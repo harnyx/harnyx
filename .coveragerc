@@ -1,0 +1,14 @@
+[run]
+branch = True
+source =
+    caster_commons
+    caster_validator
+    caster_miner
+    caster_miner_sdk
+omit =
+    */tests/*
+
+[report]
+show_missing = True
+skip_covered = True
+

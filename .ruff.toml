@@ -1,0 +1,28 @@
+target-version = "py311"
+line-length = 120
+
+[lint]
+select = [
+  "E",  # pycodestyle errors
+  "F",  # pyflakes
+  "W",  # pycodestyle warnings
+  "B",  # flake8-bugbear
+  "I",  # import sorting
+  "UP", # pyupgrade
+  "N",  # pep8-naming
+  "S",  # flake8-bandit
+  "A",  # flake8-builtins
+  "RUF100",
+]
+ignore = [
+  "S101",  # allow assert statements in tests
+]
+
+[lint.isort]
+known-first-party = [
+  "caster_commons",
+  "caster_validator",
+  "caster_miner",
+  "caster_miner_sdk",
+]
+

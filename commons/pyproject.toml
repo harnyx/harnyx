@@ -1,0 +1,34 @@
+[project]
+name = "caster-commons"
+version = "0.1.0"
+description = "Shared SDK utilities and sandbox harness for the Caster Subnet."
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+authors = [
+  { name = "Caster Labs", email = "engineering@casterlabs.example" }
+]
+dependencies = [
+  "caster-miner-sdk>=0.1.0",
+  "pydantic>=2.8",
+  "typing-extensions>=4.9",
+  "fastapi>=0.110.1",
+  "httpx>=0.27",
+  "openai>=2.8.0",
+  "google-cloud-logging>=3.11",
+  "pyseccomp>=0.1.2",
+  "google-genai>=1.52.0",
+  "google-auth>=2.28",
+  "anthropic>=0.75.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.4",
+]
+
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/caster_commons"]

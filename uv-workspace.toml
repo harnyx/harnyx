@@ -1,0 +1,3 @@
+[workspace]
+members = ["commons", "validator", "miner", "miner-sdk"]
+
