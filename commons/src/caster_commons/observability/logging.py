@@ -26,13 +26,26 @@ def _should_emit_json_payload() -> bool:
     return bool(os.getenv("K_SERVICE") or os.getenv("KUBERNETES_SERVICE_HOST"))
 
 
+def _compact_json(value: Any, *, limit: int = 512) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    if len(encoded) <= limit:
+        return encoded
+    return encoded[:limit] + "... (truncated)"
+
+
 def _structured_payload(record: logging.LogRecord) -> dict[str, Any]:
     record_dict = record.__dict__
     record_data = record_dict.get("data")
     record_json_fields = record_dict.get("json_fields")
 
+    message = record.getMessage()
+    sanitized_data: Any | None = None
+    if record_data:
+        sanitized_data = _sanitize_for_json(record_data)
+        message = f"{message} | data={_compact_json(sanitized_data)}"
+
     payload: dict[str, Any] = {
-        "message": record.getMessage(),
+        "message": message,
         "severity": record.levelname,
         "logger": record.name,
         "timestamp": (
@@ -44,8 +57,8 @@ def _structured_payload(record: logging.LogRecord) -> dict[str, Any]:
         payload["exception"] = "".join(traceback.format_exception(*record.exc_info)).rstrip("\n")
     if record.stack_info:
         payload["stack_info"] = str(record.stack_info)
-    if record_data:
-        payload["data"] = _sanitize_for_json(record_data)
+    if sanitized_data is not None:
+        payload["data"] = sanitized_data
 
     if record_json_fields:
         json_fields = _sanitize_for_json(record_json_fields)

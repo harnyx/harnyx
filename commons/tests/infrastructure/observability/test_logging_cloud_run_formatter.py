@@ -24,7 +24,8 @@ def test_formatter_emits_json_payload_for_json_fields_in_cloud_run(monkeypatch) 
     rendered = formatter.format(record)
     payload = json.loads(rendered)
 
-    assert payload["message"] == "llm.invoke.retry.complete"
+    expected_data = json.dumps(record.data, sort_keys=True, separators=(",", ":"))
+    assert payload["message"] == f"{record.getMessage()} | data={expected_data}"
     assert payload["severity"] == "INFO"
     assert payload["logger"] == "caster_commons.llm.calls"
     assert payload["data"]["provider"] == "openai"
@@ -50,7 +51,8 @@ def test_formatter_emits_json_payload_for_data_in_cloud_run(monkeypatch) -> None
     rendered = formatter.format(record)
     payload = json.loads(rendered)
 
-    assert payload["message"] == "ingestion stream exhausted candidates before filling limit"
+    expected_data = json.dumps(record.data, sort_keys=True, separators=(",", ":"))
+    assert payload["message"] == f"{record.getMessage()} | data={expected_data}"
     assert payload["severity"] == "INFO"
     assert payload["logger"] == "caster_platform.content_ingestion"
     assert payload["data"]["feed_id"] == "feed-123"
@@ -77,7 +79,8 @@ def test_formatter_emits_json_payload_for_json_fields_in_kubernetes(monkeypatch)
     rendered = formatter.format(record)
     payload = json.loads(rendered)
 
-    assert payload["message"] == "desearch.request.complete"
+    expected_data = json.dumps(record.data, sort_keys=True, separators=(",", ":"))
+    assert payload["message"] == f"{record.getMessage()} | data={expected_data}"
     assert payload["severity"] == "INFO"
     assert payload["logger"] == "caster_commons.tools.desearch.calls"
     assert payload["data"]["provider"] == "desearch"
@@ -109,7 +112,8 @@ def test_formatter_emits_exception_payload_in_kubernetes(monkeypatch) -> None:
     rendered = formatter.format(record)
     payload = json.loads(rendered)
 
-    assert payload["message"] == "ingestion worker tick failed"
+    expected_data = json.dumps(record.data, sort_keys=True, separators=(",", ":"))
+    assert payload["message"] == f"{record.getMessage()} | data={expected_data}"
     assert payload["severity"] == "ERROR"
     assert payload["data"]["run_id"] == "run-123"
     assert "ValueError: boom" in payload["exception"]
