@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import time
+import traceback
 import types
 from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
@@ -39,6 +40,10 @@ def _structured_payload(record: logging.LogRecord) -> dict[str, Any]:
             f".{int(record.msecs):03d}Z"
         ),
     }
+    if record.exc_info:
+        payload["exception"] = "".join(traceback.format_exception(*record.exc_info)).rstrip("\n")
+    if record.stack_info:
+        payload["stack_info"] = str(record.stack_info)
     if record_data:
         payload["data"] = _sanitize_for_json(record_data)
 
@@ -62,9 +67,8 @@ class ExtrasFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         record_dict = record.__dict__
         record_data = record_dict.get("data")
-        record_json_fields = record_dict.get("json_fields")
 
-        if _should_emit_json_payload() and record_json_fields:
+        if _should_emit_json_payload():
             return json.dumps(_structured_payload(record), sort_keys=True, separators=(",", ":"))
 
         formatted = super().format(record)
