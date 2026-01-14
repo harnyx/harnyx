@@ -129,11 +129,12 @@ class DeSearchClient:
         if data is None:
             raise RuntimeError("desearch twitter search returned empty response")
         response = SearchXSearchResponse.model_validate(data)
-        self._log_search_links_twitter_summary(response)
+        self._log_search_links_twitter_summary(request, response)
         return response
 
     @staticmethod
     def _log_search_links_twitter_summary(
+        request: SearchXSearchRequest,
         response: SearchXSearchResponse,
     ) -> None:
         created_at_by_id: dict[int, str | None] = {}
@@ -155,6 +156,7 @@ class DeSearchClient:
             "desearch.search_links_twitter.summary",
             extra={
                 "data": {
+                    "request": request.model_dump(exclude_none=True),
                     "return_count": len(response.data),
                     "min_id": min_id,
                     "max_id": max_id,
