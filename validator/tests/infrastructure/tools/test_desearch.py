@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -78,3 +80,38 @@ async def test_desearch_client_twitter_search() -> None:
     assert response.data[0].text == "hello"
     assert captured["method"] == "GET"
     assert captured["url"] == "https://api.desearch.ai/twitter?query=%23caster&count=3"
+
+
+async def test_desearch_client_ai_search_twitter_posts_posts_payload() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert str(request.url) == "https://api.desearch.ai/desearch/ai/search"
+        assert request.headers["authorization"] == "key"
+
+        payload = json.loads(request.content)
+        assert payload["prompt"] == "caster subnet"
+        assert payload["tools"] == ["Twitter Search"]
+        assert payload["model"] == "ORBIT"
+        assert payload["result_type"] == "LINKS_WITH_FINAL_SUMMARY"
+        assert payload["system_message"] == ""
+        assert payload["streaming"] is False
+        assert payload["count"] == 200
+        assert payload["start_date"] == "2026-01-14T00:00:00Z"
+        assert payload["end_date"] == "2026-01-14T01:02:03Z"
+
+        return httpx.Response(200, json={"tweets": []})
+
+    client = httpx.AsyncClient(
+        base_url="https://api.desearch.ai",
+        transport=httpx.MockTransport(handler),
+    )
+    adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
+
+    tweets = await adapter.ai_search_twitter_posts(
+        prompt="caster subnet",
+        count=300,
+        start_dt=datetime(2026, 1, 14, 0, 0, 0, tzinfo=UTC),
+        end_dt=datetime(2026, 1, 14, 1, 2, 3, tzinfo=UTC),
+    )
+
+    assert tweets == []

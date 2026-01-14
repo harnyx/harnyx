@@ -6,12 +6,15 @@ import asyncio
 import logging
 import time
 from collections.abc import Mapping
+from datetime import UTC, datetime
+from enum import Enum
 from typing import Any
 
 import httpx
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 from opentelemetry.util.types import AttributeValue
+from pydantic import BaseModel, ConfigDict
 
 from caster_commons.config.external_client import ExternalClientRetrySettings
 from caster_commons.llm.retry_utils import RetryPolicy, backoff_ms
@@ -24,6 +27,27 @@ from caster_commons.tools.search_models import (
 )
 
 _LOGGER = logging.getLogger("caster_commons.tools.desearch.calls")
+
+
+class DeSearchAiTool(str, Enum):
+    TWITTER_SEARCH = "Twitter Search"
+
+
+class DeSearchAiModel(str, Enum):
+    NOVA = "NOVA"
+    ORBIT = "ORBIT"
+    HORIZON = "HORIZON"
+
+
+class DeSearchAiResultType(str, Enum):
+    ONLY_LINKS = "ONLY_LINKS"
+    LINKS_WITH_FINAL_SUMMARY = "LINKS_WITH_FINAL_SUMMARY"
+
+
+class _AiSearchResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    tweets: list[SearchXResult]
 
 
 class DeSearchClient:
@@ -120,6 +144,64 @@ class DeSearchClient:
         if data is None:
             return None
         return SearchXResult.model_validate(data)
+
+    async def ai_search(
+        self,
+        *,
+        prompt: str,
+        tools: tuple[DeSearchAiTool, ...],
+        model: DeSearchAiModel,
+        count: int,
+        start_dt: datetime,
+        end_dt: datetime,
+        result_type: DeSearchAiResultType,
+        system_message: str,
+    ) -> object:
+        if not prompt.strip():
+            raise ValueError("desearch ai_search requires non-empty prompt")
+        if count <= 0:
+            raise ValueError("desearch ai_search requires count > 0")
+        if start_dt.tzinfo is None or end_dt.tzinfo is None:
+            raise ValueError("desearch ai_search requires timezone-aware datetimes")
+        if start_dt > end_dt:
+            raise ValueError("desearch ai_search requires start_dt <= end_dt")
+
+        payload: dict[str, object] = {
+            "prompt": prompt,
+            "tools": [tool.value for tool in tools],
+            "model": model.value,
+            "result_type": result_type.value,
+            "system_message": system_message,
+            "streaming": False,
+            "count": min(200, count),
+            "start_date": start_dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "end_date": end_dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        data = await self._post("desearch/ai/search", payload, expect_data=False)
+        if data is None:
+            raise RuntimeError("desearch ai_search returned empty response")
+        return data
+
+    async def ai_search_twitter_posts(
+        self,
+        *,
+        prompt: str,
+        count: int,
+        start_dt: datetime,
+        end_dt: datetime,
+    ) -> list[SearchXResult]:
+        data = await self.ai_search(
+            prompt=prompt,
+            tools=(DeSearchAiTool.TWITTER_SEARCH,),
+            model=DeSearchAiModel.HORIZON,
+            count=count,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            result_type=DeSearchAiResultType.LINKS_WITH_FINAL_SUMMARY,
+            system_message="",
+        )
+        response = _AiSearchResponse.model_validate(data, strict=True)
+        return response.tweets
 
     async def aclose(self) -> None:
         if self._owns_client:
