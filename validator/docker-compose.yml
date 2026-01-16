@@ -1,0 +1,46 @@
+services:
+  validator:
+    image: "${CASTER_VALIDATOR_IMAGE:-castersubnet/caster-subnet-validator:latest}"
+    env_file:
+      - .env
+    environment:
+      CASTER_VALIDATOR_PUBLIC_HOST: "validator"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ~/.bittensor/wallets:/root/.bittensor/wallets
+      - caster-validator-state:/workspace/.caster_state
+    ports:
+      - "${VALIDATOR_HOST_PORT:-8100}:8100"
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+    networks:
+      - default
+      - caster-sandbox-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    stop_grace_period: "${CASTER_STOP_GRACE:-30m}"
+
+  watchtower:
+    image: containrrr/watchtower
+    command:
+      - --label-enable
+      - --interval
+      - "300"
+      - --stop-timeout
+      - "${CASTER_STOP_GRACE:-30m}"
+      - --cleanup
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+networks:
+  caster-sandbox-net:
+    name: caster-sandbox-net
+    driver: bridge
+    internal: true
+
+volumes:
+  caster-validator-state:
+    driver: local
+    name: caster-validator-state

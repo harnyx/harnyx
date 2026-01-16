@@ -77,7 +77,7 @@ class LlmSettings(BaseSettings):
     scoring_llm_timeout_seconds: float = Field(default=30.0, alias="SCORING_LLM_TIMEOUT_SECONDS")
 
     # --- Scoring (validator) ---
-    scoring_llm_provider: LlmProviderName = Field(default="openai", alias="SCORING_LLM_PROVIDER")
+    scoring_llm_provider: LlmProviderName = Field(default="chutes", alias="SCORING_LLM_PROVIDER")
     scoring_llm_model: str = Field(default="", alias="SCORING_LLM_MODEL")
     scoring_llm_temperature: float | None = Field(default=None, alias="SCORING_LLM_TEMPERATURE")
     scoring_llm_max_output_tokens: int = Field(

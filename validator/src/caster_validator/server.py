@@ -47,15 +47,17 @@ _weight_worker = create_weight_worker(
     status_provider=_runtime.status_provider,
 )
 
+WORKER_STOP_TIMEOUT_SECONDS = 30 * 60
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     _weight_worker.start()
     _evaluation_worker.start()
     yield
+    _evaluation_worker.stop(timeout=WORKER_STOP_TIMEOUT_SECONDS)
+    _weight_worker.stop(timeout=WORKER_STOP_TIMEOUT_SECONDS)
     await close_runtime_resources(_runtime)
-    _evaluation_worker.stop()
-    _weight_worker.stop()
     shutdown_logging()
 
 
@@ -79,6 +81,7 @@ def main() -> None:
         app,
         host=_runtime.settings.rpc_listen_host,
         port=_runtime.settings.rpc_port,
+        timeout_graceful_shutdown=WORKER_STOP_TIMEOUT_SECONDS,
         # logging already setup
         log_config=None,
     )

@@ -5,12 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from caster_commons.llm.adapter import LlmProviderAdapter
 from caster_commons.llm.provider import LlmProviderName, LlmProviderPort, parse_provider_name
-from caster_commons.llm.providers.aliases import (
-    DEFAULT_MODEL_ALIASES,
-    AliasingLlmProvider,
-    LlmModelAliasResolver,
-)
 from caster_commons.llm.providers.chutes import ChutesLlmProvider
 from caster_commons.llm.providers.openai import OpenAILlmProvider
 from caster_commons.llm.providers.vertex.provider import VertexLlmProvider
@@ -44,7 +40,6 @@ def create_llm_provider_factory(
         vertex_timeout=vertex_timeout,
         gcp_service_account_b64=gcp_service_account_b64,
     )
-    alias_resolver = LlmModelAliasResolver(DEFAULT_MODEL_ALIASES)
     cache: dict[LlmProviderName, LlmProviderPort] = {}
     providers = _provider_registry()
 
@@ -58,7 +53,7 @@ def create_llm_provider_factory(
             raise RuntimeError(f"unknown llm provider {provider_name!r}")
 
         base_provider = spec.build(cfg)
-        provider = _wrap_aliases(provider_name, base_provider, alias_resolver)
+        provider = _wrap_adapter(provider_name, base_provider)
         cache[provider_name] = provider
         return provider
 
@@ -136,12 +131,8 @@ def _build_vertex_maas(cfg: ProviderConfig) -> LlmProviderPort:
     )
 
 
-def _wrap_aliases(
-    name: str, base_provider: LlmProviderPort, resolver: LlmModelAliasResolver
-) -> LlmProviderPort:
-    if not resolver.has_aliases():
-        return base_provider
-    return AliasingLlmProvider(provider_name=name, delegate=base_provider, resolver=resolver)
+def _wrap_adapter(name: str, base_provider: LlmProviderPort) -> LlmProviderPort:
+    return LlmProviderAdapter(provider_name=name, delegate=base_provider)
 
 
 __all__ = ["create_llm_provider_factory"]
