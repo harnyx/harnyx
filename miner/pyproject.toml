@@ -10,14 +10,17 @@ authors = [
 dependencies = [
   "fastapi>=0.110.1",
   "httpx>=0.27",
+  "python-dotenv>=1.1.1",
   "pyseccomp>=0.1.2",
   "uvicorn>=0.30",
+  "bittensor==9.9.0",
   "caster-miner-sdk>=0.1.0",
 ]
 
 [project.scripts]
 caster-miner = "caster_miner.app:main"
 caster-miner-dev = "caster_miner.dev:main"
+caster-miner-submit = "caster_miner.submit:main"
 
 [project.optional-dependencies]
 dev = [

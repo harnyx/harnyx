@@ -13,6 +13,7 @@ This repository contains everything validator operators need to run a validator 
 
 - Validator operators: see `validator/README.md`
 - Miner developers: see `miner/README.md`
+- Miner SDK reference: see `miner-sdk/README.md`
 
 ## Incentive mechanism (overview)
 
