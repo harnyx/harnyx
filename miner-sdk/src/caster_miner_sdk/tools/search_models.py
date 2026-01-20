@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class SearchWebSearchRequest(BaseModel):
@@ -65,6 +65,9 @@ class SearchXUser(BaseModel):
     username: str | None = None
     id: str | None = None
     display_name: str | None = Field(default=None, alias="name")
+    profile_image_url: str | None = Field(
+        default=None, validation_alias=AliasChoices("profile_image_url_https", "profile_image_url")
+    )
     followers_count: int | None = None
     verified: bool | None = None
     is_blue_verified: bool | None = None
@@ -130,4 +133,3 @@ __all__ = [
     "SearchXExtendedEntities",
     "SearchXUser",
 ]
-
