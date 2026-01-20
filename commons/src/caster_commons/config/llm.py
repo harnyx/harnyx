@@ -63,6 +63,13 @@ class LlmSettings(BaseSettings):
         default=DEFAULT_MAX_OUTPUT_TOKENS, alias="BENCHMARK_LLM_MAX_OUTPUT_TOKENS"
     )
 
+    # --- Digest (platform-only; run-scoped daily summaries) ---
+    digest_llm_provider: LlmProviderName = Field(default="openai", alias="DIGEST_LLM_PROVIDER")
+    digest_llm_model: str = Field(default="", alias="DIGEST_LLM_MODEL")
+    digest_llm_reasoning_effort: str | None = Field(default=None, alias="DIGEST_LLM_REASONING_EFFORT")
+    digest_llm_temperature: float | None = Field(default=None, alias="DIGEST_LLM_TEMPERATURE")
+    digest_llm_max_output_tokens: int = Field(default=DEFAULT_MAX_OUTPUT_TOKENS, alias="DIGEST_LLM_MAX_OUTPUT_TOKENS")
+
     # --- Timeouts ---
     llm_timeout_seconds: float = Field(default=60.0, alias="PLATFORM_LLM_TIMEOUT_SECONDS")
     generator_llm_timeout_seconds: float | None = Field(
@@ -74,6 +81,7 @@ class LlmSettings(BaseSettings):
     benchmark_llm_timeout_seconds: float | None = Field(
         default=None, alias="BENCHMARK_LLM_TIMEOUT_SECONDS"
     )
+    digest_llm_timeout_seconds: float | None = Field(default=None, alias="DIGEST_LLM_TIMEOUT_SECONDS")
     scoring_llm_timeout_seconds: float = Field(default=30.0, alias="SCORING_LLM_TIMEOUT_SECONDS")
 
     # --- Scoring (validator) ---
