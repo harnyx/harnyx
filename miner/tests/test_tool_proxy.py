@@ -7,7 +7,7 @@ import pytest
 
 from caster_miner.tools.proxy import ToolInvocationError, ToolProxy
 from caster_miner_sdk._internal.tool_invoker import bind_tool_invoker
-from caster_miner_sdk.api import LlmChatResult, llm_chat, search_web
+from caster_miner_sdk.api import LlmChatResult, llm_chat, search_ai, search_web
 
 TEST_TOKEN = "token-123"  # noqa: S105
 ERROR_TOKEN = "bad-token"  # noqa: S105
@@ -113,6 +113,58 @@ async def test_search_web_helper_invokes_tool_proxy() -> None:
     payload = captured["payload"]
     assert payload["tool"] == "search_web"
     assert payload["kwargs"] == {"query": "caster subnet", "num": 3}
+
+
+async def test_search_ai_helper_invokes_tool_proxy() -> None:
+    captured: dict[str, dict[str, object]] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "receipt_id": "r-ai",
+                "response": {"data": [{"url": "https://example.com", "note": "Snippet"}]},
+                "results": [
+                    {
+                        "index": 0,
+                        "result_id": "result-ai-0",
+                        "url": "https://example.com",
+                        "note": "Snippet",
+                        "title": None,
+                    }
+                ],
+                "result_policy": "referenceable",
+                "cost_usd": 0.004,
+                "budget": {
+                    "session_budget_usd": 1.0,
+                    "session_used_budget_usd": 0.0,
+                    "session_remaining_budget_usd": 1.0,
+                },
+            },
+        )
+
+    proxy = ToolProxy(
+        base_url="http://validator",
+        token=TEST_TOKEN,
+        session_id=SESSION_ID,
+        client=httpx.AsyncClient(base_url="http://validator", transport=httpx.MockTransport(handler)),
+    )
+    try:
+        with bind_tool_invoker(proxy):
+            result = await search_ai("caster subnet", tools=("web",), count=3)
+    finally:
+        await proxy.aclose()
+
+    assert result.receipt_id == "r-ai"
+    assert result.result_policy == "referenceable"
+    assert result.results[0].url == "https://example.com"
+
+    payload = captured["payload"]
+    assert payload["tool"] == "search_ai"
+    assert payload["kwargs"]["prompt"] == "caster subnet"
+    assert payload["kwargs"]["tools"] == ["web"]
+    assert payload["kwargs"]["count"] == 3
 
 
 async def test_llm_chat_helper_invokes_tool_proxy() -> None:

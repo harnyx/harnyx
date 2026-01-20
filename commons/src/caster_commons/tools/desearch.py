@@ -13,10 +13,12 @@ import httpx
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 from opentelemetry.util.types import AttributeValue
-from pydantic import BaseModel, ConfigDict
 
 from caster_commons.config.external_client import ExternalClientRetrySettings
 from caster_commons.llm.retry_utils import RetryPolicy, backoff_ms
+from caster_commons.tools.desearch_ai_protocol import (
+    parse_desearch_ai_response,
+)
 from caster_commons.tools.search_models import (
     SearchWebSearchRequest,
     SearchWebSearchResponse,
@@ -27,9 +29,14 @@ from caster_commons.tools.search_models import (
 
 _LOGGER = logging.getLogger("caster_commons.tools.desearch.calls")
 
-
 class DeSearchAiTool(str, Enum):
+    WEB = "web"
+    HACKER_NEWS = "hackernews"
+    REDDIT = "reddit"
+    WIKIPEDIA = "wikipedia"
+    YOUTUBE = "youtube"
     TWITTER = "twitter"
+    ARXIV = "arxiv"
 
 
 class DeSearchAiModel(str, Enum):
@@ -51,13 +58,8 @@ class DeSearchAiDateFilter(str, Enum):
 
 class DeSearchAiResultType(str, Enum):
     ONLY_LINKS = "ONLY_LINKS"
+    LINKS_WITH_SUMMARIES = "LINKS_WITH_SUMMARIES"
     LINKS_WITH_FINAL_SUMMARY = "LINKS_WITH_FINAL_SUMMARY"
-
-
-class _AiSearchResponse(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    tweets: list[SearchXResult]
 
 
 class DeSearchClient:
@@ -209,8 +211,9 @@ class DeSearchClient:
         payload_items: dict[str, object | None] = {
             "prompt": prompt,
             "tools": [tool.value for tool in tools],
-            # NOTE: upstream SDK does not send "model" for /desearch/ai/search (desearch_py/api.py).
-            # TODO: investigate API support before enabling.
+            # NOTE: desearch.ai /desearch/ai/search appears to ignore or reject `model` currently.
+            # We keep this parameter in the public interface for future compatibility,
+            # but do not send it in the payload until the API stabilizes.
             # "model": model.value,
             "date_filter": date_filter.value if date_filter is not None else None,
             "result_type": result_type.value,
@@ -231,7 +234,7 @@ class DeSearchClient:
         count: int,
         date_filter: DeSearchAiDateFilter | None,
     ) -> list[SearchXResult]:
-        data = await self.ai_search(
+        raw = await self.ai_search(
             prompt=prompt,
             tools=(DeSearchAiTool.TWITTER,),
             model=DeSearchAiModel.HORIZON,
@@ -240,8 +243,11 @@ class DeSearchClient:
             result_type=DeSearchAiResultType.LINKS_WITH_FINAL_SUMMARY,
             system_message="",
         )
-        response = _AiSearchResponse.model_validate(data, strict=True)
-        return response.tweets
+        response = parse_desearch_ai_response(raw)
+        tweets = response.tweets
+        if not tweets:
+            raise RuntimeError("desearch ai_search_twitter_posts expected tweets in response")
+        return tweets
 
     async def aclose(self) -> None:
         if self._owns_client:

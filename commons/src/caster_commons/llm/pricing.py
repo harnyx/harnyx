@@ -42,6 +42,8 @@ SEARCH_PRICING: dict[SearchToolName, float] = {
     "search_x": 0.003,
 }
 
+SEARCH_AI_PER_REFERENCEABLE_RESULT_USD = 0.004
+
 
 @dataclass(frozen=True)
 class ModelPricing:
@@ -73,7 +75,16 @@ def price_llm(model: ToolModelName, usage: LlmUsage) -> float:
 
 def price_search(tool_name: SearchToolName) -> float:
     """Return USD cost for a search call based on tool name."""
+    if tool_name == "search_ai":
+        raise ValueError("search_ai pricing depends on referenceable results; use price_search_ai")
     return float(SEARCH_PRICING[tool_name])
+
+
+def price_search_ai(*, referenceable_results: int) -> float:
+    """Return USD cost for AI search calls based on referenceable results."""
+    if referenceable_results < 0:
+        raise ValueError("referenceable_results must be non-negative")
+    return float(referenceable_results) * SEARCH_AI_PER_REFERENCEABLE_RESULT_USD
 
 
 __all__ = [
@@ -81,8 +92,10 @@ __all__ = [
     "ToolModelName",
     "price_llm",
     "price_search",
+    "price_search_ai",
     "MODEL_PRICING",
     "SEARCH_PRICING",
+    "SEARCH_AI_PER_REFERENCEABLE_RESULT_USD",
     "ModelPricing",
     "parse_tool_model",
 ]

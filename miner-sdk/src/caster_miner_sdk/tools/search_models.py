@@ -10,6 +10,8 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 class SearchWebSearchRequest(BaseModel):
     """Query parameters for the `search_web` tool."""
 
+    model_config = ConfigDict(extra="forbid")
+
     query: str
     num: int | None = None
     start: int | None = None
@@ -36,6 +38,8 @@ class SearchWebSearchResponse(BaseModel):
 
 class SearchXSearchRequest(BaseModel):
     """Query parameters for the `search_x` tool."""
+
+    model_config = ConfigDict(extra="forbid")
 
     query: str
     count: int | None = None
@@ -122,6 +126,63 @@ class SearchXSearchResponse(BaseModel):
     retry_reasons: tuple[str, ...] | None = None
 
 
+SearchAiTool = Literal[
+    "web",
+    "hackernews",
+    "reddit",
+    "wikipedia",
+    "youtube",
+    "twitter",
+    "arxiv",
+]
+
+SearchAiDateFilter = Literal[
+    "PAST_24_HOURS",
+    "PAST_2_DAYS",
+    "PAST_WEEK",
+    "PAST_2_WEEKS",
+    "PAST_MONTH",
+    "PAST_2_MONTHS",
+    "PAST_YEAR",
+    "PAST_2_YEARS",
+]
+
+SearchAiResultType = Literal[
+    "ONLY_LINKS",
+    "LINKS_WITH_SUMMARIES",
+    "LINKS_WITH_FINAL_SUMMARY",
+]
+
+
+class SearchAiSearchRequest(BaseModel):
+    """Query parameters for the `search_ai` tool."""
+
+    prompt: str = Field(min_length=1)
+    tools: tuple[SearchAiTool, ...] = Field(min_length=1)
+    count: int = Field(default=10, ge=1, le=200)
+    date_filter: SearchAiDateFilter | None = None
+    result_type: SearchAiResultType = "LINKS_WITH_FINAL_SUMMARY"
+    system_message: str = ""
+
+
+class SearchAiResult(BaseModel):
+    """Single AI search result item."""
+
+    url: str = Field(min_length=1)
+    note: str | None = None
+    title: str | None = None
+    source: SearchAiTool | None = None
+
+
+class SearchAiSearchResponse(BaseModel):
+    """Response payload for the `search_ai` tool."""
+
+    data: list[SearchAiResult] = Field(default_factory=list)
+    raw: Any | None = None
+    attempts: int | None = None
+    retry_reasons: tuple[str, ...] | None = None
+
+
 __all__ = [
     "SearchWebSearchRequest",
     "SearchWebSearchResponse",
@@ -132,4 +193,10 @@ __all__ = [
     "SearchXMediaEntity",
     "SearchXExtendedEntities",
     "SearchXUser",
+    "SearchAiTool",
+    "SearchAiDateFilter",
+    "SearchAiResultType",
+    "SearchAiSearchRequest",
+    "SearchAiSearchResponse",
+    "SearchAiResult",
 ]

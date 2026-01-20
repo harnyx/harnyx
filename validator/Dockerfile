@@ -33,5 +33,5 @@ COPY validator ./validator
 
 RUN uv pip install --system --editable ./validator --no-deps
 
-ENTRYPOINT ["caster-validator"]
+ENTRYPOINT ["uv", "run", "--package", "caster-validator", "caster-validator"]
 CMD []

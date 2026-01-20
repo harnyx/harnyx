@@ -83,23 +83,41 @@ async def test_desearch_client_twitter_search() -> None:
 
 async def test_desearch_client_ai_search_twitter_posts_posts_payload() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
-        assert request.method == "POST"
-        assert str(request.url) == "https://api.desearch.ai/desearch/ai/search"
         assert request.headers["authorization"] == "key"
 
-        payload = json.loads(request.content)
-        assert payload["prompt"] == "caster subnet"
-        assert payload["tools"] == ["twitter"]
-        assert payload["result_type"] == "LINKS_WITH_FINAL_SUMMARY"
-        assert payload["system_message"] == ""
-        assert payload["streaming"] is False
-        assert payload["count"] == 200
-        assert payload["date_filter"] == "PAST_24_HOURS"
-        assert "start_date" not in payload
-        assert "end_date" not in payload
-        assert "model" not in payload
+        if request.url.path == "/desearch/ai/search":
+            assert request.method == "POST"
+            payload = json.loads(request.content)
+            assert payload["prompt"] == "caster subnet"
+            assert payload["tools"] == ["twitter"]
+            assert payload["result_type"] == "LINKS_WITH_FINAL_SUMMARY"
+            assert payload["system_message"] == ""
+            assert payload["streaming"] is False
+            assert payload["count"] == 200
+            assert payload["date_filter"] == "PAST_24_HOURS"
+            assert "start_date" not in payload
+            assert "end_date" not in payload
+            assert "model" not in payload
 
-        return httpx.Response(200, json={"tweets": []})
+            return httpx.Response(
+                200,
+                json={
+                    "tweets": [
+                        {
+                            "id": "123",
+                            "url": "https://x.com/foo/status/123",
+                            "text": "hi",
+                            "user": {"username": "foo"},
+                        }
+                    ],
+                    "completion": "hello",
+                },
+            )
+
+        if request.url.path == "/twitter/post":
+            raise AssertionError("ai_search_twitter_posts should not call /twitter/post when tweets are present")
+
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
 
     client = httpx.AsyncClient(
         base_url="https://api.desearch.ai",
@@ -113,4 +131,5 @@ async def test_desearch_client_ai_search_twitter_posts_posts_payload() -> None:
         date_filter=DeSearchAiDateFilter.PAST_24_HOURS,
     )
 
-    assert tweets == []
+    assert len(tweets) == 1
+    assert tweets[0].id == "123"

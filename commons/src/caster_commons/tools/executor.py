@@ -22,7 +22,13 @@ from caster_commons.domain.tool_call import (
     ToolResultPolicy,
 )
 from caster_commons.json_types import JsonObject, JsonValue
-from caster_commons.llm.pricing import ToolModelName, parse_tool_model, price_llm, price_search
+from caster_commons.llm.pricing import (
+    ToolModelName,
+    parse_tool_model,
+    price_llm,
+    price_search,
+    price_search_ai,
+)
 from caster_commons.llm.schema import LlmResponse
 from caster_commons.tools.dto import ToolBudgetSnapshot, ToolInvocationRequest, ToolInvocationResult
 from caster_commons.tools.types import LLM_TOOLS, SearchToolName, ToolName, is_citation_source, is_search_tool
@@ -49,6 +55,7 @@ _TOOLS_WITHOUT_USAGE: set[ToolName] = {"test_tool"}
 _SEARCH_RESULT_FIELDS: dict[SearchToolName, tuple[str, str, str]] = {
     "search_web": ("link", "snippet", "title"),
     "search_x": ("url", "text", "title"),
+    "search_ai": ("url", "note", "title"),
 }
 
 
@@ -113,6 +120,7 @@ class ToolExecutor:
         self,
         request: ToolInvocationRequest,
         response_payload: object,
+        results: tuple[ToolResult, ...],
     ) -> tuple[int, ToolCallUsage | None, float | None]:
         name = request.tool
         if name in LLM_TOOLS:
@@ -120,6 +128,8 @@ class ToolExecutor:
         if is_search_tool(name):
             if not isinstance(response_payload, Mapping):
                 raise ValueError("search tool response must be a mapping")
+            if name == "search_ai":
+                return 0, None, price_search_ai(referenceable_results=len(results))
             return 0, None, price_search(name)
         if name in _TOOLS_WITHOUT_USAGE:
             return 0, None, None
@@ -149,15 +159,25 @@ class ToolExecutor:
         self._validate_token(session.session_id, request.token)
 
         response_payload = await self._invoke_tool_async(request)
-        llm_tokens, usage_details, call_cost = self._extract_usage(request, response_payload)
-        updated_session = self._record_usage(session, request, llm_tokens, usage_details, call_cost)
+        results, result_policy = self._build_results(request, response_payload)
+        llm_tokens, usage_details, call_cost = self._extract_usage(
+            request,
+            response_payload,
+            results,
+        )
+        updated_session = self._record_usage(
+            session,
+            request,
+            llm_tokens,
+            usage_details,
+            call_cost,
+        )
         budget_limit = self._usage_tracker.limit_usd
         budget_snapshot = ToolBudgetSnapshot(
             session_budget_usd=budget_limit,
             session_used_budget_usd=updated_session.usage.total_cost_usd,
             session_remaining_budget_usd=budget_limit - updated_session.usage.total_cost_usd,
         )
-        results, result_policy = self._build_results(request, response_payload)
         receipt = self._build_receipt(
             request,
             updated_session,

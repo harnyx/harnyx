@@ -118,6 +118,63 @@ async def test_execute_tool_records_receipt_and_updates_budget() -> None:
     assert result.response_payload["data"] == []
 
 
+async def test_execute_tool_prices_search_ai_by_referenceable_results() -> None:
+    session = make_session()
+    token = generate_token()
+
+    class SearchAiInvoker(ToolInvoker):
+        async def invoke(
+            self,
+            tool_name: str,
+            *,
+            args: tuple[object, ...],
+            kwargs: dict[str, object],
+        ) -> dict[str, object]:
+            assert tool_name == "search_ai"
+            return {
+                "data": [
+                    {"url": "https://a.example", "note": "A"},
+                    {"url": None, "note": "missing"},
+                    {"url": "https://b.example", "note": "B"},
+                ]
+            }
+
+    session_registry = FakeSessionRegistry()
+    session_registry.create(session)
+    receipt_log = FakeReceiptLog()
+    usage_tracker = UsageTracker(cost_limit_usd=1.0)
+    token_registry = InMemoryTokenRegistry()
+    token_registry.register(session.session_id, token)
+
+    executor = ToolExecutor(
+        session_registry=session_registry,
+        receipt_log=receipt_log,
+        usage_tracker=usage_tracker,
+        tool_invoker=SearchAiInvoker(),
+        token_registry=token_registry,
+        clock=lambda: datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
+    )
+
+    request = ToolInvocationRequest(
+        session_id=session.session_id,
+        token=token,
+        tool="search_ai",
+        args=(),
+        kwargs={"prompt": "caster subnet", "tools": ["web"], "count": 3},
+    )
+
+    result = await executor.execute(request)
+
+    stored_session = session_registry.get(session.session_id)
+    assert stored_session is not None
+    assert stored_session.usage.total_cost_usd == pytest.approx(0.008)
+
+    receipt = receipt_log.lookup(result.receipt.receipt_id)
+    assert receipt is not None
+    assert receipt.metadata.cost_usd == pytest.approx(0.008)
+    assert len(receipt.metadata.results) == 2
+
+
 async def test_execute_tool_logs_response_preview(caplog: pytest.LogCaptureFixture) -> None:
     session = make_session()
     token = generate_token()

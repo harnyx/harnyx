@@ -12,7 +12,11 @@ from caster_miner_sdk.tools.http_models import (
     ToolResultDTO,
     ToolUsageDTO,
 )
-from caster_miner_sdk.tools.search_models import SearchWebSearchResponse, SearchXSearchResponse
+from caster_miner_sdk.tools.search_models import (
+    SearchAiSearchResponse,
+    SearchWebSearchResponse,
+    SearchXSearchResponse,
+)
 
 TResponse = TypeVar("TResponse")
 
@@ -113,6 +117,27 @@ async def search_x(query: str, /, **kwargs: Any) -> ToolCallResponse[SearchXSear
     )
 
 
+async def search_ai(prompt: str, /, **kwargs: Any) -> ToolCallResponse[SearchAiSearchResponse]:
+    """Execute the validator-hosted AI search tool and return its response payload."""
+
+    payload = {"prompt": prompt}
+    payload.update(kwargs)
+    raw_response = await _current_tool_invoker().invoke("search_ai", args=(), kwargs=payload)
+    dto = _parse_execute_response(raw_response)
+    if not isinstance(dto.response, Mapping):
+        raise RuntimeError("search_ai response payload must be a mapping")
+    response = SearchAiSearchResponse.model_validate(dto.response)
+    return ToolCallResponse(
+        receipt_id=dto.receipt_id,
+        response=response,
+        results=dto.results,
+        result_policy=dto.result_policy,
+        cost_usd=dto.cost_usd,
+        usage=dto.usage,
+        budget=dto.budget,
+    )
+
+
 async def llm_chat(
     *,
     messages: Sequence[Mapping[str, Any]],
@@ -150,6 +175,7 @@ __all__ = [
     "llm_chat",
     "search_x",
     "search_web",
+    "search_ai",
     "test_tool",
     "ToolCallResponse",
     "LlmChatResult",
