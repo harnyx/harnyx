@@ -1,48 +1,91 @@
-# Validator operator quickstart
+# Validator Operator Runbook
 
 This directory contains the validator runtime package plus an operator-ready Docker Compose stack (`validator` + `watchtower`).
 
-## Querying platform weights
+## Prerequisites
 
-This validator queries platform-provided weights via `GET /v1/weights`.
+Before starting, ensure you have:
 
-Operator note: the platform will deny this request (HTTP 403) unless the validator:
-- is a metagraph validator and signs the request, and
-- has a registered validator endpoint (`POST /v1/validators/register`), and
-- is considered functioning: if the validator has not successfully completed an evaluation batch for 120 hours (measured
-  from the last successful completion; if it has never completed one, measured from when it first registered its
-  validator endpoint), weights queries are blocked until it completes a later evaluation batch.
+1. **Docker** installed and running (Docker Compose v2+)
+2. **A Bittensor wallet/hotkey** registered on the subnet metagraph
+3. **A public endpoint** reachable by the platform (for registration + evaluation callbacks)
+4. **API keys** for LLM and search tools (see env vars below)
 
-Changing/re-registering your endpoint does not clear the evaluation-based block (it is tracked by hotkey).
+## Step 1: Create your env file
 
-## Configure
-
-1) Create your env file:
 ```bash
 cp .env.example .env
 ```
 
-2) Edit `.env` and set at least:
-- `PLATFORM_BASE_URL` (platform API endpoint)
-- `VALIDATOR_PUBLIC_BASE_URL` (how the platform can reach your validator)
-- `CHUTES_API_KEY` (LLM calls)
-- `DESEARCH_API_KEY` (search tools)
-- `SCORING_LLM_MODEL` (scoring model; default `openai/gpt-oss-20b`)
+## Step 2: Configure environment variables
+
+Edit `.env` and set at least:
+
+| Variable | Description |
+|----------|-------------|
+| `PLATFORM_BASE_URL` | Platform API endpoint |
+| `VALIDATOR_PUBLIC_BASE_URL` | How the platform can reach your validator |
+| `CHUTES_API_KEY` | API key for LLM calls |
+| `DESEARCH_API_KEY` | API key for search tools |
 
 The defaults in `.env.example` already target mainnet (`finney`) and netuid `67`, and use `castersubnet/caster-subnet-sandbox:latest` for sandbox execution.
 
-Wallet notes:
-- If you already have a hotkey file in `~/.bittensor/wallets`, set `SUBTENSOR_WALLET_NAME` / `SUBTENSOR_HOTKEY_NAME` to match.
-- If you *don’t* have a hotkey file yet, set `SUBTENSOR_HOTKEY_MNEMONIC` to generate it on first start.
+### Wallet configuration
 
-## Run
+Choose one of these options:
 
-- Start/update: `bash scripts/operator_up.sh`
-- Logs: `bash scripts/operator_logs.sh`
-- Stop: `bash scripts/operator_down.sh`
+- **Existing hotkey file**: If you have a hotkey in `~/.bittensor/wallets`, set:
+  - `SUBTENSOR_WALLET_NAME`
+  - `SUBTENSOR_HOTKEY_NAME`
 
-## Auto-updates (Watchtower)
+- **Generate from mnemonic**: If you don't have a hotkey file yet, set:
+  - `SUBTENSOR_HOTKEY_MNEMONIC` — the hotkey will be generated on first start
+
+## Step 3: Start the validator
+
+```bash
+bash scripts/operator_up.sh
+```
+
+## Step 4: Verify it's working
+
+Check logs for successful startup:
+
+```bash
+bash scripts/operator_logs.sh
+```
+
+Look for:
+- Successful connection to the platform
+- Validator endpoint registration confirmation
+- Evaluation batches being received and processed
+
+## Operations
+
+### Start / Stop / Logs
+
+| Action | Command |
+|--------|---------|
+| Start or update | `bash scripts/operator_up.sh` |
+| View logs | `bash scripts/operator_logs.sh` |
+| Stop | `bash scripts/operator_down.sh` |
+
+### Auto-updates (Watchtower)
 
 Watchtower polls Docker Hub every 5 minutes and will pull/restart the validator when `CASTER_VALIDATOR_IMAGE` changes.
 
 The stack is configured for a graceful restart window (default `30m`) so in-progress evaluations can finish before the container is restarted.
+
+## Troubleshooting
+
+### HTTP 403 when querying weights
+
+The platform will deny weight queries (`GET /v1/weights`) unless the validator:
+
+1. Is a metagraph validator and signs the request
+2. Has a registered validator endpoint (`POST /v1/validators/register`)
+3. Is considered "functioning" — has successfully completed an evaluation batch within the last 120 hours
+
+If your validator has never completed an evaluation batch (or hasn't completed one in 120+ hours), weight queries are blocked until it completes a later batch.
+
+**Note:** Changing or re-registering your endpoint does not clear this block — it is tracked by hotkey.

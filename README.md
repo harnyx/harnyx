@@ -1,61 +1,87 @@
 # Caster Subnet
 
-This repository contains everything validator operators need to run a validator and everything miners need to build/test miner scripts and submit them to the platform.
+**Consensus made scalable.**
 
-## Packages
+Caster Subnet is a Bittensor subnet that builds the scalable, trusted evaluation layer for content on the open web. It provides a decentralized arbitration engine where community-defined rubrics run on a trustless agent network.
 
-- `validator/` — validator runtime for operators
-- `miner/` — miner-facing sandbox harness and local tooling
-- `miner-sdk/` — SDK used by miner scripts
-- `commons/` — shared utilities used by the above packages
+## Core values
 
-## Entry points
+- **Cost-efficient & Permissionless** — more scalable than centralized alternatives
+- **Fair & Transparent** — community-defined rubrics, decentralized execution
+- **Quick & Precise** — faster and more accurate than manual human review
 
-- Validator operators: see `validator/README.md`
-- Miner developers: see `miner/README.md`
-- Miner SDK reference: see `miner-sdk/README.md`
+## How it works
 
-## Incentive mechanism (overview)
+Caster Subnet rewards the best miner scripts by having validators run standardized evaluation tasks against them, aggregating results, and assigning emissions to a "sticky" top‑3 roster.
 
-This subnet rewards the best miner scripts by having validators run standardized tasks against them, aggregating results, and assigning emissions to a “sticky” top‑3 roster.
+**Roles:**
 
-1) Miners submit scripts (code) to the platform.
-2) The platform creates a run: tasks + candidate scripts.
-3) The platform fans out the run to multiple validators.
-4) Validators execute tasks against each script and return grades.
-5) The platform aggregates validator grades into a ranking and computes weights.
-6) Validators submit those weights on-chain (Bittensor).
+- **Miners** submit Python agent scripts that evaluate claims against rubrics
+- **Validators** execute miner scripts in sandboxed containers and grade results
+- **Platform** coordinates runs, aggregates grades, and computes weights
+- **Bittensor** records weights on-chain for emission distribution
 
-```mermaid
-sequenceDiagram
-  autonumber
-  participant P as Platform
-  participant V as Validator
-  participant S as Miner Sandbox
-  participant C as Bittensor (Subtensor)
-
-  P->>V: Run (tasks, candidate scripts)
-  loop For each script × task
-    V->>S: Run script on task
-    S-->>V: Miner response
-    V->>V: Grade vs reference
-  end
-  V-->>P: Task grades (complete set)
-  P->>P: Aggregate + compute weights
-  V->>C: submit_weights(uids, weights)
+```
+  ┌──────────┐      1. Run (tasks, scripts)      ┌───────────┐
+  │ Platform │ ─────────────────────────────────▶│ Validator │
+  └──────────┘                                   └─────┬─────┘
+        ▲                                              │
+        │  5. Task grades                              │ 2. For each script × task
+        │                                              ▼
+        │                                        ┌───────────┐
+        │                                        │  Sandbox  │
+        │                                        └─────┬─────┘
+        │                                              │ 3. Miner response
+        │                                              ▼
+        │                                        ┌───────────┐
+        └────────────────────────────────────────│ Validator │
+                                                 │ (grades)  │
+                                                 └─────┬─────┘
+                                                       │ 6. submit_weights
+                                                       ▼
+                                                 ┌───────────┐
+                                                 │ Bittensor │
+                                                 └───────────┘
 ```
 
 ### Sticky top‑3 roster rule
 
-Only a top‑1 replacement updates the roster:
+Only a top‑1 replacement updates the roster. This creates stability while still rewarding breakthrough improvements:
 
-```mermaid
-flowchart TD
-  A[New run ranking computed] --> B{Did a challenger replace top1?}
-  B -- No --> C[Keep roster as-is]
-  B -- Yes --> D[top1 := challenger]
-  D --> E[top2 := old top1]
-  E --> F[top3 := old top2]
+```
+  New run ranking computed
+           │
+           ▼
+  ┌────────────────────────┐
+  │ Challenger beat top1?  │
+  └────────┬───────────────┘
+           │
+     ┌─────┴─────┐
+     │ No        │ Yes
+     ▼           ▼
+  Keep roster   top1 ← challenger
+  as-is         top2 ← old top1
+                top3 ← old top2
+```
+
+## Entry points
+
+- **Validator operators**: see [`validator/README.md`](validator/README.md)
+- **Miner developers**: see [`miner/README.md`](miner/README.md)
+- **Miner SDK reference**: see [`packages/miner-sdk/README.md`](packages/miner-sdk/README.md)
+
+---
+
+## Repo layout
+
+```
+public/
+  miner/                # miner-facing CLI tooling (test + submit)
+  validator/            # validator runtime + operator docs
+  sandbox/              # sandbox runtime (run by validators, not miners)
+  packages/
+    miner-sdk/          # SDK imported by miner scripts
+    commons/            # shared utilities (sandbox runner, tools, etc.)
 ```
 
 ## Local development

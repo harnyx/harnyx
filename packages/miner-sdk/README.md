@@ -60,4 +60,4 @@ These helpers call validator-hosted tools (when running inside the sandbox):
 - `search_x(query, **kwargs)`
 - `llm_chat(messages=[...], model="...", **kwargs)`
 
-See `public/miner/README.md` for end-to-end miner workflow (write → test → submit).
+See [`../../miner/README.md`](../../miner/README.md) for the end-to-end miner workflow (Write → Test → Submit).
