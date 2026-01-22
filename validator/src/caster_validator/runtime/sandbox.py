@@ -85,7 +85,7 @@ def build_sandbox_options(
         image=image,
         container_name=container_name,
         pull_policy=pull_policy,
-        host_port=0,
+        host_port=None if network else 0,
         container_port=container_port,
         env={
             "SANDBOX_HOST": "0.0.0.0",  # noqa: S104

@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import pytest
-
-from caster_miner.context.snapshot import ContextSnapshot
+from caster_sandbox.context.snapshot import ContextSnapshot
 
 
 def test_context_snapshot_immutable_view() -> None:
@@ -20,4 +19,3 @@ def test_context_snapshot_to_dict_returns_copy() -> None:
     clone = snapshot.to_dict()
     assert clone == data
     assert clone is not data
-

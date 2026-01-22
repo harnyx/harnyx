@@ -1,4 +1,4 @@
-"""FastAPI sandbox stub for miner development."""
+"""FastAPI sandbox runtime for executing miner entrypoints."""
 
 from __future__ import annotations
 
@@ -13,14 +13,18 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from caster_miner.json_types import JsonValue
-from caster_miner.sandbox.harness import SandboxHarness
-from caster_miner.tools.proxy import ToolProxy
+from caster_sandbox.sandbox.harness import SandboxHarness
+from caster_sandbox.tools.proxy import ToolProxy
 
-logger = logging.getLogger("caster_miner")
+logger = logging.getLogger("caster_sandbox")
 
 
-def _tool_factory(config: Mapping[str, JsonValue] | None, headers: Mapping[str, str]) -> ToolProxy | None:
+def _token_header() -> str:
+    raw = (os.getenv("CASTER_TOKEN_HEADER") or "").strip()
+    return raw or "x-caster-token"
+
+
+def _tool_factory(config: Mapping[str, object] | None, headers: Mapping[str, str]) -> ToolProxy | None:
     raw_base_url = (config or {}).get("base_url")
     if raw_base_url is not None and not isinstance(raw_base_url, str):
         raise ValueError("tool proxy config.base_url must be a string")
@@ -29,7 +33,8 @@ def _tool_factory(config: Mapping[str, JsonValue] | None, headers: Mapping[str, 
     raw_token = (config or {}).get("token")
     if raw_token is not None and not isinstance(raw_token, str):
         raise ValueError("tool proxy config.token must be a string")
-    token = raw_token or headers.get("x-caster-token")
+    token_header = _token_header()
+    token = raw_token or headers.get(token_header)
     session_id = headers.get("x-caster-session-id")
     if not base_url or not token or not session_id:
         logger.warning(
@@ -37,7 +42,13 @@ def _tool_factory(config: Mapping[str, JsonValue] | None, headers: Mapping[str, 
             extra={"base_url": base_url, "token_present": bool(token), "session_id": session_id},
         )
         return None
-    return ToolProxy(base_url=base_url, token=token, session_id=session_id)
+    return ToolProxy(
+        base_url=base_url,
+        token=token,
+        session_id=session_id,
+        token_header=token_header,
+    )
+
 
 sandbox_harness: SandboxHarness | None = None
 _agent_loaded = False
@@ -75,24 +86,23 @@ if sandbox_harness is None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Lifecycle manager for startup/shutdown hooks."""
-    logger.info("caster-miner sandbox starting up")
+    del app
+    logger.info("caster-sandbox starting up")
     yield
-    logger.info("caster-miner sandbox shutting down")
+    logger.info("caster-sandbox shutting down")
 
 
-app = FastAPI(title="Caster Miner Sandbox", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Caster Sandbox", version="0.1.0", lifespan=lifespan)
 app.include_router(sandbox_harness.create_router(), prefix="/entry")
 
 
 @app.get("/healthz", tags=["health"])
 async def health() -> dict[str, str]:
-    """Lightweight readiness probe."""
     return {"status": "ok"}
 
+
 def main(argv: Sequence[str] | None = None) -> None:
-    """CLI helper used by build scripts and local development."""
-    parser = argparse.ArgumentParser(description="Caster Miner sandbox harness.")
+    parser = argparse.ArgumentParser(description="Caster sandbox runtime.")
     parser.add_argument("--serve", action="store_true", help="Run the FastAPI app with uvicorn.")
     parser.add_argument(
         "--host",
@@ -111,10 +121,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         import uvicorn
 
         logger.info("starting uvicorn on %s:%s", args.host, args.port)
-        uvicorn.run("caster_miner.app:app", host=args.host, port=args.port, log_level="info")
+        uvicorn.run("caster_sandbox.app:app", host=args.host, port=args.port, log_level="info")
     else:
         parser.print_help()
 
 
 if __name__ == "__main__":  # pragma: no cover
     main()
+

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import threading
 from uuid import uuid4
+
+import pytest
 
 from caster_commons.domain.claim import MinerTaskClaim, ReferenceAnswer, Rubric
 from caster_commons.domain.verdict import BINARY_VERDICT_OPTIONS
@@ -44,7 +47,8 @@ class FakeBatchService:
         self.process(batch)
 
 
-def test_evaluation_worker_drains_inbox():
+@pytest.mark.anyio
+async def test_evaluation_worker_drains_inbox():
     inbox = InMemoryBatchInbox()
     status = StatusProvider()
     fake_service = FakeBatchService()
@@ -58,8 +62,8 @@ def test_evaluation_worker_drains_inbox():
     status.state.queued_batches = len(inbox)
 
     worker.start()
-    assert fake_service.processed_event.wait(timeout=1.0)
-    worker.stop()
+    assert await asyncio.to_thread(fake_service.processed_event.wait, timeout=1.0)
+    await worker.stop(timeout=1.0)
 
     assert fake_service.processed
     assert status.state.queued_batches == 0

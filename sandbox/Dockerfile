@@ -8,13 +8,14 @@ RUN mkdir -p /sandbox && chown caster:caster /sandbox
 
 WORKDIR /workspace
 
-COPY miner-sdk ./miner-sdk
-COPY miner ./miner
+COPY packages/miner-sdk ./packages/miner-sdk
+COPY sandbox ./sandbox
 
 RUN pip install --no-cache-dir --upgrade pip \
-  && pip install --no-cache-dir ./miner-sdk ./miner
+  && pip install --no-cache-dir ./packages/miner-sdk ./sandbox
 
 USER caster
 
-ENTRYPOINT ["caster-miner"]
+ENTRYPOINT ["caster-sandbox"]
 CMD ["--serve"]
+

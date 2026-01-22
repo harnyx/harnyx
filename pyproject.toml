@@ -17,10 +17,17 @@ dependencies = [
 ]
 
 [tool.uv.workspace]
-members = ["commons", "validator", "miner", "miner-sdk"]
+members = [
+  "packages/commons",
+  "validator",
+  "miner",
+  "sandbox",
+  "packages/miner-sdk",
+]
 
 [tool.uv.sources]
 caster-commons = { workspace = true }
 caster-validator = { workspace = true }
 caster-miner = { workspace = true }
 caster-miner-sdk = { workspace = true }
+caster-sandbox = { workspace = true }

@@ -1,30 +1,25 @@
 [project]
-name = "caster-validator"
+name = "caster-sandbox"
 version = "0.1.0"
-description = "Validator runtime for the Caster Subnet."
-readme = "README.md"
+description = "Sandbox runtime for executing miner entrypoints."
 requires-python = ">=3.11,<3.12"
 authors = [
   { name = "Caster Labs", email = "engineering@casterlabs.example" }
 ]
 dependencies = [
-  "pydantic>=2.8",
-  "typing-extensions>=4.9",
-  "caster-commons>=0.1.0",
   "fastapi>=0.110.1",
+  "httpx>=0.27",
+  "pyseccomp>=0.1.2",
   "uvicorn>=0.30",
-  "bittensor==9.9.0",
-  "google-genai>=1.52.0",
-  "pydantic-settings>=2.4",
+  "caster-miner-sdk>=0.1.0",
 ]
 
 [project.scripts]
-caster-validator = "caster_validator.server:main"
+caster-sandbox = "caster_sandbox.app:main"
 
 [project.optional-dependencies]
 dev = [
   "pytest>=7.4",
-  "anthropic>=0.75.0",
 ]
 
 [build-system]
@@ -32,4 +27,5 @@ requires = ["hatchling>=1.25.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/caster_validator"]
+packages = ["src/caster_sandbox"]
+

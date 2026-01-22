@@ -18,13 +18,13 @@ from typing import Any, Protocol, cast
 import pyseccomp as seccomp
 from fastapi import APIRouter, HTTPException, Request
 
-from caster_commons.context.snapshot import ContextSnapshot
 from caster_miner_sdk._internal.tool_invoker import bind_tool_invoker
 from caster_miner_sdk.decorators import (
     EntrypointRegistry,
     get_entrypoint,
     get_entrypoint_registry,
 )
+from caster_sandbox.context.snapshot import ContextSnapshot
 
 ToolConfig = Mapping[str, Any] | None
 ToolHeaders = Mapping[str, str]
@@ -48,7 +48,8 @@ class MpContext(Protocol):
         args: tuple[Any, ...] = ...,
     ) -> multiprocessing.Process: ...
 
-logger = logging.getLogger("caster_commons.sandbox")
+
+logger = logging.getLogger("caster_sandbox.sandbox")
 
 ENTRYPOINT_TIMEOUT_SECONDS = 30
 WORKER_KILL_GRACE_SECONDS = 1.0
@@ -249,6 +250,7 @@ class SandboxHarness:
         if process.is_alive():  # pragma: no cover - guardrail
             process.kill()
 
+
 def _entrypoint_worker(
     entrypoint_name: str,
     request_payload: Mapping[str, Any],
@@ -325,3 +327,4 @@ def _execute_entrypoint(func: Callable[..., Any], call_kwargs: Mapping[str, Any]
 
 
 __all__ = ["SandboxHarness", "ToolFactory", "ToolHeaders", "ToolConfig", "EntrypointRequest"]
+

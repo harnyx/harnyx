@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -111,7 +112,7 @@ class EvaluationScheduler:
                 )
                 continue
             try:
-                deployment = self._sandboxes.start(options)
+                deployment = await asyncio.to_thread(self._sandboxes.start, options)
             except Exception as exc:
                 logger.error(
                     "Failed to start sandbox",
@@ -137,7 +138,7 @@ class EvaluationScheduler:
                     ),
                 )
             finally:
-                self._sandboxes.stop(deployment)
+                await asyncio.to_thread(self._sandboxes.stop, deployment)
             logger.debug(
                 "finished evaluation for candidate",
                 extra={"uid": candidate.uid, "artifact_id": str(candidate.artifact_id)},

@@ -4,8 +4,8 @@ import json
 
 import httpx
 import pytest
+from caster_sandbox.tools.proxy import ToolInvocationError, ToolProxy
 
-from caster_miner.tools.proxy import ToolInvocationError, ToolProxy
 from caster_miner_sdk._internal.tool_invoker import bind_tool_invoker
 from caster_miner_sdk.api import LlmChatResult, llm_chat, search_ai, search_web
 

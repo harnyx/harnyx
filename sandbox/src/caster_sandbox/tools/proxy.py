@@ -8,7 +8,7 @@ from typing import cast
 
 import httpx
 
-from caster_miner.json_types import JsonValue
+from caster_sandbox.json_types import JsonValue
 
 logger = logging.getLogger(__name__)
 
@@ -141,3 +141,4 @@ __all__ = [
     "ToolInvocationError",
     "ToolProxy",
 ]
+

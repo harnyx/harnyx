@@ -55,7 +55,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     _weight_worker.start()
     _evaluation_worker.start()
     yield
-    _evaluation_worker.stop(timeout=WORKER_STOP_TIMEOUT_SECONDS)
+    await _evaluation_worker.stop(timeout=WORKER_STOP_TIMEOUT_SECONDS)
     _weight_worker.stop(timeout=WORKER_STOP_TIMEOUT_SECONDS)
     await close_runtime_resources(_runtime)
     shutdown_logging()

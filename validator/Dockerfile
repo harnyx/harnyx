@@ -21,8 +21,8 @@ WORKDIR /workspace
 FROM base AS deps
 
 COPY pyproject.toml uv-workspace.toml uv.lock ./
-COPY commons ./commons
-COPY miner-sdk ./miner-sdk
+COPY packages/commons ./packages/commons
+COPY packages/miner-sdk ./packages/miner-sdk
 COPY validator/pyproject.toml ./validator/pyproject.toml
 
 RUN uv sync --package caster-validator --frozen --no-install-package caster-validator

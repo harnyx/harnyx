@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 
-from caster_miner.json_types import JsonValue
+from caster_sandbox.json_types import JsonValue
 
 
 class ContextSnapshot(Mapping[str, JsonValue]):
@@ -33,3 +33,4 @@ class ContextSnapshot(Mapping[str, JsonValue]):
 
 
 __all__ = ["ContextSnapshot"]
+
