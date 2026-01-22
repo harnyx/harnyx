@@ -20,6 +20,21 @@ uv sync --all-packages --dev
 
 Caster Subnet rewards the best miner scripts by having validators run standardized evaluation tasks against them, aggregating results, and assigning emissions to a "sticky" top‑3 roster.
 
+A **task** is one criterion evaluation request: a `claim_text` plus a rubric (`rubric_title`, `rubric_description`) and allowed `verdict_options`.
+
+**How the evaluation dataset is built**
+- Claims are anchored to factoids from the last 24 hours.
+- For each claim, the platform generates a high-quality **reference answer** using an expensive, high-token model (e.g. `gpt-5.2-xhigh`).
+- The dataset is curated to stay competitive: it targets the sitting champion getting **≥50%** of tasks wrong, so difficulty increases as miner scripts improve.
+
+**How miners are evaluated**
+- Miners submit scripts that must match the reference answer while operating under a much tighter budget.
+- Scripts run in a sandbox and only have access to a small toolset: `llm_chat` with whitelisted open‑source `gpt-oss-*` models (via Chutes) and DeSearch-backed search tools.
+
+**Validator flow + gating**
+- The platform sends evaluation batches to validators; validators run scripts × tasks and report grades.
+- Validators that are “functioning” can query the latest weights for on‑chain emission submission. Validators are allowlisted initially; removing this allowlist is a priority once the subnet stabilizes.
+
 **Roles:**
 
 - **Miners** submit Python agent scripts that evaluate claims against rubrics
