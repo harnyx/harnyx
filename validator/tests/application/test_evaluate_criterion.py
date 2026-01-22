@@ -159,8 +159,6 @@ async def test_evaluation_orchestrator_builds_miner_evaluation() -> None:
             "justification": "Looks good",
             "citations": [
                 {
-                    "url": "https://example.com",
-                    "note": "ref",
                     "receipt_id": "receipt-1",
                     "result_id": receipt.metadata.results[0].result_id,
                 },
@@ -224,7 +222,7 @@ async def test_evaluation_orchestrator_builds_miner_evaluation() -> None:
     assert outcome.usage.total_tokens == 10
 
 
-async def test_evaluation_orchestrator_overwrites_with_canonical_null_fields() -> None:
+async def test_evaluation_orchestrator_hydrates_citations_with_canonical_null_fields() -> None:
     session_id = uuid4()
     canonical_result = SearchToolResult(
         index=0,
@@ -244,8 +242,6 @@ async def test_evaluation_orchestrator_overwrites_with_canonical_null_fields() -
             "justification": "Looks good",
             "citations": [
                 {
-                    "url": "https://forged.example",
-                    "note": "forged note",
                     "receipt_id": "receipt-1",
                     "result_id": canonical_result.result_id,
                 },
@@ -310,8 +306,6 @@ async def test_evaluation_orchestrator_drops_invalid_citations_and_fails_support
                 "justification": "Looks good",
                 "citations": [
                     {
-                        "url": "https://example.com",
-                        "note": "ref",
                         "receipt_id": "missing",
                         "result_id": "missing-hash",
                     },
@@ -385,8 +379,6 @@ async def test_evaluation_orchestrator_drops_other_session_citations_and_fails_s
                 "justification": "Looks good",
                 "citations": [
                     {
-                        "url": "https://example.com",
-                        "note": "ref",
                         "receipt_id": "receipt-1",
                         "result_id": receipt.metadata.results[0].result_id,
                     },
@@ -460,8 +452,6 @@ async def test_evaluation_orchestrator_drops_unknown_result_id_and_fails_support
                 "justification": "Looks good",
                 "citations": [
                     {
-                        "url": "https://example.com",
-                        "note": "ref",
                         "receipt_id": "receipt-1",
                         "result_id": invalid_result_id,
                     },

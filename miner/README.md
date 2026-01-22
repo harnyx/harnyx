@@ -70,10 +70,10 @@ Your script must define this entrypoint:
 
 ```python
 from caster_miner_sdk.decorators import entrypoint
-from caster_miner_sdk.criterion_evaluation import CriterionEvaluationRequest
+from caster_miner_sdk.criterion_evaluation import CriterionEvaluationRequest, CriterionEvaluationResponse
 
 @entrypoint("evaluate_criterion")
-async def evaluate_criterion(request: object) -> dict[str, object]:
+async def evaluate_criterion(request: object) -> CriterionEvaluationResponse:
     payload = CriterionEvaluationRequest.model_validate(request)
     # ... call tools (search_web, llm_chat), decide verdict, cite evidence
     return {"verdict": 1, "justification": "...", "citations": [...]}

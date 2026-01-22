@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TypedDict
+
 from pydantic import BaseModel, ConfigDict
 
 from caster_miner_sdk.verdict import VerdictOption, VerdictOptions
@@ -59,6 +61,17 @@ class CriterionEvaluationVerdict(BaseModel):
         return cls.model_validate_json(text)
 
 
+class CriterionEvaluationCitationRef(TypedDict):
+    receipt_id: str
+    result_id: str
+
+
+class CriterionEvaluationResponse(TypedDict):
+    verdict: int
+    justification: str
+    citations: list[CriterionEvaluationCitationRef]
+
+
 def _strip_code_fence(text: str) -> str:
     fence = "```"
     if not text.startswith(fence):
@@ -72,7 +85,9 @@ def _strip_code_fence(text: str) -> str:
 
 
 __all__ = [
+    "CriterionEvaluationCitationRef",
     "CriterionEvaluationRequest",
+    "CriterionEvaluationResponse",
     "CriterionEvaluationVerdict",
     "VerdictOptionPayload",
 ]

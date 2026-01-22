@@ -139,8 +139,6 @@ async def test_application_use_cases_cooperate_for_single_evaluation() -> None:
             "justification": "looks good",
             "citations": [
                 {
-                    "url": "https://example.com",
-                    "note": "ref",
                     "receipt_id": tool_result.receipt.receipt_id,
                     "result_id": tool_result.receipt.metadata.results[0].result_id,
                 },

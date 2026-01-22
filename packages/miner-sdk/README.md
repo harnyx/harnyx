@@ -16,11 +16,11 @@ Example:
 
 ```python
 from caster_miner_sdk.decorators import entrypoint
-from caster_miner_sdk.criterion_evaluation import CriterionEvaluationRequest
+from caster_miner_sdk.criterion_evaluation import CriterionEvaluationRequest, CriterionEvaluationResponse
 
 
 @entrypoint("evaluate_criterion")
-async def evaluate_criterion(request: object) -> dict[str, object]:
+async def evaluate_criterion(request: object) -> CriterionEvaluationResponse:
     payload = CriterionEvaluationRequest.model_validate(request)
     # ...
     return {"verdict": 1, "justification": "…", "citations": []}
@@ -42,8 +42,6 @@ Your return value is validated by validators and should look like:
   "justification": "…",
   "citations": [
     {
-      "url": "https://example.com",
-      "note": "evidence summary",
       "receipt_id": "tool-receipt-id",
       "result_id": "search-result-id"
     }
@@ -51,7 +49,7 @@ Your return value is validated by validators and should look like:
 }
 ```
 
-`receipt_id` comes from the tool call response, and `result_id` comes from the search result you are citing.
+`receipt_id` comes from the tool call response, and `result_id` comes from the search result you are citing. Validators hydrate citation `url`/`note` from tool receipts.
 
 ## Tool helpers
 

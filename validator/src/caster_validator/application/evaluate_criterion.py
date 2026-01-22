@@ -38,10 +38,8 @@ logger = logging.getLogger("caster_validator.evaluation")
 
 
 class _SandboxCitationPayload(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
-    url: str | None = None
-    note: str | None = None
     receipt_id: str = Field(min_length=1)
     result_id: str = Field(
         min_length=1,
@@ -254,8 +252,8 @@ class EvaluationOrchestrator:
 
         citations = tuple(
             MinerCitation(
-                url=citation.url,
-                note=citation.note,
+                url=None,
+                note=None,
                 receipt_id=citation.receipt_id,
                 result_id=citation.result_id,
             )

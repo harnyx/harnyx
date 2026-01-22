@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from caster_miner_sdk.api import LlmChatResult, llm_chat, search_web
 from caster_miner_sdk.criterion_evaluation import (
     CriterionEvaluationRequest,
+    CriterionEvaluationResponse,
     CriterionEvaluationVerdict,
 )
 from caster_miner_sdk.decorators import entrypoint
@@ -38,7 +39,7 @@ class LlmVerdict:
 
 
 @entrypoint("evaluate_criterion")
-async def evaluate_criterion(request: object) -> dict[str, object]:
+async def evaluate_criterion(request: object) -> CriterionEvaluationResponse:
     payload = CriterionEvaluationRequest.model_validate(request)
     claim_text = payload.claim_text
     rubric_title = payload.rubric_title
@@ -190,10 +191,7 @@ def _format_allowed_values(values: Sequence[int]) -> str:
 
 
 def _build_citation(receipt_id: str, item: EvidenceItem) -> dict[str, str]:
-    note = item.note or item.title or f"Evidence from {item.url}"
     return {
-        "url": item.url,
-        "note": note,
         "receipt_id": receipt_id,
         "result_id": item.result_id,
     }

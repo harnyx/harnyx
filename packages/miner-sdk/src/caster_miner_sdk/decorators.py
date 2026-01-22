@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
-from typing import Any, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, ParamSpec, TypeVar, overload
+
+if TYPE_CHECKING:
+    from caster_miner_sdk.criterion_evaluation import CriterionEvaluationResponse
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -49,6 +52,23 @@ class EntrypointRegistry:
 _ENTRYPOINT_REGISTRY = EntrypointRegistry()
 
 
+@overload
+def entrypoint(name: None = None) -> Callable[[Callable[P, R]], Callable[P, R]]: ...
+
+
+@overload
+def entrypoint(
+    name: Literal["evaluate_criterion"],
+) -> Callable[
+    [Callable[[object], Awaitable[CriterionEvaluationResponse]]],
+    Callable[[object], Awaitable[CriterionEvaluationResponse]],
+]: ...
+
+
+@overload
+def entrypoint(name: str) -> Any: ...
+
+
 def entrypoint(name: str | None = None) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """Decorator that registers a callable as a miner entrypoint."""
 
@@ -75,6 +95,16 @@ def _assert_entrypoint_signature(func: Callable[..., Any]) -> None:
         raise TypeError("entrypoint request parameter must be passable as a keyword argument")
     if request_param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
         raise TypeError("entrypoints must not accept *args or **kwargs")
+
+
+@overload
+def get_entrypoint(
+    name: Literal["evaluate_criterion"],
+) -> Callable[[object], Awaitable[CriterionEvaluationResponse]]: ...
+
+
+@overload
+def get_entrypoint(name: str) -> Callable[..., Any]: ...
 
 
 def get_entrypoint(name: str) -> Callable[..., Any]:
