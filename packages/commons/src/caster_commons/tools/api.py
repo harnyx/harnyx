@@ -8,6 +8,7 @@ from caster_miner_sdk.api import (
     search_web,
     search_x,
     test_tool,
+    tooling_info,
 )
 from caster_miner_sdk.decorators import (
     clear_entrypoints,
@@ -29,6 +30,7 @@ __all__ = [
     "search_x",
     "search_web",
     "test_tool",
+    "tooling_info",
     "LlmChatResult",
     "ToolCallResponse",
     "TestToolResponse",

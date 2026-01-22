@@ -74,6 +74,24 @@ async def test_tool(message: str) -> ToolCallResponse[TestToolResponse]:
         budget=dto.budget,
     )
 
+async def tooling_info() -> ToolCallResponse[dict[str, Any]]:
+    """Fetch tool pricing and current session budget metadata."""
+
+    raw_response = await _current_tool_invoker().invoke("tooling_info", args=(), kwargs={})
+    dto = _parse_execute_response(raw_response)
+    if not isinstance(dto.response, Mapping):
+        raise RuntimeError("tooling_info response payload must be a mapping")
+    response = dict(dto.response)
+    return ToolCallResponse(
+        receipt_id=dto.receipt_id,
+        response=response,
+        results=dto.results,
+        result_policy=dto.result_policy,
+        cost_usd=dto.cost_usd,
+        usage=dto.usage,
+        budget=dto.budget,
+    )
+
 
 async def search_web(query: str, /, **kwargs: Any) -> ToolCallResponse[SearchWebSearchResponse]:
     """Execute the validator-hosted search tool and return its response payload."""
@@ -177,6 +195,7 @@ __all__ = [
     "search_web",
     "search_ai",
     "test_tool",
+    "tooling_info",
     "ToolCallResponse",
     "LlmChatResult",
     "TestToolResponse",

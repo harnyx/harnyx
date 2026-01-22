@@ -4,11 +4,25 @@ from __future__ import annotations
 
 from typing import Literal, TypeGuard, cast
 
-ToolName = Literal["search_web", "search_x", "search_ai", "llm_chat", "test_tool"]
+ToolName = Literal[
+    "search_web",
+    "search_x",
+    "search_ai",
+    "llm_chat",
+    "test_tool",
+    "tooling_info",
+]
 SearchToolName = Literal["search_web", "search_x", "search_ai"]
 LlmToolName = Literal["llm_chat"]
 
-TOOL_NAMES: set[ToolName] = {"search_web", "search_x", "search_ai", "llm_chat", "test_tool"}
+TOOL_NAMES: set[ToolName] = {
+    "search_web",
+    "search_x",
+    "search_ai",
+    "llm_chat",
+    "test_tool",
+    "tooling_info",
+}
 SEARCH_TOOLS: set[SearchToolName] = {"search_web", "search_x", "search_ai"}
 LLM_TOOLS: set[LlmToolName] = {"llm_chat"}
 

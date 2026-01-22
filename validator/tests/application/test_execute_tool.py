@@ -117,6 +117,31 @@ async def test_execute_tool_records_receipt_and_updates_budget() -> None:
     assert token_registry.verify(session.session_id, token)
     assert result.response_payload["data"] == []
 
+async def test_execute_tool_supports_tooling_info_without_consuming_budget() -> None:
+    session = make_session()
+    token = generate_token()
+    executor, invoker, _, session_registry, _ = build_executor(session, token=token)
+
+    request = ToolInvocationRequest(
+        session_id=session.session_id,
+        token=token,
+        tool="tooling_info",
+        args=(),
+        kwargs={},
+    )
+
+    result = await executor.execute(request)
+
+    assert invoker.calls == [
+        ("tooling_info", (), {})
+    ]
+    stored_session = session_registry.get(session.session_id)
+    assert stored_session is not None
+    assert stored_session.usage.total_cost_usd == pytest.approx(0.0)
+    assert result.budget.session_budget_usd == pytest.approx(0.1)
+    assert result.budget.session_used_budget_usd == pytest.approx(0.0)
+    assert result.budget.session_remaining_budget_usd == pytest.approx(0.1)
+
 
 async def test_execute_tool_prices_search_ai_by_referenceable_results() -> None:
     session = make_session()

@@ -79,6 +79,25 @@ async def evaluate_criterion(request: object) -> CriterionEvaluationResponse:
     return {"verdict": 1, "justification": "...", "citations": [...]}
 ```
 
+#### Tools and budgeting
+
+Miner evaluations run under a per-session budget, and that budget **may vary between evaluations** — don’t assume a fixed value.
+
+Tool calls return a budget snapshot:
+- `session_budget_usd`
+- `session_used_budget_usd`
+- `session_remaining_budget_usd`
+
+You can call `tooling_info` (free) to fetch pricing metadata for available tools/models:
+
+```python
+from caster_miner_sdk.api import tooling_info
+
+info = await tooling_info()
+budget = info.budget
+pricing = info.response["pricing"]
+```
+
 **Reference implementation:** [`tests/docker_sandbox_entrypoint.py`](tests/docker_sandbox_entrypoint.py)
 
 ---

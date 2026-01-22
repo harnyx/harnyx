@@ -161,6 +161,34 @@ def test_execute_tool_endpoint_releases_semaphore_on_failure() -> None:
     assert provider.token_semaphore.in_flight(DEMO_SESSION_TOKEN) == 0
 
 
+def test_execute_tool_endpoint_supports_tooling_info() -> None:
+    provider = DemoDependencyProvider()
+    app = create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/rpc/tools/execute",
+        json={
+            "session_id": str(provider.session.session_id),
+            "token": DEMO_SESSION_TOKEN,
+            "tool": "tooling_info",
+            "args": [],
+            "kwargs": {},
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["result_policy"] == "log_only"
+    assert body["budget"]["session_budget_usd"] == pytest.approx(0.1)
+    assert body["budget"]["session_used_budget_usd"] == pytest.approx(0.0)
+    assert body["budget"]["session_remaining_budget_usd"] == pytest.approx(0.1)
+
+    session_snapshot = provider.session_registry.get(provider.session.session_id)
+    assert session_snapshot is not None
+    assert session_snapshot.usage.total_cost_usd == pytest.approx(0.0)
+
+
 def test_execute_tool_endpoint_rejects_when_concurrency_limit_exceeded() -> None:
     provider = DemoDependencyProvider()
     app = create_test_app(provider)

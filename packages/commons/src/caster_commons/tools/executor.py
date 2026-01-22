@@ -50,7 +50,7 @@ class ToolInvoker(Protocol):
 
 tool_logger = logging.getLogger("caster_commons.tools")
 
-_TOOLS_WITHOUT_USAGE: set[ToolName] = {"test_tool"}
+_TOOLS_WITHOUT_USAGE: set[ToolName] = {"test_tool", "tooling_info"}
 
 _SEARCH_RESULT_FIELDS: dict[SearchToolName, tuple[str, str, str]] = {
     "search_web": ("link", "snippet", "title"),

@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 
-from caster_commons.tools.api import LlmChatResult, llm_chat, search_web
+from caster_commons.tools.api import LlmChatResult, llm_chat, search_web, tooling_info
 from caster_commons.tools.proxy import ToolInvocationError, ToolProxy
 from caster_miner_sdk._internal.tool_invoker import bind_tool_invoker
 
@@ -112,6 +112,50 @@ async def test_search_web_helper_invokes_tool_proxy() -> None:
     payload = captured["payload"]
     assert payload["tool"] == "search_web"
     assert payload["kwargs"] == {"query": "caster subnet", "num": 3}
+
+async def test_tooling_info_helper_invokes_tool_proxy() -> None:
+    captured: dict[str, dict[str, object]] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "receipt_id": "info-1",
+                "response": {"tool_names": ["search_web"], "pricing": {"search_web": {"usd_per_call": 0.0025}}},
+                "results": [
+                    {
+                        "index": 0,
+                        "result_id": "info-result",
+                        "raw": {"tool_names": ["search_web"]},
+                    }
+                ],
+                "result_policy": "log_only",
+                "budget": {
+                    "session_budget_usd": 1.0,
+                    "session_used_budget_usd": 0.0,
+                    "session_remaining_budget_usd": 1.0,
+                },
+            },
+        )
+
+    proxy = ToolProxy(
+        base_url="http://validator",
+        token=TEST_TOKEN,
+        session_id=SESSION_ID,
+        client=httpx.AsyncClient(base_url="http://validator", transport=httpx.MockTransport(handler)),
+    )
+    try:
+        with bind_tool_invoker(proxy):
+            result = await tooling_info()
+    finally:
+        await proxy.aclose()
+
+    assert result.receipt_id == "info-1"
+    assert result.response["tool_names"] == ["search_web"]
+    payload = captured["payload"]
+    assert payload["tool"] == "tooling_info"
+    assert payload["kwargs"] == {}
 
 
 async def test_llm_chat_helper_invokes_tool_proxy() -> None:

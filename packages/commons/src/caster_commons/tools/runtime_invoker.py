@@ -13,6 +13,9 @@ from caster_commons.application.ports.receipt_log import ReceiptLogPort
 from caster_commons.json_types import JsonObject, JsonValue
 from caster_commons.llm.pricing import (
     ALLOWED_TOOL_MODELS,
+    MODEL_PRICING,
+    SEARCH_AI_PER_REFERENCEABLE_RESULT_USD,
+    SEARCH_PRICING,
     ToolModelName,
     parse_tool_model,
 )
@@ -39,7 +42,7 @@ from caster_commons.tools.search_models import (
     SearchWebSearchRequest,
     SearchXSearchRequest,
 )
-from caster_commons.tools.types import SearchToolName, ToolName, is_search_tool
+from caster_commons.tools.types import TOOL_NAMES, SearchToolName, ToolName, is_search_tool
 from caster_commons.tools.usage_tracker import ToolCallUsage  # noqa: F401 - compatibility
 
 
@@ -95,6 +98,8 @@ class RuntimeToolInvoker(ToolInvoker):
     ) -> JsonObject:
         if tool_name == "test_tool":
             return self._invoke_test_tool(args, kwargs)
+        if tool_name == "tooling_info":
+            return self._invoke_tooling_info(args, kwargs)
         if is_search_tool(tool_name):
             return await self._dispatch_search(tool_name, args, kwargs)
         if tool_name == "llm_chat":
@@ -117,6 +122,51 @@ class RuntimeToolInvoker(ToolInvoker):
         return {
             "status": "ok",
             "echo": message,
+        }
+
+    @staticmethod
+    def _invoke_tooling_info(
+        args: Sequence[JsonValue],
+        kwargs: Mapping[str, JsonValue],
+    ) -> JsonObject:
+        if args:
+            raise ValueError("tooling_info does not accept positional arguments")
+        if kwargs:
+            raise ValueError("tooling_info does not accept keyword arguments")
+
+        pricing: dict[str, JsonValue] = {
+            "test_tool": {"kind": "free"},
+            "tooling_info": {"kind": "free"},
+            "search_ai": {
+                "kind": "per_referenceable_result",
+                "usd_per_referenceable_result": SEARCH_AI_PER_REFERENCEABLE_RESULT_USD,
+            },
+        }
+
+        for tool_name, usd_per_call in SEARCH_PRICING.items():
+            pricing[tool_name] = {
+                "kind": "flat_per_call",
+                "usd_per_call": usd_per_call,
+            }
+
+        pricing["llm_chat"] = {
+            "kind": "per_million_tokens",
+            "models": {
+                model: {
+                    "input_per_million": rates.input_per_million,
+                    "output_per_million": rates.output_per_million,
+                    "reasoning_per_million": rates.reasoning_per_million,
+                }
+                for model, rates in MODEL_PRICING.items()
+            },
+        }
+
+        tool_names: list[JsonValue] = [str(name) for name in sorted(TOOL_NAMES)]
+        allowed_models: list[JsonValue] = [str(model) for model in ALLOWED_TOOL_MODELS]
+        return {
+            "tool_names": tool_names,
+            "allowed_tool_models": allowed_models,
+            "pricing": pricing,
         }
 
     def _log_unhandled(
