@@ -4,7 +4,7 @@ version = "0.0.0"
 description = "Workspace manifest for the public Caster Subnet packages."
 requires-python = ">=3.11"
 authors = [
-  { name = "Caster Labs", email = "engineering@casterlabs.example" }
+  { name = "Brightmount", email = "dev@brightmount.co" }
 ]
 license = { text = "Proprietary" }
 dependencies = [
