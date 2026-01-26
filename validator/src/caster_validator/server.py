@@ -1,4 +1,4 @@
-"""Entrypoint for running the validator RPC service under uvicorn."""
+"""Entrypoint for running the validator API service under uvicorn."""
 
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Caster Validator RPC", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Caster Validator API", version="0.1.0", lifespan=lifespan)
     app.middleware("http")(request_logging_middleware)
 
     add_tool_routes(app, _runtime.tool_route_deps_provider)

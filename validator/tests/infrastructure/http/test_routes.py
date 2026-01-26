@@ -110,7 +110,7 @@ def test_execute_tool_endpoint_records_receipt() -> None:
     client = TestClient(app)
 
     response = client.post(
-        "/rpc/tools/execute",
+        "/v1/tools/execute",
         json={
             "session_id": str(provider.session.session_id),
             "token": DEMO_SESSION_TOKEN,
@@ -146,7 +146,7 @@ def test_execute_tool_endpoint_releases_semaphore_on_failure() -> None:
     client = TestClient(app)
 
     response = client.post(
-        "/rpc/tools/execute",
+        "/v1/tools/execute",
         json={
             "session_id": str(provider.session.session_id),
             "token": DEMO_SESSION_TOKEN,
@@ -167,7 +167,7 @@ def test_execute_tool_endpoint_supports_tooling_info() -> None:
     client = TestClient(app)
 
     response = client.post(
-        "/rpc/tools/execute",
+        "/v1/tools/execute",
         json={
             "session_id": str(provider.session.session_id),
             "token": DEMO_SESSION_TOKEN,
@@ -197,7 +197,7 @@ def test_execute_tool_endpoint_rejects_when_concurrency_limit_exceeded() -> None
     provider.token_semaphore.acquire(DEMO_SESSION_TOKEN)
     try:
         response = client.post(
-            "/rpc/tools/execute",
+            "/v1/tools/execute",
             json={
                 "session_id": str(provider.session.session_id),
                 "token": DEMO_SESSION_TOKEN,

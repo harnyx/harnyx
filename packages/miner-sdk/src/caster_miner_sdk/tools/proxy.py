@@ -21,7 +21,7 @@ DEFAULT_TOKEN_HEADER = "x-caster-token"  # noqa: S105
 
 
 class ToolProxy:
-    """Thin wrapper around the validator's tool execution endpoint."""
+    """Thin wrapper around a host container tool execution endpoint."""
 
     def __init__(
         self,
@@ -29,7 +29,7 @@ class ToolProxy:
         token: str,
         *,
         session_id: str,
-        endpoint: str = "/rpc/tools/execute",
+        endpoint: str = "/v1/tools/execute",
         timeout: float = 30.0,
         client: httpx.AsyncClient | None = None,
         token_header: str = DEFAULT_TOKEN_HEADER,

@@ -72,7 +72,7 @@ def add_tool_routes(app: FastAPI, dependency_provider: Callable[[], ToolRouteDep
     def get_dependencies() -> ToolRouteDeps:
         return dependency_provider()
 
-    @app.post("/rpc/tools/execute", response_model=ToolExecuteResponseDTO)
+    @app.post("/v1/tools/execute", response_model=ToolExecuteResponseDTO)
     async def execute_tool(
         payload: ToolExecuteRequestDTO,
         deps: ToolRouteDeps = Depends(get_dependencies),  # noqa: B008

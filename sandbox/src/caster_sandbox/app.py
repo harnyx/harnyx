@@ -28,7 +28,7 @@ def _tool_factory(config: Mapping[str, object] | None, headers: Mapping[str, str
     raw_base_url = (config or {}).get("base_url")
     if raw_base_url is not None and not isinstance(raw_base_url, str):
         raise ValueError("tool proxy config.base_url must be a string")
-    base_url = raw_base_url or os.getenv("CASTER_VALIDATOR_URL")
+    base_url = raw_base_url or os.getenv("CASTER_HOST_CONTAINER_URL")
 
     raw_token = (config or {}).get("token")
     if raw_token is not None and not isinstance(raw_token, str):
@@ -128,4 +128,3 @@ def main(argv: Sequence[str] | None = None) -> None:
 
 if __name__ == "__main__":  # pragma: no cover
     main()
-

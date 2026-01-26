@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
@@ -21,6 +22,7 @@ from caster_commons.tools.desearch_ai_protocol import (
     parse_desearch_ai_response,
 )
 from caster_commons.tools.search_models import (
+    SearchWebResult,
     SearchWebSearchRequest,
     SearchWebSearchResponse,
     SearchXResult,
@@ -61,6 +63,25 @@ class DeSearchAiResultType(str, Enum):
     ONLY_LINKS = "ONLY_LINKS"
     LINKS_WITH_SUMMARIES = "LINKS_WITH_SUMMARIES"
     LINKS_WITH_FINAL_SUMMARY = "LINKS_WITH_FINAL_SUMMARY"
+
+
+@dataclass(frozen=True, slots=True)
+class DeSearchTwitterSearchPage:
+    request: SearchXSearchRequest
+    response: SearchXSearchResponse
+    page: int
+    cursor: int | None
+    posts: list[SearchXResult]
+    post_ids: list[int]
+
+
+@dataclass(frozen=True, slots=True)
+class DeSearchWebSearchPage:
+    request: SearchWebSearchRequest
+    response: SearchWebSearchResponse
+    page: int
+    start: int
+    results: list[SearchWebResult]
 
 
 class DeSearchClient:
@@ -144,6 +165,99 @@ class DeSearchClient:
         response = SearchXSearchResponse.model_validate(data)
         self._log_search_links_twitter_summary(request, response)
         return response
+
+    async def iter_search_links_twitter_pages(
+        self,
+        request: SearchXSearchRequest,
+    ) -> AsyncIterator[DeSearchTwitterSearchPage]:
+        base_query = request.query.strip()
+        if not base_query:
+            raise ValueError("desearch iter_search_links_twitter_pages requires non-empty query")
+        if "max_id:" in base_query:
+            raise ValueError("desearch iter_search_links_twitter_pages request.query must not contain max_id:")
+
+        cursor: int | None = None
+        page_index = 0
+        while True:
+            page_query = base_query if cursor is None else f"{base_query} max_id:{cursor}"
+            page_request = request.model_copy(update={"query": page_query})
+
+            response = await self.search_links_twitter(page_request)
+            page_index += 1
+            if not response.data:
+                return
+
+            page_posts = response.data
+            post_ids = _parse_tweet_ids(page_posts)
+
+            if cursor is not None:
+                page_posts, post_ids, ignored_count = _filter_tweets_for_max_id(page_posts, cursor=cursor)
+                if ignored_count:
+                    _LOGGER.info(
+                        "desearch.search_links_twitter.pagination.ignored_out_of_range",
+                        extra={
+                            "data": {
+                                "page": page_index,
+                                "cursor": cursor,
+                                "ignored_count": ignored_count,
+                            }
+                        },
+                    )
+                if not page_posts:
+                    _LOGGER.info(
+                        "desearch.search_links_twitter.pagination.stopped_max_id_ignored",
+                        extra={"data": {"page": page_index, "cursor": cursor}},
+                    )
+                    return
+
+            yield DeSearchTwitterSearchPage(
+                request=page_request,
+                response=response,
+                page=page_index,
+                cursor=cursor,
+                posts=page_posts,
+                post_ids=post_ids,
+            )
+
+            if not post_ids:
+                return
+            cursor = min(post_ids) - 1
+
+    async def iter_search_links_web_pages(
+        self,
+        request: SearchWebSearchRequest,
+    ) -> AsyncIterator[DeSearchWebSearchPage]:
+        query = request.query.strip()
+        if not query:
+            raise ValueError("desearch iter_search_links_web_pages requires non-empty query")
+
+        start = request.start or 0
+        page_index = 0
+        last_first_link: str | None = None
+        while True:
+            page_request = request.model_copy(update={"start": start})
+            response = await self.search_links_web(page_request)
+            page_index += 1
+            if not response.data:
+                return
+
+            first_link = response.data[0].link if response.data else None
+            if last_first_link is not None and first_link == last_first_link:
+                _LOGGER.info(
+                    "desearch.search_links_web.pagination.stopped_start_ignored",
+                    extra={"data": {"page": page_index, "start": start}},
+                )
+                return
+            last_first_link = first_link
+
+            yield DeSearchWebSearchPage(
+                request=page_request,
+                response=response,
+                page=page_index,
+                start=start,
+                results=response.data,
+            )
+            start += len(response.data)
 
     @staticmethod
     def _log_search_links_twitter_summary(
@@ -471,6 +585,36 @@ class DeSearchClient:
     async def _sleep(self, attempt: int) -> None:
         backoff = backoff_ms(attempt, self._retry_policy)
         await asyncio.sleep(backoff / 1000)
+
+
+def _parse_tweet_ids(posts: list[SearchXResult]) -> list[int]:
+    ids: list[int] = []
+    for post in posts:
+        if post.id is None or not post.id.isdigit():
+            continue
+        ids.append(int(post.id))
+    return ids
+
+
+def _filter_tweets_for_max_id(
+    posts: list[SearchXResult],
+    *,
+    cursor: int,
+) -> tuple[list[SearchXResult], list[int], int]:
+    filtered: list[SearchXResult] = []
+    filtered_ids: list[int] = []
+    ignored_count = 0
+    for post in posts:
+        if post.id is None or not post.id.isdigit():
+            ignored_count += 1
+            continue
+        tweet_id = int(post.id)
+        if tweet_id > cursor:
+            ignored_count += 1
+            continue
+        filtered.append(post)
+        filtered_ids.append(tweet_id)
+    return filtered, filtered_ids, ignored_count
 
 
 __all__ = ["DeSearchClient"]

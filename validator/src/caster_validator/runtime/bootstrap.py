@@ -407,7 +407,7 @@ def _make_options_factory(resolved: Settings) -> Callable[[], SandboxOptions]:
             image=resolved.sandbox.sandbox_image,
             network=resolved.sandbox.sandbox_network,
             pull_policy=resolved.sandbox.sandbox_pull_policy,
-            validator_url=f"http://{resolved.rpc_public_host}:{resolved.rpc_port}",
+            host_container_url=f"http://{resolved.rpc_public_host}:{resolved.rpc_port}",
         )
 
     return factory

@@ -63,7 +63,7 @@ def build_sandbox_options(
     image: str,
     network: str | None,
     pull_policy: str,
-    validator_url: str,
+    host_container_url: str,
     container_name: str = "caster-sandbox-smoke",
 ) -> SandboxOptions:
     """Build sandbox options for a validator evaluation run.
@@ -72,7 +72,7 @@ def build_sandbox_options(
         image: Docker image to use for the sandbox.
         network: Docker network to attach the container to.
         pull_policy: Image pull policy ("always", "missing", "never").
-        validator_url: URL for the validator RPC endpoint.
+        host_container_url: Base URL for the host container (scheme + host + port; no `/v1`).
         container_name: Name for the container.
 
     Returns:
@@ -90,7 +90,7 @@ def build_sandbox_options(
         env={
             "SANDBOX_HOST": "0.0.0.0",  # noqa: S104
             "SANDBOX_PORT": str(container_port),
-            "CASTER_VALIDATOR_URL": validator_url,
+            "CASTER_HOST_CONTAINER_URL": host_container_url,
             "CASTER_TOKEN_HEADER": token_header,
         },
         entrypoint=None,
