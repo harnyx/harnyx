@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import subprocess
 import threading
@@ -325,7 +326,7 @@ class DockerSandboxManager(SandboxManager):
             else:
                 published_port = options.host_port
         else:
-            base_host = options.container_name
+            base_host = self._resolve_container_ip(options)
             published_port = options.container_port
 
         base_url = f"http://{base_host}:{published_port}"
@@ -363,6 +364,37 @@ class DockerSandboxManager(SandboxManager):
                 return int(published_port)
 
         raise RuntimeError(f"docker port returned an unexpected mapping: {output}")
+
+    def _resolve_container_ip(self, options: SandboxOptions) -> str:
+        network = options.network
+        if not network:
+            raise ValueError("sandbox network must be provided when host_port is not published")
+
+        args = [
+            self._docker,
+            "inspect",
+            "--format",
+            "{{json .NetworkSettings.Networks}}",
+            options.container_name,
+        ]
+        result = self._run(args, capture_output=True, text=True, check=True)
+        output = (result.stdout or "").strip()
+        if not output:
+            raise RuntimeError("docker inspect returned empty network settings")
+
+        networks = json.loads(output)
+        if not isinstance(networks, dict):
+            raise TypeError("docker inspect network settings must be a JSON object")
+
+        network_details = networks.get(network)
+        if not isinstance(network_details, dict):
+            raise RuntimeError(f"docker inspect did not include network: {network}")
+
+        ip_address = network_details.get("IPAddress")
+        if not isinstance(ip_address, str) or not ip_address:
+            raise RuntimeError(f"docker inspect returned invalid IP address for network: {network}")
+
+        return ip_address
 
     def _maybe_wait_for_health(self, base_url: str, options: SandboxOptions) -> None:
         if not options.wait_for_healthz:

@@ -31,7 +31,11 @@ class RecordingRunner:
 
     def __call__(self, args: list[str], **kwargs: object):
         self.commands.append((list(args), dict(kwargs)))
-        stdout = "container123\n" if "-d" in args else ""
+        stdout = ""
+        if args[:2] == ["docker", "run"] and "-d" in args:
+            stdout = "container123\n"
+        elif args[:2] == ["docker", "inspect"]:
+            stdout = '{"caster-net":{"IPAddress":"172.18.0.2"}}\n'
         return subprocess_completed(args, stdout)
 
 
@@ -116,7 +120,7 @@ def test_docker_manager_skips_port_mapping_when_host_port_missing() -> None:
     run_args, _ = runner.commands[0]
     assert "-p" not in run_args
     assert "--network" in run_args
-    assert deployment.base_url == "http://sandbox-demo:8000"
+    assert deployment.base_url == "http://172.18.0.2:8000"
     manager.stop(deployment)
 
 
@@ -251,4 +255,3 @@ def test_start_cleans_up_container_on_healthz_failure(monkeypatch) -> None:
     stop_args, _ = runner.commands[1]
     assert stop_args == ["docker", "stop", "-t", "5", "container123"]
     assert created_clients[0].closed is True
-
