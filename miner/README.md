@@ -33,7 +33,7 @@ This directory contains the miner-facing CLI tools for the Caster Subnet.
 **What each directory is:**
 
 - `miner/` — CLI tools you use directly (`caster-miner-dev`, `caster-miner-submit`)
-- `packages/miner-sdk/` — SDK your script imports; you don't need to read its docs
+- [`packages/miner-sdk/`](../packages/miner-sdk/README.md) — SDK your script imports; you don't need to read its docs
 - `sandbox/` — runtime that validators use to execute your script; you don't need it
 
 ---

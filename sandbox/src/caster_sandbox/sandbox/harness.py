@@ -103,7 +103,11 @@ class SandboxHarness:
         """Return a FastAPI router exposing entrypoint invocation endpoints."""
         router = APIRouter()
 
-        @router.post("/{entrypoint_name}", tags=["entrypoints"])
+        @router.post(
+            "/{entrypoint_name}",
+            tags=["entrypoints"],
+            description="Invoke a registered entrypoint by name in a sandboxed worker process.",
+        )
         async def dispatch(
             entrypoint_name: str,
             body: EntrypointRequest,
@@ -327,4 +331,3 @@ def _execute_entrypoint(func: Callable[..., Any], call_kwargs: Mapping[str, Any]
 
 
 __all__ = ["SandboxHarness", "ToolFactory", "ToolHeaders", "ToolConfig", "EntrypointRequest"]
-

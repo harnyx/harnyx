@@ -8,7 +8,8 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Security
+from fastapi.security import APIKeyHeader
 
 from caster_commons.bittensor import VerificationError
 from caster_commons.domain.session import Session
@@ -72,7 +73,11 @@ def add_tool_routes(app: FastAPI, dependency_provider: Callable[[], ToolRouteDep
     def get_dependencies() -> ToolRouteDeps:
         return dependency_provider()
 
-    @app.post("/v1/tools/execute", response_model=ToolExecuteResponseDTO)
+    @app.post(
+        "/v1/tools/execute",
+        response_model=ToolExecuteResponseDTO,
+        description="Execute a tool invocation and return the tool result and usage.",
+    )
     async def execute_tool(
         payload: ToolExecuteRequestDTO,
         deps: ToolRouteDeps = Depends(get_dependencies),  # noqa: B008
@@ -105,18 +110,30 @@ def add_control_routes(
     def get_control_deps() -> ValidatorControlDeps:
         return control_deps_provider()
 
-    @app.post("/validator/miner-task-batches/batch", response_model=BatchAcceptResponse)
-    async def accept_batch(
-        payload: MinerTaskBatchSpec,
+    bittensor_header = APIKeyHeader(name="Authorization", scheme_name="BittensorAuth", auto_error=False)
+
+    async def require_bittensor_caller(
         request: Request,
         deps: ValidatorControlDeps = Depends(get_control_deps),  # noqa: B008
-    ) -> BatchAcceptResponse:
+        _auth_header: str | None = Security(bittensor_header),
+    ) -> str:
         body = await request.body()
         try:
-            caller = deps.auth(request, body)
+            return deps.auth(request, body)
         except VerificationError as exc:
             status_code = 403 if exc.code == "caller_not_allowed" else 401
             raise HTTPException(status_code=status_code, detail=exc.message) from exc
+
+    @app.post(
+        "/validator/miner-task-batches/batch",
+        response_model=BatchAcceptResponse,
+        description="Accept a miner task batch and start processing it.",
+    )
+    async def accept_batch(
+        payload: MinerTaskBatchSpec,
+        deps: ValidatorControlDeps = Depends(get_control_deps),  # noqa: B008
+        caller: str = Security(require_bittensor_caller),
+    ) -> BatchAcceptResponse:
         try:
             deps.accept_batch.execute(payload)
         except RuntimeError as exc:
@@ -124,10 +141,15 @@ def add_control_routes(
 
         return BatchAcceptResponse(status="accepted", batch_id=str(payload.batch_id), caller=caller)
 
-    @app.get("/validator/miner-task-batches/{batch_id}/progress", response_model=ProgressResponse)
+    @app.get(
+        "/validator/miner-task-batches/{batch_id}/progress",
+        response_model=ProgressResponse,
+        description="Return progress and results for a miner task batch.",
+    )
     def progress(
         batch_id: UUID,
         deps: ValidatorControlDeps = Depends(get_control_deps),  # noqa: B008
+        _caller: str = Security(require_bittensor_caller),
     ) -> ProgressResponse:
         snapshot = deps.progress_tracker.snapshot(batch_id)
         results = [_serialize_result(c) for c in snapshot["miner_task_results"]]
@@ -139,9 +161,14 @@ def add_control_routes(
             miner_task_results=results,
         )
 
-    @app.get("/validator/status", response_model=ValidatorStatusResponse)
+    @app.get(
+        "/validator/status",
+        response_model=ValidatorStatusResponse,
+        description="Return a validator status snapshot for platform health checks.",
+    )
     def status(
         deps: ValidatorControlDeps = Depends(get_control_deps),  # noqa: B008
+        _caller: str = Security(require_bittensor_caller),
     ) -> ValidatorStatusResponse:
         snapshot = deps.status_provider.snapshot()
         return ValidatorStatusResponse(**snapshot)

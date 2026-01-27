@@ -96,7 +96,7 @@ app = FastAPI(title="Caster Sandbox", version="0.1.0", lifespan=lifespan)
 app.include_router(sandbox_harness.create_router(), prefix="/entry")
 
 
-@app.get("/healthz", tags=["health"])
+@app.get("/healthz", tags=["health"], description="Sandbox health check.")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
 
