@@ -419,27 +419,33 @@ def _build_inbound_auth(resolved: Settings) -> BittensorSr25519InboundVerifier:
     network_or_endpoint = endpoint or subtensor_settings.network
     subtensor = bt.Subtensor(network=network_or_endpoint)
     try:
-        owner_hotkey = subtensor.get_subnet_owner_hotkey(netuid=subtensor_settings.netuid)
+        subnet_info = subtensor.get_subnet_info(subtensor_settings.netuid)
     finally:
         try:
             subtensor.close()
         except Exception as exc:  # pragma: no cover - best-effort cleanup
             logger.debug("subtensor close failed during inbound auth setup", exc_info=exc)
 
-    if not owner_hotkey:
-        raise RuntimeError(f"unable to resolve subnet owner hotkey (netuid={subtensor_settings.netuid})")
-
-    owner_hotkey_ss58 = str(owner_hotkey)
+    if subnet_info is None:
+        raise RuntimeError(f"unable to resolve subnet info (netuid={subtensor_settings.netuid})")
+    owner_coldkey = subnet_info.owner_ss58
+    if not owner_coldkey:
+        raise RuntimeError(f"unable to resolve subnet owner coldkey (netuid={subtensor_settings.netuid})")
+    owner_coldkey_ss58 = str(owner_coldkey)
     logger.info(
         "configured inbound platform request verifier",
         extra={
             "data": {
                 "netuid": subtensor_settings.netuid,
-                "allowed_platform_hotkey_ss58": owner_hotkey_ss58,
+                "allowed_platform_owner_coldkey_ss58": owner_coldkey_ss58,
             }
         },
     )
-    return BittensorSr25519InboundVerifier.from_allowed((owner_hotkey_ss58,))
+    return BittensorSr25519InboundVerifier(
+        netuid=subtensor_settings.netuid,
+        network=network_or_endpoint,
+        owner_coldkey_ss58=owner_coldkey_ss58,
+    )
 
 
 def _create_search_client(settings: Settings) -> DeSearchClient:
