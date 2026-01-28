@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from caster_commons.domain.tool_usage import ToolUsageSummary
 from caster_commons.tools.http_models import ToolExecuteResponseDTO, ToolResultDTO
 
 
@@ -83,6 +84,7 @@ class MinerTaskResultModel:
     score: MinerTaskResultScoreModel
     usage: UsageModel
     session: SessionModel
+    total_tool_usage: ToolUsageSummary
 
 
 @dataclass(frozen=True, slots=True)

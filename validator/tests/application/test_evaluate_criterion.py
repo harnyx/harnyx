@@ -140,8 +140,7 @@ def test_usage_summarizer_ignores_non_search_tool_receipts() -> None:
     summarizer = UsageSummarizer()
     _, totals = summarizer.summarize(session, (search_receipt, llm_receipt))
 
-    search_totals = totals["search_tool"]
-    assert search_totals["call_count"] == 1
+    assert totals.search_tool.call_count == 1
 
 
 async def test_evaluation_orchestrator_builds_miner_evaluation() -> None:

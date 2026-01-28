@@ -226,7 +226,6 @@ class EvaluationRunner:
             score=score,
             tool_receipts=(),
             usage=TokenUsageSummary.empty(),
-            total_tool_usage=None,
         )
 
     def _validator_uid_value(self) -> int:

@@ -19,7 +19,12 @@ from caster_commons.domain.tool_call import (
     ToolCall,
     ToolResultPolicy,
 )
-from caster_commons.json_types import JsonObject, JsonValue
+from caster_commons.domain.tool_usage import (
+    LlmModelUsageCost,
+    LlmUsageSummary,
+    SearchToolUsageSummary,
+    ToolUsageSummary,
+)
 from caster_commons.llm.pricing import ALLOWED_TOOL_MODELS, parse_tool_model, price_llm, price_search
 from caster_commons.llm.schema import LlmUsage
 from caster_commons.tools.types import SearchToolName, is_citation_source, is_search_tool
@@ -62,7 +67,7 @@ class UsageSummarizer:
         self,
         session: Session,
         receipts: Sequence[ToolCall],
-    ) -> tuple[TokenUsageSummary, JsonObject]:
+    ) -> tuple[TokenUsageSummary, ToolUsageSummary]:
         usage = TokenUsageSummary.from_usage(session.usage)
         total_tool_usage = self._summarize_tool_usage(
             receipts=receipts,
@@ -75,20 +80,20 @@ class UsageSummarizer:
         *,
         receipts: Sequence[ToolCall],
         budget: SessionUsage,
-    ) -> JsonObject:
+    ) -> ToolUsageSummary:
         search_summary, total_search_cost = self._summarize_search_usage(receipts)
         llm_summary, total_llm_cost = self._summarize_llm_usage(budget)
-        return {
-            "search_tool": search_summary,
-            "search_tool_cost": total_search_cost,
-            "llm": llm_summary,
-            "llm_cost": total_llm_cost,
-        }
+        return ToolUsageSummary(
+            search_tool=search_summary,
+            search_tool_cost=total_search_cost,
+            llm=llm_summary,
+            llm_cost=total_llm_cost,
+        )
 
     def _summarize_search_usage(
         self,
         receipts: Sequence[ToolCall],
-    ) -> tuple[JsonObject, float]:
+    ) -> tuple[SearchToolUsageSummary, float]:
         total_cost = 0.0
         call_count = 0
 
@@ -98,22 +103,20 @@ class UsageSummarizer:
             total_cost += self._search_cost(receipt.tool, receipt)
             call_count += 1
 
-        usage_summary: JsonObject = {
-            "call_count": call_count,
-            "cost": round(total_cost, 6),
-        }
-        return usage_summary, total_cost
+        return (
+            SearchToolUsageSummary(call_count=call_count, cost=round(total_cost, 6)),
+            total_cost,
+        )
 
-    def _summarize_llm_usage(self, budget: SessionUsage) -> tuple[JsonObject, float]:
+    def _summarize_llm_usage(self, budget: SessionUsage) -> tuple[LlmUsageSummary, float]:
         call_count = 0
         prompt_tokens = 0
         completion_tokens = 0
         total_tokens = 0
         total_cost = 0.0
-        providers: dict[str, JsonValue] = {}
+        providers: dict[str, dict[str, LlmModelUsageCost]] = {}
 
-        for provider, models in budget.llm_usage_totals.items():
-            provider_models: dict[str, JsonValue] = {}
+        for _, models in budget.llm_usage_totals.items():
             for model, totals in models.items():
                 # Session usage may include non-tool/unsupported models; only price tool models we recognize.
                 try:
@@ -126,33 +129,26 @@ class UsageSummarizer:
                     tool_model,
                     self._llm_usage_totals_to_usage(totals),
                 )
-                provider_models[model] = {
-                    "usage": {
-                        "prompt_tokens": totals.prompt_tokens,
-                        "completion_tokens": totals.completion_tokens,
-                        "total_tokens": totals.total_tokens,
-                        "call_count": totals.call_count,
-                    },
-                    "cost": cost,
-                }
+                model_provider = tool_model.split("/", 1)[0]
+                provider_models = providers.setdefault(model_provider, {})
+                provider_models[str(tool_model)] = LlmModelUsageCost(usage=totals, cost=cost)
                 call_count += totals.call_count
-                prompt_tokens += totals.prompt_tokens or 0
-                completion_tokens += totals.completion_tokens or 0
-                total_tokens += totals.total_tokens or 0
+                prompt_tokens += totals.prompt_tokens
+                completion_tokens += totals.completion_tokens
+                total_tokens += totals.total_tokens
                 total_cost += cost
 
-            if provider_models:
-                providers[provider] = provider_models
-
-        llm_summary: JsonObject = {
-            "call_count": call_count,
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": total_tokens,
-            "providers": providers,
-            "cost": round(total_cost, 6),
-        }
-        return llm_summary, total_cost
+        return (
+            LlmUsageSummary(
+                call_count=call_count,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                providers=providers,
+                cost=round(total_cost, 6),
+            ),
+            total_cost,
+        )
 
     @staticmethod
     def _search_cost(tool: SearchToolName, receipt: ToolCall) -> float:

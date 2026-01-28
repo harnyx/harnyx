@@ -227,6 +227,7 @@ def _serialize_result(result: MinerTaskResult) -> MinerTaskResultModel:
         ),
         usage=_serialize_usage_block(result.outcome.usage),
         session=_serialize_session_block(result.session),
+        total_tool_usage=result.outcome.total_tool_usage,
     )
 
 

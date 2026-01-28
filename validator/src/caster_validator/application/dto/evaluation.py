@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from uuid import UUID
 
 from caster_commons.domain.claim import MinerTaskClaim
 from caster_commons.domain.session import LlmUsageTotals, Session, SessionUsage
 from caster_commons.domain.tool_call import ToolCall
-from caster_commons.json_types import JsonObject, JsonValue
+from caster_commons.domain.tool_usage import ToolUsageSummary
+from caster_commons.json_types import JsonValue
 from caster_validator.application.services.evaluation_scoring import EvaluationScore
 from caster_validator.domain.evaluation import MinerCriterionEvaluation
 
@@ -161,7 +162,7 @@ class EvaluationOutcome:
     score: EvaluationScore
     tool_receipts: Sequence[ToolCall]
     usage: TokenUsageSummary
-    total_tool_usage: JsonObject | None = None  # filled by orchestrator
+    total_tool_usage: ToolUsageSummary = field(default_factory=ToolUsageSummary.zero)
 
 
 @dataclass(frozen=True)
@@ -171,7 +172,7 @@ class ScoredEvaluation:
     criterion_evaluation: MinerCriterionEvaluation
     score: EvaluationScore
     usage: TokenUsageSummary
-    total_tool_usage: JsonObject | None = None
+    total_tool_usage: ToolUsageSummary = field(default_factory=ToolUsageSummary.zero)
 
 
 @dataclass(frozen=True)
