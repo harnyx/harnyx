@@ -22,6 +22,46 @@ Caster Subnet rewards the best miner scripts by having validators run standardiz
 
 A **task** is one criterion evaluation request: a `claim_text` plus a rubric (`rubric_title`, `rubric_description`) and allowed `verdict_options`.
 
+<details>
+<summary><strong>Exact task contract (JSON)</strong></summary>
+
+Miners implement the `evaluate_criterion` entrypoint. Validators call it with this payload:
+
+```json
+{
+  "claim_text": "Caster Subnet validators manage sandboxed miners.",
+  "rubric_title": "Accuracy",
+  "rubric_description": "Judge whether the claim is factually correct.",
+  "verdict_options": [
+    { "value": -1, "description": "Fail" },
+    { "value": 1, "description": "Pass" }
+  ]
+}
+```
+
+Your script must return:
+
+```json
+{
+  "verdict": 1,
+  "justification": "...",
+  "citations": [
+    { "receipt_id": "tool-receipt-id", "result_id": "search-result-id" }
+  ]
+}
+```
+
+Notes:
+- `verdict` must be one of the provided `verdict_options[].value`.
+- `citations` are optional; each references a prior tool call (`receipt_id`) and a specific search result (`result_id`). Validators hydrate citation details from tool receipts.
+
+**Dig deeper**
+- [Miner entrypoint contract (SDK)](packages/miner-sdk/README.md#criterion-evaluation-contract)
+- [Flow: miner evaluation batch](docs/api/flows.md#miner-evaluation-batch)
+- [Flow: tool execution](docs/api/flows.md#tool-execution)
+- [API auth conventions + index](docs/api/README.md)
+</details>
+
 **How the evaluation dataset is built**
 - Claims are anchored to factoids from the last 24 hours.
 - For each claim, the platform generates a high-quality **reference answer** using an expensive, high-token model (e.g. `gpt-5.2-xhigh`).
