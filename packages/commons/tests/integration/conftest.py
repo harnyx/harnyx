@@ -18,6 +18,10 @@ from caster_commons.sandbox.manager import SandboxDeployment
 _DOCKER_CLI = os.getenv("DOCKER_CLI", "docker")
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _DEFAULT_IMAGE = os.getenv("CASTER_SANDBOX_IMAGE", "local/caster-sandbox:0.1.0-dev")
+_DEFAULT_HOST_CONTAINER_URL = os.getenv(
+    "CASTER_HOST_CONTAINER_URL",
+    "http://host.docker.internal:8100",
+)
 
 
 def _docker_binary() -> str:
@@ -82,11 +86,13 @@ def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
                 "SANDBOX_HOST": "0.0.0.0",  # noqa: S104 - inside container
                 "SANDBOX_PORT": "8000",
                 "CASTER_AGENT_MODULE": agent_module,
+                "CASTER_HOST_CONTAINER_URL": _DEFAULT_HOST_CONTAINER_URL,
                 "PYTHONPATH": "/workspace",
             },
             volumes=((str(_REPO_ROOT), "/workspace", "ro"),),
             wait_for_healthz=True,
             healthz_timeout=30.0,
+            extra_hosts=(("host.docker.internal", "host-gateway"),),
         )
         deployment = manager.start(options)
         deployments.append(deployment)

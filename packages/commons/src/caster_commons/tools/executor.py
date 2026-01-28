@@ -172,7 +172,7 @@ class ToolExecutor:
             usage_details,
             call_cost,
         )
-        budget_limit = self._usage_tracker.limit_usd
+        budget_limit = updated_session.budget_usd
         budget_snapshot = ToolBudgetSnapshot(
             session_budget_usd=budget_limit,
             session_used_budget_usd=updated_session.usage.total_cost_usd,

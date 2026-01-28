@@ -18,6 +18,7 @@ class SessionTokenRequest:
     claim_id: UUID
     issued_at: datetime
     expires_at: datetime
+    budget_usd: float
     token: str
 
 

@@ -31,13 +31,6 @@ class ToolCallUsage:
 class UsageTracker:
     """Enforces per-session budget limits for tool invocations."""
 
-    def __init__(self, cost_limit_usd: float) -> None:
-        self._budget = BudgetValidator(cost_limit_usd)
-
-    @property
-    def limit_usd(self) -> float:
-        return self._budget.limit_usd
-
     def record_tool_call(
         self,
         session: Session,
@@ -52,6 +45,7 @@ class UsageTracker:
 
         updated_usage = self._update_usage(
             session.usage,
+            session_budget_usd=session.budget_usd,
             normalized_name=normalized_name,
             llm_tokens=llm_tokens,
             usage=usage_details,
@@ -79,13 +73,15 @@ class UsageTracker:
         self,
         budget: SessionUsage,
         *,
+        session_budget_usd: float,
         normalized_name: str,
         llm_tokens: int,
         usage: ToolCallUsage | None,
         cost_usd: float | None,
     ) -> SessionUsage:
+        budget_validator = BudgetValidator(session_budget_usd)
         projected_total = budget.total_cost_usd + (cost_usd or 0.0)
-        self._budget.assert_within_limits(projected_total)
+        budget_validator.assert_within_limits(projected_total)
 
         usage_totals = accumulate_llm_usage(
             budget.llm_usage_totals,
@@ -100,7 +96,7 @@ class UsageTracker:
             cost_usd=cost_usd,
             normalized_tool_name=normalized_name,
         )
-        self._budget.assert_within_limits(total_cost)
+        budget_validator.assert_within_limits(total_cost)
 
         return self._build_usage(
             budget=budget,

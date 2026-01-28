@@ -93,7 +93,6 @@ class MinerTaskBatchService:
         sandbox_options_factory: Callable[[], SandboxOptions],
         agent_resolver: AgentResolver,
         status_provider: StatusProvider | None = None,
-        budget_factory: Callable[[], float] | None = None,
         config: EvaluationBatchConfig | None = None,
         progress: ProgressRecorder | None = None,
     ) -> None:
@@ -105,8 +104,6 @@ class MinerTaskBatchService:
         self._status = status_provider
         self._config = config or EvaluationBatchConfig()
         self._progress = progress
-        if budget_factory is None:
-            raise RuntimeError("budget_factory is required")
         self._planner = BatchExecutionPlanner(
             subtensor_client=self._subtensor,
             sandbox_manager=self._sandbox_manager,
@@ -115,7 +112,6 @@ class MinerTaskBatchService:
             orchestrator_factory=orchestrator_factory,
             sandbox_options_factory=sandbox_options_factory,
             agent_resolver=agent_resolver,
-            budget_factory=budget_factory,
             progress=progress,
             config=self._config,
         )

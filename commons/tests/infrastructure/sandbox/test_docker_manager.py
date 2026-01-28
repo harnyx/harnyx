@@ -15,7 +15,6 @@ from caster_commons.sandbox.manager import SandboxDeployment
 @dataclass
 class DummyClient:
     base_url: str
-    token_header: str
     closed: bool = False
 
     def invoke(self, *args, **kwargs):  # pragma: no cover - not used in test
@@ -47,8 +46,8 @@ def test_docker_sandbox_manager_builds_commands(monkeypatch) -> None:
     runner = RecordingRunner()
     created_clients: list[DummyClient] = []
 
-    def client_factory(base_url: str, token_header: str) -> DummyClient:
-        client = DummyClient(base_url, token_header)
+    def client_factory(base_url: str) -> DummyClient:
+        client = DummyClient(base_url)
         created_clients.append(client)
         return client
 
@@ -98,8 +97,8 @@ def test_docker_sandbox_manager_builds_commands(monkeypatch) -> None:
 def test_docker_manager_skips_port_mapping_when_host_port_missing() -> None:
     runner = RecordingRunner()
 
-    def client_factory(base_url: str, token_header: str) -> DummyClient:
-        return DummyClient(base_url, token_header)
+    def client_factory(base_url: str) -> DummyClient:
+        return DummyClient(base_url)
 
     manager = DockerSandboxManager(
         docker_binary="docker",
@@ -127,8 +126,8 @@ def test_docker_manager_skips_port_mapping_when_host_port_missing() -> None:
 def test_docker_manager_mounts_volumes() -> None:
     runner = RecordingRunner()
 
-    def client_factory(base_url: str, token_header: str) -> DummyClient:
-        return DummyClient(base_url, token_header)
+    def client_factory(base_url: str) -> DummyClient:
+        return DummyClient(base_url)
 
     manager = DockerSandboxManager(
         docker_binary="docker",
@@ -165,8 +164,8 @@ def test_docker_manager_requires_network_when_host_port_missing() -> None:
 def test_docker_manager_adds_extra_hosts() -> None:
     runner = RecordingRunner()
 
-    def client_factory(base_url: str, token_header: str) -> DummyClient:
-        return DummyClient(base_url, token_header)
+    def client_factory(base_url: str) -> DummyClient:
+        return DummyClient(base_url)
 
     manager = DockerSandboxManager(
         docker_binary="docker",
@@ -192,8 +191,8 @@ def test_docker_manager_adds_extra_hosts() -> None:
 def test_docker_manager_sets_seccomp_profile() -> None:
     runner = RecordingRunner()
 
-    def client_factory(base_url: str, token_header: str) -> DummyClient:
-        return DummyClient(base_url, token_header)
+    def client_factory(base_url: str) -> DummyClient:
+        return DummyClient(base_url)
 
     manager = DockerSandboxManager(
         docker_binary="docker",
@@ -221,8 +220,8 @@ def test_start_cleans_up_container_on_healthz_failure(monkeypatch) -> None:
     runner = RecordingRunner()
     created_clients: list[DummyClient] = []
 
-    def client_factory(base_url: str, token_header: str) -> DummyClient:
-        client = DummyClient(base_url, token_header)
+    def client_factory(base_url: str) -> DummyClient:
+        client = DummyClient(base_url)
         created_clients.append(client)
         return client
 

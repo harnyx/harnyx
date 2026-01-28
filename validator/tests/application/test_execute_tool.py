@@ -38,13 +38,14 @@ class RecordingToolInvoker(ToolInvoker):
         return {"data": [], "query": kwargs.get("query", "")}
 
 
-def make_session() -> Session:
+def make_session(*, budget_usd: float = 0.1) -> Session:
     return Session(
         session_id=uuid4(),
         uid=7,
         claim_id=uuid4(),
         issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
         expires_at=datetime(2025, 10, 17, 13, tzinfo=UTC),
+        budget_usd=budget_usd,
         usage=SessionUsage(),
         status=SessionStatus.ACTIVE,
     )
@@ -64,7 +65,6 @@ def build_executor(
     session: Session,
     *,
     token: str,
-    budget_usd: float | None = None,
     clock: Callable[[], datetime] | None = None,
 ) -> tuple[
     ToolExecutor,
@@ -77,7 +77,7 @@ def build_executor(
     session_registry.create(session)
     receipt_log = FakeReceiptLog()
     invoker = RecordingToolInvoker()
-    usage_tracker = UsageTracker(budget_usd if budget_usd is not None else 0.1)
+    usage_tracker = UsageTracker()
     token_registry = InMemoryTokenRegistry()
     token_registry.register(session.session_id, token)
 
@@ -142,9 +142,39 @@ async def test_execute_tool_supports_tooling_info_without_consuming_budget() -> 
     assert result.budget.session_used_budget_usd == pytest.approx(0.0)
     assert result.budget.session_remaining_budget_usd == pytest.approx(0.1)
 
+async def test_execute_tool_budget_is_session_scoped() -> None:
+    session_a = make_session(budget_usd=0.2)
+    token_a = generate_token()
+    executor_a, _, _, _, _ = build_executor(session_a, token=token_a)
+    result_a = await executor_a.execute(
+        ToolInvocationRequest(
+            session_id=session_a.session_id,
+            token=token_a,
+            tool="tooling_info",
+            args=(),
+            kwargs={},
+        )
+    )
+
+    session_b = make_session(budget_usd=0.7)
+    token_b = generate_token()
+    executor_b, _, _, _, _ = build_executor(session_b, token=token_b)
+    result_b = await executor_b.execute(
+        ToolInvocationRequest(
+            session_id=session_b.session_id,
+            token=token_b,
+            tool="tooling_info",
+            args=(),
+            kwargs={},
+        )
+    )
+
+    assert result_a.budget.session_budget_usd == pytest.approx(0.2)
+    assert result_b.budget.session_budget_usd == pytest.approx(0.7)
+
 
 async def test_execute_tool_prices_search_ai_by_referenceable_results() -> None:
-    session = make_session()
+    session = make_session(budget_usd=1.0)
     token = generate_token()
 
     class SearchAiInvoker(ToolInvoker):
@@ -167,7 +197,7 @@ async def test_execute_tool_prices_search_ai_by_referenceable_results() -> None:
     session_registry = FakeSessionRegistry()
     session_registry.create(session)
     receipt_log = FakeReceiptLog()
-    usage_tracker = UsageTracker(cost_limit_usd=1.0)
+    usage_tracker = UsageTracker()
     token_registry = InMemoryTokenRegistry()
     token_registry.register(session.session_id, token)
 
@@ -248,10 +278,10 @@ async def test_execute_tool_rejects_invalid_token() -> None:
 
 
 async def test_execute_tool_enforces_budget() -> None:
-    session = make_session()
     limit = 0.003
+    session = make_session(budget_usd=limit)
     token = generate_token()
-    executor, *_ = build_executor(session, token=token, budget_usd=limit)
+    executor, *_ = build_executor(session, token=token)
     first = make_request(session, token=token)
     await executor.execute(first)
 
@@ -272,7 +302,7 @@ async def test_execute_tool_rejects_expired_session() -> None:
 
 
 async def test_execute_tool_records_llm_tokens_for_llm_chat() -> None:
-    session = make_session()
+    session = make_session(budget_usd=1.0)
     token = generate_token()
 
     class UsageToolInvoker(ToolInvoker):
@@ -304,7 +334,7 @@ async def test_execute_tool_records_llm_tokens_for_llm_chat() -> None:
     session_registry = FakeSessionRegistry()
     session_registry.create(session)
     receipt_log = FakeReceiptLog()
-    usage_tracker = UsageTracker(cost_limit_usd=1.0)
+    usage_tracker = UsageTracker()
     token_registry = InMemoryTokenRegistry()
     token_registry.register(session.session_id, token)
 

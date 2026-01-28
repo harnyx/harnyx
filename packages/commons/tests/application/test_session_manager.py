@@ -33,7 +33,7 @@ class FakeSessionRegistry(SessionRegistryPort):
         return self._sessions.values()
 
 
-def make_request(token: str | None = None) -> SessionTokenRequest:
+def make_request(token: str | None = None, *, budget_usd: float = 0.1) -> SessionTokenRequest:
     issued_at = datetime(2025, 10, 17, 12, tzinfo=UTC)
     expires_at = issued_at + timedelta(hours=1)
     return SessionTokenRequest(
@@ -42,6 +42,7 @@ def make_request(token: str | None = None) -> SessionTokenRequest:
         claim_id=uuid4(),
         issued_at=issued_at,
         expires_at=expires_at,
+        budget_usd=budget_usd,
         token=token or uuid4().hex,
     )
 
@@ -57,6 +58,7 @@ def test_issue_persists_session_and_token() -> None:
     stored = sessions.get(request.session_id)
     assert stored is not None
     assert issued.session == stored
+    assert issued.session.budget_usd == pytest.approx(request.budget_usd)
     assert tokens.verify(request.session_id, request.token)
 
     envelope = manager.load(request.session_id)

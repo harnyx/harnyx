@@ -75,13 +75,14 @@ class DemoDependencyProvider:
             claim_id=uuid4(),
             issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
             expires_at=datetime(2025, 10, 17, 13, tzinfo=UTC),
+            budget_usd=0.1,
             usage=SessionUsage(),
             status=SessionStatus.ACTIVE,
         )
         self.session_registry.create(self.session)
         self.tokens.register(self.session.session_id, DEMO_SESSION_TOKEN)
 
-        usage_tracker = UsageTracker(cost_limit_usd=0.1)
+        usage_tracker = UsageTracker()
         tool_invoker = RecordingToolInvoker()
 
         self.tool_executor = ToolExecutor(
@@ -180,9 +181,9 @@ def test_execute_tool_endpoint_supports_tooling_info() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["result_policy"] == "log_only"
-    assert body["budget"]["session_budget_usd"] == pytest.approx(0.1)
+    assert body["budget"]["session_budget_usd"] == pytest.approx(provider.session.budget_usd)
     assert body["budget"]["session_used_budget_usd"] == pytest.approx(0.0)
-    assert body["budget"]["session_remaining_budget_usd"] == pytest.approx(0.1)
+    assert body["budget"]["session_remaining_budget_usd"] == pytest.approx(provider.session.budget_usd)
 
     session_snapshot = provider.session_registry.get(provider.session.session_id)
     assert session_snapshot is not None

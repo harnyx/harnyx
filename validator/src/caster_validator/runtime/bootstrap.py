@@ -103,7 +103,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
     resolved = settings or Settings.load()
     logger.info("loading validator runtime configuration", extra={"settings": resolved})
 
-    state = _build_state(resolved)
+    state = _build_state()
     platform_client, platform_hotkey, subtensor_client = _build_external_clients(resolved)
     _register_with_platform(resolved, platform_hotkey, resolved.platform_api.validator_public_base_url)
 
@@ -165,7 +165,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
     )
 
 
-def _build_state(settings: Settings) -> InMemoryState:
+def _build_state() -> InMemoryState:
     session_registry = InMemorySessionRegistry()
     token_registry = InMemoryTokenRegistry()
     receipt_log = InMemoryReceiptLog()
@@ -173,7 +173,7 @@ def _build_state(settings: Settings) -> InMemoryState:
     progress_tracker = InMemoryRunProgress()
     batch_inbox = InMemoryBatchInbox()
     token_semaphore = TokenSemaphore()
-    usage_tracker = UsageTracker(settings.sandbox.max_session_budget_usd)
+    usage_tracker = UsageTracker()
     session_manager = SessionManager(session_registry, token_registry)
     return InMemoryState(
         session_registry=session_registry,

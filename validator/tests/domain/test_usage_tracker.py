@@ -10,21 +10,22 @@ from caster_commons.tools.usage_tracker import ToolCallUsage, UsageTracker
 from caster_validator.domain.exceptions import BudgetExceededError
 
 
-def make_session() -> Session:
+def make_session(*, budget_usd: float) -> Session:
     return Session(
         session_id=uuid4(),
         uid=1,
         claim_id=uuid4(),
         issued_at=datetime(2025, 10, 15, tzinfo=UTC),
         expires_at=datetime(2025, 10, 16, tzinfo=UTC),
+        budget_usd=budget_usd,
         usage=SessionUsage(),
         status=SessionStatus.ACTIVE,
     )
 
 
 def test_usage_tracker_records_tool_call_within_limits() -> None:
-    tracker = UsageTracker(cost_limit_usd=0.2)
-    session = make_session()
+    tracker = UsageTracker()
+    session = make_session(budget_usd=0.2)
 
     updated = tracker.record_tool_call(
         session,
@@ -39,8 +40,8 @@ def test_usage_tracker_records_tool_call_within_limits() -> None:
 
 
 def test_usage_tracker_blocks_when_limits_exceeded() -> None:
-    tracker = UsageTracker(cost_limit_usd=0.05)
-    session = make_session()
+    tracker = UsageTracker()
+    session = make_session(budget_usd=0.05)
     first = tracker.record_tool_call(session, tool_name="llm_chat", llm_tokens=50, cost_usd=0.04)
     assert first.usage.total_cost_usd == pytest.approx(0.04)
 
@@ -49,16 +50,16 @@ def test_usage_tracker_blocks_when_limits_exceeded() -> None:
 
 
 def test_usage_tracker_rejects_calls_when_session_inactive() -> None:
-    tracker = UsageTracker(cost_limit_usd=0.1)
-    session = make_session().mark_exhausted()
+    tracker = UsageTracker()
+    session = make_session(budget_usd=0.1).mark_exhausted()
 
     with pytest.raises(BudgetExceededError):
         tracker.record_tool_call(session, tool_name="search_web", llm_tokens=10, cost_usd=0.01)
 
 
 def test_usage_tracker_accumulates_llm_usage() -> None:
-    tracker = UsageTracker(cost_limit_usd=1.0)
-    session = make_session()
+    tracker = UsageTracker()
+    session = make_session(budget_usd=1.0)
 
     usage = ToolCallUsage(
         provider="chutes",

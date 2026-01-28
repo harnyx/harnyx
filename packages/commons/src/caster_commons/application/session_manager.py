@@ -33,6 +33,7 @@ class SessionManager:
             claim_id=request.claim_id,
             issued_at=request.issued_at,
             expires_at=request.expires_at,
+            budget_usd=request.budget_usd,
         )
         self._sessions.create(session)
         token_hash = self._tokens.register(session.session_id, request.token)

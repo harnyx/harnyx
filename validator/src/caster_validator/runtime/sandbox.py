@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from caster_commons.sandbox.docker import DockerSandboxManager
-from caster_commons.sandbox.manager import default_token_header
 from caster_commons.sandbox.options import SandboxOptions
 from caster_validator.runtime.seccomp.paths import default_profile_path
 
@@ -79,7 +78,6 @@ def build_sandbox_options(
         Configured SandboxOptions instance.
     """
     container_port = 8000
-    token_header = default_token_header()
 
     return SandboxOptions(
         image=image,
@@ -91,12 +89,10 @@ def build_sandbox_options(
             "SANDBOX_HOST": "0.0.0.0",  # noqa: S104
             "SANDBOX_PORT": str(container_port),
             "CASTER_HOST_CONTAINER_URL": host_container_url,
-            "CASTER_TOKEN_HEADER": token_header,
         },
         entrypoint=None,
         command=None,
         network=network,
-        token_header=token_header,
         extra_hosts=(("host.docker.internal", "host-gateway"),),
         startup_delay_seconds=2.0,
         wait_for_healthz=True,

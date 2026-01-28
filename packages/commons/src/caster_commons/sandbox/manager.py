@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from caster_commons.sandbox.client import SandboxClient
-from caster_commons.sandbox.options import SandboxOptions, default_token_header
+from caster_commons.sandbox.options import SandboxOptions
 
 
 @dataclass(frozen=True)
@@ -33,5 +33,4 @@ class SandboxManager(Protocol):
 __all__ = [
     "SandboxDeployment",
     "SandboxManager",
-    "default_token_header",
 ]

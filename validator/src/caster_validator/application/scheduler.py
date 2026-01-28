@@ -35,7 +35,6 @@ class SchedulerConfig:
     entrypoint: str
     token_secret_bytes: int
     session_ttl: timedelta
-    budget_usd: float
 
 
 class EvaluationScheduler:

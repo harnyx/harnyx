@@ -23,6 +23,7 @@ from caster_validator.application.invoke_entrypoint import SandboxInvocationErro
 from caster_validator.application.ports.subtensor import ValidatorNodeInfo
 from caster_validator.application.providers.claims import StaticClaimsProvider
 from caster_validator.application.scheduler import EvaluationScheduler, SchedulerConfig
+from caster_validator.application.services.evaluation_runner import EvaluationRunner
 from caster_validator.application.services.evaluation_scoring import EvaluationScore
 from caster_validator.domain.evaluation import MinerAnswer, MinerCriterionEvaluation
 from validator.tests.fixtures.subtensor import FakeSubtensorClient
@@ -119,7 +120,6 @@ async def test_scheduler_runs_all_claims_for_each_uid() -> None:
         entrypoint="evaluate_criterion",
         token_secret_bytes=8,
         session_ttl=timedelta(minutes=5),
-        budget_usd=0.1,
     )
 
     scheduler = EvaluationScheduler(
@@ -202,7 +202,6 @@ async def test_scheduler_accepts_candidate_filter() -> None:
         entrypoint="evaluate_criterion",
         token_secret_bytes=8,
         session_ttl=timedelta(minutes=5),
-        budget_usd=0.1,
     )
 
     scheduler = EvaluationScheduler(
@@ -245,7 +244,6 @@ async def test_scheduler_skips_miner_when_sandbox_invocation_errors() -> None:
         entrypoint="evaluate_criterion",
         token_secret_bytes=8,
         session_ttl=timedelta(minutes=5),
-        budget_usd=0.1,
     )
 
     scheduler = EvaluationScheduler(
@@ -267,3 +265,40 @@ async def test_scheduler_skips_miner_when_sandbox_invocation_errors() -> None:
     assert len(evaluation_records.miner_task_results) == 1
     assert len(sandbox_manager.starts) == 1
     assert len(sandbox_manager.stops) == 1
+
+
+async def test_evaluation_runner_issues_session_with_claim_budget() -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    evaluation_records = DummyEvaluationRecordStore()
+    config = SchedulerConfig(
+        entrypoint="evaluate_criterion",
+        token_secret_bytes=8,
+        session_ttl=timedelta(minutes=5),
+    )
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_records,
+        config=config,
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        progress=None,
+    )
+
+    claim = MinerTaskClaim(
+        claim_id=uuid4(),
+        text="budgeted",
+        rubric=Rubric(
+            title="Accuracy",
+            description="Check facts.",
+            verdict_options=BINARY_VERDICT_OPTIONS,
+        ),
+        reference_answer=ReferenceAnswer(verdict=1, justification="ref", citations=()),
+        budget_usd=0.123,
+    )
+
+    issued = runner._issue_session(uid=3, claim=claim)
+
+    assert issued.session.claim_id == claim.claim_id
+    assert issued.session.budget_usd == pytest.approx(0.123)

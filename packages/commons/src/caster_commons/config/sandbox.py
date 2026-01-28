@@ -11,7 +11,7 @@ SandboxPullPolicy = Literal["always", "missing", "never"]
 
 
 class SandboxSettings(BaseSettings):
-    """Docker sandbox settings and budgets."""
+    """Docker sandbox settings."""
 
     model_config = SettingsConfigDict(
         env_prefix="",
@@ -30,12 +30,6 @@ class SandboxSettings(BaseSettings):
         default="always", alias="CASTER_SANDBOX_PULL_POLICY"
     )
     sandbox_tool_base_url: str = Field(default="", alias="PLATFORM_SANDBOX_BASE_URL")
-
-    max_session_budget_usd: float = Field(
-        default=0.05,
-        alias="MAX_SESSION_BUDGET_USD",
-        description="Maximum allowed cost per miner session (USD).",
-    )
 
 
 __all__ = ["SandboxSettings", "SandboxPullPolicy"]

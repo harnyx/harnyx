@@ -18,10 +18,7 @@ from caster_sandbox.tools.proxy import ToolProxy
 
 logger = logging.getLogger("caster_sandbox")
 
-
-def _token_header() -> str:
-    raw = (os.getenv("CASTER_TOKEN_HEADER") or "").strip()
-    return raw or "x-caster-token"
+TOKEN_HEADER = "x-caster-token"  # noqa: S105
 
 
 def _tool_factory(config: Mapping[str, object] | None, headers: Mapping[str, str]) -> ToolProxy | None:
@@ -29,7 +26,7 @@ def _tool_factory(config: Mapping[str, object] | None, headers: Mapping[str, str
         raise ValueError("tool proxy config is not supported; use CASTER_HOST_CONTAINER_URL and request headers")
 
     base_url = (os.getenv("CASTER_HOST_CONTAINER_URL") or "").strip()
-    token_header = _token_header()
+    token_header = TOKEN_HEADER
     token = (headers.get(token_header) or "").strip()
     session_id = headers.get("x-caster-session-id")
     if not session_id:

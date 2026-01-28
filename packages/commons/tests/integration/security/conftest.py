@@ -19,7 +19,10 @@ from caster_commons.sandbox.docker import (
 DOCKER_CLI = os.getenv("DOCKER_CLI", "docker")
 DOCKER_BINARY = shutil.which(DOCKER_CLI) or DOCKER_CLI
 DOCKER_IMAGE_PATTERN = re.compile(r"^[\w./:-]+$")
-DEFAULT_TOKEN_HEADER = os.getenv("CASTER_TOKEN_HEADER", "x-caster-token")
+DEFAULT_HOST_CONTAINER_URL = os.getenv(
+    "CASTER_HOST_CONTAINER_URL",
+    "http://host.docker.internal:8100",
+)
 SANDBOX_TMPFS_ARG = f"{Path(tempfile.gettempdir())}:rw,noexec,nosuid,nodev,size=64m"
 
 
@@ -82,10 +85,11 @@ def sandbox(attacker_agent_path: Path):
             "SANDBOX_HOST": "0.0.0.0",  # noqa: S104 - container needs to bind all interfaces
             "SANDBOX_PORT": "8000",
             "CASTER_AGENT_PATH": "/sandbox/agent.py",
+            "CASTER_HOST_CONTAINER_URL": DEFAULT_HOST_CONTAINER_URL,
         },
         volumes=((str(attacker_agent_path), "/sandbox/agent.py", "ro"),),
         wait_for_healthz=True,
-        token_header=DEFAULT_TOKEN_HEADER,
+        extra_hosts=(("host.docker.internal", "host-gateway"),),
         extra_args=(
             "--read-only",
             "--cap-drop",

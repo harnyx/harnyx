@@ -147,7 +147,6 @@ def create_evaluation_worker_from_context(context: RuntimeContext) -> Evaluation
         sandbox_options_factory=context.build_sandbox_options,
         agent_resolver=agent_resolver,
         status_provider=context.status_provider,
-        budget_factory=lambda: context.settings.sandbox.max_session_budget_usd,
         progress=context.progress_tracker,
     )
     return EvaluationWorker(

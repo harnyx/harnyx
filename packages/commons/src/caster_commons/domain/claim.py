@@ -76,10 +76,13 @@ class MinerTaskClaim:
     text: str
     rubric: Rubric
     reference_answer: ReferenceAnswer
+    budget_usd: float = 0.05
 
     def __post_init__(self) -> None:
         if not self.text.strip():
             raise ValueError("claim text must not be empty")
+        if self.budget_usd < 0.0:
+            raise ValueError("claim budget_usd must be non-negative")
         self.rubric.verdict_options.validate(self.reference_answer.verdict)
 
 

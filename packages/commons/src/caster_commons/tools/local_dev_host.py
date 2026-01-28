@@ -12,7 +12,6 @@ from caster_commons.application.dto.session import SessionTokenRequest
 from caster_commons.application.session_manager import SessionManager
 from caster_commons.clients import CHUTES, DESEARCH
 from caster_commons.config.llm import LlmSettings
-from caster_commons.config.sandbox import SandboxSettings
 from caster_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
 from caster_commons.infrastructure.state.session_registry import InMemorySessionRegistry
 from caster_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
@@ -67,8 +66,7 @@ def create_local_tool_host(*, uid: int = 1, session_ttl_minutes: int = 30) -> Lo
     if not llm_settings.chutes_api_key_value:
         raise RuntimeError("CHUTES_API_KEY must be set to run local tool host")
 
-    sandbox_settings = SandboxSettings()
-    usage_tracker = UsageTracker(sandbox_settings.max_session_budget_usd)
+    usage_tracker = UsageTracker()
 
     sessions = InMemorySessionRegistry()
     tokens = InMemoryTokenRegistry()
@@ -85,6 +83,7 @@ def create_local_tool_host(*, uid: int = 1, session_ttl_minutes: int = 30) -> Lo
             claim_id=uuid4(),
             issued_at=now,
             expires_at=now + timedelta(minutes=session_ttl_minutes),
+            budget_usd=0.05,
             token=token,
         )
     )
@@ -127,4 +126,3 @@ def create_local_tool_host(*, uid: int = 1, session_ttl_minutes: int = 30) -> Lo
 
 
 __all__ = ["LocalToolHost", "create_local_tool_host"]
-

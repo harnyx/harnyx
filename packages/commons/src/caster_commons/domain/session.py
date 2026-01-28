@@ -110,6 +110,7 @@ class Session:
     claim_id: UUID
     issued_at: datetime
     expires_at: datetime
+    budget_usd: float
     usage: SessionUsage = field(default_factory=SessionUsage)
     status: SessionStatus = SessionStatus.ACTIVE
 
@@ -118,6 +119,8 @@ class Session:
             raise ValueError("uid must be positive")
         if self.expires_at <= self.issued_at:
             raise ValueError("expires_at must be later than issued_at")
+        if self.budget_usd < 0.0:
+            raise ValueError("budget_usd must be non-negative")
 
     def mark_exhausted(self) -> Session:
         """Mark the session as exhausted."""

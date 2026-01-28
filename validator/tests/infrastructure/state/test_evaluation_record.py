@@ -71,6 +71,7 @@ def test_in_memory_store_records_miner_task_results() -> None:
         claim_id=claim.claim_id,
         issued_at=issued_at,
         expires_at=issued_at + timedelta(minutes=5),
+        budget_usd=0.1,
         usage=SessionUsage(
             llm_usage_totals={
                 "search": {

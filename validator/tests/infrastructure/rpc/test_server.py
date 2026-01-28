@@ -75,13 +75,14 @@ class DemoDependencyProvider:
             claim_id=uuid4(),
             issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
             expires_at=datetime(2025, 10, 17, 13, tzinfo=UTC),
+            budget_usd=0.1,
             usage=SessionUsage(),
             status=SessionStatus.ACTIVE,
         )
         self.session_registry.create(self.session)
         self.tokens.register(self.session.session_id, DEMO_SESSION_TOKEN)
 
-        usage_tracker = UsageTracker(cost_limit_usd=0.1)
+        usage_tracker = UsageTracker()
         tool_invoker = RecordingToolInvoker()
 
         self.tool_executor = ToolExecutor(

@@ -104,6 +104,7 @@ def test_usage_summarizer_ignores_non_search_tool_receipts() -> None:
         claim_id=claim_id,
         issued_at=issued,
         expires_at=issued + timedelta(hours=1),
+        budget_usd=0.1,
             usage=SessionUsage(
                 llm_tokens_last_call=10,
                 llm_usage_totals={
@@ -539,6 +540,7 @@ def register_session(
             claim_id=claim_id,
             issued_at=issued,
             expires_at=issued + timedelta(hours=1),
+            budget_usd=0.1,
             usage=budget,
         ),
     )

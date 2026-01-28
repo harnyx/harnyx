@@ -53,6 +53,7 @@ def make_session_request(token: str) -> SessionTokenRequest:
         claim_id=uuid4(),
         issued_at=issued_at,
         expires_at=expires_at,
+        budget_usd=0.1,
         token=token,
     )
 

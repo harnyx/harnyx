@@ -40,7 +40,6 @@ class AgentArtifact(Protocol):
 
 
 AgentResolver = Callable[[UUID, MinerTaskBatchSpec, Path, str], Mapping[UUID, AgentArtifact]]
-BudgetFactory = Callable[[], float]
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +67,6 @@ class BatchExecutionPlanner:
         orchestrator_factory: OrchestratorFactory,
         sandbox_options_factory: SandboxOptionsFactory,
         agent_resolver: AgentResolver,
-        budget_factory: BudgetFactory,
         progress: ProgressRecorder | None,
         config: EvaluationBatchConfig,
     ) -> None:
@@ -79,7 +77,6 @@ class BatchExecutionPlanner:
         self._orchestrator_factory = orchestrator_factory
         self._sandbox_options_factory = sandbox_options_factory
         self._agent_resolver = agent_resolver
-        self._budget_factory = budget_factory
         self._progress = progress
         self._config = config
 
@@ -147,7 +144,6 @@ class BatchExecutionPlanner:
                 entrypoint=run_ctx.entrypoint,
                 token_secret_bytes=run_ctx.config.token_secret_bytes,
                 session_ttl=timedelta(minutes=5),
-                budget_usd=self._budget(),
             ),
             progress=self._progress,
         )
@@ -178,9 +174,5 @@ class BatchExecutionPlanner:
             )
 
         return sandbox_options_factory
-
-    def _budget(self) -> float:
-        return self._budget_factory()
-
 
 __all__ = ["RunContext", "BatchExecutionPlanner"]

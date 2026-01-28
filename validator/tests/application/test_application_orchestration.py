@@ -86,12 +86,13 @@ async def test_application_use_cases_cooperate_for_single_evaluation() -> None:
         claim_id=uuid4(),
         issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
         expires_at=datetime(2025, 10, 17, 13, tzinfo=UTC),
+        budget_usd=0.5,
         token=TEST_SESSION_TOKEN,
     )
     session_manager.issue(session_request)
 
     tool_invoker = EchoToolInvoker()
-    usage_tracker = UsageTracker(cost_limit_usd=0.5)
+    usage_tracker = UsageTracker()
 
     executor = ToolExecutor(
         session_registry=session_registry,

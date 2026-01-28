@@ -70,7 +70,7 @@ class EvaluationRunner:
         artifact_id = candidate.artifact_id
         evaluations: list[ScoredEvaluation] = []
         for claim in claims:
-            issued = self._issue_session(uid=uid, claim_id=claim.claim_id)
+            issued = self._issue_session(uid=uid, claim=claim)
             try:
                 scored = await self._run_evaluation(
                     batch_id=batch_id,
@@ -180,7 +180,7 @@ class EvaluationRunner:
         uid = candidate.uid
         artifact_id = candidate.artifact_id
         for claim in claims:
-            issued = self._issue_session(uid=uid, claim_id=claim.claim_id)
+            issued = self._issue_session(uid=uid, claim=claim)
             try:
                 request = self._build_request(
                     session_id=issued.session.session_id,
@@ -234,16 +234,17 @@ class EvaluationRunner:
             self._validator_uid = int(info.uid)
         return self._validator_uid
 
-    def _issue_session(self, *, uid: int, claim_id: UUID) -> SessionIssued:
+    def _issue_session(self, *, uid: int, claim: MinerTaskClaim) -> SessionIssued:
         issued_at = self._clock()
         expires_at = issued_at + self._config.session_ttl
         token = secrets.token_urlsafe(self._config.token_secret_bytes)
         request = SessionTokenRequest(
             session_id=uuid4(),
             uid=uid,
-            claim_id=claim_id,
+            claim_id=claim.claim_id,
             issued_at=issued_at,
             expires_at=expires_at,
+            budget_usd=claim.budget_usd,
             token=token,
         )
         return self._sessions.issue(request)

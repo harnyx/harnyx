@@ -137,6 +137,7 @@ def _make_task_result(*, batch_id: UUID) -> MinerTaskResult:
         claim_id=claim.claim_id,
         issued_at=issued_at,
         expires_at=issued_at + timedelta(minutes=5),
+        budget_usd=0.1,
         usage=SessionUsage(total_cost_usd=0.025),
     )
 
@@ -178,4 +179,3 @@ def test_progress_endpoint_includes_total_tool_usage() -> None:
 
     llm = tool_usage["llm"]
     assert llm["providers"]["openai"]["openai/gpt-oss-20b"]["cost"] == pytest.approx(0.02)
-

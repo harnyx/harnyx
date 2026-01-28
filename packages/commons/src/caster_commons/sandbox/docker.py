@@ -18,8 +18,8 @@ import httpx
 
 from caster_commons.json_types import JsonValue
 from caster_commons.sandbox.client import SandboxClient
-from caster_commons.sandbox.manager import SandboxDeployment, SandboxManager, default_token_header
-from caster_commons.sandbox.options import SandboxOptions
+from caster_commons.sandbox.manager import SandboxDeployment, SandboxManager
+from caster_commons.sandbox.options import DEFAULT_TOKEN_HEADER, SandboxOptions
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +31,10 @@ class HttpSandboxClient(SandboxClient):
         self,
         base_url: str,
         *,
-        token_header: str | None = None,
-        timeout: float = 45.0,
+        timeout: float = 130.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        self._token_header = token_header or default_token_header()
+        self._token_header = DEFAULT_TOKEN_HEADER
         self._owns_client = client is None
         self._client: httpx.AsyncClient = client or httpx.AsyncClient(
             base_url=base_url,
@@ -134,19 +133,14 @@ class DockerSandboxManager(SandboxManager):
         docker_binary: str = "docker",
         host: str = "127.0.0.1",
         command_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
-        client_factory: Callable[[str, str], SandboxClient] | None = None,
+        client_factory: Callable[[str], SandboxClient] | None = None,
         log_consumer: Callable[[str], None] | None = None,
         log_runner: Callable[..., subprocess.Popen[str]] | None = None,
     ) -> None:
         self._docker = docker_binary
         self._host = host
         self._run = command_runner or self._default_run
-        self._client_factory = client_factory or (
-            lambda base_url, token_header: HttpSandboxClient(
-                base_url,
-                token_header=token_header,
-            )
-        )
+        self._client_factory = client_factory or (lambda base_url: HttpSandboxClient(base_url))
         self._log_consumer = log_consumer
         self._popen: Callable[..., subprocess.Popen[str]] | None = (
             log_runner or self._default_popen
@@ -332,7 +326,7 @@ class DockerSandboxManager(SandboxManager):
             published_port = options.container_port
 
         base_url = f"http://{base_host}:{published_port}"
-        client = self._client_factory(base_url, options.token_header)
+        client = self._client_factory(base_url)
         return base_url, client
 
     def _resolve_published_port(self, options: SandboxOptions) -> int:

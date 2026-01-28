@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import re
+from uuid import uuid4
 
 import bittensor as bt
 import httpx
+import pytest
 
 from caster_commons.bittensor import build_canonical_request
 from caster_validator.infrastructure.tools.platform_client import HttpPlatformClient
@@ -55,3 +57,69 @@ def test_get_champion_weights_returns_weights() -> None:
 
     assert weights.weights == {42: 0.7, 7: 0.3}
     assert weights.final_top == (42, 7, None)
+
+
+def test_get_miner_task_batch_parses_claim_budget_usd() -> None:
+    batch_id = uuid4()
+    claim_id = uuid4()
+    artifact_id = uuid4()
+    budget_usd = 0.123
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        _assert_signed(request, keypair)
+        expected_path = f"/v1/miner-task-batches/batch/{batch_id}"
+        if request.method == "GET" and request.url.path == expected_path:
+            payload = {
+                "batch_id": str(batch_id),
+                "entrypoint": "evaluate_criterion",
+                "cutoff_at": "2025-10-17T12:00:00Z",
+                "created_at": "2025-10-17T12:00:00Z",
+                "claims": [
+                    {
+                        "claim_id": str(claim_id),
+                        "text": "smoke",
+                        "rubric": {
+                            "title": "Accuracy",
+                            "description": "desc",
+                            "verdict_options": {
+                                "options": [
+                                    {"value": -1, "description": "Fail"},
+                                    {"value": 1, "description": "Pass"},
+                                ]
+                            },
+                        },
+                        "reference_answer": {
+                            "verdict": 1,
+                            "justification": "ok",
+                            "citations": [],
+                        },
+                        "budget_usd": budget_usd,
+                    },
+                ],
+                "candidates": [
+                    {
+                        "uid": 7,
+                        "artifact_id": str(artifact_id),
+                        "content_hash": "abc",
+                        "size_bytes": 1,
+                    }
+                ],
+                "champion_uid": 7,
+                "status": "created",
+                "status_message": None,
+            }
+            return httpx.Response(status_code=200, json=payload)
+        return httpx.Response(status_code=404)
+
+    keypair = _keypair()
+    client = HttpPlatformClient(
+        base_url="https://mock.local",
+        hotkey=keypair,
+        transport=httpx.MockTransport(handler),
+    )
+
+    batch = client.get_miner_task_batch(batch_id)
+
+    assert batch.batch_id == batch_id
+    assert batch.claims[0].claim_id == claim_id
+    assert batch.claims[0].budget_usd == pytest.approx(budget_usd)
