@@ -19,7 +19,11 @@ import httpx
 from caster_commons.json_types import JsonValue
 from caster_commons.sandbox.client import SandboxClient
 from caster_commons.sandbox.manager import SandboxDeployment, SandboxManager
-from caster_commons.sandbox.options import DEFAULT_TOKEN_HEADER, SandboxOptions
+from caster_commons.sandbox.options import SandboxOptions, default_token_header
+from caster_miner_sdk.sandbox_headers import (
+    SANDBOX_HOST_CONTAINER_URL_HEADER,
+    SANDBOX_SESSION_ID_HEADER,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,10 +35,13 @@ class HttpSandboxClient(SandboxClient):
         self,
         base_url: str,
         *,
-        timeout: float = 130.0,
+        token_header: str | None = None,
+        host_container_url: str | None = None,
+        timeout: float = 45.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        self._token_header = DEFAULT_TOKEN_HEADER
+        self._token_header = token_header or default_token_header()
+        self._host_container_url = host_container_url
         self._owns_client = client is None
         self._client: httpx.AsyncClient = client or httpx.AsyncClient(
             base_url=base_url,
@@ -59,7 +66,8 @@ class HttpSandboxClient(SandboxClient):
                 },
                 headers={
                     self._token_header: token,
-                    "x-caster-session-id": str(session_id),
+                    SANDBOX_SESSION_ID_HEADER: str(session_id),
+                    SANDBOX_HOST_CONTAINER_URL_HEADER: self._host_container_url or "",
                 },
             )
             response.raise_for_status()
@@ -77,17 +85,16 @@ class HttpSandboxClient(SandboxClient):
             raise RuntimeError(
                 f"sandbox entrypoint request timed out: entrypoint={entrypoint} session_id={session_id}",
             ) from exc
-        except httpx.RequestError as exc:
+        except httpx.RequestError as exc:  # pragma: no cover - network errors
             logger.error(
                 "sandbox entrypoint request failed: entrypoint=%s session_id=%s error=%s",
                 entrypoint,
                 session_id,
-                exc,
+                str(exc),
                 exc_info=exc,
                 extra={
                     "entrypoint": entrypoint,
                     "session_id": str(session_id),
-                    "error": str(exc),
                 },
             )
             raise RuntimeError(
@@ -163,14 +170,20 @@ class DockerSandboxManager(SandboxManager):
         docker_binary: str = "docker",
         host: str = "127.0.0.1",
         command_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
-        client_factory: Callable[[str], SandboxClient] | None = None,
+        client_factory: Callable[[str, str, str | None], SandboxClient] | None = None,
         log_consumer: Callable[[str], None] | None = None,
         log_runner: Callable[..., subprocess.Popen[str]] | None = None,
     ) -> None:
         self._docker = docker_binary
         self._host = host
         self._run = command_runner or self._default_run
-        self._client_factory = client_factory or (lambda base_url: HttpSandboxClient(base_url))
+        self._client_factory = client_factory or (
+            lambda base_url, token_header, host_container_url: HttpSandboxClient(
+                base_url,
+                token_header=token_header,
+                host_container_url=host_container_url,
+            )
+        )
         self._log_consumer = log_consumer
         self._popen: Callable[..., subprocess.Popen[str]] | None = (
             log_runner or self._default_popen
@@ -206,6 +219,8 @@ class DockerSandboxManager(SandboxManager):
     def _validate_options(options: SandboxOptions) -> None:
         if options.host_port is None and not options.network:
             raise ValueError("sandbox network must be provided when host_port is not published")
+        if not options.host_container_url:
+            raise ValueError("sandbox host_container_url must be configured for tool routing")
 
     def _build_run_args(self, options: SandboxOptions) -> list[str]:
         args = self._base_args(options)
@@ -356,7 +371,7 @@ class DockerSandboxManager(SandboxManager):
             published_port = options.container_port
 
         base_url = f"http://{base_host}:{published_port}"
-        client = self._client_factory(base_url)
+        client = self._client_factory(base_url, options.token_header, options.host_container_url)
         return base_url, client
 
     def _resolve_published_port(self, options: SandboxOptions) -> int:

@@ -1,4 +1,4 @@
-"""Sandbox configuration and factory for validator runtime."""
+"""Shared sandbox manager + hardened default options for services."""
 
 from __future__ import annotations
 
@@ -6,10 +6,13 @@ import logging
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 
-from caster_commons.sandbox.docker import DockerSandboxManager
-from caster_commons.sandbox.options import SandboxOptions
-from caster_validator.runtime.seccomp.paths import default_profile_path
+from caster_commons.sandbox.docker import DockerSandboxManager, resolve_sandbox_host_container_url
+from caster_commons.sandbox.options import SandboxOptions, default_token_header
+from caster_commons.sandbox.seccomp.paths import default_profile_path
+
+DOCKER_BINARY: Final[str] = "/usr/bin/docker"
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +28,7 @@ class ContainerSecurity:
     @property
     def extra_args(self) -> tuple[str, ...]:
         """Docker run arguments for security hardening."""
+
         tmpfs = f"{Path(tempfile.gettempdir())}:rw,noexec,nosuid,nodev,size=64m"
         return (
             "--read-only",
@@ -43,15 +47,15 @@ class ContainerSecurity:
         )
 
 
-# Default security profile for validator sandboxes
-CONTAINER_SECURITY = ContainerSecurity()
+CONTAINER_SECURITY: Final[ContainerSecurity] = ContainerSecurity()
 
 
-def create_sandbox_manager() -> DockerSandboxManager:
-    """Create the Docker sandbox manager with standard configuration."""
-    sandbox_log = logging.getLogger("caster_validator.sandbox")
+def create_sandbox_manager(*, logger_name: str) -> DockerSandboxManager:
+    """Create a Docker sandbox manager with standard configuration."""
+
+    sandbox_log = logging.getLogger(logger_name)
     return DockerSandboxManager(
-        docker_binary="/usr/bin/docker",
+        docker_binary=DOCKER_BINARY,
         host="host.docker.internal",
         log_consumer=lambda line: sandbox_log.info("%s", line),
     )
@@ -62,22 +66,28 @@ def build_sandbox_options(
     image: str,
     network: str | None,
     pull_policy: str,
-    host_container_url: str,
-    container_name: str = "caster-sandbox-smoke",
+    rpc_port: int,
+    container_name: str,
+    container_port: int = 8000,
+    volumes: tuple[tuple[str, str, str | None], ...] = (),
+    extra_env: dict[str, str] | None = None,
 ) -> SandboxOptions:
-    """Build sandbox options for a validator evaluation run.
+    """Build hardened sandbox options shared by platform and validator."""
 
-    Args:
-        image: Docker image to use for the sandbox.
-        network: Docker network to attach the container to.
-        pull_policy: Image pull policy ("always", "missing", "never").
-        host_container_url: Base URL for the host container (scheme + host + port; no `/v1`).
-        container_name: Name for the container.
+    token_header = default_token_header()
+    host_container_url = resolve_sandbox_host_container_url(
+        docker_binary=DOCKER_BINARY,
+        sandbox_network=network,
+        rpc_port=rpc_port,
+    )
 
-    Returns:
-        Configured SandboxOptions instance.
-    """
-    container_port = 8000
+    env: dict[str, str] = {
+        "SANDBOX_HOST": "0.0.0.0",  # noqa: S104
+        "SANDBOX_PORT": str(container_port),
+        "CASTER_TOKEN_HEADER": token_header,
+    }
+    if extra_env:
+        env.update(extra_env)
 
     return SandboxOptions(
         image=image,
@@ -85,17 +95,18 @@ def build_sandbox_options(
         pull_policy=pull_policy,
         host_port=None if network else 0,
         container_port=container_port,
-        env={
-            "SANDBOX_HOST": "0.0.0.0",  # noqa: S104
-            "SANDBOX_PORT": str(container_port),
-            "CASTER_HOST_CONTAINER_URL": host_container_url,
-        },
+        env=env,
         entrypoint=None,
         command=None,
         network=network,
+        token_header=token_header,
+        host_container_url=host_container_url,
+        volumes=volumes,
         extra_hosts=(("host.docker.internal", "host-gateway"),),
         startup_delay_seconds=2.0,
         wait_for_healthz=True,
+        healthz_path="/healthz",
+        healthz_timeout=15.0,
         stop_timeout_seconds=5,
         user=CONTAINER_SECURITY.user,
         seccomp_profile=default_profile_path(),
@@ -107,6 +118,7 @@ def build_sandbox_options(
 __all__ = [
     "CONTAINER_SECURITY",
     "ContainerSecurity",
+    "DOCKER_BINARY",
     "build_sandbox_options",
     "create_sandbox_manager",
 ]

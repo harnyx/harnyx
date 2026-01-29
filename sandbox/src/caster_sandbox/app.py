@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import importlib
 import logging
 import os
 import runpy
@@ -13,26 +12,33 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from caster_miner_sdk.sandbox_headers import (
+    SANDBOX_HOST_CONTAINER_URL_HEADER,
+    SANDBOX_SESSION_ID_HEADER,
+)
 from caster_sandbox.sandbox.harness import SandboxHarness
 from caster_sandbox.tools.proxy import ToolProxy
 
 logger = logging.getLogger("caster_sandbox")
 
-TOKEN_HEADER = "x-caster-token"  # noqa: S105
+
+def _token_header() -> str:
+    raw = (os.getenv("CASTER_TOKEN_HEADER") or "").strip()
+    return raw or "x-caster-token"
 
 
 def _tool_factory(config: Mapping[str, object] | None, headers: Mapping[str, str]) -> ToolProxy | None:
     if config:
-        raise ValueError("tool proxy config is not supported; use CASTER_HOST_CONTAINER_URL and request headers")
+        raise ValueError("tool proxy config is not supported; use request headers")
 
-    base_url = (os.getenv("CASTER_HOST_CONTAINER_URL") or "").strip()
-    token_header = TOKEN_HEADER
+    base_url = (headers.get(SANDBOX_HOST_CONTAINER_URL_HEADER) or "").strip()
+    token_header = _token_header()
     token = (headers.get(token_header) or "").strip()
-    session_id = headers.get("x-caster-session-id")
+    session_id = (headers.get(SANDBOX_SESSION_ID_HEADER) or "").strip()
     if not session_id:
-        raise RuntimeError("sandbox request missing x-caster-session-id")
+        raise RuntimeError(f"sandbox request missing {SANDBOX_SESSION_ID_HEADER}")
     if not base_url:
-        raise RuntimeError("CASTER_HOST_CONTAINER_URL must be set inside the sandbox to enable tools")
+        raise RuntimeError(f"sandbox request missing {SANDBOX_HOST_CONTAINER_URL_HEADER} required to enable tools")
     if not token:
         raise RuntimeError(f"sandbox request missing {token_header} header required to enable tools")
     return ToolProxy(
@@ -54,6 +60,8 @@ def _load_agent_from_env() -> None:
 
     agent_path = os.getenv("CASTER_AGENT_PATH")
     agent_module = os.getenv("CASTER_AGENT_MODULE")
+    if agent_module:
+        raise RuntimeError("CASTER_AGENT_MODULE is not supported; use CASTER_AGENT_PATH")
 
     try:
         if agent_path:
@@ -64,10 +72,6 @@ def _load_agent_from_env() -> None:
                 runpy.run_path(str(path))
                 logger.info("loaded agent from path %s", path)
                 _agent_loaded = True
-        elif agent_module:
-            importlib.import_module(agent_module)
-            logger.info("loaded agent module %s", agent_module)
-            _agent_loaded = True
     except Exception as exc:  # pragma: no cover - defensive logging for sandbox startup
         logger.exception("failed to load agent", exc_info=exc)
         raise

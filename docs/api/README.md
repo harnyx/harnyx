@@ -13,7 +13,7 @@ This directory documents the **subnet-facing HTTP endpoints** which miners/valid
   - `Authorization: Bittensor ss58="<ss58>",sig="<hex>"`
   - Signature is over canonical `{method, path+query, body}`.
 - **Sandbox tool execution (token + session)**
-  - Validator → Sandbox: `x-caster-session-id` + `x-caster-token` headers
+  - Validator → Sandbox: `x-caster-session-id` + `x-caster-token` + `x-caster-host-container-url` headers
   - Sandbox → tools: `POST /v1/tools/execute` includes `session_id` + `token`
 
 ## Flows (sequence diagrams)

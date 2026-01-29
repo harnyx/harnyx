@@ -6,22 +6,28 @@ import os
 import shutil
 import socket
 import subprocess
+import tempfile
 import uuid
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from caster_commons.sandbox.docker import DockerSandboxManager, SandboxOptions
+from caster_commons.sandbox.agent_staging import stage_agent_source
+from caster_commons.sandbox.docker import (
+    DockerSandboxManager,
+    SandboxOptions,
+    resolve_sandbox_host_container_url,
+)
 from caster_commons.sandbox.manager import SandboxDeployment
+from caster_commons.sandbox.options import default_token_header
+from caster_commons.sandbox.runtime import CONTAINER_SECURITY
+from caster_commons.sandbox.seccomp.paths import default_profile_path
+from caster_commons.sandbox.state import DEFAULT_STATE_DIR
 
 _DOCKER_CLI = os.getenv("DOCKER_CLI", "docker")
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _DEFAULT_IMAGE = os.getenv("CASTER_SANDBOX_IMAGE", "local/caster-sandbox:0.1.0-dev")
-_DEFAULT_HOST_CONTAINER_URL = os.getenv(
-    "CASTER_HOST_CONTAINER_URL",
-    "http://host.docker.internal:8100",
-)
 
 
 def _docker_binary() -> str:
@@ -71,10 +77,30 @@ def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
     image = _DEFAULT_IMAGE
     _ensure_image_present(docker_bin, image)
 
+    sandbox_network = "bridge"
+    token_header = default_token_header()
+    host_container_url = resolve_sandbox_host_container_url(
+        docker_binary=docker_bin,
+        sandbox_network=sandbox_network,
+        rpc_port=1,
+    )
+
     manager = DockerSandboxManager(docker_binary=docker_bin, host="127.0.0.1")
     deployments = []
+    state_dir = Path(tempfile.mkdtemp(prefix="caster-commons-int-state-"))
 
     def _start(agent_module: str):
+        module_rel_path = Path(*agent_module.split(".")).with_suffix(".py")
+        module_path = _REPO_ROOT / module_rel_path
+        if not module_path.exists():
+            raise RuntimeError(f"agent module file not found: module={agent_module} path={module_path}")
+        artifact = stage_agent_source(
+            state_dir=state_dir,
+            container_root=DEFAULT_STATE_DIR,
+            namespace="integration_agents",
+            key=agent_module.replace(".", "_"),
+            data=module_path.read_bytes(),
+        )
         port = _find_free_port()
         options = SandboxOptions(
             image=image,
@@ -85,14 +111,19 @@ def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
             env={
                 "SANDBOX_HOST": "0.0.0.0",  # noqa: S104 - inside container
                 "SANDBOX_PORT": "8000",
-                "CASTER_HOST_CONTAINER_URL": _DEFAULT_HOST_CONTAINER_URL,
-                "CASTER_AGENT_MODULE": agent_module,
-                "PYTHONPATH": "/workspace",
+                "CASTER_TOKEN_HEADER": token_header,
+                "CASTER_AGENT_PATH": artifact.container_path,
             },
-            volumes=((str(_REPO_ROOT), "/workspace", "ro"),),
-            extra_hosts=(("host.docker.internal", "host-gateway"),),
+            volumes=((str(state_dir), DEFAULT_STATE_DIR, "ro"),),
             wait_for_healthz=True,
             healthz_timeout=30.0,
+            network=sandbox_network,
+            token_header=token_header,
+            host_container_url=host_container_url,
+            user=CONTAINER_SECURITY.user,
+            seccomp_profile=default_profile_path(),
+            ulimits=CONTAINER_SECURITY.ulimits,
+            extra_args=CONTAINER_SECURITY.extra_args,
         )
         deployment = manager.start(options)
         deployments.append(deployment)
@@ -102,3 +133,5 @@ def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
 
     for deployment in deployments:
         manager.stop(deployment)
+
+    shutil.rmtree(state_dir, ignore_errors=True)

@@ -18,8 +18,9 @@ from caster_commons.infrastructure.state.session_registry import InMemorySession
 from caster_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from caster_commons.llm.grading import JustificationGrader, JustificationGraderConfig
 from caster_commons.llm.provider import LlmProviderPort
-from caster_commons.sandbox.docker import DockerSandboxManager, resolve_sandbox_host_container_url
+from caster_commons.sandbox.docker import DockerSandboxManager
 from caster_commons.sandbox.options import SandboxOptions
+from caster_commons.sandbox.runtime import build_sandbox_options, create_sandbox_manager
 from caster_commons.tools.desearch import DeSearchClient
 from caster_commons.tools.executor import ToolExecutor
 from caster_commons.tools.runtime_invoker import ALLOWED_TOOL_MODELS, RuntimeToolInvoker
@@ -47,7 +48,6 @@ from caster_validator.infrastructure.subtensor.client import RuntimeSubtensorCli
 from caster_validator.infrastructure.subtensor.hotkey import create_wallet
 from caster_validator.infrastructure.tools.platform_client import HttpPlatformClient
 from caster_validator.runtime.llm_factory import create_llm_provider_factory
-from caster_validator.runtime.sandbox import build_sandbox_options, create_sandbox_manager
 from caster_validator.runtime.settings import Settings
 
 logger = logging.getLogger("caster_validator.runtime")
@@ -58,6 +58,7 @@ class RuntimeContext:
     """Aggregated runtime components for the validator service."""
 
     settings: Settings
+    platform_hotkey: bt.Keypair
     sandbox_manager: DockerSandboxManager
     session_manager: SessionManager
     session_registry: InMemorySessionRegistry
@@ -84,6 +85,13 @@ class RuntimeContext:
     tool_route_deps_provider: Callable[[], ToolRouteDeps]
     control_deps_provider: Callable[[], ValidatorControlDeps]
 
+    def register_with_platform(self) -> None:
+        _register_with_platform(
+            self.settings,
+            self.platform_hotkey,
+            self.settings.platform_api.validator_public_base_url,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class InMemoryState:
@@ -105,7 +113,6 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
 
     state = _build_state()
     platform_client, platform_hotkey, subtensor_client = _build_external_clients(resolved)
-    _register_with_platform(resolved, platform_hotkey, resolved.platform_api.validator_public_base_url)
 
     search_client, tool_llm_provider, scoring_llm_provider = _build_llm_clients(resolved)
     tool_invoker, tool_executor = _build_tooling(
@@ -123,7 +130,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         platform_client=platform_client,
     )
 
-    sandbox_manager = create_sandbox_manager()
+    sandbox_manager = create_sandbox_manager(logger_name="caster_validator.sandbox")
     entrypoint_factory, orchestrator_factory, options_factory = _build_factories(
         resolved=resolved,
         state=state,
@@ -137,6 +144,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
 
     return RuntimeContext(
         settings=resolved,
+        platform_hotkey=platform_hotkey,
         sandbox_manager=sandbox_manager,
         session_manager=state.session_manager,
         session_registry=state.session_registry,
@@ -407,11 +415,8 @@ def _make_options_factory(resolved: Settings) -> Callable[[], SandboxOptions]:
             image=resolved.sandbox.sandbox_image,
             network=resolved.sandbox.sandbox_network,
             pull_policy=resolved.sandbox.sandbox_pull_policy,
-            host_container_url=resolve_sandbox_host_container_url(
-                docker_binary="/usr/bin/docker",
-                sandbox_network=resolved.sandbox.sandbox_network,
-                rpc_port=resolved.rpc_port,
-            ),
+            rpc_port=resolved.rpc_port,
+            container_name="caster-sandbox-smoke",
         )
 
     return factory

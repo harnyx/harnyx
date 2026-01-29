@@ -106,7 +106,7 @@ sequenceDiagram
   participant S as Sandbox
   participant VA as Validator API (tools)
 
-  Note over V,S: Headers: x-caster-session-id + x-caster-token
+  Note over V,S: Headers: x-caster-session-id + x-caster-token + x-caster-host-container-url
   V->>S: POST /entry/{entrypoint_name}<br/>{ payload, context }
 
   S->>VA: POST /v1/tools/execute<br/>ToolExecuteRequestDTO (0+ times)

@@ -31,6 +31,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/caster_commons"]
+include = ["src/caster_commons/sandbox/seccomp/*.json"]
 
 [tool.deptry.package_module_name_map]
 caster-miner-sdk = "caster_miner_sdk"

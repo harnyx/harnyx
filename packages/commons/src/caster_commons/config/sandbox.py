@@ -29,7 +29,6 @@ class SandboxSettings(BaseSettings):
     sandbox_pull_policy: SandboxPullPolicy = Field(
         default="always", alias="CASTER_SANDBOX_PULL_POLICY"
     )
-    sandbox_tool_base_url: str = Field(default="", alias="PLATFORM_SANDBOX_BASE_URL")
 
 
 __all__ = ["SandboxSettings", "SandboxPullPolicy"]

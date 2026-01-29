@@ -5,7 +5,6 @@ import re
 import shutil
 import socket
 import subprocess
-import tempfile
 import uuid
 from pathlib import Path
 
@@ -14,17 +13,15 @@ import pytest
 from caster_commons.sandbox.docker import (
     DockerSandboxManager,
     SandboxOptions,
+    resolve_sandbox_host_container_url,
 )
-from caster_commons.sandbox.options import DEFAULT_TOKEN_HEADER
+from caster_commons.sandbox.runtime import CONTAINER_SECURITY
+from caster_commons.sandbox.seccomp.paths import default_profile_path
 
 DOCKER_CLI = os.getenv("DOCKER_CLI", "docker")
 DOCKER_BINARY = shutil.which(DOCKER_CLI) or DOCKER_CLI
 DOCKER_IMAGE_PATTERN = re.compile(r"^[\w./:-]+$")
-DEFAULT_HOST_CONTAINER_URL = os.getenv(
-    "CASTER_HOST_CONTAINER_URL",
-    "http://host.docker.internal:8100",
-)
-SANDBOX_TMPFS_ARG = f"{Path(tempfile.gettempdir())}:rw,noexec,nosuid,nodev,size=64m"
+DEFAULT_TOKEN_HEADER = os.getenv("CASTER_TOKEN_HEADER", "x-caster-token")
 
 
 @pytest.fixture(scope="session")
@@ -74,8 +71,15 @@ def sandbox(attacker_agent_path: Path):
     image = os.getenv("CASTER_SANDBOX_IMAGE", "local/caster-sandbox:0.1.0-dev")
     _require_image(image)
 
+    sandbox_network = "bridge"
+    host_container_url = resolve_sandbox_host_container_url(
+        docker_binary=DOCKER_BINARY,
+        sandbox_network=sandbox_network,
+        rpc_port=1,
+    )
+
     port = _find_free_port()
-    manager = DockerSandboxManager(host="127.0.0.1")
+    manager = DockerSandboxManager(docker_binary=DOCKER_BINARY, host="127.0.0.1")
     options = SandboxOptions(
         image=image,
         container_name=f"security-{uuid.uuid4().hex[:8]}",
@@ -87,26 +91,16 @@ def sandbox(attacker_agent_path: Path):
             "SANDBOX_PORT": "8000",
             "CASTER_TOKEN_HEADER": DEFAULT_TOKEN_HEADER,
             "CASTER_AGENT_PATH": "/sandbox/agent.py",
-            "CASTER_HOST_CONTAINER_URL": DEFAULT_HOST_CONTAINER_URL,
         },
         volumes=((str(attacker_agent_path), "/sandbox/agent.py", "ro"),),
         wait_for_healthz=True,
-        extra_hosts=(("host.docker.internal", "host-gateway"),),
-        extra_args=(
-            "--read-only",
-            "--cap-drop",
-            "ALL",
-            "--security-opt",
-            "no-new-privileges",
-            "--pids-limit",
-            "128",
-            "--memory",
-            "1g",
-            "--cpus",
-            "1",
-            "--tmpfs",
-            SANDBOX_TMPFS_ARG,
-        ),
+        token_header=DEFAULT_TOKEN_HEADER,
+        host_container_url=host_container_url,
+        network=sandbox_network,
+        user=CONTAINER_SECURITY.user,
+        seccomp_profile=default_profile_path(),
+        ulimits=CONTAINER_SECURITY.ulimits,
+        extra_args=CONTAINER_SECURITY.extra_args,
     )
     deployment = manager.start(options)
     try:

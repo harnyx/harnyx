@@ -5,27 +5,14 @@ from __future__ import annotations
 import hashlib
 import logging
 from collections.abc import Callable
-from contextlib import suppress
-from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from uuid import UUID
 
+from caster_commons.sandbox.agent_staging import MAX_AGENT_BYTES, AgentArtifact, stage_agent_source
 from caster_validator.application.dto.evaluation import MinerTaskBatchSpec, ScriptArtifactSpec
 from caster_validator.application.ports.platform import PlatformPort
 
 logger = logging.getLogger("caster_validator.agent_artifact")
-
-MAX_AGENT_BYTES = 256_000
-_LOG_SNIPPET_LIMIT = 512
-
-
-@dataclass(frozen=True, slots=True)
-class AgentArtifact:
-    """Represents a resolved agent script artifact."""
-
-    content_hash: str
-    host_path: Path
-    container_path: str
 
 
 def resolve_platform_agent_specs(
@@ -38,8 +25,6 @@ def resolve_platform_agent_specs(
 ) -> dict[UUID, AgentArtifact]:
     """Resolve agent artifacts from platform-provided specs."""
 
-    cache_root = state_dir / "platform_agents"
-    cache_root.mkdir(parents=True, exist_ok=True)
     specs: dict[UUID, AgentArtifact] = {}
     artifact_ids = [candidate.artifact_id for candidate in candidates]
     if len(set(artifact_ids)) != len(artifact_ids):
@@ -80,7 +65,6 @@ def resolve_platform_agent_specs(
             )
             continue
         artifact = _stage_platform_agent(
-            cache_root=cache_root,
             content_hash=content_hash,
             data=data,
             state_dir=state_dir,
@@ -102,58 +86,25 @@ def resolve_platform_agent_specs(
 
 def _stage_platform_agent(
     *,
-    cache_root: Path,
     content_hash: str,
     data: bytes,
     state_dir: Path,
     container_root: str,
 ) -> AgentArtifact:
-    agent_dir = cache_root / content_hash
-    agent_path = agent_dir / "agent.py"
-    if agent_path.exists():
-        container_path = _container_path_for(
-            staged_path=agent_path,
-            state_dir=state_dir,
-            container_root=container_root,
-        )
-        return AgentArtifact(content_hash=content_hash, host_path=agent_path, container_path=container_path)
-
-    agent_dir.mkdir(parents=True, exist_ok=True)
-    temp_path = agent_dir / "agent.py.tmp"
-    temp_path.write_bytes(data)
-    try:
-        _validate_agent_source(temp_path)
-        temp_path.replace(agent_path)
-    except Exception:
-        with suppress(FileNotFoundError):
-            temp_path.unlink()
-        raise
-    (agent_dir / "agent.sha256").write_text(content_hash, encoding="utf-8")
-    container_path = _container_path_for(
-        staged_path=agent_path,
+    artifact = stage_agent_source(
         state_dir=state_dir,
         container_root=container_root,
+        namespace="platform_agents",
+        key=content_hash,
+        data=data,
+        max_bytes=MAX_AGENT_BYTES,
     )
-    return AgentArtifact(content_hash=content_hash, host_path=agent_path, container_path=container_path)
-
-
-def _container_path_for(*, staged_path: Path, state_dir: Path, container_root: str) -> str:
-    rel = staged_path.relative_to(state_dir)
-    rel_path = PurePosixPath("/".join(rel.parts))
-    root = PurePosixPath(container_root or "/")
-    combined = root / rel_path
-    return combined.as_posix()
-
-
-def _validate_agent_source(path: Path) -> None:
-    try:
-        source = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError as exc:
-        raise ValueError("platform agent must be UTF-8 encoded") from exc
-    try:
-        compile(source, str(path), "exec")
-    except SyntaxError as exc:
-        raise ValueError("platform agent failed bytecode compilation") from exc
+    if artifact.content_hash != content_hash:
+        raise RuntimeError(
+            "platform agent sha256 mismatch after staging "
+            f"(expected={content_hash} actual={artifact.content_hash})"
+        )
+    return artifact
 
 
 def create_platform_agent_resolver(

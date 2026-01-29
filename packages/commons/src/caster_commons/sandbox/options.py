@@ -7,6 +7,11 @@ from dataclasses import dataclass, field
 
 DEFAULT_TOKEN_HEADER = "x-caster-token"  # noqa: S105
 
+
+def default_token_header() -> str:
+    return DEFAULT_TOKEN_HEADER
+
+
 @dataclass(frozen=True)
 class SandboxOptions:
     """Configuration for launching a sandbox container."""
@@ -20,6 +25,8 @@ class SandboxOptions:
     entrypoint: str | None = None
     command: Sequence[str] | None = None
     network: str | None = None
+    token_header: str = field(default_factory=default_token_header)
+    host_container_url: str | None = None
     volumes: Sequence[tuple[str, str, str | None]] = field(default_factory=tuple)
     working_dir: str | None = None
     extra_hosts: Sequence[tuple[str, str]] = field(default_factory=tuple)
@@ -34,4 +41,4 @@ class SandboxOptions:
     ulimits: Sequence[str] = field(default_factory=tuple)
 
 
-__all__ = ["SandboxOptions", "DEFAULT_TOKEN_HEADER"]
+__all__ = ["SandboxOptions", "DEFAULT_TOKEN_HEADER", "default_token_header"]

@@ -61,9 +61,21 @@ def test_runtime_client_live_commitment_and_weights() -> None:
         pytest.fail("no miner UID available on this subnet to set weight for")
 
     # Submit weight and verify via adapter
-    client.submit_weights({target_uid: 1.0})
-
     deadline = time.time() + 300
+    last_submit_error: Exception | None = None
+    while time.time() < deadline:
+        try:
+            client.submit_weights({target_uid: 1.0})
+            last_submit_error = None
+            break
+        except RuntimeError as exc:
+            last_submit_error = exc
+            if "too soon to commit weights" not in str(exc):
+                raise
+            time.sleep(10)
+    if last_submit_error is not None:
+        raise last_submit_error
+
     observed = baseline_value
     while time.time() < deadline:
         time.sleep(5)

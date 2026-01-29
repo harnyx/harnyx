@@ -87,3 +87,36 @@ def test_inbound_verifier_rejects_non_owner_hotkey(monkeypatch) -> None:
     )
     with pytest.raises(VerificationError, match="subnet owner coldkey"):
         verifier.verify(method="GET", path_qs="/v1/test", body=b"", authorization_header=header)
+
+
+def test_inbound_verifier_caches_hotkey_owner_lookup(monkeypatch) -> None:
+    keypair = bt.Keypair.create_from_mnemonic(bt.Keypair.generate_mnemonic())
+    canonical = build_canonical_request("GET", "/v1/test", b"")
+    signature = keypair.sign(canonical)
+    header = f'Bittensor ss58="{keypair.ss58_address}",sig="{signature.hex()}"'
+
+    calls: dict[str, int] = {"count": 0}
+
+    class FakeSubtensor:
+        def __init__(self, *, network: str) -> None:
+            self.network = network
+
+        def get_hotkey_owner(self, hotkey_ss58: str):
+            calls["count"] += 1
+            return "5OwnerColdkey"
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(sr25519.bt, "Subtensor", FakeSubtensor)
+
+    verifier = BittensorSr25519InboundVerifier(
+        netuid=2,
+        network="ws://127.0.0.1:9945",
+        owner_coldkey_ss58="5OwnerColdkey",
+        owner_cache_ttl_seconds=9999.0,
+    )
+    verifier.verify(method="GET", path_qs="/v1/test", body=b"", authorization_header=header)
+    verifier.verify(method="GET", path_qs="/v1/test", body=b"", authorization_header=header)
+
+    assert calls["count"] == 1

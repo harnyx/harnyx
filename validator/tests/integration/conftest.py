@@ -6,17 +6,21 @@ import os
 import shutil
 import socket
 import subprocess
+import tempfile
 import uuid
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
+from caster_commons.sandbox.agent_staging import stage_agent_source
 from caster_commons.sandbox.docker import (
     DockerSandboxManager,
     SandboxOptions,
+    resolve_sandbox_host_container_url,
 )
 from caster_commons.sandbox.manager import SandboxDeployment
+from caster_commons.sandbox.state import DEFAULT_STATE_DIR
 
 _DOCKER_CLI = os.getenv("DOCKER_CLI", "docker")
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -72,9 +76,26 @@ def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
 
     manager = DockerSandboxManager(docker_binary=docker_bin, host="127.0.0.1")
     deployments = []
+    state_dir = Path(tempfile.mkdtemp(prefix="caster-validator-int-state-"))
 
     def _start(agent_module: str):
+        module_rel_path = Path(*agent_module.split(".")).with_suffix(".py")
+        module_path = _REPO_ROOT / module_rel_path
+        if not module_path.exists():
+            raise RuntimeError(f"agent module file not found: module={agent_module} path={module_path}")
+        artifact = stage_agent_source(
+            state_dir=state_dir,
+            container_root=DEFAULT_STATE_DIR,
+            namespace="integration_agents",
+            key=agent_module.replace(".", "_"),
+            data=module_path.read_bytes(),
+        )
         port = _find_free_port()
+        host_container_url = resolve_sandbox_host_container_url(
+            docker_binary=docker_bin,
+            sandbox_network="bridge",
+            rpc_port=1,
+        )
         options = SandboxOptions(
             image=image,
             container_name=f"validator-int-{uuid.uuid4().hex[:8]}",
@@ -84,12 +105,12 @@ def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
             env={
                 "SANDBOX_HOST": "0.0.0.0",  # noqa: S104 - container binding
                 "SANDBOX_PORT": "8000",
-                "CASTER_AGENT_MODULE": agent_module,
-                "PYTHONPATH": "/workspace",
+                "CASTER_AGENT_PATH": artifact.container_path,
             },
-            volumes=((str(_REPO_ROOT), "/workspace", "ro"),),
+            volumes=((str(state_dir), DEFAULT_STATE_DIR, "ro"),),
             wait_for_healthz=True,
             healthz_timeout=30.0,
+            host_container_url=host_container_url,
         )
         deployment = manager.start(options)
         deployments.append(deployment)
@@ -99,3 +120,5 @@ def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
 
     for deployment in deployments:
         manager.stop(deployment)
+
+    shutil.rmtree(state_dir, ignore_errors=True)

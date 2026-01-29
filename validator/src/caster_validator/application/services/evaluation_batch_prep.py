@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -14,6 +13,7 @@ from caster_commons.application.session_manager import SessionManager
 from caster_commons.sandbox.client import SandboxClient
 from caster_commons.sandbox.docker import DockerSandboxManager
 from caster_commons.sandbox.options import SandboxOptions
+from caster_commons.sandbox.state import DEFAULT_STATE_DIR, resolve_state_mount_source
 from caster_validator.application.dto.evaluation import MinerTaskBatchSpec, ScriptArtifactSpec
 from caster_validator.application.evaluate_criterion import EvaluationOrchestrator
 from caster_validator.application.ports.evaluation_record import EvaluationRecordPort
@@ -27,7 +27,7 @@ from caster_validator.application.scheduler import EvaluationScheduler, Schedule
 class EvaluationBatchConfig:
     """Configuration for evaluation batch processing."""
 
-    state_dir: str = "/workspace/.caster_state"
+    state_dir: str = DEFAULT_STATE_DIR
     token_secret_bytes: int = 16
 
 SandboxOptionsFactory = Callable[[], SandboxOptions]
@@ -119,8 +119,7 @@ class BatchExecutionPlanner:
             run_ctx.state_dir,
             run_ctx.config.state_dir,
         )
-        state_volume_name = os.getenv("CASTER_STATE_VOLUME_NAME", "caster-validator-state")
-        volumes = run_ctx.base_volumes + ((state_volume_name, run_ctx.config.state_dir, "ro"),)
+        volumes = run_ctx.base_volumes + ((resolve_state_mount_source(), run_ctx.config.state_dir, "ro"),)
         selected_candidates = batch.candidates
         return agent_artifacts, volumes, selected_candidates
 

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 
 import bittensor as bt
 
@@ -20,6 +21,35 @@ class BittensorSr25519InboundVerifier:
     netuid: int
     network: str
     owner_coldkey_ss58: str
+    owner_cache_ttl_seconds: float = 300.0
+    _owner_cache: dict[str, tuple[float, str]] = field(default_factory=dict)
+
+    def _resolve_owner_coldkey(self, hotkey_ss58: str) -> str | None:
+        now = time.monotonic()
+        cached = self._owner_cache.get(hotkey_ss58)
+        if cached is not None:
+            expires_at, owner = cached
+            if now <= expires_at:
+                return owner
+            del self._owner_cache[hotkey_ss58]
+
+        subtensor = bt.Subtensor(network=self.network)
+        try:
+            owner = subtensor.get_hotkey_owner(hotkey_ss58)
+        finally:
+            try:
+                subtensor.close()
+            except Exception:  # pragma: no cover - best-effort cleanup
+                logger.debug("subtensor close failed during inbound auth check")
+
+        if owner is None:
+            return None
+
+        resolved = str(owner)
+        if len(self._owner_cache) >= 1024:
+            self._owner_cache.clear()
+        self._owner_cache[hotkey_ss58] = (now + self.owner_cache_ttl_seconds, resolved)
+        return resolved
 
     def verify(
         self,
@@ -37,18 +67,10 @@ class BittensorSr25519InboundVerifier:
             allowed_ss58=None,
             parse_header=parse_bittensor_header,
         )
-        subtensor = bt.Subtensor(network=self.network)
-        try:
-            owner = subtensor.get_hotkey_owner(parsed.ss58)
-        finally:
-            try:
-                subtensor.close()
-            except Exception:  # pragma: no cover - best-effort cleanup
-                logger.debug("subtensor close failed during inbound auth check")
-
-        if owner is None:
+        owner_coldkey = self._resolve_owner_coldkey(parsed.ss58)
+        if owner_coldkey is None:
             raise VerificationError("unknown_hotkey", "hotkey owner not found on chain")
-        if str(owner) != self.owner_coldkey_ss58:
+        if owner_coldkey != self.owner_coldkey_ss58:
             raise VerificationError("not_owner", "caller hotkey is not owned by subnet owner coldkey")
         return parsed.ss58
 

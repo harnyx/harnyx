@@ -11,10 +11,14 @@ from caster_commons.sandbox.docker import (
 )
 from caster_commons.sandbox.manager import SandboxDeployment
 
+_HOST_CONTAINER_URL = "http://127.0.0.1:1"
+
 
 @dataclass
 class DummyClient:
     base_url: str
+    token_header: str
+    host_container_url: str | None
     closed: bool = False
 
     def invoke(self, *args, **kwargs):  # pragma: no cover - not used in test
@@ -46,8 +50,8 @@ def test_docker_sandbox_manager_builds_commands(monkeypatch) -> None:
     runner = RecordingRunner()
     created_clients: list[DummyClient] = []
 
-    def client_factory(base_url: str) -> DummyClient:
-        client = DummyClient(base_url)
+    def client_factory(base_url: str, token_header: str, host_container_url: str | None) -> DummyClient:
+        client = DummyClient(base_url, token_header, host_container_url)
         created_clients.append(client)
         return client
 
@@ -65,6 +69,7 @@ def test_docker_sandbox_manager_builds_commands(monkeypatch) -> None:
         container_port=8000,
         env={"EXAMPLE": "value"},
         network="caster-net",
+        host_container_url=_HOST_CONTAINER_URL,
     )
 
     deployment = manager.start(options)
@@ -72,6 +77,7 @@ def test_docker_sandbox_manager_builds_commands(monkeypatch) -> None:
     assert deployment.identifier == "container123"
     assert deployment.base_url == "http://127.0.0.1:9000"
     assert isinstance(deployment.client, DummyClient)
+    assert deployment.client.host_container_url == options.host_container_url
 
     run_args, run_kwargs = runner.commands[0]
     assert run_args[:4] == [
@@ -97,8 +103,8 @@ def test_docker_sandbox_manager_builds_commands(monkeypatch) -> None:
 def test_docker_manager_skips_port_mapping_when_host_port_missing() -> None:
     runner = RecordingRunner()
 
-    def client_factory(base_url: str) -> DummyClient:
-        return DummyClient(base_url)
+    def client_factory(base_url: str, token_header: str, host_container_url: str | None) -> DummyClient:
+        return DummyClient(base_url, token_header, host_container_url)
 
     manager = DockerSandboxManager(
         docker_binary="docker",
@@ -113,6 +119,7 @@ def test_docker_manager_skips_port_mapping_when_host_port_missing() -> None:
         host_port=None,
         container_port=8000,
         network="caster-net",
+        host_container_url=_HOST_CONTAINER_URL,
     )
 
     deployment = manager.start(options)
@@ -126,8 +133,8 @@ def test_docker_manager_skips_port_mapping_when_host_port_missing() -> None:
 def test_docker_manager_mounts_volumes() -> None:
     runner = RecordingRunner()
 
-    def client_factory(base_url: str) -> DummyClient:
-        return DummyClient(base_url)
+    def client_factory(base_url: str, token_header: str, host_container_url: str | None) -> DummyClient:
+        return DummyClient(base_url, token_header, host_container_url)
 
     manager = DockerSandboxManager(
         docker_binary="docker",
@@ -140,6 +147,7 @@ def test_docker_manager_mounts_volumes() -> None:
         image="caster/sandbox:demo",
         container_name="sandbox-demo",
         volumes=(("/host/agent.py", "/workspace/agent.py", "ro"),),
+        host_container_url=_HOST_CONTAINER_URL,
     )
 
     deployment = manager.start(options)
@@ -156,6 +164,7 @@ def test_docker_manager_requires_network_when_host_port_missing() -> None:
         image="caster/sandbox:demo",
         container_name="sandbox-demo",
         host_port=None,
+        host_container_url=_HOST_CONTAINER_URL,
     )
     with pytest.raises(ValueError):
         manager.start(options)
@@ -164,8 +173,8 @@ def test_docker_manager_requires_network_when_host_port_missing() -> None:
 def test_docker_manager_adds_extra_hosts() -> None:
     runner = RecordingRunner()
 
-    def client_factory(base_url: str) -> DummyClient:
-        return DummyClient(base_url)
+    def client_factory(base_url: str, token_header: str, host_container_url: str | None) -> DummyClient:
+        return DummyClient(base_url, token_header, host_container_url)
 
     manager = DockerSandboxManager(
         docker_binary="docker",
@@ -178,6 +187,7 @@ def test_docker_manager_adds_extra_hosts() -> None:
         image="caster/sandbox:demo",
         container_name="sandbox-demo",
         extra_hosts=(("host.docker.internal", "host-gateway"),),
+        host_container_url=_HOST_CONTAINER_URL,
     )
 
     deployment = manager.start(options)
@@ -191,8 +201,8 @@ def test_docker_manager_adds_extra_hosts() -> None:
 def test_docker_manager_sets_seccomp_profile() -> None:
     runner = RecordingRunner()
 
-    def client_factory(base_url: str) -> DummyClient:
-        return DummyClient(base_url)
+    def client_factory(base_url: str, token_header: str, host_container_url: str | None) -> DummyClient:
+        return DummyClient(base_url, token_header, host_container_url)
 
     manager = DockerSandboxManager(
         docker_binary="docker",
@@ -206,6 +216,7 @@ def test_docker_manager_sets_seccomp_profile() -> None:
         image="caster/sandbox:demo",
         container_name="sandbox-demo",
         seccomp_profile=seccomp_path,
+        host_container_url=_HOST_CONTAINER_URL,
     )
 
     deployment = manager.start(options)
@@ -220,8 +231,8 @@ def test_start_cleans_up_container_on_healthz_failure(monkeypatch) -> None:
     runner = RecordingRunner()
     created_clients: list[DummyClient] = []
 
-    def client_factory(base_url: str) -> DummyClient:
-        client = DummyClient(base_url)
+    def client_factory(base_url: str, token_header: str, host_container_url: str | None) -> DummyClient:
+        client = DummyClient(base_url, token_header, host_container_url)
         created_clients.append(client)
         return client
 
@@ -244,6 +255,7 @@ def test_start_cleans_up_container_on_healthz_failure(monkeypatch) -> None:
         container_port=8000,
         wait_for_healthz=True,
         network="caster-net",
+        host_container_url=_HOST_CONTAINER_URL,
     )
 
     with pytest.raises(RuntimeError, match="healthz timeout"):

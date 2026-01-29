@@ -75,9 +75,11 @@ app = create_app()
 
 
 def main() -> None:
+    import asyncio
+
     import uvicorn
 
-    uvicorn.run(
+    config = uvicorn.Config(
         app,
         host=_runtime.settings.rpc_listen_host,
         port=_runtime.settings.rpc_port,
@@ -85,6 +87,31 @@ def main() -> None:
         # logging already setup
         log_config=None,
     )
+    server = uvicorn.Server(config)
+
+    async def _run() -> None:
+        server_task = asyncio.create_task(server.serve(), name="uvicorn-server")
+        try:
+            while not server.started:
+                if server_task.done():
+                    await server_task
+                    return
+                await asyncio.sleep(0.05)
+
+            try:
+                await asyncio.to_thread(_runtime.register_with_platform)
+            except Exception:
+                server.should_exit = True
+                await server_task
+                raise
+
+            await server_task
+        finally:
+            if not server_task.done():
+                server.should_exit = True
+                await server_task
+
+    asyncio.run(_run())
 
 
 __all__ = ["app", "main"]
