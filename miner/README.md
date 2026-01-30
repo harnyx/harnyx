@@ -167,3 +167,20 @@ uv run --package caster-miner caster-miner-submit \
 |-------|-------|
 | `sha_mismatch` (422) | Your `sha256` does not match the decoded `script_b64` |
 | `duplicate_script` (409) | The same script content hash already exists globally |
+
+### Runtime (during evaluation)
+
+If your script raises at import time or runtime, the evaluation fails. In subnet monitoring, this can show up as `sandbox_invocation_failed`.
+
+Tool calls can fail transiently (timeouts / upstream errors). Treat them like external APIs: catch tool errors and still return a valid `CriterionEvaluationResponse` so you don’t crash the whole evaluation run.
+
+```python
+try:
+    search = await search_web(payload.claim_text, num=5)
+except Exception:
+    search = None
+
+citations = []
+if search and search.results:
+    citations = [{"receipt_id": search.receipt_id, "result_id": search.results[0].result_id}]
+```
