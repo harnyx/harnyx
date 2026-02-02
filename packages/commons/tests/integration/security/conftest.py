@@ -52,7 +52,7 @@ def _require_image(image: str) -> None:
     if result.returncode != 0:
         pytest.fail(
             (
-                "Sandbox image not found. Build it with scripts/build_sandbox_image.sh before "
+                "Sandbox image not found. Build it with scripts/build/build_sandbox_image.sh before "
                 "running security tests."
             ),
         )

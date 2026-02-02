@@ -53,7 +53,7 @@ def _ensure_image_present(docker_bin: str, image: str) -> None:
         pytest.skip(
             (
                 f"Sandbox image {image!r} not found. "
-                "Build it with scripts/build_sandbox_image.sh before running integration tests."
+                "Build it with scripts/build/build_sandbox_image.sh before running integration tests."
             ),
         )
 
