@@ -3,10 +3,12 @@ services:
     image: "${CASTER_VALIDATOR_IMAGE:-castersubnet/caster-subnet-validator:latest}"
     env_file:
       - .env
+    environment:
+      CASTER_STATE_VOLUME_NAME: "${CASTER_STATE_VOLUME_NAME:-caster-validator-state}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ~/.bittensor/wallets:/root/.bittensor/wallets
-      - caster-validator-state:/workspace/.caster_state
+      - ${CASTER_WALLETS_HOST_DIR:-~/.bittensor/wallets}:/root/.bittensor/wallets
+      - ${CASTER_STATE_VOLUME_NAME:-caster-validator-state}:/workspace/.caster_state
     ports:
       - "${VALIDATOR_HOST_PORT:-8100}:8100"
     labels:
@@ -23,8 +25,10 @@ services:
     image: containrrr/watchtower
     command:
       - --label-enable
+      - --api-version
+      - "${CASTER_WATCHTOWER_DOCKER_API_VERSION:-1.25}"
       - --interval
-      - "300"
+      - "${CASTER_WATCHTOWER_INTERVAL:-300}"
       - --stop-timeout
       - "${CASTER_STOP_GRACE:-30m}"
       - --cleanup
