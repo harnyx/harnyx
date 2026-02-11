@@ -26,6 +26,7 @@ class SearchWebResult(BaseModel):
     link: str
     snippet: str | None = None
     title: str | None = None
+    provider_context: dict[str, Any] | None = None
 
 
 class SearchWebSearchResponse(BaseModel):
@@ -116,6 +117,7 @@ class SearchXResult(BaseModel):
     is_quote_tweet: bool | None = None
     media: list[SearchXMediaEntity] | None = None
     extended_entities: SearchXExtendedEntities | None = None
+    provider_context: dict[str, Any] | None = None
 
 
 class SearchXSearchResponse(BaseModel):
