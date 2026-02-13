@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from caster_commons.domain.verdict import VerdictOptions
+from caster_miner_sdk.criterion_evaluation import FeedSearchContext
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,12 +78,15 @@ class MinerTaskClaim:
     rubric: Rubric
     reference_answer: ReferenceAnswer
     budget_usd: float = 0.05
+    context: FeedSearchContext | None = None
 
     def __post_init__(self) -> None:
         if not self.text.strip():
             raise ValueError("claim text must not be empty")
         if self.budget_usd < 0.0:
             raise ValueError("claim budget_usd must be non-negative")
+        if self.context is not None and not isinstance(self.context, FeedSearchContext):
+            raise TypeError("claim context must be FeedSearchContext")
         self.rubric.verdict_options.validate(self.reference_answer.verdict)
 
 
@@ -109,6 +113,7 @@ __all__ = [
     "Citation",
     "ReferenceAnswer",
     "Span",
+    "FeedSearchContext",
     "MinerTaskClaim",
     "GeneratedClaim",
 ]

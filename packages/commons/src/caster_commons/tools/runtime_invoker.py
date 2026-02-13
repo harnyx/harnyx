@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
-from typing import Literal, cast
+from typing import Literal, Protocol, cast
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic import JsonValue as PydanticJsonValue
 
 from caster_commons.application.ports.receipt_log import ReceiptLogPort
@@ -16,6 +17,7 @@ from caster_commons.llm.pricing import (
     MODEL_PRICING,
     SEARCH_AI_PER_REFERENCEABLE_RESULT_USD,
     SEARCH_PRICING,
+    SEARCH_SIMILAR_FEED_ITEMS_PER_CALL_USD,
     ToolModelName,
     parse_tool_model,
 )
@@ -46,6 +48,18 @@ from caster_commons.tools.types import TOOL_NAMES, SearchToolName, ToolName, is_
 from caster_commons.tools.usage_tracker import ToolCallUsage  # noqa: F401 - compatibility
 
 
+class FeedSearchToolProvider(Protocol):
+    async def search_items(
+        self,
+        *,
+        feed_id: UUID,
+        enqueue_seq: int,
+        search_queries: Sequence[str],
+        num_hit: int,
+    ) -> JsonObject:
+        pass
+
+
 class LlmToolMessage(BaseModel):
     """Message format for LLM tool invocations."""
 
@@ -70,6 +84,17 @@ class LlmToolInvocation(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+class SearchItemsToolInvocation(BaseModel):
+    """Request payload for search_items tool calls."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    feed_id: UUID
+    enqueue_seq: int = Field(ge=0)
+    search_queries: tuple[str, ...] = Field(min_length=1)
+    num_hit: int = Field(default=20, ge=1, le=200)
+
+
 class RuntimeToolInvoker(ToolInvoker):
     """Dispatches sandbox tool invocations."""
 
@@ -80,6 +105,7 @@ class RuntimeToolInvoker(ToolInvoker):
         search_client: DeSearchPort | None = None,
         llm_provider: LlmProviderPort | None = None,
         llm_provider_name: str | None = None,
+        feed_search_provider: FeedSearchToolProvider | None = None,
         allowed_models: tuple[ToolModelName, ...] = ALLOWED_TOOL_MODELS,
     ) -> None:
         self._receipts = receipt_log
@@ -87,6 +113,7 @@ class RuntimeToolInvoker(ToolInvoker):
         self._search = search_client
         self._llm_provider = llm_provider
         self._llm_provider_name = llm_provider_name or "llm"
+        self._feed_search_provider = feed_search_provider
         self._allowed_models: set[ToolModelName] = set(allowed_models)
 
     async def invoke(
@@ -104,6 +131,8 @@ class RuntimeToolInvoker(ToolInvoker):
             return await self._dispatch_search(tool_name, args, kwargs)
         if tool_name == "llm_chat":
             return await self._dispatch_llm(args, kwargs)
+        if tool_name == "search_items":
+            return await self._dispatch_search_items(args, kwargs)
         self._log_unhandled(tool_name, args, kwargs)
         raise LookupError(f"tool {tool_name!r} is not registered")
 
@@ -140,6 +169,10 @@ class RuntimeToolInvoker(ToolInvoker):
             "search_ai": {
                 "kind": "per_referenceable_result",
                 "usd_per_referenceable_result": SEARCH_AI_PER_REFERENCEABLE_RESULT_USD,
+            },
+            "search_items": {
+                "kind": "flat_per_call",
+                "usd_per_call": SEARCH_SIMILAR_FEED_ITEMS_PER_CALL_USD,
             },
         }
 
@@ -224,6 +257,23 @@ class RuntimeToolInvoker(ToolInvoker):
             as_mapping = response.model_dump(exclude_none=True, mode="json")
             return cast(JsonObject, as_mapping)
         raise LookupError(f"search tool '{tool_name}' is not supported")
+
+    @normalize_response
+    async def _dispatch_search_items(
+        self,
+        args: Sequence[JsonValue],
+        kwargs: Mapping[str, JsonValue],
+    ) -> JsonObject:
+        if self._feed_search_provider is None:
+            raise LookupError("feed search provider is not configured")
+        payload = self._payload_from_args_kwargs(args, kwargs)
+        invocation = SearchItemsToolInvocation.model_validate(payload)
+        return await self._feed_search_provider.search_items(
+            feed_id=invocation.feed_id,
+            enqueue_seq=invocation.enqueue_seq,
+            search_queries=invocation.search_queries,
+            num_hit=invocation.num_hit,
+        )
 
     async def _dispatch_llm(
         self,

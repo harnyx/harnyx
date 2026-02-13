@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Literal
+from uuid import UUID
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
@@ -185,6 +186,28 @@ class SearchAiSearchResponse(BaseModel):
     retry_reasons: tuple[str, ...] | None = None
 
 
+class FeedSearchHit(BaseModel):
+    """Single hit returned by the `search_items` tool."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    job_id: UUID
+    content_id: UUID
+    provider: str
+    external_id: str
+    url: str | None = None
+    text: str
+    requested_at_epoch_ms: int
+    enqueue_seq: int
+    score: float | None = None
+
+
+class FeedSearchResponse(BaseModel):
+    """Response payload for the `search_items` tool."""
+
+    hits: list[FeedSearchHit] = Field(default_factory=list)
+
+
 __all__ = [
     "SearchWebSearchRequest",
     "SearchWebSearchResponse",
@@ -201,4 +224,6 @@ __all__ = [
     "SearchAiSearchRequest",
     "SearchAiSearchResponse",
     "SearchAiResult",
+    "FeedSearchHit",
+    "FeedSearchResponse",
 ]

@@ -43,6 +43,7 @@ SEARCH_PRICING: dict[SearchToolName, float] = {
 }
 
 SEARCH_AI_PER_REFERENCEABLE_RESULT_USD = 0.004
+SEARCH_SIMILAR_FEED_ITEMS_PER_CALL_USD = 0.0025
 
 
 @dataclass(frozen=True)
@@ -96,6 +97,7 @@ __all__ = [
     "MODEL_PRICING",
     "SEARCH_PRICING",
     "SEARCH_AI_PER_REFERENCEABLE_RESULT_USD",
+    "SEARCH_SIMILAR_FEED_ITEMS_PER_CALL_USD",
     "ModelPricing",
     "parse_tool_model",
 ]

@@ -13,6 +13,7 @@ from caster_commons.application.dto.session import SessionIssued, SessionTokenRe
 from caster_commons.application.session_manager import SessionManager
 from caster_commons.domain.claim import MinerTaskClaim
 from caster_commons.domain.session import SessionStatus
+from caster_commons.json_types import JsonObject
 from caster_validator.application.dto.evaluation import (
     EvaluationOutcome,
     EvaluationRequest,
@@ -258,21 +259,27 @@ class EvaluationRunner:
         artifact_id: UUID,
         claim: MinerTaskClaim,
     ) -> EvaluationRequest:
+        payload: JsonObject = {
+            "claim_text": claim.text,
+            "rubric_title": claim.rubric.title,
+            "rubric_description": claim.rubric.description,
+            "verdict_options": [
+                {"value": entry.value, "description": entry.description}
+                for entry in claim.rubric.verdict_options.options
+            ],
+        }
+        if claim.context is not None:
+            payload["context"] = {
+                "feed_id": str(claim.context.feed_id),
+                "enqueue_seq": claim.context.enqueue_seq,
+            }
         return EvaluationRequest(
             session_id=session_id,
             token=token,
             uid=uid,
             artifact_id=artifact_id,
             entrypoint=self._config.entrypoint,
-            payload={
-                "claim_text": claim.text,
-                "rubric_title": claim.rubric.title,
-                "rubric_description": claim.rubric.description,
-                "verdict_options": [
-                    {"value": entry.value, "description": entry.description}
-                    for entry in claim.rubric.verdict_options.options
-                ],
-            },
+            payload=payload,
             context={
                 "claim_id": str(claim.claim_id),
             },

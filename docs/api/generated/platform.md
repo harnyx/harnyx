@@ -3,6 +3,8 @@
 Generated from FastAPI OpenAPI.
 
 ## Domains
+- [feeds](#feeds)
+  - [POST /v1/feeds/search](#endpoint-post-v1-feeds-search)
 - [miner-task-batches](#miner-task-batches)
   - [POST /v1/miner-task-batches/batch](#endpoint-post-v1-miner-task-batches-batch)
   - [GET /v1/miner-task-batches/batch/{batch_id}](#endpoint-get-v1-miner-task-batches-batch-batch_id)
@@ -14,6 +16,59 @@ Generated from FastAPI OpenAPI.
   - [POST /v1/validators/register](#endpoint-post-v1-validators-register)
 - [weights](#weights)
   - [GET /v1/weights](#endpoint-get-v1-weights)
+
+## feeds
+
+### search
+
+<a id="endpoint-post-v1-feeds-search"></a>
+#### POST /v1/feeds/search
+
+Search for similar feed items strictly prior to a given feed job.
+
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
+
+**Request**
+Content-Type: `application/json`
+Body: [FeedSearchRequestModel](#model-feedsearchrequestmodel)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `enqueue_seq` |  |  | req | `integer` |
+| `feed_id` |  |  | req | `string` (format: uuid) |
+| `num_hit` |  |  | opt | `integer` (default: 20) |
+| `search_queries` |  |  | req | array[`string`] |
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: [FeedSearchResponseModel](#model-feedsearchresponsemodel)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `hits` |  |  | req | array[[FeedSearchHitModel](#model-feedsearchhitmodel)] |
+|  | `content_id` |  | req | `string` (format: uuid) |
+|  | `enqueue_seq` |  | req | `integer` |
+|  | `external_id` |  | req | `string` |
+|  | `job_id` |  | req | `string` (format: uuid) |
+|  | `provider` |  | req | `string` |
+|  | `requested_at_epoch_ms` |  | req | `integer` |
+|  | `score` |  | opt | `number` (nullable) |
+|  | `text` |  | req | `string` |
+|  | `url` |  | opt | `string` (nullable) |
+
+`422` Validation Error
+Content-Type: `application/json`
+Body: [HTTPValidationError](#model-httpvalidationerror)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
+|  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
+|  | `msg` |  | req | `string` |
+|  | `type` |  | req | `string` |
+
+
 
 ## miner-task-batches
 
@@ -38,6 +93,7 @@ Body: [CreateBatchRequest](#model-createbatchrequest)
 |  | `claims` |  | req | array[[MinerTaskClaim](#model-minertaskclaim)] |
 |  |  | `budget_usd` | opt | `number` (default: 0.05) |
 |  |  | `claim_id` | req | `string` (format: uuid) |
+|  |  | `context` | opt | [FeedSearchContext](#model-feedsearchcontext) (nullable) |
 |  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `rubric` | req | [Rubric](#model-rubric) |
 |  |  | `text` | req | `string` |
@@ -60,6 +116,9 @@ Body: [MinerTaskBatchModel](#model-minertaskbatchmodel)
 | `claims` |  |  | req | array[[MinerTaskClaimModel](#model-minertaskclaimmodel)] |
 |  | `budget_usd` |  | req | `number` |
 |  | `claim_id` |  | req | `string` (format: uuid) |
+|  | `context` |  | opt | [FeedSearchContext](#model-feedsearchcontext) (nullable) |
+|  |  | `enqueue_seq` | req | `integer` |
+|  |  | `feed_id` | req | `string` (format: uuid) |
 |  | `reference_answer` |  | req | [ReferenceAnswerModel](#model-referenceanswermodel) |
 |  |  | `citations` | opt | array[[CitationModel](#model-citationmodel)] (default: []) |
 |  |  | `justification` | req | `string` |
@@ -118,6 +177,9 @@ Body: [MinerTaskBatchModel](#model-minertaskbatchmodel)
 | `claims` |  |  | req | array[[MinerTaskClaimModel](#model-minertaskclaimmodel)] |
 |  | `budget_usd` |  | req | `number` |
 |  | `claim_id` |  | req | `string` (format: uuid) |
+|  | `context` |  | opt | [FeedSearchContext](#model-feedsearchcontext) (nullable) |
+|  |  | `enqueue_seq` | req | `integer` |
+|  |  | `feed_id` | req | `string` (format: uuid) |
 |  | `reference_answer` |  | req | [ReferenceAnswerModel](#model-referenceanswermodel) |
 |  |  | `citations` | opt | array[[CitationModel](#model-citationmodel)] (default: []) |
 |  |  | `justification` | req | `string` |
@@ -409,6 +471,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  | `claims` |  | req | array[[MinerTaskClaim](#model-minertaskclaim)] |
 |  |  | `budget_usd` | opt | `number` (default: 0.05) |
 |  |  | `claim_id` | req | `string` (format: uuid) |
+|  |  | `context` | opt | [FeedSearchContext](#model-feedsearchcontext) (nullable) |
 |  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `rubric` | req | [Rubric](#model-rubric) |
 |  |  | `text` | req | `string` |
@@ -461,6 +524,228 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
+<a id="model-feedsearchcontext"></a>
+### Model: FeedSearchContext
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `enqueue_seq` |  |  | req | `integer` |
+| `feed_id` |  |  | req | `string` (format: uuid) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "enqueue_seq": {
+      "minimum": 0.0,
+      "title": "Enqueue Seq",
+      "type": "integer"
+    },
+    "feed_id": {
+      "format": "uuid",
+      "title": "Feed Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "feed_id",
+    "enqueue_seq"
+  ],
+  "title": "FeedSearchContext",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-feedsearchhitmodel"></a>
+### Model: FeedSearchHitModel
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `content_id` |  |  | req | `string` (format: uuid) |
+| `enqueue_seq` |  |  | req | `integer` |
+| `external_id` |  |  | req | `string` |
+| `job_id` |  |  | req | `string` (format: uuid) |
+| `provider` |  |  | req | `string` |
+| `requested_at_epoch_ms` |  |  | req | `integer` |
+| `score` |  |  | opt | `number` (nullable) |
+| `text` |  |  | req | `string` |
+| `url` |  |  | opt | `string` (nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "content_id": {
+      "format": "uuid",
+      "title": "Content Id",
+      "type": "string"
+    },
+    "enqueue_seq": {
+      "title": "Enqueue Seq",
+      "type": "integer"
+    },
+    "external_id": {
+      "title": "External Id",
+      "type": "string"
+    },
+    "job_id": {
+      "format": "uuid",
+      "title": "Job Id",
+      "type": "string"
+    },
+    "provider": {
+      "title": "Provider",
+      "type": "string"
+    },
+    "requested_at_epoch_ms": {
+      "title": "Requested At Epoch Ms",
+      "type": "integer"
+    },
+    "score": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Score"
+    },
+    "text": {
+      "title": "Text",
+      "type": "string"
+    },
+    "url": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Url"
+    }
+  },
+  "required": [
+    "job_id",
+    "content_id",
+    "provider",
+    "external_id",
+    "text",
+    "requested_at_epoch_ms",
+    "enqueue_seq"
+  ],
+  "title": "FeedSearchHitModel",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-feedsearchrequestmodel"></a>
+### Model: FeedSearchRequestModel
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `enqueue_seq` |  |  | req | `integer` |
+| `feed_id` |  |  | req | `string` (format: uuid) |
+| `num_hit` |  |  | opt | `integer` (default: 20) |
+| `search_queries` |  |  | req | array[`string`] |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "enqueue_seq": {
+      "minimum": 0.0,
+      "title": "Enqueue Seq",
+      "type": "integer"
+    },
+    "feed_id": {
+      "format": "uuid",
+      "title": "Feed Id",
+      "type": "string"
+    },
+    "num_hit": {
+      "default": 20,
+      "maximum": 200.0,
+      "minimum": 1.0,
+      "title": "Num Hit",
+      "type": "integer"
+    },
+    "search_queries": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Search Queries",
+      "type": "array"
+    }
+  },
+  "required": [
+    "feed_id",
+    "enqueue_seq",
+    "search_queries"
+  ],
+  "title": "FeedSearchRequestModel",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-feedsearchresponsemodel"></a>
+### Model: FeedSearchResponseModel
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `hits` |  |  | req | array[[FeedSearchHitModel](#model-feedsearchhitmodel)] |
+|  | `content_id` |  | req | `string` (format: uuid) |
+|  | `enqueue_seq` |  | req | `integer` |
+|  | `external_id` |  | req | `string` |
+|  | `job_id` |  | req | `string` (format: uuid) |
+|  | `provider` |  | req | `string` |
+|  | `requested_at_epoch_ms` |  | req | `integer` |
+|  | `score` |  | opt | `number` (nullable) |
+|  | `text` |  | req | `string` |
+|  | `url` |  | opt | `string` (nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "hits": {
+      "items": {
+        "$ref": "#/components/schemas/FeedSearchHitModel"
+      },
+      "title": "Hits",
+      "type": "array"
+    }
+  },
+  "required": [
+    "hits"
+  ],
+  "title": "FeedSearchResponseModel",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-httpvalidationerror"></a>
 ### Model: HTTPValidationError
 
@@ -507,6 +792,9 @@ Body: [WeightsResponse](#model-weightsresponse)
 | `claims` |  |  | req | array[[MinerTaskClaimModel](#model-minertaskclaimmodel)] |
 |  | `budget_usd` |  | req | `number` |
 |  | `claim_id` |  | req | `string` (format: uuid) |
+|  | `context` |  | opt | [FeedSearchContext](#model-feedsearchcontext) (nullable) |
+|  |  | `enqueue_seq` | req | `integer` |
+|  |  | `feed_id` | req | `string` (format: uuid) |
 |  | `reference_answer` |  | req | [ReferenceAnswerModel](#model-referenceanswermodel) |
 |  |  | `citations` | opt | array[[CitationModel](#model-citationmodel)] (default: []) |
 |  |  | `justification` | req | `string` |
@@ -612,6 +900,9 @@ Body: [WeightsResponse](#model-weightsresponse)
 | --- | --- | --- | --- | --- |
 | `budget_usd` |  |  | opt | `number` (default: 0.05) |
 | `claim_id` |  |  | req | `string` (format: uuid) |
+| `context` |  |  | opt | [FeedSearchContext](#model-feedsearchcontext) (nullable) |
+|  | `enqueue_seq` |  | req | `integer` |
+|  | `feed_id` |  | req | `string` (format: uuid) |
 | `reference_answer` |  |  | req | [ReferenceAnswer](#model-referenceanswer) |
 |  | `citations` |  | opt | array[[Citation](#model-citation)] (default: []) |
 |  |  | `note` | req | `string` |
@@ -645,6 +936,16 @@ Body: [WeightsResponse](#model-weightsresponse)
       "title": "Claim Id",
       "type": "string"
     },
+    "context": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/FeedSearchContext"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "reference_answer": {
       "$ref": "#/components/schemas/ReferenceAnswer"
     },
@@ -676,6 +977,9 @@ Body: [WeightsResponse](#model-weightsresponse)
 | --- | --- | --- | --- | --- |
 | `budget_usd` |  |  | req | `number` |
 | `claim_id` |  |  | req | `string` (format: uuid) |
+| `context` |  |  | opt | [FeedSearchContext](#model-feedsearchcontext) (nullable) |
+|  | `enqueue_seq` |  | req | `integer` |
+|  | `feed_id` |  | req | `string` (format: uuid) |
 | `reference_answer` |  |  | req | [ReferenceAnswerModel](#model-referenceanswermodel) |
 |  | `citations` |  | opt | array[[CitationModel](#model-citationmodel)] (default: []) |
 |  |  | `note` | req | `string` |
@@ -704,6 +1008,16 @@ Body: [WeightsResponse](#model-weightsresponse)
       "format": "uuid",
       "title": "Claim Id",
       "type": "string"
+    },
+    "context": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/FeedSearchContext"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "reference_answer": {
       "$ref": "#/components/schemas/ReferenceAnswerModel"
@@ -738,6 +1052,9 @@ Body: [WeightsResponse](#model-weightsresponse)
 | `claims` |  |  | req | array[[MinerTaskClaim](#model-minertaskclaim)] |
 |  | `budget_usd` |  | opt | `number` (default: 0.05) |
 |  | `claim_id` |  | req | `string` (format: uuid) |
+|  | `context` |  | opt | [FeedSearchContext](#model-feedsearchcontext) (nullable) |
+|  |  | `enqueue_seq` | req | `integer` |
+|  |  | `feed_id` | req | `string` (format: uuid) |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `citations` | opt | array[[Citation](#model-citation)] (default: []) |
 |  |  | `justification` | req | `string` |

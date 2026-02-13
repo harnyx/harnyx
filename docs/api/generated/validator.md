@@ -37,6 +37,9 @@ Body: [MinerTaskBatchSpec](#model-minertaskbatchspec)
 | `claims` |  |  | req | array[[MinerTaskClaim](#model-minertaskclaim)] |
 |  | `budget_usd` |  | opt | `number` (default: 0.05) |
 |  | `claim_id` |  | req | `string` (format: uuid) |
+|  | `context` |  | opt | [FeedSearchContext](#model-feedsearchcontext) (nullable) |
+|  |  | `enqueue_seq` | req | `integer` |
+|  |  | `feed_id` | req | `string` (format: uuid) |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `citations` | opt | array[[Citation](#model-citation)] (default: []) |
 |  |  | `justification` | req | `string` |
@@ -201,7 +204,7 @@ Body: [ToolExecuteRequestDTO](#model-toolexecuterequestdto)
 | `kwargs` |  |  | opt | `object` (default: {}) |
 | `session_id` |  |  | req | `string` (format: uuid) |
 | `token` |  |  | req | `string` |
-| `tool` |  |  | req | `string` (enum: [search_web, search_x, search_ai, llm_chat, test_tool, tooling_info]) |
+| `tool` |  |  | req | `string` (enum: [search_web, search_x, search_ai, llm_chat, search_items, test_tool, tooling_info]) |
 
 **Responses**
 `200` Successful Response
@@ -313,6 +316,43 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     "note"
   ],
   "title": "Citation",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-feedsearchcontext"></a>
+### Model: FeedSearchContext
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `enqueue_seq` |  |  | req | `integer` |
+| `feed_id` |  |  | req | `string` (format: uuid) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "enqueue_seq": {
+      "minimum": 0.0,
+      "title": "Enqueue Seq",
+      "type": "integer"
+    },
+    "feed_id": {
+      "format": "uuid",
+      "title": "Feed Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "feed_id",
+    "enqueue_seq"
+  ],
+  "title": "FeedSearchContext",
   "type": "object"
 }
 ```
@@ -517,6 +557,9 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | `claims` |  |  | req | array[[MinerTaskClaim](#model-minertaskclaim)] |
 |  | `budget_usd` |  | opt | `number` (default: 0.05) |
 |  | `claim_id` |  | req | `string` (format: uuid) |
+|  | `context` |  | opt | [FeedSearchContext](#model-feedsearchcontext) (nullable) |
+|  |  | `enqueue_seq` | req | `integer` |
+|  |  | `feed_id` | req | `string` (format: uuid) |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `citations` | opt | array[[Citation](#model-citation)] (default: []) |
 |  |  | `justification` | req | `string` |
@@ -591,6 +634,9 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | --- | --- | --- | --- | --- |
 | `budget_usd` |  |  | opt | `number` (default: 0.05) |
 | `claim_id` |  |  | req | `string` (format: uuid) |
+| `context` |  |  | opt | [FeedSearchContext](#model-feedsearchcontext) (nullable) |
+|  | `enqueue_seq` |  | req | `integer` |
+|  | `feed_id` |  | req | `string` (format: uuid) |
 | `reference_answer` |  |  | req | [ReferenceAnswer](#model-referenceanswer) |
 |  | `citations` |  | opt | array[[Citation](#model-citation)] (default: []) |
 |  |  | `note` | req | `string` |
@@ -623,6 +669,16 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "format": "uuid",
       "title": "Claim Id",
       "type": "string"
+    },
+    "context": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/FeedSearchContext"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "reference_answer": {
       "$ref": "#/components/schemas/ReferenceAnswer"
@@ -1384,7 +1440,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | `kwargs` |  |  | opt | `object` (default: {}) |
 | `session_id` |  |  | req | `string` (format: uuid) |
 | `token` |  |  | req | `string` |
-| `tool` |  |  | req | `string` (enum: [search_web, search_x, search_ai, llm_chat, test_tool, tooling_info]) |
+| `tool` |  |  | req | `string` (enum: [search_web, search_x, search_ai, llm_chat, search_items, test_tool, tooling_info]) |
 
 <details>
 <summary>JSON schema</summary>
@@ -1423,6 +1479,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
         "search_x",
         "search_ai",
         "llm_chat",
+        "search_items",
         "test_tool",
         "tooling_info"
       ],

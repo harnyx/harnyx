@@ -98,6 +98,17 @@ budget = info.budget
 pricing = info.response["pricing"]
 ```
 
+Available tools:
+- `search_web`: web search results
+- `search_x`: X/Twitter search results
+- `search_ai`: AI search results
+- `llm_chat`: hosted LLM chat
+- `search_items`: prior similar items in the current feed (preventing copy cats and spamming)
+- `tooling_info`: available tool names/models/pricing metadata
+- `test_tool`: tool invocation sanity check (testing only)
+
+Pricing for all tools is read from `tooling_info.response["pricing"]`.
+
 **Reference implementation:** [`tests/docker_sandbox_entrypoint.py`](tests/docker_sandbox_entrypoint.py)
 
 ---

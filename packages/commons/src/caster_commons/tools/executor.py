@@ -23,6 +23,7 @@ from caster_commons.domain.tool_call import (
 )
 from caster_commons.json_types import JsonObject, JsonValue
 from caster_commons.llm.pricing import (
+    SEARCH_SIMILAR_FEED_ITEMS_PER_CALL_USD,
     ToolModelName,
     parse_tool_model,
     price_llm,
@@ -50,7 +51,10 @@ class ToolInvoker(Protocol):
 
 tool_logger = logging.getLogger("caster_commons.tools")
 
-_TOOLS_WITHOUT_USAGE: set[ToolName] = {"test_tool", "tooling_info"}
+_TOOLS_WITHOUT_USAGE: set[ToolName] = {
+    "test_tool",
+    "tooling_info",
+}
 
 _SEARCH_RESULT_FIELDS: dict[SearchToolName, tuple[str, str, str]] = {
     "search_web": ("link", "snippet", "title"),
@@ -131,6 +135,8 @@ class ToolExecutor:
             if name == "search_ai":
                 return 0, None, price_search_ai(referenceable_results=len(results))
             return 0, None, price_search(name)
+        if name == "search_items":
+            return 0, None, SEARCH_SIMILAR_FEED_ITEMS_PER_CALL_USD
         if name in _TOOLS_WITHOUT_USAGE:
             return 0, None, None
         raise LookupError(f"unsupported tool {request.tool!r}")

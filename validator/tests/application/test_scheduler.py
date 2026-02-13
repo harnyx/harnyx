@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 
 from caster_commons.application.session_manager import SessionManager
-from caster_commons.domain.claim import MinerTaskClaim, ReferenceAnswer, Rubric
+from caster_commons.domain.claim import FeedSearchContext, MinerTaskClaim, ReferenceAnswer, Rubric
 from caster_commons.domain.session import LlmUsageTotals
 from caster_commons.domain.verdict import VerdictOption, VerdictOptions
 from caster_commons.infrastructure.state.session_registry import InMemorySessionRegistry
@@ -309,3 +309,49 @@ async def test_evaluation_runner_issues_session_with_claim_budget() -> None:
 
     assert issued.session.claim_id == claim.claim_id
     assert issued.session.budget_usd == pytest.approx(0.123)
+
+
+async def test_evaluation_runner_request_includes_feed_search_context_when_present() -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    evaluation_records = DummyEvaluationRecordStore()
+    config = SchedulerConfig(
+        entrypoint="evaluate_criterion",
+        token_secret_bytes=8,
+        session_ttl=timedelta(minutes=5),
+    )
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_records,
+        config=config,
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        progress=None,
+    )
+
+    context = FeedSearchContext(feed_id=uuid4(), enqueue_seq=6)
+    claim = MinerTaskClaim(
+        claim_id=uuid4(),
+        text="context claim",
+        rubric=Rubric(
+            title="Accuracy",
+            description="Check facts.",
+            verdict_options=BINARY_VERDICT_OPTIONS,
+        ),
+        reference_answer=ReferenceAnswer(verdict=1, justification="ref", citations=()),
+        context=context,
+    )
+
+    request = runner._build_request(
+        session_id=uuid4(),
+        token=uuid4().hex,
+        uid=3,
+        artifact_id=uuid4(),
+        claim=claim,
+    )
+
+    assert request.payload["context"] == {
+        "feed_id": str(context.feed_id),
+        "enqueue_seq": context.enqueue_seq,
+    }

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from typing import TypedDict
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from caster_miner_sdk.verdict import VerdictOption, VerdictOptions
 
@@ -24,6 +25,13 @@ class VerdictOptionPayload(BaseModel):
         return VerdictOption(value=self.value, description=self.description)
 
 
+class FeedSearchContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    feed_id: UUID
+    enqueue_seq: int = Field(ge=0)
+
+
 class CriterionEvaluationRequest(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -36,6 +44,7 @@ class CriterionEvaluationRequest(BaseModel):
     rubric_title: str
     rubric_description: str
     verdict_options: list[VerdictOptionPayload]
+    context: FeedSearchContext | None = None
 
     def verdict_options_domain(self) -> VerdictOptions:
         options = tuple(entry.to_domain() for entry in self.verdict_options)
@@ -86,6 +95,7 @@ def _strip_code_fence(text: str) -> str:
 
 __all__ = [
     "CriterionEvaluationCitationRef",
+    "FeedSearchContext",
     "CriterionEvaluationRequest",
     "CriterionEvaluationResponse",
     "CriterionEvaluationVerdict",

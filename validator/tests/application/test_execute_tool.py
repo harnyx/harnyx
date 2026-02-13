@@ -9,6 +9,7 @@ import pytest
 from caster_commons.domain.session import Session, SessionStatus, SessionUsage
 from caster_commons.domain.tool_call import ToolCallOutcome
 from caster_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
+from caster_commons.llm.pricing import SEARCH_SIMILAR_FEED_ITEMS_PER_CALL_USD
 from caster_commons.llm.schema import LlmChoice, LlmChoiceMessage, LlmMessageContentPart, LlmResponse, LlmUsage
 from caster_commons.tools.dto import ToolInvocationRequest
 from caster_commons.tools.executor import ToolExecutor, ToolInvoker
@@ -141,6 +142,40 @@ async def test_execute_tool_supports_tooling_info_without_consuming_budget() -> 
     assert result.budget.session_budget_usd == pytest.approx(0.1)
     assert result.budget.session_used_budget_usd == pytest.approx(0.0)
     assert result.budget.session_remaining_budget_usd == pytest.approx(0.1)
+
+
+async def test_execute_tool_prices_search_items_per_call() -> None:
+    session = make_session(budget_usd=1.0)
+    token = generate_token()
+    executor, _, receipt_log, session_registry, _ = build_executor(session, token=token)
+    feed_id = str(uuid4())
+
+    request = ToolInvocationRequest(
+        session_id=session.session_id,
+        token=token,
+        tool="search_items",
+        args=(),
+        kwargs={
+            "feed_id": feed_id,
+            "enqueue_seq": 12,
+            "search_queries": ["alpha beta"],
+            "num_hit": 5,
+        },
+    )
+
+    result = await executor.execute(request)
+
+    stored_session = session_registry.get(session.session_id)
+    assert stored_session is not None
+    assert stored_session.usage.total_cost_usd == pytest.approx(SEARCH_SIMILAR_FEED_ITEMS_PER_CALL_USD)
+
+    receipt = receipt_log.lookup(result.receipt.receipt_id)
+    assert receipt is not None
+    assert receipt.metadata.cost_usd == pytest.approx(SEARCH_SIMILAR_FEED_ITEMS_PER_CALL_USD)
+    assert result.budget.session_used_budget_usd == pytest.approx(SEARCH_SIMILAR_FEED_ITEMS_PER_CALL_USD)
+    assert result.budget.session_remaining_budget_usd == pytest.approx(
+        1.0 - SEARCH_SIMILAR_FEED_ITEMS_PER_CALL_USD
+    )
 
 async def test_execute_tool_budget_is_session_scoped() -> None:
     session_a = make_session(budget_usd=0.2)

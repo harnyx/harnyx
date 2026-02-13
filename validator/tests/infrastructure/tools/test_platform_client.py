@@ -64,6 +64,7 @@ def test_get_miner_task_batch_parses_claim_budget_usd() -> None:
     claim_id = uuid4()
     artifact_id = uuid4()
     budget_usd = 0.123
+    feed_id = uuid4()
 
     def handler(request: httpx.Request) -> httpx.Response:
         _assert_signed(request, keypair)
@@ -94,6 +95,10 @@ def test_get_miner_task_batch_parses_claim_budget_usd() -> None:
                             "citations": [],
                         },
                         "budget_usd": budget_usd,
+                        "context": {
+                            "feed_id": str(feed_id),
+                            "enqueue_seq": 5,
+                        },
                     },
                 ],
                 "candidates": [
@@ -123,3 +128,6 @@ def test_get_miner_task_batch_parses_claim_budget_usd() -> None:
     assert batch.batch_id == batch_id
     assert batch.claims[0].claim_id == claim_id
     assert batch.claims[0].budget_usd == pytest.approx(budget_usd)
+    assert batch.claims[0].context is not None
+    assert batch.claims[0].context.feed_id == feed_id
+    assert batch.claims[0].context.enqueue_seq == 5

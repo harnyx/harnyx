@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
+from uuid import UUID
 
 from caster_miner_sdk._internal.tool_invoker import _current_tool_invoker
 from caster_miner_sdk.llm import LlmResponse
@@ -13,6 +14,7 @@ from caster_miner_sdk.tools.http_models import (
     ToolUsageDTO,
 )
 from caster_miner_sdk.tools.search_models import (
+    FeedSearchResponse,
     SearchAiSearchResponse,
     SearchWebSearchResponse,
     SearchXSearchResponse,
@@ -189,11 +191,43 @@ async def llm_chat(
     )
 
 
+async def search_items(
+    *,
+    feed_id: UUID | str,
+    enqueue_seq: int,
+    search_queries: Sequence[str],
+    num_hit: int,
+) -> ToolCallResponse[FeedSearchResponse]:
+    """Query prior similar items in a feed via the host-provided tool."""
+
+    payload = {
+        "feed_id": str(feed_id),
+        "enqueue_seq": int(enqueue_seq),
+        "search_queries": list(search_queries),
+        "num_hit": int(num_hit),
+    }
+    raw_response = await _current_tool_invoker().invoke("search_items", args=(), kwargs=payload)
+    dto = _parse_execute_response(raw_response)
+    if not isinstance(dto.response, Mapping):
+        raise RuntimeError("search_items response payload must be a mapping")
+    response = FeedSearchResponse.model_validate(dto.response)
+    return ToolCallResponse(
+        receipt_id=dto.receipt_id,
+        response=response,
+        results=dto.results,
+        result_policy=dto.result_policy,
+        cost_usd=dto.cost_usd,
+        usage=dto.usage,
+        budget=dto.budget,
+    )
+
+
 __all__ = [
     "llm_chat",
     "search_x",
     "search_web",
     "search_ai",
+    "search_items",
     "test_tool",
     "tooling_info",
     "ToolCallResponse",

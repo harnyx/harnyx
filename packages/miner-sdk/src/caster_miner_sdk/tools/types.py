@@ -9,6 +9,7 @@ ToolName = Literal[
     "search_x",
     "search_ai",
     "llm_chat",
+    "search_items",
     "test_tool",
     "tooling_info",
 ]
@@ -20,6 +21,7 @@ TOOL_NAMES: set[ToolName] = {
     "search_x",
     "search_ai",
     "llm_chat",
+    "search_items",
     "test_tool",
     "tooling_info",
 }
