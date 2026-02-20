@@ -36,6 +36,7 @@ from caster_commons.llm.schema import (
     LlmUsage,
     PostprocessResult,
 )
+from caster_commons.observability.langfuse import start_llm_generation, update_generation_best_effort
 
 ALLOWED_LLM_PROVIDERS: tuple[LlmProviderName, ...] = (
     "openai",
@@ -126,66 +127,96 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             kind=SpanKind.CLIENT,
             attributes=span_attributes,
         ) as span:
-            self._llm_logger.debug("llm.invoke.start", extra={"data": data})
-            start = time.perf_counter()
-            wait_ms = 0.0
-            try:
-                if self._semaphore is None:
-                    response = await self._invoke(request)
-                else:
-                    wait_start = time.perf_counter()
-                    async with self._semaphore:
-                        wait_ms = (time.perf_counter() - wait_start) * 1000
-                        self._llm_logger.debug(
-                            "llm.invoke.semaphore.wait",
-                            extra={"data": data | {"wait_ms": wait_ms}},
-                        )
+            span_context = span.get_span_context()
+            trace_id = format(span_context.trace_id, "032x") if span_context.trace_id else None
+            with start_llm_generation(
+                trace_id=trace_id,
+                provider_label=self._provider_label,
+                request=request,
+            ) as generation:
+                self._llm_logger.debug("llm.invoke.start", extra={"data": data})
+                start = time.perf_counter()
+                wait_ms = 0.0
+                try:
+                    if self._semaphore is None:
                         response = await self._invoke(request)
-            except Exception:
+                    else:
+                        wait_start = time.perf_counter()
+                        async with self._semaphore:
+                            wait_ms = (time.perf_counter() - wait_start) * 1000
+                            self._llm_logger.debug(
+                                "llm.invoke.semaphore.wait",
+                                extra={"data": data | {"wait_ms": wait_ms}},
+                            )
+                            response = await self._invoke(request)
+                except Exception as exc:
+                    elapsed = round((time.perf_counter() - start) * 1000, 2)
+                    update_generation_best_effort(
+                        generation,
+                        metadata={
+                            "error": repr(exc),
+                            "elapsed_ms": elapsed,
+                            "wait_ms": round(wait_ms, 2),
+                        },
+                    )
+                    self._llm_logger.exception(
+                        "llm.invoke.error",
+                        extra={"data": data | {"elapsed_ms": elapsed}},
+                    )
+                    span.set_attributes(
+                        {
+                            "llm.elapsed_ms": elapsed,
+                            "llm.wait_ms": round(wait_ms, 2),
+                        }
+                    )
+                    raise
+
                 elapsed = round((time.perf_counter() - start) * 1000, 2)
-                self._llm_logger.exception(
-                    "llm.invoke.error",
-                    extra={"data": data | {"elapsed_ms": elapsed}},
-                )
+                usage = response.usage or LlmUsage()
+                web_search_calls = int(usage.web_search_calls or 0)
+                response_metadata = response.metadata or {}
+
                 span.set_attributes(
                     {
                         "llm.elapsed_ms": elapsed,
                         "llm.wait_ms": round(wait_ms, 2),
+                        "llm.usage.total_tokens": int(usage.total_tokens or 0),
+                        "llm.usage.prompt_tokens": int(usage.prompt_tokens or 0),
+                        "llm.usage.completion_tokens": int(usage.completion_tokens or 0),
+                        "llm.usage.reasoning_tokens": int(usage.reasoning_tokens or 0),
+                        "llm.usage.web_search_calls": web_search_calls,
                     }
                 )
-                raise
 
-            elapsed = round((time.perf_counter() - start) * 1000, 2)
-            usage = response.usage or LlmUsage()
-            web_search_calls = int(usage.web_search_calls or 0)
-            response_metadata = response.metadata or {}
-
-            span.set_attributes(
-                {
-                    "llm.elapsed_ms": elapsed,
-                    "llm.wait_ms": round(wait_ms, 2),
-                    "llm.usage.total_tokens": int(usage.total_tokens or 0),
-                    "llm.usage.prompt_tokens": int(usage.prompt_tokens or 0),
-                    "llm.usage.completion_tokens": int(usage.completion_tokens or 0),
-                    "llm.usage.reasoning_tokens": int(usage.reasoning_tokens or 0),
-                    "llm.usage.web_search_calls": web_search_calls,
+                data |= {
+                    "request": _request_snapshot(request),
+                    "response": response.payload,
+                    "response_metadata": response_metadata,
+                    "elapsed_ms": elapsed,
+                    "usage_prompt": usage.prompt_tokens or 0,
+                    "usage_completion": usage.completion_tokens or 0,
+                    "usage_total": usage.total_tokens or 0,
+                    "reasoning_tokens": usage.reasoning_tokens or 0,
+                    "finish_reason": response.finish_reason,
+                    "web_search_calls": web_search_calls,
+                    "wait_ms": round(wait_ms, 2),
                 }
-            )
-
-            data |= {
-                "request": _request_snapshot(request),
-                "response": response.payload,
-                "response_metadata": response_metadata,
-                "elapsed_ms": elapsed,
-                "usage_prompt": usage.prompt_tokens or 0,
-                "usage_completion": usage.completion_tokens or 0,
-                "usage_total": usage.total_tokens or 0,
-                "reasoning_tokens": usage.reasoning_tokens or 0,
-                "finish_reason": response.finish_reason,
-                "web_search_calls": web_search_calls,
-                "wait_ms": round(wait_ms, 2),
-            }
-            return response
+                update_generation_best_effort(
+                    generation,
+                    output={
+                        "raw_text": response.raw_text,
+                        "payload": response.payload,
+                    },
+                    usage=usage,
+                    metadata={
+                        "provider": self._provider_label,
+                        "elapsed_ms": elapsed,
+                        "wait_ms": round(wait_ms, 2),
+                        "finish_reason": response.finish_reason,
+                        "response_metadata": response_metadata,
+                    },
+                )
+                return response
 
     async def aclose(self) -> None:
         """Providers may override to close network clients."""
