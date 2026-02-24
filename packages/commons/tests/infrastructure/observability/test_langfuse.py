@@ -2,7 +2,17 @@ from __future__ import annotations
 
 import pytest
 
-from caster_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest, LlmUsage
+from caster_commons.llm.schema import (
+    LlmChoice,
+    LlmChoiceMessage,
+    LlmInputToolResultPart,
+    LlmMessage,
+    LlmMessageContentPart,
+    LlmMessageToolCall,
+    LlmRequest,
+    LlmResponse,
+    LlmUsage,
+)
 from caster_commons.observability import langfuse
 
 _LANGFUSE_ENV_VARS = ("LANGFUSE_HOST", "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY")
@@ -13,7 +23,7 @@ def _reset_langfuse_client(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(langfuse, "_LANGFUSE_CLIENT", None)
 
 
-def _request() -> LlmRequest:
+def _request(*, extra: dict[str, object] | None = None) -> LlmRequest:
     return LlmRequest(
         provider="openai",
         model="gpt-5-mini",
@@ -26,6 +36,7 @@ def _request() -> LlmRequest:
         temperature=None,
         max_output_tokens=64,
         output_mode="text",
+        extra=extra,
     )
 
 
@@ -43,6 +54,33 @@ def _request_with_metadata(metadata: dict[str, object]) -> LlmRequest:
         max_output_tokens=64,
         output_mode="text",
         internal_metadata=metadata,
+    )
+
+
+def _response(*, postprocessed: object | None = None) -> LlmResponse:
+    return LlmResponse(
+        id="response-id",
+        choices=(
+            LlmChoice(
+                index=0,
+                message=LlmChoiceMessage(
+                    role="assistant",
+                    content=(LlmMessageContentPart(type="text", text="ok"),),
+                    tool_calls=(
+                        LlmMessageToolCall(
+                            id="call-1",
+                            type="function",
+                            name="search_repo",
+                            arguments='{"query":"caster"}',
+                        ),
+                    ),
+                ),
+                finish_reason="tool_calls",
+            ),
+        ),
+        usage=LlmUsage(prompt_tokens=7, completion_tokens=3, total_tokens=10),
+        postprocessed=postprocessed,
+        finish_reason="tool_calls",
     )
 
 
@@ -89,6 +127,94 @@ def test_start_llm_generation_returns_none_scope_when_unconfigured(
         assert generation is None
 
 
+def test_build_generation_input_payload_is_concise() -> None:
+    payload = langfuse.build_generation_input_payload(_request())
+    assert payload["request_config"] == {
+        "provider": "openai",
+        "model": "gpt-5-mini",
+        "grounded": False,
+        "output_mode": "text",
+        "max_output_tokens": 64,
+        "temperature": None,
+        "timeout_seconds": None,
+        "tool_choice": None,
+        "reasoning_effort": None,
+    }
+    assert payload["messages"] == [
+        {
+            "role": "user",
+            "content": [{"type": "input_text", "text": "hello"}],
+        }
+    ]
+    assert payload["tools"] == []
+    assert payload["include"] is None
+    assert payload["extra"] is None
+
+
+def test_build_generation_input_payload_includes_request_extra() -> None:
+    payload = langfuse.build_generation_input_payload(
+        _request(extra={"web_search_options": {"mode": "auto"}})
+    )
+
+    assert payload["extra"] == {"web_search_options": {"mode": "auto"}}
+
+
+def test_build_generation_input_payload_preserves_tool_result_output_json() -> None:
+    request = LlmRequest(
+        provider="openai",
+        model="gpt-5-mini",
+        messages=(
+            LlmMessage(
+                role="tool",
+                content=(
+                    LlmInputToolResultPart(
+                        tool_call_id="call-1",
+                        name="search_repo",
+                        output_json='{"hits":[{"title":"Caster"}]}',
+                    ),
+                ),
+            ),
+        ),
+        temperature=None,
+        max_output_tokens=64,
+        output_mode="text",
+    )
+
+    payload = langfuse.build_generation_input_payload(request)
+
+    assert payload["messages"] == [
+        {
+            "role": "tool",
+            "content": [
+                {
+                    "type": "input_tool_result",
+                    "tool_call_id": "call-1",
+                    "name": "search_repo",
+                    "output_json": '{"hits":[{"title":"Caster"}]}',
+                }
+            ],
+        }
+    ]
+
+
+def test_build_generation_output_payload_is_concise() -> None:
+    payload = langfuse.build_generation_output_payload(
+        _response(postprocessed={"title": "Title", "text": "Body"})
+    )
+    assert payload == {
+        "assistant": {"role": "assistant", "text": "ok"},
+        "finish_reason": "tool_calls",
+        "postprocessed": {"title": "Title", "text": "Body"},
+        "tool_calls": [
+            {
+                "name": "search_repo",
+                "arguments": {"query": "caster"},
+                "output": None,
+            }
+        ],
+    }
+
+
 def test_update_generation_best_effort_swallows_update_exception() -> None:
     class RaisingGeneration:
         def update(self, **kwargs: object) -> None:
@@ -97,6 +223,48 @@ def test_update_generation_best_effort_swallows_update_exception() -> None:
     langfuse.update_generation_best_effort(
         RaisingGeneration(),
         output={"ok": True},
+        usage=LlmUsage(prompt_tokens=1, completion_tokens=2, total_tokens=3),
+        metadata={"provider": "openai"},
+    )
+
+
+def test_record_child_observation_best_effort_swallows_observation_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RaisingObservationContextManager:
+        def __enter__(self) -> object:
+            raise RuntimeError("observation failed")
+
+        def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> bool:
+            return False
+
+    class RaisingClient:
+        def start_as_current_observation(self, **kwargs: object) -> RaisingObservationContextManager:
+            return RaisingObservationContextManager()
+
+    monkeypatch.setattr(langfuse, "get_client", lambda: RaisingClient())
+
+    langfuse.record_child_observation_best_effort(
+        as_type="tool",
+        name="search_repo",
+        input_payload={"arguments": {"query": "caster"}},
+        output={"result": "ok"},
+        usage=LlmUsage(prompt_tokens=1, completion_tokens=2, total_tokens=3),
+        metadata={"provider": "openai"},
+    )
+
+
+def test_record_child_observation_best_effort_swallows_client_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _raise() -> object:
+        raise RuntimeError("partial config")
+
+    monkeypatch.setattr(langfuse, "get_client", _raise)
+
+    langfuse.record_child_observation_best_effort(
+        as_type="tool",
+        name="search_repo",
+        input_payload={"arguments": {"query": "caster"}},
+        output={"result": "ok"},
         usage=LlmUsage(prompt_tokens=1, completion_tokens=2, total_tokens=3),
         metadata={"provider": "openai"},
     )

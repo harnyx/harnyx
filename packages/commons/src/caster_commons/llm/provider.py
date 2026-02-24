@@ -10,7 +10,7 @@ import asyncio
 import logging
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Protocol, cast
 
@@ -38,6 +38,8 @@ from caster_commons.llm.schema import (
 )
 from caster_commons.observability.langfuse import (
     build_generation_metadata,
+    build_generation_output_payload,
+    record_child_observation_best_effort,
     start_llm_generation,
     update_generation_best_effort,
 )
@@ -182,7 +184,32 @@ class BaseLlmProvider(ABC, LlmProviderPort):
                 elapsed = round((time.perf_counter() - start) * 1000, 2)
                 usage = response.usage or LlmUsage()
                 web_search_calls = int(usage.web_search_calls or 0)
-                response_metadata = response.metadata or {}
+                response_metadata = dict(response.metadata or {})
+                reasoning_metadata = _build_reasoning_metadata(
+                    provider_label=self._provider_label,
+                    request=request,
+                    response=response,
+                    usage=usage,
+                )
+                grounding_metadata = _build_grounding_metadata(
+                    response_metadata=response_metadata,
+                    web_search_calls=web_search_calls,
+                )
+                generation_metadata: dict[str, object] = {
+                    "elapsed_ms": elapsed,
+                    "wait_ms": round(wait_ms, 2),
+                    "finish_reason": response.finish_reason,
+                    "response_metadata": response_metadata,
+                    "raw": _build_raw_payload_metadata(
+                        request=request,
+                        response=response,
+                        response_metadata=response_metadata,
+                    ),
+                }
+                if reasoning_metadata is not None:
+                    generation_metadata["reasoning"] = reasoning_metadata
+                if grounding_metadata is not None:
+                    generation_metadata["grounding"] = grounding_metadata
 
                 span.set_attributes(
                     {
@@ -211,22 +238,21 @@ class BaseLlmProvider(ABC, LlmProviderPort):
                 }
                 update_generation_best_effort(
                     generation,
-                    output={
-                        "raw_text": response.raw_text,
-                        "payload": response.payload,
-                    },
+                    output=build_generation_output_payload(response),
                     usage=usage,
                     metadata=build_generation_metadata(
                         provider_label=self._provider_label,
                         request=request,
-                        metadata={
-                            "elapsed_ms": elapsed,
-                            "wait_ms": round(wait_ms, 2),
-                            "finish_reason": response.finish_reason,
-                            "response_metadata": response_metadata,
-                        },
+                        metadata=generation_metadata,
                     ),
                 )
+                if generation is not None:
+                    _record_child_observations(
+                        provider_label=self._provider_label,
+                        model=request.model,
+                        response=response,
+                        response_metadata=response_metadata,
+                    )
                 return response
 
     async def aclose(self) -> None:
@@ -416,7 +442,8 @@ class BaseLlmProvider(ABC, LlmProviderPort):
 
 def _request_snapshot(request: AbstractLlmRequest) -> dict[str, object]:
     if is_dataclass(request):
-        return asdict(request)
+        return cast(dict[str, object], asdict(request))
+    raise TypeError("llm request snapshot requires dataclass request")
 
 
 def _usage_snapshot(usage: LlmUsage) -> dict[str, object]:
@@ -428,6 +455,176 @@ def _usage_snapshot(usage: LlmUsage) -> dict[str, object]:
         "reasoning": usage.reasoning_tokens or 0,
         "web_search_calls": usage.web_search_calls or 0,
     }
+
+
+def _build_raw_payload_metadata(
+    *,
+    request: AbstractLlmRequest,
+    response: LlmResponse,
+    response_metadata: Mapping[str, object],
+) -> dict[str, object]:
+    return {
+        "request": _request_snapshot(request),
+        "response_payload": response.payload,
+        "response_metadata": dict(response_metadata),
+        "provider_response": _provider_response_payload(
+            response=response,
+            response_metadata=response_metadata,
+        ),
+    }
+
+
+def _provider_response_payload(
+    *,
+    response: LlmResponse,
+    response_metadata: Mapping[str, object],
+) -> object:
+    raw_response = response_metadata.get("raw_response")
+    if isinstance(raw_response, Mapping):
+        return dict(raw_response)
+    if isinstance(raw_response, Sequence) and not isinstance(raw_response, (str, bytes, bytearray)):
+        return list(raw_response)
+    return response.payload
+
+
+def _build_reasoning_metadata(
+    *,
+    provider_label: str,
+    request: AbstractLlmRequest,
+    response: LlmResponse,
+    usage: LlmUsage,
+) -> dict[str, object] | None:
+    reasoning_payload = _first_reasoning_payload(response)
+    thought_text_parts = _normalize_thought_text_parts(
+        reasoning_payload.get("thought_text_parts") if reasoning_payload is not None else None
+    )
+    has_thought_signature = bool(reasoning_payload.get("has_thought_signature")) if reasoning_payload else False
+    include_thoughts_requested = _is_vertex_include_thoughts_request(
+        provider_label=provider_label,
+        model=request.model,
+        reasoning_effort=request.reasoning_effort,
+    )
+    reasoning_tokens = int(usage.reasoning_tokens or 0)
+
+    if not (
+        include_thoughts_requested
+        or thought_text_parts
+        or has_thought_signature
+        or reasoning_tokens > 0
+    ):
+        return None
+
+    return {
+        "include_thoughts_requested": include_thoughts_requested,
+        "reasoning_effort": request.reasoning_effort,
+        "reasoning_text_available": bool(thought_text_parts),
+        "thought_text_parts": thought_text_parts,
+        "has_thought_signature": has_thought_signature,
+        "reasoning_tokens": reasoning_tokens,
+    }
+
+
+def _is_vertex_include_thoughts_request(
+    *,
+    provider_label: str,
+    model: str,
+    reasoning_effort: str | None,
+) -> bool:
+    if reasoning_effort is None:
+        return False
+    if not provider_label.startswith("vertex"):
+        return False
+
+    # Must stay aligned with Vertex thinking_config support behavior.
+    normalized_model = model.strip().lower()
+    return "gemini" in normalized_model
+
+
+def _first_reasoning_payload(response: LlmResponse) -> Mapping[str, object] | None:
+    for choice in response.choices:
+        reasoning = choice.message.reasoning
+        if isinstance(reasoning, Mapping):
+            return cast(Mapping[str, object], reasoning)
+    return None
+
+
+def _normalize_thought_text_parts(value: object) -> tuple[str, ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return ()
+    normalized: list[str] = []
+    for entry in value:
+        if not isinstance(entry, str):
+            continue
+        thought_text = entry.strip()
+        if thought_text:
+            normalized.append(thought_text)
+    return tuple(normalized)
+
+
+def _build_grounding_metadata(
+    *,
+    response_metadata: Mapping[str, object],
+    web_search_calls: int,
+) -> dict[str, object] | None:
+    queries = _extract_web_search_queries(response_metadata)
+    if not queries and web_search_calls == 0:
+        return None
+
+    payload: dict[str, object] = {"web_search_calls": web_search_calls}
+    if queries:
+        payload["web_search_queries"] = queries
+    return payload
+
+
+def _extract_web_search_queries(response_metadata: Mapping[str, object]) -> tuple[str, ...]:
+    raw_queries = response_metadata.get("web_search_queries")
+    if isinstance(raw_queries, str):
+        normalized = raw_queries.strip()
+        return (normalized,) if normalized else ()
+    if not isinstance(raw_queries, Sequence):
+        return ()
+
+    queries: list[str] = []
+    for entry in raw_queries:
+        if not isinstance(entry, str):
+            continue
+        normalized = entry.strip()
+        if normalized:
+            queries.append(normalized)
+    return tuple(queries)
+
+
+def _retriever_observation_name(provider_label: str) -> str:
+    if provider_label == "vertex":
+        return "vertex.grounding.search"
+    return f"{provider_label}.search.query"
+
+
+def _record_child_observations(
+    *,
+    provider_label: str,
+    model: str,
+    response: LlmResponse,
+    response_metadata: Mapping[str, object],
+) -> None:
+    queries = _extract_web_search_queries(response_metadata)
+    for index, query in enumerate(queries):
+        record_child_observation_best_effort(
+            as_type="retriever",
+            name=_retriever_observation_name(provider_label),
+            input_payload={"query": query, "index": index},
+            output={"issued": True},
+            metadata={"provider": provider_label, "model": model},
+        )
+
+    for tool_call in response.tool_calls:
+        record_child_observation_best_effort(
+            as_type="tool",
+            name=tool_call.name or "tool",
+            input_payload={"arguments": tool_call.arguments},
+            output={"result": tool_call.output},
+            metadata={"provider": provider_label},
+        )
 
 __all__ = [
     "ALLOWED_LLM_PROVIDERS",

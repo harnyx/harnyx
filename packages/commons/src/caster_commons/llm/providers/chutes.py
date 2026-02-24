@@ -231,6 +231,7 @@ def _choice_from_payload(choice_payload: Any, *, index: int) -> LlmChoice | None
 
     parts = _message_parts(message)
     tool_calls = _message_tool_calls(message)
+    reasoning = _message_reasoning(message)
     if not parts:
         parts = (LlmMessageContentPart(type="text", text=""),)
 
@@ -240,6 +241,7 @@ def _choice_from_payload(choice_payload: Any, *, index: int) -> LlmChoice | None
             role="assistant",
             content=parts,
             tool_calls=tool_calls,
+            reasoning=reasoning,
         ),
         finish_reason="stop",
     )
@@ -284,6 +286,13 @@ def _message_tool_calls(message: Mapping[str, Any]) -> tuple[LlmMessageToolCall,
         if call is not None:
             calls.append(call)
     return tuple(calls)
+
+
+def _message_reasoning(message: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    reasoning_value = message.get("reasoning")
+    if isinstance(reasoning_value, Mapping):
+        return dict(reasoning_value)
+    return None
 
 
 def _tool_call_from_payload(payload: Any, index: int) -> LlmMessageToolCall | None:

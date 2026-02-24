@@ -8,11 +8,19 @@ from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import asdict, is_dataclass
 from types import TracebackType
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
 from langfuse import Langfuse, propagate_attributes
 
-from caster_commons.llm.schema import AbstractLlmRequest, LlmUsage
+from caster_commons.llm.schema import (
+    AbstractLlmRequest,
+    LlmInputImagePart,
+    LlmInputTextPart,
+    LlmInputToolResultPart,
+    LlmMessage,
+    LlmResponse,
+    LlmUsage,
+)
 
 _LOGGER = logging.getLogger("caster_commons.observability.langfuse")
 _REQUIRED_ENV_VARS = ("LANGFUSE_HOST", "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY")
@@ -71,7 +79,7 @@ class _LangfuseGenerationScope(AbstractContextManager[LangfuseGeneration | None]
             generation = cast(LangfuseGeneration, self._observation_cm.__enter__())
             update_generation_best_effort(
                 generation,
-                input_payload=_request_payload(self._request),
+                input_payload=build_generation_input_payload(self._request),
                 metadata=metadata,
             )
             return generation
@@ -177,6 +185,48 @@ def start_llm_generation(
     )
 
 
+def build_generation_input_payload(request: AbstractLlmRequest) -> dict[str, object]:
+    return {
+        "messages": [_request_message_payload(message) for message in request.messages],
+        "request_config": {
+            "provider": request.provider,
+            "model": request.model,
+            "grounded": request.grounded,
+            "output_mode": request.output_mode,
+            "max_output_tokens": request.max_output_tokens,
+            "temperature": request.temperature,
+            "timeout_seconds": request.timeout_seconds,
+            "tool_choice": request.tool_choice,
+            "reasoning_effort": request.reasoning_effort,
+        },
+        "tools": _sanitize_for_json(list(request.tools or ())),
+        "include": [str(item) for item in request.include] if request.include is not None else None,
+        "extra": _sanitize_for_json(dict(request.extra)) if request.extra is not None else None,
+    }
+
+
+def build_generation_output_payload(response: LlmResponse) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "assistant": {
+            "role": "assistant",
+            "text": response.raw_text,
+        },
+        "finish_reason": response.finish_reason,
+    }
+    if response.postprocessed is not None:
+        payload["postprocessed"] = _sanitize_for_json(response.postprocessed)
+    if response.tool_calls:
+        payload["tool_calls"] = [
+            {
+                "name": call.name,
+                "arguments": call.arguments,
+                "output": call.output,
+            }
+            for call in response.tool_calls
+        ]
+    return payload
+
+
 def update_generation_best_effort(
     generation: LangfuseGeneration | None,
     *,
@@ -208,6 +258,51 @@ def update_generation_best_effort(
         _LOGGER.exception(
             "langfuse.generation.update_failed",
             extra={"data": {"fields": sorted(update_data.keys())}},
+        )
+
+
+def record_child_observation_best_effort(
+    *,
+    name: str,
+    as_type: Literal["tool", "retriever", "agent"],
+    input_payload: object | None = None,
+    output: object | None = None,
+    usage: LlmUsage | None = None,
+    metadata: Mapping[str, object] | None = None,
+) -> None:
+    """Best-effort child observation recording that never raises."""
+
+    try:
+        client = get_client()
+    except Exception:
+        _LOGGER.exception("langfuse.client.read_failed")
+        return
+
+    if client is None:
+        return
+
+    update_data: dict[str, object] = {}
+    if input_payload is not None:
+        update_data["input"] = _sanitize_for_json(input_payload)
+    if output is not None:
+        update_data["output"] = _sanitize_for_json(output)
+    if usage is not None:
+        update_data["usage_details"] = _usage_details(usage)
+    if metadata is not None:
+        update_data["metadata"] = _sanitize_for_json(dict(metadata))
+
+    try:
+        observation_cm = cast(
+            AbstractContextManager[object],
+            client.start_as_current_observation(name=name, as_type=as_type),
+        )
+        with observation_cm as observation:
+            if update_data:
+                cast(LangfuseGeneration, observation).update(**update_data)
+    except Exception:
+        _LOGGER.exception(
+            "langfuse.observation.record_failed",
+            extra={"data": {"name": name, "as_type": as_type}},
         )
 
 
@@ -258,25 +353,35 @@ def _model_parameters(request: AbstractLlmRequest) -> dict[str, str | int | bool
     return {key: value for key, value in params.items() if value is not None}
 
 
-def _request_payload(request: AbstractLlmRequest) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "provider": request.provider,
-        "model": request.model,
-        "messages": _sanitize_for_json(list(request.messages)),
-        "tools": _sanitize_for_json(list(request.tools or ())),
-        "tool_choice": request.tool_choice,
-        "grounded": request.grounded,
-        "output_mode": request.output_mode,
-        "reasoning_effort": request.reasoning_effort,
-        "max_output_tokens": request.max_output_tokens,
-        "timeout_seconds": request.timeout_seconds,
-        "temperature": request.temperature,
+def _request_message_payload(message: LlmMessage) -> dict[str, object]:
+    return {
+        "role": message.role,
+        "content": [_request_content_part_payload(part) for part in message.content],
     }
-    if request.extra is not None:
-        payload["extra"] = _sanitize_for_json(dict(request.extra))
-    if request.include is not None:
-        payload["include"] = [str(item) for item in request.include]
-    return payload
+
+
+def _request_content_part_payload(part: object) -> dict[str, object]:
+    match part:
+        case LlmInputTextPart(text=text):
+            return {"type": "input_text", "text": text}
+        case LlmInputImagePart(data=image_data):
+            return {
+                "type": "input_image",
+                "url": image_data.url,
+                "mime_type": image_data.mime_type,
+            }
+        case LlmInputToolResultPart(tool_call_id=tool_call_id, name=name, output_json=output_json):
+            return {
+                "type": "input_tool_result",
+                "tool_call_id": tool_call_id,
+                "name": name,
+                "output_json": output_json,
+            }
+        case _:
+            return {
+                "type": "unknown",
+                "value": _sanitize_for_json(part),
+            }
 
 
 def _resolve_server_label() -> str:
@@ -326,8 +431,11 @@ def _sanitize_for_json(value: object) -> object:
 
 __all__ = [
     "LangfuseGeneration",
+    "build_generation_input_payload",
     "build_generation_metadata",
+    "build_generation_output_payload",
     "get_client",
+    "record_child_observation_best_effort",
     "start_llm_generation",
     "update_generation_best_effort",
 ]

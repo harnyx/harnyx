@@ -41,6 +41,7 @@ from .codec import (
     resolve_tool_config,
     serialize_provider_native_tools,
     serialize_tools,
+    supports_thinking_config,
 )
 from .credentials import cleanup_credentials_file, prepare_credentials
 
@@ -142,6 +143,15 @@ class VertexLlmProvider(BaseLlmProvider):
             if request.output_mode == "structured" and request.output_schema is not None:
                 config_kwargs["response_schema"] = json_schema_from_model(request.output_schema)
 
+        thinking_config = (
+            resolve_thinking_config(
+                model=request.model,
+                reasoning_effort=request.reasoning_effort,
+            )
+            if supports_thinking_config(model=request.model)
+            else None
+        )
+
         config_kwargs |= {
             k: v
             for k, v in {
@@ -150,10 +160,7 @@ class VertexLlmProvider(BaseLlmProvider):
                 "system_instruction": system_instruction,
                 "tools": tools,
                 "tool_config": tool_config,
-                "thinking_config": resolve_thinking_config(
-                    model=request.model,
-                    reasoning_effort=request.reasoning_effort,
-                ),
+                "thinking_config": thinking_config,
             }.items()
             if v is not None
         }
@@ -178,7 +185,7 @@ class VertexLlmProvider(BaseLlmProvider):
 
         metadata, usage = attach_search_metadata(response, usage)
         combined_metadata = dict(metadata or {})
-        combined_metadata.setdefault("raw_response", response)
+        combined_metadata.setdefault("raw_response", _vertex_response_payload(response))
 
         return LlmResponse(
             id=response_id,
@@ -247,7 +254,7 @@ class VertexLlmProvider(BaseLlmProvider):
         llm_response = build_anthropic_response(response)
 
         metadata = dict(llm_response.metadata or {})
-        metadata.setdefault("raw_response", response)
+        metadata.setdefault("raw_response", _vertex_response_payload(response))
 
         usage_with_calls = llm_response.usage
         if llm_response.usage.web_search_calls in (None, 0):
@@ -298,6 +305,10 @@ class VertexLlmProvider(BaseLlmProvider):
 
 def _as_str(value: Any) -> str:
     return "" if value is None else str(value)
+
+
+def _vertex_response_payload(response: Any) -> Mapping[str, Any]:
+    return cast(Mapping[str, Any], response.model_dump())
 
 
 def _anthropic_messages_from_request(

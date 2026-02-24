@@ -7,7 +7,7 @@ from typing import Any, cast
 import pytest
 
 from caster_commons.clients import CHUTES
-from caster_commons.llm.providers.vertex.codec import normalize_messages
+from caster_commons.llm.providers.vertex.codec import build_choices, normalize_messages, resolve_thinking_config
 from caster_commons.llm.providers.vertex.provider import VertexLlmProvider
 from caster_commons.llm.schema import (
     GroundedLlmRequest,
@@ -52,6 +52,8 @@ class FakeResponse:
         class _Part:
             text = "ok"
             function_call = _FunctionCall()
+            thought = False
+            thought_signature = None
 
         class _Content:
             parts = [_Part()]
@@ -145,11 +147,16 @@ async def test_vertex_provider_invokes_generative_model(monkeypatch: pytest.Monk
     assert config.response_mime_type == "application/json"
     assert config.tools and len(config.tools) == 1
     assert config.tool_config.function_calling_config.mode.name == "ANY"
+    assert config.thinking_config is None
 
     assert response.raw_text == "ok"
     assert response.usage.total_tokens == 17
     tool_calls = response.tool_calls
     assert tool_calls[0].name == "lookup"
+    assert response.metadata is not None
+    raw_response = response.metadata["raw_response"]
+    assert isinstance(raw_response, dict)
+    assert raw_response["text"] == "ok"
 
 
 async def test_vertex_provider_normalizes_assistant_and_tool_roles(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -213,6 +220,86 @@ def test_vertex_codec_fails_fast_on_unknown_request_role() -> None:
                 ),
             )
         )
+
+
+def test_vertex_resolve_thinking_config_returns_none_when_effort_is_null() -> None:
+    config = resolve_thinking_config(model="gemini-2.5-pro", reasoning_effort=None)
+    assert config is None
+
+
+def test_vertex_resolve_thinking_config_sets_level_with_include_thoughts() -> None:
+    config = resolve_thinking_config(model="gemini-2.5-pro", reasoning_effort="high")
+    assert config is not None
+    assert config.include_thoughts is True
+    assert config.thinking_level is not None
+
+
+def test_vertex_codec_build_choices_separates_thought_text_from_assistant_output() -> None:
+    class _ThoughtPart:
+        text = "deliberation"
+        function_call = None
+        thought = True
+        thought_signature = "sig-1"
+
+    class _AssistantPart:
+        text = "final answer"
+        function_call = None
+        thought = False
+        thought_signature = None
+
+    class _Content:
+        parts = [_ThoughtPart(), _AssistantPart()]
+
+    class _Candidate:
+        content = _Content()
+        finish_reason = None
+        grounding_metadata = None
+
+    class _Response:
+        candidates = [_Candidate()]
+
+    choices = build_choices(_Response())
+    message = choices[0].message
+
+    assert tuple(part.text for part in message.content) == ("final answer",)
+    assert message.reasoning == {
+        "thought_text_parts": ("deliberation",),
+        "has_thought_signature": True,
+    }
+
+
+def test_vertex_codec_build_choices_treats_thought_signature_without_thought_flag_as_reasoning() -> None:
+    class _ThoughtPart:
+        text = "deliberation"
+        function_call = None
+        thought = False
+        thought_signature = "sig-2"
+
+    class _AssistantPart:
+        text = "final answer"
+        function_call = None
+        thought = False
+        thought_signature = None
+
+    class _Content:
+        parts = [_ThoughtPart(), _AssistantPart()]
+
+    class _Candidate:
+        content = _Content()
+        finish_reason = None
+        grounding_metadata = None
+
+    class _Response:
+        candidates = [_Candidate()]
+
+    choices = build_choices(_Response())
+    message = choices[0].message
+
+    assert tuple(part.text for part in message.content) == ("final answer",)
+    assert message.reasoning == {
+        "thought_text_parts": ("deliberation",),
+        "has_thought_signature": True,
+    }
 
 
 async def test_vertex_provider_routes_claude_models_to_anthropic(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -378,6 +465,7 @@ async def test_vertex_provider_injects_google_search_tool(monkeypatch: pytest.Mo
     assert config.tools
     tool = config.tools[0]
     assert tool.google_search is not None
+    assert config.thinking_config is None
 
 
 async def test_vertex_provider_includes_provider_native_grounded_tools(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -14,6 +14,7 @@ from caster_commons.llm.schema import (
     LlmChoiceMessage,
     LlmMessage,
     LlmMessageContentPart,
+    LlmMessageToolCall,
     LlmRequest,
     LlmResponse,
     LlmUsage,
@@ -57,8 +58,9 @@ class _StubProvider(BaseLlmProvider):
         *,
         response: LlmResponse | None = None,
         error: Exception | None = None,
+        provider_label: str = "openai",
     ) -> None:
-        super().__init__(provider_label="openai")
+        super().__init__(provider_label=provider_label)
         self._response = response
         self._error = error
         self.requests: list[AbstractLlmRequest] = []
@@ -74,12 +76,15 @@ class _StubProvider(BaseLlmProvider):
 
 def _request(
     *,
+    provider: str = "openai",
+    model: str = "gpt-5-mini",
+    reasoning_effort: str | None = None,
     internal_metadata: Mapping[str, object] | None = None,
     extra: Mapping[str, object] | None = None,
 ) -> LlmRequest:
     return LlmRequest(
-        provider="openai",
-        model="gpt-5-mini",
+        provider=provider,
+        model=model,
         messages=(
             LlmMessage(
                 role="user",
@@ -88,13 +93,18 @@ def _request(
         ),
         temperature=None,
         max_output_tokens=64,
+        reasoning_effort=reasoning_effort,
         output_mode="text",
         internal_metadata=internal_metadata,
         extra=extra,
     )
 
 
-def _response(*, metadata: Mapping[str, object] | None = None) -> LlmResponse:
+def _response(
+    *,
+    metadata: Mapping[str, object] | None = None,
+    usage: LlmUsage | None = None,
+) -> LlmResponse:
     return LlmResponse(
         id="response-id",
         choices=(
@@ -108,7 +118,7 @@ def _response(*, metadata: Mapping[str, object] | None = None) -> LlmResponse:
                 finish_reason="stop",
             ),
         ),
-        usage=LlmUsage(prompt_tokens=11, completion_tokens=7, total_tokens=18),
+        usage=usage or LlmUsage(prompt_tokens=11, completion_tokens=7, total_tokens=18),
         metadata=metadata,
         finish_reason="stop",
     )
@@ -122,7 +132,7 @@ async def test_invoke_success_updates_generation_payload(monkeypatch: pytest.Mon
             "feed_run_id": "feed-run-123",
         }
     )
-    response = _response(metadata={"source": "stub"})
+    response = _response(metadata={"source": "stub", "raw_response": {"response_id": "provider-raw"}})
     provider = _StubProvider(response=response)
     scope = _Scope(generation=object())
     start_calls: list[dict[str, object]] = []
@@ -179,7 +189,10 @@ async def test_invoke_success_updates_generation_payload(monkeypatch: pytest.Mon
     update_call = update_calls[0]
     assert update_call.generation is scope.generation
     assert update_call.input_payload is None
-    assert update_call.output == {"raw_text": "ok", "payload": response.payload}
+    assert update_call.output == {
+        "assistant": {"role": "assistant", "text": "ok"},
+        "finish_reason": "stop",
+    }
     assert update_call.usage == response.usage
     assert update_call.metadata is not None
     assert update_call.metadata["provider"] == "openai"
@@ -187,12 +200,77 @@ async def test_invoke_success_updates_generation_payload(monkeypatch: pytest.Mon
     assert update_call.metadata["use_case"] == "claim_generation"
     assert update_call.metadata["feed_run_id"] == "feed-run-123"
     assert update_call.metadata["finish_reason"] == "stop"
-    assert update_call.metadata["response_metadata"] == {"source": "stub"}
+    assert update_call.metadata["response_metadata"] == {
+        "source": "stub",
+        "raw_response": {"response_id": "provider-raw"},
+    }
+    assert update_call.metadata["raw"] == {
+        "request": provider_module._request_snapshot(request),
+        "response_payload": response.payload,
+        "response_metadata": {"source": "stub", "raw_response": {"response_id": "provider-raw"}},
+        "provider_response": {"response_id": "provider-raw"},
+    }
 
     elapsed_ms = update_call.metadata["elapsed_ms"]
     wait_ms = update_call.metadata["wait_ms"]
     assert isinstance(elapsed_ms, float)
     assert isinstance(wait_ms, float)
+
+
+async def test_invoke_skips_child_observation_recording_when_generation_scope_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request()
+    response = _response(metadata={"source": "stub"})
+    provider = _StubProvider(response=response)
+    scope = _Scope(generation=None)
+    child_record_calls: list[dict[str, object]] = []
+
+    def fake_start(
+        *,
+        trace_id: str | None,
+        provider_label: str,
+        request: AbstractLlmRequest,
+    ) -> _Scope:
+        return scope
+
+    def fake_update(
+        generation: object | None,
+        *,
+        input_payload: object | None = None,
+        output: object | None = None,
+        usage: LlmUsage | None = None,
+        metadata: Mapping[str, object] | None = None,
+    ) -> None:
+        return None
+
+    def fake_record_child_observations(
+        *,
+        provider_label: str,
+        model: str,
+        response: LlmResponse,
+        response_metadata: Mapping[str, object],
+    ) -> None:
+        child_record_calls.append(
+            {
+                "provider_label": provider_label,
+                "model": model,
+                "response": response,
+                "response_metadata": dict(response_metadata),
+            }
+        )
+
+    monkeypatch.setattr(provider_module, "start_llm_generation", fake_start)
+    monkeypatch.setattr(provider_module, "update_generation_best_effort", fake_update)
+    monkeypatch.setattr(provider_module, "_record_child_observations", fake_record_child_observations)
+
+    result = await provider.invoke(request)
+
+    assert result == response
+    assert provider.requests == [request]
+    assert scope.entered == 1
+    assert scope.exited == 1
+    assert child_record_calls == []
 
 
 async def test_invoke_error_updates_generation_error_and_reraises(
@@ -303,6 +381,98 @@ async def test_invoke_with_none_generation_still_returns_response(
     assert update_calls[0].generation is None
 
 
+@pytest.mark.parametrize(
+    ("provider_label", "expected_retriever_name"),
+    (
+        ("vertex", "vertex.grounding.search"),
+        ("openai", "openai.search.query"),
+    ),
+)
+async def test_invoke_records_retriever_and_tool_child_observations(
+    monkeypatch: pytest.MonkeyPatch,
+    provider_label: str,
+    expected_retriever_name: str,
+) -> None:
+    request = _request()
+    response = LlmResponse(
+        id="response-id",
+        choices=(
+            LlmChoice(
+                index=0,
+                message=LlmChoiceMessage(
+                    role="assistant",
+                    content=(LlmMessageContentPart(type="text", text="ok"),),
+                    tool_calls=(
+                        LlmMessageToolCall(
+                            id="call-1",
+                            type="function",
+                            name="search_repo",
+                            arguments='{"query":"caster"}',
+                        ),
+                    ),
+                ),
+                finish_reason="tool_calls",
+            ),
+        ),
+        usage=LlmUsage(prompt_tokens=5, completion_tokens=2, total_tokens=7, web_search_calls=1),
+        metadata={"web_search_queries": ("caster subnet",), "source": "stub"},
+        finish_reason="tool_calls",
+    )
+    provider = _StubProvider(response=response, provider_label=provider_label)
+    scope = _Scope(generation=object())
+    child_calls: list[dict[str, object]] = []
+
+    def fake_start(
+        *,
+        trace_id: str | None,
+        provider_label: str,
+        request: AbstractLlmRequest,
+    ) -> _Scope:
+        return scope
+
+    def fake_update(
+        generation: object | None,
+        *,
+        input_payload: object | None = None,
+        output: object | None = None,
+        usage: LlmUsage | None = None,
+        metadata: Mapping[str, object] | None = None,
+    ) -> None:
+        return None
+
+    def fake_record_child_observation(
+        *,
+        name: str,
+        as_type: str,
+        input_payload: object | None = None,
+        output: object | None = None,
+        usage: LlmUsage | None = None,
+        metadata: Mapping[str, object] | None = None,
+    ) -> None:
+        child_calls.append(
+            {
+                "name": name,
+                "as_type": as_type,
+                "input_payload": input_payload,
+                "output": output,
+                "metadata": metadata,
+            }
+        )
+
+    monkeypatch.setattr(provider_module, "start_llm_generation", fake_start)
+    monkeypatch.setattr(provider_module, "update_generation_best_effort", fake_update)
+    monkeypatch.setattr(provider_module, "record_child_observation_best_effort", fake_record_child_observation)
+
+    await provider.invoke(request)
+
+    assert len(child_calls) == 2
+    assert child_calls[0]["as_type"] == "retriever"
+    assert child_calls[0]["name"] == expected_retriever_name
+    assert child_calls[1]["as_type"] == "tool"
+    assert child_calls[1]["name"] == "search_repo"
+    assert all(call["as_type"] != "agent" for call in child_calls)
+
+
 async def test_invoke_preserves_provider_facing_extra_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     request = _request(
         internal_metadata={"use_case": "tool_runtime_invoker"},
@@ -338,3 +508,179 @@ async def test_invoke_preserves_provider_facing_extra_payload(monkeypatch: pytes
     assert provider.requests == [request]
     assert provider.requests[0].extra == {"web_search_options": {"mode": "auto"}}
     assert provider.requests[0].internal_metadata == {"use_case": "tool_runtime_invoker"}
+
+
+async def test_invoke_vertex_gemini_reasoning_marks_include_thoughts_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request(
+        provider="vertex",
+        model="gemini-2.5-pro",
+        reasoning_effort="high",
+    )
+    response = _response(metadata={"source": "stub"})
+    provider = _StubProvider(response=response, provider_label="vertex")
+    scope = _Scope(generation=object())
+    update_calls: list[_UpdateCall] = []
+
+    def fake_start(
+        *,
+        trace_id: str | None,
+        provider_label: str,
+        request: AbstractLlmRequest,
+    ) -> _Scope:
+        return scope
+
+    def fake_update(
+        generation: object | None,
+        *,
+        input_payload: object | None = None,
+        output: object | None = None,
+        usage: LlmUsage | None = None,
+        metadata: Mapping[str, object] | None = None,
+    ) -> None:
+        update_calls.append(
+            _UpdateCall(
+                generation=generation,
+                input_payload=input_payload,
+                output=output,
+                usage=usage,
+                metadata=metadata,
+            )
+        )
+
+    monkeypatch.setattr(provider_module, "start_llm_generation", fake_start)
+    monkeypatch.setattr(provider_module, "update_generation_best_effort", fake_update)
+
+    await provider.invoke(request)
+
+    assert len(update_calls) == 1
+    update_call = update_calls[0]
+    assert update_call.metadata is not None
+    reasoning = update_call.metadata.get("reasoning")
+    assert isinstance(reasoning, Mapping)
+    assert reasoning["include_thoughts_requested"] is True
+    assert reasoning["reasoning_effort"] == "high"
+
+
+async def test_invoke_vertex_claude_reasoning_does_not_mark_include_thoughts_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request(
+        provider="vertex",
+        model="publishers/anthropic/models/claude-3-7-sonnet",
+        reasoning_effort="high",
+    )
+    response = _response(
+        metadata={"source": "stub"},
+        usage=LlmUsage(
+            prompt_tokens=11,
+            completion_tokens=7,
+            total_tokens=18,
+            reasoning_tokens=4,
+        ),
+    )
+    provider = _StubProvider(response=response, provider_label="vertex")
+    scope = _Scope(generation=object())
+    update_calls: list[_UpdateCall] = []
+
+    def fake_start(
+        *,
+        trace_id: str | None,
+        provider_label: str,
+        request: AbstractLlmRequest,
+    ) -> _Scope:
+        return scope
+
+    def fake_update(
+        generation: object | None,
+        *,
+        input_payload: object | None = None,
+        output: object | None = None,
+        usage: LlmUsage | None = None,
+        metadata: Mapping[str, object] | None = None,
+    ) -> None:
+        update_calls.append(
+            _UpdateCall(
+                generation=generation,
+                input_payload=input_payload,
+                output=output,
+                usage=usage,
+                metadata=metadata,
+            )
+        )
+
+    monkeypatch.setattr(provider_module, "start_llm_generation", fake_start)
+    monkeypatch.setattr(provider_module, "update_generation_best_effort", fake_update)
+
+    await provider.invoke(request)
+
+    assert len(update_calls) == 1
+    update_call = update_calls[0]
+    assert update_call.metadata is not None
+    reasoning = update_call.metadata.get("reasoning")
+    assert isinstance(reasoning, Mapping)
+    assert reasoning["include_thoughts_requested"] is False
+    assert reasoning["reasoning_tokens"] == 4
+
+
+async def test_invoke_vertex_maas_openai_reasoning_does_not_mark_include_thoughts_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request(
+        provider="vertex",
+        model="publishers/openai/models/gpt-oss-20b-maas",
+        reasoning_effort="high",
+    )
+    response = _response(
+        metadata={"source": "stub"},
+        usage=LlmUsage(
+            prompt_tokens=11,
+            completion_tokens=7,
+            total_tokens=18,
+            reasoning_tokens=3,
+        ),
+    )
+    provider = _StubProvider(response=response, provider_label="vertex")
+    scope = _Scope(generation=object())
+    update_calls: list[_UpdateCall] = []
+
+    def fake_start(
+        *,
+        trace_id: str | None,
+        provider_label: str,
+        request: AbstractLlmRequest,
+    ) -> _Scope:
+        return scope
+
+    def fake_update(
+        generation: object | None,
+        *,
+        input_payload: object | None = None,
+        output: object | None = None,
+        usage: LlmUsage | None = None,
+        metadata: Mapping[str, object] | None = None,
+    ) -> None:
+        update_calls.append(
+            _UpdateCall(
+                generation=generation,
+                input_payload=input_payload,
+                output=output,
+                usage=usage,
+                metadata=metadata,
+            )
+        )
+
+    monkeypatch.setattr(provider_module, "start_llm_generation", fake_start)
+    monkeypatch.setattr(provider_module, "update_generation_best_effort", fake_update)
+
+    await provider.invoke(request)
+
+    assert len(update_calls) == 1
+    update_call = update_calls[0]
+    assert update_call.metadata is not None
+    reasoning = update_call.metadata.get("reasoning")
+    assert isinstance(reasoning, Mapping)
+    assert reasoning["include_thoughts_requested"] is False
+    assert reasoning["reasoning_effort"] == "high"
+    assert reasoning["reasoning_tokens"] == 3

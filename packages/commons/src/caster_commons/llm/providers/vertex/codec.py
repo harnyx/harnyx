@@ -95,18 +95,30 @@ def resolve_tool_config(
     return None
 
 
+def supports_thinking_config(*, model: str) -> bool:
+    normalized_model = model.strip().lower()
+    return "gemini" in normalized_model
+
+
 def resolve_thinking_config(
     *, model: str, reasoning_effort: str | None,
 ) -> types.ThinkingConfig | None:
+    include_thoughts = True
     if reasoning_effort is None:
         return None
 
     effort_raw = reasoning_effort.strip()
 
     try:
-        return types.ThinkingConfig(thinking_budget=int(effort_raw))
+        return types.ThinkingConfig(
+            thinking_budget=int(effort_raw),
+            include_thoughts=include_thoughts,
+        )
     except ValueError:
-        return types.ThinkingConfig(thinking_level=types.ThinkingLevel[effort_raw.upper()])
+        return types.ThinkingConfig(
+            thinking_level=types.ThinkingLevel[effort_raw.upper()],
+            include_thoughts=include_thoughts,
+        )
 
 
 def build_choices(response: types.GenerateContentResponse) -> tuple[LlmChoice, ...]:
@@ -117,7 +129,7 @@ def build_choices(response: types.GenerateContentResponse) -> tuple[LlmChoice, .
 
 
 def _choice_from_candidate(index: int, candidate: Any) -> LlmChoice:
-    parts, tool_calls = _candidate_parts_and_calls(candidate)
+    parts, tool_calls, reasoning = _candidate_parts_and_calls(candidate)
     finish_reason = candidate.finish_reason.value.lower() if candidate.finish_reason is not None else "stop"
     return LlmChoice(
         index=index,
@@ -125,24 +137,56 @@ def _choice_from_candidate(index: int, candidate: Any) -> LlmChoice:
             role="assistant",
             content=tuple(parts),
             tool_calls=tuple(tool_calls) if tool_calls else None,
+            reasoning=reasoning,
         ),
         finish_reason=finish_reason,
     )
 
 
-def _candidate_parts_and_calls(candidate: Any) -> tuple[list[LlmMessageContentPart], list[LlmMessageToolCall]]:
+def _candidate_parts_and_calls(
+    candidate: Any,
+) -> tuple[list[LlmMessageContentPart], list[LlmMessageToolCall], dict[str, Any] | None]:
     candidate_content = candidate.content
     if candidate_content is None or not candidate_content.parts:
-        return [], []
+        return [], [], None
 
     parts: list[LlmMessageContentPart] = []
     tool_calls: list[LlmMessageToolCall] = []
+    thought_text_parts: list[str] = []
+    has_thought_signature = False
     for part in candidate_content.parts:
         if part.function_call is not None:
             _append_tool_call(tool_calls, parts, part)
             continue
+
+        is_reasoning_part = bool(part.thought) or bool(part.thought_signature)
+        if is_reasoning_part:
+            text_value = str(part.text or "")
+            if text_value:
+                thought_text_parts.append(text_value)
+            if part.thought_signature:
+                has_thought_signature = True
+            continue
+
         parts.append(_text_part(str(part.text or "")))
-    return parts, tool_calls
+    reasoning = _reasoning_payload(
+        thought_text_parts=thought_text_parts,
+        has_thought_signature=has_thought_signature,
+    )
+    return parts, tool_calls, reasoning
+
+
+def _reasoning_payload(
+    *,
+    thought_text_parts: list[str],
+    has_thought_signature: bool,
+) -> dict[str, Any] | None:
+    if not thought_text_parts and not has_thought_signature:
+        return None
+    return {
+        "thought_text_parts": tuple(thought_text_parts),
+        "has_thought_signature": has_thought_signature,
+    }
 
 
 def _append_tool_call(
@@ -312,6 +356,7 @@ __all__ = [
     "serialize_tools",
     "serialize_provider_native_tools",
     "resolve_tool_config",
+    "supports_thinking_config",
     "resolve_thinking_config",
     "build_choices",
     "extract_usage",
