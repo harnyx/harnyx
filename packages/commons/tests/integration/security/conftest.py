@@ -21,6 +21,10 @@ from caster_commons.sandbox.seccomp.paths import default_profile_path
 DOCKER_CLI = os.getenv("DOCKER_CLI", "docker")
 DOCKER_BINARY = shutil.which(DOCKER_CLI) or DOCKER_CLI
 DOCKER_IMAGE_PATTERN = re.compile(r"^[\w./:-]+$")
+SECURITY_SANDBOX_IMAGE = os.getenv(
+    "CASTER_SECURITY_SANDBOX_IMAGE",
+    "local/caster-sandbox:0.1.0-dev",
+)
 
 
 @pytest.fixture(scope="session")
@@ -67,7 +71,7 @@ def _find_free_port() -> int:
 @pytest.fixture
 def sandbox(attacker_agent_path: Path):
     _require_docker_cli()
-    image = os.getenv("CASTER_SANDBOX_IMAGE", "local/caster-sandbox:0.1.0-dev")
+    image = SECURITY_SANDBOX_IMAGE
     _require_image(image)
 
     sandbox_network = "bridge"
@@ -89,6 +93,7 @@ def sandbox(attacker_agent_path: Path):
             "SANDBOX_HOST": "0.0.0.0",  # noqa: S104 - container needs to bind all interfaces
             "SANDBOX_PORT": "8000",
             "CASTER_AGENT_PATH": "/sandbox/agent.py",
+            "ENTRYPOINT_TIMEOUT_SECONDS": "5",
         },
         volumes=((str(attacker_agent_path), "/sandbox/agent.py", "ro"),),
         wait_for_healthz=True,
