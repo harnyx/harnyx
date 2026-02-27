@@ -118,7 +118,7 @@ class LlmSettings(BaseSettings):
     chutes_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="CHUTES_API_KEY")
 
     # --- Concurrency limits ---
-    vertex_max_concurrent: int = Field(default=8, alias="VERTEX_MAX_CONCURRENT")
+    vertex_max_concurrent: int = Field(default=30, alias="VERTEX_MAX_CONCURRENT")
     chutes_max_concurrent: int = Field(default=5, alias="CHUTES_MAX_CONCURRENT")
     desearch_max_concurrent: int = Field(default=5, alias="DESEARCH_MAX_CONCURRENT")
 
