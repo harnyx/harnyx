@@ -142,10 +142,7 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             kind=SpanKind.CLIENT,
             attributes=span_attributes,
         ) as span:
-            span_context = span.get_span_context()
-            trace_id = format(span_context.trace_id, "032x") if span_context.trace_id else None
             with start_llm_generation(
-                trace_id=trace_id,
                 provider_label=self._provider_label,
                 request=request,
             ) as generation:

@@ -162,13 +162,11 @@ async def test_invoke_success_updates_generation_payload(monkeypatch: pytest.Mon
 
     def fake_start(
         *,
-        trace_id: str | None,
         provider_label: str,
         request: AbstractLlmRequest,
     ) -> _Scope:
         start_calls.append(
             {
-                "trace_id": trace_id,
                 "provider_label": provider_label,
                 "request": request,
             }
@@ -267,7 +265,6 @@ async def test_invoke_success_handles_json_safe_vertex_thought_signature_in_raw_
 
     def fake_start(
         *,
-        trace_id: str | None,
         provider_label: str,
         request: AbstractLlmRequest,
     ) -> _Scope:
@@ -329,7 +326,6 @@ async def test_invoke_skips_child_observation_recording_when_generation_scope_mi
 
     def fake_start(
         *,
-        trace_id: str | None,
         provider_label: str,
         request: AbstractLlmRequest,
     ) -> _Scope:
@@ -384,7 +380,6 @@ async def test_invoke_error_updates_generation_error_and_reraises(
 
     def fake_start(
         *,
-        trace_id: str | None,
         provider_label: str,
         request: AbstractLlmRequest,
     ) -> _Scope:
@@ -445,7 +440,6 @@ async def test_invoke_verifier_failure_includes_raw_payload_in_error_metadata(
 
     def fake_start(
         *,
-        trace_id: str | None,
         provider_label: str,
         request: AbstractLlmRequest,
     ) -> _Scope:
@@ -498,7 +492,6 @@ async def test_invoke_with_none_generation_still_returns_response(
 
     def fake_start(
         *,
-        trace_id: str | None,
         provider_label: str,
         request: AbstractLlmRequest,
     ) -> _Scope:
@@ -578,7 +571,6 @@ async def test_invoke_records_retriever_and_tool_child_observations(
 
     def fake_start(
         *,
-        trace_id: str | None,
         provider_label: str,
         request: AbstractLlmRequest,
     ) -> _Scope:
@@ -638,7 +630,6 @@ async def test_invoke_preserves_provider_facing_extra_payload(monkeypatch: pytes
 
     def fake_start(
         *,
-        trace_id: str | None,
         provider_label: str,
         request: AbstractLlmRequest,
     ) -> _Scope:
@@ -679,7 +670,6 @@ async def test_invoke_vertex_gemini_reasoning_marks_include_thoughts_requested(
 
     def fake_start(
         *,
-        trace_id: str | None,
         provider_label: str,
         request: AbstractLlmRequest,
     ) -> _Scope:
@@ -740,7 +730,6 @@ async def test_invoke_vertex_claude_reasoning_does_not_mark_include_thoughts_req
 
     def fake_start(
         *,
-        trace_id: str | None,
         provider_label: str,
         request: AbstractLlmRequest,
     ) -> _Scope:
@@ -801,7 +790,6 @@ async def test_invoke_vertex_maas_openai_reasoning_does_not_mark_include_thought
 
     def fake_start(
         *,
-        trace_id: str | None,
         provider_label: str,
         request: AbstractLlmRequest,
     ) -> _Scope:

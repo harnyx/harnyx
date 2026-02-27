@@ -119,7 +119,6 @@ def test_start_llm_generation_returns_none_scope_when_unconfigured(
         monkeypatch.delenv(key, raising=False)
 
     scope = langfuse.start_llm_generation(
-        trace_id="trace-id",
         provider_label="openai",
         request=_request(),
     )
@@ -445,7 +444,6 @@ def test_close_propagate_scope_swallows_exit_exception_and_clears_state(caplog: 
 
     scope = langfuse._LangfuseGenerationScope(
         client=None,
-        trace_id="trace-id",
         provider_label="openai",
         request=_request(),
     )
@@ -492,7 +490,6 @@ def test_generation_scope_enter_error_path_does_not_raise_when_propagate_cleanup
 
     scope = langfuse._LangfuseGenerationScope(
         client=FakeClient(),
-        trace_id="trace-id",
         provider_label="openai",
         request=_request(),
     )
@@ -524,7 +521,6 @@ def test_generation_scope_exit_path_swallows_propagate_cleanup_failure(
 
     scope = langfuse._LangfuseGenerationScope(
         client=None,
-        trace_id="trace-id",
         provider_label="openai",
         request=_request(),
     )

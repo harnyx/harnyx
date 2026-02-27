@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import asdict, is_dataclass
 from types import TracebackType
-from typing import Any, Literal, Protocol, cast
+from typing import Literal, Protocol, cast
 
 from langfuse import Langfuse, propagate_attributes
 
@@ -39,12 +39,10 @@ class _LangfuseGenerationScope(AbstractContextManager[LangfuseGeneration | None]
         self,
         *,
         client: Langfuse | None,
-        trace_id: str | None,
         provider_label: str,
         request: AbstractLlmRequest,
     ) -> None:
         self._client = client
-        self._trace_id = trace_id
         self._provider_label = provider_label
         self._request = request
         self._observation_cm: AbstractContextManager[object] | None = None
@@ -73,7 +71,6 @@ class _LangfuseGenerationScope(AbstractContextManager[LangfuseGeneration | None]
                     as_type="generation",
                     model=self._request.model,
                     model_parameters=_model_parameters(self._request),
-                    trace_context=cast(Any, {"trace_id": self._trace_id} if self._trace_id else None),
                 ),
             )
             generation = cast(LangfuseGeneration, self._observation_cm.__enter__())
@@ -245,7 +242,6 @@ def get_client() -> Langfuse | None:
 
 def start_llm_generation(
     *,
-    trace_id: str | None,
     provider_label: str,
     request: AbstractLlmRequest,
 ) -> AbstractContextManager[LangfuseGeneration | None]:
@@ -258,7 +254,6 @@ def start_llm_generation(
     client = get_client()
     return _LangfuseGenerationScope(
         client=client,
-        trace_id=trace_id,
         provider_label=provider_label,
         request=request,
     )
