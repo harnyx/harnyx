@@ -38,7 +38,7 @@ def prepare_credentials(
 
     if credentials_info is not None:
         return (
-            ServiceAccountCredentials.from_service_account_info(  # type: ignore[no-untyped-call]
+            ServiceAccountCredentials.from_service_account_info(
                 credentials_info,
                 scopes=(_CLOUD_PLATFORM_SCOPE,),
             ),
@@ -46,7 +46,7 @@ def prepare_credentials(
         )
     if credential_path:
         return (
-            ServiceAccountCredentials.from_service_account_file(  # type: ignore[no-untyped-call]
+            ServiceAccountCredentials.from_service_account_file(
                 credential_path,
                 scopes=(_CLOUD_PLATFORM_SCOPE,),
             ),

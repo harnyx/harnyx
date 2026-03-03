@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, ParamSpec, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Literal, ParamSpec, TypeVar, cast, overload
 
 if TYPE_CHECKING:
     from caster_miner_sdk.criterion_evaluation import CriterionEvaluationResponse
@@ -73,7 +73,7 @@ def entrypoint(name: str | None = None) -> Callable[[Callable[P, R]], Callable[P
     """Decorator that registers a callable as a miner entrypoint."""
 
     def decorator(func: Callable[P, R]) -> Callable[P, R]:
-        entrypoint_name = name or func.__name__
+        entrypoint_name = name or cast(Any, func).__name__
         _ENTRYPOINT_REGISTRY.register(entrypoint_name, func)
         return func
 

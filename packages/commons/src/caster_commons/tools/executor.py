@@ -340,33 +340,19 @@ def _build_tool_results(
 
 
 def _build_search_results(tool_name: SearchToolName, payload: object) -> tuple[ToolResult, ...]:
-    if not isinstance(payload, Mapping):
-        return ()
-
-    data = payload.get("data")
-    if not isinstance(data, Sequence) or isinstance(data, (str, bytes, bytearray)):
-        return ()
+    parsed_payload = _parse_search_tool_payload(tool_name, payload)
     results: list[SearchToolResult] = []
-
-    for entry in data:
-        if not isinstance(entry, Mapping):
-            continue
-
-        url_key, note_key, title_key = _SEARCH_RESULT_FIELDS[tool_name]
-        url = _coerce_str(entry.get(url_key))
-        note = _coerce_str(entry.get(note_key))
-        title = _coerce_str(entry.get(title_key))
-
-        if not url:
+    for entry in parsed_payload.entries:
+        if entry.url is None:
             continue
 
         results.append(
             SearchToolResult(
                 index=len(results),
                 result_id=uuid4().hex,
-                url=url,
-                note=note,
-                title=title,
+                url=entry.url,
+                note=entry.note,
+                title=entry.title,
             ),
         )
 
@@ -391,6 +377,70 @@ def _coerce_str(value: object) -> str | None:
     return text if text else None
 
 
+@dataclass(frozen=True, slots=True)
+class _SearchToolPayload:
+    entries: tuple[_SearchResultPayload, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _SearchResultPayload:
+    url: str | None
+    note: str | None
+    title: str | None
+
+
+def _parse_search_tool_payload(tool_name: SearchToolName, payload: object) -> _SearchToolPayload:
+    payload_mapping = _mapping_with_string_keys(payload)
+    if payload_mapping is None:
+        return _SearchToolPayload(entries=())
+    data = payload_mapping.get("data")
+    if not isinstance(data, Sequence) or isinstance(data, (str, bytes, bytearray)):
+        return _SearchToolPayload(entries=())
+
+    url_key, note_key, title_key = _SEARCH_RESULT_FIELDS[tool_name]
+    entries: list[_SearchResultPayload] = []
+    for entry in data:
+        parsed_entry = _parse_search_result_payload(entry, url_key=url_key, note_key=note_key, title_key=title_key)
+        if parsed_entry is not None:
+            entries.append(parsed_entry)
+    return _SearchToolPayload(entries=tuple(entries))
+
+
+def _parse_search_result_payload(
+    value: object,
+    *,
+    url_key: str,
+    note_key: str,
+    title_key: str,
+) -> _SearchResultPayload | None:
+    entry_mapping = _mapping_with_string_keys(value)
+    if entry_mapping is None:
+        return None
+    return _SearchResultPayload(
+        url=_coerce_str(entry_mapping.get(url_key)),
+        note=_coerce_str(entry_mapping.get(note_key)),
+        title=_coerce_str(entry_mapping.get(title_key)),
+    )
+
+
+def _mapping_with_string_keys(value: object) -> dict[str, object] | None:
+    if not isinstance(value, Mapping):
+        return None
+    result: dict[str, object] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            return None
+        result[key] = item
+    return result
+
+
+def _require_string_key_mapping(value: object, *, label: str) -> dict[str, object]:
+    mapping = _mapping_with_string_keys(value)
+    if mapping is None:
+        raise ValueError(label)
+    return mapping
+
+
 def _extract_llm_usage(
     request: ToolInvocationRequest,
     payload: Mapping[str, object | None] | Sequence[object] | object,
@@ -398,8 +448,7 @@ def _extract_llm_usage(
     if request.tool not in LLM_TOOLS:
         raise ValueError(f"expected llm tool request, got {request.tool!r}")
 
-    if not isinstance(payload, Mapping):
-        raise ValueError("llm tool response must be a mapping")
+    parsed_payload = _parse_llm_usage_payload(payload)
 
     provider = "chutes"  # billing reference provider
 
@@ -408,10 +457,9 @@ def _extract_llm_usage(
         raise ValueError("llm tool request must include a 'model' kwarg")
     model: ToolModelName = parse_tool_model(model_raw)
 
-    llm_response = LlmResponse.from_payload(payload)
-    usage_obj = llm_response.usage
+    usage_obj = parsed_payload.llm_response.usage
     if usage_obj is None:
-        keys = ", ".join(str(key) for key in sorted(payload.keys())) or "none"
+        keys = ", ".join(str(key) for key in sorted(parsed_payload.payload_mapping.keys())) or "none"
         raise ValueError(
             "llm tool response missing 'usage' field "
             f"(payload keys: {keys})",
@@ -434,6 +482,18 @@ def _extract_llm_usage(
     resolved_total = total if total is not None else (prompt or 0) + (completion or 0)
     call_cost = price_llm(model, usage_obj)
     return resolved_total, usage_details, call_cost
+
+
+@dataclass(frozen=True, slots=True)
+class _LlmUsagePayload:
+    payload_mapping: dict[str, object]
+    llm_response: LlmResponse
+
+
+def _parse_llm_usage_payload(payload: object) -> _LlmUsagePayload:
+    payload_mapping = _require_string_key_mapping(payload, label="llm tool response must be a mapping")
+    llm_response = LlmResponse.from_payload(payload_mapping)
+    return _LlmUsagePayload(payload_mapping=payload_mapping, llm_response=llm_response)
 
 
 SENSITIVE_KEY_SUBSTRINGS = (

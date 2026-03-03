@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable, Mapping
-from typing import Any, cast
+from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
@@ -108,7 +109,7 @@ class ChutesLlmProvider(BaseLlmProvider):
         body = await self._parse_body(response)
         llm_response = self._payload_to_response(body)
         metadata = dict(llm_response.metadata or {})
-        metadata.setdefault("raw_response", body)
+        metadata.setdefault("raw_response", body.raw)
         return LlmResponse(
             id=llm_response.id,
             choices=llm_response.choices,
@@ -117,17 +118,18 @@ class ChutesLlmProvider(BaseLlmProvider):
             finish_reason=llm_response.finish_reason,
         )
 
-    async def _parse_body(self, response: httpx.Response) -> Mapping[str, Any]:
+    async def _parse_body(self, response: httpx.Response) -> _ChutesResponsePayload:
         try:
-            return cast(Mapping[str, Any], response.json())
+            payload = response.json()
         except ValueError as exc:  # pragma: no cover - network dependent
             raise RuntimeError("chutes chat completions returned non-JSON payload") from exc
+        return _parse_chutes_response_payload(payload)
 
     @staticmethod
-    def _payload_to_response(payload: Mapping[str, Any]) -> LlmResponse:
-        choices = _build_choices(payload)
-        usage = _extract_usage(payload) or LlmUsage()
-        response_id = _as_str(payload.get("id"))
+    def _payload_to_response(payload: _ChutesResponsePayload) -> LlmResponse:
+        choices = payload.choices
+        usage = payload.usage or LlmUsage()
+        response_id = payload.response_id
         return LlmResponse(
             id=response_id,
             choices=choices,
@@ -211,8 +213,27 @@ def _serialize_message(message: LlmMessage) -> dict[str, Any]:
     }
 
 
-def _build_choices(payload: Mapping[str, Any]) -> tuple[LlmChoice, ...]:
-    choices_payload = payload.get("choices")
+@dataclass(frozen=True, slots=True)
+class _ChutesResponsePayload:
+    raw: dict[str, Any]
+    response_id: str
+    choices: tuple[LlmChoice, ...]
+    usage: LlmUsage | None
+
+
+def _parse_chutes_response_payload(value: object) -> _ChutesResponsePayload:
+    payload = _require_object_mapping(value, label="chutes chat completions payload must be a JSON object")
+    return _ChutesResponsePayload(
+        raw=payload,
+        response_id=_as_str(payload.get("id")),
+        choices=_build_choices(payload.get("choices")),
+        usage=_extract_usage(payload.get("usage")),
+    )
+
+
+def _build_choices(choices_payload: object) -> tuple[LlmChoice, ...]:
+    if choices_payload is None:
+        return ()
     if not isinstance(choices_payload, list):
         return ()
 
@@ -224,8 +245,11 @@ def _build_choices(payload: Mapping[str, Any]) -> tuple[LlmChoice, ...]:
     return tuple(choices)
 
 
-def _choice_from_payload(choice_payload: Any, *, index: int) -> LlmChoice | None:
-    message = _message_payload(choice_payload)
+def _choice_from_payload(choice_payload: object, *, index: int) -> LlmChoice | None:
+    choice = _mapping_with_string_keys(choice_payload)
+    if choice is None:
+        return None
+    message = _mapping_with_string_keys(choice.get("message"))
     if message is None:
         return None
 
@@ -247,87 +271,94 @@ def _choice_from_payload(choice_payload: Any, *, index: int) -> LlmChoice | None
     )
 
 
-def _message_payload(choice_payload: Any) -> Mapping[str, Any] | None:
-    if not isinstance(choice_payload, Mapping):
-        return None
-    message = choice_payload.get("message")
-    return message if isinstance(message, Mapping) else None
-
-
-def _message_parts(message: Mapping[str, Any]) -> tuple[LlmMessageContentPart, ...]:
+def _message_parts(message: Mapping[str, object]) -> tuple[LlmMessageContentPart, ...]:
     content_value = message.get("content")
     if isinstance(content_value, str):
         return (LlmMessageContentPart(type="text", text=content_value),)
     if isinstance(content_value, list):
         parts: list[LlmMessageContentPart] = []
         for part in content_value:
-            if not isinstance(part, Mapping):
+            part_mapping = _mapping_with_string_keys(part)
+            if part_mapping is None:
                 continue
-            text_value = part.get("text")
-            if isinstance(text_value, str):
-                parts.append(
-                    LlmMessageContentPart(
-                        type=str(part.get("type", "text")),
-                        text=text_value,
-                    ),
+            text_raw = part_mapping.get("text")
+            if not isinstance(text_raw, str):
+                continue
+            type_raw = part_mapping.get("type")
+            if type_raw is not None and not isinstance(type_raw, str):
+                continue
+            parts.append(
+                LlmMessageContentPart(
+                    type=type_raw or "text",
+                    text=text_raw,
                 )
+            )
         return tuple(parts)
     return ()
 
 
-def _message_tool_calls(message: Mapping[str, Any]) -> tuple[LlmMessageToolCall, ...]:
+def _message_tool_calls(message: Mapping[str, object]) -> tuple[LlmMessageToolCall, ...]:
     tool_calls_value = message.get("tool_calls")
-    if not isinstance(tool_calls_value, list):
+    if tool_calls_value is None:
         return ()
+    if not isinstance(tool_calls_value, list):
+        raise RuntimeError("chutes message tool_calls must be an array")
 
     calls: list[LlmMessageToolCall] = []
-    for call_payload in tool_calls_value:
-        call = _tool_call_from_payload(call_payload, len(calls))
+    for index, call_payload in enumerate(tool_calls_value):
+        call = _tool_call_from_payload(call_payload, index=index)
         if call is not None:
             calls.append(call)
     return tuple(calls)
 
 
-def _message_reasoning(message: Mapping[str, Any]) -> Mapping[str, Any] | None:
+def _message_reasoning(message: Mapping[str, object]) -> Mapping[str, Any] | None:
     reasoning_value = message.get("reasoning")
+    if reasoning_value is None:
+        return None
     if isinstance(reasoning_value, Mapping):
-        return dict(reasoning_value)
-    return None
+        return _require_object_mapping(reasoning_value, label="chutes message reasoning must be a JSON object")
+    raise RuntimeError("chutes message reasoning must be a JSON object")
 
 
-def _tool_call_from_payload(payload: Any, index: int) -> LlmMessageToolCall | None:
-    if not isinstance(payload, Mapping):
+def _tool_call_from_payload(payload: object, index: int) -> LlmMessageToolCall | None:
+    call = _mapping_with_string_keys(payload)
+    if call is None:
         return None
-    function = payload.get("function")
-    if not isinstance(function, Mapping):
+    function = _mapping_with_string_keys(call.get("function"))
+    if function is None:
         return None
 
-    name = function.get("name")
-    arguments = function.get("arguments")
-    if isinstance(arguments, Mapping):
-        arguments = json.dumps(arguments)
-    if not isinstance(name, str) or not isinstance(arguments, str):
+    name_raw = function.get("name")
+    if not isinstance(name_raw, str) or not name_raw:
+        return None
+    arguments_raw = function.get("arguments")
+    if isinstance(arguments_raw, Mapping):
+        arguments = json.dumps(arguments_raw)
+    elif isinstance(arguments_raw, str):
+        arguments = arguments_raw
+    else:
         return None
 
     return LlmMessageToolCall(
-        id=str(payload.get("id", f"toolcall-{index}")),
-        type=str(payload.get("type", "function")),
-        name=name,
+        id=str(call.get("id", f"toolcall-{index}")),
+        type=str(call.get("type", "function")),
+        name=name_raw,
         arguments=arguments,
     )
 
 
-def _extract_usage(payload: Mapping[str, Any]) -> LlmUsage | None:
-    usage_payload = payload.get("usage")
-    if not isinstance(usage_payload, Mapping):
+def _extract_usage(usage_payload: object) -> LlmUsage | None:
+    if usage_payload is None:
         return None
-    prompt_tokens = usage_payload.get("prompt_tokens")
-    completion_tokens = usage_payload.get("completion_tokens")
-    total_tokens = usage_payload.get("total_tokens")
+    usage_mapping = _require_object_mapping(usage_payload, label="chutes usage payload must be a JSON object")
+    prompt_tokens = usage_mapping.get("prompt_tokens")
+    completion_tokens = usage_mapping.get("completion_tokens")
+    total_tokens = usage_mapping.get("total_tokens")
     return LlmUsage(
-        prompt_tokens=int(prompt_tokens) if prompt_tokens is not None else None,
-        completion_tokens=int(completion_tokens) if completion_tokens is not None else None,
-        total_tokens=int(total_tokens) if total_tokens is not None else None,
+        prompt_tokens=_optional_int(prompt_tokens),
+        completion_tokens=_optional_int(completion_tokens),
+        total_tokens=_optional_int(total_tokens),
     )
 
 
@@ -336,14 +367,53 @@ def _summarize_response(response: httpx.Response) -> str:
         data = response.json()
     except ValueError:
         data = response.text
-    if isinstance(data, Mapping) and "detail" in data:
-        data = data["detail"]
-    text = str(data)
+    summary_payload = _parse_response_summary_payload(data)
+    summary_value = summary_payload.detail if summary_payload.detail is not None else summary_payload.raw
+    text = str(summary_value)
     return text if len(text) <= 500 else text[:500] + "…"
+
+
+@dataclass(frozen=True, slots=True)
+class _ResponseSummaryPayload:
+    raw: object
+    detail: object | None
+
+
+def _parse_response_summary_payload(value: object) -> _ResponseSummaryPayload:
+    data_mapping = _mapping_with_string_keys(value)
+    if data_mapping is None:
+        return _ResponseSummaryPayload(raw=value, detail=None)
+    return _ResponseSummaryPayload(raw=value, detail=data_mapping.get("detail"))
+
+
+def _mapping_with_string_keys(value: object) -> dict[str, object] | None:
+    if not isinstance(value, Mapping):
+        return None
+    result: dict[str, object] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            return None
+        result[key] = item
+    return result
+
+
+def _require_object_mapping(value: object, *, label: str) -> dict[str, Any]:
+    result = _mapping_with_string_keys(value)
+    if result is None:
+        raise RuntimeError(label)
+    return result
 
 
 def _as_str(value: Any) -> str:
     return "" if value is None else str(value)
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float, str, bytes, bytearray)):
+        return int(value)
+    raise TypeError("usage token fields must be numeric")
 
 
 def _iter_tool_calls(response: LlmResponse) -> tuple[LlmMessageToolCall, ...]:

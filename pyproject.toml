@@ -9,7 +9,6 @@ authors = [
 license = { text = "Proprietary" }
 dependencies = [
   "ruff>=0.5",
-  "mypy>=1.10",
   "pytest>=8.3",
   "pytest-cov>=6.2.1",
   "vulture>=2.11",

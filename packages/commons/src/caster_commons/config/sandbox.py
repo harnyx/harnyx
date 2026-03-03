@@ -31,7 +31,7 @@ class SandboxSettings(BaseSettings):
 
 def load_sandbox_settings() -> SandboxSettings:
     # Pydantic settings load required values from env/.env at runtime.
-    return SandboxSettings()  # type: ignore[call-arg]
+    return SandboxSettings()
 
 
 __all__ = ["SandboxSettings", "SandboxPullPolicy", "load_sandbox_settings"]

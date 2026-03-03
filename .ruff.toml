@@ -14,9 +14,29 @@ select = [
   "A",  # flake8-builtins
   "C90", # mccabe complexity
   "RUF100",
+  "ANN001", # missing type annotation for function argument
+  "ANN002", # missing type annotation for *args
+  "ANN003", # missing type annotation for **kwargs
+  "ANN201", # missing return type for public function
+  "ANN202", # missing return type for private function
+  "ANN204", # missing return type for special method
+  "ANN205", # missing return type for staticmethod
+  "ANN206", # missing return type for classmethod
 ]
 ignore = [
   "S101",  # allow assert statements in tests
+]
+
+[lint.per-file-ignores]
+"**/tests/**/*.py" = [
+  "ANN001",
+  "ANN002",
+  "ANN003",
+  "ANN201",
+  "ANN202",
+  "ANN204",
+  "ANN205",
+  "ANN206",
 ]
 
 [lint.isort]
@@ -29,4 +49,3 @@ known-first-party = [
 
 [lint.mccabe]
 max-complexity = 40
-

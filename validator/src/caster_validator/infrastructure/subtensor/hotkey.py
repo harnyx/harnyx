@@ -7,7 +7,7 @@ import bittensor as bt
 from caster_commons.config.subtensor import SubtensorSettings
 
 
-def create_wallet(settings: SubtensorSettings) -> bt.wallet.Wallet:
+def create_wallet(settings: SubtensorSettings) -> bt.Wallet:
     wallet = bt.wallet(
         name=settings.wallet_name,
         hotkey=settings.hotkey_name,
@@ -23,7 +23,7 @@ def create_wallet(settings: SubtensorSettings) -> bt.wallet.Wallet:
     return wallet
 
 
-def ensure_wallet_hotkey_from_mnemonic(wallet: bt.wallet.Wallet, mnemonic: str) -> None:
+def ensure_wallet_hotkey_from_mnemonic(wallet: bt.Wallet, mnemonic: str) -> None:
     expected_ss58 = bt.Keypair.create_from_mnemonic(mnemonic).ss58_address
     if not wallet.hotkey_file.exists_on_device():
         wallet.regenerate_hotkey(

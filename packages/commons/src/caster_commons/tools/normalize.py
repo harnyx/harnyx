@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, is_dataclass
 from typing import ParamSpec, TypeVar, cast
 
@@ -18,8 +18,8 @@ def _normalize_payload(value: object) -> JsonValue:
         return _normalize_payload(asdict(value))
     if isinstance(value, BaseModel):
         return _normalize_payload(value.model_dump(exclude_none=True))
-    if isinstance(value, dict):
-        return {key: _normalize_payload(item) for key, item in value.items()}
+    if isinstance(value, Mapping):
+        return {str(key): _normalize_payload(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_normalize_payload(item) for item in value]
     return str(value)

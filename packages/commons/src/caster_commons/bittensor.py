@@ -62,7 +62,7 @@ def decode_auth_signature(signature_hex: str) -> bytes:
 class VerificationError(Exception):
     """Raised when Bittensor signature verification fails."""
 
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
         self.message = message

@@ -43,7 +43,7 @@ def service_account_credentials_from_b64(
     info = load_service_account_info(serialized, source=source)
     return cast(
         ServiceAccountCredentials,
-        ServiceAccountCredentials.from_service_account_info(  # type: ignore[no-untyped-call]
+        ServiceAccountCredentials.from_service_account_info(
             info,
             scopes=scopes,
         ),

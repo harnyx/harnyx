@@ -10,6 +10,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -132,10 +133,7 @@ class HttpSandboxClient(SandboxClient):
                 f"sandbox entrypoint request failed with status {status}: {detail}",
             ) from exc
         body = response.json()
-        result = body.get("result", body)
-        if not isinstance(result, Mapping):
-            raise ValueError("sandbox response must be a mapping")
-        return dict(result)
+        return _parse_sandbox_invoke_result(body)
 
     async def aclose(self) -> None:
         if self._owns_client:
@@ -161,10 +159,65 @@ def _summarize_response(response: httpx.Response) -> str:
         data = response.json()
     except ValueError:
         data = response.text
-    if isinstance(data, Mapping) and "detail" in data:
-        data = data["detail"]
-    text = str(data)
+    summary_payload = _parse_sandbox_response_summary(data)
+    summary_value = summary_payload.detail if summary_payload.detail is not None else summary_payload.raw
+    text = str(summary_value)
     return text if len(text) <= 500 else text[:500] + "…"
+
+
+@dataclass(frozen=True, slots=True)
+class _SandboxResponseSummary:
+    raw: object
+    detail: object | None
+
+
+def _parse_sandbox_invoke_result(value: object) -> dict[str, JsonValue]:
+    body = _require_object_mapping(value, label="sandbox response must be a JSON object")
+    result = body.get("result", body)
+    return _require_json_object(result, label="sandbox response result must be a JSON object")
+
+
+def _parse_sandbox_response_summary(value: object) -> _SandboxResponseSummary:
+    data_mapping = _object_mapping_or_none(value)
+    if data_mapping is None:
+        return _SandboxResponseSummary(raw=value, detail=None)
+    return _SandboxResponseSummary(raw=value, detail=data_mapping.get("detail"))
+
+
+def _object_mapping_or_none(value: object) -> dict[str, object] | None:
+    if not isinstance(value, Mapping):
+        return None
+    result: dict[str, object] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            return None
+        result[key] = item
+    return result
+
+
+def _require_object_mapping(value: object, *, label: str) -> dict[str, object]:
+    mapping = _object_mapping_or_none(value)
+    if mapping is None:
+        raise ValueError(label)
+    return mapping
+
+
+def _require_json_object(value: object, *, label: str) -> dict[str, JsonValue]:
+    mapping = _require_object_mapping(value, label=label)
+    result: dict[str, JsonValue] = {}
+    for key, item in mapping.items():
+        result[key] = _to_json_value(item, label=f"{label}.{key}")
+    return result
+
+
+def _to_json_value(value: object, *, label: str) -> JsonValue:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, list):
+        return [_to_json_value(item, label=f"{label}[]") for item in value]
+    if isinstance(value, Mapping):
+        return _require_json_object(value, label=label)
+    raise TypeError(f"{label} must be JSON-compatible")
 
 
 class DockerSandboxManager(SandboxManager):

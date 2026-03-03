@@ -346,7 +346,7 @@ def _cloud_logging_handler(
         "creating google cloud logging client",
         extra={"data": {"project": project}},
     )
-    client: gcp_logging.Client = gcp_logging.Client(  # type: ignore[no-untyped-call]
+    client: gcp_logging.Client = gcp_logging.Client(
         project=project,
         credentials=credentials,
     )
@@ -453,11 +453,11 @@ def shutdown_logging() -> None:
             seen.add(hid)
             if isinstance(handler, CloudLoggingHandler):
                 try:
-                    handler.flush()  # type: ignore[no-untyped-call]
+                    handler.flush()
                 except Exception:  # noqa: S110
                     pass
                 try:
-                    handler.close()  # type: ignore[no-untyped-call]
+                    handler.close()
                 except Exception:  # noqa: S110
                     pass
 

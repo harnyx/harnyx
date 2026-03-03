@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar, cast
 from uuid import UUID
 
 from caster_miner_sdk._internal.tool_invoker import _current_tool_invoker
@@ -57,16 +57,21 @@ def _parse_execute_response(raw_response: object) -> ToolExecuteResponseDTO:
     return ToolExecuteResponseDTO.model_validate(raw_response)
 
 
+def _require_response_mapping(response_payload: object, *, label: str) -> Mapping[str, Any]:
+    if not isinstance(response_payload, Mapping):
+        raise RuntimeError(label)
+    return cast(Mapping[str, Any], response_payload)
+
+
 async def test_tool(message: str) -> ToolCallResponse[TestToolResponse]:
     """Invoke the validator-hosted test tool."""
 
     raw_response = await _current_tool_invoker().invoke("test_tool", args=(message,), kwargs={})
     dto = _parse_execute_response(raw_response)
-    if not isinstance(dto.response, Mapping):
-        raise RuntimeError("test_tool response payload must be a mapping")
+    response_payload = _require_response_mapping(dto.response, label="test_tool response payload must be a mapping")
     response = TestToolResponse(
-        status=str(dto.response.get("status", "")),
-        echo=str(dto.response.get("echo", "")),
+        status=str(response_payload.get("status", "")),
+        echo=str(response_payload.get("echo", "")),
     )
     return ToolCallResponse(
         receipt_id=dto.receipt_id,
@@ -83,9 +88,8 @@ async def tooling_info() -> ToolCallResponse[dict[str, Any]]:
 
     raw_response = await _current_tool_invoker().invoke("tooling_info", args=(), kwargs={})
     dto = _parse_execute_response(raw_response)
-    if not isinstance(dto.response, Mapping):
-        raise RuntimeError("tooling_info response payload must be a mapping")
-    response = dict(dto.response)
+    response_payload = _require_response_mapping(dto.response, label="tooling_info response payload must be a mapping")
+    response = dict(response_payload)
     return ToolCallResponse(
         receipt_id=dto.receipt_id,
         response=response,
@@ -104,9 +108,8 @@ async def search_web(query: str, /, **kwargs: Any) -> ToolCallResponse[SearchWeb
     payload.update(kwargs)
     raw_response = await _current_tool_invoker().invoke("search_web", args=(), kwargs=payload)
     dto = _parse_execute_response(raw_response)
-    if not isinstance(dto.response, Mapping):
-        raise RuntimeError("search_web response payload must be a mapping")
-    response = SearchWebSearchResponse.model_validate(dto.response)
+    response_payload = _require_response_mapping(dto.response, label="search_web response payload must be a mapping")
+    response = SearchWebSearchResponse.model_validate(response_payload)
     return ToolCallResponse(
         receipt_id=dto.receipt_id,
         response=response,
@@ -125,9 +128,8 @@ async def search_x(query: str, /, **kwargs: Any) -> ToolCallResponse[SearchXSear
     payload.update(kwargs)
     raw_response = await _current_tool_invoker().invoke("search_x", args=(), kwargs=payload)
     dto = _parse_execute_response(raw_response)
-    if not isinstance(dto.response, Mapping):
-        raise RuntimeError("search_x response payload must be a mapping")
-    response = SearchXSearchResponse.model_validate(dto.response)
+    response_payload = _require_response_mapping(dto.response, label="search_x response payload must be a mapping")
+    response = SearchXSearchResponse.model_validate(response_payload)
     return ToolCallResponse(
         receipt_id=dto.receipt_id,
         response=response,
@@ -146,9 +148,8 @@ async def search_ai(prompt: str, /, **kwargs: Any) -> ToolCallResponse[SearchAiS
     payload.update(kwargs)
     raw_response = await _current_tool_invoker().invoke("search_ai", args=(), kwargs=payload)
     dto = _parse_execute_response(raw_response)
-    if not isinstance(dto.response, Mapping):
-        raise RuntimeError("search_ai response payload must be a mapping")
-    response = SearchAiSearchResponse.model_validate(dto.response)
+    response_payload = _require_response_mapping(dto.response, label="search_ai response payload must be a mapping")
+    response = SearchAiSearchResponse.model_validate(response_payload)
     return ToolCallResponse(
         receipt_id=dto.receipt_id,
         response=response,
@@ -177,9 +178,8 @@ async def search_repo(
     payload.update(kwargs)
     raw_response = await _current_tool_invoker().invoke("search_repo", args=(), kwargs=payload)
     dto = _parse_execute_response(raw_response)
-    if not isinstance(dto.response, Mapping):
-        raise RuntimeError("search_repo response payload must be a mapping")
-    response = SearchRepoSearchResponse.model_validate(dto.response)
+    response_payload = _require_response_mapping(dto.response, label="search_repo response payload must be a mapping")
+    response = SearchRepoSearchResponse.model_validate(response_payload)
     return ToolCallResponse(
         receipt_id=dto.receipt_id,
         response=response,
@@ -208,9 +208,8 @@ async def get_repo_file(
     payload.update(kwargs)
     raw_response = await _current_tool_invoker().invoke("get_repo_file", args=(), kwargs=payload)
     dto = _parse_execute_response(raw_response)
-    if not isinstance(dto.response, Mapping):
-        raise RuntimeError("get_repo_file response payload must be a mapping")
-    response = GetRepoFileResponse.model_validate(dto.response)
+    response_payload = _require_response_mapping(dto.response, label="get_repo_file response payload must be a mapping")
+    response = GetRepoFileResponse.model_validate(response_payload)
     return ToolCallResponse(
         receipt_id=dto.receipt_id,
         response=response,
@@ -241,9 +240,8 @@ async def llm_chat(
         kwargs=payload,
     )
     dto = _parse_execute_response(raw_response)
-    if not isinstance(dto.response, Mapping):
-        raise RuntimeError("llm_chat response missing 'response' payload")
-    llm = LlmResponse.from_payload(dto.response)
+    response_payload = _require_response_mapping(dto.response, label="llm_chat response missing 'response' payload")
+    llm = LlmResponse.from_payload(response_payload)
     return LlmChatResult(
         receipt_id=dto.receipt_id,
         response=llm,
@@ -272,9 +270,8 @@ async def search_items(
     }
     raw_response = await _current_tool_invoker().invoke("search_items", args=(), kwargs=payload)
     dto = _parse_execute_response(raw_response)
-    if not isinstance(dto.response, Mapping):
-        raise RuntimeError("search_items response payload must be a mapping")
-    response = FeedSearchResponse.model_validate(dto.response)
+    response_payload = _require_response_mapping(dto.response, label="search_items response payload must be a mapping")
+    response = FeedSearchResponse.model_validate(response_payload)
     return ToolCallResponse(
         receipt_id=dto.receipt_id,
         response=response,

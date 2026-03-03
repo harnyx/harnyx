@@ -62,7 +62,7 @@ class SubtensorClientPort(Protocol):
         """Submit normalized weights and return the transaction reference/hash."""
 
     def fetch_weight(self, uid: int) -> float:
-        """Return the current on-chain weight for ``uid`` (0.0 when absent)."""
+        """Return this validator's current on-chain weight for target ``uid`` (0.0 when absent)."""
 
     def tempo(self, netuid: int) -> int:
         """Return the epoch tempo (blocks per epoch) for ``netuid``."""

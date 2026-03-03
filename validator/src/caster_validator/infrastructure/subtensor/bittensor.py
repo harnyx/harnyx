@@ -6,8 +6,10 @@ import logging
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any, cast
 
 import bittensor as bt
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from caster_commons.config.subtensor import SubtensorSettings
 from caster_validator.application.ports.subtensor import (
@@ -22,6 +24,42 @@ from .hotkey import create_wallet
 logger = logging.getLogger("caster_validator.subtensor")
 
 
+class _SubtensorWeightTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    uid: int
+    weight: int
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_wire(cls, value: object) -> object:
+        if isinstance(value, tuple) and len(value) == 2:
+            uid, weight = value
+            return {"uid": uid, "weight": weight}
+        return value
+
+
+class _SubtensorWeightRow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_uid: int
+    targets: list[_SubtensorWeightTarget]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_wire(cls, value: object) -> object:
+        if isinstance(value, tuple) and len(value) == 2:
+            source_uid, targets = value
+            return {"source_uid": source_uid, "targets": targets}
+        return value
+
+
+class _SubtensorWeightsPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rows: list[_SubtensorWeightRow]
+
+
 @dataclass(slots=True)
 class BittensorSubtensorClient(SubtensorClientPort):
     """Synchronous wrapper around ``bt.Subtensor``."""
@@ -30,7 +68,7 @@ class BittensorSubtensorClient(SubtensorClientPort):
 
     def __post_init__(self) -> None:
         self._subtensor: bt.Subtensor | None = None
-        self._wallet: bt.wallet.Wallet | None = None
+        self._wallet: bt.Wallet | None = None
 
     # ------------------------------------------------------------------
     # lifecycle helpers
@@ -65,7 +103,7 @@ class BittensorSubtensorClient(SubtensorClientPort):
             raise RuntimeError("subtensor client not initialized")
         return self._subtensor
 
-    def _require_wallet(self) -> bt.wallet.Wallet:
+    def _require_wallet(self) -> bt.Wallet:
         if self._wallet is None:
             raise RuntimeError("wallet not initialized")
         return self._wallet
@@ -150,12 +188,19 @@ class BittensorSubtensorClient(SubtensorClientPort):
         subtensor = self._require_subtensor()
         wallet = self._require_wallet()
         uids, normalized = self._normalize_weights(weights)
-        kwargs = self._set_weights_kwargs(wallet, uids, normalized)
         logger.debug(
             "calling subtensor.set_weights",
             extra={"uids": uids, "wait_for_inclusion": self.settings.wait_for_inclusion},
         )
-        success, message = subtensor.set_weights(**kwargs)
+        success, message = subtensor.set_weights(
+            wallet=wallet,
+            netuid=self.settings.netuid,
+            weights=normalized,
+            uids=uids,
+            wait_for_inclusion=self.settings.wait_for_inclusion,
+            wait_for_finalization=self.settings.wait_for_finalization,
+            period=self.settings.transaction_period,
+        )
         logger.debug(
             "subtensor.set_weights returned",
             extra={"success": success, "message": message},
@@ -174,29 +219,31 @@ class BittensorSubtensorClient(SubtensorClientPort):
         normalized = [value / total for value in values]
         return uids, normalized
 
-    def _set_weights_kwargs(
-        self,
-        wallet: bt.wallet.Wallet,
-        uids: list[int],
-        normalized: list[float],
-    ) -> dict[str, object]:
-        return {
-            "wallet": wallet,
-            "netuid": self.settings.netuid,
-            "weights": normalized,
-            "uids": uids,
-            "wait_for_inclusion": self.settings.wait_for_inclusion,
-            "wait_for_finalization": self.settings.wait_for_finalization,
-            "period": self.settings.transaction_period,
-        }
-
     def fetch_weight(self, uid: int) -> float:
-        self._ensure_ready()
-        subtensor = self._require_subtensor()
-        weights = subtensor.weights(netuid=self.settings.netuid)
-        if uid < 0 or uid >= len(weights):
+        if uid < 0:
             return 0.0
-        return float(weights[uid])
+        self._ensure_ready()
+        validator_uid = self.validator_info().uid
+        if validator_uid < 0:
+            return 0.0
+        subtensor = self._require_subtensor()
+        raw_weights = subtensor.weights(netuid=self.settings.netuid)
+        try:
+            payload = _SubtensorWeightsPayload.model_validate(
+                {"rows": raw_weights},
+                strict=True,
+            )
+        except ValidationError as exc:
+            raise RuntimeError(f"invalid subtensor weights payload: {exc}") from exc
+
+        row = next((candidate for candidate in payload.rows if candidate.source_uid == validator_uid), None)
+        if row is None:
+            return 0.0
+
+        target = next((candidate for candidate in row.targets if candidate.uid == uid), None)
+        if target is None:
+            return 0.0
+        return float(target.weight)
 
     def tempo(self, netuid: int) -> int:
         self._ensure_ready()
@@ -232,7 +279,8 @@ class BittensorSubtensorClient(SubtensorClientPort):
     def _query_version_key(self) -> int | None:
         try:
             subtensor = self._require_subtensor()
-            return int(subtensor.weights_version(self.settings.netuid))
+            subtensor_any = cast(Any, subtensor)
+            return int(subtensor_any.weights_version(self.settings.netuid))
         except Exception:  # pragma: no cover - optional metadata
             return None
 

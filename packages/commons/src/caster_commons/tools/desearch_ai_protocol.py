@@ -6,6 +6,7 @@ Pydantic `TypeAdapter` validation, so downstream code can work with typed object
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from pydantic import ConfigDict, TypeAdapter
@@ -44,14 +45,13 @@ DESEARCH_AI_DOCS_RESPONSE_ADAPTER = TypeAdapter(DeSearchAiDocsResponse)
 
 
 def parse_desearch_ai_response(raw: object) -> DeSearchAiDocsResponse:
-    if not isinstance(raw, dict):
-        raise TypeError("desearch ai search response must be a JSON object")
-    if not _looks_like_docs_response(raw):
+    raw_mapping = _require_object_mapping(raw, label="desearch ai search response must be a JSON object")
+    if not _looks_like_docs_response(raw_mapping):
         raise ValueError("unexpected desearch ai search response shape (missing docs keys like 'tweets' or '*_search')")
-    return DESEARCH_AI_DOCS_RESPONSE_ADAPTER.validate_python(raw)
+    return DESEARCH_AI_DOCS_RESPONSE_ADAPTER.validate_python(raw_mapping)
 
 
-def _looks_like_docs_response(raw: dict[object, object]) -> bool:
+def _looks_like_docs_response(raw: Mapping[str, object]) -> bool:
     for key in (
         "tweets",
         "search",
@@ -67,6 +67,17 @@ def _looks_like_docs_response(raw: dict[object, object]) -> bool:
         if key in raw:
             return True
     return False
+
+
+def _require_object_mapping(value: object, *, label: str) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        raise TypeError(label)
+    result: dict[str, object] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise TypeError(f"{label}: key must be a string")
+        result[key] = item
+    return result
 
 
 __all__ = [
