@@ -3,7 +3,7 @@
 All LLM prices here are **Chutes-based** reference rates, used solely for
 budgeting miner tool calls (even if the runtime executes against another
 provider like Vertex). External benchmarking uses its own pricing
-(`platform/scripts/criterion_evaluation_benchmark.py`) and must not import this module.
+(`apps/platform/scripts/criterion_evaluation_benchmark.py`) and must not import this module.
 """
 
 from __future__ import annotations
