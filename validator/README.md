@@ -11,6 +11,14 @@ Before starting, ensure you have:
 3. **A public endpoint** reachable by the platform (for registration + evaluation callbacks)
 4. **API keys** for LLM and search tools (see env vars below)
 
+### Hardware + networking (quick sizing)
+
+- vCPU: 2 (4 recommended)
+- RAM: 4 GiB (8 GiB recommended)
+- Disk: 20 GB
+- Network: platform must reach your validator on TCP 8100; set `VALIDATOR_PUBLIC_BASE_URL` accordingly
+- Third-party APIs: Chutes (`CHUTES_API_KEY`) + DeSearch (`DESEARCH_API_KEY`)
+
 ## Step 1: Create your env file
 
 ```bash
