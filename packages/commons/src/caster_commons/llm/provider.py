@@ -469,7 +469,11 @@ class BaseLlmProvider(ABC, LlmProviderPort):
 
 def _request_snapshot(request: AbstractLlmRequest) -> dict[str, object]:
     if is_dataclass(request):
-        return cast(dict[str, object], asdict(request))
+        snapshot = cast(dict[str, object], asdict(request))
+        redacted = _redact_tool_auth_secrets(snapshot)
+        if not isinstance(redacted, dict):
+            raise TypeError("llm request snapshot redaction must return dict")
+        return cast(dict[str, object], redacted)
     raise TypeError("llm request snapshot requires dataclass request")
 
 
@@ -638,6 +642,29 @@ def _extract_web_search_queries(response_metadata: Mapping[str, object]) -> tupl
         if normalized:
             queries.append(normalized)
     return tuple(queries)
+
+
+_TOOL_SECRET_KEYS = frozenset(
+    {
+        "api_key_string",
+        "apiKeyString",
+    }
+)
+
+
+def _redact_tool_auth_secrets(value: object) -> object:
+    if isinstance(value, Mapping):
+        redacted: dict[str, object] = {}
+        for raw_key, child in value.items():
+            key = str(raw_key)
+            if key in _TOOL_SECRET_KEYS and isinstance(child, str):
+                redacted[key] = "[REDACTED]"
+            else:
+                redacted[key] = _redact_tool_auth_secrets(child)
+        return redacted
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_redact_tool_auth_secrets(item) for item in value]
+    return value
 
 
 def _retriever_observation_name(provider_label: str) -> str:

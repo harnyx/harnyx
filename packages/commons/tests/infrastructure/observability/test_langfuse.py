@@ -11,6 +11,7 @@ from caster_commons.llm.schema import (
     LlmMessageToolCall,
     LlmRequest,
     LlmResponse,
+    LlmTool,
     LlmUsage,
 )
 from caster_commons.observability import langfuse
@@ -194,6 +195,53 @@ def test_build_generation_input_payload_preserves_tool_result_output_json() -> N
             ],
         }
     ]
+
+
+def test_build_generation_input_payload_redacts_tool_api_keys() -> None:
+    request = LlmRequest(
+        provider="vertex",
+        model="gemini-2.5-flash",
+        messages=(
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text("hello"),),
+            ),
+        ),
+        temperature=None,
+        max_output_tokens=64,
+        output_mode="text",
+        tools=(
+            LlmTool(
+                type="provider_native",
+                config={
+                    "retrieval": {
+                        "external_api": {
+                            "auth_config": {
+                                "api_key_config": {
+                                    "api_key_string": "secret-auth-config-snake",
+                                    "apiKeyString": "secret-auth-config-camel",
+                                }
+                            },
+                            "api_auth": {
+                                "api_key_config": {
+                                    "api_key_string": "secret-legacy-snake",
+                                    "apiKeyString": "secret-legacy-camel",
+                                }
+                            },
+                        }
+                    }
+                },
+            ),
+        ),
+    )
+
+    payload = langfuse.build_generation_input_payload(request)
+    tool_payload = payload["tools"][0]["config"]["retrieval"]["external_api"]
+
+    assert tool_payload["auth_config"]["api_key_config"]["api_key_string"] == "[REDACTED]"
+    assert tool_payload["auth_config"]["api_key_config"]["apiKeyString"] == "[REDACTED]"
+    assert tool_payload["api_auth"]["api_key_config"]["api_key_string"] == "[REDACTED]"
+    assert tool_payload["api_auth"]["api_key_config"]["apiKeyString"] == "[REDACTED]"
 
 
 def test_build_generation_output_payload_is_concise() -> None:

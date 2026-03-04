@@ -5,6 +5,7 @@ Generated from FastAPI OpenAPI.
 ## Domains
 - [feeds](#feeds)
   - [POST /v1/feeds/search](#endpoint-post-v1-feeds-search)
+  - [POST /v1/feeds/{feed_id}/tool/search](#endpoint-post-v1-feeds-feed_id-tool-search)
 - [miner-task-batches](#miner-task-batches)
   - [POST /v1/miner-task-batches/batch](#endpoint-post-v1-miner-task-batches-batch)
   - [GET /v1/miner-task-batches/batch/{batch_id}](#endpoint-get-v1-miner-task-batches-batch-batch_id)
@@ -16,6 +17,8 @@ Generated from FastAPI OpenAPI.
   - [POST /v1/repo-search/ensure-index](#endpoint-post-v1-repo-search-ensure-index)
   - [POST /v1/repo-search/get-file](#endpoint-post-v1-repo-search-get-file)
   - [POST /v1/repo-search/search](#endpoint-post-v1-repo-search-search)
+  - [POST /v1/repo-search/tool/get-file](#endpoint-post-v1-repo-search-tool-get-file)
+  - [POST /v1/repo-search/tool/search](#endpoint-post-v1-repo-search-tool-search)
 - [validators](#validators)
   - [POST /v1/validators/register](#endpoint-post-v1-validators-register)
 - [weights](#weights)
@@ -73,6 +76,55 @@ Body: [FeedSearchResponseModel](#model-feedsearchresponsemodel)
 |  | `score` |  | opt | `number` (nullable) |
 |  | `text` |  | req | `string` |
 |  | `url` |  | opt | `string` (nullable) |
+
+`422` Validation Error
+Content-Type: `application/json`
+Body: [HTTPValidationError](#model-httpvalidationerror)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
+|  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
+|  | `msg` |  | req | `string` |
+|  | `type` |  | req | `string` |
+
+
+### {feed_id}
+
+#### tool
+
+##### search
+
+<a id="endpoint-post-v1-feeds-feed_id-tool-search"></a>
+###### POST /v1/feeds/{feed_id}/tool/search
+
+Provider-native simple search endpoint for feed-item grounding with optional enqueue boundary.
+
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`) OR ApiKey
+
+**Parameters**
+| Param | In | Req | Notes |
+| --- | --- | --- | --- |
+| `feed_id` | path | req | `string` (format: uuid) |
+| `enqueue_seq` | query | opt | `integer` (nullable) |
+
+**Request**
+Content-Type: `application/json`
+Body: [_RepoSimpleSearchRequest](#model-_reposimplesearchrequest)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `query` |  |  | req | `string` |
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: array[[_RepoSimpleSearchHit](#model-_reposimplesearchhit)]
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `snippet` |  |  | req | `string` |
+| `uri` |  |  | req | `string` |
 
 `422` Validation Error
 Content-Type: `application/json`
@@ -354,7 +406,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 Ensure a repository index is available for repo tools.
 
-**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`) OR ApiKey
 
 **Request**
 Content-Type: `application/json`
@@ -393,7 +445,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 Fetch a markdown file from a repository snapshot.
 
-**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`) OR ApiKey
 
 **Request**
 Content-Type: `application/json`
@@ -440,7 +492,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 Search markdown files in a repository snapshot.
 
-**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`) OR ApiKey
 
 **Request**
 Content-Type: `application/json`
@@ -467,6 +519,98 @@ Body: [SearchRepoSearchResponse](#model-searchreposearchresponse)
 |  | `path` |  | req | `string` |
 |  | `title` |  | opt | `string` (nullable) |
 |  | `url` |  | req | `string` |
+
+`422` Validation Error
+Content-Type: `application/json`
+Body: [HTTPValidationError](#model-httpvalidationerror)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
+|  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
+|  | `msg` |  | req | `string` |
+|  | `type` |  | req | `string` |
+
+
+### tool
+
+#### get-file
+
+<a id="endpoint-post-v1-repo-search-tool-get-file"></a>
+##### POST /v1/repo-search/tool/get-file
+
+Provider-native simple search endpoint for full-file repo grounding.
+
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`) OR ApiKey
+
+**Parameters**
+| Param | In | Req | Notes |
+| --- | --- | --- | --- |
+| `repo_url` | query | req | `string` |
+| `commit_sha` | query | req | `string` |
+
+**Request**
+Content-Type: `application/json`
+Body: [_RepoSimpleSearchRequest](#model-_reposimplesearchrequest)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `query` |  |  | req | `string` |
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: array[[_RepoSimpleSearchHit](#model-_reposimplesearchhit)]
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `snippet` |  |  | req | `string` |
+| `uri` |  |  | req | `string` |
+
+`422` Validation Error
+Content-Type: `application/json`
+Body: [HTTPValidationError](#model-httpvalidationerror)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
+|  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
+|  | `msg` |  | req | `string` |
+|  | `type` |  | req | `string` |
+
+
+#### search
+
+<a id="endpoint-post-v1-repo-search-tool-search"></a>
+##### POST /v1/repo-search/tool/search
+
+Provider-native simple search endpoint for repo-diff grounding.
+
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`) OR ApiKey
+
+**Parameters**
+| Param | In | Req | Notes |
+| --- | --- | --- | --- |
+| `repo_url` | query | req | `string` |
+| `commit_sha` | query | req | `string` |
+
+**Request**
+Content-Type: `application/json`
+Body: [_RepoSimpleSearchRequest](#model-_reposimplesearchrequest)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `query` |  |  | req | `string` |
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: array[[_RepoSimpleSearchHit](#model-_reposimplesearchhit)]
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `snippet` |  |  | req | `string` |
+| `uri` |  |  | req | `string` |
 
 `422` Validation Error
 Content-Type: `application/json`
@@ -544,6 +688,69 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 
 ## Models
+
+<a id="model-_reposimplesearchhit"></a>
+### Model: _RepoSimpleSearchHit
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `snippet` |  |  | req | `string` |
+| `uri` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "snippet": {
+      "title": "Snippet",
+      "type": "string"
+    },
+    "uri": {
+      "title": "Uri",
+      "type": "string"
+    }
+  },
+  "required": [
+    "snippet",
+    "uri"
+  ],
+  "title": "_RepoSimpleSearchHit",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-_reposimplesearchrequest"></a>
+### Model: _RepoSimpleSearchRequest
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `query` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "query": {
+      "minLength": 1,
+      "title": "Query",
+      "type": "string"
+    }
+  },
+  "required": [
+    "query"
+  ],
+  "title": "_RepoSimpleSearchRequest",
+  "type": "object"
+}
+```
+
+</details>
 
 <a id="model-citation"></a>
 ### Model: Citation

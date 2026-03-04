@@ -2,7 +2,7 @@ from caster_commons.llm.provider import _request_snapshot
 from caster_commons.llm.schema import GroundedLlmRequest, LlmMessage, LlmMessageContentPart, LlmTool
 
 
-def test_request_snapshot_keeps_nested_api_key_fields() -> None:
+def test_request_snapshot_redacts_nested_api_key_fields() -> None:
     request = GroundedLlmRequest(
         provider="vertex",
         model="gemini-2.0",
@@ -20,12 +20,18 @@ def test_request_snapshot_keeps_nested_api_key_fields() -> None:
                 config={
                     "retrieval": {
                         "external_api": {
+                            "auth_config": {
+                                "api_key_config": {
+                                    "api_key_string": "secret-auth-config-snake",
+                                    "apiKeyString": "secret-auth-config-camel",
+                                }
+                            },
                             "api_auth": {
                                 "api_key_config": {
-                                    "api_key_string": "ApiKey secret-snake",
-                                    "apiKeyString": "ApiKey secret-camel",
+                                    "api_key_string": "secret-legacy-snake",
+                                    "apiKeyString": "secret-legacy-camel",
                                 }
-                            }
+                            },
                         }
                     }
                 },
@@ -34,7 +40,11 @@ def test_request_snapshot_keeps_nested_api_key_fields() -> None:
     )
 
     snapshot = _request_snapshot(request)
-    tool_config = snapshot["tools"][0]["config"]["retrieval"]["external_api"]["api_auth"]["api_key_config"]
+    external_api = snapshot["tools"][0]["config"]["retrieval"]["external_api"]
+    auth_config = external_api["auth_config"]["api_key_config"]
+    legacy_auth_config = external_api["api_auth"]["api_key_config"]
 
-    assert tool_config["api_key_string"] == "ApiKey secret-snake"
-    assert tool_config["apiKeyString"] == "ApiKey secret-camel"
+    assert auth_config["api_key_string"] == "[REDACTED]"
+    assert auth_config["apiKeyString"] == "[REDACTED]"
+    assert legacy_auth_config["api_key_string"] == "[REDACTED]"
+    assert legacy_auth_config["apiKeyString"] == "[REDACTED]"

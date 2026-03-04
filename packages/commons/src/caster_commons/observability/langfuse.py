@@ -285,6 +285,7 @@ def propagate_trace_attributes_best_effort(
 
 
 def build_generation_input_payload(request: AbstractLlmRequest) -> dict[str, object]:
+    tools_payload = _sanitize_for_json(list(request.tools or ()))
     return {
         "messages": [_request_message_payload(message) for message in request.messages],
         "request_config": {
@@ -298,7 +299,7 @@ def build_generation_input_payload(request: AbstractLlmRequest) -> dict[str, obj
             "tool_choice": request.tool_choice,
             "reasoning_effort": request.reasoning_effort,
         },
-        "tools": _sanitize_for_json(list(request.tools or ())),
+        "tools": _redact_tool_auth_secrets(tools_payload),
         "include": [str(item) for item in request.include] if request.include is not None else None,
         "extra": _sanitize_for_json(dict(request.extra)) if request.extra is not None else None,
     }
@@ -525,6 +526,29 @@ def _usage_details(usage: LlmUsage) -> dict[str, int]:
         "web_search_calls": int(usage.web_search_calls or 0),
     }
     return details
+
+
+_TOOL_SECRET_KEYS = frozenset(
+    {
+        "api_key_string",
+        "apiKeyString",
+    }
+)
+
+
+def _redact_tool_auth_secrets(value: object) -> object:
+    if isinstance(value, Mapping):
+        redacted: dict[str, object] = {}
+        for raw_key, child in value.items():
+            key = str(raw_key)
+            if key in _TOOL_SECRET_KEYS and isinstance(child, str):
+                redacted[key] = "[REDACTED]"
+            else:
+                redacted[key] = _redact_tool_auth_secrets(child)
+        return redacted
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_redact_tool_auth_secrets(item) for item in value]
+    return value
 
 
 def _sanitize_for_json(value: object) -> object:
