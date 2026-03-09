@@ -109,7 +109,6 @@ __all__ = [
     "LlmCitation",
     "LlmResponse",
     "PostprocessResult",
-    "supports_repo_diff_dual_thread",
     "supports_tool_result_messages",
     "supports_grounded_additional_tools",
 ]
@@ -125,15 +124,6 @@ def supports_tool_result_messages(*, provider: str, model: str) -> bool:
         return True
     if normalized_provider == "vertex":
         return not _is_vertex_claude_model(model)
-    return False
-
-
-def supports_repo_diff_dual_thread(*, provider: str, model: str) -> bool:
-    normalized_provider = provider.strip().lower()
-    if normalized_provider == "chutes":
-        return False
-    if normalized_provider == "vertex":
-        return supports_tool_result_messages(provider=normalized_provider, model=model)
     return False
 
 

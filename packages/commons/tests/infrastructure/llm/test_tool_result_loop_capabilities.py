@@ -11,7 +11,6 @@ from caster_commons.llm.schema import (
     LlmMessageToolCall,
     LlmResponse,
     LlmUsage,
-    supports_repo_diff_dual_thread,
     supports_tool_result_messages,
 )
 
@@ -27,10 +26,6 @@ def test_tool_result_loop_capabilities_are_centralized() -> None:
         )
         is False
     )
-
-    assert supports_repo_diff_dual_thread(provider="vertex", model="gemini-2.5-flash") is True
-    assert supports_repo_diff_dual_thread(provider="chutes", model="deepseek-ai/DeepSeek-V3.1") is False
-    assert supports_repo_diff_dual_thread(provider="unknown", model="gpt-4.1-mini") is False
 
 
 def test_chutes_serializes_tool_result_message_as_tool_role_message() -> None:
