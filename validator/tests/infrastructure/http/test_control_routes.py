@@ -184,8 +184,8 @@ def _make_batch_payload(
 ) -> dict[str, object]:
     return {
         "batch_id": str(batch_id),
-        "cutoff_at_iso": "2026-03-08T00:00:00+00:00",
-        "created_at_iso": "2026-03-08T00:00:00+00:00",
+        "cutoff_at": "2026-03-08T00:00:00+00:00",
+        "created_at": "2026-03-08T00:00:00+00:00",
         "tasks": [
             {
                 "task_id": str(task_id or uuid4()),
@@ -262,8 +262,8 @@ def test_accept_batch_endpoint_accepts_platform_json_payload() -> None:
         "/validator/miner-task-batches/batch",
         json={
             "batch_id": str(batch_id),
-            "cutoff_at_iso": "2026-03-08T00:00:00+00:00",
-            "created_at_iso": "2026-03-08T00:00:00+00:00",
+            "cutoff_at": "2026-03-08T00:00:00+00:00",
+            "created_at": "2026-03-08T00:00:00+00:00",
             "tasks": [
                 {
                     "task_id": str(task_id),
@@ -295,6 +295,53 @@ def test_accept_batch_endpoint_accepts_platform_json_payload() -> None:
     assert received.tasks[0].task_id == task_id
     assert received.tasks[0].query.text == "What happened?"
     assert received.artifacts[0].artifact_id == artifact_id
+    assert received.cutoff_at == "2026-03-08T00:00:00+00:00"
+    assert received.created_at == "2026-03-08T00:00:00+00:00"
+
+
+def test_accept_batch_endpoint_rejects_legacy_iso_keys() -> None:
+    batch_id = uuid4()
+    task_id = uuid4()
+    artifact_id = uuid4()
+    snapshot: RunProgressSnapshot = {
+        "batch_id": batch_id,
+        "total": 0,
+        "completed": 0,
+        "remaining": 0,
+        "tasks": (),
+        "miner_task_runs": (),
+    }
+    provider = DemoControlDependencyProvider(snapshot=snapshot)
+    app = _create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/validator/miner-task-batches/batch",
+        json={
+            "batch_id": str(batch_id),
+            "cutoff_at_iso": "2026-03-08T00:00:00+00:00",
+            "created_at_iso": "2026-03-08T00:00:00+00:00",
+            "tasks": [
+                {
+                    "task_id": str(task_id),
+                    "query": {"text": "What happened?"},
+                    "reference_answer": {"text": "The reference answer."},
+                    "budget_usd": 0.05,
+                }
+            ],
+            "artifacts": [
+                {
+                    "uid": 7,
+                    "artifact_id": str(artifact_id),
+                    "content_hash": "hash-123",
+                    "size_bytes": 42,
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert provider.accept_batch.received_batch is None
 
 
 def test_accept_batch_endpoint_rejects_non_strict_artifact_uid_payload() -> None:
@@ -317,8 +364,8 @@ def test_accept_batch_endpoint_rejects_non_strict_artifact_uid_payload() -> None
         "/validator/miner-task-batches/batch",
         json={
             "batch_id": str(batch_id),
-            "cutoff_at_iso": "2026-03-08T00:00:00+00:00",
-            "created_at_iso": "2026-03-08T00:00:00+00:00",
+            "cutoff_at": "2026-03-08T00:00:00+00:00",
+            "created_at": "2026-03-08T00:00:00+00:00",
             "tasks": [
                 {
                     "task_id": str(task_id),

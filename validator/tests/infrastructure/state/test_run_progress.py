@@ -35,8 +35,8 @@ def _make_batch(*, batch_id: UUID | None = None, query_text: str = "example") ->
     artifact = ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="abc", size_bytes=1)
     return MinerTaskBatchSpec(
         batch_id=batch_id or uuid4(),
-        cutoff_at_iso="2025-01-01T00:00:00Z",
-        created_at_iso="2025-01-01T00:00:00Z",
+        cutoff_at="2025-01-01T00:00:00Z",
+        created_at="2025-01-01T00:00:00Z",
         tasks=(task,),
         artifacts=(artifact,),
     )
@@ -61,8 +61,8 @@ def _make_multi_batch(*, batch_id: UUID | None = None) -> MinerTaskBatchSpec:
     )
     return MinerTaskBatchSpec(
         batch_id=batch_id or uuid4(),
-        cutoff_at_iso="2025-01-01T00:00:00Z",
-        created_at_iso="2025-01-01T00:00:00Z",
+        cutoff_at="2025-01-01T00:00:00Z",
+        created_at="2025-01-01T00:00:00Z",
         tasks=tasks,
         artifacts=artifacts,
     )

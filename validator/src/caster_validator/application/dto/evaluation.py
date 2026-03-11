@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Self
 from uuid import UUID
 
-from pydantic import AliasChoices, BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from caster_commons.domain.miner_task import MinerTask, Query, Response
 from caster_commons.domain.session import LlmUsageTotals, Session, SessionUsage
@@ -90,8 +90,8 @@ class MinerTaskBatchSpec(BaseModel):
     """Miner-task batch supplied by the platform."""
 
     batch_id: UUID
-    cutoff_at: str = Field(min_length=1, validation_alias=AliasChoices("cutoff_at", "cutoff_at_iso"))
-    created_at: str = Field(min_length=1, validation_alias=AliasChoices("created_at", "created_at_iso"))
+    cutoff_at: str = Field(min_length=1)
+    created_at: str = Field(min_length=1)
     tasks: tuple[MinerTask, ...] = Field(min_length=1)
     artifacts: tuple[ScriptArtifactSpec, ...] = Field(min_length=1)
 
