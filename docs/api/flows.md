@@ -75,7 +75,7 @@ sequenceDiagram
   participant V as Validator API
 
   Note over P,V: Authorization: Bittensor ss58="...",sig="..."
-  P->>V: POST /validator/miner-task-batches/batch<br/>{ batch_id, cutoff_at_iso, created_at_iso, tasks, artifacts }
+  P->>V: POST /validator/miner-task-batches/batch<br/>{ batch_id, cutoff_at, created_at, tasks, artifacts }
   V-->>P: 200 { status:"accepted", batch_id, caller }
 
   Note over P,V: On error, validator returns 4xx/5xx.

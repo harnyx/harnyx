@@ -108,8 +108,8 @@ class MinerTaskBatchRequestModel(BaseModel):
     model_config = VALIDATOR_STRICT_CONFIG
 
     batch_id: str = Field(min_length=1)
-    cutoff_at: str = Field(min_length=1, validation_alias="cutoff_at_iso")
-    created_at: str = Field(min_length=1, validation_alias="created_at_iso")
+    cutoff_at: str = Field(min_length=1)
+    created_at: str = Field(min_length=1)
     tasks: list[MinerTaskRequestModel] = Field(min_length=1)
     artifacts: list[ScriptArtifactRequestModel] = Field(min_length=1)
 
