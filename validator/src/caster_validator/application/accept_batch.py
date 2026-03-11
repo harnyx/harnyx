@@ -33,20 +33,22 @@ class AcceptEvaluationBatch:
 
     def execute(self, batch: MinerTaskBatchSpec) -> None:
         with self._lock:
-            self.progress.register(batch)
             state = self._accepted_batch_state(batch.batch_id)
             if state is None:
+                self.progress.register(batch)
                 self._queue_new_batch(batch)
                 return
+            if state.batch != batch:
+                raise RuntimeError("batch_id already exists with different contents")
             if state.lifecycle in {"queued", "processing", "completed"}:
                 return
 
-            if self._all_pairs_recorded(batch):
+            if self._all_pairs_recorded(state.batch):
                 self._accepted_batches[batch.batch_id] = replace(state, lifecycle="completed")
                 return
 
             self._accepted_batches[batch.batch_id] = replace(state, lifecycle="queued")
-            self.inbox.put(batch)
+            self.inbox.put(state.batch)
             self._update_status_queue_length()
 
     def mark_processing(self, batch_id: UUID) -> None:
