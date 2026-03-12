@@ -662,7 +662,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `final_top` |  |  | opt | `array` (nullable) |
+| `champion_uid` |  |  | opt | `integer` (nullable) |
 | `weights` |  |  | req | `object` |
 
 
@@ -2425,7 +2425,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `final_top` |  |  | opt | `array` (nullable) |
+| `champion_uid` |  |  | opt | `integer` (nullable) |
 | `weights` |  |  | req | `object` |
 
 <details>
@@ -2434,50 +2434,16 @@ Body: [WeightsResponse](#model-weightsresponse)
 ```json
 {
   "properties": {
-    "final_top": {
+    "champion_uid": {
       "anyOf": [
         {
-          "maxItems": 3,
-          "minItems": 3,
-          "prefixItems": [
-            {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          ],
-          "type": "array"
+          "type": "integer"
         },
         {
           "type": "null"
         }
       ],
-      "title": "Final Top"
+      "title": "Champion Uid"
     },
     "weights": {
       "additionalProperties": {

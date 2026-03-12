@@ -41,7 +41,7 @@ def test_get_champion_weights_returns_weights() -> None:
         if request.method == "GET" and request.url.path == "/v1/weights":
             payload = {
                 "weights": {"42": 0.7, "7": 0.3},
-                "final_top": [42, 7, None],
+                "champion_uid": 42,
             }
             return httpx.Response(status_code=200, json=payload)
         return httpx.Response(status_code=404)
@@ -56,7 +56,7 @@ def test_get_champion_weights_returns_weights() -> None:
     weights = client.get_champion_weights()
 
     assert weights.weights == {42: 0.7, 7: 0.3}
-    assert weights.final_top == (42, 7, None)
+    assert weights.champion_uid == 42
 
 
 def test_get_miner_task_batch_parses_tasks_and_artifacts() -> None:

@@ -174,6 +174,12 @@ async def test_scheduler_records_failure_when_sandbox_invocation_errors() -> Non
     evaluation_records = DummyEvaluationRecordStore()
     session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
     receipt_log = DummyReceiptLog()
+    clock_values = iter(
+        (
+            datetime(2025, 10, 27, 0, 0, 0, tzinfo=UTC),
+            datetime(2025, 10, 27, 0, 0, 2, tzinfo=UTC),
+        ),
+    )
 
     def orchestrator_factory(_client: object):
         class FailingOrchestrator:
@@ -191,7 +197,7 @@ async def test_scheduler_records_failure_when_sandbox_invocation_errors() -> Non
         receipt_log=receipt_log,
         orchestrator_factory=orchestrator_factory,
         sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
-        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        clock=lambda: next(clock_values),
         config=SchedulerConfig(
             token_secret_bytes=8,
             session_ttl=timedelta(minutes=5),
@@ -207,6 +213,7 @@ async def test_scheduler_records_failure_when_sandbox_invocation_errors() -> Non
         code="sandbox_invocation_failed",
         message="upstream tool failure",
     )
+    assert result.runs[0].run.details.elapsed_ms == pytest.approx(2000.0)
 
 
 async def test_scheduler_records_failure_when_scoring_errors() -> None:

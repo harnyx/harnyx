@@ -51,6 +51,7 @@ class EvaluationDetails(BaseModel):
 
     score_breakdown: ScoreBreakdown | None = None
     total_tool_usage: ToolUsageSummary = Field(default_factory=ToolUsageSummary.zero)
+    elapsed_ms: float | None = Field(default=None, ge=0.0)
     error: EvaluationError | None = None
 
     @field_validator("total_tool_usage", mode="before")

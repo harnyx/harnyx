@@ -38,6 +38,10 @@ SubmissionFactory = Callable[[MinerTask, SessionIssued], Awaitable[MinerTaskRunS
 logger = logging.getLogger("caster_validator.scheduler")
 
 
+def _elapsed_ms(*, issued_at: datetime, completed_at: datetime) -> float:
+    return (completed_at - issued_at).total_seconds() * 1000.0
+
+
 class EvaluationRunner:
     """Executes miner task runs for artifacts and records submissions."""
 
@@ -208,10 +212,12 @@ class EvaluationRunner:
         error_message: str,
     ) -> MinerTaskRunSubmission:
         envelope = self._sessions.mark_status(session_id, SessionStatus.ERROR)
+        completed_at = self._clock()
         usage, total_tool_usage = self._summarize_session(envelope)
         details = EvaluationDetails(
             error=EvaluationError(code=error_code, message=error_message),
             total_tool_usage=total_tool_usage,
+            elapsed_ms=_elapsed_ms(issued_at=envelope.session.issued_at, completed_at=completed_at),
         )
         run = MinerTaskRun(
             session_id=session_id,
@@ -220,7 +226,7 @@ class EvaluationRunner:
             task_id=task.task_id,
             response=None,
             details=details,
-            completed_at=self._clock(),
+            completed_at=completed_at,
         )
         self._receipts.clear_session(session_id)
         submission = MinerTaskRunSubmission(

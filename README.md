@@ -18,7 +18,7 @@ uv sync --all-packages --dev
 
 ## How evaluation works (roles + flow)
 
-Caster rewards the best miner scripts by having validators run standardized query tasks against them, aggregating scores, and assigning emissions to a sticky top-3 roster.
+Caster rewards the best miner scripts by having validators run standardized query tasks against them, aggregating scores, and assigning emissions to one sticky current champion.
 
 A **task** is one generic query plus one reference answer.
 
@@ -92,17 +92,17 @@ sequenceDiagram
 
 - **Cost-efficient and permissionless** — open participation under explicit budget constraints
 - **Measurable and transparent** — scripts, monitoring, and scoring rules are visible
-- **Competitive and adaptive** — the dataset and sticky roster keep miners improving over time
+- **Competitive and adaptive** — the dataset and sticky champion keep miners improving over time
 
-## Sticky roster keeps incentives honest
+## Sticky champion keeps incentives honest
 
-We open-source miner scripts. Without a guardrail, a copycat can clone the current best script and win #2/#3 with minimal changes.
+We open-source miner scripts. Without a guardrail, a copycat can clone the current best script and win by matching the incumbent with minimal changes.
 
-The sticky top-3 roster prevents that:
+The sticky current champion prevents that:
 
-- Only a challenger that beats the current #1 can enter the roster.
-- If a challenger does **not** beat #1, the roster stays unchanged.
-- If a challenger beats #1, the roster shifts: challenger -> #1, old #1 -> #2, old #2 -> #3.
+- A challenger can take the slot only by clearing the score-margin gate, or by matching/non-regressing score while being materially cheaper or faster.
+- If a challenger does **not** beat the incumbent on one of those accepted paths, the champion stays unchanged.
+- Emission remains winner-take-all for the current champion only.
 
 ## Repo layout
 

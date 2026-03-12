@@ -34,6 +34,10 @@ from caster_validator.domain.evaluation import MinerTaskRun
 logger = logging.getLogger("caster_validator.task_run")
 
 
+def _elapsed_ms(*, issued_at: datetime, completed_at: datetime) -> float:
+    return (completed_at - issued_at).total_seconds() * 1000.0
+
+
 class UsageSummarizer:
     """Summarizes tool and LLM usage for a miner task run."""
 
@@ -167,15 +171,18 @@ class TaskRunOrchestrator:
                 query=request.task.query,
             ),
         )
+        invocation_completed_at = self._clock()
         score_breakdown = await self._scoring.score(
             task=request.task,
             response=invocation.response,
         )
         session = self._require_session(request.session_id)
+        completed_at = self._clock()
         usage, total_tool_usage = self._usage.summarize(session, invocation.tool_receipts)
         details = EvaluationDetails(
             score_breakdown=score_breakdown,
             total_tool_usage=total_tool_usage,
+            elapsed_ms=_elapsed_ms(issued_at=session.issued_at, completed_at=invocation_completed_at),
         )
         run = MinerTaskRun(
             session_id=request.session_id,
@@ -184,7 +191,7 @@ class TaskRunOrchestrator:
             task_id=request.task.task_id,
             response=invocation.response,
             details=details,
-            completed_at=self._clock(),
+            completed_at=completed_at,
         )
         self._receipts.clear_session(request.session_id)
         return TaskRunOutcome(

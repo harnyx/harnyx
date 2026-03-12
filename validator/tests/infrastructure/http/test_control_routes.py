@@ -149,6 +149,7 @@ def _make_task_submission(*, batch_id: UUID) -> tuple[MinerTask, MinerTaskRunSub
                 scoring_version="v1",
             ),
             total_tool_usage=total_tool_usage,
+            elapsed_ms=2500.0,
         ),
         completed_at=datetime.now(UTC),
     )
@@ -240,6 +241,7 @@ def test_progress_endpoint_includes_specifics_and_task_fields() -> None:
     assert specifics["total_tool_usage"]["search_tool_cost"] == pytest.approx(0.005)
     assert specifics["total_tool_usage"]["llm_cost"] == pytest.approx(0.02)
     assert specifics["score_breakdown"]["total_score"] == pytest.approx(0.9)
+    assert specifics["elapsed_ms"] == pytest.approx(2500.0)
 
 
 def test_accept_batch_endpoint_accepts_platform_json_payload() -> None:

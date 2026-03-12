@@ -196,7 +196,7 @@ sequenceDiagram
   P-->>V: 200 { status:"ok" }
 
   V->>P: GET /v1/weights
-  P-->>V: 200 { weights, final_top }
+  P-->>V: 200 { weights, champion_uid }
 
   Note over V,P: On error, platform returns 4xx { error_code, message }.
 ```

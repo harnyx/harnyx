@@ -46,7 +46,7 @@ class WeightWorker(BaseWorker):
                 extra={
                     "tx_hash": result.tx_hash,
                     "weight_count": len(result.weights),
-                    "final_top": [uid for uid in result.final_top if uid is not None],
+                    "champion_uid": result.champion_uid,
                 },
             )
             if self._status is not None:

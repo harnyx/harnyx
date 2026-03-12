@@ -34,8 +34,8 @@ Body: [MinerTaskBatchRequestModel](#model-minertaskbatchrequestmodel)
 |  | `size_bytes` |  | req | `integer` |
 |  | `uid` |  | req | `integer` |
 | `batch_id` |  |  | req | `string` |
-| `created_at_iso` |  |  | req | `string` |
-| `cutoff_at_iso` |  |  | req | `string` |
+| `created_at` |  |  | req | `string` |
+| `cutoff_at` |  |  | req | `string` |
 | `tasks` |  |  | req | array[[MinerTaskRequestModel](#model-minertaskrequestmodel)] |
 |  | `budget_usd` |  | opt | `number` (default: 0.05) |
 |  | `query` |  | req | [Query](#model-query) |
@@ -109,6 +109,7 @@ Body: [ProgressResponse](#model-progressresponse)
 |  |  | `status` | req | `string` |
 |  |  | `uid` | req | `integer` |
 |  | `specifics` |  | req | [EvaluationDetails](#model-evaluationdetails) |
+|  |  | `elapsed_ms` | opt | `number` (nullable) |
 |  |  | `error` | opt | [EvaluationError](#model-evaluationerror) (nullable) |
 |  |  | `score_breakdown` | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
 |  |  | `total_tool_usage` | opt | [ToolUsageSummary](#model-toolusagesummary) |
@@ -281,6 +282,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `elapsed_ms` |  |  | opt | `number` (nullable) |
 | `error` |  |  | opt | [EvaluationError](#model-evaluationerror) (nullable) |
 |  | `code` |  | req | `string` |
 |  | `message` |  | req | `string` |
@@ -310,6 +312,18 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 {
   "additionalProperties": false,
   "properties": {
+    "elapsed_ms": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Elapsed Ms"
+    },
     "error": {
       "anyOf": [
         {
@@ -573,8 +587,8 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `size_bytes` |  | req | `integer` |
 |  | `uid` |  | req | `integer` |
 | `batch_id` |  |  | req | `string` |
-| `created_at_iso` |  |  | req | `string` |
-| `cutoff_at_iso` |  |  | req | `string` |
+| `created_at` |  |  | req | `string` |
+| `cutoff_at` |  |  | req | `string` |
 | `tasks` |  |  | req | array[[MinerTaskRequestModel](#model-minertaskrequestmodel)] |
 |  | `budget_usd` |  | opt | `number` (default: 0.05) |
 |  | `query` |  | req | [Query](#model-query) |
@@ -603,14 +617,14 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "title": "Batch Id",
       "type": "string"
     },
-    "created_at_iso": {
+    "created_at": {
       "minLength": 1,
-      "title": "Created At Iso",
+      "title": "Created At",
       "type": "string"
     },
-    "cutoff_at_iso": {
+    "cutoff_at": {
       "minLength": 1,
-      "title": "Cutoff At Iso",
+      "title": "Cutoff At",
       "type": "string"
     },
     "tasks": {
@@ -624,8 +638,8 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
   },
   "required": [
     "batch_id",
-    "cutoff_at_iso",
-    "created_at_iso",
+    "cutoff_at",
+    "created_at",
     "tasks",
     "artifacts"
   ],
@@ -777,6 +791,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `status` |  | req | `string` |
 |  | `uid` |  | req | `integer` |
 | `specifics` |  |  | req | [EvaluationDetails](#model-evaluationdetails) |
+|  | `elapsed_ms` |  | opt | `number` (nullable) |
 |  | `error` |  | opt | [EvaluationError](#model-evaluationerror) (nullable) |
 |  |  | `code` | req | `string` |
 |  |  | `message` | req | `string` |
@@ -873,6 +888,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  |  | `status` | req | `string` |
 |  |  | `uid` | req | `integer` |
 |  | `specifics` |  | req | [EvaluationDetails](#model-evaluationdetails) |
+|  |  | `elapsed_ms` | opt | `number` (nullable) |
 |  |  | `error` | opt | [EvaluationError](#model-evaluationerror) (nullable) |
 |  |  | `score_breakdown` | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
 |  |  | `total_tool_usage` | opt | [ToolUsageSummary](#model-toolusagesummary) |

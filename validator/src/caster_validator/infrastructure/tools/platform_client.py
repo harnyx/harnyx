@@ -93,13 +93,9 @@ class HttpPlatformClient(PlatformPort):
             )
         payload = response.json()
         weights = {int(uid): float(weight) for uid, weight in payload.get("weights", {}).items()}
-        final_top_payload = payload.get("final_top") or (None, None, None)
-        final_top = (
-            int(final_top_payload[0]) if final_top_payload[0] is not None else None,
-            int(final_top_payload[1]) if final_top_payload[1] is not None else None,
-            int(final_top_payload[2]) if final_top_payload[2] is not None else None,
-        )
-        return ChampionWeights(final_top=final_top, weights=weights)
+        champion_uid_raw = payload.get("champion_uid")
+        champion_uid = int(champion_uid_raw) if champion_uid_raw is not None else None
+        return ChampionWeights(champion_uid=champion_uid, weights=weights)
 
 
 __all__ = ["HttpPlatformClient", "PlatformClientError"]

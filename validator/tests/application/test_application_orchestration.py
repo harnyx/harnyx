@@ -82,6 +82,16 @@ class StubScoringService:
         )
 
 
+class _ClockSequence:
+    def __init__(self, *values: datetime) -> None:
+        self._values = list(values)
+
+    def now(self) -> datetime:
+        if not self._values:
+            raise AssertionError("clock sequence exhausted")
+        return self._values.pop(0)
+
+
 async def test_application_use_cases_cooperate_for_single_task_run() -> None:
     session_registry = FakeSessionRegistry()
     receipt_log = FakeReceiptLog()
@@ -162,7 +172,10 @@ async def test_application_use_cases_cooperate_for_single_task_run() -> None:
         receipt_log=receipt_log,
         scoring_service=StubScoringService(),
         session_registry=session_registry,
-        clock=lambda: datetime(2025, 10, 17, 12, 10, tzinfo=UTC),
+        clock=_ClockSequence(
+            datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
+            datetime(2025, 10, 17, 12, 10, tzinfo=UTC),
+        ).now,
     )
 
     outcome = await orchestrator.evaluate(
@@ -178,6 +191,8 @@ async def test_application_use_cases_cooperate_for_single_task_run() -> None:
     assert outcome.run.response == Response(text="A direct answer")
     assert outcome.run.details.score_breakdown is not None
     assert outcome.run.details.score_breakdown.total_score == pytest.approx(1.0)
+    assert outcome.run.details.elapsed_ms == pytest.approx(300000.0)
+    assert outcome.run.completed_at == datetime(2025, 10, 17, 12, 10, tzinfo=UTC)
     assert outcome.run.details.total_tool_usage.search_tool_cost == pytest.approx(0.0025)
     assert sandbox.requests == [
         (

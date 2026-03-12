@@ -21,13 +21,13 @@ class PlatformPort(Protocol):
         ...
 
     def get_champion_weights(self) -> ChampionWeights:
-        """Return platform-computed champion weights and top3."""
+        """Return platform-computed champion weights."""
         ...
 
 
 @dataclass(frozen=True)
 class ChampionWeights:
-    final_top: tuple[int | None, int | None, int | None]
+    champion_uid: int | None
     weights: dict[int, float]
 
 

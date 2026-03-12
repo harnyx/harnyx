@@ -21,7 +21,7 @@ DEFAULT_MIN_BLOCKS = 100
 class WeightSubmissionResult:
     """Champion-aware weight submission outcome."""
 
-    final_top: tuple[int | None, int | None, int | None]
+    champion_uid: int | None
     weights: dict[int, float]
     tx_hash: str
 
@@ -63,15 +63,11 @@ class WeightSubmissionService:
             return None
         return self.submit()
 
-    def submit(
-        self,
-        *,
-        roster: object | None = None,
-    ) -> WeightSubmissionResult:
+    def submit(self) -> WeightSubmissionResult:
         """Submit weights unconditionally (caller must ensure window is open)."""
         selection = self._platform.get_champion_weights()
         weights = selection.weights
-        final_top = selection.final_top
+        champion_uid = selection.champion_uid
         if not weights:
             raise RuntimeError("platform returned empty weights")
         weights_logger.debug("submitting weights to subtensor", extra={"weights": weights})
@@ -81,13 +77,13 @@ class WeightSubmissionService:
             "submitted champion weights from platform",
             extra={
                 "event": "champion_weights_submitted",
-                "final_top": [uid for uid in final_top if uid is not None],
+                "champion_uid": champion_uid,
                 "weights": weights,
                 "tx_hash": tx_hash,
                 "submitted_at": submitted_at.isoformat(),
             },
         )
-        return WeightSubmissionResult(final_top=final_top, weights=weights, tx_hash=tx_hash)
+        return WeightSubmissionResult(champion_uid=champion_uid, weights=weights, tx_hash=tx_hash)
 
 
 __all__ = ["WeightSubmissionResult", "WeightSubmissionService", "DEFAULT_MIN_BLOCKS"]

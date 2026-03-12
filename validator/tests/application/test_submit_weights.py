@@ -18,13 +18,13 @@ class StubPlatform:
     def __init__(
         self,
         weights: dict[int, float],
-        final_top: tuple[int | None, int | None, int | None],
+        champion_uid: int | None,
     ):
         self._weights = weights
-        self._final_top = final_top
+        self._champion_uid = champion_uid
 
     def get_champion_weights(self) -> ChampionWeights:
-        return ChampionWeights(final_top=self._final_top, weights=self._weights)
+        return ChampionWeights(champion_uid=self._champion_uid, weights=self._weights)
 
 
 def test_submission_service_submits_platform_weights() -> None:
@@ -33,7 +33,7 @@ def test_submission_service_submits_platform_weights() -> None:
     fake.current_block_height = 1_234
     netuid = 1
     fake.tempo_by_netuid[netuid] = 360
-    platform = StubPlatform(weights={5: 0.6, 1: 0.4}, final_top=(5, 1, None))
+    platform = StubPlatform(weights={5: 0.6, 1: 0.4}, champion_uid=5)
     service = WeightSubmissionService(
         subtensor=fake,
         netuid=netuid,
@@ -43,7 +43,7 @@ def test_submission_service_submits_platform_weights() -> None:
 
     result = service.submit()
 
-    assert result.final_top == (5, 1, None)
+    assert result.champion_uid == 5
     assert fake.weight_updates[-1] == result.weights
     assert pytest.approx(result.weights[5], rel=1e-6) == 0.6
     assert pytest.approx(result.weights[1], rel=1e-6) == 0.4
@@ -51,7 +51,7 @@ def test_submission_service_submits_platform_weights() -> None:
 
 def test_submission_service_raises_on_empty_weights() -> None:
     fake = FakeSubtensorClient()
-    platform = StubPlatform(weights={}, final_top=(None, None, None))
+    platform = StubPlatform(weights={}, champion_uid=None)
     service = WeightSubmissionService(
         subtensor=fake,
         netuid=1,
