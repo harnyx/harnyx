@@ -146,7 +146,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 <a id="endpoint-post-v1-miner-task-batches-batch"></a>
 #### POST /v1/miner-task-batches/batch
 
-Create a miner-task batch (tasks + artifacts).
+Owner emergency recovery route. Each request force-creates a fresh batch, is not replay-safe, and fails fast with 409 while batch creation is already in progress or another batch is running. Returns an explicit terminal delivery failure when every observed validator definitively rejects or misses dispatch.
 
 **Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
 
@@ -156,7 +156,6 @@ Body: [CreateBatchRequest](#model-createbatchrequest)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `batch_id` |  |  | opt | `string` (format: uuid; nullable) |
 | `champion_artifact_id` |  |  | opt | `string` (format: uuid; nullable) |
 | `override_task_dataset` |  |  | opt | [OverrideMinerTaskDatasetModel](#model-overrideminertaskdatasetmodel) (nullable) |
 |  | `tasks` |  | req | array[[MinerTaskInputModel](#model-minertaskinputmodel)] |
@@ -191,16 +190,14 @@ Body: [MinerTaskBatchModel](#model-minertaskbatchmodel)
 |  |  | `text` | req | `string` |
 |  | `task_id` |  | req | `string` (format: uuid) |
 
-`422` Validation Error
+`409` Batch creation already in progress or another batch is running.
 Content-Type: `application/json`
-Body: [HTTPValidationError](#model-httpvalidationerror)
+Body: [ErrorResponse](#model-errorresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
-|  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
-|  | `msg` |  | req | `string` |
-|  | `type` |  | req | `string` |
+| `error_code` |  |  | req | `string` |
+| `message` |  |  | req | `string` |
 
 
 #### {batch_id}
@@ -771,7 +768,6 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `batch_id` |  |  | opt | `string` (format: uuid; nullable) |
 | `champion_artifact_id` |  |  | opt | `string` (format: uuid; nullable) |
 | `override_task_dataset` |  |  | opt | [OverrideMinerTaskDatasetModel](#model-overrideminertaskdatasetmodel) (nullable) |
 |  | `tasks` |  | req | array[[MinerTaskInputModel](#model-minertaskinputmodel)] |
@@ -785,19 +781,8 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
-    "batch_id": {
-      "anyOf": [
-        {
-          "format": "uuid",
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Batch Id"
-    },
     "champion_artifact_id": {
       "anyOf": [
         {
@@ -963,6 +948,40 @@ Body: [WeightsResponse](#model-weightsresponse)
     "justification"
   ],
   "title": "CriterionEvaluationModel",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-errorresponse"></a>
+### Model: ErrorResponse
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `error_code` |  |  | req | `string` |
+| `message` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "error_code": {
+      "title": "Error Code",
+      "type": "string"
+    },
+    "message": {
+      "title": "Message",
+      "type": "string"
+    }
+  },
+  "required": [
+    "error_code",
+    "message"
+  ],
+  "title": "ErrorResponse",
   "type": "object"
 }
 ```
