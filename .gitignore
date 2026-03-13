@@ -1,0 +1,53 @@
+# Local env files created by validator/miner setup
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Python bytecode and tooling caches
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+**/.pytest_cache/
+.ruff_cache/
+**/.ruff_cache/
+.mypy_cache/
+**/.mypy_cache/
+.hypothesis/
+**/.hypothesis/
+.tox/
+**/.tox/
+.nox/
+**/.nox/
+
+# Local virtual environments
+.venv/
+**/.venv/
+venv/
+**/venv/
+
+# Coverage and test artifacts
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Build and vendored output
+dist/
+**/dist/
+build/
+**/build/
+*.egg-info/
+**/*.egg-info/
+node_modules/
+**/node_modules/
+
+# Editor / OS clutter
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
