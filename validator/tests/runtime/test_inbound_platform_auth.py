@@ -3,11 +3,11 @@ from __future__ import annotations
 import bittensor as bt
 import pytest
 
-import caster_validator.infrastructure.auth.sr25519 as sr25519
-from caster_commons.bittensor import VerificationError, build_canonical_request
-from caster_validator.infrastructure.auth.sr25519 import BittensorSr25519InboundVerifier
-from caster_validator.runtime import bootstrap
-from caster_validator.runtime.settings import Settings
+import harnyx_validator.infrastructure.auth.sr25519 as sr25519
+from harnyx_commons.bittensor import VerificationError, build_canonical_request
+from harnyx_validator.infrastructure.auth.sr25519 import BittensorSr25519InboundVerifier
+from harnyx_validator.runtime import bootstrap
+from harnyx_validator.runtime.settings import Settings
 
 
 def test_build_inbound_auth_uses_subnet_owner_hotkey(monkeypatch) -> None:

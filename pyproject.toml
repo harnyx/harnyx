@@ -1,5 +1,5 @@
 [project]
-name = "caster-subnet-public-workspace"
+name = "harnyx-subnet-public-workspace"
 version = "0.0.0"
 description = "Workspace manifest for the public Caster Subnet packages."
 requires-python = ">=3.11"
@@ -17,6 +17,11 @@ dependencies = [
 
 [tool.uv.workspace]
 members = [
+  "compat/caster-commons",
+  "compat/caster-validator",
+  "compat/caster-miner",
+  "compat/caster-miner-sdk",
+  "compat/caster-sandbox",
   "packages/commons",
   "validator",
   "miner",
@@ -25,6 +30,11 @@ members = [
 ]
 
 [tool.uv.sources]
+harnyx-commons = { workspace = true }
+harnyx-validator = { workspace = true }
+harnyx-miner = { workspace = true }
+harnyx-miner-sdk = { workspace = true }
+harnyx-sandbox = { workspace = true }
 caster-commons = { workspace = true }
 caster-validator = { workspace = true }
 caster-miner = { workspace = true }

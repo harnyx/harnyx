@@ -5,9 +5,9 @@ from uuid import uuid4
 
 import pytest
 
-from caster_commons.domain.session import Session, SessionStatus, SessionUsage
-from caster_commons.tools.usage_tracker import ToolCallUsage, UsageTracker
-from caster_validator.domain.exceptions import BudgetExceededError
+from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
+from harnyx_commons.tools.usage_tracker import ToolCallUsage, UsageTracker
+from harnyx_validator.domain.exceptions import BudgetExceededError
 
 
 def make_session(*, budget_usd: float) -> Session:

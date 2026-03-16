@@ -6,13 +6,13 @@ from subprocess import CompletedProcess
 
 import pytest
 
-import caster_commons.sandbox.docker as docker_module
-from caster_commons.sandbox.docker import (
+import harnyx_commons.sandbox.docker as docker_module
+from harnyx_commons.sandbox.docker import (
     DockerSandboxManager,
     SandboxOptions,
     resolve_sandbox_host_container_url,
 )
-from caster_commons.sandbox.manager import SandboxDeployment
+from harnyx_commons.sandbox.manager import SandboxDeployment
 
 _HOST_CONTAINER_URL = "http://127.0.0.1:1"
 

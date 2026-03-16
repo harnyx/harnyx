@@ -13,14 +13,14 @@ from pathlib import Path
 
 import pytest
 
-from caster_commons.sandbox.agent_staging import stage_agent_source
-from caster_commons.sandbox.docker import (
+from harnyx_commons.sandbox.agent_staging import stage_agent_source
+from harnyx_commons.sandbox.docker import (
     DockerSandboxManager,
     SandboxOptions,
     resolve_sandbox_host_container_url,
 )
-from caster_commons.sandbox.manager import SandboxDeployment
-from caster_commons.sandbox.state import DEFAULT_STATE_DIR
+from harnyx_commons.sandbox.manager import SandboxDeployment
+from harnyx_commons.sandbox.state import DEFAULT_STATE_DIR
 
 _DOCKER_CLI = os.getenv("DOCKER_CLI", "docker")
 _REPO_ROOT = Path(__file__).resolve().parents[3]

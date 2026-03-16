@@ -7,8 +7,8 @@ import bittensor as bt
 import httpx
 import pytest
 
-from caster_commons.bittensor import build_canonical_request
-from caster_validator.infrastructure.tools.platform_client import HttpPlatformClient
+from harnyx_commons.bittensor import build_canonical_request
+from harnyx_validator.infrastructure.tools.platform_client import HttpPlatformClient
 
 _HEADER_PATTERN = re.compile(
     r'^Bittensor\s+ss58="(?P<ss58>[^"]+)",\s*sig="(?P<sig>[0-9a-f]+)"$'

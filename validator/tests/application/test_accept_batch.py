@@ -5,11 +5,11 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from caster_commons.domain.miner_task import MinerTask, Query, ReferenceAnswer
-from caster_validator.application.accept_batch import AcceptEvaluationBatch
-from caster_validator.application.dto.evaluation import MinerTaskBatchSpec, ScriptArtifactSpec
-from caster_validator.application.status import StatusProvider
-from caster_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
+from harnyx_commons.domain.miner_task import MinerTask, Query, ReferenceAnswer
+from harnyx_validator.application.accept_batch import AcceptEvaluationBatch
+from harnyx_validator.application.dto.evaluation import MinerTaskBatchSpec, ScriptArtifactSpec
+from harnyx_validator.application.status import StatusProvider
+from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
 
 
 class ProgressSpy:

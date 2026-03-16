@@ -8,8 +8,13 @@ members = [
     "caster-miner",
     "caster-miner-sdk",
     "caster-sandbox",
-    "caster-subnet-public-workspace",
     "caster-validator",
+    "harnyx-commons",
+    "harnyx-miner",
+    "harnyx-miner-sdk",
+    "harnyx-sandbox",
+    "harnyx-subnet-public-workspace",
+    "harnyx-validator",
 ]
 
 [[package]]
@@ -261,169 +266,57 @@ wheels = [
 [[package]]
 name = "caster-commons"
 version = "0.1.0"
-source = { editable = "packages/commons" }
+source = { editable = "compat/caster-commons" }
 dependencies = [
-    { name = "anthropic" },
-    { name = "caster-miner-sdk" },
-    { name = "google-auth" },
-    { name = "google-cloud-logging" },
-    { name = "google-genai" },
-    { name = "httpx" },
-    { name = "langfuse" },
-    { name = "opentelemetry-exporter-otlp-proto-http" },
-    { name = "opentelemetry-sdk" },
-    { name = "pydantic" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
+    { name = "harnyx-commons" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "anthropic", specifier = ">=0.75.0" },
-    { name = "caster-miner-sdk", editable = "packages/miner-sdk" },
-    { name = "google-auth", specifier = ">=2.28" },
-    { name = "google-cloud-logging", specifier = ">=3.11" },
-    { name = "google-genai", specifier = ">=1.52.0" },
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "langfuse", specifier = ">=3.14.1" },
-    { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.39" },
-    { name = "opentelemetry-sdk", specifier = ">=1.39" },
-    { name = "pydantic", specifier = ">=2.8" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4" },
-]
-provides-extras = ["dev"]
+requires-dist = [{ name = "harnyx-commons", editable = "packages/commons" }]
 
 [[package]]
 name = "caster-miner"
 version = "0.1.0"
-source = { editable = "miner" }
+source = { editable = "compat/caster-miner" }
 dependencies = [
-    { name = "bittensor" },
-    { name = "caster-miner-sdk" },
-    { name = "httpx" },
-    { name = "python-dotenv" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
+    { name = "harnyx-miner" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "bittensor", specifier = "==9.9.0" },
-    { name = "caster-miner-sdk", editable = "packages/miner-sdk" },
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4" },
-    { name = "python-dotenv", specifier = ">=1.1.1" },
-]
-provides-extras = ["dev"]
+requires-dist = [{ name = "harnyx-miner", editable = "miner" }]
 
 [[package]]
 name = "caster-miner-sdk"
 version = "0.1.1"
-source = { editable = "packages/miner-sdk" }
+source = { editable = "compat/caster-miner-sdk" }
 dependencies = [
-    { name = "httpx" },
-    { name = "pydantic" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
+    { name = "harnyx-miner-sdk" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "pydantic", specifier = ">=2.8" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4" },
-]
-provides-extras = ["dev"]
+requires-dist = [{ name = "harnyx-miner-sdk", editable = "packages/miner-sdk" }]
 
 [[package]]
 name = "caster-sandbox"
 version = "0.1.0"
-source = { editable = "sandbox" }
+source = { editable = "compat/caster-sandbox" }
 dependencies = [
-    { name = "caster-miner-sdk" },
-    { name = "fastapi" },
-    { name = "httpx" },
-    { name = "pyseccomp" },
-    { name = "uvicorn" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
+    { name = "harnyx-sandbox" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "caster-miner-sdk", editable = "packages/miner-sdk" },
-    { name = "fastapi", specifier = ">=0.110.1" },
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "pyseccomp", specifier = ">=0.1.2" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4" },
-    { name = "uvicorn", specifier = ">=0.30" },
-]
-provides-extras = ["dev"]
-
-[[package]]
-name = "caster-subnet-public-workspace"
-version = "0.0.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "deptry" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-    { name = "vulture" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "deptry", specifier = ">=0.23" },
-    { name = "pytest", specifier = ">=8.3" },
-    { name = "pytest-cov", specifier = ">=6.2.1" },
-    { name = "ruff", specifier = ">=0.5" },
-    { name = "vulture", specifier = ">=2.11" },
-]
+requires-dist = [{ name = "harnyx-sandbox", editable = "sandbox" }]
 
 [[package]]
 name = "caster-validator"
 version = "0.1.0"
-source = { editable = "validator" }
+source = { editable = "compat/caster-validator" }
 dependencies = [
-    { name = "bittensor" },
-    { name = "caster-commons" },
-    { name = "fastapi" },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "uvicorn" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "anthropic" },
-    { name = "pytest" },
+    { name = "harnyx-validator" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "anthropic", marker = "extra == 'dev'", specifier = ">=0.75.0" },
-    { name = "bittensor", specifier = "==9.9.0" },
-    { name = "caster-commons", editable = "packages/commons" },
-    { name = "fastapi", specifier = ">=0.110.1" },
-    { name = "pydantic", specifier = ">=2.8" },
-    { name = "pydantic-settings", specifier = ">=2.4" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4" },
-    { name = "uvicorn", specifier = ">=0.30" },
-]
-provides-extras = ["dev"]
+requires-dist = [{ name = "harnyx-validator", editable = "validator" }]
 
 [[package]]
 name = "certifi"
@@ -800,6 +693,173 @@ sdist = { url = "https://files.pythonhosted.org/packages/01/ee/02a2c011bdab74c6f
 wheels = [
     { url = "https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl", hash = "sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86", size = 37515, upload-time = "2025-04-24T03:35:24.344Z" },
 ]
+
+[[package]]
+name = "harnyx-commons"
+version = "0.1.0"
+source = { editable = "packages/commons" }
+dependencies = [
+    { name = "anthropic" },
+    { name = "google-auth" },
+    { name = "google-cloud-logging" },
+    { name = "google-genai" },
+    { name = "harnyx-miner-sdk" },
+    { name = "httpx" },
+    { name = "langfuse" },
+    { name = "opentelemetry-exporter-otlp-proto-http" },
+    { name = "opentelemetry-sdk" },
+    { name = "pydantic" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anthropic", specifier = ">=0.75.0" },
+    { name = "google-auth", specifier = ">=2.28" },
+    { name = "google-cloud-logging", specifier = ">=3.11" },
+    { name = "google-genai", specifier = ">=1.52.0" },
+    { name = "harnyx-miner-sdk", editable = "packages/miner-sdk" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "langfuse", specifier = ">=3.14.1" },
+    { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.39" },
+    { name = "opentelemetry-sdk", specifier = ">=1.39" },
+    { name = "pydantic", specifier = ">=2.8" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "harnyx-miner"
+version = "0.1.0"
+source = { editable = "miner" }
+dependencies = [
+    { name = "bittensor" },
+    { name = "harnyx-miner-sdk" },
+    { name = "httpx" },
+    { name = "python-dotenv" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bittensor", specifier = "==9.9.0" },
+    { name = "harnyx-miner-sdk", editable = "packages/miner-sdk" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4" },
+    { name = "python-dotenv", specifier = ">=1.1.1" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "harnyx-miner-sdk"
+version = "0.1.1"
+source = { editable = "packages/miner-sdk" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "pydantic", specifier = ">=2.8" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "harnyx-sandbox"
+version = "0.1.0"
+source = { editable = "sandbox" }
+dependencies = [
+    { name = "fastapi" },
+    { name = "harnyx-miner-sdk" },
+    { name = "httpx" },
+    { name = "pyseccomp" },
+    { name = "uvicorn" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.110.1" },
+    { name = "harnyx-miner-sdk", editable = "packages/miner-sdk" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "pyseccomp", specifier = ">=0.1.2" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4" },
+    { name = "uvicorn", specifier = ">=0.30" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "harnyx-subnet-public-workspace"
+version = "0.0.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "deptry" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+    { name = "vulture" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "deptry", specifier = ">=0.23" },
+    { name = "pytest", specifier = ">=8.3" },
+    { name = "pytest-cov", specifier = ">=6.2.1" },
+    { name = "ruff", specifier = ">=0.5" },
+    { name = "vulture", specifier = ">=2.11" },
+]
+
+[[package]]
+name = "harnyx-validator"
+version = "0.1.0"
+source = { editable = "validator" }
+dependencies = [
+    { name = "bittensor" },
+    { name = "fastapi" },
+    { name = "harnyx-commons" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "uvicorn" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "anthropic" },
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anthropic", marker = "extra == 'dev'", specifier = ">=0.75.0" },
+    { name = "bittensor", specifier = "==9.9.0" },
+    { name = "fastapi", specifier = ">=0.110.1" },
+    { name = "harnyx-commons", editable = "packages/commons" },
+    { name = "pydantic", specifier = ">=2.8" },
+    { name = "pydantic-settings", specifier = ">=2.4" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4" },
+    { name = "uvicorn", specifier = ">=0.30" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "httpcore"

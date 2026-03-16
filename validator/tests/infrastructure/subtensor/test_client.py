@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from caster_commons.config.subtensor import SubtensorSettings
-from caster_validator.infrastructure.subtensor.client import RuntimeSubtensorClient
+from harnyx_commons.config.subtensor import SubtensorSettings
+from harnyx_validator.infrastructure.subtensor.client import RuntimeSubtensorClient
 from validator.tests.fixtures.subtensor import FakeSubtensorClient
 
 

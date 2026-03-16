@@ -25,7 +25,7 @@ COPY packages/commons ./packages/commons
 COPY packages/miner-sdk ./packages/miner-sdk
 COPY validator/pyproject.toml ./validator/pyproject.toml
 
-RUN uv sync --package caster-validator --frozen --no-install-package caster-validator
+RUN uv sync --package harnyx-validator --frozen --no-install-package harnyx-validator
 
 FROM deps AS runtime
 
@@ -33,5 +33,5 @@ COPY validator ./validator
 
 RUN uv pip install --system --editable ./validator --no-deps
 
-ENTRYPOINT ["uv", "run", "--package", "caster-validator", "caster-validator"]
+ENTRYPOINT ["uv", "run", "--package", "harnyx-validator", "harnyx-validator"]
 CMD []

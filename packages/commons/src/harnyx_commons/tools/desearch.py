@@ -1,0 +1,620 @@
+"""HTTP client adapter for the DeSearch API."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from collections.abc import AsyncIterator, Mapping
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Any
+
+import httpx
+from opentelemetry import trace
+from opentelemetry.trace import SpanKind
+from opentelemetry.util.types import AttributeValue
+
+from harnyx_commons.config.external_client import ExternalClientRetrySettings
+from harnyx_commons.llm.retry_utils import RetryPolicy, backoff_ms
+from harnyx_commons.tools.desearch_ai_protocol import (
+    DeSearchAiDocsResponse,
+    parse_desearch_ai_response,
+)
+from harnyx_commons.tools.search_models import (
+    SearchWebResult,
+    SearchWebSearchRequest,
+    SearchWebSearchResponse,
+    SearchXResult,
+    SearchXSearchRequest,
+    SearchXSearchResponse,
+)
+
+_LOGGER = logging.getLogger("harnyx_commons.tools.desearch.calls")
+
+class DeSearchAiTool(StrEnum):
+    WEB = "web"
+    HACKER_NEWS = "hackernews"
+    REDDIT = "reddit"
+    WIKIPEDIA = "wikipedia"
+    YOUTUBE = "youtube"
+    TWITTER = "twitter"
+    ARXIV = "arxiv"
+
+
+class DeSearchAiModel(StrEnum):
+    NOVA = "NOVA"
+    ORBIT = "ORBIT"
+    HORIZON = "HORIZON"
+
+
+class DeSearchAiDateFilter(StrEnum):
+    PAST_24_HOURS = "PAST_24_HOURS"
+    PAST_2_DAYS = "PAST_2_DAYS"
+    PAST_WEEK = "PAST_WEEK"
+    PAST_2_WEEKS = "PAST_2_WEEKS"
+    PAST_MONTH = "PAST_MONTH"
+    PAST_2_MONTHS = "PAST_2_MONTHS"
+    PAST_YEAR = "PAST_YEAR"
+    PAST_2_YEARS = "PAST_2_YEARS"
+
+
+class DeSearchAiResultType(StrEnum):
+    ONLY_LINKS = "ONLY_LINKS"
+    LINKS_WITH_SUMMARIES = "LINKS_WITH_SUMMARIES"
+    LINKS_WITH_FINAL_SUMMARY = "LINKS_WITH_FINAL_SUMMARY"
+
+
+@dataclass(frozen=True, slots=True)
+class DeSearchTwitterSearchPage:
+    request: SearchXSearchRequest
+    response: SearchXSearchResponse
+    page: int
+    cursor: int | None
+    posts: list[SearchXResult]
+    post_ids: list[int]
+
+
+@dataclass(frozen=True, slots=True)
+class DeSearchWebSearchPage:
+    request: SearchWebSearchRequest
+    response: SearchWebSearchResponse
+    page: int
+    start: int
+    results: list[SearchWebResult]
+
+
+class DeSearchClient:
+    """Lightweight async client for DeSearch endpoints."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        timeout: float = 30.0,
+        client: httpx.AsyncClient | None = None,
+        retry_policy: RetryPolicy | None = None,
+        max_concurrent: int | None = None,
+    ) -> None:
+        if not api_key:
+            raise ValueError("DeSearch API key must be provided")
+        normalized_base = base_url.rstrip("/")
+        self._owns_client = client is None
+        self._client: httpx.AsyncClient = client or httpx.AsyncClient(
+            base_url=normalized_base,
+            timeout=timeout,
+        )
+        self._api_key = api_key
+        self._retry_policy = retry_policy or ExternalClientRetrySettings().retry_policy
+        self._semaphore: asyncio.Semaphore | None = (
+            asyncio.Semaphore(max_concurrent) if max_concurrent and max_concurrent > 0 else None
+        )
+
+    async def _post(
+        self,
+        endpoint: str,
+        payload: Mapping[str, Any],
+        *,
+        expect_data: bool = True,
+        allow_not_found: bool = False,
+    ) -> dict[str, Any] | None:
+        path = endpoint if endpoint.startswith("/") else f"/{endpoint}"
+        return await self._request(
+            "post",
+            path,
+            json_payload=dict(payload),
+            expect_data=expect_data,
+            allow_not_found=allow_not_found,
+        )
+
+    async def _get(
+        self,
+        endpoint: str,
+        params: Mapping[str, Any],
+        *,
+        expect_data: bool = True,
+        allow_not_found: bool = False,
+    ) -> dict[str, Any] | None:
+        path = endpoint if endpoint.startswith("/") else f"/{endpoint}"
+        return await self._request(
+            "get",
+            path,
+            params=dict(params),
+            expect_data=expect_data,
+            allow_not_found=allow_not_found,
+        )
+
+    # Convenience wrappers ------------------------------------------------------------------------
+
+    async def search_links_web(self, request: SearchWebSearchRequest) -> SearchWebSearchResponse:
+        params = request.to_query_params()
+        data = await self._get("web", params)
+        if data is None:
+            raise RuntimeError("desearch web search returned empty response")
+        return SearchWebSearchResponse.model_validate(data)
+
+    async def search_links_twitter(
+        self,
+        request: SearchXSearchRequest,
+    ) -> SearchXSearchResponse:
+        params = request.to_query_params()
+        data = await self._get("twitter", params)
+        if data is None:
+            raise RuntimeError("desearch twitter search returned empty response")
+        response = SearchXSearchResponse.model_validate(data)
+        self._log_search_links_twitter_summary(request, response)
+        return response
+
+    async def iter_search_links_twitter_pages(
+        self,
+        request: SearchXSearchRequest,
+    ) -> AsyncIterator[DeSearchTwitterSearchPage]:
+        base_query = request.query.strip()
+        if not base_query:
+            raise ValueError("desearch iter_search_links_twitter_pages requires non-empty query")
+        if "max_id:" in base_query:
+            raise ValueError("desearch iter_search_links_twitter_pages request.query must not contain max_id:")
+
+        cursor: int | None = None
+        page_index = 0
+        while True:
+            page_query = base_query if cursor is None else f"{base_query} max_id:{cursor}"
+            page_request = request.model_copy(update={"query": page_query})
+
+            response = await self.search_links_twitter(page_request)
+            page_index += 1
+            if not response.data:
+                return
+
+            page_posts = response.data
+            post_ids = _parse_tweet_ids(page_posts)
+
+            if cursor is not None:
+                page_posts, post_ids, ignored_count = _filter_tweets_for_max_id(page_posts, cursor=cursor)
+                if ignored_count:
+                    _LOGGER.info(
+                        "desearch.search_links_twitter.pagination.ignored_out_of_range",
+                        extra={
+                            "data": {
+                                "page": page_index,
+                                "cursor": cursor,
+                                "ignored_count": ignored_count,
+                            }
+                        },
+                    )
+                if not page_posts:
+                    _LOGGER.info(
+                        "desearch.search_links_twitter.pagination.stopped_max_id_ignored",
+                        extra={"data": {"page": page_index, "cursor": cursor}},
+                    )
+                    return
+
+            yield DeSearchTwitterSearchPage(
+                request=page_request,
+                response=response,
+                page=page_index,
+                cursor=cursor,
+                posts=page_posts,
+                post_ids=post_ids,
+            )
+
+            if not post_ids:
+                return
+            cursor = min(post_ids) - 1
+
+    async def iter_search_links_web_pages(
+        self,
+        request: SearchWebSearchRequest,
+    ) -> AsyncIterator[DeSearchWebSearchPage]:
+        query = request.query.strip()
+        if not query:
+            raise ValueError("desearch iter_search_links_web_pages requires non-empty query")
+
+        start = request.start or 0
+        page_index = 0
+        last_first_link: str | None = None
+        while True:
+            page_request = request.model_copy(update={"start": start})
+            response = await self.search_links_web(page_request)
+            page_index += 1
+            if not response.data:
+                return
+
+            first_link = response.data[0].link if response.data else None
+            if last_first_link is not None and first_link == last_first_link:
+                _LOGGER.info(
+                    "desearch.search_links_web.pagination.stopped_start_ignored",
+                    extra={"data": {"page": page_index, "start": start}},
+                )
+                return
+            last_first_link = first_link
+
+            yield DeSearchWebSearchPage(
+                request=page_request,
+                response=response,
+                page=page_index,
+                start=start,
+                results=response.data,
+            )
+            start += len(response.data)
+
+    @staticmethod
+    def _log_search_links_twitter_summary(
+        request: SearchXSearchRequest,
+        response: SearchXSearchResponse,
+    ) -> None:
+        created_at_by_id: dict[int, str | None] = {}
+        min_id: int | None = None
+        max_id: int | None = None
+        for post in response.data:
+            if post.id is None:
+                continue
+            tweet_id = int(post.id)
+            created_at_by_id[tweet_id] = post.created_at
+            if min_id is None or tweet_id < min_id:
+                min_id = tweet_id
+            if max_id is None or tweet_id > max_id:
+                max_id = tweet_id
+
+        sample_tweets = [tweet.model_dump(exclude_none=True) for tweet in response.data[:20]]
+
+        _LOGGER.info(
+            "desearch.search_links_twitter.summary",
+            extra={
+                "data": {
+                    "request": request.model_dump(exclude_none=True),
+                    "return_count": len(response.data),
+                    "min_id": min_id,
+                    "max_id": max_id,
+                    "min_created_at": created_at_by_id.get(min_id) if min_id is not None else None,
+                    "max_created_at": created_at_by_id.get(max_id) if max_id is not None else None,
+                },
+                "json_fields": {"sample_tweets": sample_tweets},
+            },
+        )
+
+    async def fetch_twitter_post(self, *, post_id: str) -> SearchXResult | None:
+        if not post_id:
+            raise ValueError("desearch fetch_twitter_post requires non-empty id")
+        data = await self._get(
+            "twitter/post",
+            {"id": post_id},
+            expect_data=False,
+            allow_not_found=True,
+        )
+        if data is None:
+            return None
+        return SearchXResult.model_validate(data)
+
+    async def ai_search(
+        self,
+        *,
+        prompt: str,
+        tools: tuple[DeSearchAiTool, ...],
+        model: DeSearchAiModel,
+        count: int,
+        date_filter: DeSearchAiDateFilter | None,
+        result_type: DeSearchAiResultType,
+        system_message: str,
+    ) -> object:
+        if not prompt.strip():
+            raise ValueError("desearch ai_search requires non-empty prompt")
+        if count <= 0:
+            raise ValueError("desearch ai_search requires count > 0")
+
+        payload_items: dict[str, object | None] = {
+            "prompt": prompt,
+            "tools": [tool.value for tool in tools],
+            # NOTE: desearch.ai /desearch/ai/search appears to ignore or reject `model` currently.
+            # We keep this parameter in the public interface for future compatibility,
+            # but do not send it in the payload until the API stabilizes.
+            # "model": model.value,
+            "date_filter": date_filter.value if date_filter is not None else None,
+            "result_type": result_type.value,
+            "system_message": system_message,
+            "streaming": False,
+            "count": min(200, count),
+        }
+        payload = {key: value for key, value in payload_items.items() if value is not None}
+        data = await self._post("desearch/ai/search", payload, expect_data=False)
+        if data is None:
+            raise RuntimeError("desearch ai_search returned empty response")
+        return data
+
+    async def ai_search_twitter_posts(
+        self,
+        *,
+        prompt: str,
+        count: int,
+        date_filter: DeSearchAiDateFilter | None,
+        system_message: str = "",
+    ) -> DeSearchAiDocsResponse:
+        raw = await self.ai_search(
+            prompt=prompt,
+            tools=(DeSearchAiTool.TWITTER,),
+            model=DeSearchAiModel.HORIZON,
+            count=count,
+            date_filter=date_filter,
+            result_type=DeSearchAiResultType.LINKS_WITH_FINAL_SUMMARY,
+            system_message=system_message,
+        )
+        return parse_desearch_ai_response(raw)
+
+    async def aclose(self) -> None:
+        if self._owns_client:
+            await self._client.aclose()
+
+    # ------------------------------------------------------------------
+    # internal
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_payload: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+        expect_data: bool = True,
+        allow_not_found: bool = False,
+    ) -> dict[str, Any] | None:
+        if self._semaphore is None:
+            return await self._request_with_retries(
+                method,
+                path,
+                json_payload=json_payload,
+                params=params,
+                expect_data=expect_data,
+                allow_not_found=allow_not_found,
+                wait_ms=0.0,
+            )
+
+        wait_start = time.perf_counter()
+        async with self._semaphore:
+            wait_ms = (time.perf_counter() - wait_start) * 1000
+            return await self._request_with_retries(
+                method,
+                path,
+                json_payload=json_payload,
+                params=params,
+                expect_data=expect_data,
+                allow_not_found=allow_not_found,
+                wait_ms=wait_ms,
+            )
+
+    async def _request_with_retries(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_payload: dict[str, Any] | None,
+        params: dict[str, Any] | None,
+        expect_data: bool,
+        allow_not_found: bool,
+        wait_ms: float,
+    ) -> dict[str, Any] | None:
+        reasons: list[str] = []
+        total_latency_ms = 0.0
+        attempts_made = 0
+        tracer = trace.get_tracer("harnyx_commons.tools.desearch")
+        with tracer.start_as_current_span(
+            "desearch.request",
+            kind=SpanKind.CLIENT,
+            attributes={
+                "http.method": method.upper(),
+                "http.target": path,
+            },
+        ) as span:
+            try:
+                for attempt in range(self._retry_policy.attempts):
+                    attempts_made = attempt + 1
+                    attempt_start = time.perf_counter()
+                    try:
+                        resp = await self._send(method, path, json_payload=json_payload, params=params)
+                        raw_response, data = await self._parse_response(resp)
+                        total_latency_ms += (time.perf_counter() - attempt_start) * 1000
+                        if expect_data:
+                            if self._missing_data(data):
+                                if self._should_retry(attempt):
+                                    reasons.append("missing_data")
+                                    await self._sleep(attempt)
+                                    continue
+                                span.set_attributes({"desearch.error": "missing_data"})
+                                raise RuntimeError("desearch returned missing data")
+                            if self._empty_payload(data):
+                                if self._should_retry(attempt):
+                                    reasons.append("empty_data")
+                                    await self._sleep(attempt)
+                                    continue
+
+                        data["attempts"] = attempt + 1
+                        data["retry_reasons"] = tuple(reasons)
+                        span.set_attributes(
+                            {
+                                "http.status_code": resp.status_code,
+                                "desearch.result_count": (
+                                    len(data["data"]) if isinstance(data.get("data"), list) else 0
+                                ),
+                            }
+                        )
+
+                        _LOGGER.info(
+                            "desearch.request.complete",
+                            extra={
+                                "data": {
+                                    "method": method.upper(),
+                                    "path": path,
+                                    "status_code": resp.status_code,
+                                    "attempts": attempt + 1,
+                                    "latency_ms_total": round(total_latency_ms, 2),
+                                    "retry_reasons": tuple(reasons),
+                                    "result_count": len(data["data"]) if isinstance(data.get("data"), list) else None,
+                                    "wait_ms": round(wait_ms, 2),
+                                },
+                                "json_fields": {
+                                    "request": {
+                                        "method": method.upper(),
+                                        "path": path,
+                                        "params": params,
+                                        "json": json_payload,
+                                    },
+                                    "response_raw": raw_response,
+                                },
+                            },
+                        )
+                        return data
+                    except httpx.HTTPStatusError as exc:  # pragma: no cover - network errors
+                        status = exc.response.status_code if exc.response else None
+                        if allow_not_found and status == 404:
+                            total_latency_ms += (time.perf_counter() - attempt_start) * 1000
+                            span.set_attributes(
+                                {
+                                    "http.status_code": 404,
+                                    "desearch.not_found": True,
+                                }
+                            )
+                            _LOGGER.info(
+                                "desearch.request.not_found",
+                                extra={
+                                    "data": {
+                                        "method": method.upper(),
+                                        "path": path,
+                                        "status_code": status,
+                                        "attempts": attempt + 1,
+                                        "latency_ms_total": round(total_latency_ms, 2),
+                                        "retry_reasons": tuple(reasons),
+                                        "wait_ms": round(wait_ms, 2),
+                                    },
+                                    "json_fields": {
+                                        "request": {
+                                            "method": method.upper(),
+                                            "path": path,
+                                            "params": params,
+                                            "json": json_payload,
+                                        },
+                                    },
+                                },
+                            )
+                            return None
+                        retryable = status == 429 or (status is not None and status >= 500)
+                        reasons.append(f"http_{status}")
+                        if not (retryable and self._should_retry(attempt)):
+                            span.set_attributes(
+                                {
+                                    "http.status_code": status or 0,
+                                    "desearch.error": f"http_{status}",
+                                }
+                            )
+                            raise RuntimeError(f"desearch request failed with status {status}") from exc
+                        await self._sleep(attempt)
+                    except httpx.HTTPError as exc:  # pragma: no cover
+                        reasons.append(exc.__class__.__name__)
+                        if not self._should_retry(attempt):
+                            span.set_attributes({"desearch.error": exc.__class__.__name__})
+                            raise RuntimeError(f"desearch request error: {exc}") from exc
+                        await self._sleep(attempt)
+            finally:
+                final_attributes: dict[str, AttributeValue] = {
+                    "desearch.attempts": attempts_made,
+                    "desearch.latency_ms_total": round(total_latency_ms, 2),
+                    "desearch.wait_ms": round(wait_ms, 2),
+                }
+                if reasons:
+                    final_attributes["desearch.retry_reasons"] = tuple(reasons)
+                span.set_attributes(final_attributes)
+
+        raise RuntimeError(f"desearch request failed after {self._retry_policy.attempts} attempts: {reasons}")
+
+    async def _send(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_payload: dict[str, Any] | None,
+        params: dict[str, Any] | None,
+    ) -> httpx.Response:
+        headers = {"Authorization": self._api_key}
+        if method == "post":
+            headers["content-type"] = "application/json"
+            return await self._client.post(path, headers=headers, json=json_payload)
+        return await self._client.get(path, headers=headers, params=params)
+
+    @staticmethod
+    async def _parse_response(resp: httpx.Response) -> tuple[object, dict[str, Any]]:
+        resp.raise_for_status()
+        raw = resp.json()
+        data = raw
+        if isinstance(data, list):
+            data = {"data": data}
+        if not isinstance(data, dict):
+            raise RuntimeError("desearch response was not an object")
+        return raw, data
+
+    @staticmethod
+    def _missing_data(data: dict[str, Any]) -> bool:
+        return data.get("data") is None
+
+    @staticmethod
+    def _empty_payload(data: dict[str, Any]) -> bool:
+        payload = data.get("data")
+        return isinstance(payload, list) and len(payload) == 0
+
+    def _should_retry(self, attempt: int) -> bool:
+        return attempt + 1 < self._retry_policy.attempts
+
+    async def _sleep(self, attempt: int) -> None:
+        backoff = backoff_ms(attempt, self._retry_policy)
+        await asyncio.sleep(backoff / 1000)
+
+
+def _parse_tweet_ids(posts: list[SearchXResult]) -> list[int]:
+    ids: list[int] = []
+    for post in posts:
+        if post.id is None or not post.id.isdigit():
+            continue
+        ids.append(int(post.id))
+    return ids
+
+
+def _filter_tweets_for_max_id(
+    posts: list[SearchXResult],
+    *,
+    cursor: int,
+) -> tuple[list[SearchXResult], list[int], int]:
+    filtered: list[SearchXResult] = []
+    filtered_ids: list[int] = []
+    ignored_count = 0
+    for post in posts:
+        if post.id is None or not post.id.isdigit():
+            ignored_count += 1
+            continue
+        tweet_id = int(post.id)
+        if tweet_id > cursor:
+            ignored_count += 1
+            continue
+        filtered.append(post)
+        filtered_ids.append(tweet_id)
+    return filtered, filtered_ids, ignored_count
+
+
+__all__ = ["DeSearchClient"]

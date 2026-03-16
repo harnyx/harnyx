@@ -3,10 +3,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from caster_miner_sdk.api import LlmChatResult, llm_chat, search_web
-from caster_miner_sdk.decorators import entrypoint
-from caster_miner_sdk.llm import LlmMessageContentPart
-from caster_miner_sdk.query import Query, Response
+from harnyx_miner_sdk.api import LlmChatResult, llm_chat, search_web
+from harnyx_miner_sdk.decorators import entrypoint
+from harnyx_miner_sdk.llm import LlmMessageContentPart
+from harnyx_miner_sdk.query import Query, Response
 
 MAX_EVIDENCE_RESULTS = 3
 CHUTES_MODEL = "openai/gpt-oss-120b"

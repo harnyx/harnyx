@@ -16,5 +16,5 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 USER caster
 
-ENTRYPOINT ["caster-sandbox"]
+ENTRYPOINT ["harnyx-sandbox"]
 CMD ["--serve"]

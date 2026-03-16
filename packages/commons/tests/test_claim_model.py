@@ -4,8 +4,8 @@ from uuid import uuid4
 
 import pytest
 
-from caster_commons.domain.claim import FeedSearchContext, GeneratedClaim, Rubric, Span
-from caster_commons.domain.verdict import VerdictOption, VerdictOptions
+from harnyx_commons.domain.claim import FeedSearchContext, GeneratedClaim, Rubric, Span
+from harnyx_commons.domain.verdict import VerdictOption, VerdictOptions
 
 _BINARY_VERDICT_OPTIONS = VerdictOptions(
     options=(

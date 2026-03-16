@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from caster_validator.infrastructure.state.backoff_file import FileBackoff
+from harnyx_validator.infrastructure.state.backoff_file import FileBackoff
 
 
 def test_read_missing_returns_none(tmp_path: Path) -> None:

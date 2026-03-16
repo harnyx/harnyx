@@ -4,11 +4,11 @@ services:
     env_file:
       - .env
     environment:
-      CASTER_STATE_VOLUME_NAME: "${CASTER_STATE_VOLUME_NAME:-caster-validator-state}"
+      CASTER_STATE_VOLUME_NAME: "${CASTER_STATE_VOLUME_NAME:-harnyx-validator-state}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${CASTER_WALLETS_HOST_DIR:-~/.bittensor/wallets}:/root/.bittensor/wallets
-      - ${CASTER_STATE_VOLUME_NAME:-caster-validator-state}:/workspace/.caster_state
+      - ${CASTER_STATE_VOLUME_NAME:-harnyx-validator-state}:/workspace/.caster_state
     ports:
       - "${VALIDATOR_HOST_PORT:-8100}:8100"
     labels:
@@ -43,6 +43,6 @@ networks:
     internal: true
 
 volumes:
-  caster-validator-state:
+  harnyx-validator-state:
     driver: local
-    name: caster-validator-state
+    name: harnyx-validator-state

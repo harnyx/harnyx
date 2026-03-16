@@ -4,9 +4,9 @@ from typing import Any, cast
 
 import pytest
 
-from caster_commons.config.subtensor import SubtensorSettings
-from caster_validator.application.ports.subtensor import ValidatorNodeInfo
-from caster_validator.infrastructure.subtensor.bittensor import BittensorSubtensorClient
+from harnyx_commons.config.subtensor import SubtensorSettings
+from harnyx_validator.application.ports.subtensor import ValidatorNodeInfo
+from harnyx_validator.infrastructure.subtensor.bittensor import BittensorSubtensorClient
 
 
 class _SubtensorStub:

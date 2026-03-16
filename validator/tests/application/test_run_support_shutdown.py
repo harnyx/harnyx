@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from caster_validator.runtime.evaluation_worker import estimate_cycle_duration_seconds
+from harnyx_validator.runtime.evaluation_worker import estimate_cycle_duration_seconds
 
 
 def test_estimate_cycle_duration_includes_bootstrap_and_evaluations() -> None:

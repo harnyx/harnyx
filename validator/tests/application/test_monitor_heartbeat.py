@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from caster_validator.application.monitor_heartbeat import HeartbeatMonitor, HeartbeatProbe
+from harnyx_validator.application.monitor_heartbeat import HeartbeatMonitor, HeartbeatProbe
 
 
 def test_heartbeat_monitor_triggers_restart_when_stale() -> None:

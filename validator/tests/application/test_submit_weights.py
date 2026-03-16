@@ -4,9 +4,9 @@ from datetime import UTC, datetime
 
 import pytest
 
-from caster_validator.application.ports.platform import ChampionWeights
-from caster_validator.application.ports.subtensor import ValidatorNodeInfo
-from caster_validator.application.submit_weights import WeightSubmissionService
+from harnyx_validator.application.ports.platform import ChampionWeights
+from harnyx_validator.application.ports.subtensor import ValidatorNodeInfo
+from harnyx_validator.application.submit_weights import WeightSubmissionService
 from validator.tests.fixtures.subtensor import FakeSubtensorClient
 
 

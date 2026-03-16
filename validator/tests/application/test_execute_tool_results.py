@@ -5,8 +5,8 @@ from uuid import UUID
 
 import pytest
 
-from caster_commons.domain.tool_call import ToolResultPolicy
-from caster_commons.tools.executor import _build_tool_results
+from harnyx_commons.domain.tool_call import ToolResultPolicy
+from harnyx_commons.tools.executor import _build_tool_results
 
 
 @pytest.fixture(autouse=True)
@@ -16,7 +16,7 @@ def deterministic_uuid(monkeypatch: pytest.MonkeyPatch) -> None:
     def _fake_uuid() -> UUID:
         return UUID(int=next(sequence))
 
-    monkeypatch.setattr("caster_commons.tools.executor.uuid4", _fake_uuid)
+    monkeypatch.setattr("harnyx_commons.tools.executor.uuid4", _fake_uuid)
 
 
 def test_build_tool_results_search_web_referenceable() -> None:

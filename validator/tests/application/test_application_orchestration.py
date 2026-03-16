@@ -5,17 +5,17 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from caster_commons.application.dto.session import SessionTokenRequest
-from caster_commons.application.session_manager import SessionManager
-from caster_commons.domain.miner_task import MinerTask, Query, ReferenceAnswer, Response, ScoreBreakdown
-from caster_commons.domain.session import LlmUsageTotals
-from caster_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
-from caster_commons.tools.dto import ToolInvocationRequest
-from caster_commons.tools.executor import ToolExecutor
-from caster_commons.tools.usage_tracker import UsageTracker
-from caster_validator.application.dto.evaluation import MinerTaskRunRequest
-from caster_validator.application.evaluate_task_run import TaskRunOrchestrator
-from caster_validator.application.invoke_entrypoint import EntrypointInvoker
+from harnyx_commons.application.dto.session import SessionTokenRequest
+from harnyx_commons.application.session_manager import SessionManager
+from harnyx_commons.domain.miner_task import MinerTask, Query, ReferenceAnswer, Response, ScoreBreakdown
+from harnyx_commons.domain.session import LlmUsageTotals
+from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
+from harnyx_commons.tools.dto import ToolInvocationRequest
+from harnyx_commons.tools.executor import ToolExecutor
+from harnyx_commons.tools.usage_tracker import UsageTracker
+from harnyx_validator.application.dto.evaluation import MinerTaskRunRequest
+from harnyx_validator.application.evaluate_task_run import TaskRunOrchestrator
+from harnyx_validator.application.invoke_entrypoint import EntrypointInvoker
 from validator.tests.fixtures.fakes import FakeReceiptLog, FakeSessionRegistry
 
 pytestmark = pytest.mark.anyio("asyncio")

@@ -6,13 +6,13 @@ from uuid import uuid4
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from caster_commons.domain.session import Session, SessionStatus, SessionUsage
-from caster_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
-from caster_commons.protocol_headers import CASTER_SESSION_ID_HEADER, SESSION_ID_HEADER
-from caster_commons.tools.executor import ToolExecutor
-from caster_commons.tools.token_semaphore import TokenSemaphore
-from caster_commons.tools.usage_tracker import UsageTracker
-from caster_validator.infrastructure.http.routes import ToolRouteDeps, add_tool_routes
+from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
+from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
+from harnyx_commons.protocol_headers import CASTER_SESSION_ID_HEADER, SESSION_ID_HEADER
+from harnyx_commons.tools.executor import ToolExecutor
+from harnyx_commons.tools.token_semaphore import TokenSemaphore
+from harnyx_commons.tools.usage_tracker import UsageTracker
+from harnyx_validator.infrastructure.http.routes import ToolRouteDeps, add_tool_routes
 from validator.tests.fixtures.fakes import FakeReceiptLog, FakeSessionRegistry
 
 DEMO_SESSION_TOKEN = uuid4().hex

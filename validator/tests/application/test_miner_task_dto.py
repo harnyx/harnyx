@@ -6,8 +6,8 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from caster_commons.domain.miner_task import MinerTask, Query, ReferenceAnswer
-from caster_validator.application.dto.evaluation import MinerTaskBatchSpec, ScriptArtifactSpec
+from harnyx_commons.domain.miner_task import MinerTask, Query, ReferenceAnswer
+from harnyx_validator.application.dto.evaluation import MinerTaskBatchSpec, ScriptArtifactSpec
 
 _NOW = datetime.now(UTC)
 

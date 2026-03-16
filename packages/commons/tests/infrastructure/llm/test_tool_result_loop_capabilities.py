@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from caster_commons.llm.providers.chutes import ChutesLlmProvider
-from caster_commons.llm.providers.chutes import _serialize_message as _serialize_chutes_message
-from caster_commons.llm.schema import (
+from harnyx_commons.llm.providers.chutes import ChutesLlmProvider
+from harnyx_commons.llm.providers.chutes import _serialize_message as _serialize_chutes_message
+from harnyx_commons.llm.schema import (
     LlmChoice,
     LlmChoiceMessage,
     LlmInputToolResultPart,

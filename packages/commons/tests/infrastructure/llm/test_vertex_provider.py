@@ -6,11 +6,11 @@ from typing import Any, cast
 
 import pytest
 
-from caster_commons.clients import CHUTES
-from caster_commons.llm.provider_types import normalize_reasoning_effort
-from caster_commons.llm.providers.vertex.codec import build_choices, normalize_messages, resolve_thinking_config
-from caster_commons.llm.providers.vertex.provider import VertexLlmProvider
-from caster_commons.llm.schema import (
+from harnyx_commons.clients import CHUTES
+from harnyx_commons.llm.provider_types import normalize_reasoning_effort
+from harnyx_commons.llm.providers.vertex.codec import build_choices, normalize_messages, resolve_thinking_config
+from harnyx_commons.llm.providers.vertex.provider import VertexLlmProvider
+from harnyx_commons.llm.schema import (
     GroundedLlmRequest,
     LlmChoice,
     LlmChoiceMessage,
@@ -92,7 +92,7 @@ async def test_vertex_provider_invokes_generative_model(monkeypatch: pytest.Monk
                 captured["model_call"] = self.latest
                 return FakeResponse()
 
-    monkeypatch.setattr("caster_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
+    monkeypatch.setattr("harnyx_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
 
     provider = VertexLlmProvider(
         project="demo-project",
@@ -204,7 +204,7 @@ async def test_vertex_provider_raw_response_metadata_is_json_safe(monkeypatch: p
             def generate_content(self, *, model: str, contents: Any, config: Any) -> _RawResponseWithThoughtSignature:
                 return _RawResponseWithThoughtSignature()
 
-    monkeypatch.setattr("caster_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
+    monkeypatch.setattr("harnyx_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
 
     provider = VertexLlmProvider(
         project="demo-project",
@@ -256,7 +256,7 @@ async def test_vertex_provider_normalizes_assistant_and_tool_roles(monkeypatch: 
                 captured["config"] = config
                 return FakeResponse()
 
-    monkeypatch.setattr("caster_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
+    monkeypatch.setattr("harnyx_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
 
     provider = VertexLlmProvider(
         project="demo-project",
@@ -408,7 +408,7 @@ async def test_vertex_provider_routes_claude_models_to_anthropic(monkeypatch: py
                 captured["vertex_calls"] += 1
                 return FakeResponse()
 
-    monkeypatch.setattr("caster_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
+    monkeypatch.setattr("harnyx_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
 
     provider = VertexLlmProvider(
         project="demo-project",
@@ -495,8 +495,8 @@ def test_vertex_provider_writes_base64_credentials(monkeypatch: pytest.MonkeyPat
             def generate_content(self, *, model: str, contents: Any, config: Any) -> FakeResponse:
                 return FakeResponse()
 
-    monkeypatch.setattr("caster_commons.llm.providers.vertex.credentials.ServiceAccountCredentials", FakeCredentials)
-    monkeypatch.setattr("caster_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
+    monkeypatch.setattr("harnyx_commons.llm.providers.vertex.credentials.ServiceAccountCredentials", FakeCredentials)
+    monkeypatch.setattr("harnyx_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
 
     service_account_payload = json.dumps({
         "type": "service_account",
@@ -529,7 +529,7 @@ async def test_vertex_provider_injects_google_search_tool(monkeypatch: pytest.Mo
                 captured["config"] = config
                 return FakeResponse()
 
-    monkeypatch.setattr("caster_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
+    monkeypatch.setattr("harnyx_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
 
     provider = VertexLlmProvider(
         project="demo-project",
@@ -575,7 +575,7 @@ async def test_vertex_provider_includes_provider_native_grounded_tools(monkeypat
                 captured["config"] = config
                 return FakeResponse()
 
-    monkeypatch.setattr("caster_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
+    monkeypatch.setattr("harnyx_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
 
     provider = VertexLlmProvider(
         project="demo-project",
@@ -645,7 +645,7 @@ async def test_vertex_serializes_input_tool_result_as_function_response(monkeypa
                 captured["config"] = config
                 return FakeResponse()
 
-    monkeypatch.setattr("caster_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
+    monkeypatch.setattr("harnyx_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
 
     provider = VertexLlmProvider(
         project="demo-project",

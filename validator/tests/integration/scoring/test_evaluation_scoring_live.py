@@ -4,16 +4,16 @@ from uuid import uuid4
 
 import pytest
 
-from caster_commons.clients import CHUTES
-from caster_commons.domain.miner_task import MinerTask, Query, ReferenceAnswer, Response
-from caster_commons.llm.provider import LlmProviderPort
-from caster_commons.llm.schema import AbstractLlmRequest, LlmResponse
-from caster_validator.application.services.evaluation_scoring import (
+from harnyx_commons.clients import CHUTES
+from harnyx_commons.domain.miner_task import MinerTask, Query, ReferenceAnswer, Response
+from harnyx_commons.llm.provider import LlmProviderPort
+from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
+from harnyx_validator.application.services.evaluation_scoring import (
     EvaluationScoringConfig,
     EvaluationScoringService,
 )
-from caster_validator.runtime.llm_factory import create_llm_provider_factory
-from caster_validator.runtime.settings import Settings
+from harnyx_validator.runtime.llm_factory import create_llm_provider_factory
+from harnyx_validator.runtime.settings import Settings
 
 pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
 

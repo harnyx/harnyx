@@ -6,8 +6,8 @@ from uuid import uuid4
 
 import pytest
 
-from caster_commons.domain.miner_task import MinerTask, Query, ReferenceAnswer, Response
-from caster_validator.application.services.evaluation_scoring import (
+from harnyx_commons.domain.miner_task import MinerTask, Query, ReferenceAnswer, Response
+from harnyx_validator.application.services.evaluation_scoring import (
     EvaluationScoringConfig,
     EvaluationScoringService,
     _validate_score_weights,
@@ -126,7 +126,7 @@ async def test_scoring_service_normalizes_negative_cosine_similarity() -> None:
 
 
 async def test_score_fails_explicitly_when_embeddings_are_unavailable_at_score_time() -> None:
-    from caster_validator.infrastructure.scoring.vertex_embedding import MissingTextEmbeddingClient
+    from harnyx_validator.infrastructure.scoring.vertex_embedding import MissingTextEmbeddingClient
 
     task = MinerTask(
         task_id=uuid4(),

@@ -10,13 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from caster_commons.sandbox.docker import (
+from harnyx_commons.sandbox.docker import (
     DockerSandboxManager,
     SandboxOptions,
     resolve_sandbox_host_container_url,
 )
-from caster_commons.sandbox.runtime import CONTAINER_SECURITY
-from caster_commons.sandbox.seccomp.paths import default_profile_path
+from harnyx_commons.sandbox.runtime import CONTAINER_SECURITY
+from harnyx_commons.sandbox.seccomp.paths import default_profile_path
 
 DOCKER_CLI = os.getenv("DOCKER_CLI", "docker")
 DOCKER_BINARY = shutil.which(DOCKER_CLI) or DOCKER_CLI

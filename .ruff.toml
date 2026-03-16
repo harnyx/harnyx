@@ -41,10 +41,10 @@ ignore = [
 
 [lint.isort]
 known-first-party = [
-  "caster_commons",
-  "caster_validator",
-  "caster_miner",
-  "caster_miner_sdk",
+  "harnyx_commons",
+  "harnyx_validator",
+  "harnyx_miner",
+  "harnyx_miner_sdk",
 ]
 
 [lint.mccabe]

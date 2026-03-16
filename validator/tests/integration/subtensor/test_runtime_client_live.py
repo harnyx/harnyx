@@ -4,9 +4,9 @@ import time
 
 import pytest
 
-from caster_validator.application.scheduling.gate import chain_epoch_index, commitment_marker
-from caster_validator.infrastructure.subtensor.client import RuntimeSubtensorClient
-from caster_validator.runtime.settings import Settings
+from harnyx_validator.application.scheduling.gate import chain_epoch_index, commitment_marker
+from harnyx_validator.infrastructure.subtensor.client import RuntimeSubtensorClient
+from harnyx_validator.runtime.settings import Settings
 
 pytestmark = pytest.mark.subtensor_live
 

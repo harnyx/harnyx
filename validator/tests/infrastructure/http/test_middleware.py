@@ -5,7 +5,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from caster_validator.infrastructure.http.middleware import request_logging_middleware
+from harnyx_validator.infrastructure.http.middleware import request_logging_middleware
 
 
 def test_request_logging_middleware_includes_method_path_query_and_truncated_body(caplog) -> None:
@@ -16,7 +16,7 @@ def test_request_logging_middleware_includes_method_path_query_and_truncated_bod
     async def rpc() -> dict[str, bool]:
         return {"ok": True}
 
-    target_logger = logging.getLogger("caster_validator.http")
+    target_logger = logging.getLogger("harnyx_validator.http")
     original_propagate = target_logger.propagate
     target_logger.propagate = False
     target_logger.addHandler(caplog.handler)
@@ -37,7 +37,7 @@ def test_request_logging_middleware_includes_method_path_query_and_truncated_bod
 
     assert response.status_code == 200
 
-    records = [record for record in caplog.records if record.name == "caster_validator.http"]
+    records = [record for record in caplog.records if record.name == "harnyx_validator.http"]
     received = next(record for record in records if record.msg == "request_received")
     completed = next(record for record in records if record.msg == "request_completed")
 

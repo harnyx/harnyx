@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from caster_commons.llm.schema import (
+from harnyx_commons.llm.schema import (
     LlmChoice,
     LlmChoiceMessage,
     LlmMessageContentPart,
@@ -14,20 +14,20 @@ from caster_commons.llm.schema import (
     LlmResponse,
     LlmUsage,
 )
-from caster_commons.tools.desearch import (
+from harnyx_commons.tools.desearch import (
     DeSearchAiDateFilter,
     DeSearchAiModel,
     DeSearchAiResultType,
     DeSearchAiTool,
 )
-from caster_commons.tools.search_models import (
+from harnyx_commons.tools.search_models import (
     SearchWebSearchRequest,
     SearchWebSearchResponse,
     SearchXResult,
     SearchXSearchRequest,
     SearchXSearchResponse,
 )
-from caster_validator.runtime.bootstrap import ALLOWED_TOOL_MODELS, RuntimeToolInvoker
+from harnyx_validator.runtime.bootstrap import ALLOWED_TOOL_MODELS, RuntimeToolInvoker
 from validator.tests.fixtures.fakes import FakeReceiptLog
 
 pytestmark = pytest.mark.anyio("asyncio")

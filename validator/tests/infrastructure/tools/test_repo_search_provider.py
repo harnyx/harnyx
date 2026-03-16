@@ -7,8 +7,8 @@ import bittensor as bt
 import httpx
 import pytest
 
-from caster_commons.bittensor import build_canonical_request
-from caster_validator.infrastructure.tools.repo_search_provider import HttpRepoSearchToolProvider
+from harnyx_commons.bittensor import build_canonical_request
+from harnyx_validator.infrastructure.tools.repo_search_provider import HttpRepoSearchToolProvider
 
 pytestmark = pytest.mark.anyio("asyncio")
 

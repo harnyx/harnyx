@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from caster_commons.domain.miner_task import (
+from harnyx_commons.domain.miner_task import (
     EvaluationDetails,
     MinerTask,
     Query,
@@ -14,16 +14,16 @@ from caster_commons.domain.miner_task import (
     Response,
     ScoreBreakdown,
 )
-from caster_commons.domain.session import Session, SessionUsage
-from caster_commons.domain.tool_usage import ToolUsageSummary
-from caster_validator.application.dto.evaluation import (
+from harnyx_commons.domain.session import Session, SessionUsage
+from harnyx_commons.domain.tool_usage import ToolUsageSummary
+from harnyx_validator.application.dto.evaluation import (
     MinerTaskBatchSpec,
     MinerTaskRunSubmission,
     ScriptArtifactSpec,
     TokenUsageSummary,
 )
-from caster_validator.domain.evaluation import MinerTaskRun
-from caster_validator.infrastructure.state.run_progress import InMemoryRunProgress
+from harnyx_validator.domain.evaluation import MinerTaskRun
+from harnyx_validator.infrastructure.state.run_progress import InMemoryRunProgress
 
 
 def _make_batch(*, batch_id: UUID | None = None, query_text: str = "example") -> MinerTaskBatchSpec:

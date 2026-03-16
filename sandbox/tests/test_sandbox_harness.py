@@ -6,14 +6,14 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 
-import caster_sandbox.sandbox.harness as harness_module
+import harnyx_sandbox.sandbox.harness as harness_module
 import pytest
-from caster_sandbox.sandbox.harness import SandboxHarness
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from harnyx_sandbox.sandbox.harness import SandboxHarness
 
-from caster_miner_sdk.api import test_tool as invoke_test_tool
-from caster_miner_sdk.decorators import entrypoint, entrypoint_exists
+from harnyx_miner_sdk.api import test_tool as invoke_test_tool
+from harnyx_miner_sdk.decorators import entrypoint, entrypoint_exists
 
 
 def test_harness_invokes_entrypoint_and_closes_tools() -> None:

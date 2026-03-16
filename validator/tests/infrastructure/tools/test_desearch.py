@@ -6,8 +6,8 @@ from typing import Any
 import httpx
 import pytest
 
-from caster_commons.tools.desearch import DeSearchAiDateFilter, DeSearchClient
-from caster_commons.tools.search_models import SearchWebSearchRequest, SearchXSearchRequest
+from harnyx_commons.tools.desearch import DeSearchAiDateFilter, DeSearchClient
+from harnyx_commons.tools.search_models import SearchWebSearchRequest, SearchXSearchRequest
 
 pytestmark = pytest.mark.anyio("asyncio")
 

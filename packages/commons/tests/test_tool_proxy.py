@@ -5,10 +5,10 @@ import json
 import httpx
 import pytest
 
-from caster_commons.tools.api import LlmChatResult, llm_chat, search_web, tooling_info
-from caster_commons.tools.proxy import ToolInvocationError, ToolProxy
-from caster_miner_sdk._internal.tool_invoker import bind_tool_invoker
-from caster_miner_sdk.sandbox_headers import CASTER_SESSION_ID_HEADER
+from harnyx_commons.tools.api import LlmChatResult, llm_chat, search_web, tooling_info
+from harnyx_commons.tools.proxy import ToolInvocationError, ToolProxy
+from harnyx_miner_sdk._internal.tool_invoker import bind_tool_invoker
+from harnyx_miner_sdk.sandbox_headers import CASTER_SESSION_ID_HEADER
 
 TEST_TOKEN = "token-123"  # noqa: S105
 ERROR_TOKEN = "bad-token"  # noqa: S105

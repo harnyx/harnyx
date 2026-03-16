@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from caster_sandbox.app import app
 from fastapi.testclient import TestClient
+from harnyx_sandbox.app import app
 
 
 def test_entry_route_requires_x_caster_token_header() -> None:

@@ -13,16 +13,16 @@ from pathlib import Path
 
 import pytest
 
-from caster_commons.sandbox.agent_staging import stage_agent_source
-from caster_commons.sandbox.docker import (
+from harnyx_commons.sandbox.agent_staging import stage_agent_source
+from harnyx_commons.sandbox.docker import (
     DockerSandboxManager,
     SandboxOptions,
     resolve_sandbox_host_container_url,
 )
-from caster_commons.sandbox.manager import SandboxDeployment
-from caster_commons.sandbox.runtime import CONTAINER_SECURITY
-from caster_commons.sandbox.seccomp.paths import default_profile_path
-from caster_commons.sandbox.state import DEFAULT_STATE_DIR
+from harnyx_commons.sandbox.manager import SandboxDeployment
+from harnyx_commons.sandbox.runtime import CONTAINER_SECURITY
+from harnyx_commons.sandbox.seccomp.paths import default_profile_path
+from harnyx_commons.sandbox.state import DEFAULT_STATE_DIR
 
 _DOCKER_CLI = os.getenv("DOCKER_CLI", "docker")
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -85,7 +85,7 @@ def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
 
     manager = DockerSandboxManager(docker_binary=docker_bin, host="127.0.0.1")
     deployments = []
-    state_dir = Path(tempfile.mkdtemp(prefix="caster-commons-int-state-"))
+    state_dir = Path(tempfile.mkdtemp(prefix="harnyx-commons-int-state-"))
 
     def _start(agent_module: str):
         module_rel_path = Path(*agent_module.split(".")).with_suffix(".py")

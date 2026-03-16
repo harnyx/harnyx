@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
-from caster_commons.llm.adapter import LlmProviderAdapter
-from caster_commons.llm.schema import (
+from harnyx_commons.llm.adapter import LlmProviderAdapter
+from harnyx_commons.llm.schema import (
     LlmChoice,
     LlmChoiceMessage,
     LlmMessage,

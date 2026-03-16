@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from caster_commons.context.snapshot import ContextSnapshot
+from harnyx_commons.context.snapshot import ContextSnapshot
 
 
 def test_context_snapshot_immutable_view() -> None:

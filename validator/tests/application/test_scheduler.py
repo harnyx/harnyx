@@ -5,9 +5,9 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from caster_commons.application.ports.receipt_log import ReceiptLogPort
-from caster_commons.application.session_manager import SessionManager
-from caster_commons.domain.miner_task import (
+from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
+from harnyx_commons.application.session_manager import SessionManager
+from harnyx_commons.domain.miner_task import (
     EvaluationDetails,
     EvaluationError,
     MinerTask,
@@ -16,20 +16,20 @@ from caster_commons.domain.miner_task import (
     Response,
     ScoreBreakdown,
 )
-from caster_commons.domain.tool_usage import ToolUsageSummary
-from caster_commons.infrastructure.state.session_registry import InMemorySessionRegistry
-from caster_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
-from caster_commons.sandbox.manager import SandboxDeployment, SandboxManager
-from caster_validator.application.dto.evaluation import (
+from harnyx_commons.domain.tool_usage import ToolUsageSummary
+from harnyx_commons.infrastructure.state.session_registry import InMemorySessionRegistry
+from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
+from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager
+from harnyx_validator.application.dto.evaluation import (
     MinerTaskRunSubmission,
     ScriptArtifactSpec,
     TaskRunOutcome,
     TokenUsageSummary,
 )
-from caster_validator.application.invoke_entrypoint import SandboxInvocationError
-from caster_validator.application.ports.subtensor import ValidatorNodeInfo
-from caster_validator.application.scheduler import EvaluationScheduler, SchedulerConfig
-from caster_validator.domain.evaluation import MinerTaskRun
+from harnyx_validator.application.invoke_entrypoint import SandboxInvocationError
+from harnyx_validator.application.ports.subtensor import ValidatorNodeInfo
+from harnyx_validator.application.scheduler import EvaluationScheduler, SchedulerConfig
+from harnyx_validator.domain.evaluation import MinerTaskRun
 from validator.tests.fixtures.subtensor import FakeSubtensorClient
 
 pytestmark = pytest.mark.anyio("asyncio")

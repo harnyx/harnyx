@@ -5,7 +5,7 @@ import sys
 from opentelemetry import baggage, context, trace
 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, TraceState
 
-from caster_commons.observability.logging import (
+from harnyx_commons.observability.logging import (
     CloudJsonSanitizer,
     ExtrasFormatter,
     OtelContextLogFilter,
@@ -17,7 +17,7 @@ def test_formatter_emits_json_payload_for_json_fields_in_cloud_run(monkeypatch) 
     formatter = ExtrasFormatter("%(levelname)s %(name)s: %(message)s")
 
     record = logging.LogRecord(
-        name="caster_commons.llm.calls",
+        name="harnyx_commons.llm.calls",
         level=logging.INFO,
         pathname=__file__,
         lineno=1,
@@ -34,7 +34,7 @@ def test_formatter_emits_json_payload_for_json_fields_in_cloud_run(monkeypatch) 
     expected_data = json.dumps(record.data, sort_keys=True, separators=(",", ":"))
     assert payload["message"] == f"{record.getMessage()} | data={expected_data}"
     assert payload["severity"] == "INFO"
-    assert payload["logger"] == "caster_commons.llm.calls"
+    assert payload["logger"] == "harnyx_commons.llm.calls"
     assert payload["data"]["provider"] == "chutes"
     assert payload["request"]["payload"] == "<bytes len=5>"
     assert payload["response"]["ok"] is True
@@ -45,7 +45,7 @@ def test_formatter_emits_json_payload_for_data_in_cloud_run(monkeypatch) -> None
     formatter = ExtrasFormatter("%(levelname)s %(name)s: %(message)s")
 
     record = logging.LogRecord(
-        name="caster_platform.content_ingestion",
+        name="harnyx_platform.content_ingestion",
         level=logging.INFO,
         pathname=__file__,
         lineno=1,
@@ -61,7 +61,7 @@ def test_formatter_emits_json_payload_for_data_in_cloud_run(monkeypatch) -> None
     expected_data = json.dumps(record.data, sort_keys=True, separators=(",", ":"))
     assert payload["message"] == f"{record.getMessage()} | data={expected_data}"
     assert payload["severity"] == "INFO"
-    assert payload["logger"] == "caster_platform.content_ingestion"
+    assert payload["logger"] == "harnyx_platform.content_ingestion"
     assert payload["data"]["feed_id"] == "feed-123"
     assert payload["data"]["limit"] == 1000
 
@@ -72,7 +72,7 @@ def test_formatter_emits_json_payload_for_json_fields_in_kubernetes(monkeypatch)
     formatter = ExtrasFormatter("%(levelname)s %(name)s: %(message)s")
 
     record = logging.LogRecord(
-        name="caster_commons.tools.desearch.calls",
+        name="harnyx_commons.tools.desearch.calls",
         level=logging.INFO,
         pathname=__file__,
         lineno=1,
@@ -89,7 +89,7 @@ def test_formatter_emits_json_payload_for_json_fields_in_kubernetes(monkeypatch)
     expected_data = json.dumps(record.data, sort_keys=True, separators=(",", ":"))
     assert payload["message"] == f"{record.getMessage()} | data={expected_data}"
     assert payload["severity"] == "INFO"
-    assert payload["logger"] == "caster_commons.tools.desearch.calls"
+    assert payload["logger"] == "harnyx_commons.tools.desearch.calls"
     assert payload["data"]["provider"] == "desearch"
     assert payload["request"]["payload"] == "<bytes len=5>"
     assert payload["response"]["ok"] is True
@@ -106,7 +106,7 @@ def test_formatter_emits_exception_payload_in_kubernetes(monkeypatch) -> None:
         exc_info = sys.exc_info()
 
     record = logging.LogRecord(
-        name="caster_platform.ingestion_worker",
+        name="harnyx_platform.ingestion_worker",
         level=logging.ERROR,
         pathname=__file__,
         lineno=1,
@@ -132,7 +132,7 @@ def test_formatter_ignores_json_fields_outside_managed_runtimes(monkeypatch) -> 
     formatter = ExtrasFormatter("%(levelname)s %(name)s: %(message)s")
 
     record = logging.LogRecord(
-        name="caster_commons.llm.calls",
+        name="harnyx_commons.llm.calls",
         level=logging.INFO,
         pathname=__file__,
         lineno=1,
@@ -145,7 +145,7 @@ def test_formatter_ignores_json_fields_outside_managed_runtimes(monkeypatch) -> 
 
     rendered = formatter.format(record)
 
-    assert rendered.startswith("INFO caster_commons.llm.calls: llm.invoke.retry.complete")
+    assert rendered.startswith("INFO harnyx_commons.llm.calls: llm.invoke.retry.complete")
     assert "data=" in rendered
     assert "request" not in rendered
 
@@ -153,7 +153,7 @@ def test_formatter_ignores_json_fields_outside_managed_runtimes(monkeypatch) -> 
 def test_cloud_json_sanitizer_injects_data_into_json_fields() -> None:
     sanitizer = CloudJsonSanitizer()
     record = logging.LogRecord(
-        name="caster_commons.llm.calls",
+        name="harnyx_commons.llm.calls",
         level=logging.INFO,
         pathname=__file__,
         lineno=1,
@@ -188,7 +188,7 @@ def test_otel_context_log_filter_injects_trace_and_baggage(monkeypatch) -> None:
         span = NonRecordingSpan(span_context)
         with trace.use_span(span, end_on_exit=False):
             record = logging.LogRecord(
-                name="caster_commons.llm.calls",
+                name="harnyx_commons.llm.calls",
                 level=logging.INFO,
                 pathname=__file__,
                 lineno=1,

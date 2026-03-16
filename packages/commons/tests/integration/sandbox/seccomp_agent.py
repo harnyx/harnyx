@@ -6,7 +6,7 @@ import threading
 from collections.abc import Mapping
 from typing import Any
 
-from caster_miner_sdk.decorators import entrypoint
+from harnyx_miner_sdk.decorators import entrypoint
 
 
 @entrypoint("spawn_thread")
