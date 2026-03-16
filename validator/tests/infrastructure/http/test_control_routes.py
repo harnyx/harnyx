@@ -7,7 +7,7 @@ import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
-from caster_commons.domain.miner_task import (
+from harnyx_commons.domain.miner_task import (
     EvaluationDetails,
     MinerTask,
     Query,
@@ -15,24 +15,24 @@ from caster_commons.domain.miner_task import (
     Response,
     ScoreBreakdown,
 )
-from caster_commons.domain.session import LlmUsageTotals, Session, SessionUsage
-from caster_commons.domain.tool_usage import (
+from harnyx_commons.domain.session import LlmUsageTotals, Session, SessionUsage
+from harnyx_commons.domain.tool_usage import (
     LlmModelUsageCost,
     LlmUsageSummary,
     SearchToolUsageSummary,
     ToolUsageSummary,
 )
-from caster_validator.application.accept_batch import AcceptEvaluationBatch
-from caster_validator.application.dto.evaluation import (
+from harnyx_validator.application.accept_batch import AcceptEvaluationBatch
+from harnyx_validator.application.dto.evaluation import (
     MinerTaskBatchSpec,
     MinerTaskRunSubmission,
     TokenUsageSummary,
 )
-from caster_validator.application.status import StatusProvider
-from caster_validator.domain.evaluation import MinerTaskRun
-from caster_validator.infrastructure.http.routes import ValidatorControlDeps, add_control_routes
-from caster_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
-from caster_validator.infrastructure.state.run_progress import InMemoryRunProgress, RunProgressSnapshot
+from harnyx_validator.application.status import StatusProvider
+from harnyx_validator.domain.evaluation import MinerTaskRun
+from harnyx_validator.infrastructure.http.routes import ValidatorControlDeps, add_control_routes
+from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
+from harnyx_validator.infrastructure.state.run_progress import InMemoryRunProgress, RunProgressSnapshot
 
 
 def _create_test_app(provider: DemoControlDependencyProvider) -> FastAPI:

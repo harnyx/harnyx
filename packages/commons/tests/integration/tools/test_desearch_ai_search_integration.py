@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from caster_commons.config.llm import LlmSettings
-from caster_commons.tools.desearch import DeSearchAiDateFilter, DeSearchClient
-from caster_commons.tools.desearch_ai_protocol import DeSearchAiDocsResponse
+from harnyx_commons.config.llm import LlmSettings
+from harnyx_commons.tools.desearch import DeSearchAiDateFilter, DeSearchClient
+from harnyx_commons.tools.desearch_ai_protocol import DeSearchAiDocsResponse
 
 pytestmark = [pytest.mark.anyio("asyncio"), pytest.mark.integration]
 

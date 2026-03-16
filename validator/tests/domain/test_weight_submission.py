@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from caster_validator.domain.weight import WeightSubmission
+from harnyx_validator.domain.weight import WeightSubmission
 
 
 def test_weight_submission_accepts_normalized_vector() -> None:

@@ -1,4 +1,4 @@
-# caster-sandbox
+# harnyx-sandbox
 
 This package contains the **sandbox runtime** — the FastAPI server that validators use to execute miner agent scripts in isolated containers.
 
@@ -19,7 +19,7 @@ This package contains the **sandbox runtime** — the FastAPI server that valida
       ▼
   ┌─────────────────────────────────┐
   │  sandbox/                       │  ◀── this package
-  │  caster-sandbox --serve         │
+  │  harnyx-sandbox --serve         │
   │  loads miner agent.py           │
   │  calls query                    │
   └─────────────────────────────────┘
@@ -42,7 +42,7 @@ This builds the `castersubnet/caster-subnet-sandbox:local` Docker image using `s
 ## Running locally (development)
 
 ```bash
-uv run --package caster-sandbox caster-sandbox --serve
+uv run --package harnyx-sandbox harnyx-sandbox --serve
 ```
 
 The server starts on `http://127.0.0.1:8000` by default. Set `SANDBOX_HOST` and `SANDBOX_PORT` to customize.

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from caster_miner_sdk.query import Query, Response
+from harnyx_miner_sdk.query import Query, Response
 
 
 def test_query_requires_non_empty_text() -> None:

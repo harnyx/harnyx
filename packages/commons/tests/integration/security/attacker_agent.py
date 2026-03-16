@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from caster_miner_sdk.decorators import entrypoint
+from harnyx_miner_sdk.decorators import entrypoint
 
 
 @entrypoint("probe")

@@ -1,5 +1,5 @@
-from caster_commons.llm.provider import _request_snapshot
-from caster_commons.llm.schema import GroundedLlmRequest, LlmMessage, LlmMessageContentPart, LlmTool
+from harnyx_commons.llm.provider import _request_snapshot
+from harnyx_commons.llm.schema import GroundedLlmRequest, LlmMessage, LlmMessageContentPart, LlmTool
 
 
 def test_request_snapshot_redacts_nested_api_key_fields() -> None:

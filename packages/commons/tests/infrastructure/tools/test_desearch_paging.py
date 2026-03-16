@@ -5,8 +5,8 @@ import logging
 import httpx
 import pytest
 
-from caster_commons.tools.desearch import DeSearchClient
-from caster_commons.tools.search_models import SearchWebSearchRequest, SearchXSearchRequest
+from harnyx_commons.tools.desearch import DeSearchClient
+from harnyx_commons.tools.search_models import SearchWebSearchRequest, SearchXSearchRequest
 
 pytestmark = pytest.mark.anyio("asyncio")
 
@@ -76,7 +76,7 @@ async def test_iter_search_links_twitter_pages_adds_max_id_and_stops_on_empty() 
 
 
 async def test_iter_search_links_twitter_pages_stops_if_max_id_ignored(caplog: pytest.LogCaptureFixture) -> None:
-    caplog.set_level(logging.INFO, logger="caster_commons.tools.desearch.calls")
+    caplog.set_level(logging.INFO, logger="harnyx_commons.tools.desearch.calls")
 
     queries: list[str] = []
     tweets_page_1 = [_tweet(tweet_id=10), _tweet(tweet_id=8)]

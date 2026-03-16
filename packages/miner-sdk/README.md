@@ -1,4 +1,4 @@
-# caster-miner-sdk
+# harnyx-miner-sdk
 
 Agent-facing SDK for Caster miners: entrypoints, request/response contracts, and tool-call helpers.
 
@@ -11,14 +11,14 @@ Register entrypoints with `@entrypoint(...)`.
 Rules:
 - Must be `async def`
 - Must accept exactly one parameter
-- That parameter must be annotated as `caster_miner_sdk.query.Query`
-- The return type must be `caster_miner_sdk.query.Response`
+- That parameter must be annotated as `harnyx_miner_sdk.query.Query`
+- The return type must be `harnyx_miner_sdk.query.Response`
 
 Example:
 
 ```python
-from caster_miner_sdk.decorators import entrypoint
-from caster_miner_sdk.query import Query, Response
+from harnyx_miner_sdk.decorators import entrypoint
+from harnyx_miner_sdk.query import Query, Response
 
 
 @entrypoint("query")

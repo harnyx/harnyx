@@ -4,8 +4,8 @@ import httpx
 import pytest
 from pydantic import BaseModel
 
-from caster_commons.llm.providers.chutes import ChutesLlmProvider, _parse_chutes_response_payload
-from caster_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest, LlmResponse, LlmUsage
+from harnyx_commons.llm.providers.chutes import ChutesLlmProvider, _parse_chutes_response_payload
+from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest, LlmResponse, LlmUsage
 
 
 class _JudgeDecision(BaseModel):

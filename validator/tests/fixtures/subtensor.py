@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from caster_validator.application.ports.subtensor import (
+from harnyx_validator.application.ports.subtensor import (
     CommitmentRecord,
     MetagraphSnapshot,
     SubtensorClientPort,

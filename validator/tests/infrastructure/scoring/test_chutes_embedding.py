@@ -3,7 +3,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from caster_validator.infrastructure.scoring.chutes_embedding import ChutesTextEmbeddingClient
+from harnyx_validator.infrastructure.scoring.chutes_embedding import ChutesTextEmbeddingClient
 
 pytestmark = pytest.mark.anyio("asyncio")
 

@@ -3,11 +3,11 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
-from caster_commons.clients import CHUTES
-from caster_commons.config.llm import LlmSettings
-from caster_commons.llm.json_utils import pydantic_postprocessor
-from caster_commons.llm.providers.chutes import ChutesLlmProvider
-from caster_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest
+from harnyx_commons.clients import CHUTES
+from harnyx_commons.config.llm import LlmSettings
+from harnyx_commons.llm.json_utils import pydantic_postprocessor
+from harnyx_commons.llm.providers.chutes import ChutesLlmProvider
+from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest
 
 pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
 

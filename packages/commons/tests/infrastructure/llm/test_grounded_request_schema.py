@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from caster_commons.llm.schema import GroundedLlmRequest, LlmMessage, LlmMessageContentPart, LlmTool
+from harnyx_commons.llm.schema import GroundedLlmRequest, LlmMessage, LlmMessageContentPart, LlmTool
 
 
 def _tools() -> tuple[LlmTool, ...]:

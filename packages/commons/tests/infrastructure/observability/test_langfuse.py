@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from caster_commons.llm.schema import (
+from harnyx_commons.llm.schema import (
     LlmChoice,
     LlmChoiceMessage,
     LlmInputToolResultPart,
@@ -14,7 +14,7 @@ from caster_commons.llm.schema import (
     LlmTool,
     LlmUsage,
 )
-from caster_commons.observability import langfuse
+from harnyx_commons.observability import langfuse
 
 _LANGFUSE_ENV_VARS = ("LANGFUSE_HOST", "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY")
 
@@ -441,7 +441,7 @@ def test_propagate_trace_attributes_best_effort_swallows_enter_exception(
 
     monkeypatch.setattr(langfuse, "get_client", lambda: object())
     monkeypatch.setattr(langfuse, "propagate_attributes", _raising_propagate_attributes)
-    caplog.set_level("ERROR", logger="caster_commons.observability.langfuse")
+    caplog.set_level("ERROR", logger="harnyx_commons.observability.langfuse")
 
     with langfuse.propagate_trace_attributes_best_effort(
         trace_name="content_review_job",
@@ -470,7 +470,7 @@ def test_propagate_trace_attributes_best_effort_swallows_exit_exception(
         "propagate_attributes",
         lambda **kwargs: RaisingExitContextManager(),
     )
-    caplog.set_level("ERROR", logger="caster_commons.observability.langfuse")
+    caplog.set_level("ERROR", logger="harnyx_commons.observability.langfuse")
 
     with langfuse.propagate_trace_attributes_best_effort(
         trace_name="content_review_job",
@@ -497,7 +497,7 @@ def test_close_propagate_scope_swallows_exit_exception_and_clears_state(caplog: 
     )
     scope._propagate_cm = RaisingPropagateContextManager()
 
-    caplog.set_level("ERROR", logger="caster_commons.observability.langfuse")
+    caplog.set_level("ERROR", logger="harnyx_commons.observability.langfuse")
     scope._close_propagate_scope()
 
     assert scope._propagate_cm is None
@@ -534,7 +534,7 @@ def test_generation_scope_enter_error_path_does_not_raise_when_propagate_cleanup
         "propagate_attributes",
         lambda *, tags: RaisingPropagateContextManager(),
     )
-    caplog.set_level("ERROR", logger="caster_commons.observability.langfuse")
+    caplog.set_level("ERROR", logger="harnyx_commons.observability.langfuse")
 
     scope = langfuse._LangfuseGenerationScope(
         client=FakeClient(),
@@ -575,7 +575,7 @@ def test_generation_scope_exit_path_swallows_propagate_cleanup_failure(
     scope._observation_cm = SuccessfulObservationContextManager()
     scope._propagate_cm = RaisingPropagateContextManager()
 
-    caplog.set_level("ERROR", logger="caster_commons.observability.langfuse")
+    caplog.set_level("ERROR", logger="harnyx_commons.observability.langfuse")
     result = scope.__exit__(None, None, None)
 
     assert result is True

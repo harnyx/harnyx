@@ -5,9 +5,9 @@ from uuid import uuid4
 
 import pytest
 
-from caster_commons.domain.miner_task import EvaluationDetails, EvaluationError, Response, ScoreBreakdown
-from caster_commons.domain.tool_usage import ToolUsageSummary
-from caster_validator.domain.evaluation import MinerTaskRun
+from harnyx_commons.domain.miner_task import EvaluationDetails, EvaluationError, Response, ScoreBreakdown
+from harnyx_commons.domain.tool_usage import ToolUsageSummary
+from harnyx_validator.domain.evaluation import MinerTaskRun
 
 
 def test_miner_task_run_rejects_failed_state_without_error() -> None:

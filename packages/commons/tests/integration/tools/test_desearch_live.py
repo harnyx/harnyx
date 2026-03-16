@@ -4,10 +4,10 @@ import asyncio
 
 import pytest
 
-from caster_commons.clients import DESEARCH
-from caster_commons.config.llm import LlmSettings
-from caster_commons.tools.desearch import DeSearchClient
-from caster_commons.tools.search_models import SearchWebSearchRequest, SearchXSearchRequest
+from harnyx_commons.clients import DESEARCH
+from harnyx_commons.config.llm import LlmSettings
+from harnyx_commons.tools.desearch import DeSearchClient
+from harnyx_commons.tools.search_models import SearchWebSearchRequest, SearchXSearchRequest
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio("asyncio")]
 

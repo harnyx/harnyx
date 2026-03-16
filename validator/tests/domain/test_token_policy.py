@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from caster_commons.errors import ConcurrencyLimitError
-from caster_commons.tools.token_semaphore import TokenSemaphore
+from harnyx_commons.errors import ConcurrencyLimitError
+from harnyx_commons.tools.token_semaphore import TokenSemaphore
 
 
 def test_token_semaphore_allows_within_limit() -> None:

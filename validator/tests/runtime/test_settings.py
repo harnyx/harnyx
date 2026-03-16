@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from caster_validator.runtime.settings import Settings
+from harnyx_validator.runtime.settings import Settings
 
 
 def test_settings_defaults_sandbox_image_when_unset(monkeypatch) -> None:

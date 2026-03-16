@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from caster_commons.domain.miner_task import (
+from harnyx_commons.domain.miner_task import (
     EvaluationDetails,
     MinerTask,
     Query,
@@ -13,11 +13,11 @@ from caster_commons.domain.miner_task import (
     Response,
     ScoreBreakdown,
 )
-from caster_commons.domain.session import Session, SessionUsage
-from caster_commons.domain.tool_usage import ToolUsageSummary
-from caster_validator.application.dto.evaluation import MinerTaskRunSubmission, TokenUsageSummary
-from caster_validator.domain.evaluation import MinerTaskRun
-from caster_validator.infrastructure.state.evaluation_record import InMemoryEvaluationRecordStore
+from harnyx_commons.domain.session import Session, SessionUsage
+from harnyx_commons.domain.tool_usage import ToolUsageSummary
+from harnyx_validator.application.dto.evaluation import MinerTaskRunSubmission, TokenUsageSummary
+from harnyx_validator.domain.evaluation import MinerTaskRun
+from harnyx_validator.infrastructure.state.evaluation_record import InMemoryEvaluationRecordStore
 
 
 def _make_submission(

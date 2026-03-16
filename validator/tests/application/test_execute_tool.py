@@ -6,15 +6,15 @@ from uuid import uuid4
 
 import pytest
 
-from caster_commons.domain.session import Session, SessionStatus, SessionUsage
-from caster_commons.domain.tool_call import ToolCallOutcome
-from caster_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
-from caster_commons.llm.pricing import SEARCH_SIMILAR_FEED_ITEMS_PER_CALL_USD
-from caster_commons.llm.schema import LlmChoice, LlmChoiceMessage, LlmMessageContentPart, LlmResponse, LlmUsage
-from caster_commons.tools.dto import ToolInvocationRequest
-from caster_commons.tools.executor import ToolExecutor, ToolInvoker
-from caster_commons.tools.usage_tracker import UsageTracker
-from caster_validator.domain.exceptions import BudgetExceededError
+from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
+from harnyx_commons.domain.tool_call import ToolCallOutcome
+from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
+from harnyx_commons.llm.pricing import SEARCH_SIMILAR_FEED_ITEMS_PER_CALL_USD
+from harnyx_commons.llm.schema import LlmChoice, LlmChoiceMessage, LlmMessageContentPart, LlmResponse, LlmUsage
+from harnyx_commons.tools.dto import ToolInvocationRequest
+from harnyx_commons.tools.executor import ToolExecutor, ToolInvoker
+from harnyx_commons.tools.usage_tracker import UsageTracker
+from harnyx_validator.domain.exceptions import BudgetExceededError
 from validator.tests.fixtures.fakes import FakeReceiptLog, FakeSessionRegistry
 
 pytestmark = pytest.mark.anyio("asyncio")
@@ -271,7 +271,7 @@ async def test_execute_tool_logs_response_preview(caplog: pytest.LogCaptureFixtu
     executor, *_ = build_executor(session, token=token)
     request = make_request(session, token=token)
 
-    with caplog.at_level("INFO", logger="caster_commons.tools"):
+    with caplog.at_level("INFO", logger="harnyx_commons.tools"):
         await executor.execute(request)
 
     completed = next(

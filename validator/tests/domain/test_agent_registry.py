@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from caster_validator.domain.agent import AgentRegistry, AgentStatus, SandboxSpec, ToolDescriptor
+from harnyx_validator.domain.agent import AgentRegistry, AgentStatus, SandboxSpec, ToolDescriptor
 
 
 def test_agent_registry_mark_synced_updates_metadata() -> None:

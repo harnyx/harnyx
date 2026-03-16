@@ -5,15 +5,15 @@ from types import SimpleNamespace
 import pytest
 from pydantic import SecretStr
 
-from caster_commons.config.llm import LlmSettings
-from caster_commons.config.observability import ObservabilitySettings
-from caster_commons.config.platform_api import PlatformApiSettings
-from caster_commons.config.sandbox import SandboxSettings
-from caster_commons.config.subtensor import SubtensorSettings
-from caster_commons.config.vertex import VertexSettings
-from caster_validator.infrastructure.scoring.vertex_embedding import LazyVertexTextEmbeddingClient
-from caster_validator.runtime.bootstrap import _create_scoring_service, close_runtime_resources
-from caster_validator.runtime.settings import Settings
+from harnyx_commons.config.llm import LlmSettings
+from harnyx_commons.config.observability import ObservabilitySettings
+from harnyx_commons.config.platform_api import PlatformApiSettings
+from harnyx_commons.config.sandbox import SandboxSettings
+from harnyx_commons.config.subtensor import SubtensorSettings
+from harnyx_commons.config.vertex import VertexSettings
+from harnyx_validator.infrastructure.scoring.vertex_embedding import LazyVertexTextEmbeddingClient
+from harnyx_validator.runtime.bootstrap import _create_scoring_service, close_runtime_resources
+from harnyx_validator.runtime.settings import Settings
 
 
 def test_create_scoring_service_does_not_require_vertex_config_at_bootstrap() -> None:
@@ -37,7 +37,7 @@ def test_create_scoring_service_does_not_require_vertex_config_at_bootstrap() ->
             gcp_service_account_credential_b64=SecretStr(""),
         ),
         sandbox=SandboxSettings.model_construct(
-            sandbox_image="caster-sandbox:test",
+            sandbox_image="harnyx-sandbox:test",
             sandbox_network="caster-sandbox-net",
             sandbox_pull_policy="always",
         ),
@@ -89,7 +89,7 @@ def test_create_scoring_service_uses_chutes_embeddings_for_chutes_provider() -> 
             gcp_service_account_credential_b64=SecretStr(""),
         ),
         sandbox=SandboxSettings.model_construct(
-            sandbox_image="caster-sandbox:test",
+            sandbox_image="harnyx-sandbox:test",
             sandbox_network="caster-sandbox-net",
             sandbox_pull_policy="always",
         ),
@@ -141,7 +141,7 @@ def test_create_scoring_service_requires_chutes_api_key_for_chutes_embeddings() 
             gcp_service_account_credential_b64=SecretStr(""),
         ),
         sandbox=SandboxSettings.model_construct(
-            sandbox_image="caster-sandbox:test",
+            sandbox_image="harnyx-sandbox:test",
             sandbox_network="caster-sandbox-net",
             sandbox_pull_policy="always",
         ),
@@ -192,7 +192,7 @@ def test_create_scoring_service_uses_vertex_maas_region_for_embeddings() -> None
             gcp_service_account_credential_b64=SecretStr(""),
         ),
         sandbox=SandboxSettings.model_construct(
-            sandbox_image="caster-sandbox:test",
+            sandbox_image="harnyx-sandbox:test",
             sandbox_network="caster-sandbox-net",
             sandbox_pull_policy="always",
         ),

@@ -8,12 +8,12 @@ This directory contains the miner-facing CLI tools for the Caster Subnet.
   You (miner)
       │
       │  write agent.py
-      │  (imports caster-miner-sdk)
+      │  (imports harnyx-miner-sdk)
       ▼
   ┌─────────────────────────────────┐
   │  miner/                         │  ◀── what you interact with
-  │  • caster-miner-dev   (test)    │
-  │  • caster-miner-submit (upload) │
+  │  • harnyx-miner-dev   (test)    │
+  │  • harnyx-miner-submit (upload) │
   └─────────────────────────────────┘
                 │
                 │ submits script to platform
@@ -32,7 +32,7 @@ This directory contains the miner-facing CLI tools for the Caster Subnet.
 
 **What each directory is:**
 
-- `miner/` — CLI tools you use directly (`caster-miner-dev`, `caster-miner-submit`)
+- `miner/` — CLI tools you use directly (`harnyx-miner-dev`, `harnyx-miner-submit`)
 - [`packages/miner-sdk/`](../packages/miner-sdk/README.md) — SDK your script imports; you don't need to read its docs
 - `sandbox/` — runtime that validators use to execute your script; you don't need it
 
@@ -69,8 +69,8 @@ You submit **one UTF-8 Python source file** (≤ 256KB). Validators will:
 Your script must define this entrypoint:
 
 ```python
-from caster_miner_sdk.decorators import entrypoint
-from caster_miner_sdk.query import Query, Response
+from harnyx_miner_sdk.decorators import entrypoint
+from harnyx_miner_sdk.query import Query, Response
 
 @entrypoint("query")
 async def query(query: Query) -> Response:
@@ -92,7 +92,7 @@ Tool calls return a budget snapshot:
 You can call `tooling_info` (free) to fetch pricing metadata for available tools/models:
 
 ```python
-from caster_miner_sdk.api import tooling_info
+from harnyx_miner_sdk.api import tooling_info
 
 info = await tooling_info()
 budget = info.budget
@@ -123,16 +123,16 @@ Repo-tool usage pattern:
 
 ### Step 3: Test locally
 
-`caster-miner-dev` loads your file, finds `query`, and runs it with a `Query` payload. It uses real tool calls, so you need the API keys configured above.
+`harnyx-miner-dev` loads your file, finds `query`, and runs it with a `Query` payload. It uses real tool calls, so you need the API keys configured above.
 
 ```bash
-uv run --package caster-miner caster-miner-dev --agent-path ./agent.py
+uv run --package harnyx-miner harnyx-miner-dev --agent-path ./agent.py
 ```
 
 To test with a specific request payload:
 
 ```bash
-uv run --package caster-miner caster-miner-dev --agent-path ./agent.py --request-json ./request.json
+uv run --package harnyx-miner harnyx-miner-dev --agent-path ./agent.py --request-json ./request.json
 ```
 
 ---
@@ -148,7 +148,7 @@ export PLATFORM_BASE_URL="https://api.castersubnet.example"
 Upload your agent with your registered hotkey:
 
 ```bash
-uv run --package caster-miner caster-miner-submit \
+uv run --package harnyx-miner harnyx-miner-submit \
   --agent-path ./agent.py \
   --wallet-name <wallet-name> \
   --hotkey-name <hotkey-name>

@@ -6,13 +6,13 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from caster_commons.application.dto.session import SessionTokenRequest
-from caster_commons.application.session_manager import SessionManager
-from caster_commons.domain.miner_task import Query, Response
-from caster_commons.domain.tool_call import ReceiptMetadata, ToolCall, ToolCallOutcome
-from caster_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
-from caster_validator.application.dto.evaluation import EntrypointInvocationRequest
-from caster_validator.application.invoke_entrypoint import EntrypointInvoker, SandboxClient
+from harnyx_commons.application.dto.session import SessionTokenRequest
+from harnyx_commons.application.session_manager import SessionManager
+from harnyx_commons.domain.miner_task import Query, Response
+from harnyx_commons.domain.tool_call import ReceiptMetadata, ToolCall, ToolCallOutcome
+from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
+from harnyx_validator.application.dto.evaluation import EntrypointInvocationRequest
+from harnyx_validator.application.invoke_entrypoint import EntrypointInvoker, SandboxClient
 from validator.tests.fixtures.fakes import FakeReceiptLog, FakeSessionRegistry
 
 pytestmark = pytest.mark.anyio("asyncio")

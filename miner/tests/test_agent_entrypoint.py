@@ -4,17 +4,17 @@ from typing import Any
 
 import pytest
 
-from caster_miner_sdk.api import LlmChatResult, ToolCallResponse
-from caster_miner_sdk.llm import (
+from harnyx_miner_sdk.api import LlmChatResult, ToolCallResponse
+from harnyx_miner_sdk.llm import (
     LlmChoice,
     LlmChoiceMessage,
     LlmMessageContentPart,
     LlmResponse,
     LlmUsage,
 )
-from caster_miner_sdk.query import Query
-from caster_miner_sdk.tools.http_models import ToolBudgetDTO, ToolResultDTO
-from caster_miner_sdk.tools.search_models import SearchWebSearchResponse
+from harnyx_miner_sdk.query import Query
+from harnyx_miner_sdk.tools.http_models import ToolBudgetDTO, ToolResultDTO
+from harnyx_miner_sdk.tools.search_models import SearchWebSearchResponse
 from miner.tests import docker_sandbox_entrypoint as agent
 
 pytestmark = pytest.mark.anyio("asyncio")

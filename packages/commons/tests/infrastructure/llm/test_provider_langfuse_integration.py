@@ -6,9 +6,9 @@ from types import TracebackType
 
 import pytest
 
-import caster_commons.llm.provider as provider_module
-from caster_commons.llm.provider import BaseLlmProvider
-from caster_commons.llm.schema import (
+import harnyx_commons.llm.provider as provider_module
+from harnyx_commons.llm.provider import BaseLlmProvider
+from harnyx_commons.llm.schema import (
     AbstractLlmRequest,
     LlmChoice,
     LlmChoiceMessage,

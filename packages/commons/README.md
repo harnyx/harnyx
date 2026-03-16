@@ -1,4 +1,4 @@
-# caster-commons
+# harnyx-commons
 
 Shared utilities for the Caster Subnet workspace.
 
@@ -9,4 +9,4 @@ This package provides:
 - **Observability** — logging and tracing utilities
 - **Domain types** — shared data structures (queries, responses, sessions, scores, etc.)
 
-This is an internal package used by `caster-validator`.
+This is an internal package used by `harnyx-validator`.

@@ -3,11 +3,11 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
-from caster_commons.clients import PLATFORM
-from caster_commons.config.llm import LlmSettings
-from caster_commons.config.vertex import VertexSettings
-from caster_commons.llm.providers.vertex.provider import VertexLlmProvider
-from caster_commons.llm.schema import GroundedLlmRequest, LlmMessage, LlmMessageContentPart, LlmRequest
+from harnyx_commons.clients import PLATFORM
+from harnyx_commons.config.llm import LlmSettings
+from harnyx_commons.config.vertex import VertexSettings
+from harnyx_commons.llm.providers.vertex.provider import VertexLlmProvider
+from harnyx_commons.llm.schema import GroundedLlmRequest, LlmMessage, LlmMessageContentPart, LlmRequest
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio("asyncio")]
 

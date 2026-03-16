@@ -4,7 +4,7 @@ from collections.abc import Generator
 
 import pytest
 
-from caster_commons.tools.decorators import clear_entrypoints
+from harnyx_commons.tools.decorators import clear_entrypoints
 
 
 @pytest.fixture(autouse=True)

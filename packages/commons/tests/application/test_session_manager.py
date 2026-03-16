@@ -6,11 +6,11 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from caster_commons.application.dto.session import SessionTokenRequest
-from caster_commons.application.ports.session_registry import SessionRegistryPort
-from caster_commons.application.session_manager import SessionManager
-from caster_commons.domain.session import Session, SessionStatus
-from caster_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
+from harnyx_commons.application.dto.session import SessionTokenRequest
+from harnyx_commons.application.ports.session_registry import SessionRegistryPort
+from harnyx_commons.application.session_manager import SessionManager
+from harnyx_commons.domain.session import Session, SessionStatus
+from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 
 
 class FakeSessionRegistry(SessionRegistryPort):

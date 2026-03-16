@@ -5,8 +5,8 @@ import logging
 import httpx
 import pytest
 
-from caster_commons.tools.desearch import DeSearchClient
-from caster_commons.tools.search_models import SearchXSearchRequest
+from harnyx_commons.tools.desearch import DeSearchClient
+from harnyx_commons.tools.search_models import SearchXSearchRequest
 
 pytestmark = pytest.mark.anyio("asyncio")
 
@@ -31,7 +31,7 @@ async def test_search_links_twitter_emits_summary_log(caplog: pytest.LogCaptureF
         assert request.url.path == "/twitter"
         return httpx.Response(200, json=tweets, request=request)
 
-    caplog.set_level(logging.INFO, logger="caster_commons.tools.desearch.calls")
+    caplog.set_level(logging.INFO, logger="harnyx_commons.tools.desearch.calls")
     client = DeSearchClient(
         base_url="https://desearch.example",
         api_key="token-123",
@@ -48,7 +48,7 @@ async def test_search_links_twitter_emits_summary_log(caplog: pytest.LogCaptureF
     summary_records = [
         record
         for record in caplog.records
-        if record.name == "caster_commons.tools.desearch.calls"
+        if record.name == "harnyx_commons.tools.desearch.calls"
         and record.msg == "desearch.search_links_twitter.summary"
     ]
     assert len(summary_records) == 1

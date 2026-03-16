@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from caster_commons.domain.miner_task import Query as CommonsQuery
-from caster_commons.domain.miner_task import Response as CommonsResponse
-from caster_miner_sdk.query import Query as MinerSdkQuery
-from caster_miner_sdk.query import Response as MinerSdkResponse
+from harnyx_commons.domain.miner_task import Query as CommonsQuery
+from harnyx_commons.domain.miner_task import Response as CommonsResponse
+from harnyx_miner_sdk.query import Query as MinerSdkQuery
+from harnyx_miner_sdk.query import Response as MinerSdkResponse
 
 
 def _relevant_model_config(model: type[object]) -> tuple[object, object, object, object]:

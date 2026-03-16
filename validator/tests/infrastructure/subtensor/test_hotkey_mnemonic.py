@@ -3,7 +3,7 @@ from __future__ import annotations
 import bittensor as bt
 import pytest
 
-from caster_validator.infrastructure.subtensor.hotkey import ensure_wallet_hotkey_from_mnemonic
+from harnyx_validator.infrastructure.subtensor.hotkey import ensure_wallet_hotkey_from_mnemonic
 
 
 def _make_wallet(tmp_path) -> bt.wallet.Wallet:
@@ -46,15 +46,15 @@ def test_ensure_wallet_hotkey_from_mnemonic_raises_when_mismatched(tmp_path) -> 
 
 
 def test_create_wallet_raises_when_missing_mnemonic_and_keyfile(tmp_path, monkeypatch) -> None:
-    from caster_commons.config.subtensor import SubtensorSettings
-    from caster_validator.infrastructure.subtensor.hotkey import create_wallet
+    from harnyx_commons.config.subtensor import SubtensorSettings
+    from harnyx_validator.infrastructure.subtensor.hotkey import create_wallet
 
     original_wallet = bt.wallet
 
     def wallet_factory(*, name: str, hotkey: str) -> bt.wallet.Wallet:
         return original_wallet(name=name, hotkey=hotkey, path=str(tmp_path))
 
-    monkeypatch.setattr("caster_validator.infrastructure.subtensor.hotkey.bt.wallet", wallet_factory)
+    monkeypatch.setattr("harnyx_validator.infrastructure.subtensor.hotkey.bt.wallet", wallet_factory)
 
     settings = SubtensorSettings.model_validate(
         {

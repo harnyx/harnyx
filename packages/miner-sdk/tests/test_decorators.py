@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from caster_miner_sdk.decorators import (
+from harnyx_miner_sdk.decorators import (
     clear_entrypoints,
     entrypoint,
     entrypoint_exists,
     get_entrypoint,
 )
-from caster_miner_sdk.query import Query, Response
+from harnyx_miner_sdk.query import Query, Response
 
 pytestmark = pytest.mark.anyio("asyncio")
 
@@ -41,7 +41,7 @@ async def test_query_entrypoint_rejects_wrong_parameter_type() -> None:
 
     with pytest.raises(
         TypeError,
-        match="query entrypoint parameter must be annotated as caster_miner_sdk.query.Query",
+        match="query entrypoint parameter must be annotated as harnyx_miner_sdk.query.Query",
     ):
         @entrypoint("query")
         async def query(request: str) -> Response:
@@ -53,7 +53,7 @@ async def test_query_entrypoint_rejects_wrong_return_type() -> None:
 
     with pytest.raises(
         TypeError,
-        match="query entrypoint return type must be caster_miner_sdk.query.Response",
+        match="query entrypoint return type must be harnyx_miner_sdk.query.Response",
     ):
         @entrypoint("query")
         async def query(request: Query) -> str:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from caster_commons.config.sandbox import load_sandbox_settings
+from harnyx_commons.config.sandbox import load_sandbox_settings
 
 
 def test_load_sandbox_settings_ignores_empty_legacy_env_names(monkeypatch) -> None:

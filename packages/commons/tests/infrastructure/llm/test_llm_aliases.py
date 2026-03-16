@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from caster_commons.llm.adapter import LlmProviderAdapter
-from caster_commons.llm.schema import (
+from harnyx_commons.llm.adapter import LlmProviderAdapter
+from harnyx_commons.llm.schema import (
     LlmChoice,
     LlmChoiceMessage,
     LlmMessageContentPart,
@@ -11,7 +11,7 @@ from caster_commons.llm.schema import (
     LlmResponse,
     LlmUsage,
 )
-from caster_commons.tools.runtime_invoker import ALLOWED_TOOL_MODELS
+from harnyx_commons.tools.runtime_invoker import ALLOWED_TOOL_MODELS
 
 pytestmark = pytest.mark.anyio("asyncio")
 
