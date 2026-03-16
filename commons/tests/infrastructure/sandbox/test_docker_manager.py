@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass
 from subprocess import CompletedProcess
 
 import pytest
 
+import caster_commons.sandbox.docker as docker_module
 from caster_commons.sandbox.docker import (
     DockerSandboxManager,
     SandboxOptions,
+    resolve_sandbox_host_container_url,
 )
 from caster_commons.sandbox.manager import SandboxDeployment
 
@@ -17,7 +20,6 @@ _HOST_CONTAINER_URL = "http://127.0.0.1:1"
 @dataclass
 class DummyClient:
     base_url: str
-    token_header: str
     host_container_url: str | None
     closed: bool = False
 
@@ -50,8 +52,8 @@ def test_docker_sandbox_manager_builds_commands(monkeypatch) -> None:
     runner = RecordingRunner()
     created_clients: list[DummyClient] = []
 
-    def client_factory(base_url: str, token_header: str, host_container_url: str | None) -> DummyClient:
-        client = DummyClient(base_url, token_header, host_container_url)
+    def client_factory(base_url: str, host_container_url: str | None) -> DummyClient:
+        client = DummyClient(base_url, host_container_url)
         created_clients.append(client)
         return client
 
@@ -103,8 +105,8 @@ def test_docker_sandbox_manager_builds_commands(monkeypatch) -> None:
 def test_docker_manager_skips_port_mapping_when_host_port_missing() -> None:
     runner = RecordingRunner()
 
-    def client_factory(base_url: str, token_header: str, host_container_url: str | None) -> DummyClient:
-        return DummyClient(base_url, token_header, host_container_url)
+    def client_factory(base_url: str, host_container_url: str | None) -> DummyClient:
+        return DummyClient(base_url, host_container_url)
 
     manager = DockerSandboxManager(
         docker_binary="docker",
@@ -133,8 +135,8 @@ def test_docker_manager_skips_port_mapping_when_host_port_missing() -> None:
 def test_docker_manager_mounts_volumes() -> None:
     runner = RecordingRunner()
 
-    def client_factory(base_url: str, token_header: str, host_container_url: str | None) -> DummyClient:
-        return DummyClient(base_url, token_header, host_container_url)
+    def client_factory(base_url: str, host_container_url: str | None) -> DummyClient:
+        return DummyClient(base_url, host_container_url)
 
     manager = DockerSandboxManager(
         docker_binary="docker",
@@ -173,8 +175,8 @@ def test_docker_manager_requires_network_when_host_port_missing() -> None:
 def test_docker_manager_adds_extra_hosts() -> None:
     runner = RecordingRunner()
 
-    def client_factory(base_url: str, token_header: str, host_container_url: str | None) -> DummyClient:
-        return DummyClient(base_url, token_header, host_container_url)
+    def client_factory(base_url: str, host_container_url: str | None) -> DummyClient:
+        return DummyClient(base_url, host_container_url)
 
     manager = DockerSandboxManager(
         docker_binary="docker",
@@ -201,8 +203,8 @@ def test_docker_manager_adds_extra_hosts() -> None:
 def test_docker_manager_sets_seccomp_profile() -> None:
     runner = RecordingRunner()
 
-    def client_factory(base_url: str, token_header: str, host_container_url: str | None) -> DummyClient:
-        return DummyClient(base_url, token_header, host_container_url)
+    def client_factory(base_url: str, host_container_url: str | None) -> DummyClient:
+        return DummyClient(base_url, host_container_url)
 
     manager = DockerSandboxManager(
         docker_binary="docker",
@@ -231,8 +233,8 @@ def test_start_cleans_up_container_on_healthz_failure(monkeypatch) -> None:
     runner = RecordingRunner()
     created_clients: list[DummyClient] = []
 
-    def client_factory(base_url: str, token_header: str, host_container_url: str | None) -> DummyClient:
-        client = DummyClient(base_url, token_header, host_container_url)
+    def client_factory(base_url: str, host_container_url: str | None) -> DummyClient:
+        client = DummyClient(base_url, host_container_url)
         created_clients.append(client)
         return client
 
@@ -266,3 +268,86 @@ def test_start_cleans_up_container_on_healthz_failure(monkeypatch) -> None:
     stop_args, _ = runner.commands[1]
     assert stop_args == ["docker", "stop", "-t", "5", "container123"]
     assert created_clients[0].closed is True
+
+
+def test_resolve_sandbox_host_container_url_falls_back_to_mountinfo_container_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stale_hostname = "6aadabeb0b48"
+    live_container_id = "7ffe3b2775de"
+    calls: list[str] = []
+
+    def fake_exists(self) -> bool:
+        return str(self) == "/.dockerenv"
+
+    def fake_read_text(self, *, encoding: str = "utf-8") -> str:
+        assert encoding == "utf-8"
+        if str(self) != "/proc/self/mountinfo":
+            raise AssertionError(f"unexpected read_text path: {self}")
+        return (
+            "1533 1522 8:1 "
+            f"/var/lib/docker/containers/{live_container_id}/hostname "
+            "/etc/hostname rw,relatime - ext4 /dev/sda1 rw,commit=30\n"
+        )
+
+    def fake_run(args: list[str], **kwargs: object) -> CompletedProcess[str]:
+        calls.append(args[-1])
+        if args[-1] == stale_hostname:
+            raise subprocess.CalledProcessError(
+                returncode=1,
+                cmd=args,
+                stderr=f"error: no such object: {stale_hostname}",
+            )
+        if args[-1] == live_container_id:
+            return subprocess_completed(args, '{"caster-net":{"IPAddress":"172.19.0.2"}}\n')
+        raise AssertionError(f"unexpected docker target: {args[-1]}")
+
+    monkeypatch.setenv("HOSTNAME", stale_hostname)
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    monkeypatch.setattr(docker_module.Path, "exists", fake_exists)
+    monkeypatch.setattr(docker_module.Path, "read_text", fake_read_text)
+    monkeypatch.setattr(docker_module.subprocess, "run", fake_run)
+
+    result = resolve_sandbox_host_container_url(
+        docker_binary="docker",
+        sandbox_network="caster-net",
+        rpc_port=8100,
+    )
+
+    assert result == "http://172.19.0.2:8100"
+    assert calls == [stale_hostname, live_container_id]
+
+
+def test_resolve_sandbox_host_container_url_raises_when_hostname_and_mountinfo_fail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stale_hostname = "6aadabeb0b48"
+
+    def fake_exists(self) -> bool:
+        return str(self) == "/.dockerenv"
+
+    def fake_read_text(self, *, encoding: str = "utf-8") -> str:
+        assert encoding == "utf-8"
+        if str(self) != "/proc/self/mountinfo":
+            raise AssertionError(f"unexpected read_text path: {self}")
+        return "1522 1498 0:95 / / rw,relatime - overlay overlay rw\n"
+
+    def fake_run(args: list[str], **kwargs: object) -> CompletedProcess[str]:
+        raise subprocess.CalledProcessError(
+            returncode=1,
+            cmd=args,
+            stderr=f"error: no such object: {stale_hostname}",
+        )
+
+    monkeypatch.setenv("HOSTNAME", stale_hostname)
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    monkeypatch.setattr(docker_module.Path, "exists", fake_exists)
+    monkeypatch.setattr(docker_module.Path, "read_text", fake_read_text)
+    monkeypatch.setattr(docker_module.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match=f"container={stale_hostname}"):
+        resolve_sandbox_host_container_url(
+            docker_binary="docker",
+            sandbox_network="caster-net",
+            rpc_port=8100,
+        )

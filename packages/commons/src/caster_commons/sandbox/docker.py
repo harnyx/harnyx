@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -27,6 +28,10 @@ from caster_commons.sandbox.manager import SandboxDeployment, SandboxManager
 from caster_commons.sandbox.options import DEFAULT_TOKEN_HEADER, SandboxOptions
 
 logger = logging.getLogger(__name__)
+
+_MOUNTINFO_CONTAINER_ID_PATTERN = re.compile(
+    r"/containers/([0-9a-f]{12,64})/(?:hostname|hosts|resolv\.conf)(?:\s|$)"
+)
 
 
 class HttpSandboxClient(SandboxClient):
@@ -668,6 +673,48 @@ def resolve_container_ip(*, docker_binary: str, container: str, network: str) ->
     return ip_address
 
 
+def _resolve_current_container_id_from_mountinfo() -> str | None:
+    try:
+        mountinfo = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = _MOUNTINFO_CONTAINER_ID_PATTERN.search(mountinfo)
+    if match is None:
+        return None
+    return match.group(1)
+
+
+def _resolve_runtime_container_ip(*, docker_binary: str, network: str) -> str:
+    container = os.getenv("HOSTNAME")
+    if not container:
+        raise RuntimeError("HOSTNAME must be set to derive CASTER_HOST_CONTAINER_URL in containerized runs")
+    try:
+        return resolve_container_ip(docker_binary=docker_binary, container=container, network=network)
+    except RuntimeError as hostname_error:
+        mountinfo_container = _resolve_current_container_id_from_mountinfo()
+        if mountinfo_container is None or mountinfo_container == container:
+            raise
+        logger.warning(
+            "falling back to mountinfo-derived container id for sandbox host resolution: "
+            "hostname_container=%s mountinfo_container=%s network=%s error=%s",
+            container,
+            mountinfo_container,
+            network,
+            hostname_error,
+        )
+        try:
+            return resolve_container_ip(
+                docker_binary=docker_binary,
+                container=mountinfo_container,
+                network=network,
+            )
+        except RuntimeError as mountinfo_error:
+            raise RuntimeError(
+                "failed to resolve current container IP "
+                f"via HOSTNAME={container} and mountinfo_container={mountinfo_container}"
+            ) from mountinfo_error
+
+
 def resolve_sandbox_host_container_url(
     *, docker_binary: str, sandbox_network: str | None, rpc_port: int
 ) -> str:
@@ -677,10 +724,7 @@ def resolve_sandbox_host_container_url(
     if os.getenv("KUBERNETES_SERVICE_HOST"):
         host = resolve_network_gateway(docker_binary=docker_binary, network=sandbox_network)
     elif Path("/.dockerenv").exists():
-        container = os.getenv("HOSTNAME")
-        if not container:
-            raise RuntimeError("HOSTNAME must be set to derive CASTER_HOST_CONTAINER_URL in containerized runs")
-        host = resolve_container_ip(docker_binary=docker_binary, container=container, network=sandbox_network)
+        host = _resolve_runtime_container_ip(docker_binary=docker_binary, network=sandbox_network)
     else:
         host = resolve_network_gateway(docker_binary=docker_binary, network=sandbox_network)
 
