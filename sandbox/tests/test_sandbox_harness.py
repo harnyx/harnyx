@@ -95,6 +95,26 @@ def test_harness_invokes_entrypoint_and_closes_tools() -> None:
     assert close_flag.value == 1
 
 
+def test_harness_accepts_neutral_session_header() -> None:
+    @entrypoint("neutral_session_echo")
+    async def neutral_entrypoint(request: dict[str, object]) -> dict[str, object]:
+        return {"message": request.get("message")}
+
+    harness = SandboxHarness()
+    app = FastAPI()
+    app.include_router(harness.create_router(), prefix="/entry")
+    client = TestClient(app)
+
+    response = client.post(
+        "/entry/neutral_session_echo",
+        json={"payload": {"message": "hello"}, "context": {}},
+        headers={"x-platform-token": "token", "x-session-id": "session-1"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["result"] == {"message": "hello"}
+
+
 def test_unknown_entrypoint_returns_404() -> None:
     harness = SandboxHarness()
     app = FastAPI()

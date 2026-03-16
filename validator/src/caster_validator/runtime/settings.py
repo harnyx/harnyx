@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from caster_commons.config.llm import LlmSettings
@@ -59,11 +59,18 @@ class Settings(BaseSettings):
         extra="ignore",
         case_sensitive=False,
         frozen=True,
+        env_ignore_empty=True,
     )
 
     # --- Server ---
-    rpc_listen_host: str = Field(default="0.0.0.0", alias="CASTER_VALIDATOR_HOST")  # noqa: S104
-    rpc_port: int = Field(default=8100, alias="CASTER_VALIDATOR_PORT")
+    rpc_listen_host: str = Field(
+        default="0.0.0.0",  # noqa: S104
+        validation_alias=AliasChoices("CASTER_VALIDATOR_HOST", "VALIDATOR_HOST"),
+    )
+    rpc_port: int = Field(
+        default=8100,
+        validation_alias=AliasChoices("CASTER_VALIDATOR_PORT", "VALIDATOR_PORT"),
+    )
 
     # --- Component settings ---
     llm: LlmSettings = Field(default_factory=LlmSettings)
