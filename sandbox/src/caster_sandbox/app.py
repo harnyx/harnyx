@@ -10,12 +10,13 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Security
+from fastapi import Depends, FastAPI, HTTPException, Request, Security
 from fastapi.security import APIKeyHeader
 
+from caster_commons.protocol_headers import read_platform_token_header
 from caster_miner_sdk.sandbox_headers import (
-    CASTER_HOST_CONTAINER_URL_HEADER,
-    CASTER_SESSION_ID_HEADER,
+    read_host_container_url_header,
+    read_session_id_header,
 )
 from caster_sandbox.sandbox.harness import SandboxHarness
 from caster_sandbox.tools.proxy import ToolProxy
@@ -25,23 +26,24 @@ logger = logging.getLogger("caster_sandbox")
 CASTER_TOKEN_SCHEME = APIKeyHeader(name="x-caster-token", scheme_name="CasterToken", auto_error=False)
 
 
-async def require_tool_token(token: str | None = Security(CASTER_TOKEN_SCHEME)) -> str:
-    if not token:
+async def require_tool_token(request: Request, token: str | None = Security(CASTER_TOKEN_SCHEME)) -> str:
+    resolved_token = token or read_platform_token_header(request.headers)
+    if not resolved_token:
         raise HTTPException(status_code=401, detail="missing x-caster-token header")
-    return token
+    return resolved_token
 
 
 def _tool_factory(config: Mapping[str, object] | None, headers: Mapping[str, str]) -> ToolProxy | None:
     if config:
         raise ValueError("tool proxy config is not supported; use request headers")
 
-    base_url = (headers.get(CASTER_HOST_CONTAINER_URL_HEADER) or "").strip()
-    token = (headers.get("x-caster-token") or "").strip()
-    session_id = (headers.get(CASTER_SESSION_ID_HEADER) or "").strip()
+    base_url = read_host_container_url_header(headers)
+    token = read_platform_token_header(headers)
+    session_id = read_session_id_header(headers)
     if not session_id:
-        raise RuntimeError(f"sandbox request missing {CASTER_SESSION_ID_HEADER}")
+        raise RuntimeError("sandbox request missing x-caster-session-id header")
     if not base_url:
-        raise RuntimeError(f"sandbox request missing {CASTER_HOST_CONTAINER_URL_HEADER} required to enable tools")
+        raise RuntimeError("sandbox request missing x-caster-host-container-url header required to enable tools")
     if not token:
         raise RuntimeError("sandbox request missing x-caster-token header required to enable tools")
     return ToolProxy(
@@ -55,13 +57,21 @@ sandbox_harness: SandboxHarness | None = None
 _agent_loaded = False
 
 
+def _read_old_first_env(*names: str) -> str:
+    for name in names:
+        value = (os.getenv(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def _load_agent_from_env() -> None:
     global _agent_loaded
     if _agent_loaded:
         return
 
-    agent_path = os.getenv("CASTER_AGENT_PATH")
-    agent_module = os.getenv("CASTER_AGENT_MODULE")
+    agent_path = _read_old_first_env("CASTER_AGENT_PATH", "AGENT_PATH")
+    agent_module = _read_old_first_env("CASTER_AGENT_MODULE", "AGENT_MODULE")
     if agent_module:
         raise RuntimeError("CASTER_AGENT_MODULE is not supported; use CASTER_AGENT_PATH")
 

@@ -164,7 +164,7 @@ class BatchExecutionPlanner:
             resolved_artifact = agent_artifacts.get(artifact.artifact_id)
             if resolved_artifact is not None:
                 env["CASTER_AGENT_PATH"] = resolved_artifact.container_path
-            elif "CASTER_AGENT_PATH" not in env:
+            elif "CASTER_AGENT_PATH" not in env and "AGENT_PATH" not in env:
                 raise RuntimeError(f"agent path missing for artifact {artifact.uid}/{artifact.artifact_id}")
             return replace(
                 run_ctx.base_options,

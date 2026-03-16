@@ -24,6 +24,7 @@ from caster_miner_sdk.decorators import (
     get_entrypoint,
     get_entrypoint_registry,
 )
+from caster_miner_sdk.sandbox_headers import read_session_id_header
 from caster_sandbox.context.snapshot import ContextSnapshot
 
 ToolConfig = Mapping[str, Any] | None
@@ -139,7 +140,7 @@ class SandboxHarness:
             except HTTPException:
                 raise
             except Exception as exc:
-                session_id = headers.get("x-caster-session-id")
+                session_id = read_session_id_header(headers)
                 logger.exception(
                     "sandbox entrypoint failed",
                     extra={
@@ -236,7 +237,7 @@ class SandboxHarness:
         exc: TimeoutError,
     ) -> tuple[str, Any]:
         self._terminate_process(process)
-        session_id = payload["headers"].get("x-caster-session-id")
+        session_id = read_session_id_header(payload["headers"])
         logger.exception(
             "sandbox entrypoint timed out",
             extra={

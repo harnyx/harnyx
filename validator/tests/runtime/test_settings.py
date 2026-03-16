@@ -25,6 +25,28 @@ def test_settings_honor_sandbox_image_override(monkeypatch) -> None:
     assert settings.sandbox.sandbox_image == "test-sandbox:latest"
 
 
+def test_settings_accepts_neutral_validator_env_names(monkeypatch) -> None:
+    monkeypatch.setenv("VALIDATOR_HOST", "127.0.0.1")
+    monkeypatch.setenv("VALIDATOR_PORT", "9001")
+
+    settings = Settings.load()
+
+    assert settings.rpc_listen_host == "127.0.0.1"
+    assert settings.rpc_port == 9001
+
+
+def test_settings_ignores_empty_legacy_validator_env_names(monkeypatch) -> None:
+    monkeypatch.setenv("CASTER_VALIDATOR_HOST", "")
+    monkeypatch.setenv("CASTER_VALIDATOR_PORT", "")
+    monkeypatch.setenv("VALIDATOR_HOST", "127.0.0.1")
+    monkeypatch.setenv("VALIDATOR_PORT", "9001")
+
+    settings = Settings.load()
+
+    assert settings.rpc_listen_host == "127.0.0.1"
+    assert settings.rpc_port == 9001
+
+
 def test_settings_honor_sandbox_image_override_from_dotenv(tmp_path, monkeypatch) -> None:
     """Settings honor validator sandbox overrides from a local .env file."""
     monkeypatch.chdir(tmp_path)

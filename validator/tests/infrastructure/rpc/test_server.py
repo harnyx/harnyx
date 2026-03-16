@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from caster_commons.domain.session import Session, SessionStatus, SessionUsage
 from caster_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
-from caster_commons.protocol_headers import CASTER_SESSION_ID_HEADER
+from caster_commons.protocol_headers import CASTER_SESSION_ID_HEADER, SESSION_ID_HEADER
 from caster_commons.tools.executor import ToolExecutor
 from caster_commons.tools.token_semaphore import TokenSemaphore
 from caster_commons.tools.usage_tracker import UsageTracker
@@ -138,6 +138,29 @@ def test_execute_tool_endpoint_records_receipt() -> None:
     assert provider.token_semaphore.acquire_calls == [DEMO_SESSION_TOKEN]
     assert provider.token_semaphore.release_calls == [DEMO_SESSION_TOKEN]
     assert provider.token_semaphore.in_flight(DEMO_SESSION_TOKEN) == 0
+
+
+def test_execute_tool_endpoint_accepts_neutral_headers() -> None:
+    provider = DemoDependencyProvider()
+    app = create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/tools/execute",
+        json={
+            "tool": "search_web",
+            "args": ["demo"],
+            "kwargs": {"query": "demo"},
+        },
+        headers={
+            "x-platform-token": DEMO_SESSION_TOKEN,
+            SESSION_ID_HEADER: str(provider.session.session_id),
+        },
+    )
+
+    assert response.status_code == 200
+    assert provider.token_semaphore.acquire_calls == [DEMO_SESSION_TOKEN]
+    assert provider.token_semaphore.release_calls == [DEMO_SESSION_TOKEN]
 
 
 def test_execute_tool_endpoint_releases_semaphore_on_failure() -> None:
