@@ -10,9 +10,41 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from caster_commons.config.llm import LlmSettings
 from caster_commons.config.observability import ObservabilitySettings
 from caster_commons.config.platform_api import PlatformApiSettings
-from caster_commons.config.sandbox import SandboxSettings, load_sandbox_settings
+from caster_commons.config.sandbox import SandboxPullPolicy, SandboxSettings
 from caster_commons.config.subtensor import SubtensorSettings
 from caster_commons.config.vertex import VertexSettings
+
+_DEFAULT_VALIDATOR_SANDBOX_IMAGE = "castersubnet/caster-subnet-sandbox:finney"
+
+
+class _ValidatorSandboxEnv(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="",
+        extra="ignore",
+        case_sensitive=False,
+        frozen=True,
+        env_file=".env",
+        env_file_encoding="utf-8",
+    )
+
+    sandbox_image: str = Field(
+        default=_DEFAULT_VALIDATOR_SANDBOX_IMAGE,
+        alias="CASTER_SANDBOX_IMAGE",
+    )
+    sandbox_network: str | None = Field(default="caster-sandbox-net", alias="CASTER_SANDBOX_NETWORK")
+    sandbox_pull_policy: SandboxPullPolicy = Field(
+        default="always",
+        alias="CASTER_SANDBOX_PULL_POLICY",
+    )
+
+
+def load_validator_sandbox_settings() -> SandboxSettings:
+    env = _ValidatorSandboxEnv()
+    return SandboxSettings.model_construct(
+        sandbox_image=env.sandbox_image,
+        sandbox_network=env.sandbox_network,
+        sandbox_pull_policy=env.sandbox_pull_policy,
+    )
 
 
 class Settings(BaseSettings):
@@ -36,7 +68,7 @@ class Settings(BaseSettings):
     # --- Component settings ---
     llm: LlmSettings = Field(default_factory=LlmSettings)
     vertex: VertexSettings = Field(default_factory=VertexSettings)
-    sandbox: SandboxSettings = Field(default_factory=load_sandbox_settings)
+    sandbox: SandboxSettings = Field(default_factory=load_validator_sandbox_settings)
     platform_api: PlatformApiSettings = Field(default_factory=PlatformApiSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     subtensor: SubtensorSettings = Field(default_factory=SubtensorSettings)

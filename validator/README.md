@@ -36,7 +36,7 @@ Edit `.env` and set at least:
 | `CHUTES_API_KEY` | API key for LLM calls |
 | `DESEARCH_API_KEY` | API key for search tools |
 
-The defaults in `.env.example` already target mainnet (`finney`) and netuid `67`, and use `castersubnet/caster-subnet-sandbox:latest` for sandbox execution.
+The defaults in `.env.example` already target mainnet (`finney`) and netuid `67`. Validator sandbox execution defaults to `castersubnet/caster-subnet-sandbox:finney`; set `CASTER_SANDBOX_IMAGE=castersubnet/caster-subnet-sandbox:testnet` for staging/testnet, or use another explicit value only when you intentionally want to test or pin a different sandbox image.
 
 ### Wallet configuration
 
