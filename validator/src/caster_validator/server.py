@@ -22,7 +22,7 @@ from caster_validator.runtime.settings import Settings
 from caster_validator.runtime.weight_worker import create_weight_worker
 
 init_logging()
-configure_tracing(service_name="caster-validator")
+configure_tracing(service_name="harnyx-validator")
 _settings = Settings.load()
 if _settings.observability.enable_cloud_logging:
     gcp_project = _settings.observability.gcp_project_id
@@ -62,7 +62,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Caster Validator API", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Harnyx Validator API", version="0.1.0", lifespan=lifespan)
     app.middleware("http")(request_logging_middleware)
 
     @app.get("/healthz", description="Validator health check.")

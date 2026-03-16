@@ -416,7 +416,7 @@ class DeSearchClient:
         reasons: list[str] = []
         total_latency_ms = 0.0
         attempts_made = 0
-        tracer = trace.get_tracer("caster_commons.tools.desearch")
+        tracer = trace.get_tracer("harnyx_commons.tools.desearch")
         with tracer.start_as_current_span(
             "desearch.request",
             kind=SpanKind.CLIENT,

@@ -13,7 +13,7 @@ from caster_commons.observability.logging import (
 
 
 def test_formatter_emits_json_payload_for_json_fields_in_cloud_run(monkeypatch) -> None:
-    monkeypatch.setenv("K_SERVICE", "caster-platform")
+    monkeypatch.setenv("K_SERVICE", "harnyx-platform")
     formatter = ExtrasFormatter("%(levelname)s %(name)s: %(message)s")
 
     record = logging.LogRecord(
@@ -41,7 +41,7 @@ def test_formatter_emits_json_payload_for_json_fields_in_cloud_run(monkeypatch) 
 
 
 def test_formatter_emits_json_payload_for_data_in_cloud_run(monkeypatch) -> None:
-    monkeypatch.setenv("K_SERVICE", "caster-platform")
+    monkeypatch.setenv("K_SERVICE", "harnyx-platform")
     formatter = ExtrasFormatter("%(levelname)s %(name)s: %(message)s")
 
     record = logging.LogRecord(
@@ -173,9 +173,9 @@ def test_cloud_json_sanitizer_injects_data_into_json_fields() -> None:
 def test_otel_context_log_filter_injects_trace_and_baggage(monkeypatch) -> None:
     monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
 
-    ctx = baggage.set_baggage("caster.run_id", "run-123")
-    ctx = baggage.set_baggage("caster.feed_id", "feed-456", context=ctx)
-    ctx = baggage.set_baggage("caster.use_case", "feed_run", context=ctx)
+    ctx = baggage.set_baggage("harnyx.run_id", "run-123")
+    ctx = baggage.set_baggage("harnyx.feed_id", "feed-456", context=ctx)
+    ctx = baggage.set_baggage("harnyx.use_case", "feed_run", context=ctx)
     token = context.attach(ctx)
     try:
         span_context = SpanContext(
@@ -213,8 +213,8 @@ def test_otel_context_log_filter_injects_trace_and_baggage(monkeypatch) -> None:
             assert payload["otel"]["trace_id"] == "0123456789abcdef0123456789abcdef"
             assert payload["otel"]["span_id"] == "0123456789abcdef"
             baggage_payload = payload["otel"]["baggage"]
-            assert baggage_payload["caster.run_id"] == "run-123"
-            assert baggage_payload["caster.feed_id"] == "feed-456"
-            assert baggage_payload["caster.use_case"] == "feed_run"
+            assert baggage_payload["harnyx.run_id"] == "run-123"
+            assert baggage_payload["harnyx.feed_id"] == "feed-456"
+            assert baggage_payload["harnyx.use_case"] == "feed_run"
     finally:
         context.detach(token)

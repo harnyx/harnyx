@@ -13,9 +13,9 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, Request, Security
 from fastapi.security import APIKeyHeader
 
-from caster_commons.protocol_headers import read_platform_token_header
 from caster_miner_sdk.sandbox_headers import (
     read_host_container_url_header,
+    read_platform_token_header,
     read_session_id_header,
 )
 from caster_sandbox.sandbox.harness import SandboxHarness

@@ -320,7 +320,7 @@ def test_record_child_observation_best_effort_swallows_client_error(monkeypatch:
 def test_build_generation_metadata_merges_internal_metadata_with_canonical_server(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("OTEL_SERVICE_NAME", "caster-platform-worker")
+    monkeypatch.setenv("OTEL_SERVICE_NAME", "harnyx-platform-worker")
     request = _request_with_metadata(
         {
             "use_case": "claim_generation",
@@ -336,7 +336,7 @@ def test_build_generation_metadata_merges_internal_metadata_with_canonical_serve
     )
 
     assert metadata["provider"] == "openai"
-    assert metadata["server"] == "caster-platform-worker"
+    assert metadata["server"] == "harnyx-platform-worker"
     assert metadata["use_case"] == "claim_generation"
     assert metadata["feed_run_id"] == "feed-run-123"
     assert metadata["elapsed_ms"] == 12.3
@@ -345,14 +345,14 @@ def test_build_generation_metadata_merges_internal_metadata_with_canonical_serve
 def test_derive_tags_uses_only_low_cardinality_dimensions() -> None:
     tags = langfuse._derive_tags(
         {
-            "server": "caster-platform-worker",
+            "server": "harnyx-platform-worker",
             "use_case": "claim_generation",
             "feed_run_id": "feed-run-123",
             "user_id": "u-99",
         }
     )
 
-    assert tags == ["server:caster-platform-worker", "use_case:claim_generation"]
+    assert tags == ["server:harnyx-platform-worker", "use_case:claim_generation"]
 
 
 def test_propagate_trace_attributes_best_effort_noops_when_unconfigured(
@@ -413,7 +413,7 @@ def test_propagate_trace_attributes_best_effort_calls_propagate_attributes(
             "is_retry": True,
             "optional_field": None,
         },
-        tags=["server:caster-platform-worker", "use_case:content_review_job"],
+        tags=["server:harnyx-platform-worker", "use_case:content_review_job"],
     ):
         pass
 
@@ -428,7 +428,7 @@ def test_propagate_trace_attributes_best_effort_calls_propagate_attributes(
             "attempt": "2",
             "is_retry": "True",
         },
-        "tags": ["server:caster-platform-worker", "use_case:content_review_job"],
+        "tags": ["server:harnyx-platform-worker", "use_case:content_review_job"],
     }
 
 

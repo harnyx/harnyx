@@ -60,4 +60,3 @@ async def test_search_links_twitter_emits_summary_log(caplog: pytest.LogCaptureF
     assert record.data["min_created_at"] == "2026-01-14T00:00:00Z"
     assert record.data["max_created_at"] == "2026-01-14T00:00:24Z"
     assert record.json_fields["sample_tweets"] == tweets[:20]
-

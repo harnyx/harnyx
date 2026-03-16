@@ -142,7 +142,7 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         if request.reasoning_effort is not None:
             span_attributes["llm.reasoning_effort"] = str(request.reasoning_effort)
 
-        tracer = trace.get_tracer("caster_commons.llm")
+        tracer = trace.get_tracer("harnyx_commons.llm")
         with tracer.start_as_current_span(
             "llm.invoke",
             kind=SpanKind.CLIENT,
