@@ -11,7 +11,7 @@ def test_settings_defaults_sandbox_image_when_unset(monkeypatch) -> None:
     settings = Settings.load()
 
     assert settings.llm.tool_llm_provider == "chutes"
-    assert settings.sandbox.sandbox_image == "castersubnet/caster-subnet-sandbox:finney"
+    assert settings.sandbox.sandbox_image == "harnyx/harnyx-subnet-sandbox:finney"
 
 
 def test_settings_honor_sandbox_image_override(monkeypatch) -> None:

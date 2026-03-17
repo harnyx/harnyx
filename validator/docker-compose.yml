@@ -1,6 +1,6 @@
 services:
   validator:
-    image: "${CASTER_VALIDATOR_IMAGE:-castersubnet/caster-subnet-validator:latest}"
+    image: "${CASTER_VALIDATOR_IMAGE:-harnyx/harnyx-subnet-validator:latest}"
     env_file:
       - .env
     environment:
@@ -8,14 +8,14 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${CASTER_WALLETS_HOST_DIR:-~/.bittensor/wallets}:/root/.bittensor/wallets
-      - ${CASTER_STATE_VOLUME_NAME:-harnyx-validator-state}:/workspace/.caster_state
+      - ${CASTER_STATE_VOLUME_NAME:-harnyx-validator-state}:/workspace/.harnyx_state
     ports:
       - "${VALIDATOR_HOST_PORT:-8100}:8100"
     labels:
       com.centurylinklabs.watchtower.enable: "true"
     networks:
       - default
-      - caster-sandbox-net
+      - harnyx-sandbox-net
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
@@ -37,8 +37,8 @@ services:
     restart: unless-stopped
 
 networks:
-  caster-sandbox-net:
-    name: caster-sandbox-net
+  harnyx-sandbox-net:
+    name: harnyx-sandbox-net
     driver: bridge
     internal: true
 
