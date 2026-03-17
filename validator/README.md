@@ -31,12 +31,12 @@ Edit `.env` and set at least:
 
 | Variable | Description |
 |----------|-------------|
-| `PLATFORM_BASE_URL` | Platform API endpoint (finney/mainnet: `https://api.casterhub.ai`, testnet: `https://api.staging.casterhub.ai`) |
+| `PLATFORM_BASE_URL` | Platform API endpoint (finney/mainnet: `https://api.harnyx.ai`, testnet: `https://api.staging.harnyx.ai`) |
 | `VALIDATOR_PUBLIC_BASE_URL` | How the platform can reach your validator |
 | `CHUTES_API_KEY` | API key for LLM calls |
 | `DESEARCH_API_KEY` | API key for search tools |
 
-The defaults in `.env.example` already target mainnet (`finney`) and netuid `67`. Validator sandbox execution defaults to `castersubnet/caster-subnet-sandbox:finney`; set `CASTER_SANDBOX_IMAGE=castersubnet/caster-subnet-sandbox:testnet` for staging/testnet, or use another explicit value only when you intentionally want to test or pin a different sandbox image.
+The defaults in `.env.example` already target mainnet (`finney`) and netuid `67`. Validator sandbox execution defaults to `harnyx/harnyx-subnet-sandbox:finney`; set `CASTER_SANDBOX_IMAGE=harnyx/harnyx-subnet-sandbox:testnet` for staging/testnet, or use another explicit value only when you intentionally want to test or pin a different sandbox image.
 
 ### Wallet configuration
 

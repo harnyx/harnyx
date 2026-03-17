@@ -14,7 +14,7 @@ from harnyx_commons.config.sandbox import SandboxPullPolicy, SandboxSettings
 from harnyx_commons.config.subtensor import SubtensorSettings
 from harnyx_commons.config.vertex import VertexSettings
 
-_DEFAULT_VALIDATOR_SANDBOX_IMAGE = "castersubnet/caster-subnet-sandbox:finney"
+_DEFAULT_VALIDATOR_SANDBOX_IMAGE = "harnyx/harnyx-subnet-sandbox:finney"
 
 
 class _ValidatorSandboxEnv(BaseSettings):
@@ -31,7 +31,7 @@ class _ValidatorSandboxEnv(BaseSettings):
         default=_DEFAULT_VALIDATOR_SANDBOX_IMAGE,
         alias="CASTER_SANDBOX_IMAGE",
     )
-    sandbox_network: str | None = Field(default="caster-sandbox-net", alias="CASTER_SANDBOX_NETWORK")
+    sandbox_network: str | None = Field(default="harnyx-sandbox-net", alias="CASTER_SANDBOX_NETWORK")
     sandbox_pull_policy: SandboxPullPolicy = Field(
         default="always",
         alias="CASTER_SANDBOX_PULL_POLICY",

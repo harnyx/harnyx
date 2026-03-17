@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Final
 
-DEFAULT_STATE_DIR: Final[str] = "/workspace/.caster_state"
+DEFAULT_STATE_DIR: Final[str] = "/workspace/.harnyx_state"
 _STATE_MOUNT_SOURCE_ENV: Final[str] = "CASTER_STATE_VOLUME_NAME"
 _NEUTRAL_STATE_MOUNT_SOURCE_ENV: Final[str] = "STATE_VOLUME_NAME"
 
@@ -18,7 +18,7 @@ def default_state_dir_path() -> Path:
 def resolve_state_mount_source() -> str:
     """Return the docker mount source for the shared state directory.
 
-    In DinD/Kubernetes this should be a path (default: `/workspace/.caster_state`) mounted into the
+    In DinD/Kubernetes this should be a path (default: `/workspace/.harnyx_state`) mounted into the
     dockerd container. In Docker Compose (docker socket) this can be a named volume.
     """
 

@@ -23,7 +23,7 @@ DOCKER_BINARY = shutil.which(DOCKER_CLI) or DOCKER_CLI
 DOCKER_IMAGE_PATTERN = re.compile(r"^[\w./:-]+$")
 SECURITY_SANDBOX_IMAGE = os.getenv(
     "CASTER_SECURITY_SANDBOX_IMAGE",
-    "local/caster-sandbox:0.1.0-dev",
+    "local/harnyx-sandbox:0.1.0-dev",
 )
 
 

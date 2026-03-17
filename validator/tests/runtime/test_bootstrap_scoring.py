@@ -38,7 +38,7 @@ def test_create_scoring_service_does_not_require_vertex_config_at_bootstrap() ->
         ),
         sandbox=SandboxSettings.model_construct(
             sandbox_image="harnyx-sandbox:test",
-            sandbox_network="caster-sandbox-net",
+            sandbox_network="harnyx-sandbox-net",
             sandbox_pull_policy="always",
         ),
         platform_api=PlatformApiSettings.model_construct(
@@ -90,7 +90,7 @@ def test_create_scoring_service_uses_chutes_embeddings_for_chutes_provider() -> 
         ),
         sandbox=SandboxSettings.model_construct(
             sandbox_image="harnyx-sandbox:test",
-            sandbox_network="caster-sandbox-net",
+            sandbox_network="harnyx-sandbox-net",
             sandbox_pull_policy="always",
         ),
         platform_api=PlatformApiSettings.model_construct(
@@ -142,7 +142,7 @@ def test_create_scoring_service_requires_chutes_api_key_for_chutes_embeddings() 
         ),
         sandbox=SandboxSettings.model_construct(
             sandbox_image="harnyx-sandbox:test",
-            sandbox_network="caster-sandbox-net",
+            sandbox_network="harnyx-sandbox-net",
             sandbox_pull_policy="always",
         ),
         platform_api=PlatformApiSettings.model_construct(
@@ -193,7 +193,7 @@ def test_create_scoring_service_uses_vertex_maas_region_for_embeddings() -> None
         ),
         sandbox=SandboxSettings.model_construct(
             sandbox_image="harnyx-sandbox:test",
-            sandbox_network="caster-sandbox-net",
+            sandbox_network="harnyx-sandbox-net",
             sandbox_pull_policy="always",
         ),
         platform_api=PlatformApiSettings.model_construct(

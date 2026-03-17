@@ -24,7 +24,7 @@ from harnyx_commons.sandbox.state import DEFAULT_STATE_DIR
 
 _DOCKER_CLI = os.getenv("DOCKER_CLI", "docker")
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_DEFAULT_IMAGE = os.getenv("CASTER_SANDBOX_IMAGE", "local/caster-sandbox:0.1.0-dev")
+_DEFAULT_IMAGE = os.getenv("CASTER_SANDBOX_IMAGE", "local/harnyx-sandbox:0.1.0-dev")
 
 
 def _docker_binary() -> str:
