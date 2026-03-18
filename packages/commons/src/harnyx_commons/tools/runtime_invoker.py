@@ -141,7 +141,7 @@ class RuntimeToolInvoker(ToolInvoker):
         allowed_models: tuple[ToolModelName, ...] = ALLOWED_TOOL_MODELS,
     ) -> None:
         self._receipts = receipt_log
-        self._logger = logging.getLogger("caster_tools.invoker")
+        self._logger = logging.getLogger("harnyx_commons.tools.runtime_invoker")
         self._search = search_client
         self._llm_provider = llm_provider
         self._llm_provider_name = llm_provider_name or "llm"

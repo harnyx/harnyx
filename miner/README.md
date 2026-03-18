@@ -142,7 +142,7 @@ uv run --package harnyx-miner harnyx-miner-dev --agent-path ./agent.py --request
 Set the platform base URL:
 
 ```bash
-export PLATFORM_BASE_URL="https://api.castersubnet.example"
+export PLATFORM_BASE_URL="https://api.harnyx.ai"
 ```
 
 Upload your agent with your registered hotkey:

@@ -362,8 +362,8 @@ async def test_execute_tool_records_llm_tokens_for_llm_chat() -> None:
                 usage=LlmUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
             )
             payload = response.to_payload()
-            payload["_caster_provider"] = "llm"
-            payload["_caster_model"] = "openai/gpt-oss-20b"
+            payload["harnyx_provider"] = "llm"
+            payload["harnyx_model"] = "openai/gpt-oss-20b"
             return payload
 
     session_registry = FakeSessionRegistry()
