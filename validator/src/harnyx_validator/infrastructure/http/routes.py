@@ -3,23 +3,20 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Security
-from fastapi.routing import APIRoute
 from fastapi.security import APIKeyHeader
-from starlette.responses import Response
 
 from harnyx_commons.bittensor import VerificationError
 from harnyx_commons.domain.miner_task import MinerTask
 from harnyx_commons.domain.session import Session
 from harnyx_commons.errors import ConcurrencyLimitError
 from harnyx_commons.protocol_headers import (
-    CASTER_SESSION_ID_HEADER,
-    read_platform_token_header,
+    SESSION_ID_HEADER,
 )
 from harnyx_commons.tools.dto import ToolInvocationRequest
 from harnyx_commons.tools.executor import ToolExecutor
@@ -52,24 +49,6 @@ from harnyx_validator.infrastructure.state.run_progress import RunProgressSnapsh
 logger = logging.getLogger("harnyx_validator.http")
 
 
-class _LegacySessionHeaderCompatibilityRoute(APIRoute):
-    def get_route_handler(self) -> Callable[[Request], Coroutine[object, object, Response]]:
-        original_route_handler = super().get_route_handler()
-
-        async def route_handler(request: Request) -> Response:
-            legacy_header = b"x-caster-session-id"
-            neutral_header = b"x-session-id"
-            header_names = {name.lower() for name, _ in request.scope["headers"]}
-            if legacy_header not in header_names:
-                for name, value in request.scope["headers"]:
-                    if name.lower() == neutral_header:
-                        request.scope["headers"].append((legacy_header, value))
-                        break
-            return await original_route_handler(request)
-
-        return route_handler
-
-
 @dataclass(frozen=True)
 class ToolRouteDeps:
     tool_executor: ToolExecutor
@@ -90,12 +69,10 @@ class ProgressTracker(Protocol):
 
 
 def add_tool_routes(app: FastAPI, dependency_provider: Callable[[], ToolRouteDeps]) -> None:
-    app.router.route_class = _LegacySessionHeaderCompatibilityRoute
-
     def get_dependencies() -> ToolRouteDeps:
         return dependency_provider()
 
-    tool_token_header = APIKeyHeader(name="x-caster-token", scheme_name="CasterToken", auto_error=False)
+    tool_token_header = APIKeyHeader(name="x-platform-token", scheme_name="PlatformToken", auto_error=False)
 
     @app.post(
         "/v1/tools/execute",
@@ -104,17 +81,15 @@ def add_tool_routes(app: FastAPI, dependency_provider: Callable[[], ToolRouteDep
     )
     async def execute_tool(
         payload: ToolExecuteRequestDTO,
-        request: Request,
         deps: ToolRouteDeps = Depends(get_dependencies),  # noqa: B008
         token_header: str | None = Security(tool_token_header),
-        session_id: UUID = Header(alias=CASTER_SESSION_ID_HEADER),  # noqa: B008
+        session_id: UUID = Header(alias=SESSION_ID_HEADER),  # noqa: B008
     ) -> ToolExecuteResponseDTO:
-        resolved_token_header = token_header or read_platform_token_header(request.headers)
-        if not resolved_token_header:
-            raise HTTPException(status_code=401, detail="missing x-caster-token header")
+        if not token_header:
+            raise HTTPException(status_code=401, detail="missing x-platform-token header")
         invocation = ToolInvocationRequest(
             session_id=session_id,
-            token=resolved_token_header,
+            token=token_header,
             tool=payload.tool,
             args=payload.args,
             kwargs=payload.kwargs,

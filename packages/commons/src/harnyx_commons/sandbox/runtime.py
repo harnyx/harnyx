@@ -19,7 +19,7 @@ DOCKER_BINARY: Final[str] = "/usr/bin/docker"
 class ContainerSecurity:
     """Security constraints for sandbox containers."""
 
-    user: str = "caster"
+    user: str = "harnyx"
     ulimits: tuple[str, ...] = ("nproc=128:128", "nofile=512:512")
     pids_limit: int = 128
     memory: str = "1g"

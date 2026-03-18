@@ -554,7 +554,7 @@ async def test_invoke_records_retriever_and_tool_child_observations(
                             id="call-1",
                             type="function",
                             name="search_repo",
-                            arguments='{"query":"caster"}',
+                            arguments='{"query":"harnyx"}',
                         ),
                     ),
                 ),
@@ -562,7 +562,7 @@ async def test_invoke_records_retriever_and_tool_child_observations(
             ),
         ),
         usage=LlmUsage(prompt_tokens=5, completion_tokens=2, total_tokens=7, web_search_calls=1),
-        metadata={"web_search_queries": ("caster subnet",), "source": "stub"},
+        metadata={"web_search_queries": ("harnyx subnet",), "source": "stub"},
         finish_reason="tool_calls",
     )
     provider = _StubProvider(response=response, provider_label=provider_label)

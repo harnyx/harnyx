@@ -1,11 +1,11 @@
 [project]
 name = "harnyx-commons"
 version = "0.1.0"
-description = "Shared SDK utilities and sandbox harness for the Caster Subnet."
+description = "Shared SDK utilities and sandbox harness for the Harnyx Subnet."
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
 authors = [
-  { name = "Caster Labs", email = "engineering@casterlabs.example" }
+  { name = "Harnyx Labs", email = "engineering@harnyx.example" }
 ]
 dependencies = [
   "harnyx-miner-sdk>=0.1.1",

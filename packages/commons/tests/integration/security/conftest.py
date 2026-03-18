@@ -22,7 +22,7 @@ DOCKER_CLI = os.getenv("DOCKER_CLI", "docker")
 DOCKER_BINARY = shutil.which(DOCKER_CLI) or DOCKER_CLI
 DOCKER_IMAGE_PATTERN = re.compile(r"^[\w./:-]+$")
 SECURITY_SANDBOX_IMAGE = os.getenv(
-    "CASTER_SECURITY_SANDBOX_IMAGE",
+    "SECURITY_SANDBOX_IMAGE",
     "local/harnyx-sandbox:0.1.0-dev",
 )
 
@@ -92,7 +92,7 @@ def sandbox(attacker_agent_path: Path):
         env={
             "SANDBOX_HOST": "0.0.0.0",  # noqa: S104 - container needs to bind all interfaces
             "SANDBOX_PORT": "8000",
-            "CASTER_AGENT_PATH": "/sandbox/agent.py",
+            "AGENT_PATH": "/sandbox/agent.py",
             "ENTRYPOINT_TIMEOUT_SECONDS": "5",
         },
         volumes=((str(attacker_agent_path), "/sandbox/agent.py", "ro"),),

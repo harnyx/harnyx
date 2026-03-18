@@ -20,8 +20,8 @@ import httpx
 
 from harnyx_commons.json_types import JsonValue
 from harnyx_commons.protocol_headers import (
-    CASTER_HOST_CONTAINER_URL_HEADER,
-    CASTER_SESSION_ID_HEADER,
+    HOST_CONTAINER_URL_HEADER,
+    SESSION_ID_HEADER,
 )
 from harnyx_commons.sandbox.client import SandboxClient
 from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager
@@ -72,8 +72,8 @@ class HttpSandboxClient(SandboxClient):
     ) -> Mapping[str, JsonValue]:
         headers: dict[str, str] = {
             self._token_header: token,
-            CASTER_SESSION_ID_HEADER: str(session_id),
-            CASTER_HOST_CONTAINER_URL_HEADER: self._host_container_url or "",
+            SESSION_ID_HEADER: str(session_id),
+            HOST_CONTAINER_URL_HEADER: self._host_container_url or "",
         }
         try:
             response = await self._client.post(
@@ -687,7 +687,7 @@ def _resolve_current_container_id_from_mountinfo() -> str | None:
 def _resolve_runtime_container_ip(*, docker_binary: str, network: str) -> str:
     container = os.getenv("HOSTNAME")
     if not container:
-        raise RuntimeError("HOSTNAME must be set to derive CASTER_HOST_CONTAINER_URL in containerized runs")
+        raise RuntimeError("HOSTNAME must be set to derive HOST_CONTAINER_URL in containerized runs")
     try:
         return resolve_container_ip(docker_binary=docker_binary, container=container, network=network)
     except RuntimeError as hostname_error:
@@ -719,7 +719,7 @@ def resolve_sandbox_host_container_url(
     *, docker_binary: str, sandbox_network: str | None, rpc_port: int
 ) -> str:
     if not sandbox_network:
-        raise RuntimeError("CASTER_SANDBOX_NETWORK must be configured to derive CASTER_HOST_CONTAINER_URL")
+        raise RuntimeError("SANDBOX_NETWORK must be configured to derive HOST_CONTAINER_URL")
 
     if os.getenv("KUBERNETES_SERVICE_HOST"):
         host = resolve_network_gateway(docker_binary=docker_binary, network=sandbox_network)

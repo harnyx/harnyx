@@ -72,7 +72,7 @@ def _response(*, postprocessed: object | None = None) -> LlmResponse:
                             id="call-1",
                             type="function",
                             name="search_repo",
-                            arguments='{"query":"caster"}',
+                            arguments='{"query":"harnyx"}',
                         ),
                     ),
                 ),
@@ -170,7 +170,7 @@ def test_build_generation_input_payload_preserves_tool_result_output_json() -> N
                     LlmInputToolResultPart(
                         tool_call_id="call-1",
                         name="search_repo",
-                        output_json='{"hits":[{"title":"Caster"}]}',
+                        output_json='{"hits":[{"title":"Harnyx"}]}',
                     ),
                 ),
             ),
@@ -190,7 +190,7 @@ def test_build_generation_input_payload_preserves_tool_result_output_json() -> N
                     "type": "input_tool_result",
                     "tool_call_id": "call-1",
                     "name": "search_repo",
-                    "output_json": '{"hits":[{"title":"Caster"}]}',
+                    "output_json": '{"hits":[{"title":"Harnyx"}]}',
                 }
             ],
         }
@@ -255,7 +255,7 @@ def test_build_generation_output_payload_is_concise() -> None:
         "tool_calls": [
             {
                 "name": "search_repo",
-                "arguments": {"query": "caster"},
+                "arguments": {"query": "harnyx"},
                 "output": None,
             }
         ],
@@ -294,7 +294,7 @@ def test_record_child_observation_best_effort_swallows_observation_exception(
     langfuse.record_child_observation_best_effort(
         as_type="tool",
         name="search_repo",
-        input_payload={"arguments": {"query": "caster"}},
+        input_payload={"arguments": {"query": "harnyx"}},
         output={"result": "ok"},
         usage=LlmUsage(prompt_tokens=1, completion_tokens=2, total_tokens=3),
         metadata={"provider": "openai"},
@@ -310,7 +310,7 @@ def test_record_child_observation_best_effort_swallows_client_error(monkeypatch:
     langfuse.record_child_observation_best_effort(
         as_type="tool",
         name="search_repo",
-        input_payload={"arguments": {"query": "caster"}},
+        input_payload={"arguments": {"query": "harnyx"}},
         output={"result": "ok"},
         usage=LlmUsage(prompt_tokens=1, completion_tokens=2, total_tokens=3),
         metadata={"provider": "openai"},

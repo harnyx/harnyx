@@ -48,7 +48,7 @@ class FakeResponse:
         class _FunctionCall:
             id = None
             name = "lookup"
-            args = {"query": "caster"}
+            args = {"query": "harnyx"}
 
         class _Part:
             text = "ok"
@@ -699,7 +699,7 @@ def test_vertex_verify_accepts_tool_call_only_choice() -> None:
                             id="tc-1",
                             type="function",
                             name="search_repo",
-                            arguments='{"query":"caster"}',
+                            arguments='{"query":"harnyx"}',
                         ),
                     ),
                 ),

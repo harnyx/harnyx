@@ -36,7 +36,7 @@ Edit `.env` and set at least:
 | `CHUTES_API_KEY` | API key for LLM calls |
 | `DESEARCH_API_KEY` | API key for search tools |
 
-The defaults in `.env.example` already target mainnet (`finney`) and netuid `67`. Validator sandbox execution defaults to `harnyx/harnyx-subnet-sandbox:finney`; set `CASTER_SANDBOX_IMAGE=harnyx/harnyx-subnet-sandbox:testnet` for staging/testnet, or use another explicit value only when you intentionally want to test or pin a different sandbox image.
+The defaults in `.env.example` already target mainnet (`finney`) and netuid `67`. Validator sandbox execution defaults to `harnyx/harnyx-subnet-sandbox:finney`; set `SANDBOX_IMAGE=harnyx/harnyx-subnet-sandbox:testnet` for staging/testnet, or use another explicit value only when you intentionally want to test or pin a different sandbox image.
 
 ### Wallet configuration
 
@@ -80,7 +80,7 @@ Look for:
 
 ### Auto-updates (Watchtower)
 
-Watchtower polls Docker Hub every 5 minutes and will pull/restart the validator when `CASTER_VALIDATOR_IMAGE` changes.
+Watchtower polls Docker Hub every 5 minutes and will pull/restart the validator when `VALIDATOR_IMAGE` changes.
 
 The stack is configured for a graceful restart window (default `30m`) so in-progress evaluations can finish before the container is restarted.
 

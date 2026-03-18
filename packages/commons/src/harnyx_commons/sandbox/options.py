@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
-DEFAULT_TOKEN_HEADER = "x-caster-token"  # noqa: S105
-HOST_CONTAINER_URL_HEADER = "x-caster-host-container-url"
+DEFAULT_TOKEN_HEADER = "x-platform-token"  # noqa: S105
+HOST_CONTAINER_URL_HEADER = "x-host-container-url"
 
 
 @dataclass(frozen=True)

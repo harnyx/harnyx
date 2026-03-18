@@ -4,11 +4,6 @@ requires-python = "==3.11.*"
 
 [manifest]
 members = [
-    "caster-commons",
-    "caster-miner",
-    "caster-miner-sdk",
-    "caster-sandbox",
-    "caster-validator",
     "harnyx-commons",
     "harnyx-miner",
     "harnyx-miner-sdk",
@@ -262,61 +257,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/bc/1d/ede8680603f601688
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2c/fc/1d7b80d0eb7b714984ce40efc78859c022cd930e402f599d8ca9e39c78a4/cachetools-6.2.4-py3-none-any.whl", hash = "sha256:69a7a52634fed8b8bf6e24a050fb60bff1c9bd8f6d24572b99c32d4e71e62a51", size = 11551, upload-time = "2025-12-15T18:24:52.332Z" },
 ]
-
-[[package]]
-name = "caster-commons"
-version = "0.1.0"
-source = { editable = "compat/caster-commons" }
-dependencies = [
-    { name = "harnyx-commons" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "harnyx-commons", editable = "packages/commons" }]
-
-[[package]]
-name = "caster-miner"
-version = "0.1.0"
-source = { editable = "compat/caster-miner" }
-dependencies = [
-    { name = "harnyx-miner" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "harnyx-miner", editable = "miner" }]
-
-[[package]]
-name = "caster-miner-sdk"
-version = "0.1.1"
-source = { editable = "compat/caster-miner-sdk" }
-dependencies = [
-    { name = "harnyx-miner-sdk" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "harnyx-miner-sdk", editable = "packages/miner-sdk" }]
-
-[[package]]
-name = "caster-sandbox"
-version = "0.1.0"
-source = { editable = "compat/caster-sandbox" }
-dependencies = [
-    { name = "harnyx-sandbox" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "harnyx-sandbox", editable = "sandbox" }]
-
-[[package]]
-name = "caster-validator"
-version = "0.1.0"
-source = { editable = "compat/caster-validator" }
-dependencies = [
-    { name = "harnyx-validator" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "harnyx-validator", editable = "validator" }]
 
 [[package]]
 name = "certifi"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import AliasChoices, Field
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SandboxPullPolicy = Literal["always", "missing", "never"]
@@ -25,15 +25,15 @@ class SandboxSettings(BaseSettings):
 
     sandbox_image: str = Field(
         ...,
-        validation_alias=AliasChoices("CASTER_SANDBOX_IMAGE", "SANDBOX_IMAGE"),
+        alias="SANDBOX_IMAGE",
     )
     sandbox_network: str | None = Field(
-        default="caster-sandbox-net",
-        validation_alias=AliasChoices("CASTER_SANDBOX_NETWORK", "SANDBOX_NETWORK"),
+        default="harnyx-sandbox-net",
+        alias="SANDBOX_NETWORK",
     )
     sandbox_pull_policy: SandboxPullPolicy = Field(
         default="always",
-        validation_alias=AliasChoices("CASTER_SANDBOX_PULL_POLICY", "SANDBOX_PULL_POLICY"),
+        alias="SANDBOX_PULL_POLICY",
     )
 
 

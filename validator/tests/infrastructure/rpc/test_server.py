@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
-from harnyx_commons.protocol_headers import CASTER_SESSION_ID_HEADER, SESSION_ID_HEADER
+from harnyx_commons.protocol_headers import SESSION_ID_HEADER
 from harnyx_commons.tools.executor import ToolExecutor
 from harnyx_commons.tools.token_semaphore import TokenSemaphore
 from harnyx_commons.tools.usage_tracker import UsageTracker
@@ -119,8 +119,8 @@ def test_execute_tool_endpoint_records_receipt() -> None:
             "kwargs": {"query": "demo"},
         },
         headers={
-            "x-caster-token": DEMO_SESSION_TOKEN,
-            CASTER_SESSION_ID_HEADER: str(provider.session.session_id),
+            "x-platform-token": DEMO_SESSION_TOKEN,
+            SESSION_ID_HEADER: str(provider.session.session_id),
         },
     )
 
@@ -180,8 +180,8 @@ def test_execute_tool_endpoint_releases_semaphore_on_failure() -> None:
             "kwargs": {"query": "demo"},
         },
         headers={
-            "x-caster-token": DEMO_SESSION_TOKEN,
-            CASTER_SESSION_ID_HEADER: str(provider.session.session_id),
+            "x-platform-token": DEMO_SESSION_TOKEN,
+            SESSION_ID_HEADER: str(provider.session.session_id),
         },
     )
 
@@ -205,8 +205,8 @@ def test_execute_tool_endpoint_rejects_when_concurrency_limit_exceeded() -> None
                 "kwargs": {"query": "demo"},
             },
             headers={
-                "x-caster-token": DEMO_SESSION_TOKEN,
-                CASTER_SESSION_ID_HEADER: str(provider.session.session_id),
+                "x-platform-token": DEMO_SESSION_TOKEN,
+                SESSION_ID_HEADER: str(provider.session.session_id),
             },
         )
     finally:

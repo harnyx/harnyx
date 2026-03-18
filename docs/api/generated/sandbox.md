@@ -15,7 +15,7 @@ Generated from FastAPI OpenAPI.
 
 Invoke a registered entrypoint by name in a sandboxed worker process.
 
-**Auth**: Tool token (`x-caster-token` header)
+**Auth**: Tool token (`x-platform-token` header)
 
 **Parameters**
 | Param | In | Req | Notes |

@@ -233,10 +233,10 @@ async def test_runtime_invoker_routes_search_payload() -> None:
         allowed_models=ALLOWED_TOOL_MODELS,
     )
 
-    result = await _invoke(invoker, "search_web", kwargs={"query": "caster subnet"})
+    result = await _invoke(invoker, "search_web", kwargs={"query": "harnyx subnet"})
 
     assert result == {"data": []}
-    assert stub_desearch.calls == [("web", {"query": "caster subnet"})]
+    assert stub_desearch.calls == [("web", {"query": "harnyx subnet"})]
 
 
 async def test_runtime_invoker_rejects_prompt_for_search_web() -> None:
@@ -248,7 +248,7 @@ async def test_runtime_invoker_rejects_prompt_for_search_web() -> None:
     )
 
     with pytest.raises(ValidationError) as excinfo:
-        await _invoke(invoker, "search_web", kwargs={"prompt": "caster subnet"})
+        await _invoke(invoker, "search_web", kwargs={"prompt": "harnyx subnet"})
     assert any(
         err.get("type") == "extra_forbidden" and err.get("loc") == ("prompt",)
         for err in excinfo.value.errors()
@@ -263,10 +263,10 @@ async def test_runtime_invoker_routes_search_x() -> None:
         allowed_models=ALLOWED_TOOL_MODELS,
     )
 
-    result = await _invoke(invoker, "search_x", kwargs={"query": "#caster"})
+    result = await _invoke(invoker, "search_x", kwargs={"query": "#harnyx"})
 
     assert result == {"data": []}
-    assert stub_desearch.calls[-1] == ("twitter", {"query": "#caster"})
+    assert stub_desearch.calls[-1] == ("twitter", {"query": "#harnyx"})
 
 
 async def test_runtime_invoker_rejects_prompt_for_search_x() -> None:
@@ -278,7 +278,7 @@ async def test_runtime_invoker_rejects_prompt_for_search_x() -> None:
     )
 
     with pytest.raises(ValidationError) as excinfo:
-        await _invoke(invoker, "search_x", kwargs={"prompt": "#caster"})
+        await _invoke(invoker, "search_x", kwargs={"prompt": "#harnyx"})
     assert any(
         err.get("type") == "extra_forbidden" and err.get("loc") == ("prompt",)
         for err in excinfo.value.errors()
@@ -296,7 +296,7 @@ async def test_runtime_invoker_routes_search_ai() -> None:
     result = await _invoke(
         invoker,
         "search_ai",
-        kwargs={"prompt": "caster subnet", "tools": ["youtube"], "count": 1},
+        kwargs={"prompt": "harnyx subnet", "tools": ["youtube"], "count": 1},
     )
 
     assert result["data"][0]["url"] == "https://example.com"
@@ -305,7 +305,7 @@ async def test_runtime_invoker_routes_search_ai() -> None:
     assert result["data"][0]["source"] == "youtube"
 
     assert stub_desearch.calls[-1][0] == "ai_search"
-    assert stub_desearch.calls[-1][1]["prompt"] == "caster subnet"
+    assert stub_desearch.calls[-1][1]["prompt"] == "harnyx subnet"
     assert stub_desearch.calls[-1][1]["tools"] == ["youtube"]
     assert stub_desearch.calls[-1][1]["model"] == "HORIZON"
     assert stub_desearch.calls[-1][1]["result_type"] == "LINKS_WITH_FINAL_SUMMARY"
@@ -340,7 +340,7 @@ async def test_runtime_invoker_routes_search_ai_docs_response() -> None:
     result = await _invoke(
         invoker,
         "search_ai",
-        kwargs={"prompt": "caster subnet", "tools": ["web", "twitter"], "count": 2},
+        kwargs={"prompt": "harnyx subnet", "tools": ["web", "twitter"], "count": 2},
     )
 
     assert result["data"][0]["url"] == "https://example.com"
@@ -464,7 +464,7 @@ async def test_runtime_invoker_rejects_missing_clients() -> None:
             kwargs={
                 "repo_url": "https://github.com/org/repo",
                 "commit_sha": "a" * 40,
-                "query": "caster",
+                "query": "harnyx",
             },
         )
 

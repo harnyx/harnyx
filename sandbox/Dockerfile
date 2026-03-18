@@ -3,8 +3,8 @@ FROM python:3.11-slim AS base
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-RUN useradd --create-home --uid 1000 caster
-RUN mkdir -p /sandbox && chown caster:caster /sandbox
+RUN useradd --create-home --uid 1000 harnyx
+RUN mkdir -p /sandbox && chown harnyx:harnyx /sandbox
 
 WORKDIR /workspace
 
@@ -14,7 +14,7 @@ COPY sandbox ./sandbox
 RUN pip install --no-cache-dir --upgrade pip \
   && pip install --no-cache-dir ./packages/miner-sdk ./sandbox
 
-USER caster
+USER harnyx
 
 ENTRYPOINT ["harnyx-sandbox"]
 CMD ["--serve"]

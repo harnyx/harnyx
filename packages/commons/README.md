@@ -1,6 +1,6 @@
 # harnyx-commons
 
-Shared utilities for the Caster Subnet workspace.
+Shared utilities for the Harnyx Subnet workspace.
 
 This package provides:
 

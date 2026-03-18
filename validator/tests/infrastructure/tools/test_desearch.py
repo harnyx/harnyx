@@ -36,12 +36,12 @@ async def test_desearch_client_posts_payload() -> None:
         client=client,
     )
 
-    request = SearchWebSearchRequest(query="caster subnet", num=5)
+    request = SearchWebSearchRequest(query="harnyx subnet", num=5)
     result = await adapter.search_links_web(request)
 
     assert result.data == []
     assert captured["method"] == "GET"
-    assert captured["url"] == "https://api.desearch.ai/web?query=caster+subnet&num=5"
+    assert captured["url"] == "https://api.desearch.ai/web?query=harnyx+subnet&num=5"
     assert captured["headers"]["authorization"] == "test-key"
 
 
@@ -56,7 +56,7 @@ async def test_desearch_client_raises_on_error_status() -> None:
     adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="test-key", client=client)
 
     with pytest.raises(RuntimeError):
-        await adapter.search_links_web(SearchWebSearchRequest(query="caster subnet"))
+        await adapter.search_links_web(SearchWebSearchRequest(query="harnyx subnet"))
 
 
 async def test_desearch_client_twitter_search() -> None:
@@ -74,11 +74,11 @@ async def test_desearch_client_twitter_search() -> None:
     )
     adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
 
-    response = await adapter.search_links_twitter(SearchXSearchRequest(query="#caster", count=3))
+    response = await adapter.search_links_twitter(SearchXSearchRequest(query="#harnyx", count=3))
 
     assert response.data[0].text == "hello"
     assert captured["method"] == "GET"
-    assert captured["url"] == "https://api.desearch.ai/twitter?query=%23caster&count=3"
+    assert captured["url"] == "https://api.desearch.ai/twitter?query=%23harnyx&count=3"
 
 
 async def test_desearch_client_ai_search_twitter_posts_posts_payload() -> None:
@@ -88,7 +88,7 @@ async def test_desearch_client_ai_search_twitter_posts_posts_payload() -> None:
         if request.url.path == "/desearch/ai/search":
             assert request.method == "POST"
             payload = json.loads(request.content)
-            assert payload["prompt"] == "caster subnet"
+            assert payload["prompt"] == "harnyx subnet"
             assert payload["tools"] == ["twitter"]
             assert payload["result_type"] == "LINKS_WITH_FINAL_SUMMARY"
             assert payload["system_message"] == ""
@@ -126,7 +126,7 @@ async def test_desearch_client_ai_search_twitter_posts_posts_payload() -> None:
     adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
 
     response = await adapter.ai_search_twitter_posts(
-        prompt="caster subnet",
+        prompt="harnyx subnet",
         count=300,
         date_filter=DeSearchAiDateFilter.PAST_24_HOURS,
     )

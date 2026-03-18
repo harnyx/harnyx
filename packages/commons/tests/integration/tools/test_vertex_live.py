@@ -38,7 +38,7 @@ async def test_vertex_maas_completion_live() -> None:
                     role="user",
                     content=(
                         LlmMessageContentPart.input_text(
-                            "Respond with a short sentence describing the Caster validator runtime."
+                            "Respond with a short sentence describing the Harnyx validator runtime."
                         ),
                     ),
                 ),

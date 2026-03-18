@@ -1,14 +1,14 @@
 services:
   validator:
-    image: "${CASTER_VALIDATOR_IMAGE:-harnyx/harnyx-subnet-validator:latest}"
+    image: "${VALIDATOR_IMAGE:-harnyx/harnyx-subnet-validator:latest}"
     env_file:
       - .env
     environment:
-      CASTER_STATE_VOLUME_NAME: "${CASTER_STATE_VOLUME_NAME:-harnyx-validator-state}"
+      STATE_VOLUME_NAME: "${STATE_VOLUME_NAME:-harnyx-validator-state}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ${CASTER_WALLETS_HOST_DIR:-~/.bittensor/wallets}:/root/.bittensor/wallets
-      - ${CASTER_STATE_VOLUME_NAME:-harnyx-validator-state}:/workspace/.harnyx_state
+      - ${WALLETS_HOST_DIR:-~/.bittensor/wallets}:/root/.bittensor/wallets
+      - ${STATE_VOLUME_NAME:-harnyx-validator-state}:/workspace/.harnyx_state
     ports:
       - "${VALIDATOR_HOST_PORT:-8100}:8100"
     labels:
@@ -19,18 +19,18 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
-    stop_grace_period: "${CASTER_STOP_GRACE:-30m}"
+    stop_grace_period: "${STOP_GRACE:-30m}"
 
   watchtower:
     image: containrrr/watchtower
     command:
       - --label-enable
       - --api-version
-      - "${CASTER_WATCHTOWER_DOCKER_API_VERSION:-1.25}"
+      - "${WATCHTOWER_DOCKER_API_VERSION:-1.25}"
       - --interval
-      - "${CASTER_WATCHTOWER_INTERVAL:-300}"
+      - "${WATCHTOWER_INTERVAL:-300}"
       - --stop-timeout
-      - "${CASTER_STOP_GRACE:-30m}"
+      - "${STOP_GRACE:-30m}"
       - --cleanup
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

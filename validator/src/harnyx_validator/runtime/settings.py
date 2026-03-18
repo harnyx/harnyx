@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from pydantic import AliasChoices, Field
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from harnyx_commons.config.llm import LlmSettings
@@ -29,12 +29,12 @@ class _ValidatorSandboxEnv(BaseSettings):
 
     sandbox_image: str = Field(
         default=_DEFAULT_VALIDATOR_SANDBOX_IMAGE,
-        alias="CASTER_SANDBOX_IMAGE",
+        alias="SANDBOX_IMAGE",
     )
-    sandbox_network: str | None = Field(default="harnyx-sandbox-net", alias="CASTER_SANDBOX_NETWORK")
+    sandbox_network: str | None = Field(default="harnyx-sandbox-net", alias="SANDBOX_NETWORK")
     sandbox_pull_policy: SandboxPullPolicy = Field(
         default="always",
-        alias="CASTER_SANDBOX_PULL_POLICY",
+        alias="SANDBOX_PULL_POLICY",
     )
 
 
@@ -65,11 +65,11 @@ class Settings(BaseSettings):
     # --- Server ---
     rpc_listen_host: str = Field(
         default="0.0.0.0",  # noqa: S104
-        validation_alias=AliasChoices("CASTER_VALIDATOR_HOST", "VALIDATOR_HOST"),
+        alias="VALIDATOR_HOST",
     )
     rpc_port: int = Field(
         default=8100,
-        validation_alias=AliasChoices("CASTER_VALIDATOR_PORT", "VALIDATOR_PORT"),
+        alias="VALIDATOR_PORT",
     )
 
     # --- Component settings ---

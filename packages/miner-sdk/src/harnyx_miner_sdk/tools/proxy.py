@@ -9,7 +9,7 @@ from typing import cast
 import httpx
 
 from harnyx_miner_sdk.json_types import JsonValue
-from harnyx_miner_sdk.sandbox_headers import CASTER_SESSION_ID_HEADER
+from harnyx_miner_sdk.sandbox_headers import PLATFORM_TOKEN_HEADER, SESSION_ID_HEADER
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ class ToolInvocationError(RuntimeError):
     """Raised when a tool invocation fails."""
 
 
-DEFAULT_TOKEN_HEADER = "x-caster-token"  # noqa: S105
+DEFAULT_TOKEN_HEADER = PLATFORM_TOKEN_HEADER
 
 
 class ToolProxy:
@@ -62,7 +62,7 @@ class ToolProxy:
         }
         headers = {
             DEFAULT_TOKEN_HEADER: self._token,
-            CASTER_SESSION_ID_HEADER: self._session_id,
+            SESSION_ID_HEADER: self._session_id,
         }
         endpoint = f"{self._client.base_url}{self._endpoint}"
         logger.info("[ToolProxy] POST %s %s", endpoint, _describe_payload(payload))

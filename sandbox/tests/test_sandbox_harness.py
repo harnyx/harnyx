@@ -81,7 +81,7 @@ def test_harness_invokes_entrypoint_and_closes_tools() -> None:
             "payload": {"message": "hello"},
             "context": {"run_id": "abc"},
         },
-        headers={"x-caster-token": "token", "x-caster-session-id": "session-1"},
+        headers={"x-platform-token": "token", "x-session-id": "session-1"},
     )
 
     assert response.status_code == 200

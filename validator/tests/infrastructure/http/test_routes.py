@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
-from harnyx_commons.protocol_headers import CASTER_SESSION_ID_HEADER, SESSION_ID_HEADER
+from harnyx_commons.protocol_headers import SESSION_ID_HEADER
 from harnyx_commons.tools.executor import ToolExecutor
 from harnyx_commons.tools.token_semaphore import TokenSemaphore
 from harnyx_commons.tools.usage_tracker import UsageTracker
@@ -119,8 +119,8 @@ def test_execute_tool_endpoint_records_receipt() -> None:
             "kwargs": {"query": "demo"},
         },
         headers={
-            "x-caster-token": DEMO_SESSION_TOKEN,
-            CASTER_SESSION_ID_HEADER: str(provider.session.session_id),
+            "x-platform-token": DEMO_SESSION_TOKEN,
+            SESSION_ID_HEADER: str(provider.session.session_id),
         },
     )
 
@@ -180,8 +180,8 @@ def test_execute_tool_endpoint_releases_semaphore_on_failure() -> None:
             "kwargs": {"query": "demo"},
         },
         headers={
-            "x-caster-token": DEMO_SESSION_TOKEN,
-            CASTER_SESSION_ID_HEADER: str(provider.session.session_id),
+            "x-platform-token": DEMO_SESSION_TOKEN,
+            SESSION_ID_HEADER: str(provider.session.session_id),
         },
     )
 
@@ -203,8 +203,8 @@ def test_execute_tool_endpoint_supports_tooling_info() -> None:
             "kwargs": {},
         },
         headers={
-            "x-caster-token": DEMO_SESSION_TOKEN,
-            CASTER_SESSION_ID_HEADER: str(provider.session.session_id),
+            "x-platform-token": DEMO_SESSION_TOKEN,
+            SESSION_ID_HEADER: str(provider.session.session_id),
         },
     )
 
@@ -235,8 +235,8 @@ def test_execute_tool_endpoint_rejects_when_concurrency_limit_exceeded() -> None
                 "kwargs": {"query": "demo"},
             },
             headers={
-                "x-caster-token": DEMO_SESSION_TOKEN,
-                CASTER_SESSION_ID_HEADER: str(provider.session.session_id),
+                "x-platform-token": DEMO_SESSION_TOKEN,
+                SESSION_ID_HEADER: str(provider.session.session_id),
             },
         )
     finally:
@@ -262,11 +262,11 @@ def test_execute_tool_endpoint_rejects_missing_token_header() -> None:
             "args": ["demo"],
             "kwargs": {"query": "demo"},
         },
-        headers={CASTER_SESSION_ID_HEADER: str(provider.session.session_id)},
+        headers={SESSION_ID_HEADER: str(provider.session.session_id)},
     )
 
     assert response.status_code == 401
-    assert response.json() == {"detail": "missing x-caster-token header"}
+    assert response.json() == {"detail": "missing x-platform-token header"}
 
 
 def test_execute_tool_endpoint_rejects_missing_session_header() -> None:
@@ -281,7 +281,7 @@ def test_execute_tool_endpoint_rejects_missing_session_header() -> None:
             "args": ["demo"],
             "kwargs": {"query": "demo"},
         },
-        headers={"x-caster-token": DEMO_SESSION_TOKEN},
+        headers={"x-platform-token": DEMO_SESSION_TOKEN},
     )
 
     assert response.status_code == 422
@@ -300,8 +300,8 @@ def test_execute_tool_endpoint_rejects_malformed_session_header() -> None:
             "kwargs": {"query": "demo"},
         },
         headers={
-            "x-caster-token": DEMO_SESSION_TOKEN,
-            CASTER_SESSION_ID_HEADER: "not-a-uuid",
+            "x-platform-token": DEMO_SESSION_TOKEN,
+            SESSION_ID_HEADER: "not-a-uuid",
         },
     )
 
@@ -322,24 +322,24 @@ def test_execute_tool_endpoint_rejects_legacy_body_session_id_field() -> None:
             "kwargs": {"query": "demo"},
         },
         headers={
-            "x-caster-token": DEMO_SESSION_TOKEN,
-            CASTER_SESSION_ID_HEADER: str(provider.session.session_id),
+            "x-platform-token": DEMO_SESSION_TOKEN,
+            SESSION_ID_HEADER: str(provider.session.session_id),
         },
     )
 
     assert response.status_code == 422
 
 
-def test_execute_tool_openapi_declares_caster_token_security() -> None:
+def test_execute_tool_openapi_declares_platform_token_security() -> None:
     provider = DemoDependencyProvider()
     app = create_test_app(provider)
 
     operation = app.openapi()["paths"]["/v1/tools/execute"]["post"]
     security = operation["security"]
     parameters = operation["parameters"]
-    assert {"CasterToken": []} in security
+    assert {"PlatformToken": []} in security
     assert any(
-        parameter.get("name") == CASTER_SESSION_ID_HEADER
+        parameter.get("name") == SESSION_ID_HEADER
         and parameter.get("in") == "header"
         and parameter.get("required") is True
         and parameter.get("schema", {}).get("format") == "uuid"

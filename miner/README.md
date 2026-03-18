@@ -1,6 +1,6 @@
 # Miner Guide
 
-This directory contains the miner-facing CLI tools for the Caster Subnet.
+This directory contains the miner-facing CLI tools for the Harnyx Subnet.
 
 ## How it fits together
 

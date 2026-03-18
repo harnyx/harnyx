@@ -15,7 +15,7 @@ This package contains the **sandbox runtime** — the FastAPI server that valida
 ```
   Validator
       │
-      │ starts container from castersubnet/caster-subnet-sandbox image
+      │ starts container from harnyx/harnyx-subnet-sandbox image
       ▼
   ┌─────────────────────────────────┐
   │  sandbox/                       │  ◀── this package
@@ -34,10 +34,10 @@ This package contains the **sandbox runtime** — the FastAPI server that valida
 From the repo root:
 
 ```bash
-docker build -f sandbox/Dockerfile -t castersubnet/caster-subnet-sandbox:local .
+docker build -f sandbox/Dockerfile -t harnyx/harnyx-subnet-sandbox:local .
 ```
 
-This builds the `castersubnet/caster-subnet-sandbox:local` Docker image using `sandbox/Dockerfile`.
+This builds the `harnyx/harnyx-subnet-sandbox:local` Docker image using `sandbox/Dockerfile`.
 
 ## Running locally (development)
 

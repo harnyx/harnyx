@@ -73,7 +73,7 @@ def submission_window_index(now_block: int, min_blocks: int) -> int:
     return max(0, now_block) // min_blocks
 
 
-def commitment_marker(uid: int, epoch: int, *, prefix: str = "caster:weights:v1") -> str:
+def commitment_marker(uid: int, epoch: int, *, prefix: str = "harnyx:weights:v1") -> str:
     """Build the canonical commitment payload for ``uid`` and ``epoch``."""
 
     return f"{prefix}:uid={uid}:epoch={epoch}"

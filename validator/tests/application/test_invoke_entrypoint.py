@@ -89,7 +89,7 @@ async def test_invoke_entrypoint_calls_query_with_query_payload() -> None:
             session_id=session_id,
             token=token,
             uid=42,
-            query=Query(text="caster subnet"),
+            query=Query(text="harnyx subnet"),
         ),
     )
 
@@ -97,7 +97,7 @@ async def test_invoke_entrypoint_calls_query_with_query_payload() -> None:
     assert sandbox.invocations == [
         (
             "query",
-            {"text": "caster subnet"},
+            {"text": "harnyx subnet"},
             {},
             token,
             session_id,

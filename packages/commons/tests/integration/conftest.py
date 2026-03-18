@@ -26,7 +26,7 @@ from harnyx_commons.sandbox.state import DEFAULT_STATE_DIR
 
 _DOCKER_CLI = os.getenv("DOCKER_CLI", "docker")
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_DEFAULT_IMAGE = os.getenv("CASTER_SANDBOX_IMAGE", "local/harnyx-sandbox:0.1.0-dev")
+_DEFAULT_IMAGE = os.getenv("SANDBOX_IMAGE", "local/harnyx-sandbox:0.1.0-dev")
 
 
 def _docker_binary() -> str:
@@ -109,7 +109,7 @@ def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
             env={
                 "SANDBOX_HOST": "0.0.0.0",  # noqa: S104 - inside container
                 "SANDBOX_PORT": "8000",
-                "CASTER_AGENT_PATH": artifact.container_path,
+                "AGENT_PATH": artifact.container_path,
             },
             volumes=((str(state_dir), DEFAULT_STATE_DIR, "ro"),),
             wait_for_healthz=True,

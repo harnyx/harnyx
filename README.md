@@ -1,8 +1,8 @@
-# Caster Subnet
+# Harnyx Subnet
 
 **Consensus made scalable.**
 
-Caster Subnet is a Bittensor subnet that evaluates generic query-answering scripts by running miner code in validator sandboxes. Validators compare miner responses against reference answers, aggregate scores, and submit weights on-chain.
+Harnyx Subnet is a Bittensor subnet that evaluates generic query-answering scripts by running miner code in validator sandboxes. Validators compare miner responses against reference answers, aggregate scores, and submit weights on-chain.
 
 ## Start here
 
@@ -18,7 +18,7 @@ uv sync --all-packages --dev
 
 ## How evaluation works (roles + flow)
 
-Caster rewards the best miner scripts by having validators run standardized query tasks against them, aggregating scores, and assigning emissions to one sticky current champion.
+Harnyx rewards the best miner scripts by having validators run standardized query tasks against them, aggregating scores, and assigning emissions to one sticky current champion.
 
 A **task** is one generic query plus one reference answer.
 
@@ -29,7 +29,7 @@ Miners implement the `query` entrypoint. Validators call it with this payload:
 
 ```json
 {
-  "text": "Caster Subnet validators manage sandboxed miners."
+  "text": "Harnyx Subnet validators manage sandboxed miners."
 }
 ```
 

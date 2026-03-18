@@ -8,7 +8,7 @@ from harnyx_sandbox.tools.proxy import ToolInvocationError, ToolProxy
 
 from harnyx_miner_sdk._internal.tool_invoker import bind_tool_invoker
 from harnyx_miner_sdk.api import LlmChatResult, llm_chat, search_ai, search_web
-from harnyx_miner_sdk.sandbox_headers import CASTER_SESSION_ID_HEADER
+from harnyx_miner_sdk.sandbox_headers import SESSION_ID_HEADER
 
 TEST_TOKEN = "token-123"  # noqa: S105
 ERROR_TOKEN = "bad-token"  # noqa: S105
@@ -45,8 +45,8 @@ async def test_tool_proxy_invokes_endpoint_with_token() -> None:
         "args": ["query"],
         "kwargs": {"foo": "bar"},
     }
-    assert captured["headers"]["x-caster-token"] == "token-123"
-    assert captured["headers"][CASTER_SESSION_ID_HEADER] == SESSION_ID
+    assert captured["headers"]["x-platform-token"] == "token-123"
+    assert captured["headers"][SESSION_ID_HEADER] == SESSION_ID
 
 
 async def test_tool_proxy_raises_on_http_error() -> None:
@@ -103,7 +103,7 @@ async def test_search_web_helper_invokes_tool_proxy() -> None:
     )
     try:
         with bind_tool_invoker(proxy):
-            result = await search_web("caster subnet", num=3)
+            result = await search_web("harnyx subnet", num=3)
     finally:
         await proxy.aclose()
 
@@ -112,7 +112,7 @@ async def test_search_web_helper_invokes_tool_proxy() -> None:
     assert result.results[0].url == "https://example.com"
     payload = captured["payload"]
     assert payload["tool"] == "search_web"
-    assert payload["kwargs"] == {"query": "caster subnet", "num": 3}
+    assert payload["kwargs"] == {"query": "harnyx subnet", "num": 3}
 
 
 async def test_search_ai_helper_invokes_tool_proxy() -> None:
@@ -152,7 +152,7 @@ async def test_search_ai_helper_invokes_tool_proxy() -> None:
     )
     try:
         with bind_tool_invoker(proxy):
-            result = await search_ai("caster subnet", tools=("web",), count=3)
+            result = await search_ai("harnyx subnet", tools=("web",), count=3)
     finally:
         await proxy.aclose()
 
@@ -162,7 +162,7 @@ async def test_search_ai_helper_invokes_tool_proxy() -> None:
 
     payload = captured["payload"]
     assert payload["tool"] == "search_ai"
-    assert payload["kwargs"]["prompt"] == "caster subnet"
+    assert payload["kwargs"]["prompt"] == "harnyx subnet"
     assert payload["kwargs"]["tools"] == ["web"]
     assert payload["kwargs"]["count"] == 3
 

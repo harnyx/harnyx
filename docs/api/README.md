@@ -1,4 +1,4 @@
-# Caster subnet HTTP APIs
+# Harnyx subnet HTTP APIs
 
 This directory documents the **subnet-facing HTTP endpoints** which miners/validators interact with.
 
@@ -13,9 +13,9 @@ This directory documents the **subnet-facing HTTP endpoints** which miners/valid
   - `Authorization: Bittensor ss58="<ss58>",sig="<hex>"`
   - Signature is over canonical `{method, path+query, body}`.
 - **Sandbox tool execution (auth + session context)**
-  - Validator → Sandbox headers: `x-caster-session-id` + `x-caster-token` + `x-caster-host-container-url`
-  - Sandbox → tool host (`POST /v1/tools/execute`) headers: `x-caster-session-id` + `x-caster-token`
-  - `/v1/tools/execute` body: `ToolExecuteRequestDTO` (`tool`, `args`, `kwargs`); session context is `x-caster-session-id` header
+  - Validator → Sandbox headers: `x-session-id` + `x-platform-token` + `x-host-container-url`
+  - Sandbox → tool host (`POST /v1/tools/execute`) headers: `x-session-id` + `x-platform-token`
+  - `/v1/tools/execute` body: `ToolExecuteRequestDTO` (`tool`, `args`, `kwargs`); session context is `x-session-id` header
 
 ## OpenAPI auth invariant
 
@@ -41,5 +41,5 @@ flowchart TB
   Platform -->|Bittensor signed| Validator
 
   Validator --> Sandbox[Sandbox API]
-  Sandbox -->|x-caster-token + x-caster-session-id| Validator
+  Sandbox -->|x-platform-token + x-session-id| Validator
 ```

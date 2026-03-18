@@ -1,4 +1,4 @@
-# Caster API flows (sequence diagrams)
+# Harnyx API flows (sequence diagrams)
 
 All Mermaid **sequence diagrams** live here (one document). For request/response shapes, use the generated endpoint references:
 - Platform: [generated/platform.md](generated/platform.md)
@@ -23,8 +23,8 @@ These diagrams are intentionally **linear** (no `alt` / `par` / `loop`) to keep 
 | Domain | Flow | Goal | Actors | Auth / Context |
 |--------|------|------|--------|------|
 | Subnet runtime | Miner script upload | upload script artifact | Miner ↔ Platform | `Authorization: Bittensor ...` |
-| Subnet runtime | Miner-task batch | forward batch + run sandbox + poll progress | Platform ↔ Validator ↔ Sandbox | `Authorization: Bittensor ...` + `x-caster-token` + `x-caster-session-id` + `x-caster-host-container-url` |
-| Subnet runtime | Tool execution | agent invokes host tools | Sandbox agent ↔ Tool host | `x-caster-token` + `x-caster-session-id` |
+| Subnet runtime | Miner-task batch | forward batch + run sandbox + poll progress | Platform ↔ Validator ↔ Sandbox | `Authorization: Bittensor ...` + `x-platform-token` + `x-session-id` + `x-host-container-url` |
+| Subnet runtime | Tool execution | agent invokes host tools | Sandbox agent ↔ Tool host | `x-platform-token` + `x-session-id` |
 | Subnet ops | Validator registration and weights | register API base URL; read weights | Validator ↔ Platform | `Authorization: Bittensor ...` |
 
 ---
@@ -64,7 +64,7 @@ sequenceDiagram
 |---|---|
 | **What’s happening** | Platform distributes a batch of `tasks` + `artifacts`; validator fetches artifacts; validator runs `query`; platform polls progress + status. |
 | **Actors** | Platform ↔ Validator API ↔ Sandbox |
-| **Auth** | Platform↔Validator is Bittensor-signed; Validator↔Sandbox uses `x-caster-token` + `x-caster-session-id` + `x-caster-host-container-url`. |
+| **Auth** | Platform↔Validator is Bittensor-signed; Validator↔Sandbox uses `x-platform-token` + `x-session-id` + `x-host-container-url`. |
 | **Happy path** | forward batch → fetch artifacts → run `query` → poll progress/status |
 
 #### 1) Platform forwards a batch to validators
@@ -106,10 +106,10 @@ sequenceDiagram
   participant S as Sandbox
   participant VA as Validator API (tools)
 
-  Note over V,S: Headers: x-caster-session-id + x-caster-token + x-caster-host-container-url
+  Note over V,S: Headers: x-session-id + x-platform-token + x-host-container-url
   V->>S: POST /entry/query<br/>{ text: "..." }
 
-  Note over S,VA: Headers: x-caster-session-id + x-caster-token
+  Note over S,VA: Headers: x-session-id + x-platform-token
   S->>VA: POST /v1/tools/execute<br/>ToolExecuteRequestDTO (0+ times)
   VA-->>S: 200 ToolExecuteResponseDTO
 
@@ -154,7 +154,7 @@ sequenceDiagram
 |---|---|
 | **What’s happening** | Sandboxed agent code invokes host-managed tools (search/LLM/etc.) over HTTP. |
 | **Actors** | Agent (in sandbox) ↔ Tool host (validator) |
-| **Auth** | `x-caster-token` + `x-caster-session-id` |
+| **Auth** | `x-platform-token` + `x-session-id` |
 | **Happy path** | `POST /v1/tools/execute` returns `ToolExecuteResponseDTO` |
 
 ```mermaid
@@ -162,7 +162,7 @@ sequenceDiagram
   participant A as Agent code (in sandbox)
   participant H as Tool host (validator)
 
-  Note over A,H: ToolProxy sends x-caster-token + x-caster-session-id headers
+  Note over A,H: ToolProxy sends x-platform-token + x-session-id headers
   A->>H: POST /v1/tools/execute<br/>ToolExecuteRequestDTO
   H-->>A: 200 ToolExecuteResponseDTO
 ```

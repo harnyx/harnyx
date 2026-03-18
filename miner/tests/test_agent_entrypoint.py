@@ -101,7 +101,7 @@ async def test_query_builds_supported_response(monkeypatch: pytest.MonkeyPatch) 
         fake_llm_chat,
     )
 
-    result = await agent.query(Query(text="Caster Subnet validators manage sandboxed miners."))
+    result = await agent.query(Query(text="Harnyx Subnet validators manage sandboxed miners."))
 
     assert "Evidence [1]" in result.text
     assert "Alpha evidence" in result.text

@@ -6,7 +6,7 @@ from harnyx_validator.runtime.settings import Settings
 def test_settings_defaults_sandbox_image_when_unset(monkeypatch) -> None:
     """Settings default the validator sandbox image when no override is supplied."""
     monkeypatch.setenv("TOOL_LLM_PROVIDER", "chutes")
-    monkeypatch.delenv("CASTER_SANDBOX_IMAGE", raising=False)
+    monkeypatch.delenv("SANDBOX_IMAGE", raising=False)
 
     settings = Settings.load()
 
@@ -17,7 +17,7 @@ def test_settings_defaults_sandbox_image_when_unset(monkeypatch) -> None:
 def test_settings_honor_sandbox_image_override(monkeypatch) -> None:
     """Settings still honor explicit validator sandbox image overrides."""
     monkeypatch.setenv("TOOL_LLM_PROVIDER", "chutes")
-    monkeypatch.setenv("CASTER_SANDBOX_IMAGE", "test-sandbox:latest")
+    monkeypatch.setenv("SANDBOX_IMAGE", "test-sandbox:latest")
 
     settings = Settings.load()
 
@@ -25,7 +25,7 @@ def test_settings_honor_sandbox_image_override(monkeypatch) -> None:
     assert settings.sandbox.sandbox_image == "test-sandbox:latest"
 
 
-def test_settings_accepts_neutral_validator_env_names(monkeypatch) -> None:
+def test_settings_accepts_validator_env_names(monkeypatch) -> None:
     monkeypatch.setenv("VALIDATOR_HOST", "127.0.0.1")
     monkeypatch.setenv("VALIDATOR_PORT", "9001")
 
@@ -35,9 +35,9 @@ def test_settings_accepts_neutral_validator_env_names(monkeypatch) -> None:
     assert settings.rpc_port == 9001
 
 
-def test_settings_ignores_empty_legacy_validator_env_names(monkeypatch) -> None:
-    monkeypatch.setenv("CASTER_VALIDATOR_HOST", "")
-    monkeypatch.setenv("CASTER_VALIDATOR_PORT", "")
+def test_settings_accepts_validator_env_names_when_empty_values_set_first(monkeypatch) -> None:
+    monkeypatch.setenv("VALIDATOR_HOST", "")
+    monkeypatch.setenv("VALIDATOR_PORT", "")
     monkeypatch.setenv("VALIDATOR_HOST", "127.0.0.1")
     monkeypatch.setenv("VALIDATOR_PORT", "9001")
 
@@ -51,8 +51,8 @@ def test_settings_honor_sandbox_image_override_from_dotenv(tmp_path, monkeypatch
     """Settings honor validator sandbox overrides from a local .env file."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("TOOL_LLM_PROVIDER", "chutes")
-    monkeypatch.delenv("CASTER_SANDBOX_IMAGE", raising=False)
-    (tmp_path / ".env").write_text("CASTER_SANDBOX_IMAGE=dotenv-sandbox:latest\n", encoding="utf-8")
+    monkeypatch.delenv("SANDBOX_IMAGE", raising=False)
+    (tmp_path / ".env").write_text("SANDBOX_IMAGE=dotenv-sandbox:latest\n", encoding="utf-8")
 
     settings = Settings.load()
 

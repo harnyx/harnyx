@@ -24,7 +24,7 @@ from harnyx_commons.sandbox.state import DEFAULT_STATE_DIR
 
 _DOCKER_CLI = os.getenv("DOCKER_CLI", "docker")
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_DEFAULT_IMAGE = os.getenv("CASTER_SANDBOX_IMAGE", "local/harnyx-sandbox:0.1.0-dev")
+_DEFAULT_IMAGE = os.getenv("SANDBOX_IMAGE", "local/harnyx-sandbox:0.1.0-dev")
 
 
 def _docker_binary() -> str:
@@ -76,7 +76,7 @@ def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
 
     manager = DockerSandboxManager(docker_binary=docker_bin, host="127.0.0.1")
     deployments = []
-    state_dir = Path(tempfile.mkdtemp(prefix="caster-validator-int-state-"))
+    state_dir = Path(tempfile.mkdtemp(prefix="harnyx-validator-int-state-"))
 
     def _start(agent_module: str):
         module_rel_path = Path(*agent_module.split(".")).with_suffix(".py")
@@ -105,7 +105,7 @@ def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
             env={
                 "SANDBOX_HOST": "0.0.0.0",  # noqa: S104 - container binding
                 "SANDBOX_PORT": "8000",
-                "CASTER_AGENT_PATH": artifact.container_path,
+                "AGENT_PATH": artifact.container_path,
             },
             volumes=((str(state_dir), DEFAULT_STATE_DIR, "ro"),),
             wait_for_healthz=True,

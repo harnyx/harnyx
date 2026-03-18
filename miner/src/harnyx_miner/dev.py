@@ -11,7 +11,7 @@ from harnyx_miner_sdk._internal.tool_invoker import bind_tool_invoker
 from harnyx_miner_sdk.decorators import clear_entrypoints, entrypoint_exists, get_entrypoint
 from harnyx_miner_sdk.query import Query, Response
 
-_DEFAULT_QUERY_TEXT = "Caster Subnet validators manage sandboxed miners."
+_DEFAULT_QUERY_TEXT = "Harnyx Subnet validators manage sandboxed miners."
 
 
 def _load_agent(agent_path: Path) -> None:

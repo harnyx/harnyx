@@ -159,12 +159,12 @@ class BatchExecutionPlanner:
                 f"harnyx-sandbox-{artifact.uid}-{artifact.artifact_id.hex[:8]}-{run_ctx.batch_id.hex[:8]}"
             )
             env = dict(run_ctx.base_env)
-            env["CASTER_MINER_UID"] = str(artifact.uid)
-            env["CASTER_EVALUATION_RUN_ID"] = str(run_ctx.batch_id)
+            env["MINER_UID"] = str(artifact.uid)
+            env["EVALUATION_RUN_ID"] = str(run_ctx.batch_id)
             resolved_artifact = agent_artifacts.get(artifact.artifact_id)
             if resolved_artifact is not None:
-                env["CASTER_AGENT_PATH"] = resolved_artifact.container_path
-            elif "CASTER_AGENT_PATH" not in env and "AGENT_PATH" not in env:
+                env["AGENT_PATH"] = resolved_artifact.container_path
+            elif "AGENT_PATH" not in env:
                 raise RuntimeError(f"agent path missing for artifact {artifact.uid}/{artifact.artifact_id}")
             return replace(
                 run_ctx.base_options,

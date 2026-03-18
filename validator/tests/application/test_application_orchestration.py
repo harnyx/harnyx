@@ -72,7 +72,7 @@ class EchoToolInvoker:
 
 class StubScoringService:
     async def score(self, *, task: MinerTask, response: Response) -> ScoreBreakdown:
-        assert task.query.text == "Caster Subnet demo"
+        assert task.query.text == "Harnyx Subnet demo"
         assert response.text == "A direct answer"
         return ScoreBreakdown(
             comparison_score=1.0,
@@ -101,7 +101,7 @@ async def test_application_use_cases_cooperate_for_single_task_run() -> None:
 
     task = MinerTask(
         task_id=uuid4(),
-        query=Query(text="Caster Subnet demo"),
+        query=Query(text="Harnyx Subnet demo"),
         reference_answer=ReferenceAnswer(text="A direct answer"),
     )
     session_request = SessionTokenRequest(
@@ -132,8 +132,8 @@ async def test_application_use_cases_cooperate_for_single_task_run() -> None:
             session_id=session_request.session_id,
             token=TEST_SESSION_TOKEN,
             tool="search_web",
-            args=("caster subnet",),
-            kwargs={"query": "caster subnet"},
+            args=("harnyx subnet",),
+            kwargs={"query": "harnyx subnet"},
         ),
     )
 
@@ -197,7 +197,7 @@ async def test_application_use_cases_cooperate_for_single_task_run() -> None:
     assert sandbox.requests == [
         (
             "query",
-            {"text": "Caster Subnet demo"},
+            {"text": "Harnyx Subnet demo"},
             {},
             TEST_SESSION_TOKEN,
             session_request.session_id,

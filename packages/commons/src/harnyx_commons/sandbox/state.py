@@ -7,8 +7,7 @@ from pathlib import Path
 from typing import Final
 
 DEFAULT_STATE_DIR: Final[str] = "/workspace/.harnyx_state"
-_STATE_MOUNT_SOURCE_ENV: Final[str] = "CASTER_STATE_VOLUME_NAME"
-_NEUTRAL_STATE_MOUNT_SOURCE_ENV: Final[str] = "STATE_VOLUME_NAME"
+_STATE_MOUNT_SOURCE_ENV: Final[str] = "STATE_VOLUME_NAME"
 
 
 def default_state_dir_path() -> Path:
@@ -24,7 +23,6 @@ def resolve_state_mount_source() -> str:
 
     return (
         os.getenv(_STATE_MOUNT_SOURCE_ENV)
-        or os.getenv(_NEUTRAL_STATE_MOUNT_SOURCE_ENV)
         or DEFAULT_STATE_DIR
     )
 

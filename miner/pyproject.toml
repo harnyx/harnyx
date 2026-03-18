@@ -1,11 +1,11 @@
 [project]
 name = "harnyx-miner"
 version = "0.1.0"
-description = "Miner-facing SDK harness for the Caster Subnet."
+description = "Miner-facing SDK harness for the Harnyx Subnet."
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
 authors = [
-  { name = "Caster Labs", email = "engineering@casterlabs.example" }
+  { name = "Harnyx Labs", email = "engineering@harnyx.example" }
 ]
 dependencies = [
   "httpx>=0.27",
@@ -17,8 +17,6 @@ dependencies = [
 [project.scripts]
 harnyx-miner-dev = "harnyx_miner.dev:main"
 harnyx-miner-submit = "harnyx_miner.submit:main"
-caster-miner-dev = "harnyx_miner.dev:main"
-caster-miner-submit = "harnyx_miner.submit:main"
 
 [project.optional-dependencies]
 dev = [

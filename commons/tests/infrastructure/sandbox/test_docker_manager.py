@@ -40,7 +40,7 @@ class RecordingRunner:
         if args[:2] == ["docker", "run"] and "-d" in args:
             stdout = "container123\n"
         elif args[:2] == ["docker", "inspect"]:
-            stdout = '{"caster-net":{"IPAddress":"172.18.0.2"}}\n'
+            stdout = '{"harnyx-net":{"IPAddress":"172.18.0.2"}}\n'
         return subprocess_completed(args, stdout)
 
 
@@ -65,12 +65,12 @@ def test_docker_sandbox_manager_builds_commands(monkeypatch) -> None:
     )
 
     options = SandboxOptions(
-        image="caster/sandbox:demo",
+        image="harnyx/sandbox:demo",
         container_name="sandbox-demo",
         host_port=9000,
         container_port=8000,
         env={"EXAMPLE": "value"},
-        network="caster-net",
+        network="harnyx-net",
         host_container_url=_HOST_CONTAINER_URL,
     )
 
@@ -116,11 +116,11 @@ def test_docker_manager_skips_port_mapping_when_host_port_missing() -> None:
     )
 
     options = SandboxOptions(
-        image="caster/sandbox:demo",
+        image="harnyx/sandbox:demo",
         container_name="sandbox-demo",
         host_port=None,
         container_port=8000,
-        network="caster-net",
+        network="harnyx-net",
         host_container_url=_HOST_CONTAINER_URL,
     )
 
@@ -146,7 +146,7 @@ def test_docker_manager_mounts_volumes() -> None:
     )
 
     options = SandboxOptions(
-        image="caster/sandbox:demo",
+        image="harnyx/sandbox:demo",
         container_name="sandbox-demo",
         volumes=(("/host/agent.py", "/workspace/agent.py", "ro"),),
         host_container_url=_HOST_CONTAINER_URL,
@@ -163,7 +163,7 @@ def test_docker_manager_mounts_volumes() -> None:
 def test_docker_manager_requires_network_when_host_port_missing() -> None:
     manager = DockerSandboxManager()
     options = SandboxOptions(
-        image="caster/sandbox:demo",
+        image="harnyx/sandbox:demo",
         container_name="sandbox-demo",
         host_port=None,
         host_container_url=_HOST_CONTAINER_URL,
@@ -186,7 +186,7 @@ def test_docker_manager_adds_extra_hosts() -> None:
     )
 
     options = SandboxOptions(
-        image="caster/sandbox:demo",
+        image="harnyx/sandbox:demo",
         container_name="sandbox-demo",
         extra_hosts=(("host.docker.internal", "host-gateway"),),
         host_container_url=_HOST_CONTAINER_URL,
@@ -215,7 +215,7 @@ def test_docker_manager_sets_seccomp_profile() -> None:
 
     seccomp_path = "/workspace/runtime-seccomp.json"
     options = SandboxOptions(
-        image="caster/sandbox:demo",
+        image="harnyx/sandbox:demo",
         container_name="sandbox-demo",
         seccomp_profile=seccomp_path,
         host_container_url=_HOST_CONTAINER_URL,
@@ -251,12 +251,12 @@ def test_start_cleans_up_container_on_healthz_failure(monkeypatch) -> None:
     monkeypatch.setattr(manager, "_wait_for_healthz", fail_healthz)
 
     options = SandboxOptions(
-        image="caster/sandbox:demo",
+        image="harnyx/sandbox:demo",
         container_name="sandbox-demo",
         host_port=9000,
         container_port=8000,
         wait_for_healthz=True,
-        network="caster-net",
+        network="harnyx-net",
         host_container_url=_HOST_CONTAINER_URL,
     )
 
@@ -299,7 +299,7 @@ def test_resolve_sandbox_host_container_url_falls_back_to_mountinfo_container_id
                 stderr=f"error: no such object: {stale_hostname}",
             )
         if args[-1] == live_container_id:
-            return subprocess_completed(args, '{"caster-net":{"IPAddress":"172.19.0.2"}}\n')
+            return subprocess_completed(args, '{"harnyx-net":{"IPAddress":"172.19.0.2"}}\n')
         raise AssertionError(f"unexpected docker target: {args[-1]}")
 
     monkeypatch.setenv("HOSTNAME", stale_hostname)
@@ -310,7 +310,7 @@ def test_resolve_sandbox_host_container_url_falls_back_to_mountinfo_container_id
 
     result = resolve_sandbox_host_container_url(
         docker_binary="docker",
-        sandbox_network="caster-net",
+        sandbox_network="harnyx-net",
         rpc_port=8100,
     )
 
@@ -348,6 +348,6 @@ def test_resolve_sandbox_host_container_url_raises_when_hostname_and_mountinfo_f
     with pytest.raises(RuntimeError, match=f"container={stale_hostname}"):
         resolve_sandbox_host_container_url(
             docker_binary="docker",
-            sandbox_network="caster-net",
+            sandbox_network="harnyx-net",
             rpc_port=8100,
         )

@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Sandbox runtime for executing miner entrypoints."
 requires-python = ">=3.11,<3.12"
 authors = [
-  { name = "Caster Labs", email = "engineering@casterlabs.example" }
+  { name = "Harnyx Labs", email = "engineering@harnyx.example" }
 ]
 dependencies = [
   "fastapi>=0.110.1",
@@ -16,7 +16,6 @@ dependencies = [
 
 [project.scripts]
 harnyx-sandbox = "harnyx_sandbox.app:main"
-caster-sandbox = "harnyx_sandbox.app:main"
 
 [project.optional-dependencies]
 dev = [

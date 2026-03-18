@@ -23,14 +23,13 @@ from harnyx_sandbox.tools.proxy import ToolProxy
 
 logger = logging.getLogger("harnyx_sandbox")
 
-CASTER_TOKEN_SCHEME = APIKeyHeader(name="x-caster-token", scheme_name="CasterToken", auto_error=False)
+PLATFORM_TOKEN_SCHEME = APIKeyHeader(name="x-platform-token", scheme_name="PlatformToken", auto_error=False)
 
 
-async def require_tool_token(request: Request, token: str | None = Security(CASTER_TOKEN_SCHEME)) -> str:
-    resolved_token = token or read_platform_token_header(request.headers)
-    if not resolved_token:
-        raise HTTPException(status_code=401, detail="missing x-caster-token header")
-    return resolved_token
+async def require_tool_token(_request: Request, token: str | None = Security(PLATFORM_TOKEN_SCHEME)) -> str:
+    if not token:
+        raise HTTPException(status_code=401, detail="missing x-platform-token header")
+    return token
 
 
 def _tool_factory(config: Mapping[str, object] | None, headers: Mapping[str, str]) -> ToolProxy | None:
@@ -41,11 +40,11 @@ def _tool_factory(config: Mapping[str, object] | None, headers: Mapping[str, str
     token = read_platform_token_header(headers)
     session_id = read_session_id_header(headers)
     if not session_id:
-        raise RuntimeError("sandbox request missing x-caster-session-id header")
+        raise RuntimeError("sandbox request missing x-session-id header")
     if not base_url:
-        raise RuntimeError("sandbox request missing x-caster-host-container-url header required to enable tools")
+        raise RuntimeError("sandbox request missing x-host-container-url header required to enable tools")
     if not token:
-        raise RuntimeError("sandbox request missing x-caster-token header required to enable tools")
+        raise RuntimeError("sandbox request missing x-platform-token header required to enable tools")
     return ToolProxy(
         base_url=base_url,
         token=token,
@@ -57,23 +56,15 @@ sandbox_harness: SandboxHarness | None = None
 _agent_loaded = False
 
 
-def _read_old_first_env(*names: str) -> str:
-    for name in names:
-        value = (os.getenv(name) or "").strip()
-        if value:
-            return value
-    return ""
-
-
 def _load_agent_from_env() -> None:
     global _agent_loaded
     if _agent_loaded:
         return
 
-    agent_path = _read_old_first_env("CASTER_AGENT_PATH", "AGENT_PATH")
-    agent_module = _read_old_first_env("CASTER_AGENT_MODULE", "AGENT_MODULE")
+    agent_path = (os.getenv("AGENT_PATH") or "").strip()
+    agent_module = (os.getenv("AGENT_MODULE") or "").strip()
     if agent_module:
-        raise RuntimeError("CASTER_AGENT_MODULE is not supported; use CASTER_AGENT_PATH")
+        raise RuntimeError("AGENT_MODULE is not supported; use AGENT_PATH")
 
     try:
         if agent_path:
@@ -101,7 +92,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("harnyx-sandbox shutting down")
 
 
-app = FastAPI(title="Caster Sandbox", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Harnyx Sandbox", version="0.1.0", lifespan=lifespan)
 app.include_router(
     sandbox_harness.create_router(),
     prefix="/entry",
@@ -115,7 +106,7 @@ async def health() -> dict[str, str]:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Caster sandbox runtime.")
+    parser = argparse.ArgumentParser(description="Harnyx sandbox runtime.")
     parser.add_argument("--serve", action="store_true", help="Run the FastAPI app with uvicorn.")
     parser.add_argument(
         "--host",

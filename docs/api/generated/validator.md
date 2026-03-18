@@ -174,12 +174,12 @@ Body: [ValidatorStatusResponse](#model-validatorstatusresponse)
 
 Execute a tool invocation and return the tool result and usage.
 
-**Auth**: Tool token (`x-caster-token` header)
+**Auth**: Tool token (`x-platform-token` header)
 
 **Headers**
 | Header | Req | Notes |
 | --- | --- | --- |
-| `x-caster-session-id` | req | `string` (format: uuid) |
+| `x-session-id` | req | `string` (format: uuid) |
 
 **Request**
 Content-Type: `application/json`

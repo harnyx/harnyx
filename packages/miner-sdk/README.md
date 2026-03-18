@@ -1,6 +1,6 @@
 # harnyx-miner-sdk
 
-Agent-facing SDK for Caster miners: entrypoints, request/response contracts, and tool-call helpers.
+Agent-facing SDK for Harnyx miners: entrypoints, request/response contracts, and tool-call helpers.
 
 This package is imported by **your miner agent script**.
 

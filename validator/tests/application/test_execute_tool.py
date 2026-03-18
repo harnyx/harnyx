@@ -57,8 +57,8 @@ def make_request(session: Session, *, token: str) -> ToolInvocationRequest:
         session_id=session.session_id,
         token=token,
         tool="search_web",
-        args=("caster subnet",),
-        kwargs={"query": "caster subnet"},
+        args=("harnyx subnet",),
+        kwargs={"query": "harnyx subnet"},
     )
 
 
@@ -105,7 +105,7 @@ async def test_execute_tool_records_receipt_and_updates_budget() -> None:
     result = await executor.execute(request)
 
     assert invoker.calls == [
-        ("search_web", ("caster subnet",), {"query": "caster subnet"})
+        ("search_web", ("harnyx subnet",), {"query": "harnyx subnet"})
     ]
     stored_session = session_registry.get(session.session_id)
     assert stored_session is not None
@@ -250,7 +250,7 @@ async def test_execute_tool_prices_search_ai_by_referenceable_results() -> None:
         token=token,
         tool="search_ai",
         args=(),
-        kwargs={"prompt": "caster subnet", "tools": ["web"], "count": 3},
+        kwargs={"prompt": "harnyx subnet", "tools": ["web"], "count": 3},
     )
 
     result = await executor.execute(request)
@@ -279,8 +279,8 @@ async def test_execute_tool_logs_response_preview(caplog: pytest.LogCaptureFixtu
         for record in caplog.records
         if record.message.startswith("tool call completed:")
     )
-    assert "response_preview={'data': [], 'query': 'caster subnet'}" in completed.message
-    assert completed.response_preview == "{'data': [], 'query': 'caster subnet'}"
+    assert "response_preview={'data': [], 'query': 'harnyx subnet'}" in completed.message
+    assert completed.response_preview == "{'data': [], 'query': 'harnyx subnet'}"
     assert completed.results_preview == "()"
 
 

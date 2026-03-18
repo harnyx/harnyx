@@ -18,7 +18,7 @@ class BaseWorker(ABC):
     """
 
     worker_name: ClassVar[str] = "base-worker"
-    logger_name: ClassVar[str] = "caster.worker"
+    logger_name: ClassVar[str] = "harnyx.worker"
     default_poll_interval: ClassVar[float | None] = None  # None = no sleep (blocking workers)
 
     def __init__(self, *, poll_interval: float | None = None) -> None:
@@ -99,4 +99,3 @@ class BaseWorker(ABC):
 
 
 __all__ = ["BaseWorker"]
-
