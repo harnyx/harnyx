@@ -8,9 +8,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
+from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.protocol_headers import SESSION_ID_HEADER
 from harnyx_commons.tools.executor import ToolExecutor
+from harnyx_commons.tools.runtime_invoker import build_miner_sandbox_tool_invoker
 from harnyx_commons.tools.token_semaphore import TokenSemaphore
 from harnyx_commons.tools.usage_tracker import UsageTracker
 from harnyx_validator.infrastructure.http.routes import ToolRouteDeps, add_tool_routes
@@ -106,6 +108,43 @@ class DemoDependencyProvider:
         return self.dependencies
 
 
+class ToolingInfoDependencyProvider:
+    def __init__(self) -> None:
+        self.session_registry = FakeSessionRegistry()
+        self.receipt_log = InMemoryReceiptLog()
+        self.tokens = InMemoryTokenRegistry()
+
+        self.session = Session(
+            session_id=uuid4(),
+            uid=7,
+            task_id=uuid4(),
+            issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
+            expires_at=datetime(2025, 10, 17, 13, tzinfo=UTC),
+            budget_usd=0.1,
+            usage=SessionUsage(),
+            status=SessionStatus.ACTIVE,
+        )
+        self.session_registry.create(self.session)
+        self.tokens.register(self.session.session_id, DEMO_SESSION_TOKEN)
+
+        self.tool_executor = ToolExecutor(
+            session_registry=self.session_registry,
+            receipt_log=self.receipt_log,
+            usage_tracker=UsageTracker(),
+            tool_invoker=build_miner_sandbox_tool_invoker(self.receipt_log),
+            token_registry=self.tokens,
+            clock=lambda: datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
+        )
+        self.token_semaphore = RecordingTokenSemaphore(max_parallel_calls=1)
+        self.dependencies = ToolRouteDeps(
+            tool_executor=self.tool_executor,
+            token_semaphore=self.token_semaphore,
+        )
+
+    def __call__(self) -> ToolRouteDeps:
+        return self.dependencies
+
+
 def test_execute_tool_endpoint_records_receipt() -> None:
     provider = DemoDependencyProvider()
     app = create_test_app(provider)
@@ -190,8 +229,29 @@ def test_execute_tool_endpoint_releases_semaphore_on_failure() -> None:
     assert provider.token_semaphore.in_flight(DEMO_SESSION_TOKEN) == 0
 
 
-def test_execute_tool_endpoint_supports_tooling_info() -> None:
+def test_execute_tool_endpoint_rejects_repo_tools() -> None:
     provider = DemoDependencyProvider()
+    app = create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/tools/execute",
+        json={
+            "tool": "search_repo",
+            "args": [],
+            "kwargs": {},
+        },
+        headers={
+            "x-platform-token": DEMO_SESSION_TOKEN,
+            SESSION_ID_HEADER: str(provider.session.session_id),
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_execute_tool_endpoint_supports_tooling_info() -> None:
+    provider = ToolingInfoDependencyProvider()
     app = create_test_app(provider)
     client = TestClient(app)
 
@@ -214,6 +274,11 @@ def test_execute_tool_endpoint_supports_tooling_info() -> None:
     assert body["budget"]["session_budget_usd"] == pytest.approx(provider.session.budget_usd)
     assert body["budget"]["session_used_budget_usd"] == pytest.approx(0.0)
     assert body["budget"]["session_remaining_budget_usd"] == pytest.approx(provider.session.budget_usd)
+    response_payload = body["response"]
+    assert "search_repo" not in response_payload["tool_names"]
+    assert "get_repo_file" not in response_payload["tool_names"]
+    assert "search_repo" not in response_payload["pricing"]
+    assert "get_repo_file" not in response_payload["pricing"]
 
     session_snapshot = provider.session_registry.get(provider.session.session_id)
     assert session_snapshot is not None
@@ -345,3 +410,14 @@ def test_execute_tool_openapi_declares_platform_token_security() -> None:
         and parameter.get("schema", {}).get("format") == "uuid"
         for parameter in parameters
     )
+
+
+def test_execute_tool_openapi_excludes_repo_tools() -> None:
+    provider = DemoDependencyProvider()
+    app = create_test_app(provider)
+
+    schema = app.openapi()["components"]["schemas"]["ToolExecuteRequestDTO"]
+    tool_enum = schema["properties"]["tool"]["enum"]
+
+    assert "search_repo" not in tool_enum
+    assert "get_repo_file" not in tool_enum

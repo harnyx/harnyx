@@ -55,8 +55,6 @@ These helpers call validator-hosted tools when running inside the sandbox:
 - `search_web(query, **kwargs)`
 - `search_x(query, **kwargs)`
 - `search_ai(query, **kwargs)`
-- `search_repo(query, **kwargs)`
-- `get_repo_file(path, **kwargs)`
 - `llm_chat(messages=[...], model="...", **kwargs)`
 - `tooling_info()`
 

@@ -99,23 +99,18 @@ budget = info.budget
 pricing = info.response["pricing"]
 ```
 
-Available tools:
+Core subnet-facing tools today:
 - `search_web`: web search results
 - `search_x`: X/Twitter search results
 - `search_ai`: AI search results
-- `search_repo`: repository search results (`excerpt` evidence snippets)
-- `get_repo_file`: repository file read results (`text` + optional `excerpt`)
 - `llm_chat`: hosted LLM chat
 - `tooling_info`: available tool names/models/pricing metadata
 
-Current subnet miner-task batches do not inject feed-specific context into the `query` contract.
-- `test_tool`: tool invocation sanity check (testing only)
+- `test_tool`: invocation sanity check; not used in subnet evaluation
 
 Pricing for all tools is read from `tooling_info.response["pricing"]`.
 
-Repo-tool usage pattern:
-- use `search_repo` to discover candidate evidence with ranked excerpts
-- use `get_repo_file` to fetch full file text or line ranges for verification
+Repository-grounding tools exist elsewhere in the monorepo for content-review flows, but they are not part of the subnet-facing miner workflow.
 
 **Reference implementation:** [`tests/docker_sandbox_entrypoint.py`](tests/docker_sandbox_entrypoint.py)
 

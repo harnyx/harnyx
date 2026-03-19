@@ -8,28 +8,24 @@ ToolName = Literal[
     "search_web",
     "search_x",
     "search_ai",
-    "search_repo",
-    "get_repo_file",
     "llm_chat",
     "search_items",
     "test_tool",
     "tooling_info",
 ]
-SearchToolName = Literal["search_web", "search_x", "search_ai", "search_repo", "get_repo_file"]
+SearchToolName = Literal["search_web", "search_x", "search_ai"]
 LlmToolName = Literal["llm_chat"]
 
 TOOL_NAMES: set[ToolName] = {
     "search_web",
     "search_x",
     "search_ai",
-    "search_repo",
-    "get_repo_file",
     "llm_chat",
     "search_items",
     "test_tool",
     "tooling_info",
 }
-SEARCH_TOOLS: set[SearchToolName] = {"search_web", "search_x", "search_ai", "search_repo", "get_repo_file"}
+SEARCH_TOOLS: set[SearchToolName] = {"search_web", "search_x", "search_ai"}
 LLM_TOOLS: set[LlmToolName] = {"llm_chat"}
 
 

@@ -22,7 +22,11 @@ from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_commons.sandbox.runtime import build_sandbox_options, create_sandbox_manager
 from harnyx_commons.tools.desearch import DeSearchClient
 from harnyx_commons.tools.executor import ToolExecutor
-from harnyx_commons.tools.runtime_invoker import ALLOWED_TOOL_MODELS, RuntimeToolInvoker
+from harnyx_commons.tools.runtime_invoker import (
+    ALLOWED_TOOL_MODELS,
+    RuntimeToolInvoker,
+    build_miner_sandbox_tool_invoker,
+)
 from harnyx_commons.tools.token_semaphore import TokenSemaphore
 from harnyx_commons.tools.usage_tracker import UsageTracker
 from harnyx_validator.application.accept_batch import AcceptEvaluationBatch
@@ -52,7 +56,6 @@ from harnyx_validator.infrastructure.subtensor.client import RuntimeSubtensorCli
 from harnyx_validator.infrastructure.subtensor.hotkey import create_wallet
 from harnyx_validator.infrastructure.tools.feed_search_provider import HttpFeedSearchToolProvider
 from harnyx_validator.infrastructure.tools.platform_client import HttpPlatformClient
-from harnyx_validator.infrastructure.tools.repo_search_provider import HttpRepoSearchToolProvider
 from harnyx_validator.runtime.llm_factory import create_llm_provider_factory
 from harnyx_validator.runtime.settings import Settings
 
@@ -135,18 +138,12 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         hotkey=platform_hotkey,
         timeout_seconds=PLATFORM.timeout_seconds,
     )
-    repo_search_provider = HttpRepoSearchToolProvider(
-        base_url=str(resolved.platform_api.platform_base_url),
-        hotkey=platform_hotkey,
-        timeout_seconds=PLATFORM.timeout_seconds,
-    )
     tool_invoker, tool_executor = _build_tooling(
         state=state,
         resolved=resolved,
         search_client=search_client,
         tool_llm_provider=tool_llm_provider,
         feed_search_provider=feed_search_provider,
-        repo_search_provider=repo_search_provider,
     )
 
     scoring_service, weight_submission_service, scoring_embedding_client = _build_services(
@@ -245,15 +242,13 @@ def _build_tooling(
     search_client: DeSearchClient | None,
     tool_llm_provider: LlmProviderPort | None,
     feed_search_provider: HttpFeedSearchToolProvider | None,
-    repo_search_provider: HttpRepoSearchToolProvider | None,
 ) -> tuple[RuntimeToolInvoker, ToolExecutor]:
-    tool_invoker = RuntimeToolInvoker(
+    tool_invoker = build_miner_sandbox_tool_invoker(
         state.receipt_log,
         search_client=search_client,
         llm_provider=tool_llm_provider,
         llm_provider_name=resolved.llm.tool_llm_provider,
         feed_search_provider=feed_search_provider,
-        repo_search_provider=repo_search_provider,
         allowed_models=ALLOWED_TOOL_MODELS,
     )
     tool_executor = ToolExecutor(

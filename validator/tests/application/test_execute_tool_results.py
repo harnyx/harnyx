@@ -73,42 +73,27 @@ def test_build_tool_results_search_x_referenceable() -> None:
     ]
 
 
-def test_build_tool_results_repo_tools_map_excerpt_to_note() -> None:
-    search_payload = {
+def test_build_tool_results_search_ai_keeps_note_field() -> None:
+    payload = {
         "data": [
             {
-                "url": "https://github.com/org/repo/blob/sha/docs/a.md",
-                "excerpt": "alpha excerpt",
-                "title": "docs/a.md",
-            }
-        ]
-    }
-    file_payload = {
-        "data": [
-            {
-                "url": "https://github.com/org/repo/blob/sha/docs/a.md",
-                "excerpt": "beta excerpt",
-                "text": "full text should not be used as citation note",
-                "title": "docs/a.md",
+                "url": "https://example.com/harnyx",
+                "note": "alpha note",
+                "title": "Harnyx",
             }
         ]
     }
 
-    search_results = _build_tool_results(
-        "search_repo",
-        search_payload,
-        ToolResultPolicy.REFERENCEABLE,
-    )
-    file_results = _build_tool_results(
-        "get_repo_file",
-        file_payload,
+    results = _build_tool_results(
+        "search_ai",
+        payload,
         ToolResultPolicy.REFERENCEABLE,
     )
 
-    assert len(search_results) == 1
-    assert search_results[0].note == "alpha excerpt"
-    assert len(file_results) == 1
-    assert file_results[0].note == "beta excerpt"
+    assert len(results) == 1
+    assert results[0].url == "https://example.com/harnyx"
+    assert results[0].note == "alpha note"
+    assert results[0].title == "Harnyx"
 
 
 def test_build_tool_results_referenceable_with_non_mapping_payload() -> None:

@@ -1,8 +1,10 @@
 # Harnyx Subnet
 
-**Consensus made scalable.**
+**The harness is the product. The swarm is the moat.**
 
-Harnyx Subnet is a Bittensor subnet that evaluates generic query-answering scripts by running miner code in validator sandboxes. Validators compare miner responses against reference answers, aggregate scores, and submit weights on-chain.
+Harnyx (SN 67) is a Bittensor subnet for deep research. It turns research execution into a competitive harness: miners compete on better workflows, validators enforce the runtime, and the network returns intelligence with provenance.
+
+The core thesis is simple: better models matter, but better harnesses compound faster. Deep research is not one reasoning step. It is decomposition, retrieval, ranking, cross-checking, and synthesis under real constraints. Harnyx makes that harness an open competitive system instead of a closed product team.
 
 ## Start here
 
@@ -16,11 +18,11 @@ Harnyx Subnet is a Bittensor subnet that evaluates generic query-answering scrip
 uv sync --all-packages --dev
 ```
 
-## How evaluation works (roles + flow)
+## How the subnet works today
 
-Harnyx rewards the best miner scripts by having validators run standardized query tasks against them, aggregating scores, and assigning emissions to one sticky current champion.
+Today, miners submit Python agents. Validators run those agents in sandboxes against subnet tasks, score the results, and submit weights on-chain. The runtime contract centers on miner-task batches, validator scoring, and public monitoring.
 
-A **task** is one generic query plus one reference answer.
+A **task** is one research-style query plus one stronger reference answer.
 
 <details>
 <summary><strong>Exact task contract (JSON)</strong></summary>
@@ -51,8 +53,8 @@ Notes:
 - [API auth conventions + index](docs/api/README.md)
 </details>
 
-**How the evaluation dataset is built**
-- The platform generates batches of realistic standalone user queries.
+**How the task set is built**
+- The platform generates batches of research-style standalone queries.
 - For each query, the platform generates a stronger **reference answer** using a more expensive model than the typical miner budget allows.
 - Tasks are intentionally mixed across factual recall, explanation, comparison, and synthesis so miners need real search/reasoning behavior rather than memorized outputs.
 
@@ -67,6 +69,7 @@ Notes:
 **Validator flow + gating**
 - The platform sends miner-task batches to validators; validators run script x task combinations and report scored runs.
 - Validators that are "functioning" can query the latest weights for on-chain emission submission.
+- Current champion and weight-submission mechanics are documented in the incentive layer; they are runtime details, not the entry point for new participants.
 
 **Roles**
 - **Miners** submit Python agent scripts that answer queries
@@ -87,22 +90,6 @@ sequenceDiagram
     Validator-->>Platform: 4) Scored runs
     Validator->>Bittensor: 5) submit_weights
 ```
-
-## What we optimize for
-
-- **Cost-efficient and permissionless** — open participation under explicit budget constraints
-- **Measurable and transparent** — scripts, monitoring, and scoring rules are visible
-- **Competitive and adaptive** — the dataset and sticky champion keep miners improving over time
-
-## Sticky champion keeps incentives honest
-
-We open-source miner scripts. Without a guardrail, a copycat can clone the current best script and win by matching the incumbent with minimal changes.
-
-The sticky current champion prevents that:
-
-- A challenger can take the slot only by clearing the score-margin gate, or by matching/non-regressing score while being materially cheaper or faster.
-- If a challenger does **not** beat the incumbent on one of those accepted paths, the champion stays unchanged.
-- Emission remains winner-take-all for the current champion only.
 
 ## Repo layout
 

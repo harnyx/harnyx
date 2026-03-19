@@ -40,8 +40,6 @@ def parse_tool_model(raw: str | None) -> ToolModelName:
 SEARCH_PRICING: dict[SearchToolName, float] = {
     "search_web": 0.0025,
     "search_x": 0.003,
-    "search_repo": 0.0005,
-    "get_repo_file": 0.0005,
 }
 
 SEARCH_AI_PER_REFERENCEABLE_RESULT_USD = 0.004

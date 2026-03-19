@@ -21,11 +21,11 @@ from harnyx_commons.protocol_headers import (
 from harnyx_commons.tools.dto import ToolInvocationRequest
 from harnyx_commons.tools.executor import ToolExecutor
 from harnyx_commons.tools.http_models import (
-    ToolExecuteRequestDTO,
     ToolExecuteResponseDTO,
 )
 from harnyx_commons.tools.http_serialization import serialize_tool_execute_response
 from harnyx_commons.tools.token_semaphore import TokenSemaphore
+from harnyx_miner_sdk.tools.http_models import ToolExecuteRequestDTO
 from harnyx_validator.application.accept_batch import AcceptEvaluationBatch
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskRunSubmission,

@@ -1,4 +1,4 @@
-"""Shared Pydantic response shapes for tool-related HTTP endpoints."""
+"""Shared Pydantic shapes for tool-related HTTP endpoints."""
 
 from __future__ import annotations
 

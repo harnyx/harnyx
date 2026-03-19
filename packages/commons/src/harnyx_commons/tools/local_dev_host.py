@@ -20,7 +20,7 @@ from harnyx_commons.tools.desearch import DeSearchClient
 from harnyx_commons.tools.dto import ToolInvocationRequest
 from harnyx_commons.tools.executor import ToolExecutor
 from harnyx_commons.tools.http_serialization import serialize_tool_execute_response
-from harnyx_commons.tools.runtime_invoker import ALLOWED_TOOL_MODELS, RuntimeToolInvoker
+from harnyx_commons.tools.runtime_invoker import ALLOWED_TOOL_MODELS, build_miner_sandbox_tool_invoker
 from harnyx_commons.tools.types import parse_tool_name
 from harnyx_commons.tools.usage_tracker import UsageTracker
 
@@ -100,7 +100,7 @@ def create_local_tool_host(*, uid: int = 1, session_ttl_minutes: int = 30) -> Lo
         timeout=CHUTES.timeout_seconds,
         max_concurrent=llm_settings.chutes_max_concurrent,
     )
-    tool_invoker = RuntimeToolInvoker(
+    tool_invoker = build_miner_sandbox_tool_invoker(
         receipts,
         search_client=desearch,
         llm_provider=llm_provider,

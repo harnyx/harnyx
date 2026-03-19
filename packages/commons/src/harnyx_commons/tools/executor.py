@@ -60,8 +60,6 @@ _SEARCH_RESULT_FIELDS: dict[SearchToolName, tuple[str, str, str]] = {
     "search_web": ("link", "snippet", "title"),
     "search_x": ("url", "text", "title"),
     "search_ai": ("url", "note", "title"),
-    "search_repo": ("url", "excerpt", "title"),
-    "get_repo_file": ("url", "excerpt", "title"),
 }
 
 

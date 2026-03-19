@@ -97,89 +97,6 @@ class StubDeSearchClient:
         return self.ai_search_response
 
 
-class StubRepoSearchProvider:
-    def __init__(self) -> None:
-        self.search_calls: list[dict[str, object]] = []
-        self.get_file_calls: list[dict[str, object]] = []
-        self.search_response: Mapping[str, Any] = {
-            "data": [
-                {
-                    "path": "docs/z.md",
-                    "bm25": 2.0,
-                    "url": "https://github.com/org/repo/blob/sha/docs/z.md",
-                    "excerpt": "z" * 1_200,
-                    "title": "docs/z.md",
-                    "text": "this field must not be exposed by search_repo",
-                },
-                {
-                    "path": "docs/a.md",
-                    "bm25": 2.0,
-                    "url": "https://github.com/org/repo/blob/sha/docs/a.md",
-                    "excerpt": "alpha",
-                    "title": "docs/a.md",
-                },
-                {
-                    "path": "docs/b.md",
-                    "bm25": 1.5,
-                    "url": "https://github.com/org/repo/blob/sha/docs/b.md",
-                    "excerpt": "beta",
-                    "title": "docs/b.md",
-                },
-            ]
-        }
-        self.get_file_response: Mapping[str, Any] = {
-            "data": [
-                {
-                    "path": "docs/a.md",
-                    "url": "https://github.com/org/repo/blob/sha/docs/a.md",
-                    "text": "full file text",
-                    "excerpt": "e" * 1_500,
-                    "title": "docs/a.md",
-                }
-            ]
-        }
-
-    async def search_repo(
-        self,
-        *,
-        repo_url: str,
-        commit_sha: str,
-        query: str,
-        path_glob: str | None,
-        limit: int,
-    ) -> Mapping[str, Any]:
-        self.search_calls.append(
-            {
-                "repo_url": repo_url,
-                "commit_sha": commit_sha,
-                "query": query,
-                "path_glob": path_glob,
-                "limit": limit,
-            }
-        )
-        return self.search_response
-
-    async def get_repo_file(
-        self,
-        *,
-        repo_url: str,
-        commit_sha: str,
-        path: str,
-        start_line: int | None,
-        end_line: int | None,
-    ) -> Mapping[str, Any]:
-        self.get_file_calls.append(
-            {
-                "repo_url": repo_url,
-                "commit_sha": commit_sha,
-                "path": path,
-                "start_line": start_line,
-                "end_line": end_line,
-            }
-        )
-        return self.get_file_response
-
-
 class StubChutesProvider:
     def __init__(self) -> None:
         self.calls: list[LlmRequest] = []
@@ -353,73 +270,33 @@ async def test_runtime_invoker_routes_search_ai_docs_response() -> None:
     assert result["data"][1]["source"] == "twitter"
 
 
-async def test_runtime_invoker_routes_search_repo_with_deterministic_ordering_and_excerpt_cap() -> None:
-    repo_provider = StubRepoSearchProvider()
+async def test_runtime_invoker_rejects_repo_tools_as_unregistered() -> None:
     invoker = RuntimeToolInvoker(
         FakeReceiptLog(),
-        repo_search_provider=repo_provider,
         allowed_models=ALLOWED_TOOL_MODELS,
     )
 
-    result = await _invoke(
-        invoker,
-        "search_repo",
-        kwargs={
-            "repo_url": "https://github.com/org/repo",
-            "commit_sha": "a" * 40,
-            "query": "alpha beta",
-            "path_glob": "docs/*.md",
-            "limit": 10,
-        },
-    )
+    with pytest.raises(LookupError, match=r"tool 'search_repo' is not registered"):
+        await _invoke(
+            invoker,
+            "search_repo",
+            kwargs={
+                "repo_url": "https://github.com/org/repo",
+                "commit_sha": "a" * 40,
+                "query": "alpha beta",
+            },
+        )
 
-    assert repo_provider.search_calls == [
-        {
-            "repo_url": "https://github.com/org/repo",
-            "commit_sha": "a" * 40,
-            "query": "alpha beta",
-            "path_glob": "docs/*.md",
-            "limit": 10,
-        }
-    ]
-    assert [item["path"] for item in result["data"]] == ["docs/b.md", "docs/a.md", "docs/z.md"]
-    assert len(result["data"][2]["excerpt"]) == 1_000
-    assert "text" not in result["data"][0]
-    assert "text" not in result["data"][1]
-    assert "text" not in result["data"][2]
-
-
-async def test_runtime_invoker_routes_get_repo_file_with_text_and_excerpt_cap() -> None:
-    repo_provider = StubRepoSearchProvider()
-    invoker = RuntimeToolInvoker(
-        FakeReceiptLog(),
-        repo_search_provider=repo_provider,
-        allowed_models=ALLOWED_TOOL_MODELS,
-    )
-
-    result = await _invoke(
-        invoker,
-        "get_repo_file",
-        kwargs={
-            "repo_url": "https://github.com/org/repo",
-            "commit_sha": "b" * 40,
-            "path": "docs/a.md",
-            "start_line": 10,
-            "end_line": 20,
-        },
-    )
-
-    assert repo_provider.get_file_calls == [
-        {
-            "repo_url": "https://github.com/org/repo",
-            "commit_sha": "b" * 40,
-            "path": "docs/a.md",
-            "start_line": 10,
-            "end_line": 20,
-        }
-    ]
-    assert result["data"][0]["text"] == "full file text"
-    assert len(result["data"][0]["excerpt"]) == 1_000
+    with pytest.raises(LookupError, match=r"tool 'get_repo_file' is not registered"):
+        await _invoke(
+            invoker,
+            "get_repo_file",
+            kwargs={
+                "repo_url": "https://github.com/org/repo",
+                "commit_sha": "b" * 40,
+                "path": "docs/a.md",
+            },
+        )
 
 
 async def test_runtime_invoker_routes_llm_chat() -> None:
@@ -456,17 +333,6 @@ async def test_runtime_invoker_rejects_missing_clients() -> None:
 
     with pytest.raises(LookupError):
         await _invoke(invoker, "search_web", kwargs={})
-
-    with pytest.raises(LookupError):
-        await _invoke(
-            invoker,
-            "search_repo",
-            kwargs={
-                "repo_url": "https://github.com/org/repo",
-                "commit_sha": "a" * 40,
-                "query": "harnyx",
-            },
-        )
 
     with pytest.raises(LookupError):
         await _invoke(

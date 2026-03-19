@@ -1,4 +1,4 @@
-"""Shared tool type definitions."""
+"""Miner-facing tool type definitions shared across host-side code."""
 
 from __future__ import annotations
 
@@ -9,10 +9,14 @@ from harnyx_miner_sdk.tools.types import (
     LlmToolName,
     SearchToolName,
     ToolName,
-    is_citation_source,
     is_search_tool,
     parse_tool_name,
 )
+
+
+def is_citation_source(name: str) -> bool:
+    return is_search_tool(name)
+
 
 __all__ = [
     "ToolName",
