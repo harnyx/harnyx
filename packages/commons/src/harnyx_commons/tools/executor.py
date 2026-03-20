@@ -21,6 +21,7 @@ from harnyx_commons.domain.tool_call import (
     ToolResult,
     ToolResultPolicy,
 )
+from harnyx_commons.errors import BudgetExceededError
 from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.llm.pricing import (
     SEARCH_SIMILAR_FEED_ITEMS_PER_CALL_USD,
@@ -171,19 +172,19 @@ class ToolExecutor:
             response_payload,
             results,
         )
-        updated_session = self._record_usage(
-            session,
-            request,
-            llm_tokens,
-            usage_details,
-            call_cost,
-        )
-        budget_limit = updated_session.budget_usd
-        budget_snapshot = ToolBudgetSnapshot(
-            session_budget_usd=budget_limit,
-            session_used_budget_usd=updated_session.usage.total_cost_usd,
-            session_remaining_budget_usd=budget_limit - updated_session.usage.total_cost_usd,
-        )
+        try:
+            updated_session = self._record_usage(
+                session,
+                request,
+                llm_tokens,
+                usage_details,
+                call_cost,
+            )
+        except BudgetExceededError:
+            self._sessions.update(session.mark_exhausted())
+            raise
+        updated_session = _mark_session_exhausted_if_needed(updated_session)
+        budget_snapshot = _build_budget_snapshot(updated_session)
         receipt = self._build_receipt(
             request,
             updated_session,
@@ -317,6 +318,22 @@ def _hash_payload(payload: object) -> str:
     normalized = _normalize_payload(payload)
     serialized = json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return sha256(serialized).hexdigest()
+
+
+def _build_budget_snapshot(session: Session) -> ToolBudgetSnapshot:
+    used_budget_usd = session.usage.total_cost_usd
+    return ToolBudgetSnapshot(
+        session_budget_usd=session.budget_usd,
+        session_hard_limit_usd=session.effective_hard_limit_usd,
+        session_used_budget_usd=used_budget_usd,
+        session_remaining_budget_usd=max(session.budget_usd - used_budget_usd, 0.0),
+    )
+
+
+def _mark_session_exhausted_if_needed(session: Session) -> Session:
+    if session.usage.total_cost_usd >= session.effective_hard_limit_usd:
+        return session.mark_exhausted()
+    return session
 
 
 def _resolve_result_policy(tool_name: ToolName) -> ToolResultPolicy:

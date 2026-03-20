@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -10,6 +10,7 @@ from harnyx_commons.application.dto.session import SessionTokenRequest
 from harnyx_commons.application.session_manager import SessionManager
 from harnyx_commons.domain.miner_task import Query, Response
 from harnyx_commons.domain.tool_call import ReceiptMetadata, ToolCall, ToolCallOutcome
+from harnyx_commons.errors import SessionBudgetExhaustedError
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_validator.application.dto.evaluation import EntrypointInvocationRequest
 from harnyx_validator.application.invoke_entrypoint import EntrypointInvoker, SandboxClient
@@ -23,6 +24,7 @@ class RecordingSandbox(SandboxClient):
         self.invocations: list[tuple[str, Mapping[str, object], Mapping[str, object], str, UUID]] = []
         self.response: Mapping[str, object] = {"text": "Answer"}
         self.raise_error: Exception | None = None
+        self.on_invoke: Callable[[UUID], None] | None = None
 
     async def invoke(
         self,
@@ -34,6 +36,8 @@ class RecordingSandbox(SandboxClient):
         session_id: UUID,
     ) -> Mapping[str, object]:
         self.invocations.append((entrypoint, payload, context, token, session_id))
+        if self.on_invoke is not None:
+            self.on_invoke(session_id)
         if self.raise_error is not None:
             raise self.raise_error
         return self.response
@@ -184,6 +188,51 @@ async def test_invoke_entrypoint_rejects_inactive_session() -> None:
     session_registry.update(session.mark_completed())
 
     with pytest.raises(RuntimeError):
+        await invoker.invoke(
+            EntrypointInvocationRequest(
+                session_id=session_id,
+                token=token,
+                uid=42,
+                query=Query(text="demo"),
+            ),
+        )
+
+
+async def test_invoke_entrypoint_raises_when_session_exhausts_after_successful_response() -> None:
+    token = uuid4().hex
+    invoker, sandbox, session_id, session_registry, _, _, _ = _build_invoker(token)
+
+    def exhaust_session(invoked_session_id: UUID) -> None:
+        session = session_registry.get(invoked_session_id)
+        assert session is not None
+        session_registry.update(session.mark_exhausted())
+
+    sandbox.on_invoke = exhaust_session
+
+    with pytest.raises(SessionBudgetExhaustedError):
+        await invoker.invoke(
+            EntrypointInvocationRequest(
+                session_id=session_id,
+                token=token,
+                uid=42,
+                query=Query(text="demo"),
+            ),
+        )
+
+
+async def test_invoke_entrypoint_raises_exhausted_when_sandbox_errors_after_exhaustion() -> None:
+    token = uuid4().hex
+    invoker, sandbox, session_id, session_registry, _, _, _ = _build_invoker(token)
+
+    def exhaust_session(invoked_session_id: UUID) -> None:
+        session = session_registry.get(invoked_session_id)
+        assert session is not None
+        session_registry.update(session.mark_exhausted())
+
+    sandbox.on_invoke = exhaust_session
+    sandbox.raise_error = RuntimeError("tool budget exceeded")
+
+    with pytest.raises(SessionBudgetExhaustedError):
         await invoker.invoke(
             EntrypointInvocationRequest(
                 session_id=session_id,

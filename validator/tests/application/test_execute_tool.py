@@ -39,7 +39,7 @@ class RecordingToolInvoker(ToolInvoker):
         return {"data": [], "query": kwargs.get("query", "")}
 
 
-def make_session(*, budget_usd: float = 0.1) -> Session:
+def make_session(*, budget_usd: float = 0.1, hard_limit_usd: float | None = None) -> Session:
     return Session(
         session_id=uuid4(),
         uid=7,
@@ -47,6 +47,7 @@ def make_session(*, budget_usd: float = 0.1) -> Session:
         issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
         expires_at=datetime(2025, 10, 17, 13, tzinfo=UTC),
         budget_usd=budget_usd,
+        hard_limit_usd=hard_limit_usd,
         usage=SessionUsage(),
         status=SessionStatus.ACTIVE,
     )
@@ -140,6 +141,7 @@ async def test_execute_tool_supports_tooling_info_without_consuming_budget() -> 
     assert stored_session is not None
     assert stored_session.usage.total_cost_usd == pytest.approx(0.0)
     assert result.budget.session_budget_usd == pytest.approx(0.1)
+    assert result.budget.session_hard_limit_usd == pytest.approx(0.1)
     assert result.budget.session_used_budget_usd == pytest.approx(0.0)
     assert result.budget.session_remaining_budget_usd == pytest.approx(0.1)
 
@@ -206,6 +208,22 @@ async def test_execute_tool_budget_is_session_scoped() -> None:
 
     assert result_a.budget.session_budget_usd == pytest.approx(0.2)
     assert result_b.budget.session_budget_usd == pytest.approx(0.7)
+
+
+async def test_execute_tool_budget_snapshot_clamps_remaining_after_soft_budget_is_exhausted() -> None:
+    session = make_session(budget_usd=0.001, hard_limit_usd=0.01)
+    token = generate_token()
+    executor, _, _, session_registry, _ = build_executor(session, token=token)
+
+    result = await executor.execute(make_request(session, token=token))
+
+    stored_session = session_registry.get(session.session_id)
+    assert stored_session is not None
+    assert stored_session.usage.total_cost_usd == pytest.approx(0.0025)
+    assert result.budget.session_budget_usd == pytest.approx(0.001)
+    assert result.budget.session_hard_limit_usd == pytest.approx(0.01)
+    assert result.budget.session_used_budget_usd == pytest.approx(0.0025)
+    assert result.budget.session_remaining_budget_usd == pytest.approx(0.0)
 
 
 async def test_execute_tool_prices_search_ai_by_referenceable_results() -> None:

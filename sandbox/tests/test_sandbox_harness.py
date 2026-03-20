@@ -44,6 +44,7 @@ def test_harness_invokes_entrypoint_and_closes_tools() -> None:
                 "result_policy": "log_only",
                 "budget": {
                     "session_budget_usd": 1.0,
+                    "session_hard_limit_usd": 1.0,
                     "session_used_budget_usd": 0.0,
                     "session_remaining_budget_usd": 1.0,
                 },

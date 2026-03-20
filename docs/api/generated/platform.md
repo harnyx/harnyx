@@ -1304,7 +1304,7 @@ Body: [CreateBatchRequest](#model-createbatchrequest)
 | `champion_artifact_id` |  |  | opt | `string` (format: uuid; nullable) |
 | `override_task_dataset` |  |  | opt | [OverrideMinerTaskDatasetModel](#model-overrideminertaskdatasetmodel) (nullable) |
 |  | `tasks` |  | req | array[[MinerTaskInputModel](#model-minertaskinputmodel)] |
-|  |  | `budget_usd` | opt | `number` (default: 0.05) |
+|  |  | `budget_usd` | opt | `number` (default: 0.5) |
 |  |  | `query` | req | [Query](#model-query) |
 |  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `task_id` | req | `string` (format: uuid) |
@@ -1328,7 +1328,7 @@ Body: [MinerTaskBatchModel](#model-minertaskbatchmodel)
 | `cutoff_at` |  |  | req | `string` (format: date-time) |
 | `failed_at` |  |  | opt | `string` (format: date-time; nullable) |
 | `tasks` |  |  | req | array[[MinerTask](#model-minertask)] |
-|  | `budget_usd` |  | opt | `number` (default: 0.05) |
+|  | `budget_usd` |  | opt | `number` (default: 0.5) |
 |  | `query` |  | req | [Query](#model-query) |
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
@@ -1378,7 +1378,7 @@ Body: [MinerTaskBatchModel](#model-minertaskbatchmodel)
 | `cutoff_at` |  |  | req | `string` (format: date-time) |
 | `failed_at` |  |  | opt | `string` (format: date-time; nullable) |
 | `tasks` |  |  | req | array[[MinerTask](#model-minertask)] |
-|  | `budget_usd` |  | opt | `number` (default: 0.05) |
+|  | `budget_usd` |  | opt | `number` (default: 0.5) |
 |  | `query` |  | req | [Query](#model-query) |
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
@@ -3031,7 +3031,7 @@ Body: `unknown`
 | `champion_artifact_id` |  |  | opt | `string` (format: uuid; nullable) |
 | `override_task_dataset` |  |  | opt | [OverrideMinerTaskDatasetModel](#model-overrideminertaskdatasetmodel) (nullable) |
 |  | `tasks` |  | req | array[[MinerTaskInputModel](#model-minertaskinputmodel)] |
-|  |  | `budget_usd` | opt | `number` (default: 0.05) |
+|  |  | `budget_usd` | opt | `number` (default: 0.5) |
 |  |  | `query` | req | [Query](#model-query) |
 |  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `task_id` | req | `string` (format: uuid) |
@@ -6477,7 +6477,7 @@ Body: `unknown`
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `budget_usd` |  |  | opt | `number` (default: 0.05) |
+| `budget_usd` |  |  | opt | `number` (default: 0.5) |
 | `query` |  |  | req | [Query](#model-query) |
 |  | `text` |  | req | `string` |
 | `reference_answer` |  |  | req | [ReferenceAnswer](#model-referenceanswer) |
@@ -6492,7 +6492,7 @@ Body: `unknown`
   "additionalProperties": false,
   "properties": {
     "budget_usd": {
-      "default": 0.05,
+      "default": 0.5,
       "minimum": 0.0,
       "title": "Budget Usd",
       "type": "number"
@@ -6538,7 +6538,7 @@ Body: `unknown`
 | `cutoff_at` |  |  | req | `string` (format: date-time) |
 | `failed_at` |  |  | opt | `string` (format: date-time; nullable) |
 | `tasks` |  |  | req | array[[MinerTask](#model-minertask)] |
-|  | `budget_usd` |  | opt | `number` (default: 0.05) |
+|  | `budget_usd` |  | opt | `number` (default: 0.5) |
 |  | `query` |  | req | [Query](#model-query) |
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
@@ -6637,7 +6637,7 @@ Body: `unknown`
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `budget_usd` |  |  | opt | `number` (default: 0.05) |
+| `budget_usd` |  |  | opt | `number` (default: 0.5) |
 | `query` |  |  | req | [Query](#model-query) |
 |  | `text` |  | req | `string` |
 | `reference_answer` |  |  | req | [ReferenceAnswer](#model-referenceanswer) |
@@ -6652,7 +6652,7 @@ Body: `unknown`
   "additionalProperties": false,
   "properties": {
     "budget_usd": {
-      "default": 0.05,
+      "default": 0.5,
       "minimum": 0.0,
       "title": "Budget Usd",
       "type": "number"
@@ -7826,7 +7826,7 @@ Body: `unknown`
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `tasks` |  |  | req | array[[MinerTaskInputModel](#model-minertaskinputmodel)] |
-|  | `budget_usd` |  | opt | `number` (default: 0.05) |
+|  | `budget_usd` |  | opt | `number` (default: 0.5) |
 |  | `query` |  | req | [Query](#model-query) |
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |

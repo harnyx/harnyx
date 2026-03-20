@@ -15,6 +15,10 @@ class BudgetExceededError(RuntimeError):
     """Raised when a tool call exceeds the configured session budget."""
 
 
+class SessionBudgetExhaustedError(RuntimeError):
+    """Raised when execution exhausts the session hard limit."""
+
+
 class ConcurrencyLimitError(RuntimeError):
     """Raised when a token exceeds its permitted parallel call allowance."""
 
@@ -23,5 +27,6 @@ __all__ = [
     "SandboxError",
     "MissingEntrypointError",
     "BudgetExceededError",
+    "SessionBudgetExhaustedError",
     "ConcurrencyLimitError",
 ]

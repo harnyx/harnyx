@@ -23,6 +23,7 @@ pytestmark = pytest.mark.anyio("asyncio")
 def _fake_budget() -> ToolBudgetDTO:
     return ToolBudgetDTO(
         session_budget_usd=1.0,
+        session_hard_limit_usd=1.0,
         session_used_budget_usd=0.0,
         session_remaining_budget_usd=1.0,
     )

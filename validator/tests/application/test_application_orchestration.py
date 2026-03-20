@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -9,6 +10,7 @@ from harnyx_commons.application.dto.session import SessionTokenRequest
 from harnyx_commons.application.session_manager import SessionManager
 from harnyx_commons.domain.miner_task import MinerTask, Query, ReferenceAnswer, Response, ScoreBreakdown
 from harnyx_commons.domain.session import LlmUsageTotals
+from harnyx_commons.errors import SessionBudgetExhaustedError
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.tools.dto import ToolInvocationRequest
 from harnyx_commons.tools.executor import ToolExecutor
@@ -27,6 +29,7 @@ class StubSandboxClient:
     def __init__(self) -> None:
         self.requests: list[tuple[str, dict[str, object], dict[str, object], str, UUID]] = []
         self.response: dict[str, object] | None = None
+        self.on_invoke: Callable[[UUID], None] | None = None
 
     def set_response(self, response: dict[str, object]) -> None:
         self.response = response
@@ -41,6 +44,8 @@ class StubSandboxClient:
         session_id: UUID,
     ) -> dict[str, object]:
         self.requests.append((entrypoint, payload, context, token, session_id))
+        if self.on_invoke is not None:
+            self.on_invoke(session_id)
         if self.response is None:
             raise RuntimeError("sandbox response not configured")
         return self.response
@@ -80,6 +85,16 @@ class StubScoringService:
             total_score=1.0,
             scoring_version="v1",
         )
+
+
+class TrackingScoringService:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def score(self, *, task: MinerTask, response: Response) -> ScoreBreakdown:
+        _ = task, response
+        self.calls += 1
+        raise AssertionError("scoring should not run for exhausted sessions")
 
 
 class _ClockSequence:
@@ -203,3 +218,64 @@ async def test_application_use_cases_cooperate_for_single_task_run() -> None:
             session_request.session_id,
         ),
     ]
+
+
+async def test_task_orchestration_stops_before_scoring_when_session_exhausts() -> None:
+    session_registry = FakeSessionRegistry()
+    receipt_log = FakeReceiptLog()
+    token_registry = InMemoryTokenRegistry()
+    session_manager = SessionManager(session_registry, token_registry)
+
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="Harnyx Subnet demo"),
+        reference_answer=ReferenceAnswer(text="A direct answer"),
+    )
+    session_request = SessionTokenRequest(
+        session_id=uuid4(),
+        uid=7,
+        task_id=task.task_id,
+        issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
+        expires_at=datetime(2025, 10, 17, 13, tzinfo=UTC),
+        budget_usd=0.5,
+        token=TEST_SESSION_TOKEN,
+    )
+    session_manager.issue(session_request)
+
+    sandbox = StubSandboxClient()
+    sandbox.set_response({"text": "A direct answer"})
+
+    def exhaust_session(session_id: UUID) -> None:
+        session = session_registry.get(session_id)
+        assert session is not None
+        session_registry.update(session.mark_exhausted())
+
+    sandbox.on_invoke = exhaust_session
+
+    invoker = EntrypointInvoker(
+        session_registry=session_registry,
+        sandbox_client=sandbox,
+        token_registry=token_registry,
+        receipt_log=receipt_log,
+    )
+    scoring = TrackingScoringService()
+    orchestrator = TaskRunOrchestrator(
+        entrypoint_invoker=invoker,
+        receipt_log=receipt_log,
+        scoring_service=scoring,
+        session_registry=session_registry,
+        clock=lambda: datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
+    )
+
+    with pytest.raises(SessionBudgetExhaustedError):
+        await orchestrator.evaluate(
+            MinerTaskRunRequest(
+                session_id=session_request.session_id,
+                token=TEST_SESSION_TOKEN,
+                uid=7,
+                artifact_id=uuid4(),
+                task=task,
+            ),
+        )
+
+    assert scoring.calls == 0

@@ -59,6 +59,7 @@ def test_issue_persists_session_and_token() -> None:
     assert stored is not None
     assert issued.session == stored
     assert issued.session.budget_usd == pytest.approx(request.budget_usd)
+    assert issued.session.effective_hard_limit_usd == pytest.approx(request.budget_usd)
     assert tokens.verify(request.session_id, request.token)
 
     envelope = manager.load(request.session_id)
@@ -82,3 +83,24 @@ def test_missing_session_raises_on_mark_status() -> None:
     manager = SessionManager(FakeSessionRegistry(), InMemoryTokenRegistry())
     with pytest.raises(LookupError):
         manager.mark_status(uuid4(), SessionStatus.COMPLETED)
+
+
+def test_issue_preserves_explicit_hard_limit() -> None:
+    sessions = FakeSessionRegistry()
+    tokens = InMemoryTokenRegistry()
+    manager = SessionManager(sessions, tokens)
+    request = SessionTokenRequest(
+        session_id=uuid4(),
+        uid=7,
+        task_id=uuid4(),
+        issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
+        expires_at=datetime(2025, 10, 17, 13, tzinfo=UTC),
+        budget_usd=0.5,
+        token=uuid4().hex,
+        hard_limit_usd=1.0,
+    )
+
+    issued = manager.issue(request)
+
+    assert issued.session.budget_usd == pytest.approx(0.5)
+    assert issued.session.effective_hard_limit_usd == pytest.approx(1.0)

@@ -10,6 +10,7 @@ from harnyx_commons.domain.shared_config import COMMONS_STRICT_CONFIG
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
 
 _TOOL_USAGE_ADAPTER = TypeAdapter(ToolUsageSummary)
+DEFAULT_MINER_TASK_BUDGET_USD = 0.5
 
 
 class _TextModel(BaseModel):
@@ -74,10 +75,11 @@ class MinerTask(BaseModel):
     task_id: UUID
     query: Query
     reference_answer: ReferenceAnswer
-    budget_usd: float = Field(default=0.05, ge=0.0)
+    budget_usd: float = Field(default=DEFAULT_MINER_TASK_BUDGET_USD, ge=0.0)
 
 
 __all__ = [
+    "DEFAULT_MINER_TASK_BUDGET_USD",
     "EvaluationDetails",
     "EvaluationError",
     "MinerTask",

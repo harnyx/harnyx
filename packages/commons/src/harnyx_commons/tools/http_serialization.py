@@ -18,6 +18,7 @@ def serialize_tool_execute_response(result: ToolInvocationResult) -> ToolExecute
     usage = _serialize_usage(result)
     budget = ToolBudgetDTO(
         session_budget_usd=result.budget.session_budget_usd,
+        session_hard_limit_usd=result.budget.session_hard_limit_usd,
         session_used_budget_usd=result.budget.session_used_budget_usd,
         session_remaining_budget_usd=result.budget.session_remaining_budget_usd,
     )
@@ -70,4 +71,3 @@ def _serialize_tool_result(tool_result: ToolResult) -> ToolResultDTO:
 
 
 __all__ = ["serialize_tool_execute_response"]
-

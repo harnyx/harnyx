@@ -15,6 +15,7 @@ from harnyx_commons.application.session_manager import SessionManager
 from harnyx_commons.domain.miner_task import EvaluationDetails, EvaluationError, MinerTask
 from harnyx_commons.domain.session import SessionStatus
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
+from harnyx_commons.errors import SessionBudgetExhaustedError
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskRunRequest,
     MinerTaskRunSubmission,
@@ -129,6 +130,14 @@ class EvaluationRunner:
                 session_id=issued.session.session_id,
                 outcome=outcome,
             )
+        except SessionBudgetExhaustedError as exc:
+            return self._record_exhausted(
+                batch_id=batch_id,
+                artifact=artifact,
+                task=task,
+                session_id=issued.session.session_id,
+                error_message=str(exc),
+            )
         except SandboxInvocationError as exc:
             return self._record_task_failure(
                 batch_id=batch_id,
@@ -212,6 +221,50 @@ class EvaluationRunner:
         error_message: str,
     ) -> MinerTaskRunSubmission:
         envelope = self._sessions.mark_status(session_id, SessionStatus.ERROR)
+        return self._record_terminal_failure(
+            batch_id=batch_id,
+            envelope=envelope,
+            uid=uid,
+            artifact_id=artifact_id,
+            task=task,
+            error_code=error_code,
+            error_message=error_message,
+        )
+
+    def _record_exhausted(
+        self,
+        *,
+        batch_id: UUID,
+        artifact: ScriptArtifactSpec,
+        task: MinerTask,
+        session_id: UUID,
+        error_message: str,
+    ) -> MinerTaskRunSubmission:
+        envelope = self._sessions.inspect(session_id)
+        if envelope.session.status is not SessionStatus.EXHAUSTED:
+            raise RuntimeError("exhausted task runs require exhausted session status")
+        return self._record_terminal_failure(
+            batch_id=batch_id,
+            envelope=envelope,
+            uid=artifact.uid,
+            artifact_id=artifact.artifact_id,
+            task=task,
+            error_code="session_budget_exhausted",
+            error_message=error_message,
+        )
+
+    def _record_terminal_failure(
+        self,
+        *,
+        batch_id: UUID,
+        envelope: SessionEnvelope,
+        uid: int,
+        artifact_id: UUID,
+        task: MinerTask,
+        error_code: str,
+        error_message: str,
+    ) -> MinerTaskRunSubmission:
+        session_id = envelope.session.session_id
         completed_at = self._clock()
         usage, total_tool_usage = self._summarize_session(envelope)
         details = EvaluationDetails(

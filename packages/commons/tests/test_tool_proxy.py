@@ -88,6 +88,7 @@ async def test_search_web_helper_invokes_tool_proxy() -> None:
                 "result_policy": "referenceable",
                 "budget": {
                     "session_budget_usd": 1.0,
+                    "session_hard_limit_usd": 1.0,
                     "session_used_budget_usd": 0.0,
                     "session_remaining_budget_usd": 1.0,
                 },
@@ -133,6 +134,7 @@ async def test_tooling_info_helper_invokes_tool_proxy() -> None:
                 "result_policy": "log_only",
                 "budget": {
                     "session_budget_usd": 1.0,
+                    "session_hard_limit_usd": 1.0,
                     "session_used_budget_usd": 0.0,
                     "session_remaining_budget_usd": 1.0,
                 },
@@ -196,6 +198,7 @@ async def test_llm_chat_helper_invokes_tool_proxy() -> None:
                 "result_policy": "log_only",
                 "budget": {
                     "session_budget_usd": 1.0,
+                    "session_hard_limit_usd": 1.0,
                     "session_used_budget_usd": 0.0,
                     "session_remaining_budget_usd": 1.0,
                 },

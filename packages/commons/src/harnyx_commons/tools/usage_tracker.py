@@ -45,7 +45,7 @@ class UsageTracker:
 
         updated_usage = self._update_usage(
             session.usage,
-            session_budget_usd=session.budget_usd,
+            session_hard_limit_usd=session.effective_hard_limit_usd,
             normalized_name=normalized_name,
             llm_tokens=llm_tokens,
             usage=usage_details,
@@ -73,13 +73,13 @@ class UsageTracker:
         self,
         budget: SessionUsage,
         *,
-        session_budget_usd: float,
+        session_hard_limit_usd: float,
         normalized_name: str,
         llm_tokens: int,
         usage: ToolCallUsage | None,
         cost_usd: float | None,
     ) -> SessionUsage:
-        budget_validator = BudgetValidator(session_budget_usd)
+        budget_validator = BudgetValidator(session_hard_limit_usd)
         projected_total = budget.total_cost_usd + (cost_usd or 0.0)
         budget_validator.assert_within_limits(projected_total)
 

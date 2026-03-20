@@ -12,6 +12,7 @@ from harnyx_commons.application.dto.session import SessionTokenRequest
 from harnyx_commons.application.session_manager import SessionManager
 from harnyx_commons.clients import CHUTES, DESEARCH
 from harnyx_commons.config.llm import LlmSettings
+from harnyx_commons.domain.miner_task import DEFAULT_MINER_TASK_BUDGET_USD
 from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
 from harnyx_commons.infrastructure.state.session_registry import InMemorySessionRegistry
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
@@ -83,7 +84,7 @@ def create_local_tool_host(*, uid: int = 1, session_ttl_minutes: int = 30) -> Lo
             task_id=uuid4(),
             issued_at=now,
             expires_at=now + timedelta(minutes=session_ttl_minutes),
-            budget_usd=0.05,
+            budget_usd=DEFAULT_MINER_TASK_BUDGET_USD,
             token=token,
         )
     )

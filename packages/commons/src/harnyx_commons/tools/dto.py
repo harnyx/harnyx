@@ -17,21 +17,29 @@ class ToolBudgetSnapshot:
     """Session budget snapshot captured after executing a tool call."""
 
     session_budget_usd: float
+    session_hard_limit_usd: float
     session_used_budget_usd: float
     session_remaining_budget_usd: float
 
     def __post_init__(self) -> None:
         if self.session_budget_usd < 0.0:
             raise ValueError("session_budget_usd must be non-negative")
+        if self.session_hard_limit_usd < 0.0:
+            raise ValueError("session_hard_limit_usd must be non-negative")
         if self.session_used_budget_usd < 0.0:
             raise ValueError("session_used_budget_usd must be non-negative")
         if self.session_remaining_budget_usd < 0.0:
             raise ValueError("session_remaining_budget_usd must be non-negative")
-        if self.session_used_budget_usd > self.session_budget_usd:
-            raise ValueError("session_used_budget_usd must not exceed session_budget_usd")
-        expected_remaining = self.session_budget_usd - self.session_used_budget_usd
+        if self.session_hard_limit_usd < self.session_budget_usd:
+            raise ValueError("session_hard_limit_usd must be greater than or equal to session_budget_usd")
+        if self.session_used_budget_usd > self.session_hard_limit_usd:
+            raise ValueError("session_used_budget_usd must not exceed session_hard_limit_usd")
+        expected_remaining = max(self.session_budget_usd - self.session_used_budget_usd, 0.0)
         if abs(self.session_remaining_budget_usd - expected_remaining) > 1e-9:
-            raise ValueError("session_remaining_budget_usd must equal budget - used")
+            raise ValueError(
+                "session_remaining_budget_usd must equal "
+                "max(session_budget_usd - session_used_budget_usd, 0)"
+            )
 
 
 @dataclass(frozen=True)

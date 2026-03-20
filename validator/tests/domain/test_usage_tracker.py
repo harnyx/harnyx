@@ -10,7 +10,7 @@ from harnyx_commons.tools.usage_tracker import ToolCallUsage, UsageTracker
 from harnyx_validator.domain.exceptions import BudgetExceededError
 
 
-def make_session(*, budget_usd: float) -> Session:
+def make_session(*, budget_usd: float, hard_limit_usd: float | None = None) -> Session:
     return Session(
         session_id=uuid4(),
         uid=1,
@@ -18,6 +18,7 @@ def make_session(*, budget_usd: float) -> Session:
         issued_at=datetime(2025, 10, 15, tzinfo=UTC),
         expires_at=datetime(2025, 10, 16, tzinfo=UTC),
         budget_usd=budget_usd,
+        hard_limit_usd=hard_limit_usd,
         usage=SessionUsage(),
         status=SessionStatus.ACTIVE,
     )
@@ -55,6 +56,20 @@ def test_usage_tracker_rejects_calls_when_session_inactive() -> None:
 
     with pytest.raises(BudgetExceededError):
         tracker.record_tool_call(session, tool_name="search_web", llm_tokens=10, cost_usd=0.01)
+
+
+def test_usage_tracker_allows_usage_past_soft_budget_when_hard_limit_is_higher() -> None:
+    tracker = UsageTracker()
+    session = make_session(budget_usd=0.5, hard_limit_usd=1.0)
+
+    updated = tracker.record_tool_call(
+        session,
+        tool_name="search_web",
+        llm_tokens=10,
+        cost_usd=0.52,
+    )
+
+    assert updated.usage.total_cost_usd == pytest.approx(0.52)
 
 
 def test_usage_tracker_accumulates_llm_usage() -> None:

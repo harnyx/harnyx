@@ -272,6 +272,7 @@ def test_execute_tool_endpoint_supports_tooling_info() -> None:
     body = response.json()
     assert body["result_policy"] == "log_only"
     assert body["budget"]["session_budget_usd"] == pytest.approx(provider.session.budget_usd)
+    assert body["budget"]["session_hard_limit_usd"] == pytest.approx(provider.session.effective_hard_limit_usd)
     assert body["budget"]["session_used_budget_usd"] == pytest.approx(0.0)
     assert body["budget"]["session_remaining_budget_usd"] == pytest.approx(provider.session.budget_usd)
     response_payload = body["response"]

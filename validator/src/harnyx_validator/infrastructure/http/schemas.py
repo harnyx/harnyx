@@ -6,7 +6,14 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
-from harnyx_commons.domain.miner_task import EvaluationDetails, MinerTask, Query, ReferenceAnswer, Response
+from harnyx_commons.domain.miner_task import (
+    DEFAULT_MINER_TASK_BUDGET_USD,
+    EvaluationDetails,
+    MinerTask,
+    Query,
+    ReferenceAnswer,
+    Response,
+)
 from harnyx_commons.tools.http_models import ToolExecuteResponseDTO, ToolResultDTO
 from harnyx_validator.application.dto.evaluation import MinerTaskBatchSpec, ScriptArtifactSpec
 from harnyx_validator.domain.shared_config import VALIDATOR_STRICT_CONFIG
@@ -88,7 +95,7 @@ class MinerTaskRequestModel(BaseModel):
     task_id: str = Field(min_length=1)
     query: Query
     reference_answer: ReferenceAnswer
-    budget_usd: float = Field(default=0.05, ge=0.0)
+    budget_usd: float = Field(default=DEFAULT_MINER_TASK_BUDGET_USD, ge=0.0)
 
     @field_validator("task_id")
     @classmethod

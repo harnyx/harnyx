@@ -51,6 +51,7 @@ class ToolBudgetDTO(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     session_budget_usd: float = Field(ge=0.0)
+    session_hard_limit_usd: float = Field(ge=0.0)
     session_used_budget_usd: float = Field(ge=0.0)
     session_remaining_budget_usd: float = Field(ge=0.0)
 

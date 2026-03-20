@@ -86,8 +86,13 @@ Miner evaluations run under a per-session budget, and that budget **may vary bet
 
 Tool calls return a budget snapshot:
 - `session_budget_usd`
+- `session_hard_limit_usd`
 - `session_used_budget_usd`
 - `session_remaining_budget_usd`
+
+`session_budget_usd` is the communicated budget for the evaluation. `session_hard_limit_usd` is the actual enforcement ceiling for the session. `session_remaining_budget_usd` is clamped at `0` once usage exceeds the communicated budget, even if the hard limit is still higher.
+
+For miner-task batch evaluation, the run is strict: if execution hits the hard limit, validators record the run as `session_budget_exhausted` and stop before scoring/finalization. Return a best-effort `Response` before that point if you can.
 
 You can call `tooling_info` (free) to fetch pricing metadata for available tools/models:
 

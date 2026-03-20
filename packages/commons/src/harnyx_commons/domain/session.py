@@ -111,6 +111,7 @@ class Session:
     issued_at: datetime
     expires_at: datetime
     budget_usd: float
+    hard_limit_usd: float | None = None
     usage: SessionUsage = field(default_factory=SessionUsage)
     status: SessionStatus = SessionStatus.ACTIVE
 
@@ -121,6 +122,15 @@ class Session:
             raise ValueError("expires_at must be later than issued_at")
         if self.budget_usd < 0.0:
             raise ValueError("budget_usd must be non-negative")
+        if self.hard_limit_usd is not None and self.hard_limit_usd < 0.0:
+            raise ValueError("hard_limit_usd must be non-negative")
+        if self.effective_hard_limit_usd < self.budget_usd:
+            raise ValueError("hard_limit_usd must be greater than or equal to budget_usd")
+
+    @property
+    def effective_hard_limit_usd(self) -> float:
+        """Return the enforced budget ceiling for this session."""
+        return self.budget_usd if self.hard_limit_usd is None else self.hard_limit_usd
 
     def mark_exhausted(self) -> Session:
         """Mark the session as exhausted."""

@@ -37,7 +37,7 @@ Body: [MinerTaskBatchRequestModel](#model-minertaskbatchrequestmodel)
 | `created_at` |  |  | req | `string` |
 | `cutoff_at` |  |  | req | `string` |
 | `tasks` |  |  | req | array[[MinerTaskRequestModel](#model-minertaskrequestmodel)] |
-|  | `budget_usd` |  | opt | `number` (default: 0.05) |
+|  | `budget_usd` |  | opt | `number` (default: 0.5) |
 |  | `query` |  | req | [Query](#model-query) |
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
@@ -200,6 +200,7 @@ Body: [ToolExecuteResponseDTO](#model-toolexecuteresponsedto)
 | --- | --- | --- | --- | --- |
 | `budget` |  |  | req | [ToolBudgetDTO](#model-toolbudgetdto) |
 |  | `session_budget_usd` |  | req | `number` |
+|  | `session_hard_limit_usd` |  | req | `number` |
 |  | `session_remaining_budget_usd` |  | req | `number` |
 |  | `session_used_budget_usd` |  | req | `number` |
 | `cost_usd` |  |  | opt | `number` (nullable) |
@@ -590,7 +591,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | `created_at` |  |  | req | `string` |
 | `cutoff_at` |  |  | req | `string` |
 | `tasks` |  |  | req | array[[MinerTaskRequestModel](#model-minertaskrequestmodel)] |
-|  | `budget_usd` |  | opt | `number` (default: 0.05) |
+|  | `budget_usd` |  | opt | `number` (default: 0.5) |
 |  | `query` |  | req | [Query](#model-query) |
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
@@ -655,7 +656,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `budget_usd` |  |  | opt | `number` (default: 0.05) |
+| `budget_usd` |  |  | opt | `number` (default: 0.5) |
 | `query` |  |  | req | [Query](#model-query) |
 |  | `text` |  | req | `string` |
 | `reference_answer` |  |  | req | [ReferenceAnswer](#model-referenceanswer) |
@@ -670,7 +671,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
   "additionalProperties": false,
   "properties": {
     "budget_usd": {
-      "default": 0.05,
+      "default": 0.5,
       "minimum": 0.0,
       "title": "Budget Usd",
       "type": "number"
@@ -1243,6 +1244,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `session_budget_usd` |  |  | req | `number` |
+| `session_hard_limit_usd` |  |  | req | `number` |
 | `session_remaining_budget_usd` |  |  | req | `number` |
 | `session_used_budget_usd` |  |  | req | `number` |
 
@@ -1255,6 +1257,11 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     "session_budget_usd": {
       "minimum": 0.0,
       "title": "Session Budget Usd",
+      "type": "number"
+    },
+    "session_hard_limit_usd": {
+      "minimum": 0.0,
+      "title": "Session Hard Limit Usd",
       "type": "number"
     },
     "session_remaining_budget_usd": {
@@ -1270,6 +1277,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
   },
   "required": [
     "session_budget_usd",
+    "session_hard_limit_usd",
     "session_used_budget_usd",
     "session_remaining_budget_usd"
   ],
@@ -1343,6 +1351,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | --- | --- | --- | --- | --- |
 | `budget` |  |  | req | [ToolBudgetDTO](#model-toolbudgetdto) |
 |  | `session_budget_usd` |  | req | `number` |
+|  | `session_hard_limit_usd` |  | req | `number` |
 |  | `session_remaining_budget_usd` |  | req | `number` |
 |  | `session_used_budget_usd` |  | req | `number` |
 | `cost_usd` |  |  | opt | `number` (nullable) |
