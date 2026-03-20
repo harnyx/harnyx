@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from harnyx_validator.application.accept_batch import AcceptEvaluationBatch
 from harnyx_validator.application.services.evaluation_batch import EvaluationBatchConfig, MinerTaskBatchService
 from harnyx_validator.application.status import StatusProvider
+from harnyx_validator.infrastructure.observability.sentry import capture_exception
 from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
 from harnyx_validator.runtime.agent_artifact import create_platform_agent_resolver
 
@@ -111,6 +112,7 @@ class EvaluationWorker:
                 if self._batch_tracker is not None:
                     self._batch_tracker.mark_completed(batch.batch_id)
             except Exception as exc:
+                capture_exception(exc)
                 if self._batch_tracker is not None:
                     self._batch_tracker.mark_retryable_or_completed(batch.batch_id)
                 logger.exception(

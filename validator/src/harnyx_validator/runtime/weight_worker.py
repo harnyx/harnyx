@@ -10,6 +10,7 @@ from harnyx_validator.application.submit_weights import (
     DEFAULT_MIN_BLOCKS,
     WeightSubmissionService,
 )
+from harnyx_validator.infrastructure.observability.sentry import capture_exception
 
 # Default polling interval in seconds
 DEFAULT_POLL_INTERVAL = 30.0
@@ -39,7 +40,11 @@ class WeightWorker(BaseWorker):
 
     def _tick(self) -> None:
         """Attempt to submit weights if the window is open."""
-        result = self._submission_service.try_submit()
+        try:
+            result = self._submission_service.try_submit()
+        except Exception as exc:
+            capture_exception(exc)
+            raise
         if result is not None:
             self._logger.info(
                 "weights submitted",

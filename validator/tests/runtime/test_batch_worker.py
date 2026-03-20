@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+import harnyx_validator.runtime.evaluation_worker as worker_mod
 from harnyx_commons.domain.miner_task import MinerTask, Query, ReferenceAnswer
 from harnyx_validator.application.accept_batch import AcceptEvaluationBatch
 from harnyx_validator.application.dto.evaluation import MinerTaskBatchSpec, ScriptArtifactSpec
@@ -157,3 +158,30 @@ async def test_evaluation_worker_marks_batch_completed_when_all_pairs_are_record
 
     assert len(inbox) == 0
     assert status.state.last_error == "worker boom"
+
+
+@pytest.mark.anyio
+async def test_evaluation_worker_sends_failed_batch_exception_to_sentry(monkeypatch) -> None:
+    captured: list[BaseException] = []
+    monkeypatch.setattr(worker_mod, "capture_exception", captured.append)
+
+    inbox = InMemoryBatchInbox()
+    status = StatusProvider()
+    progress = ProgressSpy()
+    accept_batch = AcceptEvaluationBatch(inbox=inbox, status=status, progress=progress)
+    batch = _sample_batch()
+    accept_batch.execute(batch)
+    fake_service = FakeBatchService(error=RuntimeError("worker boom"))
+
+    worker = EvaluationWorker(
+        batch_service=fake_service,
+        batch_inbox=inbox,
+        status_provider=status,
+        batch_tracker=accept_batch,
+    )
+
+    worker.start()
+    assert await asyncio.to_thread(fake_service.processed_event.wait, timeout=1.0)
+    await worker.stop(timeout=1.0)
+
+    assert [str(exc) for exc in captured] == ["worker boom"]

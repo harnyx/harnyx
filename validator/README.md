@@ -38,6 +38,14 @@ Edit `.env` and set at least:
 
 The defaults in `.env.example` already target mainnet (`finney`) and netuid `67`. Validator sandbox execution defaults to `harnyx/harnyx-subnet-sandbox:finney`; set `SANDBOX_IMAGE=harnyx/harnyx-subnet-sandbox:testnet` for staging/testnet, or use another explicit value only when you intentionally want to test or pin a different sandbox image.
 
+### Optional Sentry
+
+- Set `SENTRY_DSN` to enable validator error reporting to Sentry.
+- Leave `SENTRY_DSN` blank to disable Sentry entirely.
+- `SENTRY_ENVIRONMENT`, `SENTRY_RELEASE`, and `SENTRY_TRACES_SAMPLE_RATE` are optional shared Sentry settings.
+- Validator follows the same Sentry model as platform: framework request-path and fatal top-level crash failures can be auto-captured, while swallowed background-worker failures are captured explicitly.
+- Expected translated request/tool 4xx paths stay low-noise and should not create Sentry events during normal control flow.
+
 ### Wallet configuration
 
 Choose one of these options:

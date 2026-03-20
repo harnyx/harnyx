@@ -16,14 +16,17 @@ from harnyx_validator.infrastructure.observability.logging import (
     enable_cloud_logging,
     init_logging,
 )
+from harnyx_validator.infrastructure.observability.sentry import configure_sentry_from_env
 from harnyx_validator.runtime.bootstrap import build_runtime, close_runtime_resources
 from harnyx_validator.runtime.evaluation_worker import create_evaluation_worker_from_context
 from harnyx_validator.runtime.settings import Settings
 from harnyx_validator.runtime.weight_worker import create_weight_worker
 
 init_logging()
-configure_tracing(service_name="harnyx-validator")
+configure_sentry_from_env()
 _settings = Settings.load()
+configure_tracing(service_name="harnyx-validator")
+
 if _settings.observability.enable_cloud_logging:
     gcp_project = _settings.observability.gcp_project_id
     if gcp_project is None:
@@ -40,7 +43,6 @@ else:
     )
 
 _runtime = build_runtime(_settings)
-
 _evaluation_worker = create_evaluation_worker_from_context(_runtime)
 _weight_worker = create_weight_worker(
     submission_service=_runtime.weight_submission_service,

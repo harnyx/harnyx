@@ -28,6 +28,10 @@ class ObservabilitySettings(BaseSettings):
         default_factory=lambda: SecretStr(""),
         alias="SENTRY_DSN_PLATFORM_WORKER",
     )
+    sentry_dsn: SecretStr = Field(
+        default_factory=lambda: SecretStr(""),
+        alias="SENTRY_DSN",
+    )
     sentry_environment: str | None = Field(default=None, alias="SENTRY_ENVIRONMENT")
     sentry_release: str | None = Field(default=None, alias="SENTRY_RELEASE")
     sentry_traces_sample_rate: float | None = Field(
@@ -57,6 +61,10 @@ class ObservabilitySettings(BaseSettings):
     @property
     def sentry_dsn_platform_worker_value(self) -> str:
         return self.sentry_dsn_platform_worker.get_secret_value().strip()
+
+    @property
+    def sentry_dsn_value(self) -> str:
+        return self.sentry_dsn.get_secret_value().strip()
 
 
 __all__ = ["ObservabilitySettings"]
