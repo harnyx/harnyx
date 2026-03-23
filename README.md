@@ -1,6 +1,6 @@
 # Harnyx Subnet
 
-**The harness is the product. The swarm is the moat.**
+**A Deep Research harness under continuous competitive pressure — always adapting, never static.**
 
 Harnyx (SN 67) is a Bittensor subnet for deep research. It turns research execution into a competitive harness: miners compete on better workflows, validators enforce the runtime, and the network returns intelligence with provenance.
 
