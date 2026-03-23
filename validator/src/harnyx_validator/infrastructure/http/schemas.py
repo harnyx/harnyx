@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
@@ -162,6 +163,7 @@ class ProgressResponse(BaseModel):
     model_config = VALIDATOR_STRICT_CONFIG
 
     batch_id: str = Field(min_length=1)
+    status: Literal["unknown", "queued", "processing", "completed"]
     total: int = Field(ge=0)
     completed: int = Field(ge=0)
     remaining: int = Field(ge=0)

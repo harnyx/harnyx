@@ -216,7 +216,7 @@ async def test_scheduler_records_failure_when_sandbox_invocation_errors() -> Non
     assert result.runs[0].run.details.elapsed_ms == pytest.approx(2000.0)
 
 
-async def test_scheduler_records_failure_when_scoring_errors() -> None:
+async def test_scheduler_retries_only_transient_sandbox_invocation_errors() -> None:
     tasks = (_task("first"), _task("second"))
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
@@ -232,7 +232,7 @@ async def test_scheduler_records_failure_when_scoring_errors() -> None:
         async def evaluate(self, request):
             self.calls += 1
             if self.calls == 1:
-                raise RuntimeError("embedding client unavailable")
+                raise SandboxInvocationError("upstream tool failure")
             details = EvaluationDetails(
                 score_breakdown=ScoreBreakdown(
                     comparison_score=1.0,
@@ -276,6 +276,74 @@ async def test_scheduler_records_failure_when_scoring_errors() -> None:
 
     assert len(result.runs) == 2
     assert len(evaluation_records.records_by_batch) == 2
+    assert orchestrator.calls == 3
+    assert result.runs[0].score == pytest.approx(0.75)
+    assert result.runs[0].run.response == Response(text="answer first")
+    assert result.runs[1].score == pytest.approx(0.75)
+    assert result.runs[1].run.response == Response(text="answer second")
+
+
+async def test_scheduler_records_terminal_failure_for_generic_post_invoke_error_and_continues() -> None:
+    tasks = (_task("first"), _task("second"))
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    sandbox_manager = DummySandboxManager()
+    evaluation_records = DummyEvaluationRecordStore()
+    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    receipt_log = DummyReceiptLog()
+
+    class GenericFailureThenSuccessOrchestrator:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def evaluate(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("embedding client unavailable")
+            details = EvaluationDetails(
+                score_breakdown=ScoreBreakdown(
+                    comparison_score=1.0,
+                    similarity_score=0.5,
+                    total_score=0.75,
+                    scoring_version="v1",
+                ),
+                total_tool_usage=ToolUsageSummary.zero(),
+            )
+            run = MinerTaskRun(
+                session_id=request.session_id,
+                uid=request.uid,
+                artifact_id=request.artifact_id,
+                task_id=request.task.task_id,
+                response=Response(text=f"answer {request.task.query.text}"),
+                details=details,
+                completed_at=datetime(2025, 10, 27, tzinfo=UTC),
+            )
+            return TaskRunOutcome(run=run, usage=TokenUsageSummary.empty())
+
+    orchestrator = GenericFailureThenSuccessOrchestrator()
+
+    scheduler = EvaluationScheduler(
+        tasks=tasks,
+        subtensor_client=subtensor,
+        sandbox_manager=sandbox_manager,
+        session_manager=session_manager,
+        evaluation_records=evaluation_records,
+        receipt_log=receipt_log,
+        orchestrator_factory=lambda _client: orchestrator,
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+        ),
+    )
+
+    artifacts = (ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0),)
+    result = await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
+
+    assert orchestrator.calls == 2
+    assert len(result.runs) == 2
+    assert len(evaluation_records.records_by_batch) == 2
     assert result.runs[0].score == 0.0
     assert result.runs[0].run.details.error == EvaluationError(
         code="task_run_failed",
@@ -283,6 +351,117 @@ async def test_scheduler_records_failure_when_scoring_errors() -> None:
     )
     assert result.runs[1].score == pytest.approx(0.75)
     assert result.runs[1].run.response == Response(text="answer second")
+
+
+async def test_scheduler_retries_sandbox_start_once_before_running_tasks() -> None:
+    task = _task("startup")
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+
+    class FlakySandboxManager(DummySandboxManager):
+        def start(self, options: object | None = None) -> SandboxDeployment:
+            self.starts.append(options)
+            if len(self.starts) == 1:
+                raise RuntimeError("sandbox cold start failed")
+            return SandboxDeployment(client=object())
+
+    sandbox_manager = FlakySandboxManager()
+    evaluation_records = DummyEvaluationRecordStore()
+    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    receipt_log = DummyReceiptLog()
+
+    def orchestrator_factory(_client: object):
+        class StubOrchestrator:
+            async def evaluate(self, request):
+                details = EvaluationDetails(
+                    score_breakdown=ScoreBreakdown(
+                        comparison_score=1.0,
+                        similarity_score=0.5,
+                        total_score=0.75,
+                        scoring_version="v1",
+                    ),
+                    total_tool_usage=ToolUsageSummary.zero(),
+                )
+                run = MinerTaskRun(
+                    session_id=request.session_id,
+                    uid=request.uid,
+                    artifact_id=request.artifact_id,
+                    task_id=request.task.task_id,
+                    response=Response(text="answer startup"),
+                    details=details,
+                    completed_at=datetime(2025, 10, 27, tzinfo=UTC),
+                )
+                return TaskRunOutcome(run=run, usage=TokenUsageSummary.empty())
+
+        return StubOrchestrator()
+
+    scheduler = EvaluationScheduler(
+        tasks=(task,),
+        subtensor_client=subtensor,
+        sandbox_manager=sandbox_manager,
+        session_manager=session_manager,
+        evaluation_records=evaluation_records,
+        receipt_log=receipt_log,
+        orchestrator_factory=orchestrator_factory,
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+        ),
+    )
+
+    artifacts = (ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0),)
+    result = await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
+
+    assert len(sandbox_manager.starts) == 2
+    assert len(result.runs) == 1
+    assert result.runs[0].score == pytest.approx(0.75)
+
+
+async def test_scheduler_returns_terminal_setup_failures_in_batch_result() -> None:
+    task = _task("startup failure")
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+
+    class AlwaysFailingSandboxManager(DummySandboxManager):
+        def start(self, options: object | None = None) -> SandboxDeployment:
+            self.starts.append(options)
+            raise RuntimeError("sandbox cold start failed")
+
+    sandbox_manager = AlwaysFailingSandboxManager()
+    evaluation_records = DummyEvaluationRecordStore()
+    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    receipt_log = DummyReceiptLog()
+
+    scheduler = EvaluationScheduler(
+        tasks=(task,),
+        subtensor_client=subtensor,
+        sandbox_manager=sandbox_manager,
+        session_manager=session_manager,
+        evaluation_records=evaluation_records,
+        receipt_log=receipt_log,
+        orchestrator_factory=lambda _client: _client,
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+        ),
+    )
+
+    artifacts = (ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0),)
+    result = await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
+
+    assert len(sandbox_manager.starts) == 2
+    assert len(result.runs) == 1
+    assert len(evaluation_records.records_by_batch) == 1
+    assert result.runs[0] == evaluation_records.records_by_batch[0]
+    assert result.runs[0].score == 0.0
+    assert result.runs[0].run.details.error == EvaluationError(
+        code="sandbox_start_failed",
+        message="sandbox cold start failed",
+    )
 
 
 async def test_evaluation_runner_issues_session_with_task_budget() -> None:

@@ -114,9 +114,9 @@ class EvaluationWorker:
             except Exception as exc:
                 capture_exception(exc)
                 if self._batch_tracker is not None:
-                    self._batch_tracker.mark_retryable_or_completed(batch.batch_id)
+                    self._batch_tracker.mark_completed_if_recorded(batch.batch_id)
                 logger.exception(
-                    "batch processing failed",
+                    "batch processing raised unexpectedly after service-owned recovery boundary",
                     extra={"batch_id": str(batch.batch_id)},
                 )
                 if self._status is not None:

@@ -157,11 +157,22 @@ def add_control_routes(
         deps: ValidatorControlDeps = Depends(get_control_deps),  # noqa: B008
         _caller: str = Security(require_bittensor_caller),
     ) -> ProgressResponse:
+        lifecycle = deps.accept_batch.lifecycle_for(batch_id)
+        if lifecycle is None:
+            return ProgressResponse(
+                batch_id=str(batch_id),
+                status="unknown",
+                total=0,
+                completed=0,
+                remaining=0,
+                miner_task_runs=[],
+            )
         snapshot = deps.progress_tracker.snapshot(batch_id)
         tasks_by_id = {task.task_id: task for task in snapshot["tasks"]}
         runs = [_serialize_run(result, tasks_by_id) for result in snapshot["miner_task_runs"]]
         return ProgressResponse(
             batch_id=str(batch_id),
+            status=lifecycle,
             total=snapshot["total"],
             completed=snapshot["completed"],
             remaining=snapshot["remaining"],

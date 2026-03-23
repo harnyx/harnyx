@@ -17,6 +17,7 @@ from harnyx_commons.domain.session import SessionStatus
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
 from harnyx_commons.errors import SessionBudgetExhaustedError
 from harnyx_validator.application.dto.evaluation import (
+    MinerTaskBatchSpec,
     MinerTaskRunRequest,
     MinerTaskRunSubmission,
     ScriptArtifactSpec,
@@ -37,6 +38,7 @@ Clock = Callable[[], datetime]
 SubmissionFactory = Callable[[MinerTask, SessionIssued], Awaitable[MinerTaskRunSubmission]]
 
 logger = logging.getLogger("harnyx_validator.scheduler")
+LOCAL_RETRY_ATTEMPTS = 2
 
 
 def _elapsed_ms(*, issued_at: datetime, completed_at: datetime) -> float:
@@ -76,20 +78,49 @@ class EvaluationRunner:
         tasks: Sequence[MinerTask],
         orchestrator: TaskRunOrchestrator,
     ) -> list[MinerTaskRunSubmission]:
-        async def create_submission(task: MinerTask, issued: SessionIssued) -> MinerTaskRunSubmission:
-            return await self._evaluate_task(
-                batch_id=batch_id,
-                artifact=artifact,
-                task=task,
-                issued=issued,
-                orchestrator=orchestrator,
+        submissions: list[MinerTaskRunSubmission] = []
+        for task in tasks:
+            submissions.append(
+                await self._evaluate_task_with_retry(
+                    batch_id=batch_id,
+                    artifact=artifact,
+                    task=task,
+                    orchestrator=orchestrator,
+                )
             )
+        return submissions
 
-        return await self._run_tasks_with_sessions(
-            artifact=artifact,
-            tasks=tasks,
-            create_submission=create_submission,
+    async def record_failure_for_missing_pairs(
+        self,
+        *,
+        batch: MinerTaskBatchSpec,
+        error_code: str,
+        error_message: str,
+    ) -> list[MinerTaskRunSubmission]:
+        recorded_pairs = (
+            frozenset()
+            if self._progress is None
+            else self._progress.recorded_pairs(batch.batch_id)
         )
+        submissions: list[MinerTaskRunSubmission] = []
+        for artifact in batch.artifacts:
+            remaining_tasks = tuple(
+                task
+                for task in batch.tasks
+                if (artifact.artifact_id, task.task_id) not in recorded_pairs
+            )
+            if not remaining_tasks:
+                continue
+            submissions.extend(
+                await self.record_failure_for_artifact(
+                    batch_id=batch.batch_id,
+                    artifact=artifact,
+                    tasks=remaining_tasks,
+                    error_code=error_code,
+                    error_message=error_message,
+                )
+            )
+        return submissions
 
     async def _run_tasks_with_sessions(
         self,
@@ -107,7 +138,49 @@ class EvaluationRunner:
                 self._sessions.revoke(issued.session.session_id)
         return submissions
 
-    async def _evaluate_task(
+    async def _evaluate_task_with_retry(
+        self,
+        *,
+        batch_id: UUID,
+        artifact: ScriptArtifactSpec,
+        task: MinerTask,
+        orchestrator: TaskRunOrchestrator,
+    ) -> MinerTaskRunSubmission:
+        issued = self._issue_session(uid=artifact.uid, task=task)
+        try:
+            for attempt_number in range(1, LOCAL_RETRY_ATTEMPTS + 1):
+                try:
+                    return await self._evaluate_task_attempt(
+                        batch_id=batch_id,
+                        artifact=artifact,
+                        task=task,
+                        issued=issued,
+                        orchestrator=orchestrator,
+                    )
+                except SandboxInvocationError as exc:
+                    if attempt_number == LOCAL_RETRY_ATTEMPTS:
+                        return self._record_task_failure(
+                            batch_id=batch_id,
+                            artifact=artifact,
+                            task=task,
+                            session_id=issued.session.session_id,
+                            **_failure_details(exc),
+                            exc=exc,
+                        )
+                    self._log_retry_attempt(
+                        batch_id=batch_id,
+                        artifact=artifact,
+                        task=task,
+                        attempt_number=attempt_number,
+                        exc=exc,
+                    )
+                    continue
+        finally:
+            self._sessions.revoke(issued.session.session_id)
+
+        raise RuntimeError("task retry loop exited without returning")
+
+    async def _evaluate_task_attempt(
         self,
         *,
         batch_id: UUID,
@@ -138,26 +211,15 @@ class EvaluationRunner:
                 session_id=issued.session.session_id,
                 error_message=str(exc),
             )
-        except SandboxInvocationError as exc:
-            return self._record_task_failure(
-                batch_id=batch_id,
-                artifact=artifact,
-                task=task,
-                session_id=issued.session.session_id,
-                error_code="sandbox_invocation_failed",
-                error_message=str(exc),
-                log_message="sandbox invocation failed during miner task run",
-                exc=exc,
-            )
+        except SandboxInvocationError:
+            raise
         except Exception as exc:
             return self._record_task_failure(
                 batch_id=batch_id,
                 artifact=artifact,
                 task=task,
                 session_id=issued.session.session_id,
-                error_code="task_run_failed",
-                error_message=str(exc),
-                log_message="miner task run failed after sandbox invocation",
+                **_failure_details(exc),
                 exc=exc,
             )
 
@@ -325,6 +387,27 @@ class EvaluationRunner:
             error_message=error_message,
         )
 
+    def _log_retry_attempt(
+        self,
+        *,
+        batch_id: UUID,
+        artifact: ScriptArtifactSpec,
+        task: MinerTask,
+        attempt_number: int,
+        exc: Exception,
+    ) -> None:
+        logger.warning(
+            "miner task run attempt failed; retrying once",
+            extra={
+                "batch_id": str(batch_id),
+                "uid": artifact.uid,
+                "artifact_id": str(artifact.artifact_id),
+                "task_id": str(task.task_id),
+                "attempt_number": attempt_number,
+            },
+            exc_info=exc,
+        )
+
     def _summarize_session(self, envelope: SessionEnvelope) -> tuple[TokenUsageSummary, ToolUsageSummary]:
         receipts = tuple(self._receipts.for_session(envelope.session.session_id))
         return self._usage.summarize(envelope.session, receipts)
@@ -356,4 +439,18 @@ class EvaluationRunner:
         return self._sessions.issue(request)
 
 
-__all__ = ["EvaluationRunner"]
+def _failure_details(exc: Exception) -> dict[str, str]:
+    if isinstance(exc, SandboxInvocationError):
+        return {
+            "error_code": "sandbox_invocation_failed",
+            "error_message": str(exc),
+            "log_message": "sandbox invocation failed during miner task run",
+        }
+    return {
+        "error_code": "task_run_failed",
+        "error_message": str(exc),
+        "log_message": "miner task run failed after sandbox invocation",
+    }
+
+
+__all__ = ["EvaluationRunner", "LOCAL_RETRY_ATTEMPTS"]

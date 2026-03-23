@@ -78,13 +78,26 @@ class FakeBatchService:
         self.process(batch)
 
 
+class PersistentFailureBatchService:
+    def __init__(self) -> None:
+        self.processed: list[MinerTaskBatchSpec] = []
+        self.processed_event = threading.Event()
+
+    async def process_async(self, batch: MinerTaskBatchSpec) -> None:
+        self.processed.append(batch)
+        self.processed_event.set()
+        raise RuntimeError("worker boom")
+
+
 @pytest.mark.anyio
 async def test_evaluation_worker_drains_inbox():
     inbox = InMemoryBatchInbox()
     status = StatusProvider()
     progress = ProgressSpy()
     accept_batch = AcceptEvaluationBatch(inbox=inbox, status=status, progress=progress)
-    fake_service = FakeBatchService()
+    fake_service = FakeBatchService(
+        on_process=lambda current_batch: progress.set_recorded_pairs(current_batch, _all_pairs(current_batch)),
+    )
 
     worker = EvaluationWorker(
         batch_service=fake_service,
@@ -104,14 +117,14 @@ async def test_evaluation_worker_drains_inbox():
 
 
 @pytest.mark.anyio
-async def test_evaluation_worker_marks_batch_retryable_when_pairs_remain() -> None:
+async def test_evaluation_worker_does_not_retry_incomplete_batch_after_service_boundary_exception() -> None:
     inbox = InMemoryBatchInbox()
     status = StatusProvider()
     progress = ProgressSpy()
     accept_batch = AcceptEvaluationBatch(inbox=inbox, status=status, progress=progress)
     batch = _sample_batch()
     accept_batch.execute(batch)
-    fake_service = FakeBatchService(error=RuntimeError("worker boom"))
+    fake_service = PersistentFailureBatchService()
 
     worker = EvaluationWorker(
         batch_service=fake_service,
@@ -121,17 +134,19 @@ async def test_evaluation_worker_marks_batch_retryable_when_pairs_remain() -> No
     )
 
     worker.start()
-    assert await asyncio.to_thread(fake_service.processed_event.wait, timeout=1.0)
-    await worker.stop(timeout=1.0)
+    try:
+        assert await asyncio.to_thread(fake_service.processed_event.wait, timeout=1.0)
+        await asyncio.sleep(0.05)
+    finally:
+        await worker.stop(timeout=1.0)
 
-    accept_batch.execute(batch)
-
-    assert len(inbox) == 1
-    assert status.state.last_error == "worker boom"
+    assert len(fake_service.processed) == 1
+    assert accept_batch.lifecycle_for(batch.batch_id) == "processing"
+    assert len(inbox) == 0
 
 
 @pytest.mark.anyio
-async def test_evaluation_worker_marks_batch_completed_when_all_pairs_are_recorded() -> None:
+async def test_evaluation_worker_marks_batch_completed_when_pairs_are_already_recorded() -> None:
     inbox = InMemoryBatchInbox()
     status = StatusProvider()
     progress = ProgressSpy()
@@ -171,7 +186,7 @@ async def test_evaluation_worker_sends_failed_batch_exception_to_sentry(monkeypa
     accept_batch = AcceptEvaluationBatch(inbox=inbox, status=status, progress=progress)
     batch = _sample_batch()
     accept_batch.execute(batch)
-    fake_service = FakeBatchService(error=RuntimeError("worker boom"))
+    fake_service = PersistentFailureBatchService()
 
     worker = EvaluationWorker(
         batch_service=fake_service,
@@ -181,7 +196,12 @@ async def test_evaluation_worker_sends_failed_batch_exception_to_sentry(monkeypa
     )
 
     worker.start()
-    assert await asyncio.to_thread(fake_service.processed_event.wait, timeout=1.0)
-    await worker.stop(timeout=1.0)
+    try:
+        assert await asyncio.to_thread(fake_service.processed_event.wait, timeout=1.0)
+        await asyncio.sleep(0.05)
+    finally:
+        await worker.stop(timeout=1.0)
 
     assert [str(exc) for exc in captured] == ["worker boom"]
+    assert len(fake_service.processed) == 1
+    assert len(inbox) == 0

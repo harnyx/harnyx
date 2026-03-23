@@ -107,6 +107,7 @@ def test_accept_batch_ignores_exact_duplicate_replay_while_completed() -> None:
     assert inbox.next() == batch
     status.state.queued_batches = len(inbox)
     accept_batch.mark_processing(batch.batch_id)
+    progress.set_recorded_pairs(batch, _all_pairs(batch))
     accept_batch.mark_completed(batch.batch_id)
     accept_batch.execute(batch)
 
@@ -116,47 +117,7 @@ def test_accept_batch_ignores_exact_duplicate_replay_while_completed() -> None:
     assert progress.registered == [batch]
 
 
-def test_accept_batch_reenqueues_retryable_batch_with_remaining_pairs() -> None:
-    inbox = InMemoryBatchInbox()
-    status = StatusProvider()
-    progress = ProgressSpy()
-    accept_batch = AcceptEvaluationBatch(inbox=inbox, status=status, progress=progress)
-    batch = _make_batch()
-
-    accept_batch.execute(batch)
-    assert inbox.next() == batch
-    status.state.queued_batches = len(inbox)
-    accept_batch.mark_processing(batch.batch_id)
-    accept_batch.mark_retryable_or_completed(batch.batch_id)
-    accept_batch.execute(batch)
-
-    assert len(inbox) == 1
-    assert status.state.queued_batches == 1
-    assert progress.register_attempts == [batch]
-
-
-def test_accept_batch_retryable_replay_stays_single_runnable_copy() -> None:
-    inbox = InMemoryBatchInbox()
-    status = StatusProvider()
-    progress = ProgressSpy()
-    accept_batch = AcceptEvaluationBatch(inbox=inbox, status=status, progress=progress)
-    batch = _make_batch()
-
-    accept_batch.execute(batch)
-    assert inbox.next() == batch
-    status.state.queued_batches = len(inbox)
-    accept_batch.mark_processing(batch.batch_id)
-    accept_batch.mark_retryable_or_completed(batch.batch_id)
-
-    accept_batch.execute(batch)
-    accept_batch.execute(batch)
-
-    assert len(inbox) == 1
-    assert status.state.queued_batches == 1
-    assert progress.register_attempts == [batch]
-
-
-def test_accept_batch_retryable_replay_becomes_completed_when_all_pairs_are_recorded() -> None:
+def test_accept_batch_duplicate_processing_replay_becomes_completed_when_all_pairs_are_recorded() -> None:
     inbox = InMemoryBatchInbox()
     status = StatusProvider()
     progress = ProgressSpy()
@@ -168,12 +129,52 @@ def test_accept_batch_retryable_replay_becomes_completed_when_all_pairs_are_reco
     status.state.queued_batches = len(inbox)
     accept_batch.mark_processing(batch.batch_id)
     progress.set_recorded_pairs(batch, _all_pairs(batch))
-    accept_batch.mark_retryable_or_completed(batch.batch_id)
     accept_batch.execute(batch)
 
     assert len(inbox) == 0
     assert status.state.queued_batches == 0
     assert progress.register_attempts == [batch]
+
+
+def test_accept_batch_complete_if_recorded_leaves_processing_when_pairs_are_missing() -> None:
+    inbox = InMemoryBatchInbox()
+    status = StatusProvider()
+    progress = ProgressSpy()
+    accept_batch = AcceptEvaluationBatch(inbox=inbox, status=status, progress=progress)
+    batch = _make_batch()
+
+    accept_batch.execute(batch)
+    assert inbox.next() == batch
+    status.state.queued_batches = len(inbox)
+    accept_batch.mark_processing(batch.batch_id)
+
+    completed = accept_batch.mark_completed_if_recorded(batch.batch_id)
+
+    assert completed is False
+    assert accept_batch.lifecycle_for(batch.batch_id) == "processing"
+    assert len(inbox) == 0
+    assert status.state.queued_batches == 0
+
+
+def test_accept_batch_complete_if_recorded_marks_completed_when_all_pairs_are_recorded() -> None:
+    inbox = InMemoryBatchInbox()
+    status = StatusProvider()
+    progress = ProgressSpy()
+    accept_batch = AcceptEvaluationBatch(inbox=inbox, status=status, progress=progress)
+    batch = _make_batch()
+
+    accept_batch.execute(batch)
+    assert inbox.next() == batch
+    status.state.queued_batches = len(inbox)
+    accept_batch.mark_processing(batch.batch_id)
+    progress.set_recorded_pairs(batch, _all_pairs(batch))
+
+    completed = accept_batch.mark_completed_if_recorded(batch.batch_id)
+
+    assert completed is True
+    assert accept_batch.lifecycle_for(batch.batch_id) == "completed"
+    assert len(inbox) == 0
+    assert status.state.queued_batches == 0
 
 
 def test_accept_batch_rejects_conflicting_replay() -> None:

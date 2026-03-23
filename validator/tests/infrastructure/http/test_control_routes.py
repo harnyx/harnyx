@@ -42,14 +42,19 @@ def _create_test_app(provider: DemoControlDependencyProvider) -> FastAPI:
 
 
 class StubAcceptBatch:
-    def __init__(self) -> None:
+    def __init__(self, *, lifecycle: str | None = "processing") -> None:
         self.received_batch: MinerTaskBatchSpec | None = None
+        self._lifecycle = lifecycle
 
     def execute(self, batch: object) -> None:
         if not isinstance(batch, MinerTaskBatchSpec):
             raise AssertionError(f"expected MinerTaskBatchSpec, got {type(batch)!r}")
         self.received_batch = batch
         return None
+
+    def lifecycle_for(self, batch_id: UUID) -> str | None:
+        _ = batch_id
+        return self._lifecycle
 
 
 class StubStatusProvider:
@@ -66,8 +71,8 @@ class FakeProgressTracker:
 
 
 class DemoControlDependencyProvider:
-    def __init__(self, *, snapshot: RunProgressSnapshot) -> None:
-        self.accept_batch = StubAcceptBatch()
+    def __init__(self, *, snapshot: RunProgressSnapshot, lifecycle: str | None = "processing") -> None:
+        self.accept_batch = StubAcceptBatch(lifecycle=lifecycle)
         self._deps = ValidatorControlDeps(
             accept_batch=self.accept_batch,
             status_provider=StubStatusProvider(),
@@ -227,6 +232,7 @@ def test_progress_endpoint_includes_specifics_and_task_fields() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["batch_id"] == str(batch_id)
+    assert body["status"] == "processing"
     assert body["total"] == 1
     assert body["completed"] == 1
     assert body["remaining"] == 0
@@ -412,6 +418,33 @@ def test_accept_batch_endpoint_is_idempotent_for_exact_duplicate_replay() -> Non
     assert snapshot["total"] == 1
     assert snapshot["completed"] == 0
     assert snapshot["remaining"] == 1
+
+
+def test_progress_endpoint_returns_unknown_for_unaccepted_batch() -> None:
+    batch_id = uuid4()
+    snapshot: RunProgressSnapshot = {
+        "batch_id": batch_id,
+        "total": 0,
+        "completed": 0,
+        "remaining": 0,
+        "tasks": (),
+        "miner_task_runs": (),
+    }
+    provider = DemoControlDependencyProvider(snapshot=snapshot, lifecycle=None)
+    app = _create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.get(f"/validator/miner-task-batches/{batch_id}/progress")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "batch_id": str(batch_id),
+        "status": "unknown",
+        "total": 0,
+        "completed": 0,
+        "remaining": 0,
+        "miner_task_runs": [],
+    }
 
 
 def test_accept_batch_endpoint_rejects_conflicting_duplicate_replay() -> None:

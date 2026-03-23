@@ -13,14 +13,21 @@ from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.application.session_manager import SessionManager
 from harnyx_commons.domain.miner_task import MinerTask
 from harnyx_commons.sandbox.client import SandboxClient
-from harnyx_commons.sandbox.manager import SandboxManager
+from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager
 from harnyx_commons.sandbox.options import SandboxOptions
-from harnyx_validator.application.dto.evaluation import MinerTaskBatchRunResult, ScriptArtifactSpec
+from harnyx_validator.application.dto.evaluation import (
+    MinerTaskBatchRunResult,
+    MinerTaskRunSubmission,
+    ScriptArtifactSpec,
+)
 from harnyx_validator.application.evaluate_task_run import TaskRunOrchestrator
 from harnyx_validator.application.ports.evaluation_record import EvaluationRecordPort
 from harnyx_validator.application.ports.progress import ProgressRecorder
 from harnyx_validator.application.ports.subtensor import SubtensorClientPort
-from harnyx_validator.application.services.evaluation_runner import EvaluationRunner
+from harnyx_validator.application.services.evaluation_runner import (
+    LOCAL_RETRY_ATTEMPTS,
+    EvaluationRunner,
+)
 
 SandboxOptionsFactory = Callable[[ScriptArtifactSpec], SandboxOptions]
 TaskRunOrchestratorFactory = Callable[[SandboxClient], TaskRunOrchestrator]
@@ -99,42 +106,13 @@ class EvaluationScheduler:
                 "starting miner task run for artifact",
                 extra={"uid": artifact.uid, "artifact_id": str(artifact.artifact_id)},
             )
-            try:
-                options = self._sandbox_options(artifact)
-            except Exception as exc:
-                logger.error(
-                    "failed to prepare sandbox options",
-                    extra={"batch_id": str(batch_id), "uid": artifact.uid, "artifact_id": str(artifact.artifact_id)},
-                    exc_info=exc,
-                )
-                submissions.extend(
-                    await self._runner.record_failure_for_artifact(
-                        batch_id=batch_id,
-                        artifact=artifact,
-                        tasks=remaining_tasks,
-                        error_code="agent_unavailable",
-                        error_message=str(exc),
-                    ),
-                )
-                continue
-
-            try:
-                deployment = await asyncio.to_thread(self._sandboxes.start, options)
-            except Exception as exc:
-                logger.error(
-                    "failed to start sandbox",
-                    extra={"batch_id": str(batch_id), "uid": artifact.uid, "artifact_id": str(artifact.artifact_id)},
-                    exc_info=exc,
-                )
-                submissions.extend(
-                    await self._runner.record_failure_for_artifact(
-                        batch_id=batch_id,
-                        artifact=artifact,
-                        tasks=remaining_tasks,
-                        error_code="sandbox_start_failed",
-                        error_message=str(exc),
-                    ),
-                )
+            deployment, terminal_failures = await self._start_artifact_with_retry(
+                batch_id=batch_id,
+                artifact=artifact,
+                remaining_tasks=remaining_tasks,
+            )
+            submissions.extend(terminal_failures)
+            if deployment is None:
                 continue
 
             try:
@@ -159,6 +137,88 @@ class EvaluationScheduler:
             batch_id=batch_id,
             tasks=tasks,
             runs=tuple(submissions),
+        )
+
+    async def _start_artifact_with_retry(
+        self,
+        *,
+        batch_id: UUID,
+        artifact: ScriptArtifactSpec,
+        remaining_tasks: Sequence[MinerTask],
+    ) -> tuple[SandboxDeployment | None, list[MinerTaskRunSubmission]]:
+        last_error_code = ""
+        last_error_message = ""
+        for attempt_number in range(1, LOCAL_RETRY_ATTEMPTS + 1):
+            try:
+                options = self._sandbox_options(artifact)
+            except Exception as exc:
+                last_error_code = "agent_unavailable"
+                last_error_message = str(exc)
+                if attempt_number < LOCAL_RETRY_ATTEMPTS:
+                    self._log_artifact_retry(
+                        batch_id=batch_id,
+                        artifact=artifact,
+                        attempt_number=attempt_number,
+                        stage="sandbox options",
+                        exc=exc,
+                    )
+                    continue
+                logger.error(
+                    "failed to prepare sandbox options",
+                    extra={"batch_id": str(batch_id), "uid": artifact.uid, "artifact_id": str(artifact.artifact_id)},
+                    exc_info=exc,
+                )
+                break
+
+            try:
+                return await asyncio.to_thread(self._sandboxes.start, options), []
+            except Exception as exc:
+                last_error_code = "sandbox_start_failed"
+                last_error_message = str(exc)
+                if attempt_number < LOCAL_RETRY_ATTEMPTS:
+                    self._log_artifact_retry(
+                        batch_id=batch_id,
+                        artifact=artifact,
+                        attempt_number=attempt_number,
+                        stage="sandbox start",
+                        exc=exc,
+                    )
+                    continue
+                logger.error(
+                    "failed to start sandbox",
+                    extra={"batch_id": str(batch_id), "uid": artifact.uid, "artifact_id": str(artifact.artifact_id)},
+                    exc_info=exc,
+                )
+                break
+
+        failures = await self._runner.record_failure_for_artifact(
+            batch_id=batch_id,
+            artifact=artifact,
+            tasks=remaining_tasks,
+            error_code=last_error_code,
+            error_message=last_error_message,
+        )
+        return None, failures
+
+    def _log_artifact_retry(
+        self,
+        *,
+        batch_id: UUID,
+        artifact: ScriptArtifactSpec,
+        attempt_number: int,
+        stage: str,
+        exc: Exception,
+    ) -> None:
+        logger.warning(
+            "artifact setup attempt failed; retrying once",
+            extra={
+                "batch_id": str(batch_id),
+                "uid": artifact.uid,
+                "artifact_id": str(artifact.artifact_id),
+                "attempt_number": attempt_number,
+                "stage": stage,
+            },
+            exc_info=exc,
         )
 
 
