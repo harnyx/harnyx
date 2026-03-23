@@ -9,6 +9,7 @@ from uuid import uuid4
 from fastapi import Request
 
 logger = logging.getLogger("harnyx_validator.http")
+_LOW_NOISE_PROBE_PATHS = frozenset({"/healthz", "/readyz"})
 
 
 async def request_logging_middleware(
@@ -16,12 +17,14 @@ async def request_logging_middleware(
     call_next: Callable[[Request], Awaitable[Any]],
 ) -> Any:
     request_id = request.headers.get("x-request-id", uuid4().hex)
+    log_level = logging.DEBUG if request.url.path in _LOW_NOISE_PROBE_PATHS else logging.INFO
     request_line = _format_request_line(request)
     query_params = list(request.query_params.multi_items())
 
     body_bytes = await request.body()
     body_str = _truncate_body(body_bytes)
-    logger.info(
+    logger.log(
+        log_level,
         "request_received",
         extra={
             "data": {
@@ -56,7 +59,8 @@ async def request_logging_middleware(
     duration = time.perf_counter() - start
     status_code = response.status_code
 
-    logger.info(
+    logger.log(
+        log_level,
         "request_completed",
         extra={
             "data": {
