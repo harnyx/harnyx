@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -10,7 +11,7 @@ from fastapi import FastAPI
 from harnyx_commons.observability.logging import shutdown_logging
 from harnyx_commons.observability.tracing import configure_tracing
 from harnyx_validator.infrastructure.http.middleware import request_logging_middleware
-from harnyx_validator.infrastructure.http.routes import add_control_routes, add_tool_routes
+from harnyx_validator.infrastructure.http.routes import add_control_routes, add_system_routes, add_tool_routes
 from harnyx_validator.infrastructure.observability.logging import (
     configure_logging,
     enable_cloud_logging,
@@ -50,6 +51,7 @@ _weight_worker = create_weight_worker(
 )
 
 WORKER_STOP_TIMEOUT_SECONDS = 30 * 60
+logger = logging.getLogger("harnyx_validator.server")
 
 
 @asynccontextmanager
@@ -66,11 +68,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 def create_app() -> FastAPI:
     app = FastAPI(title="Harnyx Validator API", version="0.1.0", lifespan=lifespan)
     app.middleware("http")(request_logging_middleware)
-
-    @app.get("/healthz", description="Validator health check.")
-    def healthz() -> dict[str, str]:
-        return {"status": "ok"}
-
+    add_system_routes(app, _runtime.status_provider)
     add_tool_routes(app, _runtime.tool_route_deps_provider)
     add_control_routes(app, _runtime.control_deps_provider)
 
@@ -106,7 +104,10 @@ def main() -> None:
 
             try:
                 await asyncio.to_thread(_runtime.register_with_platform)
-            except Exception:
+                _runtime.status_provider.mark_platform_registration_succeeded()
+            except Exception as exc:
+                _runtime.status_provider.mark_platform_registration_failed(str(exc))
+                logger.exception("validator platform registration failed during startup")
                 server.should_exit = True
                 await server_task
                 raise

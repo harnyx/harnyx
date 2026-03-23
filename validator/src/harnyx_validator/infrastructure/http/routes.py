@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Security
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, Security, status
 from fastapi.security import APIKeyHeader
 
 from harnyx_commons.bittensor import VerificationError
@@ -106,6 +106,22 @@ def add_tool_routes(app: FastAPI, dependency_provider: Callable[[], ToolRouteDep
             _log_tool_error(session_id, invocation, exc)
             raise HTTPException(status_code=400, detail=_public_error_message(exc)) from exc
         return serialize_tool_execute_response(result)
+
+
+def add_system_routes(app: FastAPI, status_provider: StatusProvider) -> None:
+    @app.get("/healthz", description="Validator health check.")
+    def healthz() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.get("/readyz", description="Validator readiness check.")
+    def readyz(response: Response) -> dict[str, str]:
+        if status_provider.platform_registration_ready():
+            return {"status": "ok"}
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        error = status_provider.platform_registration_error()
+        if error:
+            return {"status": "registration_failed", "detail": error}
+        return {"status": "waiting_for_platform_registration"}
 
 
 def add_control_routes(
@@ -288,3 +304,12 @@ def _serialize_session_block(session: Session) -> SessionModel:
         issued_at=session.issued_at.isoformat(),
         expires_at=session.expires_at.isoformat(),
     )
+
+
+__all__ = [
+    "ToolRouteDeps",
+    "ValidatorControlDeps",
+    "add_tool_routes",
+    "add_system_routes",
+    "add_control_routes",
+]

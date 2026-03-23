@@ -18,6 +18,8 @@ class InMemoryStatus:
     queued_batches: int = 0
     last_weight_submission_at: datetime | None = None
     last_weight_error: str | None = None
+    platform_registration_ready: bool = False
+    platform_registration_error: str | None = None
 
 
 class StatusSnapshot(TypedDict):
@@ -56,6 +58,20 @@ class StatusProvider:
             "last_weight_submission_at": self._iso(self.state.last_weight_submission_at),
             "last_weight_error": self.state.last_weight_error,
         }
+
+    def mark_platform_registration_succeeded(self) -> None:
+        self.state.platform_registration_ready = True
+        self.state.platform_registration_error = None
+
+    def mark_platform_registration_failed(self, error: str) -> None:
+        self.state.platform_registration_ready = False
+        self.state.platform_registration_error = error
+
+    def platform_registration_ready(self) -> bool:
+        return self.state.platform_registration_ready
+
+    def platform_registration_error(self) -> str | None:
+        return self.state.platform_registration_error
 
     @staticmethod
     def _iso(value: datetime | None) -> str | None:
