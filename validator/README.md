@@ -40,9 +40,10 @@ The defaults in `.env.example` already target mainnet (`finney`) and netuid `67`
 
 ### Optional Sentry
 
-- Set `SENTRY_DSN` to enable validator error reporting to Sentry.
-- Leave `SENTRY_DSN` blank to disable Sentry entirely.
-- `SENTRY_ENVIRONMENT`, `SENTRY_RELEASE`, and `SENTRY_TRACES_SAMPLE_RATE` are optional shared Sentry settings.
+- The checked-in `.env.example` defaults `SENTRY_DSN` to the shared Harnyx validator Sentry project so we can monitor operator issues centrally.
+- Recommended production defaults are `SENTRY_ENVIRONMENT=prod` and `SENTRY_TRACES_SAMPLE_RATE=0.05`.
+- `SENTRY_RELEASE` is optional.
+- Clear `SENTRY_DSN` only if you intentionally want to opt out of Harnyx-managed monitoring.
 - Validator follows the same Sentry model as platform: framework request-path and fatal top-level crash failures can be auto-captured, while swallowed background-worker failures are captured explicitly.
 - Expected translated request/tool 4xx paths stay low-noise and should not create Sentry events during normal control flow.
 
