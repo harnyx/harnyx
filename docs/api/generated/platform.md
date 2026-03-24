@@ -9,7 +9,6 @@ Generated from FastAPI OpenAPI.
 - [miner-task-batches](#miner-task-batches)
   - [POST /v1/miner-task-batches/batch](#endpoint-post-v1-miner-task-batches-batch)
   - [GET /v1/miner-task-batches/batch/{batch_id}](#endpoint-get-v1-miner-task-batches-batch-batch_id)
-  - [GET /v1/miner-task-batches/progress/{batch_id}](#endpoint-get-v1-miner-task-batches-progress-batch_id)
   - [GET /v1/miner-task-batches/{batch_id}/artifacts/{artifact_id}](#endpoint-get-v1-miner-task-batches-batch_id-artifacts-artifact_id)
 - [miners](#miners)
   - [POST /v1/miners/scripts](#endpoint-post-v1-miners-scripts)
@@ -146,7 +145,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 <a id="endpoint-post-v1-miner-task-batches-batch"></a>
 #### POST /v1/miner-task-batches/batch
 
-Owner emergency recovery route. Each request force-creates a fresh batch, is not replay-safe, and fails fast with 409 while batch creation is already in progress or another batch is running. Returns an explicit terminal delivery failure when every observed validator definitively rejects or misses dispatch.
+Owner emergency recovery route. Each request force-creates a fresh batch, is not replay-safe, and fails fast with 409 while batch creation is already in progress or another batch is running. Returns once the worker has persisted the build claim, started the background continuation, and can identify the accepted batch.
 
 **Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
 
@@ -165,30 +164,13 @@ Body: [CreateBatchRequest](#model-createbatchrequest)
 |  |  | `task_id` | req | `string` (format: uuid) |
 
 **Responses**
-`200` Successful Response
+`202` Successful Response
 Content-Type: `application/json`
-Body: [MinerTaskBatchModel](#model-minertaskbatchmodel)
+Body: [CreateBatchAcceptedResponse](#model-createbatchacceptedresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `artifacts` |  |  | req | array[[ScriptArtifactModel](#model-scriptartifactmodel)] |
-|  | `artifact_id` |  | req | `string` (format: uuid) |
-|  | `content_hash` |  | req | `string` |
-|  | `size_bytes` |  | req | `integer` |
-|  | `uid` |  | req | `integer` |
 | `batch_id` |  |  | req | `string` (format: uuid) |
-| `champion_artifact_id` |  |  | req | `string` (format: uuid; nullable) |
-| `completed_at` |  |  | opt | `string` (format: date-time; nullable) |
-| `created_at` |  |  | req | `string` (format: date-time) |
-| `cutoff_at` |  |  | req | `string` (format: date-time) |
-| `failed_at` |  |  | opt | `string` (format: date-time; nullable) |
-| `tasks` |  |  | req | array[[MinerTask](#model-minertask)] |
-|  | `budget_usd` |  | opt | `number` (default: 0.5) |
-|  | `query` |  | req | [Query](#model-query) |
-|  |  | `text` | req | `string` |
-|  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
-|  |  | `text` | req | `string` |
-|  | `task_id` |  | req | `string` (format: uuid) |
 
 `409` Batch creation already in progress or another batch is running.
 Content-Type: `application/json`
@@ -239,48 +221,6 @@ Body: [MinerTaskBatchModel](#model-minertaskbatchmodel)
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `text` | req | `string` |
 |  | `task_id` |  | req | `string` (format: uuid) |
-
-`422` Validation Error
-Content-Type: `application/json`
-Body: [HTTPValidationError](#model-httpvalidationerror)
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
-|  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
-|  | `msg` |  | req | `string` |
-|  | `type` |  | req | `string` |
-
-
-### progress
-
-#### {batch_id}
-
-<a id="endpoint-get-v1-miner-task-batches-progress-batch_id"></a>
-##### GET /v1/miner-task-batches/progress/{batch_id}
-
-Return a lightweight progress snapshot for a batch.
-
-**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
-
-**Parameters**
-| Param | In | Req | Notes |
-| --- | --- | --- | --- |
-| `batch_id` | path | req | `string` (format: uuid) |
-
-**Responses**
-`200` Successful Response
-Content-Type: `application/json`
-Body: [ProgressSnapshotResponse](#model-progresssnapshotresponse)
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `artifact_count` |  |  | req | `integer` |
-| `batch_id` |  |  | req | `string` (format: uuid) |
-| `created_at` |  |  | req | `string` (format: date-time) |
-| `cutoff_at` |  |  | req | `string` (format: date-time) |
-| `status` |  |  | req | `string` |
-| `task_count` |  |  | req | `integer` |
 
 `422` Validation Error
 Content-Type: `application/json`
@@ -757,6 +697,35 @@ Body: [WeightsResponse](#model-weightsresponse)
     "note"
   ],
   "title": "CitationModel",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-createbatchacceptedresponse"></a>
+### Model: CreateBatchAcceptedResponse
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `batch_id` |  |  | req | `string` (format: uuid) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "batch_id": {
+      "format": "uuid",
+      "title": "Batch Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "batch_id"
+  ],
+  "title": "CreateBatchAcceptedResponse",
   "type": "object"
 }
 ```
@@ -1795,67 +1764,6 @@ Body: [WeightsResponse](#model-weightsresponse)
     "tasks"
   ],
   "title": "OverrideMinerTaskDatasetModel",
-  "type": "object"
-}
-```
-
-</details>
-
-<a id="model-progresssnapshotresponse"></a>
-### Model: ProgressSnapshotResponse
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `artifact_count` |  |  | req | `integer` |
-| `batch_id` |  |  | req | `string` (format: uuid) |
-| `created_at` |  |  | req | `string` (format: date-time) |
-| `cutoff_at` |  |  | req | `string` (format: date-time) |
-| `status` |  |  | req | `string` |
-| `task_count` |  |  | req | `integer` |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "properties": {
-    "artifact_count": {
-      "title": "Artifact Count",
-      "type": "integer"
-    },
-    "batch_id": {
-      "format": "uuid",
-      "title": "Batch Id",
-      "type": "string"
-    },
-    "created_at": {
-      "format": "date-time",
-      "title": "Created At",
-      "type": "string"
-    },
-    "cutoff_at": {
-      "format": "date-time",
-      "title": "Cutoff At",
-      "type": "string"
-    },
-    "status": {
-      "title": "Status",
-      "type": "string"
-    },
-    "task_count": {
-      "title": "Task Count",
-      "type": "integer"
-    }
-  },
-  "required": [
-    "batch_id",
-    "status",
-    "created_at",
-    "cutoff_at",
-    "artifact_count",
-    "task_count"
-  ],
-  "title": "ProgressSnapshotResponse",
   "type": "object"
 }
 ```
