@@ -98,7 +98,7 @@ class StubChutesProvider:
                             ),
                         ),
                         refusal={"reason": "ignored"},
-                        reasoning={"summary": "ignored"},
+                        reasoning="ignored",
                     ),
                     finish_reason="stop",
                     logprobs={"token_logprobs": []},

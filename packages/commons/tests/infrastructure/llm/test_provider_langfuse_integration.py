@@ -126,6 +126,7 @@ def _response(
     *,
     metadata: Mapping[str, object] | None = None,
     usage: LlmUsage | None = None,
+    reasoning: str | None = None,
 ) -> LlmResponse:
     return LlmResponse(
         id="response-id",
@@ -136,6 +137,7 @@ def _response(
                     role="assistant",
                     content=(LlmMessageContentPart(type="text", text="ok"),),
                     tool_calls=None,
+                    reasoning=reasoning,
                 ),
                 finish_reason="stop",
             ),
@@ -705,6 +707,80 @@ async def test_invoke_vertex_gemini_reasoning_marks_include_thoughts_requested(
     assert isinstance(reasoning, Mapping)
     assert reasoning["include_thoughts_requested"] is True
     assert reasoning["reasoning_effort"] == "high"
+
+
+async def test_invoke_vertex_reasoning_metadata_uses_string_reasoning_and_raw_signature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request(
+        provider="vertex",
+        model="gemini-2.5-pro",
+        reasoning_effort="high",
+    )
+    response = _response(
+        metadata={
+            "source": "stub",
+            "raw_response": {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "thought": True,
+                                    "text": "deliberation",
+                                    "thought_signature": "sig-1",
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        },
+        reasoning="deliberation",
+    )
+    provider = _StubProvider(response=response, provider_label="vertex")
+    scope = _Scope(generation=object())
+    update_calls: list[_UpdateCall] = []
+
+    def fake_start(
+        *,
+        provider_label: str,
+        request: AbstractLlmRequest,
+    ) -> _Scope:
+        return scope
+
+    def fake_update(
+        generation: object | None,
+        *,
+        input_payload: object | None = None,
+        output: object | None = None,
+        usage: LlmUsage | None = None,
+        metadata: Mapping[str, object] | None = None,
+    ) -> None:
+        update_calls.append(
+            _UpdateCall(
+                generation=generation,
+                input_payload=input_payload,
+                output=output,
+                usage=usage,
+                metadata=metadata,
+            )
+        )
+
+    monkeypatch.setattr(provider_module, "start_llm_generation", fake_start)
+    monkeypatch.setattr(provider_module, "update_generation_best_effort", fake_update)
+
+    await provider.invoke(request)
+
+    assert len(update_calls) == 1
+    update_call = update_calls[0]
+    assert update_call.metadata is not None
+    reasoning_metadata = update_call.metadata.get("reasoning")
+    assert isinstance(reasoning_metadata, Mapping)
+    assert reasoning_metadata["include_thoughts_requested"] is True
+    assert reasoning_metadata["reasoning_text_available"] is True
+    assert reasoning_metadata["thought_text_parts"] == ("deliberation",)
+    assert reasoning_metadata["has_thought_signature"] is True
 
 
 async def test_invoke_vertex_claude_reasoning_does_not_mark_include_thoughts_requested(

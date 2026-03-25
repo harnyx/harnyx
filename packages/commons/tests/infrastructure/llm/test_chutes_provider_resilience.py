@@ -4,7 +4,12 @@ import httpx
 import pytest
 from pydantic import BaseModel
 
-from harnyx_commons.llm.providers.chutes import ChutesLlmProvider, _parse_chutes_response_payload
+from harnyx_commons.llm.providers.chutes import (
+    ChutesLlmProvider,
+    ChutesTextEmbeddingClient,
+    _parse_chutes_response_payload,
+    resolve_chutes_embedding_base_url,
+)
 from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest, LlmResponse, LlmUsage
 
 
@@ -124,7 +129,7 @@ def test_parse_payload_skips_malformed_content_fragment_and_keeps_valid_text() -
     assert parts[0].text == "ok"
 
 
-def test_parse_payload_rejects_non_object_reasoning_field() -> None:
+def test_parse_payload_normalizes_string_reasoning_field() -> None:
     payload = {
         "id": "resp_reasoning",
         "choices": [
@@ -137,8 +142,59 @@ def test_parse_payload_rejects_non_object_reasoning_field() -> None:
         ],
     }
 
-    with pytest.raises(RuntimeError, match="chutes message reasoning must be a JSON object"):
-        _parse_chutes_response_payload(payload)
+    parsed = _parse_chutes_response_payload(payload)
+
+    assert parsed.choices[0].message.reasoning == "model supplied unsupported reasoning shape"
+
+
+def test_resolve_chutes_embedding_base_url_returns_expected_live_base_url() -> None:
+    base_url = resolve_chutes_embedding_base_url("Qwen/Qwen3-Embedding-0.6B")
+
+    assert base_url == "https://chutes-qwen-qwen3-embedding-0-6b.chutes.ai"
+
+
+def test_resolve_chutes_embedding_base_url_fails_for_unmapped_model() -> None:
+    with pytest.raises(RuntimeError, match="no chutes embedding base_url configured"):
+        resolve_chutes_embedding_base_url("Unknown/Embedding-Model")
+
+
+@pytest.mark.anyio("asyncio")
+async def test_chutes_text_embedding_client_posts_openai_compatible_embeddings_request() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["path"] = request.url.path
+        captured["headers"] = dict(request.headers)
+        captured["json"] = request.read().decode()
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "embedding": [0.25, 0.5, 0.75],
+                        "index": 0,
+                        "object": "embedding",
+                    }
+                ]
+            },
+        )
+
+    client = ChutesTextEmbeddingClient(
+        model="Qwen/Qwen3-Embedding-0.6B",
+        base_url="https://example.com",
+        client=httpx.AsyncClient(base_url="https://example.com", transport=httpx.MockTransport(handler)),
+        api_key="test-key",
+        dimensions=3,
+    )
+
+    vector = await client.embed("hello world")
+
+    assert vector == (0.25, 0.5, 0.75)
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/v1/embeddings"
+    assert '"model":"Qwen/Qwen3-Embedding-0.6B"' in str(captured["json"])
+    assert '"input":"hello world"' in str(captured["json"])
 
 
 def test_classify_http_status_includes_upstream_detail() -> None:

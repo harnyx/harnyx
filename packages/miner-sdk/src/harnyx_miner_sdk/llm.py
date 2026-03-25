@@ -151,7 +151,7 @@ class LlmChoiceMessage:
     content: Sequence[LlmMessageContentPart]
     tool_calls: Sequence[LlmMessageToolCall] | None = None
     refusal: Mapping[str, Any] | None = None
-    reasoning: Mapping[str, Any] | None = None
+    reasoning: str | None = None
 
 
 @dataclass(frozen=True)

@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from harnyx_commons.llm.provider import BaseLlmProvider
 from harnyx_commons.llm.schema import (
@@ -28,6 +28,10 @@ from harnyx_commons.llm.schema import (
 )
 
 logger = logging.getLogger(__name__)
+
+_CHUTES_EMBEDDING_BASE_URL_BY_MODEL = {
+    "Qwen/Qwen3-Embedding-0.6B": "https://chutes-qwen-qwen3-embedding-0-6b.chutes.ai",
+}
 
 
 class ChutesLlmProvider(BaseLlmProvider):
@@ -173,6 +177,103 @@ class ChutesLlmProvider(BaseLlmProvider):
             await self._client.aclose()
 
 
+class _EmbeddingDatum(BaseModel):
+    model_config = ConfigDict(extra="ignore", frozen=True, strict=True)
+
+    embedding: list[float] = Field(min_length=1)
+
+
+class _EmbeddingResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore", frozen=True, strict=True)
+
+    data: list[_EmbeddingDatum] = Field(min_length=1)
+
+
+@dataclass(slots=True)
+class ChutesTextEmbeddingClient:
+    model: str
+    api_key: str
+    base_url: str | None = None
+    timeout_seconds: float = 30.0
+    dimensions: int | None = None
+    client: httpx.AsyncClient | None = None
+    _owns_client: bool = field(default=False, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        normalized_model = self.model.strip()
+        if not normalized_model:
+            raise ValueError("chutes embedding model must be configured")
+        if not self.api_key:
+            raise ValueError("Chutes API key must be provided for embeddings")
+        resolved_base_url = _normalize_embedding_base_url(self.base_url, normalized_model)
+        self.model = normalized_model
+        self.base_url = resolved_base_url
+        if self.client is None:
+            self.client = httpx.AsyncClient(
+                base_url=resolved_base_url,
+                timeout=self.timeout_seconds,
+            )
+            self._owns_client = True
+        else:
+            self._owns_client = False
+
+    async def embed(self, text: str) -> tuple[float, ...]:
+        normalized = text.strip()
+        if not normalized:
+            raise ValueError("embedding input text must not be empty")
+        client = self._require_client()
+        response = await client.post(
+            "v1/embeddings",
+            json=self._request_body(normalized),
+            headers={"Authorization": f"Bearer {self.api_key}"},
+        )
+        response.raise_for_status()
+        payload = _EmbeddingResponse.model_validate(response.json())
+        vector = tuple(float(value) for value in payload.data[0].embedding)
+        if self.dimensions is not None and len(vector) != self.dimensions:
+            raise RuntimeError(
+                f"embedding dimensions mismatch: expected={self.dimensions} actual={len(vector)}"
+            )
+        return vector
+
+    async def aclose(self) -> None:
+        if self._owns_client:
+            await self._require_client().aclose()
+
+    def _request_body(self, text: str) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "input": text,
+        }
+        if self.dimensions is not None:
+            payload["dimensions"] = self.dimensions
+        return payload
+
+    def _require_client(self) -> httpx.AsyncClient:
+        if self.client is None:
+            raise RuntimeError("chutes embedding client is not initialized")
+        return self.client
+
+
+def resolve_chutes_embedding_base_url(model: str) -> str:
+    normalized_model = model.strip()
+    if not normalized_model:
+        raise RuntimeError("chutes embedding model must be configured")
+    try:
+        return _CHUTES_EMBEDDING_BASE_URL_BY_MODEL[normalized_model]
+    except KeyError as exc:
+        raise RuntimeError(f"no chutes embedding base_url configured for model: {normalized_model}") from exc
+
+
+def _normalize_embedding_base_url(base_url: str | None, model: str) -> str:
+    if base_url is None:
+        return resolve_chutes_embedding_base_url(model)
+    normalized_base_url = base_url.rstrip("/")
+    if not normalized_base_url:
+        raise ValueError("chutes embedding base_url must not be empty")
+    return normalized_base_url
+
+
 def _serialize_tool(spec: LlmTool) -> dict[str, Any]:
     if spec.type == "function" and spec.function is not None:
         return {
@@ -249,6 +350,27 @@ class _ChutesResponsePayload:
     response_id: str
     choices: tuple[LlmChoice, ...]
     usage: LlmUsage | None
+
+
+class _ChutesReasoningObject(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    thought_text_parts: list[str] = Field(default_factory=list)
+    text: str | None = None
+    summary: str | None = None
+    content: str | None = None
+
+    @property
+    def reasoning_text(self) -> str | None:
+        normalized_parts = tuple(part.strip() for part in self.thought_text_parts if part.strip())
+        if normalized_parts:
+            return "\n\n".join(normalized_parts)
+
+        for candidate in (self.text, self.summary, self.content):
+            normalized_text = _normalize_reasoning_text(candidate)
+            if normalized_text is not None:
+                return normalized_text
+        return None
 
 
 def _parse_chutes_response_payload(value: object) -> _ChutesResponsePayload:
@@ -342,13 +464,32 @@ def _message_tool_calls(message: Mapping[str, object]) -> tuple[LlmMessageToolCa
     return tuple(calls)
 
 
-def _message_reasoning(message: Mapping[str, object]) -> Mapping[str, Any] | None:
+def _message_reasoning(message: Mapping[str, object]) -> str | None:
     reasoning_value = message.get("reasoning")
     if reasoning_value is None:
         return None
+    if isinstance(reasoning_value, str):
+        return _normalize_reasoning_text(reasoning_value)
     if isinstance(reasoning_value, Mapping):
-        return _require_object_mapping(reasoning_value, label="chutes message reasoning must be a JSON object")
-    raise RuntimeError("chutes message reasoning must be a JSON object")
+        return _reasoning_text_from_object(
+            _require_object_mapping(reasoning_value, label="chutes message reasoning must be a JSON object")
+        )
+    raise RuntimeError("chutes message reasoning must be a string or JSON object")
+
+
+def _reasoning_text_from_object(reasoning_value: Mapping[str, object]) -> str | None:
+    try:
+        reasoning_payload = _ChutesReasoningObject.model_validate(reasoning_value, strict=True)
+    except ValidationError as exc:
+        raise RuntimeError("chutes message reasoning object shape is invalid") from exc
+    return reasoning_payload.reasoning_text
+
+
+def _normalize_reasoning_text(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized_text = value.strip()
+    return normalized_text or None
 
 
 def _tool_call_from_payload(payload: object, index: int) -> LlmMessageToolCall | None:
@@ -461,4 +602,8 @@ def _is_valid_json(text: str) -> bool:
     return True
 
 
-__all__ = ["ChutesLlmProvider"]
+__all__ = [
+    "ChutesLlmProvider",
+    "ChutesTextEmbeddingClient",
+    "resolve_chutes_embedding_base_url",
+]

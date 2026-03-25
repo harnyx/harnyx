@@ -383,10 +383,7 @@ def test_vertex_codec_build_choices_separates_thought_text_from_assistant_output
     message = choices[0].message
 
     assert tuple(part.text for part in message.content) == ("final answer",)
-    assert message.reasoning == {
-        "thought_text_parts": ("deliberation",),
-        "has_thought_signature": True,
-    }
+    assert message.reasoning == "deliberation"
 
 
 def test_vertex_codec_build_choices_preserves_signature_only_text_as_output() -> None:

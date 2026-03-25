@@ -64,7 +64,7 @@ from harnyx_validator.runtime.settings import Settings
 logger = logging.getLogger("harnyx_validator.runtime")
 
 _SCORING_EMBEDDING_MODEL = "gemini-embedding-001"
-_SCORING_CHUTES_EMBEDDING_MODEL = "text-embedding-3-small"
+_SCORING_CHUTES_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 
 
 class _ScoringEmbeddingClient(TextEmbeddingPort, Protocol):

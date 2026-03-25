@@ -3,7 +3,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from harnyx_validator.infrastructure.scoring.chutes_embedding import ChutesTextEmbeddingClient
+from harnyx_commons.llm.providers.chutes import ChutesTextEmbeddingClient
 
 pytestmark = pytest.mark.anyio("asyncio")
 
@@ -30,7 +30,8 @@ async def test_chutes_text_embedding_client_posts_openai_compatible_embeddings_r
         )
 
     client = ChutesTextEmbeddingClient(
-        model="text-embedding-3-small",
+        model="Qwen/Qwen3-Embedding-0.6B",
+        base_url="https://llm.chutes.ai",
         client=httpx.AsyncClient(base_url="https://llm.chutes.ai", transport=httpx.MockTransport(handler)),
         api_key="test-key",
         dimensions=3,
@@ -41,5 +42,5 @@ async def test_chutes_text_embedding_client_posts_openai_compatible_embeddings_r
     assert vector == (0.25, 0.5, 0.75)
     assert captured["method"] == "POST"
     assert captured["path"] == "/v1/embeddings"
-    assert '"model":"text-embedding-3-small"' in str(captured["json"])
+    assert '"model":"Qwen/Qwen3-Embedding-0.6B"' in str(captured["json"])
     assert '"input":"hello world"' in str(captured["json"])

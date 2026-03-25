@@ -11,6 +11,8 @@ from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequ
 
 pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
 
+REASONING_MODEL = "tngtech/DeepSeek-TNG-R1T2-Chimera-TEE"
+
 
 class JsonObjectAnswer(BaseModel):
     ping: str
@@ -106,3 +108,34 @@ async def test_chutes_json_schema_live_with_throwaway_schema() -> None:
     assert parsed.animal == "otter"
     assert parsed.count == 3
     assert parsed.approved is True
+
+
+async def test_chutes_reasoning_live_normalizes_string_reasoning_payload() -> None:
+    api_key, _, timeout = _provider_settings()
+    provider = ChutesLlmProvider(
+        base_url=CHUTES.base_url,
+        api_key=api_key,
+        timeout=timeout,
+    )
+    request = LlmRequest(
+        provider="chutes",
+        model=REASONING_MODEL,
+        messages=(
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text('What is 7 times 8? Reply with only "56".'),),
+            ),
+        ),
+        temperature=0.0,
+        max_output_tokens=32,
+        timeout_seconds=180.0,
+    )
+
+    try:
+        response = await provider.invoke(request)
+    finally:
+        await provider.aclose()
+
+    reasoning = response.choices[0].message.reasoning
+    assert isinstance(reasoning, str)
+    assert reasoning.strip()

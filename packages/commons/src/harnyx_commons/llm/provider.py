@@ -12,11 +12,12 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, is_dataclass
-from typing import Protocol, cast
+from typing import Protocol, TypeVar, cast
 
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 from opentelemetry.util.types import AttributeValue
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from harnyx_commons.config.external_client import ExternalClientRetrySettings
 from harnyx_commons.llm.provider_types import (
@@ -55,6 +56,8 @@ ALLOWED_LLM_PROVIDERS: tuple[LlmProviderName, ...] = (
     VERTEX_PROVIDER,
     VERTEX_MAAS_PROVIDER,
 )
+
+_ModelT = TypeVar("_ModelT", bound=BaseModel)
 
 
 
@@ -550,11 +553,10 @@ def _build_reasoning_metadata(
     response: LlmResponse,
     usage: LlmUsage,
 ) -> dict[str, object] | None:
-    reasoning_payload = _first_reasoning_payload(response)
-    thought_text_parts = _normalize_thought_text_parts(
-        reasoning_payload.get("thought_text_parts") if reasoning_payload is not None else None
+    thought_text_parts, has_thought_signature = _reasoning_details_from_response(
+        provider_label=provider_label,
+        response=response,
     )
-    has_thought_signature = bool(reasoning_payload.get("has_thought_signature")) if reasoning_payload else False
     include_thoughts_requested = _is_vertex_include_thoughts_request(
         provider_label=provider_label,
         model=request.model,
@@ -596,25 +598,172 @@ def _is_vertex_include_thoughts_request(
     return "gemini" in normalized_model
 
 
-def _first_reasoning_payload(response: LlmResponse) -> Mapping[str, object] | None:
-    for choice in response.choices:
-        reasoning = choice.message.reasoning
-        if isinstance(reasoning, Mapping):
-            return cast(Mapping[str, object], reasoning)
+def _reasoning_details_from_response(
+    *,
+    provider_label: str,
+    response: LlmResponse,
+) -> tuple[tuple[str, ...], bool]:
+    raw_details = _reasoning_details_from_raw_response(
+        provider_label=provider_label,
+        raw_response=(response.metadata or {}).get("raw_response"),
+    )
+    if raw_details is not None:
+        thought_text_parts, has_thought_signature = raw_details
+        if thought_text_parts or has_thought_signature:
+            return thought_text_parts, has_thought_signature
+
+    reasoning_text = _first_reasoning_text(response)
+    if reasoning_text is None:
+        return (), False
+    return (reasoning_text,), False
+
+
+def _reasoning_details_from_raw_response(
+    *,
+    provider_label: str,
+    raw_response: object,
+) -> tuple[tuple[str, ...], bool] | None:
+    if provider_label.startswith(VERTEX_PROVIDER):
+        return _vertex_reasoning_details_from_raw_response(raw_response)
+    if provider_label == CHUTES_PROVIDER:
+        return _chutes_reasoning_details_from_raw_response(raw_response)
     return None
 
 
-def _normalize_thought_text_parts(value: object) -> tuple[str, ...]:
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
-        return ()
-    normalized: list[str] = []
-    for entry in value:
-        if not isinstance(entry, str):
+def _first_reasoning_text(response: LlmResponse) -> str | None:
+    for choice in response.choices:
+        reasoning = choice.message.reasoning
+        normalized_reasoning = _normalize_reasoning_text(reasoning)
+        if normalized_reasoning is not None:
+            return normalized_reasoning
+    return None
+
+
+class _RawReasoningObject(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    thought_text_parts: list[str] = Field(default_factory=list)
+    has_thought_signature: bool = False
+    text: str | None = None
+    summary: str | None = None
+    content: str | None = None
+
+    @property
+    def normalized_thought_text_parts(self) -> tuple[str, ...]:
+        return tuple(part.strip() for part in self.thought_text_parts if part.strip())
+
+    @property
+    def reasoning_text(self) -> str | None:
+        for candidate in (self.text, self.summary, self.content):
+            normalized_text = _normalize_reasoning_text(candidate)
+            if normalized_text is not None:
+                return normalized_text
+        return None
+
+
+class _ChutesRawMessage(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    reasoning: str | _RawReasoningObject | None = None
+
+
+class _ChutesRawChoice(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    message: _ChutesRawMessage | None = None
+
+
+class _ChutesRawResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    choices: list[_ChutesRawChoice] = Field(default_factory=list)
+
+
+class _VertexRawPart(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    thought: bool = False
+    text: str | None = None
+    thought_signature: str | None = None
+
+
+class _VertexRawContent(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    parts: list[_VertexRawPart] = Field(default_factory=list)
+
+
+class _VertexRawCandidate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    content: _VertexRawContent | None = None
+
+
+class _VertexRawResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    candidates: list[_VertexRawCandidate] = Field(default_factory=list)
+
+
+def _vertex_reasoning_details_from_raw_response(raw_response: object) -> tuple[tuple[str, ...], bool]:
+    raw_payload = _validated_model(_VertexRawResponse, raw_response)
+    if raw_payload is None:
+        return (), False
+
+    thought_text_parts: list[str] = []
+    has_thought_signature = False
+    for candidate in raw_payload.candidates:
+        if candidate.content is None:
             continue
-        thought_text = entry.strip()
-        if thought_text:
-            normalized.append(thought_text)
-    return tuple(normalized)
+        for part in candidate.content.parts:
+            if not part.thought:
+                continue
+            thought_text = _normalize_reasoning_text(part.text)
+            if thought_text is not None:
+                thought_text_parts.append(thought_text)
+            if part.thought_signature is not None:
+                has_thought_signature = True
+    return tuple(thought_text_parts), has_thought_signature
+
+
+def _chutes_reasoning_details_from_raw_response(raw_response: object) -> tuple[tuple[str, ...], bool]:
+    raw_payload = _validated_model(_ChutesRawResponse, raw_response)
+    if raw_payload is None:
+        return (), False
+
+    for choice in raw_payload.choices:
+        if choice.message is None:
+            continue
+        reasoning_payload = choice.message.reasoning
+        if isinstance(reasoning_payload, str):
+            reasoning_text = _normalize_reasoning_text(reasoning_payload)
+            return ((reasoning_text,) if reasoning_text is not None else ()), False
+
+        if reasoning_payload is None:
+            continue
+
+        thought_text_parts = reasoning_payload.normalized_thought_text_parts
+        if thought_text_parts:
+            return thought_text_parts, reasoning_payload.has_thought_signature
+
+        fallback_text = reasoning_payload.reasoning_text
+        return ((fallback_text,) if fallback_text is not None else ()), reasoning_payload.has_thought_signature
+
+    return (), False
+
+
+def _normalize_reasoning_text(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized_text = value.strip()
+    return normalized_text or None
+
+
+def _validated_model(model: type[_ModelT], value: object) -> _ModelT | None:
+    try:
+        return model.model_validate(value, strict=True)
+    except ValidationError:
+        return None
 
 
 def _build_grounding_metadata(

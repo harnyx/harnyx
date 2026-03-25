@@ -147,7 +147,7 @@ def _choice_from_candidate(index: int, candidate: Any) -> LlmChoice:
 
 def _candidate_parts_and_calls(
     candidate: Any,
-) -> tuple[list[LlmMessageContentPart], list[LlmMessageToolCall], dict[str, Any] | None]:
+) -> tuple[list[LlmMessageContentPart], list[LlmMessageToolCall], str | None]:
     candidate_content = candidate.content
     if candidate_content is None or not candidate_content.parts:
         return [], [], None
@@ -155,7 +155,6 @@ def _candidate_parts_and_calls(
     parts: list[LlmMessageContentPart] = []
     tool_calls: list[LlmMessageToolCall] = []
     thought_text_parts: list[str] = []
-    has_thought_signature = False
     for part in candidate_content.parts:
         if part.function_call is not None:
             _append_tool_call(tool_calls, parts, part)
@@ -166,29 +165,18 @@ def _candidate_parts_and_calls(
             text_value = str(part.text or "")
             if text_value:
                 thought_text_parts.append(text_value)
-            if part.thought_signature:
-                has_thought_signature = True
             continue
 
         parts.append(_text_part(str(part.text or "")))
-    reasoning = _reasoning_payload(
-        thought_text_parts=thought_text_parts,
-        has_thought_signature=has_thought_signature,
-    )
+    reasoning = _reasoning_text(thought_text_parts)
     return parts, tool_calls, reasoning
 
 
-def _reasoning_payload(
-    *,
-    thought_text_parts: list[str],
-    has_thought_signature: bool,
-) -> dict[str, Any] | None:
-    if not thought_text_parts and not has_thought_signature:
+def _reasoning_text(thought_text_parts: list[str]) -> str | None:
+    normalized_parts = tuple(part.strip() for part in thought_text_parts if part.strip())
+    if not normalized_parts:
         return None
-    return {
-        "thought_text_parts": tuple(thought_text_parts),
-        "has_thought_signature": has_thought_signature,
-    }
+    return "\n\n".join(normalized_parts)
 
 
 def _append_tool_call(

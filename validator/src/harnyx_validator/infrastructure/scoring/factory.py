@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from harnyx_commons.clients import CHUTES
 from harnyx_commons.llm.provider_types import CHUTES_PROVIDER, VERTEX_MAAS_PROVIDER, LlmProviderName
-from harnyx_validator.infrastructure.scoring.chutes_embedding import ChutesTextEmbeddingClient
+from harnyx_commons.llm.providers.chutes import ChutesTextEmbeddingClient
 from harnyx_validator.infrastructure.scoring.vertex_embedding import LazyVertexTextEmbeddingClient
 
 ScoringEmbeddingClient = ChutesTextEmbeddingClient | LazyVertexTextEmbeddingClient
@@ -22,7 +21,7 @@ def create_scoring_embedding_client(
     vertex_maas_location: str | None,
     vertex_service_account_b64: str | None,
     vertex_timeout_seconds: float,
-    chutes_base_url: str = CHUTES.base_url,
+    chutes_base_url: str | None = None,
 ) -> ScoringEmbeddingClient:
     if provider_name == CHUTES_PROVIDER:
         if not chutes_api_key:
