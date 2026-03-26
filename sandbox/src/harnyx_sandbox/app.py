@@ -18,7 +18,7 @@ from harnyx_miner_sdk.sandbox_headers import (
     read_platform_token_header,
     read_session_id_header,
 )
-from harnyx_sandbox.sandbox.harness import SandboxHarness
+from harnyx_sandbox.sandbox.harness import ENTRYPOINT_TIMEOUT_SECONDS, SandboxHarness
 from harnyx_sandbox.tools.proxy import ToolProxy
 
 logger = logging.getLogger("harnyx_sandbox")
@@ -49,6 +49,7 @@ def _tool_factory(config: Mapping[str, object] | None, headers: Mapping[str, str
         base_url=base_url,
         token=token,
         session_id=session_id,
+        timeout=ENTRYPOINT_TIMEOUT_SECONDS,
     )
 
 

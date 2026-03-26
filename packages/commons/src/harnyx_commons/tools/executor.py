@@ -502,13 +502,8 @@ def _extract_llm_usage(
         raise ValueError(f"expected llm tool request, got {request.tool!r}")
 
     parsed_payload = _parse_llm_usage_payload(payload)
-
-    provider = "chutes"  # billing reference provider
-
-    model_raw = request.kwargs.get("model")
-    if not isinstance(model_raw, str) or not model_raw:
-        raise ValueError("llm tool request must include a 'model' kwarg")
-    model: ToolModelName = parse_tool_model(model_raw)
+    provider = "chutes"
+    model = _extract_llm_model(request.kwargs)
 
     usage_obj = parsed_payload.llm_response.usage
     if usage_obj is None:
@@ -541,6 +536,15 @@ def _extract_llm_usage(
 class _LlmUsagePayload:
     payload_mapping: dict[str, object]
     llm_response: LlmResponse
+
+def _extract_llm_model(
+    request_kwargs: Mapping[str, JsonValue],
+) -> ToolModelName:
+    request_model = request_kwargs.get("model")
+    if isinstance(request_model, str) and request_model.strip():
+        return parse_tool_model(request_model)
+
+    raise ValueError("llm tool request must include a 'model' kwarg")
 
 
 def _parse_llm_usage_payload(payload: object) -> _LlmUsagePayload:

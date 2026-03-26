@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import harnyx_sandbox.app as app_module
+import harnyx_sandbox.sandbox.harness as harness_module
 import httpx
 import pytest
 from harnyx_sandbox.tools.proxy import ToolInvocationError, ToolProxy
@@ -15,6 +17,47 @@ ERROR_TOKEN = "bad-token"  # noqa: S105
 SESSION_ID = "00000000-0000-0000-0000-000000000001"
 
 pytestmark = pytest.mark.anyio("asyncio")
+
+
+def test_tool_factory_uses_entrypoint_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class CapturingProxy:
+        def __init__(
+            self,
+            base_url: str,
+            token: str,
+            *,
+            session_id: str,
+            timeout: float,
+        ) -> None:
+            captured.update(
+                {
+                    "base_url": base_url,
+                    "token": token,
+                    "session_id": session_id,
+                    "timeout": timeout,
+                }
+            )
+
+    monkeypatch.setattr(app_module, "ToolProxy", CapturingProxy)
+
+    proxy = app_module._tool_factory(
+        None,
+        {
+            "x-host-container-url": "http://validator",
+            "x-platform-token": TEST_TOKEN,
+            "x-session-id": SESSION_ID,
+        },
+    )
+
+    assert proxy is not None
+    assert captured == {
+        "base_url": "http://validator",
+        "token": TEST_TOKEN,
+        "session_id": SESSION_ID,
+        "timeout": harness_module.ENTRYPOINT_TIMEOUT_SECONDS,
+    }
 
 
 async def test_tool_proxy_invokes_endpoint_with_token() -> None:

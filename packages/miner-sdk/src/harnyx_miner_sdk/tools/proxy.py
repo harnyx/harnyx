@@ -19,6 +19,7 @@ class ToolInvocationError(RuntimeError):
 
 
 DEFAULT_TOKEN_HEADER = PLATFORM_TOKEN_HEADER
+DEFAULT_TOOL_PROXY_TIMEOUT_SECONDS = 120.0
 
 
 class ToolProxy:
@@ -31,7 +32,7 @@ class ToolProxy:
         *,
         session_id: str,
         endpoint: str = "/v1/tools/execute",
-        timeout: float = 30.0,
+        timeout: float = DEFAULT_TOOL_PROXY_TIMEOUT_SECONDS,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         if not base_url:
@@ -40,6 +41,8 @@ class ToolProxy:
             raise ValueError("token must be provided")
         if not session_id:
             raise ValueError("session_id must be provided")
+        if timeout <= 0:
+            raise ValueError("timeout must be > 0")
         self._endpoint = endpoint
         self._timeout = timeout
         self._owns_client = client is None
@@ -138,6 +141,7 @@ def _describe_payload(payload: Mapping[str, object]) -> str:
 
 
 __all__ = [
+    "DEFAULT_TOOL_PROXY_TIMEOUT_SECONDS",
     "DEFAULT_TOKEN_HEADER",
     "ToolInvocationError",
     "ToolProxy",

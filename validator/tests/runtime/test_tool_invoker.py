@@ -272,12 +272,38 @@ async def test_runtime_invoker_routes_llm_chat(model: str) -> None:
     assert result["usage"]["prompt_cached_tokens"] == 4
     assert result["usage"]["reasoning_tokens"] == 3
     assert result["usage"]["web_search_calls"] == 1
+    assert "harnyx_provider" not in result
+    assert "harnyx_model" not in result
     recorded = stub_chutes.calls[0]
     assert recorded.model == model
     assert recorded.temperature == 0.1
     assert recorded.messages[0].content[0].type == "input_text"
     assert recorded.messages[0].content[0].text == "hi"
     assert recorded.provider == "chutes"
+
+
+async def test_runtime_invoker_does_not_expose_internal_provider_metadata_for_llm_chat() -> None:
+    stub_provider = StubChutesProvider()
+    invoker = RuntimeToolInvoker(
+        FakeReceiptLog(),
+        llm_provider=stub_provider,
+        llm_provider_name="vertex-maas",
+        allowed_models=ALLOWED_TOOL_MODELS,
+    )
+
+    result = await _invoke(
+        invoker,
+        "llm_chat",
+        kwargs={
+            "messages": [{"role": "user", "content": "hi"}],
+            "model": ALLOWED_TOOL_MODELS[0],
+        },
+    )
+
+    assert "harnyx_provider" not in result
+    assert "harnyx_model" not in result
+    assert stub_provider.calls[0].provider == "vertex-maas"
+    assert stub_provider.calls[0].model == ALLOWED_TOOL_MODELS[0]
 
 
 async def test_runtime_invoker_rejects_blank_search_ai_prompt() -> None:
