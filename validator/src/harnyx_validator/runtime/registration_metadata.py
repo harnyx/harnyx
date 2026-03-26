@@ -7,10 +7,10 @@ import logging
 import os
 import re
 import subprocess
-from importlib.metadata import version
 from pathlib import Path
 
 from harnyx_validator.application.dto.registration import ValidatorRegistrationMetadata
+from harnyx_validator.version import VALIDATOR_RELEASE_VERSION
 
 _DOCKER_BINARY = "docker"
 _MOUNTINFO_CONTAINER_ID_PATTERN = re.compile(
@@ -136,7 +136,7 @@ def _resolve_image_identity() -> tuple[str | None, str | None]:
 def resolve_validator_registration_metadata() -> ValidatorRegistrationMetadata:
     local_image_id, registry_digest = _resolve_image_identity()
     return ValidatorRegistrationMetadata(
-        validator_version=version("harnyx-validator"),
+        validator_version=VALIDATOR_RELEASE_VERSION,
         source_revision=_optional_env("SOURCE_REVISION"),
         registry_digest=registry_digest,
         local_image_id=local_image_id,

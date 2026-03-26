@@ -22,6 +22,7 @@ from harnyx_validator.runtime.bootstrap import build_runtime, close_runtime_reso
 from harnyx_validator.runtime.evaluation_worker import create_evaluation_worker_from_context
 from harnyx_validator.runtime.settings import Settings
 from harnyx_validator.runtime.weight_worker import create_weight_worker
+from harnyx_validator.version import VALIDATOR_RELEASE_VERSION
 
 init_logging()
 configure_sentry_from_env()
@@ -66,7 +67,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Harnyx Validator API", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(
+        title="Harnyx Validator API",
+        version=VALIDATOR_RELEASE_VERSION,
+        lifespan=lifespan,
+    )
     app.middleware("http")(request_logging_middleware)
     add_system_routes(app, _runtime.status_provider)
     add_tool_routes(app, _runtime.tool_route_deps_provider)

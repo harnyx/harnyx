@@ -13,6 +13,7 @@ from harnyx_validator.infrastructure.platform.registration_client import (
     PlatformRegistrationClient,
     register_with_retry,
 )
+from harnyx_validator.version import VALIDATOR_RELEASE_VERSION
 
 _HEADER_PATTERN = re.compile(
     r'^Bittensor\s+ss58="(?P<ss58>[^"]+)",\s*sig="(?P<sig>[0-9a-f]+)"$'
@@ -59,7 +60,7 @@ def test_registration_client_posts_runtime_metadata_in_signed_body(monkeypatch) 
     monkeypatch.setattr(registration_module.httpx, "Client", _StubClient)
     keypair = _keypair()
     metadata = ValidatorRegistrationMetadata(
-        validator_version="0.1.0",
+        validator_version=VALIDATOR_RELEASE_VERSION,
         source_revision="abc123",
         registry_digest="sha256:registry",
         local_image_id="sha256:local",
@@ -76,7 +77,7 @@ def test_registration_client_posts_runtime_metadata_in_signed_body(monkeypatch) 
     _assert_signed_body(request, keypair)
     assert json.loads(request.content) == {
         "base_url": "https://validator.invalid",
-        "validator_version": "0.1.0",
+        "validator_version": VALIDATOR_RELEASE_VERSION,
         "source_revision": "abc123",
         "registry_digest": "sha256:registry",
         "local_image_id": "sha256:local",
@@ -85,7 +86,7 @@ def test_registration_client_posts_runtime_metadata_in_signed_body(monkeypatch) 
 
 def test_register_with_retry_forwards_metadata(monkeypatch) -> None:
     metadata = ValidatorRegistrationMetadata(
-        validator_version="0.1.0",
+        validator_version=VALIDATOR_RELEASE_VERSION,
         source_revision=None,
         registry_digest=None,
         local_image_id=None,

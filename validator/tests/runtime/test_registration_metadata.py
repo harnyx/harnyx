@@ -6,29 +6,29 @@ import pytest
 
 import harnyx_validator.runtime.registration_metadata as metadata_mod
 from harnyx_validator.runtime.registration_metadata import resolve_validator_registration_metadata
+from harnyx_validator.version import VALIDATOR_RELEASE_VERSION
 
 
 def test_resolve_registration_metadata_reads_version_revision_and_image_identity(monkeypatch) -> None:
     monkeypatch.setenv("SOURCE_REVISION", "abc123")
-    monkeypatch.setattr(metadata_mod, "version", lambda _: "0.1.0")
     monkeypatch.setattr(metadata_mod, "_inspect_current_image_id", lambda: "sha256:local")
     monkeypatch.setattr(metadata_mod, "_inspect_registry_digest", lambda _: "sha256:registry")
 
     metadata = resolve_validator_registration_metadata()
 
-    assert metadata.validator_version == "0.1.0"
+    assert metadata.validator_version == VALIDATOR_RELEASE_VERSION
     assert metadata.source_revision == "abc123"
     assert metadata.registry_digest == "sha256:registry"
     assert metadata.local_image_id == "sha256:local"
 
 
 def test_resolve_registration_metadata_allows_missing_registry_digest(monkeypatch) -> None:
-    monkeypatch.setattr(metadata_mod, "version", lambda _: "0.1.0")
     monkeypatch.setattr(metadata_mod, "_inspect_current_image_id", lambda: "sha256:local")
     monkeypatch.setattr(metadata_mod, "_inspect_registry_digest", lambda _: None)
 
     metadata = resolve_validator_registration_metadata()
 
+    assert metadata.validator_version == VALIDATOR_RELEASE_VERSION
     assert metadata.local_image_id == "sha256:local"
     assert metadata.registry_digest is None
 
@@ -38,7 +38,6 @@ def test_resolve_registration_metadata_allows_missing_image_identity(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setenv("SOURCE_REVISION", "abc123")
-    monkeypatch.setattr(metadata_mod, "version", lambda _: "0.1.0")
     monkeypatch.setattr(
         metadata_mod,
         "_inspect_current_image_id",
@@ -48,7 +47,7 @@ def test_resolve_registration_metadata_allows_missing_image_identity(
 
     metadata = resolve_validator_registration_metadata()
 
-    assert metadata.validator_version == "0.1.0"
+    assert metadata.validator_version == VALIDATOR_RELEASE_VERSION
     assert metadata.source_revision == "abc123"
     assert metadata.local_image_id is None
     assert metadata.registry_digest is None
@@ -61,7 +60,6 @@ def test_resolve_registration_metadata_allows_missing_docker_cli(
 ) -> None:
     monkeypatch.setenv("HOSTNAME", "validator-host")
     monkeypatch.setenv("SOURCE_REVISION", "abc123")
-    monkeypatch.setattr(metadata_mod, "version", lambda _: "0.1.0")
     monkeypatch.setattr(metadata_mod, "_resolve_current_container_id_from_mountinfo", lambda: None)
     monkeypatch.setattr(
         metadata_mod.subprocess,
@@ -72,7 +70,7 @@ def test_resolve_registration_metadata_allows_missing_docker_cli(
 
     metadata = resolve_validator_registration_metadata()
 
-    assert metadata.validator_version == "0.1.0"
+    assert metadata.validator_version == VALIDATOR_RELEASE_VERSION
     assert metadata.source_revision == "abc123"
     assert metadata.local_image_id is None
     assert metadata.registry_digest is None
@@ -83,7 +81,6 @@ def test_resolve_registration_metadata_allows_registry_digest_inspection_failure
     monkeypatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    monkeypatch.setattr(metadata_mod, "version", lambda _: "0.1.0")
     monkeypatch.setattr(metadata_mod, "_inspect_current_image_id", lambda: "sha256:local")
     monkeypatch.setattr(
         metadata_mod,
@@ -94,6 +91,7 @@ def test_resolve_registration_metadata_allows_registry_digest_inspection_failure
 
     metadata = resolve_validator_registration_metadata()
 
+    assert metadata.validator_version == VALIDATOR_RELEASE_VERSION
     assert metadata.local_image_id == "sha256:local"
     assert metadata.registry_digest is None
     assert "validator registration registry digest inspection unavailable" in caplog.text

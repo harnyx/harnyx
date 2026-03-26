@@ -1,0 +1,6 @@
+"""Shared validator release/package version constants."""
+
+VALIDATOR_RELEASE_VERSION = "20260326.post7"
+VALIDATOR_PACKAGE_VERSION = "20260326.post7"
+
+__all__ = ["VALIDATOR_PACKAGE_VERSION", "VALIDATOR_RELEASE_VERSION"]
