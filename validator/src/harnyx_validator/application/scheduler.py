@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
@@ -27,6 +27,7 @@ from harnyx_validator.application.services.evaluation_runner import (
     LOCAL_RETRY_ATTEMPTS,
     EvaluationRunner,
     ValidatorBatchFailedError,
+    ValidatorBatchFailureDetail,
 )
 
 SandboxOptionsFactory = Callable[[ScriptArtifactSpec], SandboxOptions]
@@ -67,6 +68,7 @@ class EvaluationScheduler:
         self._make_orchestrator = orchestrator_factory
         self._sandbox_options = sandbox_options_factory
         self._progress = progress
+        self._clock = clock
         self._runner = EvaluationRunner(
             subtensor_client=subtensor_client,
             session_manager=session_manager,
@@ -189,6 +191,14 @@ class EvaluationScheduler:
         raise ValidatorBatchFailedError(
             error_code=last_error_code or "artifact_setup_failed",
             message=last_error_message or "artifact setup failed",
+            failure_detail=ValidatorBatchFailureDetail(
+                error_code=last_error_code or "artifact_setup_failed",
+                error_message=last_error_message or "artifact setup failed",
+                occurred_at=self._clock().astimezone(UTC),
+                artifact_id=artifact.artifact_id,
+                uid=artifact.uid,
+                exception_type=None,
+            ),
         )
 
     def _log_artifact_retry(

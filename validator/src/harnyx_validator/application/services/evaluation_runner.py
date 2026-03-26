@@ -79,10 +79,28 @@ class TaskAttemptDecision:
     classification: FailureClassification | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ValidatorBatchFailureDetail:
+    error_code: str
+    error_message: str
+    occurred_at: datetime
+    artifact_id: UUID | None = None
+    task_id: UUID | None = None
+    uid: int | None = None
+    exception_type: str | None = None
+
+
 class ValidatorBatchFailedError(RuntimeError):
-    def __init__(self, *, error_code: str, message: str) -> None:
+    def __init__(
+        self,
+        *,
+        error_code: str,
+        message: str,
+        failure_detail: ValidatorBatchFailureDetail,
+    ) -> None:
         super().__init__(message)
         self.error_code = error_code
+        self.failure_detail = failure_detail
 
 
 @dataclass(slots=True)
@@ -239,6 +257,15 @@ class EvaluationRunner:
                 raise ValidatorBatchFailedError(
                     error_code=classification.error_code,
                     message=classification.error_message,
+                    failure_detail=ValidatorBatchFailureDetail(
+                        error_code=classification.error_code,
+                        error_message=classification.error_message,
+                        occurred_at=self._clock(),
+                        artifact_id=artifact.artifact_id,
+                        task_id=task.task_id,
+                        uid=artifact.uid,
+                        exception_type=_exception_type_name(classification.exc),
+                    ),
                 ) from classification.exc
         finally:
             self._sessions.revoke(issued.session.session_id)
@@ -643,6 +670,12 @@ def _retry_exception_for_classification(classification: FailureClassification) -
     return RuntimeError(classification.error_message)
 
 
+def _exception_type_name(exc: Exception | None) -> str | None:
+    if exc is None:
+        return None
+    return type(exc).__name__
+
+
 __all__ = [
     "AttemptDecisionKind",
     "EvaluationRunner",
@@ -650,5 +683,6 @@ __all__ = [
     "FailureKind",
     "LOCAL_RETRY_ATTEMPTS",
     "TaskAttemptDecision",
+    "ValidatorBatchFailureDetail",
     "ValidatorBatchFailedError",
 ]

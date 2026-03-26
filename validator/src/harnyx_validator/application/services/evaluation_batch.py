@@ -36,6 +36,7 @@ from harnyx_validator.application.services.evaluation_batch_prep import (
 from harnyx_validator.application.services.evaluation_runner import (
     EvaluationRunner,
     ValidatorBatchFailedError,
+    ValidatorBatchFailureDetail,
 )
 from harnyx_validator.application.status import StatusProvider
 
@@ -141,6 +142,12 @@ class MinerTaskBatchService:
             raise ValidatorBatchFailedError(
                 error_code="batch_execution_failed",
                 message=str(exc),
+                failure_detail=ValidatorBatchFailureDetail(
+                    error_code="batch_execution_failed",
+                    error_message=str(exc),
+                    occurred_at=datetime.now(UTC),
+                    exception_type=type(exc).__name__,
+                ),
             ) from exc
         self._complete_batch(run_ctx.batch_id, batch_result, elapsed)
 

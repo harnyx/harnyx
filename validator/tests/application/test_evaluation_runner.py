@@ -749,6 +749,10 @@ async def test_evaluation_runner_returns_tool_provider_failed_after_retry_exhaus
         )
 
     assert exc_info.value.error_code == "tool_provider_failed"
+    assert exc_info.value.failure_detail.error_code == "tool_provider_failed"
+    assert exc_info.value.failure_detail.artifact_id == artifact.artifact_id
+    assert exc_info.value.failure_detail.task_id == task.task_id
+    assert exc_info.value.failure_detail.uid == artifact.uid
     assert orchestrator.calls == 2
     assert evaluation_store.records == []
 
@@ -876,6 +880,12 @@ async def test_evaluation_runner_does_not_let_stale_provider_marker_poison_later
         )
 
     assert exc_info.value.error_code == "sandbox_invocation_failed"
+    assert exc_info.value.failure_detail.error_code == "sandbox_invocation_failed"
+    assert exc_info.value.failure_detail.error_message == "plain sandbox failure"
+    assert exc_info.value.failure_detail.artifact_id == artifact.artifact_id
+    assert exc_info.value.failure_detail.task_id == task.task_id
+    assert exc_info.value.failure_detail.uid == artifact.uid
+    assert exc_info.value.failure_detail.exception_type == "SandboxInvocationError"
     assert orchestrator.calls == 2
     assert evaluation_store.records == []
 

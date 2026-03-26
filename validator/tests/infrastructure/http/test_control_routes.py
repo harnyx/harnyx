@@ -29,6 +29,7 @@ from harnyx_validator.application.dto.evaluation import (
     MinerTaskRunSubmission,
     TokenUsageSummary,
 )
+from harnyx_validator.application.services.evaluation_runner import ValidatorBatchFailureDetail
 from harnyx_validator.application.status import StatusProvider
 from harnyx_validator.domain.evaluation import MinerTaskRun
 from harnyx_validator.infrastructure.http.routes import (
@@ -55,11 +56,18 @@ class _StubHotkey:
 
 
 class StubAcceptBatch:
-    def __init__(self, *, lifecycle: str | None = "processing", error_code: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        lifecycle: str | None = "processing",
+        error_code: str | None = None,
+        failure_detail: ValidatorBatchFailureDetail | None = None,
+    ) -> None:
         self.received_batch: MinerTaskBatchSpec | None = None
         self.received_restore_runs: tuple[MinerTaskRunSubmission, ...] = ()
         self._lifecycle = lifecycle
         self._error_code = error_code
+        self._failure_detail = failure_detail
 
     def execute(
         self,
@@ -80,6 +88,10 @@ class StubAcceptBatch:
     def error_code_for(self, batch_id: UUID) -> str | None:
         _ = batch_id
         return self._error_code
+
+    def failure_detail_for(self, batch_id: UUID) -> ValidatorBatchFailureDetail | None:
+        _ = batch_id
+        return self._failure_detail
 
 
 class StubStatusProvider:
@@ -103,9 +115,14 @@ class DemoControlDependencyProvider:
         auth: ControlRouteAuth | None = None,
         lifecycle: str | None = "processing",
         error_code: str | None = None,
+        failure_detail: ValidatorBatchFailureDetail | None = None,
         validator_hotkey: _StubHotkey | None = None,
     ) -> None:
-        self.accept_batch = StubAcceptBatch(lifecycle=lifecycle, error_code=error_code)
+        self.accept_batch = StubAcceptBatch(
+            lifecycle=lifecycle,
+            error_code=error_code,
+            failure_detail=failure_detail,
+        )
         self._deps = ValidatorControlDeps(
             accept_batch=self.accept_batch,
             status_provider=StubStatusProvider(),
@@ -454,6 +471,15 @@ def test_progress_endpoint_keeps_ordered_runs_visible_when_lifecycle_is_failed()
         snapshot=snapshot,
         lifecycle="failed",
         error_code="sandbox_invocation_failed",
+        failure_detail=ValidatorBatchFailureDetail(
+            error_code="sandbox_invocation_failed",
+            error_message="plain sandbox failure",
+            occurred_at=datetime(2026, 3, 26, 21, 0, tzinfo=UTC),
+            artifact_id=first_submission.run.artifact_id,
+            task_id=first_submission.run.task_id,
+            uid=first_submission.run.uid,
+            exception_type="SandboxInvocationError",
+        ),
     )
     app = _create_test_app(provider)
     client = TestClient(app)
@@ -465,6 +491,15 @@ def test_progress_endpoint_keeps_ordered_runs_visible_when_lifecycle_is_failed()
     assert body["batch_id"] == str(batch_id)
     assert body["status"] == "failed"
     assert body["error_code"] == "sandbox_invocation_failed"
+    assert body["failure_detail"] == {
+        "error_code": "sandbox_invocation_failed",
+        "error_message": "plain sandbox failure",
+        "artifact_id": str(first_submission.run.artifact_id),
+        "task_id": str(first_submission.run.task_id),
+        "uid": first_submission.run.uid,
+        "exception_type": "SandboxInvocationError",
+        "occurred_at": "2026-03-26T21:00:00+00:00",
+    }
     assert body["total"] == 2
     assert body["completed"] == 2
     assert body["remaining"] == 0
@@ -751,6 +786,7 @@ def test_progress_endpoint_returns_unknown_for_unaccepted_batch() -> None:
         "batch_id": str(batch_id),
         "status": "unknown",
         "error_code": None,
+        "failure_detail": None,
         "total": 0,
         "completed": 0,
         "remaining": 0,

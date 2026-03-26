@@ -119,7 +119,11 @@ class EvaluationWorker:
             except ValidatorBatchFailedError as exc:
                 capture_exception(exc)
                 if self._batch_tracker is not None:
-                    self._batch_tracker.mark_failed(batch.batch_id, error_code=exc.error_code)
+                    self._batch_tracker.mark_failed(
+                        batch.batch_id,
+                        error_code=exc.error_code,
+                        failure_detail=exc.failure_detail,
+                    )
                 logger.exception(
                     "batch processing failed",
                     extra={"batch_id": str(batch.batch_id), "error_code": exc.error_code},
@@ -130,7 +134,11 @@ class EvaluationWorker:
             except Exception as exc:
                 capture_exception(exc)
                 if self._batch_tracker is not None:
-                    self._batch_tracker.mark_failed(batch.batch_id, error_code="unexpected_batch_failure")
+                    self._batch_tracker.mark_failed(
+                        batch.batch_id,
+                        error_code="unexpected_batch_failure",
+                        failure_detail=None,
+                    )
                 logger.exception(
                     "batch processing raised unexpectedly after service-owned recovery boundary",
                     extra={"batch_id": str(batch.batch_id)},

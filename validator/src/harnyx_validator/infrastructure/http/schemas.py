@@ -24,6 +24,7 @@ from harnyx_validator.application.dto.evaluation import (
     ScriptArtifactSpec,
     TokenUsageSummary,
 )
+from harnyx_validator.application.services.evaluation_runner import ValidatorBatchFailureDetail
 from harnyx_validator.domain.evaluation import MinerTaskRun
 from harnyx_validator.domain.shared_config import VALIDATOR_STRICT_CONFIG
 
@@ -270,12 +271,37 @@ class MinerTaskRunSubmissionModel(BaseModel):
     specifics: EvaluationDetails
 
 
+class FailureDetailResponse(BaseModel):
+    model_config = VALIDATOR_STRICT_CONFIG
+
+    error_code: str = Field(min_length=1)
+    error_message: str = Field(min_length=1)
+    artifact_id: str | None = None
+    task_id: str | None = None
+    uid: int | None = Field(default=None, ge=0)
+    exception_type: str | None = None
+    occurred_at: str = Field(min_length=1)
+
+    @classmethod
+    def from_domain(cls, detail: ValidatorBatchFailureDetail) -> FailureDetailResponse:
+        return cls(
+            error_code=detail.error_code,
+            error_message=detail.error_message,
+            artifact_id=None if detail.artifact_id is None else str(detail.artifact_id),
+            task_id=None if detail.task_id is None else str(detail.task_id),
+            uid=detail.uid,
+            exception_type=detail.exception_type,
+            occurred_at=detail.occurred_at.isoformat(),
+        )
+
+
 class ProgressResponse(BaseModel):
     model_config = VALIDATOR_STRICT_CONFIG
 
     batch_id: str = Field(min_length=1)
     status: Literal["unknown", "queued", "processing", "completed", "failed"]
     error_code: str | None = None
+    failure_detail: FailureDetailResponse | None = None
     total: int = Field(ge=0)
     completed: int = Field(ge=0)
     remaining: int = Field(ge=0)
@@ -300,6 +326,7 @@ class ValidatorStatusResponse(BaseModel):
 
 __all__ = [
     "BatchAcceptResponse",
+    "FailureDetailResponse",
     "MinerTaskBatchRequestModel",
     "MinerTaskRequestModel",
     "MinerTaskRunModel",

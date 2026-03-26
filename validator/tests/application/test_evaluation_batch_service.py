@@ -154,6 +154,9 @@ async def test_process_async_fails_batch_after_scheduler_escape(
         await service.process_async(batch)
 
     assert exc_info.value.error_code == "batch_execution_failed"
+    assert exc_info.value.failure_detail.error_code == "batch_execution_failed"
+    assert exc_info.value.failure_detail.error_message == "worker boom"
+    assert exc_info.value.failure_detail.exception_type == "RuntimeError"
     assert logged == {}
 
 
@@ -196,5 +199,8 @@ async def test_process_async_fails_from_build_run_context_failure(
         await service.process_async(batch)
 
     assert exc_info.value.error_code == "batch_execution_failed"
+    assert exc_info.value.failure_detail.error_code == "batch_execution_failed"
+    assert exc_info.value.failure_detail.error_message == "setup boom"
+    assert exc_info.value.failure_detail.exception_type == "RuntimeError"
     assert accept_batch.lifecycle_for(batch.batch_id) == "processing"
     assert progress.recorded_pairs(batch.batch_id) == frozenset()

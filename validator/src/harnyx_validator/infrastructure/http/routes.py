@@ -28,9 +28,11 @@ from harnyx_validator.application.dto.evaluation import (
     MinerTaskRunSubmission,
     TokenUsageSummary,
 )
+from harnyx_validator.application.services.evaluation_runner import ValidatorBatchFailureDetail
 from harnyx_validator.application.status import StatusProvider
 from harnyx_validator.infrastructure.http.schemas import (
     BatchAcceptResponse,
+    FailureDetailResponse,
     MinerTaskBatchRequestModel,
     MinerTaskRunModel,
     MinerTaskRunSubmissionModel,
@@ -216,6 +218,7 @@ def add_control_routes(
                 batch_id=str(batch_id),
                 status="unknown",
                 error_code=None,
+                failure_detail=None,
                 total=0,
                 completed=0,
                 remaining=0,
@@ -229,6 +232,7 @@ def add_control_routes(
                 batch_id=str(batch_id),
                 status="failed",
                 error_code=deps.accept_batch.error_code_for(batch_id),
+                failure_detail=_serialize_failure_detail(deps.accept_batch.failure_detail_for(batch_id)),
                 total=snapshot["total"],
                 completed=snapshot["completed"],
                 remaining=snapshot["remaining"],
@@ -238,6 +242,7 @@ def add_control_routes(
             batch_id=str(batch_id),
             status=lifecycle,
             error_code=deps.accept_batch.error_code_for(batch_id),
+            failure_detail=None,
             total=snapshot["total"],
             completed=snapshot["completed"],
             remaining=snapshot["remaining"],
@@ -335,6 +340,14 @@ def _serialize_run(
         session=_serialize_session_block(submission.session),
         specifics=submission.run.details,
     )
+
+
+def _serialize_failure_detail(
+    detail: ValidatorBatchFailureDetail | None,
+) -> FailureDetailResponse | None:
+    if detail is None:
+        return None
+    return FailureDetailResponse.from_domain(detail)
 
 
 def _serialize_usage_block(usage: TokenUsageSummary) -> UsageModel:
