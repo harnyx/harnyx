@@ -1,6 +1,6 @@
 services:
   validator:
-    image: "${VALIDATOR_IMAGE:-harnyx/harnyx-subnet-validator:latest}"
+    image: "${VALIDATOR_IMAGE:-harnyx/harnyx-subnet-validator:finney}"
     env_file:
       - .env
     environment:
