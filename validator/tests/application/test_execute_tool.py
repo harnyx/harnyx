@@ -436,7 +436,7 @@ async def test_execute_tool_rejects_expired_session() -> None:
 @pytest.mark.parametrize(
     "model",
     [
-        "openai/gpt-oss-20b",
+        "openai/gpt-oss-20b-TEE",
         "Qwen/Qwen3-Next-80B-A3B-Instruct",
     ],
 )
@@ -521,7 +521,7 @@ async def test_execute_tool_records_llm_tokens_for_llm_chat(model: str) -> None:
 
 
 async def test_execute_tool_ignores_stale_response_model_metadata_for_llm_chat() -> None:
-    request_model = "openai/gpt-oss-20b"
+    request_model = "openai/gpt-oss-20b-TEE"
     stale_payload_model = "Qwen/Qwen3-Next-80B-A3B-Instruct"
     session = make_session(budget_usd=1.0)
     token = generate_token()

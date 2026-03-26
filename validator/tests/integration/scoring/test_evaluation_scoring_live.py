@@ -12,6 +12,7 @@ from harnyx_validator.application.services.evaluation_scoring import (
     EvaluationScoringConfig,
     EvaluationScoringService,
 )
+from harnyx_validator.runtime import bootstrap
 from harnyx_validator.runtime.settings import Settings
 
 pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
@@ -38,9 +39,6 @@ class RecordingProvider(LlmProviderPort):
 async def test_evaluation_scoring_live_uses_real_structured_chutes_flow() -> None:
     settings = Settings.load()
     provider_name = settings.llm.scoring_llm_provider
-    model = settings.llm.scoring_llm_model
-
-    assert model, "SCORING_LLM_MODEL must be configured"
 
     resolve_provider = build_cached_llm_provider_resolver(
         llm_settings=settings.llm,
@@ -52,7 +50,8 @@ async def test_evaluation_scoring_live_uses_real_structured_chutes_flow() -> Non
         embedding_client=StubEmbeddingClient(),
         config=EvaluationScoringConfig(
             provider=provider_name,
-            model=model,
+            model=bootstrap._SCORING_LLM_MODEL,
+            reasoning_effort=bootstrap._SCORING_LLM_REASONING_EFFORT,
             temperature=0.0,
             max_output_tokens=256,
             timeout_seconds=float(settings.llm.scoring_llm_timeout_seconds),

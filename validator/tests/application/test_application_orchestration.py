@@ -159,7 +159,7 @@ async def test_application_use_cases_cooperate_for_single_task_run() -> None:
             session.usage.update(
                 llm_usage_totals={
                     "chutes": {
-                        "openai/gpt-oss-20b": LlmUsageTotals(
+                        "openai/gpt-oss-20b-TEE": LlmUsageTotals(
                             prompt_tokens=10,
                             completion_tokens=15,
                             total_tokens=25,

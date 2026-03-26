@@ -29,7 +29,7 @@ def _provider_settings() -> tuple[str, str, float]:
     settings = LlmSettings()
     api_key = settings.chutes_api_key_value
     assert api_key, "CHUTES_API_KEY must be configured"
-    model = settings.scoring_llm_model or "openai/gpt-oss-20b"
+    model = "openai/gpt-oss-120b-TEE"
     timeout = float(CHUTES.timeout_seconds)
     return api_key, model, timeout
 

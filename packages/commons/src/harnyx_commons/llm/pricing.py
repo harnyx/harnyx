@@ -17,14 +17,14 @@ from harnyx_commons.tools.types import SearchToolName
 
 # Canonical model ids allowed for tool LLM calls.
 ToolModelName = Literal[
-    "openai/gpt-oss-20b",
-    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b-TEE",
+    "openai/gpt-oss-120b-TEE",
     "Qwen/Qwen3-Next-80B-A3B-Instruct",
 ]
 
 ALLOWED_TOOL_MODELS: tuple[ToolModelName, ...] = (
-    "openai/gpt-oss-20b",
-    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b-TEE",
+    "openai/gpt-oss-120b-TEE",
     "Qwen/Qwen3-Next-80B-A3B-Instruct",
 )
 
@@ -58,8 +58,8 @@ class ModelPricing:
 
 # Chutes reference rates keyed by canonical model id.
 MODEL_PRICING: Mapping[ToolModelName, ModelPricing] = {
-    "openai/gpt-oss-20b": ModelPricing(0.25, 2.0, 2.0),
-    "openai/gpt-oss-120b": ModelPricing(1.25, 10.0, 10.0),
+    "openai/gpt-oss-20b-TEE": ModelPricing(0.25, 2.0, 2.0),
+    "openai/gpt-oss-120b-TEE": ModelPricing(1.25, 10.0, 10.0),
     "Qwen/Qwen3-Next-80B-A3B-Instruct": ModelPricing(0.10, 0.80, 0.0),
 }
 

@@ -50,7 +50,7 @@ async def test_chutes_structured_request_is_not_rewritten() -> None:
 
     request = LlmRequest(
         provider="chutes",
-        model="openai/gpt-oss-20b",
+        model="openai/gpt-oss-20b-TEE",
         messages=(
             LlmMessage(
                 role="user",
@@ -77,7 +77,7 @@ async def test_chutes_json_object_request_is_not_rewritten() -> None:
 
     request = LlmRequest(
         provider="chutes",
-        model="openai/gpt-oss-20b",
+        model="openai/gpt-oss-20b-TEE",
         messages=(
             LlmMessage(
                 role="user",

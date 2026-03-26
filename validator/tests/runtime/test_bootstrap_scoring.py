@@ -115,10 +115,8 @@ def test_create_scoring_service_does_not_require_vertex_config_at_bootstrap() ->
         rpc_port=8100,
         llm=LlmSettings.model_construct(
             scoring_llm_provider="chutes",
-            scoring_llm_model="openai/gpt-oss-20b",
             scoring_llm_temperature=None,
             scoring_llm_max_output_tokens=1024,
-            scoring_llm_reasoning_effort=None,
             scoring_llm_timeout_seconds=30.0,
             chutes_api_key=SecretStr("test-key"),
         ),
@@ -159,6 +157,9 @@ def test_create_scoring_service_does_not_require_vertex_config_at_bootstrap() ->
     service = _create_scoring_service(settings, provider=SimpleNamespace())
 
     assert service is not None
+    assert service._config.provider == "chutes"
+    assert service._config.model == bootstrap._SCORING_LLM_MODEL
+    assert service._config.reasoning_effort == bootstrap._SCORING_LLM_REASONING_EFFORT
 
 
 def test_create_scoring_service_uses_chutes_embeddings_for_chutes_provider() -> None:
@@ -167,10 +168,8 @@ def test_create_scoring_service_uses_chutes_embeddings_for_chutes_provider() -> 
         rpc_port=8100,
         llm=LlmSettings.model_construct(
             scoring_llm_provider="chutes",
-            scoring_llm_model="openai/gpt-oss-20b",
             scoring_llm_temperature=None,
             scoring_llm_max_output_tokens=1024,
-            scoring_llm_reasoning_effort=None,
             scoring_llm_timeout_seconds=30.0,
             chutes_api_key=SecretStr("test-key"),
         ),
@@ -223,10 +222,8 @@ def test_create_scoring_service_fails_when_chutes_embedding_model_is_unmapped(
         rpc_port=8100,
         llm=LlmSettings.model_construct(
             scoring_llm_provider="chutes",
-            scoring_llm_model="openai/gpt-oss-20b",
             scoring_llm_temperature=None,
             scoring_llm_max_output_tokens=1024,
-            scoring_llm_reasoning_effort=None,
             scoring_llm_timeout_seconds=30.0,
             chutes_api_key=SecretStr("test-key"),
         ),
@@ -275,10 +272,8 @@ def test_create_scoring_service_requires_chutes_api_key_for_chutes_embeddings() 
         rpc_port=8100,
         llm=LlmSettings.model_construct(
             scoring_llm_provider="chutes",
-            scoring_llm_model="openai/gpt-oss-20b",
             scoring_llm_temperature=None,
             scoring_llm_max_output_tokens=1024,
-            scoring_llm_reasoning_effort=None,
             scoring_llm_timeout_seconds=30.0,
             chutes_api_key=SecretStr(""),
         ),
@@ -326,10 +321,8 @@ def test_create_scoring_service_uses_vertex_maas_region_for_embeddings() -> None
         rpc_port=8100,
         llm=LlmSettings.model_construct(
             scoring_llm_provider="vertex-maas",
-            scoring_llm_model="gemini-2.5-flash",
             scoring_llm_temperature=None,
             scoring_llm_max_output_tokens=1024,
-            scoring_llm_reasoning_effort=None,
             scoring_llm_timeout_seconds=30.0,
             chutes_api_key=SecretStr(""),
         ),

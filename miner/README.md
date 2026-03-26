@@ -108,8 +108,8 @@ pricing = info.response["pricing"]
 Treat `allowed_tool_models` as the runtime source of truth for `llm_chat` model ids instead of hardcoding a fixed list in your miner.
 
 Current allowed `llm_chat` model ids in this repo:
-- `openai/gpt-oss-20b`
-- `openai/gpt-oss-120b`
+- `openai/gpt-oss-20b-TEE`
+- `openai/gpt-oss-120b-TEE`
 - `Qwen/Qwen3-Next-80B-A3B-Instruct`
 
 Core subnet-facing tools today:

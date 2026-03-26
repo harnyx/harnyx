@@ -30,7 +30,7 @@ def test_grounded_chutes_rejected() -> None:
     ):
         GroundedLlmRequest(
             provider="chutes",
-            model="openai/gpt-oss-20b",
+            model="openai/gpt-oss-20b-TEE",
             messages=_messages(),
             temperature=None,
             max_output_tokens=None,

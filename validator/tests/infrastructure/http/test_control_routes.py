@@ -241,7 +241,7 @@ def _make_task_submission(*, batch_id: UUID) -> tuple[MinerTask, MinerTaskRunSub
             cost=0.02,
             providers={
                 "chutes": {
-                    "openai/gpt-oss-20b": LlmModelUsageCost(
+                    "openai/gpt-oss-20b-TEE": LlmModelUsageCost(
                         usage=LlmUsageTotals(
                             prompt_tokens=10,
                             completion_tokens=5,

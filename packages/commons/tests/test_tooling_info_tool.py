@@ -40,12 +40,14 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
     assert "search_items" not in payload["pricing"]
 
     model_prices = payload["pricing"]["llm_chat"]["models"]
-    assert model_prices["openai/gpt-oss-20b"]["input_per_million"] == pytest.approx(
-        MODEL_PRICING["openai/gpt-oss-20b"].input_per_million
+    assert model_prices["openai/gpt-oss-20b-TEE"]["input_per_million"] == pytest.approx(
+        MODEL_PRICING["openai/gpt-oss-20b-TEE"].input_per_million
     )
-    assert model_prices["openai/gpt-oss-120b"]["output_per_million"] == pytest.approx(
-        MODEL_PRICING["openai/gpt-oss-120b"].output_per_million
+    assert model_prices["openai/gpt-oss-120b-TEE"]["output_per_million"] == pytest.approx(
+        MODEL_PRICING["openai/gpt-oss-120b-TEE"].output_per_million
     )
+    assert "openai/gpt-oss-20b" not in payload["allowed_tool_models"]
+    assert "openai/gpt-oss-120b" not in payload["allowed_tool_models"]
     assert "Qwen/Qwen3-Next-80B-A3B-Instruct" in payload["allowed_tool_models"]
     assert model_prices["Qwen/Qwen3-Next-80B-A3B-Instruct"]["input_per_million"] == pytest.approx(
         MODEL_PRICING["Qwen/Qwen3-Next-80B-A3B-Instruct"].input_per_million

@@ -69,6 +69,8 @@ logger = logging.getLogger("harnyx_validator.runtime")
 
 _SCORING_EMBEDDING_MODEL = "gemini-embedding-001"
 _SCORING_CHUTES_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
+_SCORING_LLM_MODEL = "openai/gpt-oss-120b-TEE"
+_SCORING_LLM_REASONING_EFFORT = "high"
 TOKEN_MAX_PARALLEL_CALLS = 2
 
 
@@ -548,10 +550,10 @@ def _create_scoring_service(
     resolved_embedding_client = embedding_client or _create_scoring_embedding_client(settings)
     config = EvaluationScoringConfig(
         provider=settings.llm.scoring_llm_provider,
-        model=settings.llm.scoring_llm_model,
+        model=_SCORING_LLM_MODEL,
         temperature=settings.llm.scoring_llm_temperature,
         max_output_tokens=settings.llm.scoring_llm_max_output_tokens,
-        reasoning_effort=settings.llm.scoring_llm_reasoning_effort,
+        reasoning_effort=_SCORING_LLM_REASONING_EFFORT,
         timeout_seconds=settings.llm.scoring_llm_timeout_seconds,
     )
     return EvaluationScoringService(

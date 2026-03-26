@@ -12,7 +12,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.anyio("asyncio")]
 def _request() -> LlmRequest:
     return LlmRequest(
         provider="chutes",
-        model="openai/gpt-oss-20b",
+        model="openai/gpt-oss-20b-TEE",
         messages=(
             LlmMessage(
                 role="user",

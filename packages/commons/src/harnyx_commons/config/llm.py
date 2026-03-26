@@ -85,13 +85,9 @@ class LlmSettings(BaseSettings):
 
     # --- Scoring (validator) ---
     scoring_llm_provider: LlmProviderName = Field(default="chutes", alias="SCORING_LLM_PROVIDER")
-    scoring_llm_model: str = Field(default="", alias="SCORING_LLM_MODEL")
     scoring_llm_temperature: float | None = Field(default=None, alias="SCORING_LLM_TEMPERATURE")
     scoring_llm_max_output_tokens: int = Field(
         default=DEFAULT_MAX_OUTPUT_TOKENS, alias="SCORING_LLM_MAX_OUTPUT_TOKENS"
-    )
-    scoring_llm_reasoning_effort: str | None = Field(
-        default=None, alias="SCORING_LLM_REASONING_EFFORT"
     )
 
     # --- Content review (platform-only) ---
