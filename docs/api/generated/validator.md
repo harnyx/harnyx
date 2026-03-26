@@ -36,6 +36,33 @@ Body: [MinerTaskBatchRequestModel](#model-minertaskbatchrequestmodel)
 | `batch_id` |  |  | req | `string` |
 | `created_at` |  |  | req | `string` |
 | `cutoff_at` |  |  | req | `string` |
+| `restore_runs` |  |  | opt | array[[RestoreMinerTaskRunSubmissionModel](#model-restoreminertaskrunsubmissionmodel)] |
+|  | `batch_id` |  | req | `string` |
+|  | `run` |  | req | [RestoreMinerTaskRunModel](#model-restoreminertaskrunmodel) |
+|  |  | `artifact_id` | req | `string` |
+|  |  | `completed_at` | opt | `string` (nullable) |
+|  |  | `response` | opt | [Response](#model-response) (nullable) |
+|  |  | `task_id` | req | `string` |
+|  | `score` |  | req | `number` |
+|  | `session` |  | req | [SessionModel](#model-sessionmodel) |
+|  |  | `expires_at` | req | `string` |
+|  |  | `issued_at` | req | `string` |
+|  |  | `session_id` | req | `string` |
+|  |  | `status` | req | `string` |
+|  |  | `uid` | req | `integer` |
+|  | `specifics` |  | req | [EvaluationDetails-Input](#model-evaluationdetails-input) |
+|  |  | `elapsed_ms` | opt | `number` (nullable) |
+|  |  | `error` | opt | [EvaluationError](#model-evaluationerror) (nullable) |
+|  |  | `score_breakdown` | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
+|  |  | `total_tool_usage` | opt | [ToolUsageSummary-Input](#model-toolusagesummary-input) |
+|  | `usage` |  | req | [UsageModel](#model-usagemodel) |
+|  |  | `by_provider` | opt | `object` |
+|  |  | `call_count` | req | `integer` |
+|  |  | `total_completion_tokens` | req | `integer` |
+|  |  | `total_prompt_tokens` | req | `integer` |
+|  |  | `total_tokens` | req | `integer` |
+|  | `validator` |  | req | [ValidatorModel](#model-validatormodel) |
+|  |  | `uid` | req | `integer` |
 | `tasks` |  |  | req | array[[MinerTaskRequestModel](#model-minertaskrequestmodel)] |
 |  | `budget_usd` |  | opt | `number` (default: 0.5) |
 |  | `query` |  | req | [Query](#model-query) |
@@ -93,10 +120,19 @@ Body: [ProgressResponse](#model-progressresponse)
 | `batch_id` |  |  | req | `string` |
 | `completed` |  |  | req | `integer` |
 | `error_code` |  |  | opt | `string` (nullable) |
+| `failure_detail` |  |  | opt | [FailureDetailResponse](#model-failuredetailresponse) (nullable) |
+|  | `artifact_id` |  | opt | `string` (nullable) |
+|  | `error_code` |  | req | `string` |
+|  | `error_message` |  | req | `string` |
+|  | `exception_type` |  | opt | `string` (nullable) |
+|  | `occurred_at` |  | req | `string` |
+|  | `task_id` |  | opt | `string` (nullable) |
+|  | `uid` |  | opt | `integer` (nullable) |
 | `miner_task_runs` |  |  | req | array[[MinerTaskRunSubmissionModel](#model-minertaskrunsubmissionmodel)] |
 |  | `batch_id` |  | req | `string` |
 |  | `run` |  | req | [MinerTaskRunModel](#model-minertaskrunmodel) |
 |  |  | `artifact_id` | req | `string` |
+|  |  | `completed_at` | opt | `string` (nullable) |
 |  |  | `query` | req | [Query](#model-query) |
 |  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `response` | opt | [Response](#model-response) (nullable) |
@@ -109,11 +145,11 @@ Body: [ProgressResponse](#model-progressresponse)
 |  |  | `session_id` | req | `string` |
 |  |  | `status` | req | `string` |
 |  |  | `uid` | req | `integer` |
-|  | `specifics` |  | req | [EvaluationDetails](#model-evaluationdetails) |
+|  | `specifics` |  | req | [EvaluationDetails-Output](#model-evaluationdetails-output) |
 |  |  | `elapsed_ms` | opt | `number` (nullable) |
 |  |  | `error` | opt | [EvaluationError](#model-evaluationerror) (nullable) |
 |  |  | `score_breakdown` | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
-|  |  | `total_tool_usage` | opt | [ToolUsageSummary](#model-toolusagesummary) |
+|  |  | `total_tool_usage` | opt | [ToolUsageSummary-Output](#model-toolusagesummary-output) |
 |  | `usage` |  | req | [UsageModel](#model-usagemodel) |
 |  |  | `by_provider` | opt | `object` |
 |  |  | `call_count` | req | `integer` |
@@ -155,6 +191,7 @@ Body: [ValidatorStatusResponse](#model-validatorstatusresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `hotkey` |  |  | req | `string` |
 | `last_batch_id` |  |  | opt | `string` (nullable) |
 | `last_completed_at` |  |  | opt | `string` (nullable) |
 | `last_error` |  |  | opt | `string` (nullable) |
@@ -163,6 +200,7 @@ Body: [ValidatorStatusResponse](#model-validatorstatusresponse)
 | `last_weight_submission_at` |  |  | opt | `string` (nullable) |
 | `queued_batches` |  |  | opt | `integer` (default: 0) |
 | `running` |  |  | opt | `boolean` (default: False) |
+| `signature_hex` |  |  | opt | `string` (nullable) |
 | `status` |  |  | req | `string` |
 
 
@@ -280,8 +318,8 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 </details>
 
-<a id="model-evaluationdetails"></a>
-### Model: EvaluationDetails
+<a id="model-evaluationdetails-input"></a>
+### Model: EvaluationDetails-Input
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
@@ -294,8 +332,8 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `scoring_version` |  | req | `string` |
 |  | `similarity_score` |  | req | `number` |
 |  | `total_score` |  | req | `number` |
-| `total_tool_usage` |  |  | opt | [ToolUsageSummary](#model-toolusagesummary) |
-|  | `llm` |  | opt | [LlmUsageSummary](#model-llmusagesummary) |
+| `total_tool_usage` |  |  | opt | [ToolUsageSummary-Input](#model-toolusagesummary-input) |
+|  | `llm` |  | opt | [LlmUsageSummary-Input](#model-llmusagesummary-input) |
 |  |  | `call_count` | opt | `integer` (default: 0) |
 |  |  | `completion_tokens` | opt | `integer` (default: 0) |
 |  |  | `cost` | opt | `number` (default: 0.0) |
@@ -348,7 +386,85 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       ]
     },
     "total_tool_usage": {
-      "$ref": "#/components/schemas/ToolUsageSummary"
+      "$ref": "#/components/schemas/ToolUsageSummary-Input"
+    }
+  },
+  "title": "EvaluationDetails",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-evaluationdetails-output"></a>
+### Model: EvaluationDetails-Output
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `elapsed_ms` |  |  | opt | `number` (nullable) |
+| `error` |  |  | opt | [EvaluationError](#model-evaluationerror) (nullable) |
+|  | `code` |  | req | `string` |
+|  | `message` |  | req | `string` |
+| `score_breakdown` |  |  | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
+|  | `comparison_score` |  | req | `number` |
+|  | `scoring_version` |  | req | `string` |
+|  | `similarity_score` |  | req | `number` |
+|  | `total_score` |  | req | `number` |
+| `total_tool_usage` |  |  | opt | [ToolUsageSummary-Output](#model-toolusagesummary-output) |
+|  | `llm` |  | opt | [LlmUsageSummary-Output](#model-llmusagesummary-output) |
+|  |  | `call_count` | opt | `integer` (default: 0) |
+|  |  | `completion_tokens` | opt | `integer` (default: 0) |
+|  |  | `cost` | opt | `number` (default: 0.0) |
+|  |  | `prompt_tokens` | opt | `integer` (default: 0) |
+|  |  | `providers` | opt | `object` |
+|  |  | `total_tokens` | opt | `integer` (default: 0) |
+|  | `llm_cost` |  | opt | `number` (default: 0.0) |
+|  | `search_tool` |  | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
+|  |  | `call_count` | opt | `integer` (default: 0) |
+|  |  | `cost` | opt | `number` (default: 0.0) |
+|  | `search_tool_cost` |  | opt | `number` (default: 0.0) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "elapsed_ms": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Elapsed Ms"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/EvaluationError"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "score_breakdown": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/ScoreBreakdown"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "total_tool_usage": {
+      "$ref": "#/components/schemas/ToolUsageSummary-Output"
     }
   },
   "title": "EvaluationDetails",
@@ -389,6 +505,99 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     "message"
   ],
   "title": "EvaluationError",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-failuredetailresponse"></a>
+### Model: FailureDetailResponse
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `artifact_id` |  |  | opt | `string` (nullable) |
+| `error_code` |  |  | req | `string` |
+| `error_message` |  |  | req | `string` |
+| `exception_type` |  |  | opt | `string` (nullable) |
+| `occurred_at` |  |  | req | `string` |
+| `task_id` |  |  | opt | `string` (nullable) |
+| `uid` |  |  | opt | `integer` (nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "artifact_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Artifact Id"
+    },
+    "error_code": {
+      "minLength": 1,
+      "title": "Error Code",
+      "type": "string"
+    },
+    "error_message": {
+      "minLength": 1,
+      "title": "Error Message",
+      "type": "string"
+    },
+    "exception_type": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Exception Type"
+    },
+    "occurred_at": {
+      "minLength": 1,
+      "title": "Occurred At",
+      "type": "string"
+    },
+    "task_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Task Id"
+    },
+    "uid": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Uid"
+    }
+  },
+  "required": [
+    "error_code",
+    "error_message",
+    "occurred_at"
+  ],
+  "title": "FailureDetailResponse",
   "type": "object"
 }
 ```
@@ -474,8 +683,69 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 </details>
 
-<a id="model-llmusagesummary"></a>
-### Model: LlmUsageSummary
+<a id="model-llmusagesummary-input"></a>
+### Model: LlmUsageSummary-Input
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `call_count` |  |  | opt | `integer` (default: 0) |
+| `completion_tokens` |  |  | opt | `integer` (default: 0) |
+| `cost` |  |  | opt | `number` (default: 0.0) |
+| `prompt_tokens` |  |  | opt | `integer` (default: 0) |
+| `providers` |  |  | opt | `object` |
+| `total_tokens` |  |  | opt | `integer` (default: 0) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "call_count": {
+      "default": 0,
+      "title": "Call Count",
+      "type": "integer"
+    },
+    "completion_tokens": {
+      "default": 0,
+      "title": "Completion Tokens",
+      "type": "integer"
+    },
+    "cost": {
+      "default": 0.0,
+      "title": "Cost",
+      "type": "number"
+    },
+    "prompt_tokens": {
+      "default": 0,
+      "title": "Prompt Tokens",
+      "type": "integer"
+    },
+    "providers": {
+      "additionalProperties": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/LlmModelUsageCost"
+        },
+        "type": "object"
+      },
+      "title": "Providers",
+      "type": "object"
+    },
+    "total_tokens": {
+      "default": 0,
+      "title": "Total Tokens",
+      "type": "integer"
+    }
+  },
+  "title": "LlmUsageSummary",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-llmusagesummary-output"></a>
+### Model: LlmUsageSummary-Output
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
@@ -592,6 +862,33 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | `batch_id` |  |  | req | `string` |
 | `created_at` |  |  | req | `string` |
 | `cutoff_at` |  |  | req | `string` |
+| `restore_runs` |  |  | opt | array[[RestoreMinerTaskRunSubmissionModel](#model-restoreminertaskrunsubmissionmodel)] |
+|  | `batch_id` |  | req | `string` |
+|  | `run` |  | req | [RestoreMinerTaskRunModel](#model-restoreminertaskrunmodel) |
+|  |  | `artifact_id` | req | `string` |
+|  |  | `completed_at` | opt | `string` (nullable) |
+|  |  | `response` | opt | [Response](#model-response) (nullable) |
+|  |  | `task_id` | req | `string` |
+|  | `score` |  | req | `number` |
+|  | `session` |  | req | [SessionModel](#model-sessionmodel) |
+|  |  | `expires_at` | req | `string` |
+|  |  | `issued_at` | req | `string` |
+|  |  | `session_id` | req | `string` |
+|  |  | `status` | req | `string` |
+|  |  | `uid` | req | `integer` |
+|  | `specifics` |  | req | [EvaluationDetails-Input](#model-evaluationdetails-input) |
+|  |  | `elapsed_ms` | opt | `number` (nullable) |
+|  |  | `error` | opt | [EvaluationError](#model-evaluationerror) (nullable) |
+|  |  | `score_breakdown` | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
+|  |  | `total_tool_usage` | opt | [ToolUsageSummary-Input](#model-toolusagesummary-input) |
+|  | `usage` |  | req | [UsageModel](#model-usagemodel) |
+|  |  | `by_provider` | opt | `object` |
+|  |  | `call_count` | req | `integer` |
+|  |  | `total_completion_tokens` | req | `integer` |
+|  |  | `total_prompt_tokens` | req | `integer` |
+|  |  | `total_tokens` | req | `integer` |
+|  | `validator` |  | req | [ValidatorModel](#model-validatormodel) |
+|  |  | `uid` | req | `integer` |
 | `tasks` |  |  | req | array[[MinerTaskRequestModel](#model-minertaskrequestmodel)] |
 |  | `budget_usd` |  | opt | `number` (default: 0.5) |
 |  | `query` |  | req | [Query](#model-query) |
@@ -629,6 +926,13 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "minLength": 1,
       "title": "Cutoff At",
       "type": "string"
+    },
+    "restore_runs": {
+      "items": {
+        "$ref": "#/components/schemas/RestoreMinerTaskRunSubmissionModel"
+      },
+      "title": "Restore Runs",
+      "type": "array"
     },
     "tasks": {
       "items": {
@@ -708,6 +1012,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `artifact_id` |  |  | req | `string` |
+| `completed_at` |  |  | opt | `string` (nullable) |
 | `query` |  |  | req | [Query](#model-query) |
 |  | `text` |  | req | `string` |
 | `reference_answer` |  |  | req | [ReferenceAnswer](#model-referenceanswer) |
@@ -728,6 +1033,17 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "minLength": 1,
       "title": "Artifact Id",
       "type": "string"
+    },
+    "completed_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Completed At"
     },
     "query": {
       "$ref": "#/components/schemas/Query"
@@ -778,6 +1094,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | `batch_id` |  |  | req | `string` |
 | `run` |  |  | req | [MinerTaskRunModel](#model-minertaskrunmodel) |
 |  | `artifact_id` |  | req | `string` |
+|  | `completed_at` |  | opt | `string` (nullable) |
 |  | `query` |  | req | [Query](#model-query) |
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
@@ -793,7 +1110,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `session_id` |  | req | `string` |
 |  | `status` |  | req | `string` |
 |  | `uid` |  | req | `integer` |
-| `specifics` |  |  | req | [EvaluationDetails](#model-evaluationdetails) |
+| `specifics` |  |  | req | [EvaluationDetails-Output](#model-evaluationdetails-output) |
 |  | `elapsed_ms` |  | opt | `number` (nullable) |
 |  | `error` |  | opt | [EvaluationError](#model-evaluationerror) (nullable) |
 |  |  | `code` | req | `string` |
@@ -803,8 +1120,8 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  |  | `scoring_version` | req | `string` |
 |  |  | `similarity_score` | req | `number` |
 |  |  | `total_score` | req | `number` |
-|  | `total_tool_usage` |  | opt | [ToolUsageSummary](#model-toolusagesummary) |
-|  |  | `llm` | opt | [LlmUsageSummary](#model-llmusagesummary) |
+|  | `total_tool_usage` |  | opt | [ToolUsageSummary-Output](#model-toolusagesummary-output) |
+|  |  | `llm` | opt | [LlmUsageSummary-Output](#model-llmusagesummary-output) |
 |  |  | `llm_cost` | opt | `number` (default: 0.0) |
 |  |  | `search_tool` | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
 |  |  | `search_tool_cost` | opt | `number` (default: 0.0) |
@@ -842,7 +1159,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "$ref": "#/components/schemas/SessionModel"
     },
     "specifics": {
-      "$ref": "#/components/schemas/EvaluationDetails"
+      "$ref": "#/components/schemas/EvaluationDetails-Output"
     },
     "usage": {
       "$ref": "#/components/schemas/UsageModel"
@@ -875,10 +1192,19 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | `batch_id` |  |  | req | `string` |
 | `completed` |  |  | req | `integer` |
 | `error_code` |  |  | opt | `string` (nullable) |
+| `failure_detail` |  |  | opt | [FailureDetailResponse](#model-failuredetailresponse) (nullable) |
+|  | `artifact_id` |  | opt | `string` (nullable) |
+|  | `error_code` |  | req | `string` |
+|  | `error_message` |  | req | `string` |
+|  | `exception_type` |  | opt | `string` (nullable) |
+|  | `occurred_at` |  | req | `string` |
+|  | `task_id` |  | opt | `string` (nullable) |
+|  | `uid` |  | opt | `integer` (nullable) |
 | `miner_task_runs` |  |  | req | array[[MinerTaskRunSubmissionModel](#model-minertaskrunsubmissionmodel)] |
 |  | `batch_id` |  | req | `string` |
 |  | `run` |  | req | [MinerTaskRunModel](#model-minertaskrunmodel) |
 |  |  | `artifact_id` | req | `string` |
+|  |  | `completed_at` | opt | `string` (nullable) |
 |  |  | `query` | req | [Query](#model-query) |
 |  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `response` | opt | [Response](#model-response) (nullable) |
@@ -891,11 +1217,11 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  |  | `session_id` | req | `string` |
 |  |  | `status` | req | `string` |
 |  |  | `uid` | req | `integer` |
-|  | `specifics` |  | req | [EvaluationDetails](#model-evaluationdetails) |
+|  | `specifics` |  | req | [EvaluationDetails-Output](#model-evaluationdetails-output) |
 |  |  | `elapsed_ms` | opt | `number` (nullable) |
 |  |  | `error` | opt | [EvaluationError](#model-evaluationerror) (nullable) |
 |  |  | `score_breakdown` | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
-|  |  | `total_tool_usage` | opt | [ToolUsageSummary](#model-toolusagesummary) |
+|  |  | `total_tool_usage` | opt | [ToolUsageSummary-Output](#model-toolusagesummary-output) |
 |  | `usage` |  | req | [UsageModel](#model-usagemodel) |
 |  |  | `by_provider` | opt | `object` |
 |  |  | `call_count` | req | `integer` |
@@ -935,6 +1261,16 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
         }
       ],
       "title": "Error Code"
+    },
+    "failure_detail": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/FailureDetailResponse"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "miner_task_runs": {
       "items": {
@@ -1064,6 +1400,160 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     "text"
   ],
   "title": "Response",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-restoreminertaskrunmodel"></a>
+### Model: RestoreMinerTaskRunModel
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `artifact_id` |  |  | req | `string` |
+| `completed_at` |  |  | opt | `string` (nullable) |
+| `response` |  |  | opt | [Response](#model-response) (nullable) |
+|  | `text` |  | req | `string` |
+| `task_id` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "artifact_id": {
+      "minLength": 1,
+      "title": "Artifact Id",
+      "type": "string"
+    },
+    "completed_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Completed At"
+    },
+    "response": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/Response"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "task_id": {
+      "minLength": 1,
+      "title": "Task Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "artifact_id",
+    "task_id"
+  ],
+  "title": "RestoreMinerTaskRunModel",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-restoreminertaskrunsubmissionmodel"></a>
+### Model: RestoreMinerTaskRunSubmissionModel
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `batch_id` |  |  | req | `string` |
+| `run` |  |  | req | [RestoreMinerTaskRunModel](#model-restoreminertaskrunmodel) |
+|  | `artifact_id` |  | req | `string` |
+|  | `completed_at` |  | opt | `string` (nullable) |
+|  | `response` |  | opt | [Response](#model-response) (nullable) |
+|  |  | `text` | req | `string` |
+|  | `task_id` |  | req | `string` |
+| `score` |  |  | req | `number` |
+| `session` |  |  | req | [SessionModel](#model-sessionmodel) |
+|  | `expires_at` |  | req | `string` |
+|  | `issued_at` |  | req | `string` |
+|  | `session_id` |  | req | `string` |
+|  | `status` |  | req | `string` |
+|  | `uid` |  | req | `integer` |
+| `specifics` |  |  | req | [EvaluationDetails-Input](#model-evaluationdetails-input) |
+|  | `elapsed_ms` |  | opt | `number` (nullable) |
+|  | `error` |  | opt | [EvaluationError](#model-evaluationerror) (nullable) |
+|  |  | `code` | req | `string` |
+|  |  | `message` | req | `string` |
+|  | `score_breakdown` |  | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
+|  |  | `comparison_score` | req | `number` |
+|  |  | `scoring_version` | req | `string` |
+|  |  | `similarity_score` | req | `number` |
+|  |  | `total_score` | req | `number` |
+|  | `total_tool_usage` |  | opt | [ToolUsageSummary-Input](#model-toolusagesummary-input) |
+|  |  | `llm` | opt | [LlmUsageSummary-Input](#model-llmusagesummary-input) |
+|  |  | `llm_cost` | opt | `number` (default: 0.0) |
+|  |  | `search_tool` | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
+|  |  | `search_tool_cost` | opt | `number` (default: 0.0) |
+| `usage` |  |  | req | [UsageModel](#model-usagemodel) |
+|  | `by_provider` |  | opt | `object` |
+|  | `call_count` |  | req | `integer` |
+|  | `total_completion_tokens` |  | req | `integer` |
+|  | `total_prompt_tokens` |  | req | `integer` |
+|  | `total_tokens` |  | req | `integer` |
+| `validator` |  |  | req | [ValidatorModel](#model-validatormodel) |
+|  | `uid` |  | req | `integer` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "batch_id": {
+      "minLength": 1,
+      "title": "Batch Id",
+      "type": "string"
+    },
+    "run": {
+      "$ref": "#/components/schemas/RestoreMinerTaskRunModel"
+    },
+    "score": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Score",
+      "type": "number"
+    },
+    "session": {
+      "$ref": "#/components/schemas/SessionModel"
+    },
+    "specifics": {
+      "$ref": "#/components/schemas/EvaluationDetails-Input"
+    },
+    "usage": {
+      "$ref": "#/components/schemas/UsageModel"
+    },
+    "validator": {
+      "$ref": "#/components/schemas/ValidatorModel"
+    }
+  },
+  "required": [
+    "batch_id",
+    "validator",
+    "run",
+    "score",
+    "usage",
+    "session",
+    "specifics"
+  ],
+  "title": "RestoreMinerTaskRunSubmissionModel",
   "type": "object"
 }
 ```
@@ -1599,12 +2089,12 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 </details>
 
-<a id="model-toolusagesummary"></a>
-### Model: ToolUsageSummary
+<a id="model-toolusagesummary-input"></a>
+### Model: ToolUsageSummary-Input
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `llm` |  |  | opt | [LlmUsageSummary](#model-llmusagesummary) |
+| `llm` |  |  | opt | [LlmUsageSummary-Input](#model-llmusagesummary-input) |
 |  | `call_count` |  | opt | `integer` (default: 0) |
 |  | `completion_tokens` |  | opt | `integer` (default: 0) |
 |  | `cost` |  | opt | `number` (default: 0.0) |
@@ -1624,7 +2114,55 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 {
   "properties": {
     "llm": {
-      "$ref": "#/components/schemas/LlmUsageSummary"
+      "$ref": "#/components/schemas/LlmUsageSummary-Input"
+    },
+    "llm_cost": {
+      "default": 0.0,
+      "title": "Llm Cost",
+      "type": "number"
+    },
+    "search_tool": {
+      "$ref": "#/components/schemas/SearchToolUsageSummary"
+    },
+    "search_tool_cost": {
+      "default": 0.0,
+      "title": "Search Tool Cost",
+      "type": "number"
+    }
+  },
+  "title": "ToolUsageSummary",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-toolusagesummary-output"></a>
+### Model: ToolUsageSummary-Output
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `llm` |  |  | opt | [LlmUsageSummary-Output](#model-llmusagesummary-output) |
+|  | `call_count` |  | opt | `integer` (default: 0) |
+|  | `completion_tokens` |  | opt | `integer` (default: 0) |
+|  | `cost` |  | opt | `number` (default: 0.0) |
+|  | `prompt_tokens` |  | opt | `integer` (default: 0) |
+|  | `providers` |  | opt | `object` |
+|  | `total_tokens` |  | opt | `integer` (default: 0) |
+| `llm_cost` |  |  | opt | `number` (default: 0.0) |
+| `search_tool` |  |  | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
+|  | `call_count` |  | opt | `integer` (default: 0) |
+|  | `cost` |  | opt | `number` (default: 0.0) |
+| `search_tool_cost` |  |  | opt | `number` (default: 0.0) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "llm": {
+      "$ref": "#/components/schemas/LlmUsageSummary-Output"
     },
     "llm_cost": {
       "default": 0.0,
@@ -1845,6 +2383,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `hotkey` |  |  | req | `string` |
 | `last_batch_id` |  |  | opt | `string` (nullable) |
 | `last_completed_at` |  |  | opt | `string` (nullable) |
 | `last_error` |  |  | opt | `string` (nullable) |
@@ -1853,6 +2392,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | `last_weight_submission_at` |  |  | opt | `string` (nullable) |
 | `queued_batches` |  |  | opt | `integer` (default: 0) |
 | `running` |  |  | opt | `boolean` (default: False) |
+| `signature_hex` |  |  | opt | `string` (nullable) |
 | `status` |  |  | req | `string` |
 
 <details>
@@ -1862,6 +2402,11 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 {
   "additionalProperties": false,
   "properties": {
+    "hotkey": {
+      "minLength": 1,
+      "title": "Hotkey",
+      "type": "string"
+    },
     "last_batch_id": {
       "anyOf": [
         {
@@ -1939,6 +2484,17 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "title": "Running",
       "type": "boolean"
     },
+    "signature_hex": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Signature Hex"
+    },
     "status": {
       "minLength": 1,
       "title": "Status",
@@ -1946,7 +2502,8 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     }
   },
   "required": [
-    "status"
+    "status",
+    "hotkey"
   ],
   "title": "ValidatorStatusResponse",
   "type": "object"

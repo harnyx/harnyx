@@ -560,6 +560,10 @@ Body: [RegisterValidatorRequest](#model-registervalidatorrequest)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `base_url` |  |  | req | `string` |
+| `local_image_id` |  |  | opt | `string` (nullable) |
+| `registry_digest` |  |  | opt | `string` (nullable) |
+| `source_revision` |  |  | opt | `string` (nullable) |
+| `validator_version` |  |  | opt | `string` (nullable) |
 
 **Responses**
 `200` Successful Response
@@ -1836,16 +1840,70 @@ Body: [WeightsResponse](#model-weightsresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `base_url` |  |  | req | `string` |
+| `local_image_id` |  |  | opt | `string` (nullable) |
+| `registry_digest` |  |  | opt | `string` (nullable) |
+| `source_revision` |  |  | opt | `string` (nullable) |
+| `validator_version` |  |  | opt | `string` (nullable) |
 
 <details>
 <summary>JSON schema</summary>
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "base_url": {
+      "minLength": 1,
       "title": "Base Url",
       "type": "string"
+    },
+    "local_image_id": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Local Image Id"
+    },
+    "registry_digest": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Registry Digest"
+    },
+    "source_revision": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Source Revision"
+    },
+    "validator_version": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Validator Version"
     }
   },
   "required": [
