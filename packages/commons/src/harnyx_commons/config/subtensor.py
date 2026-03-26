@@ -14,6 +14,7 @@ class SubtensorSettings(BaseSettings):
         extra="ignore",
         env_file=".env",
         env_file_encoding="utf-8",
+        env_ignore_empty=True,
     )
 
     network: str = Field(default="local", alias="SUBTENSOR_NETWORK")
@@ -37,7 +38,7 @@ class SubtensorSettings(BaseSettings):
         if isinstance(value, str):
             stripped = value.strip()
             if not stripped:
-                raise ValueError("SUBTENSOR_HOTKEY_MNEMONIC must be a non-empty string when provided")
+                return None
             return SecretStr(stripped)
         return value
 

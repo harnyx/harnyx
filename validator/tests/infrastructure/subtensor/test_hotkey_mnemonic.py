@@ -74,3 +74,28 @@ def test_create_wallet_raises_when_missing_mnemonic_and_keyfile(tmp_path, monkey
 
     with pytest.raises(RuntimeError, match="SUBTENSOR_HOTKEY_MNEMONIC"):
         create_wallet(settings)
+
+
+@pytest.mark.parametrize("mnemonic_value", ["", "   "])
+def test_create_wallet_uses_existing_hotkey_when_mnemonic_env_is_blank(
+    tmp_path, monkeypatch, mnemonic_value: str
+) -> None:
+    from harnyx_validator.infrastructure.subtensor.hotkey import create_wallet
+    from harnyx_validator.runtime.settings import Settings
+
+    original_wallet = bt.wallet
+    expected_hotkey = _make_wallet(tmp_path)
+    ensure_wallet_hotkey_from_seed(expected_hotkey, "//Alice")
+
+    def wallet_factory(*, name: str, hotkey: str) -> bt.wallet.Wallet:
+        return original_wallet(name=name, hotkey=hotkey, path=str(tmp_path))
+
+    monkeypatch.setattr("harnyx_validator.infrastructure.subtensor.hotkey.bt.wallet", wallet_factory)
+    monkeypatch.setenv("SUBTENSOR_WALLET_NAME", "validator")
+    monkeypatch.setenv("SUBTENSOR_HOTKEY_NAME", "default")
+    monkeypatch.setenv("SUBTENSOR_HOTKEY_MNEMONIC", mnemonic_value)
+
+    settings = Settings.load()
+    wallet = create_wallet(settings.subtensor)
+
+    assert wallet.hotkey.ss58_address == expected_hotkey.hotkey.ss58_address
