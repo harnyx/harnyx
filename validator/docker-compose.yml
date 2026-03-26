@@ -26,7 +26,7 @@ services:
     command:
       - --label-enable
       - --api-version
-      - "${WATCHTOWER_DOCKER_API_VERSION:-1.25}"
+      - "${WATCHTOWER_DOCKER_API_VERSION:-1.44}"
       - --interval
       - "${WATCHTOWER_INTERVAL:-300}"
       - --stop-timeout
