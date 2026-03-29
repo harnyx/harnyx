@@ -26,6 +26,10 @@ from harnyx_validator.application.dto.evaluation import (
     ScriptArtifactSpec,
     TokenUsageSummary,
 )
+from harnyx_validator.application.services.evaluation_runner import (
+    ValidatorBatchFailedError,
+    ValidatorBatchFailureDetail,
+)
 from harnyx_validator.application.status import StatusProvider
 from harnyx_validator.domain.evaluation import MinerTaskRun
 from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
@@ -171,6 +175,32 @@ def _completed_submission(batch: MinerTaskBatchSpec) -> MinerTaskRunSubmission:
         score=1.0,
         usage=TokenUsageSummary.empty(),
         session=session,
+    )
+
+
+def _validator_batch_failed_error(
+    batch: MinerTaskBatchSpec,
+    *,
+    error_code: str,
+    error_message: str,
+    task_id: UUID | None,
+    exception_type: str | None = None,
+    occurred_at: datetime | None = None,
+) -> ValidatorBatchFailedError:
+    artifact = batch.artifacts[0]
+    detail = ValidatorBatchFailureDetail(
+        error_code=error_code,
+        error_message=error_message,
+        occurred_at=occurred_at or datetime.now(UTC),
+        artifact_id=artifact.artifact_id,
+        task_id=task_id,
+        uid=artifact.uid,
+        exception_type=exception_type,
+    )
+    return ValidatorBatchFailedError(
+        error_code=error_code,
+        message=error_message,
+        failure_detail=detail,
     )
 
 
@@ -329,3 +359,113 @@ async def test_evaluation_worker_sends_failed_batch_exception_to_sentry(monkeypa
     assert [str(exc) for exc in captured] == ["worker boom"]
     assert len(fake_service.processed) == 1
     assert len(inbox) == 0
+
+
+@pytest.mark.anyio
+async def test_evaluation_worker_sends_batch_failure_scope_to_sentry(monkeypatch) -> None:
+    captured: list[tuple[BaseException, dict[str, object]]] = []
+
+    def _capture_exception(exc: BaseException, **kwargs: object) -> None:
+        captured.append((exc, kwargs))
+
+    monkeypatch.setattr(worker_mod, "capture_exception", _capture_exception)
+
+    inbox = InMemoryBatchInbox()
+    status = StatusProvider()
+    progress = ProgressSpy()
+    accept_batch = AcceptEvaluationBatch(inbox=inbox, status=status, progress=progress)
+    batch = _sample_batch()
+    accept_batch.execute(batch)
+    occurred_at = datetime.now(UTC)
+    error = _validator_batch_failed_error(
+        batch,
+        error_code="provider_batch_failure",
+        error_message=(
+            "provider failure threshold reached (provider=desearch model=search_web failed_calls=10 total_calls=10)"
+        ),
+        task_id=batch.tasks[0].task_id,
+        exception_type="SandboxInvocationError",
+        occurred_at=occurred_at,
+    )
+    fake_service = FakeBatchService(error=error)
+
+    worker = EvaluationWorker(
+        batch_service=fake_service,
+        batch_inbox=inbox,
+        status_provider=status,
+        batch_tracker=accept_batch,
+    )
+
+    worker.start()
+    try:
+        assert await asyncio.to_thread(fake_service.processed_event.wait, timeout=1.0)
+        await asyncio.sleep(0.05)
+    finally:
+        await worker.stop(timeout=1.0)
+
+    assert len(captured) == 1
+    exc, payload = captured[0]
+    assert exc is error
+    assert payload["tags"] == {
+        "error_code": "provider_batch_failure",
+        "failure_kind": "provider",
+        "provider": "desearch",
+        "model": "search_web",
+    }
+    assert payload["context_name"] == "validator_batch"
+    assert payload["context"] == {
+        "batch_id": str(batch.batch_id),
+        "error_code": "provider_batch_failure",
+        "error_message": (
+            "provider failure threshold reached (provider=desearch model=search_web failed_calls=10 total_calls=10)"
+        ),
+        "occurred_at": occurred_at.isoformat(),
+        "artifact_id": str(batch.artifacts[0].artifact_id),
+        "task_id": str(batch.tasks[0].task_id),
+        "uid": batch.artifacts[0].uid,
+        "exception_type": "SandboxInvocationError",
+        "provider": "desearch",
+        "model": "search_web",
+        "failed_calls": 10,
+        "total_calls": 10,
+    }
+    assert payload["fingerprint"] == [
+        "validator-batch",
+        "provider_batch_failure",
+        "desearch",
+        "search_web",
+    ]
+
+
+def test_batch_failure_capture_payload_uses_base_grouping_for_non_provider_errors() -> None:
+    batch = _sample_batch()
+    occurred_at = datetime.now(UTC)
+    error = _validator_batch_failed_error(
+        batch,
+        error_code="artifact_breaker_tripped",
+        error_message="validator artifact breaker tripped across 3 artifacts",
+        task_id=None,
+        exception_type="SandboxInvocationError",
+        occurred_at=occurred_at,
+    )
+
+    payload = worker_mod._batch_failure_capture_payload(batch_id=batch.batch_id, exc=error)
+
+    assert payload.tags == {
+        "error_code": "artifact_breaker_tripped",
+        "failure_kind": "artifact",
+    }
+    assert payload.context_name == "validator_batch"
+    assert payload.context == {
+        "batch_id": str(batch.batch_id),
+        "error_code": "artifact_breaker_tripped",
+        "error_message": "validator artifact breaker tripped across 3 artifacts",
+        "occurred_at": occurred_at.isoformat(),
+        "artifact_id": str(batch.artifacts[0].artifact_id),
+        "uid": batch.artifacts[0].uid,
+        "exception_type": "SandboxInvocationError",
+    }
+    assert payload.fingerprint == [
+        "validator-batch",
+        "artifact_breaker_tripped",
+    ]

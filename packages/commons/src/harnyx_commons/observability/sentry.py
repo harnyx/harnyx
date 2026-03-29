@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from pydantic_settings.sources import DotEnvSettingsSource
 from sentry_sdk import capture_exception as _capture_exception
 from sentry_sdk import init as sentry_init
+from sentry_sdk import push_scope as _push_scope
 from sentry_sdk.integrations.logging import LoggingIntegration
 
 from harnyx_commons.config.observability import ObservabilitySettings
@@ -63,14 +65,69 @@ def _configure_sentry_sdk(
     )
 
 
-def capture_exception(exc: BaseException) -> None:
-    _capture_exception(exc)
+def capture_exception(
+    exc: BaseException,
+    *,
+    tags: Mapping[str, object] | None = None,
+    context_name: str = "context",
+    context: Mapping[str, Any] | None = None,
+    extras: Mapping[str, Any] | None = None,
+    fingerprint: Sequence[object] | None = None,
+) -> None:
+    cleaned_tags = _clean_tags(tags)
+    cleaned_context = _clean_scope_payload(context)
+    cleaned_extras = _clean_scope_payload(extras)
+    cleaned_fingerprint = _clean_fingerprint(fingerprint)
+
+    if not cleaned_tags and not cleaned_context and not cleaned_extras and cleaned_fingerprint is None:
+        _capture_exception(exc)
+        return
+
+    with _push_scope() as scope:
+        for key, value in cleaned_tags.items():
+            scope.set_tag(key, value)
+        if cleaned_context:
+            scope.set_context(context_name, cleaned_context)
+        for key, value in cleaned_extras.items():
+            scope.set_extra(key, value)
+        if cleaned_fingerprint is not None:
+            scope.fingerprint = cleaned_fingerprint
+        _capture_exception(exc)
 
 
 def capture_exception_for_status(exc: Exception, *, status_code: int) -> None:
     if status_code < 500:
         return
     _capture_exception(exc)
+
+
+def _clean_tags(values: Mapping[str, object] | None) -> dict[str, str]:
+    cleaned: dict[str, str] = {}
+    if values is None:
+        return cleaned
+    for key, value in values.items():
+        if value is None:
+            continue
+        cleaned[key] = str(value)
+    return cleaned
+
+
+def _clean_scope_payload(values: Mapping[str, Any] | None) -> dict[str, Any]:
+    cleaned: dict[str, Any] = {}
+    if values is None:
+        return cleaned
+    for key, value in values.items():
+        if value is None:
+            continue
+        cleaned[key] = value
+    return cleaned
+
+
+def _clean_fingerprint(values: Sequence[object] | None) -> list[str] | None:
+    if values is None:
+        return None
+    cleaned = [str(value) for value in values if value is not None and str(value) != ""]
+    return cleaned or None
 
 
 def _clean_optional(value: str | None) -> str | None:

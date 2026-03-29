@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import threading
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from harnyx_validator.application.accept_batch import AcceptEvaluationBatch
 from harnyx_validator.application.services.evaluation_batch import EvaluationBatchConfig, MinerTaskBatchService
-from harnyx_validator.application.services.evaluation_runner import ValidatorBatchFailedError
+from harnyx_validator.application.services.evaluation_runner import (
+    ValidatorBatchFailedError,
+    ValidatorBatchFailureDetail,
+)
 from harnyx_validator.application.status import StatusProvider
 from harnyx_validator.infrastructure.observability.sentry import capture_exception
 from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
@@ -19,10 +25,23 @@ if TYPE_CHECKING:
     from harnyx_validator.runtime.bootstrap import RuntimeContext
 
 logger = logging.getLogger("harnyx_validator.evaluation_worker")
+_PROVIDER_BATCH_FAILURE_PATTERN = re.compile(
+    r"^provider failure threshold reached "
+    r"\(provider=(?P<provider>\S+) model=(?P<model>\S+) "
+    r"failed_calls=(?P<failed_calls>\d+) total_calls=(?P<total_calls>\d+)\)$"
+)
 
 
 # Re-export config for convenience
 EVALUATION_CONFIG = EvaluationBatchConfig()
+
+
+@dataclass(frozen=True, slots=True)
+class _BatchFailureCapturePayload:
+    tags: dict[str, str]
+    context_name: str
+    context: dict[str, object]
+    fingerprint: list[str]
 
 
 def estimate_cycle_duration_seconds(
@@ -46,6 +65,83 @@ def estimate_cycle_duration_seconds(
     per_evaluation = http_timeout_floor
 
     return uid_count * startup + uid_count * task_count * per_evaluation
+
+
+def _serialize_failure_detail(detail: ValidatorBatchFailureDetail) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "error_code": detail.error_code,
+        "error_message": detail.error_message,
+        "occurred_at": detail.occurred_at.isoformat(),
+    }
+    if detail.artifact_id is not None:
+        payload["artifact_id"] = str(detail.artifact_id)
+    if detail.task_id is not None:
+        payload["task_id"] = str(detail.task_id)
+    if detail.uid is not None:
+        payload["uid"] = detail.uid
+    if detail.exception_type is not None:
+        payload["exception_type"] = detail.exception_type
+    return payload
+
+
+def _failure_kind(error_code: str) -> str:
+    if error_code == "provider_batch_failure":
+        return "provider"
+    if error_code == "artifact_breaker_tripped":
+        return "artifact"
+    if error_code == "batch_execution_failed":
+        return "batch_execution"
+    return "validator_batch"
+
+
+def _provider_failure_scope_fields(
+    detail: ValidatorBatchFailureDetail,
+) -> tuple[dict[str, str], dict[str, object], list[str] | None]:
+    if detail.error_code != "provider_batch_failure":
+        return {}, {}, None
+    match = _PROVIDER_BATCH_FAILURE_PATTERN.match(detail.error_message)
+    if match is None:
+        return {}, {}, None
+    provider = match.group("provider")
+    model = match.group("model")
+    failed_calls = int(match.group("failed_calls"))
+    total_calls = int(match.group("total_calls"))
+    return (
+        {
+            "provider": provider,
+            "model": model,
+        },
+        {
+            "provider": provider,
+            "model": model,
+            "failed_calls": failed_calls,
+            "total_calls": total_calls,
+        },
+        ["validator-batch", detail.error_code, provider, model],
+    )
+
+
+def _batch_failure_capture_payload(
+    *,
+    batch_id: UUID,
+    exc: ValidatorBatchFailedError,
+) -> _BatchFailureCapturePayload:
+    detail_context = _serialize_failure_detail(exc.failure_detail)
+    provider_tags, provider_context, provider_fingerprint = _provider_failure_scope_fields(exc.failure_detail)
+    return _BatchFailureCapturePayload(
+        tags={
+            "error_code": exc.error_code,
+            "failure_kind": _failure_kind(exc.error_code),
+            **provider_tags,
+        },
+        context_name="validator_batch",
+        context={
+            "batch_id": str(batch_id),
+            **detail_context,
+            **provider_context,
+        },
+        fingerprint=provider_fingerprint or ["validator-batch", exc.error_code],
+    )
 
 
 class EvaluationWorker:
@@ -117,7 +213,14 @@ class EvaluationWorker:
                 if self._batch_tracker is not None:
                     self._batch_tracker.mark_completed(batch.batch_id)
             except ValidatorBatchFailedError as exc:
-                capture_exception(exc)
+                payload = _batch_failure_capture_payload(batch_id=batch.batch_id, exc=exc)
+                capture_exception(
+                    exc,
+                    tags=payload.tags,
+                    context_name=payload.context_name,
+                    context=payload.context,
+                    fingerprint=payload.fingerprint,
+                )
                 if self._batch_tracker is not None:
                     self._batch_tracker.mark_failed(
                         batch.batch_id,

@@ -6,6 +6,34 @@ import harnyx_commons.observability.sentry as sentry_mod
 from harnyx_commons.config.observability import ObservabilitySettings
 
 
+class _FakeScope:
+    def __init__(self) -> None:
+        self.tags: dict[str, str] = {}
+        self.context: dict[str, dict[str, object]] = {}
+        self.extras: dict[str, object] = {}
+        self.fingerprint: list[str] | None = None
+
+    def set_tag(self, key: str, value: str) -> None:
+        self.tags[key] = value
+
+    def set_context(self, name: str, value: dict[str, object]) -> None:
+        self.context[name] = value
+
+    def set_extra(self, key: str, value: object) -> None:
+        self.extras[key] = value
+
+
+class _FakeScopeManager:
+    def __init__(self, scope: _FakeScope) -> None:
+        self._scope = scope
+
+    def __enter__(self) -> _FakeScope:
+        return self._scope
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+
 def _observability(
     *,
     environment: str | None = "staging",
@@ -221,6 +249,63 @@ def test_capture_exception_forwards_to_sdk(monkeypatch) -> None:
     sentry_mod.capture_exception(RuntimeError("boom"))
 
     assert [str(exc) for exc in captured] == ["boom"]
+
+
+def test_capture_exception_applies_scoped_metadata(monkeypatch) -> None:
+    captured: list[BaseException] = []
+    scope = _FakeScope()
+    monkeypatch.setattr(sentry_mod, "_capture_exception", captured.append)
+    monkeypatch.setattr(sentry_mod, "_push_scope", lambda: _FakeScopeManager(scope))
+
+    sentry_mod.capture_exception(
+        RuntimeError("boom"),
+        tags={"error_code": "provider_batch_failure", "failed_calls": 10},
+        context_name="validator_batch",
+        context={"batch_id": "batch-123", "artifact_id": "artifact-456"},
+        extras={"uid": 7},
+        fingerprint=["validator-batch", "provider_batch_failure", "desearch", "search_web"],
+    )
+
+    assert [str(exc) for exc in captured] == ["boom"]
+    assert scope.tags == {
+        "error_code": "provider_batch_failure",
+        "failed_calls": "10",
+    }
+    assert scope.context == {
+        "validator_batch": {
+            "batch_id": "batch-123",
+            "artifact_id": "artifact-456",
+        }
+    }
+    assert scope.extras == {"uid": 7}
+    assert scope.fingerprint == [
+        "validator-batch",
+        "provider_batch_failure",
+        "desearch",
+        "search_web",
+    ]
+
+
+def test_capture_exception_skips_none_scoped_metadata(monkeypatch) -> None:
+    captured: list[BaseException] = []
+    scope = _FakeScope()
+    monkeypatch.setattr(sentry_mod, "_capture_exception", captured.append)
+    monkeypatch.setattr(sentry_mod, "_push_scope", lambda: _FakeScopeManager(scope))
+
+    sentry_mod.capture_exception(
+        RuntimeError("boom"),
+        tags={"provider": "desearch", "empty": None},
+        context_name="validator_batch",
+        context={"artifact_id": None},
+        extras={"task_id": None},
+        fingerprint=["validator-batch", "", None, "provider_batch_failure"],
+    )
+
+    assert [str(exc) for exc in captured] == ["boom"]
+    assert scope.tags == {"provider": "desearch"}
+    assert scope.context == {}
+    assert scope.extras == {}
+    assert scope.fingerprint == ["validator-batch", "provider_batch_failure"]
 
 
 def test_capture_exception_for_status_only_sends_5xx(monkeypatch) -> None:

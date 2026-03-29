@@ -88,8 +88,7 @@ _SEARCH_PROVIDER_TOOLS = frozenset(("search_web", "search_ai", "fetch_page"))
 
 
 class _ScoringEmbeddingClient(TextEmbeddingPort, Protocol):
-    async def aclose(self) -> None:
-        ...
+    async def aclose(self) -> None: ...
 
 
 class _ProviderTrackingToolExecutor(ToolExecutor):
@@ -538,6 +537,7 @@ def _register_with_platform(settings: Settings, hotkey: bt.Keypair, public_url: 
     )
     register_with_retry(client, public_url.rstrip("/"), metadata=metadata, attempts=30)
 
+
 def _build_subtensor_client(resolved: Settings) -> SubtensorClientPort:
     client = RuntimeSubtensorClient(resolved.subtensor)
     try:
@@ -570,11 +570,7 @@ def _model_name_from_request(request: ToolInvocationRequest) -> str | None:
     if not payload and request.args:
         first_arg = request.args[0]
         if isinstance(first_arg, dict):
-            payload = {
-                key: value
-                for key, value in first_arg.items()
-                if isinstance(key, str)
-            }
+            payload = {key: value for key, value in first_arg.items() if isinstance(key, str)}
     model_raw = payload.get("model")
     if not isinstance(model_raw, str):
         return None
@@ -842,5 +838,4 @@ __all__ = ["RuntimeContext", "build_runtime", "close_runtime_resources"]
 
 
 class _SupportsAclose(Protocol):
-    async def aclose(self) -> None:
-        ...
+    async def aclose(self) -> None: ...

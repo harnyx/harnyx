@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from harnyx_commons.clients import DESEARCH
 from harnyx_commons.config.llm import LlmSettings
 from harnyx_commons.tools.desearch import DeSearchAiDateFilter, DeSearchClient
 from harnyx_commons.tools.desearch_ai_protocol import DeSearchAiDocsResponse
@@ -14,7 +15,7 @@ async def test_desearch_ai_search_live() -> None:
     assert settings.desearch_api_key_value, "DESEARCH_API_KEY must be set"
 
     desearch = DeSearchClient(
-        base_url=settings.desearch_base_url,
+        base_url=DESEARCH.base_url,
         api_key=settings.desearch_api_key_value,
         timeout=settings.llm_timeout_seconds,
         max_concurrent=1,
