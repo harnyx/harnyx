@@ -58,8 +58,8 @@ class ModelPricing:
 
 # Chutes reference rates keyed by canonical model id.
 MODEL_PRICING: Mapping[ToolModelName, ModelPricing] = {
-    "openai/gpt-oss-20b-TEE": ModelPricing(0.25, 2.0, 2.0),
-    "openai/gpt-oss-120b-TEE": ModelPricing(1.25, 10.0, 10.0),
+    "openai/gpt-oss-20b-TEE": ModelPricing(0.03, 0.11, 0.11),
+    "openai/gpt-oss-120b-TEE": ModelPricing(0.09, 0.36, 0.36),
     "Qwen/Qwen3-Next-80B-A3B-Instruct": ModelPricing(0.10, 0.80, 0.0),
 }
 

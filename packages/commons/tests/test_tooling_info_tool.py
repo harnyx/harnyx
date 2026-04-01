@@ -40,12 +40,12 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
     assert "search_items" not in payload["pricing"]
 
     model_prices = payload["pricing"]["llm_chat"]["models"]
-    assert model_prices["openai/gpt-oss-20b-TEE"]["input_per_million"] == pytest.approx(
-        MODEL_PRICING["openai/gpt-oss-20b-TEE"].input_per_million
-    )
-    assert model_prices["openai/gpt-oss-120b-TEE"]["output_per_million"] == pytest.approx(
-        MODEL_PRICING["openai/gpt-oss-120b-TEE"].output_per_million
-    )
+    assert model_prices["openai/gpt-oss-20b-TEE"]["input_per_million"] == pytest.approx(0.03)
+    assert model_prices["openai/gpt-oss-20b-TEE"]["output_per_million"] == pytest.approx(0.11)
+    assert model_prices["openai/gpt-oss-20b-TEE"]["reasoning_per_million"] == pytest.approx(0.11)
+    assert model_prices["openai/gpt-oss-120b-TEE"]["input_per_million"] == pytest.approx(0.09)
+    assert model_prices["openai/gpt-oss-120b-TEE"]["output_per_million"] == pytest.approx(0.36)
+    assert model_prices["openai/gpt-oss-120b-TEE"]["reasoning_per_million"] == pytest.approx(0.36)
     assert "openai/gpt-oss-20b" not in payload["allowed_tool_models"]
     assert "openai/gpt-oss-120b" not in payload["allowed_tool_models"]
     assert "Qwen/Qwen3-Next-80B-A3B-Instruct" in payload["allowed_tool_models"]
@@ -83,3 +83,17 @@ def test_qwen_tool_model_pricing_ignores_reasoning_tokens() -> None:
     cost = price_llm(parse_tool_model("Qwen/Qwen3-Next-80B-A3B-Instruct"), usage)
 
     assert cost == pytest.approx(0.90)
+
+
+def test_openai_tool_model_pricing_matches_current_chutes_rates() -> None:
+    usage = LlmUsage(
+        prompt_tokens=1_000_000,
+        completion_tokens=1_000_000,
+        reasoning_tokens=1_000_000,
+    )
+
+    cost_20b = price_llm(parse_tool_model("openai/gpt-oss-20b-TEE"), usage)
+    cost_120b = price_llm(parse_tool_model("openai/gpt-oss-120b-TEE"), usage)
+
+    assert cost_20b == pytest.approx(0.25)
+    assert cost_120b == pytest.approx(0.81)
