@@ -1,6 +1,6 @@
 [project]
 name = "harnyx-validator"
-version = "20260401.post0"
+version = "20260404.post0"
 description = "Validator runtime for the Harnyx Subnet."
 readme = "README.md"
 requires-python = ">=3.11,<3.12"

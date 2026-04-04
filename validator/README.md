@@ -105,8 +105,7 @@ The platform will deny weight queries (`GET /v1/weights`) unless the validator:
 
 1. Is a metagraph validator and signs the request
 2. Has a registered validator endpoint (`POST /v1/validators/register`)
-3. Is considered "functioning" — has successfully completed an evaluation batch within the last 120 hours
 
-If your validator has never completed an evaluation batch (or hasn't completed one in 120+ hours), weight queries are blocked until it completes a later batch.
+If weight queries still return `403`, verify that the validator has registered its public base URL with platform under the same hotkey used to sign the request.
 
-**Note:** Changing or re-registering your endpoint does not clear this block — it is tracked by hotkey.
+**Note:** Registration is still required; an unregistered hotkey remains blocked.
