@@ -8,6 +8,7 @@ import pytest
 
 from harnyx_commons.domain.miner_task import (
     EvaluationDetails,
+    EvaluationError,
     MinerTask,
     Query,
     ReferenceAnswer,
@@ -140,6 +141,43 @@ def _completed_submission(batch: MinerTaskBatchSpec) -> MinerTaskRunSubmission:
     )
 
 
+def _failed_submission(batch: MinerTaskBatchSpec, *, error_code: str) -> MinerTaskRunSubmission:
+    artifact = batch.artifacts[0]
+    task = batch.tasks[0]
+    issued_at = datetime.now(UTC)
+    completed_at = issued_at + timedelta(seconds=5)
+    session = Session(
+        session_id=uuid4(),
+        uid=artifact.uid,
+        task_id=task.task_id,
+        issued_at=issued_at,
+        expires_at=completed_at + timedelta(minutes=5),
+        budget_usd=task.budget_usd,
+        status=SessionStatus.COMPLETED,
+    )
+    details = EvaluationDetails(
+        error=EvaluationError(code=error_code, message="terminal timeout"),
+        total_tool_usage=ToolUsageSummary.zero(),
+        elapsed_ms=5000.0,
+    )
+    return MinerTaskRunSubmission(
+        batch_id=batch.batch_id,
+        validator_uid=1,
+        run=MinerTaskRun(
+            session_id=session.session_id,
+            uid=artifact.uid,
+            artifact_id=artifact.artifact_id,
+            task_id=task.task_id,
+            response=None,
+            details=details,
+            completed_at=completed_at,
+        ),
+        score=0.0,
+        usage=TokenUsageSummary.empty(),
+        session=session,
+    )
+
+
 def test_accept_batch_ignores_exact_duplicate_replay_while_queued() -> None:
     inbox = InMemoryBatchInbox()
     status = StatusProvider()
@@ -213,6 +251,23 @@ def test_accept_batch_marks_new_batch_completed_without_queue_when_restore_runs_
     assert progress.restore_attempts == [(batch, (restored,))]
 
 
+def test_accept_batch_marks_new_batch_completed_for_terminal_timeout_restore() -> None:
+    inbox = InMemoryBatchInbox()
+    status = StatusProvider()
+    progress = ProgressSpy()
+    accept_batch = AcceptEvaluationBatch(inbox=inbox, status=status, progress=progress)
+    batch = _make_batch()
+    restored = _failed_submission(batch, error_code="timeout_miner_owned")
+
+    accept_batch.execute(batch, restore_runs=(restored,))
+
+    assert len(inbox) == 0
+    assert status.state.queued_batches == 0
+    assert accept_batch.lifecycle_for(batch.batch_id) == "completed"
+    assert progress.register_attempts == [batch]
+    assert progress.restore_attempts == [(batch, (restored,))]
+
+
 def test_accept_batch_duplicate_processing_replay_becomes_completed_when_all_pairs_are_recorded() -> None:
     inbox = InMemoryBatchInbox()
     status = StatusProvider()
@@ -268,6 +323,33 @@ def test_accept_batch_duplicate_processing_replay_keeps_processing_lifecycle() -
     assert len(inbox) == 0
     assert status.state.queued_batches == 0
     assert progress.restore_attempts == [(batch, (restored,))]
+
+
+def test_accept_batch_forwards_restore_provider_evidence_alongside_terminal_timeout_failure() -> None:
+    inbox = InMemoryBatchInbox()
+    status = StatusProvider()
+    progress = ProgressSpy()
+    accept_batch = AcceptEvaluationBatch(inbox=inbox, status=status, progress=progress)
+    batch = _make_batch()
+    restored = _failed_submission(batch, error_code="timeout_inconclusive")
+    provider_evidence = (
+        {
+            "provider": "openai",
+            "model": "gpt-4o",
+            "total_calls": 3,
+            "failed_calls": 1,
+        },
+    )
+
+    accept_batch.execute(
+        batch,
+        restore_runs=(restored,),
+        restore_provider_evidence=provider_evidence,
+    )
+
+    assert accept_batch.lifecycle_for(batch.batch_id) == "completed"
+    assert progress.restore_attempts == [(batch, (restored,))]
+    assert progress.restore_provider_evidence_attempts == [(batch, provider_evidence)]
 
 
 def test_begin_processing_skips_dequeued_batch_restored_to_completion() -> None:

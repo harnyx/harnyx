@@ -8,6 +8,7 @@ import pytest
 
 from harnyx_commons.domain.miner_task import (
     EvaluationDetails,
+    EvaluationError,
     MinerTask,
     Query,
     ReferenceAnswer,
@@ -108,6 +109,45 @@ def _make_submission(batch: MinerTaskBatchSpec, *, score: float = 1.0) -> MinerT
     )
 
 
+def _make_failed_submission(
+    batch: MinerTaskBatchSpec,
+    *,
+    error_code: str,
+) -> MinerTaskRunSubmission:
+    task = batch.tasks[0]
+    artifact = batch.artifacts[0]
+    issued_at = datetime.now(UTC)
+    session_id = uuid4()
+    return MinerTaskRunSubmission(
+        batch_id=batch.batch_id,
+        validator_uid=4,
+        run=MinerTaskRun(
+            session_id=session_id,
+            uid=artifact.uid,
+            artifact_id=artifact.artifact_id,
+            task_id=task.task_id,
+            response=None,
+            details=EvaluationDetails(
+                error=EvaluationError(code=error_code, message="terminal timeout"),
+                total_tool_usage=ToolUsageSummary.zero(),
+                elapsed_ms=5000.0,
+            ),
+            completed_at=issued_at + timedelta(seconds=5),
+        ),
+        score=0.0,
+        usage=TokenUsageSummary.empty(),
+        session=Session(
+            session_id=session_id,
+            uid=artifact.uid,
+            task_id=task.task_id,
+            issued_at=issued_at,
+            expires_at=issued_at + timedelta(minutes=5),
+            budget_usd=task.budget_usd,
+            usage=SessionUsage(total_cost_usd=0.0),
+        ),
+    )
+
+
 def test_run_progress_recorded_pairs_returns_exact_finished_pairs() -> None:
     progress = InMemoryRunProgress()
     batch = _make_multi_batch()
@@ -181,6 +221,23 @@ def test_run_progress_record_is_idempotent_for_duplicate_pair() -> None:
     assert snapshot["completed"] == 1
     assert snapshot["remaining"] == 0
     assert snapshot["miner_task_runs"] == (submission,)
+
+
+def test_run_progress_restore_completed_runs_records_terminal_timeout_failed_submission() -> None:
+    progress = InMemoryRunProgress()
+    batch = _make_batch()
+    failed_submission = _make_failed_submission(batch, error_code="timeout_miner_owned")
+
+    progress.restore_completed_runs(batch, submissions=(failed_submission,))
+
+    snapshot = progress.snapshot(batch.batch_id)
+    assert snapshot["total"] == 1
+    assert snapshot["completed"] == 1
+    assert snapshot["remaining"] == 0
+    assert snapshot["miner_task_runs"] == (failed_submission,)
+    assert progress.recorded_pairs(batch.batch_id) == {
+        (failed_submission.run.artifact_id, failed_submission.run.task_id),
+    }
 
 
 def test_run_progress_record_rejects_conflicting_duplicate_pair() -> None:

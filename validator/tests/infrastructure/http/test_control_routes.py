@@ -12,6 +12,7 @@ import harnyx_validator.infrastructure.http.routes as routes_mod
 from harnyx_commons.bittensor import VerificationError
 from harnyx_commons.domain.miner_task import (
     EvaluationDetails,
+    EvaluationError,
     MinerTask,
     Query,
     ReferenceAnswer,
@@ -399,6 +400,46 @@ def _make_task_submission(*, batch_id: UUID) -> tuple[MinerTask, MinerTaskRunSub
     return task, submission
 
 
+def _make_failed_task_submission(*, batch_id: UUID, error_code: str) -> tuple[MinerTask, MinerTaskRunSubmission]:
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="What happened?"),
+        reference_answer=ReferenceAnswer(text="The reference answer."),
+    )
+    run = MinerTaskRun(
+        session_id=uuid4(),
+        uid=7,
+        artifact_id=uuid4(),
+        task_id=task.task_id,
+        response=None,
+        details=EvaluationDetails(
+            error=EvaluationError(code=error_code, message="terminal timeout"),
+            total_tool_usage=ToolUsageSummary.zero(),
+            elapsed_ms=2500.0,
+        ),
+        completed_at=datetime.now(UTC),
+    )
+    issued_at = datetime.now(UTC)
+    session = Session(
+        session_id=run.session_id,
+        uid=run.uid,
+        task_id=task.task_id,
+        issued_at=issued_at,
+        expires_at=issued_at + timedelta(minutes=5),
+        budget_usd=0.1,
+        usage=SessionUsage(total_cost_usd=0.0),
+    )
+    submission = MinerTaskRunSubmission(
+        batch_id=batch_id,
+        validator_uid=4,
+        run=run,
+        score=0.0,
+        usage=TokenUsageSummary.empty(),
+        session=session,
+    )
+    return task, submission
+
+
 def _make_batch_payload(
     *,
     batch_id: UUID,
@@ -430,11 +471,10 @@ def _make_batch_payload(
 
 
 def _make_restore_run_payload(submission: MinerTaskRunSubmission) -> dict[str, object]:
-    score_breakdown = submission.run.details.score_breakdown
-    if score_breakdown is None:
-        raise AssertionError("expected restore submission score breakdown")
     total_tool_usage = submission.run.details.total_tool_usage
     llm_usage = total_tool_usage.llm
+    score_breakdown = submission.run.details.score_breakdown
+    error = submission.run.details.error
     return {
         "batch_id": str(submission.batch_id),
         "validator": {"uid": submission.validator_uid},
@@ -442,7 +482,7 @@ def _make_restore_run_payload(submission: MinerTaskRunSubmission) -> dict[str, o
             "artifact_id": str(submission.run.artifact_id),
             "task_id": str(submission.run.task_id),
             "completed_at": submission.run.completed_at.isoformat(),
-            "response": {"text": submission.run.response.text if submission.run.response else ""},
+            "response": None if submission.run.response is None else {"text": submission.run.response.text},
         },
         "score": submission.score,
         "usage": {
@@ -460,12 +500,17 @@ def _make_restore_run_payload(submission: MinerTaskRunSubmission) -> dict[str, o
             "expires_at": submission.session.expires_at.isoformat(),
         },
         "specifics": {
-            "score_breakdown": {
-                "comparison_score": score_breakdown.comparison_score,
-                "similarity_score": score_breakdown.similarity_score,
-                "total_score": score_breakdown.total_score,
-                "scoring_version": score_breakdown.scoring_version,
-            },
+            "score_breakdown": (
+                None
+                if score_breakdown is None
+                else {
+                    "comparison_score": score_breakdown.comparison_score,
+                    "similarity_score": score_breakdown.similarity_score,
+                    "total_score": score_breakdown.total_score,
+                    "scoring_version": score_breakdown.scoring_version,
+                }
+            ),
+            "error": None if error is None else {"code": error.code, "message": error.message},
             "total_tool_usage": {
                 "search_tool": {
                     "call_count": total_tool_usage.search_tool.call_count,
@@ -905,6 +950,64 @@ def test_accept_batch_endpoint_forwards_restore_runs() -> None:
     assert restored.score == submission.score
     assert restored.session.session_id == submission.session.session_id
     assert restored.session.uid == submission.session.uid
+
+
+def test_accept_batch_endpoint_forwards_terminal_timeout_failed_restore_run_and_provider_evidence() -> None:
+    batch_id = uuid4()
+    task, submission = _make_failed_task_submission(
+        batch_id=batch_id,
+        error_code="timeout_inconclusive",
+    )
+    snapshot: RunProgressSnapshot = {
+        "batch_id": batch_id,
+        "total": 0,
+        "completed": 0,
+        "remaining": 0,
+        "tasks": (),
+        "miner_task_runs": (),
+        "provider_evidence": (),
+    }
+    provider = DemoControlDependencyProvider(snapshot=snapshot)
+    app = _create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/validator/miner-task-batches/batch",
+        json={
+            **_make_batch_payload(
+                batch_id=batch_id,
+                task_id=task.task_id,
+                artifact_id=submission.run.artifact_id,
+                query_text=task.query.text,
+            ),
+            "restore_runs": [_make_restore_run_payload(submission)],
+            "restore_provider_evidence": [
+                {
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "total_calls": 3,
+                    "failed_calls": 1,
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(provider.accept_batch.received_restore_runs) == 1
+    restored = provider.accept_batch.received_restore_runs[0]
+    assert restored.run.response is None
+    assert restored.run.details.error == EvaluationError(
+        code="timeout_inconclusive",
+        message="terminal timeout",
+    )
+    assert provider.accept_batch.received_restore_provider_evidence == (
+        {
+            "provider": "openai",
+            "model": "gpt-4o",
+            "total_calls": 3,
+            "failed_calls": 1,
+        },
+    )
 
 
 def test_accept_batch_endpoint_rejects_invalid_restore_session_status() -> None:
