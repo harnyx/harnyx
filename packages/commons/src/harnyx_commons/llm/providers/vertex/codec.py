@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import httpx
@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from harnyx_commons.llm.provider_types import normalize_reasoning_effort
 from harnyx_commons.llm.schema import (
+    AbstractLlmRequest,
     LlmChoice,
     LlmChoiceMessage,
     LlmInputContentPart,
@@ -22,11 +23,60 @@ from harnyx_commons.llm.schema import (
     LlmMessage,
     LlmMessageContentPart,
     LlmMessageToolCall,
+    LlmResponse,
     LlmTool,
     LlmUsage,
 )
 
 _IMAGE_FETCH_TIMEOUT_SECONDS = 20.0
+
+
+class _VertexMaasRequestPayload(BaseModel):
+    model: str
+    messages: list[dict[str, Any]]
+    temperature: float | None = None
+    max_tokens: int | None = None
+    tools: list[dict[str, Any]] | None = None
+    tool_choice: str | None = None
+    reasoning_effort: str | None = None
+    include: list[str] | None = None
+    response_format: dict[str, Any] | None = None
+
+
+class _VertexMaasToolFunctionPayload(BaseModel):
+    name: str
+    arguments: object | None = None
+
+
+class _VertexMaasToolCallPayload(BaseModel):
+    id: str | None = None
+    function: _VertexMaasToolFunctionPayload
+
+
+class _VertexMaasChoiceMessagePayload(BaseModel):
+    content: str | list[dict[str, Any]] | None = None
+    reasoning_content: str | list[dict[str, Any]] | None = None
+    reasoning: str | None = None
+    tool_calls: list[_VertexMaasToolCallPayload] | None = None
+
+
+class _VertexMaasChoicePayload(BaseModel):
+    message: _VertexMaasChoiceMessagePayload
+    finish_reason: str | None = None
+
+
+class _VertexMaasUsagePayload(BaseModel):
+    prompt_tokens: int | None = None
+    prompt_tokens_details: dict[str, int] | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    reasoning_tokens: int | None = None
+
+
+class _VertexMaasResponsePayload(BaseModel):
+    id: str | None = None
+    choices: list[_VertexMaasChoicePayload]
+    usage: _VertexMaasUsagePayload | None = None
 
 
 def _to_vertex_request_role(role: str) -> str:
@@ -75,6 +125,199 @@ def serialize_provider_native_tools(tools: Sequence[LlmTool] | None) -> list[typ
             raise ValueError("provider-native Vertex tools require config payload")
         serialized.append(types.Tool(**dict(tool.config)))
     return serialized
+
+
+def build_vertex_maas_chat_payload(request: AbstractLlmRequest) -> dict[str, Any]:
+    response_format: dict[str, Any] | None = None
+    match request.output_mode:
+        case "text":
+            response_format = None
+        case "json_object":
+            response_format = {"type": "json_object"}
+        case "structured":
+            schema_type = request.output_schema
+            if schema_type is None:
+                raise ValueError("structured output requires output_schema")
+            response_format = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": schema_type.__name__,
+                    "schema": json_schema_from_model(schema_type),
+                },
+            }
+        case _:
+            raise ValueError(f"unsupported Vertex MaaS output_mode: {request.output_mode!r}")
+
+    payload = _VertexMaasRequestPayload(
+        model=vertex_maas_openai_chat_model_name(request.model),
+        messages=[_serialize_vertex_maas_chat_message(message) for message in request.messages],
+        temperature=request.temperature,
+        max_tokens=request.max_output_tokens,
+        tools=serialize_vertex_maas_openai_tools(request.tools),
+        tool_choice=request.tool_choice,
+        reasoning_effort=request.reasoning_effort,
+        include=list(request.include) if request.include else None,
+        response_format=response_format,
+    ).model_dump(exclude_none=True)
+    if request.extra:
+        payload.update(dict(request.extra))
+    return payload
+
+
+def serialize_vertex_maas_openai_tools(tools: Sequence[LlmTool] | None) -> list[dict[str, Any]] | None:
+    if not tools:
+        return None
+
+    serialized: list[dict[str, Any]] = []
+    for tool in tools:
+        if tool.type == "function" and tool.function is not None:
+            serialized.append(
+                {
+                    "type": "function",
+                    "function": dict(tool.function),
+                }
+            )
+            continue
+
+        tool_payload: dict[str, Any] = {"type": tool.type}
+        if tool.config:
+            tool_payload.update(dict(tool.config))
+        serialized.append(tool_payload)
+    return serialized
+
+
+def parse_vertex_maas_chat_response(payload: Mapping[str, Any]) -> LlmResponse:
+    parsed = _VertexMaasResponsePayload.model_validate(payload)
+    choices = tuple(
+        LlmChoice(
+            index=index,
+            message=LlmChoiceMessage(
+                role="assistant",
+                content=(
+                    (_text_part(content_text),)
+                    if (
+                        content_text := _extract_vertex_maas_text(
+                            choice.message.content,
+                            require_text_type=True,
+                        )
+                    )
+                    else ()
+                ),
+                tool_calls=_vertex_maas_tool_calls(choice.message.tool_calls),
+                reasoning=(
+                    _extract_vertex_maas_text(choice.message.reasoning_content)
+                    or _extract_vertex_maas_text(choice.message.reasoning)
+                ),
+            ),
+            finish_reason=choice.finish_reason or "stop",
+        )
+        for index, choice in enumerate(parsed.choices)
+    )
+    usage_payload = parsed.usage
+    usage = LlmUsage(
+        prompt_tokens=usage_payload.prompt_tokens if usage_payload else None,
+        prompt_cached_tokens=(
+            usage_payload.prompt_tokens_details.get("cached_tokens")
+            if usage_payload and usage_payload.prompt_tokens_details
+            else None
+        ),
+        completion_tokens=usage_payload.completion_tokens if usage_payload else None,
+        total_tokens=usage_payload.total_tokens if usage_payload else None,
+        reasoning_tokens=usage_payload.reasoning_tokens if usage_payload else None,
+    )
+    response_id = parsed.id or ""
+    finish_reason = choices[0].finish_reason if choices else None
+    return LlmResponse(
+        id=response_id,
+        choices=choices,
+        usage=usage,
+        finish_reason=finish_reason,
+    )
+
+
+def _serialize_vertex_maas_chat_message(message: LlmMessage) -> dict[str, Any]:
+    fragments: list[str] = []
+    tool_results: list[LlmInputToolResultPart] = []
+    for part in message.content:
+        match part:
+            case LlmInputTextPart(text=text):
+                fragments.append(text)
+            case LlmInputToolResultPart() as tool_result:
+                tool_results.append(tool_result)
+            case LlmInputImagePart():
+                raise ValueError("vertex-maas GPT OSS requests do not support image content parts")
+            case _:
+                raise ValueError(f"unsupported Vertex MaaS request content part type: {part!r}")
+
+    if tool_results:
+        if fragments:
+            raise ValueError("vertex-maas tool messages cannot mix text and input_tool_result parts")
+        if len(tool_results) != 1:
+            raise ValueError("vertex-maas tool messages must include exactly one input_tool_result part")
+        tool_result = tool_results[0]
+        return {
+            "role": "tool",
+            "tool_call_id": tool_result.tool_call_id,
+            "name": tool_result.name,
+            "content": tool_result.output_json,
+        }
+
+    return {
+        "role": message.role,
+        "content": "\n".join(fragments),
+    }
+
+
+def vertex_maas_openai_chat_model_name(model: str) -> str:
+    normalized = model.strip()
+    prefix = "publishers/"
+    models_marker = "/models/"
+    if normalized.startswith(prefix) and models_marker in normalized:
+        publisher_and_model = normalized[len(prefix) :]
+        publisher, model_name = publisher_and_model.split(models_marker, 1)
+        return f"{publisher}/{model_name}"
+    return normalized
+
+
+def _extract_vertex_maas_text(
+    value: str | list[dict[str, Any]] | None,
+    *,
+    require_text_type: bool = False,
+) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+
+    text_fragments = [
+        text.strip()
+        for item in value
+        if not require_text_type or item.get("type") == "text"
+        if isinstance((text := item.get("text")), str)
+        if text.strip()
+    ]
+    return "\n\n".join(text_fragments) or None
+
+
+def _vertex_maas_tool_calls(
+    value: list[_VertexMaasToolCallPayload] | None,
+) -> tuple[LlmMessageToolCall, ...] | None:
+    if not value:
+        return None
+    return tuple(
+        LlmMessageToolCall(
+            id=tool_call.id or f"toolcall-{index}",
+            type="function",
+            name=tool_call.function.name,
+            arguments=(
+                tool_call.function.arguments
+                if isinstance(tool_call.function.arguments, str)
+                else json.dumps(tool_call.function.arguments or {})
+            ),
+        )
+        for index, tool_call in enumerate(value)
+    )
 
 
 def resolve_tool_config(

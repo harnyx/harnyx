@@ -18,6 +18,7 @@ from harnyx_commons.domain.miner_task import (
     ReferenceAnswer,
     Response,
     ScoreBreakdown,
+    ScorerReasoning,
 )
 from harnyx_commons.domain.session import LlmUsageTotals, Session, SessionUsage
 from harnyx_commons.domain.tool_usage import (
@@ -371,6 +372,10 @@ def _make_task_submission(*, batch_id: UUID) -> tuple[MinerTask, MinerTaskRunSub
                 similarity_score=0.8,
                 total_score=0.9,
                 scoring_version="v1",
+                reasoning=ScorerReasoning(
+                    text="miner-first trace\n\n---\n\nreference-first trace",
+                    reasoning_tokens=18,
+                ),
             ),
             total_tool_usage=total_tool_usage,
             elapsed_ms=2500.0,
@@ -508,6 +513,14 @@ def _make_restore_run_payload(submission: MinerTaskRunSubmission) -> dict[str, o
                     "similarity_score": score_breakdown.similarity_score,
                     "total_score": score_breakdown.total_score,
                     "scoring_version": score_breakdown.scoring_version,
+                    "reasoning": (
+                        None
+                        if score_breakdown.reasoning is None
+                        else {
+                            "text": score_breakdown.reasoning.text,
+                            "reasoning_tokens": score_breakdown.reasoning.reasoning_tokens,
+                        }
+                    ),
                 }
             ),
             "error": None if error is None else {"code": error.code, "message": error.message},
@@ -600,6 +613,10 @@ def test_progress_endpoint_includes_specifics_and_task_fields() -> None:
     assert specifics["total_tool_usage"]["search_tool_cost"] == pytest.approx(0.005)
     assert specifics["total_tool_usage"]["llm_cost"] == pytest.approx(0.02)
     assert specifics["score_breakdown"]["total_score"] == pytest.approx(0.9)
+    assert specifics["score_breakdown"]["reasoning"] == {
+        "text": "miner-first trace\n\n---\n\nreference-first trace",
+        "reasoning_tokens": 18,
+    }
     assert specifics["elapsed_ms"] == pytest.approx(2500.0)
 
 

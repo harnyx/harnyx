@@ -200,8 +200,8 @@ class RuntimeToolInvoker(ToolInvoker):
             "unhandled tool requested",
             extra={
                 "tool": tool_name,
-                "args": tuple(args),
-                "kwargs": dict(kwargs),
+                "tool_args": tuple(args),
+                "tool_kwargs": dict(kwargs),
             },
         )
 

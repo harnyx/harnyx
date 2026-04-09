@@ -57,6 +57,60 @@ async def test_vertex_maas_qwen_alias_completion_live() -> None:
         await provider.aclose()
 
 
+async def test_vertex_maas_openai_reasoning_live() -> None:
+    vertex = VertexSettings()
+    project = vertex.gcp_project_id
+    location = vertex.vertex_maas_gcp_location
+    credentials_b64 = vertex.gcp_sa_credential_b64_value
+
+    assert project, "GCP_PROJECT_ID must be configured"
+    assert location, "VERTEX_MAAS_GCP_LOCATION must be configured"
+    assert credentials_b64, "Vertex credentials must be configured"
+
+    provider = LlmProviderAdapter(
+        provider_name="vertex-maas",
+        delegate=VertexLlmProvider(
+            project=project,
+            location=location,
+            timeout=float(vertex.vertex_timeout_seconds or PLATFORM.timeout_seconds),
+            credentials_path=None,
+            service_account_b64=credentials_b64 or "",
+        ),
+    )
+    try:
+        request = LlmRequest(
+            provider="vertex-maas",
+            model="openai/gpt-oss-120b-TEE",
+            messages=(
+                LlmMessage(
+                    role="user",
+                    content=(
+                        LlmMessageContentPart.input_text(
+                            'What is 7 times 8? Reply with only "56".'
+                        ),
+                    ),
+                ),
+            ),
+            temperature=0.0,
+            max_output_tokens=256,
+            reasoning_effort="high",
+            timeout_seconds=180.0,
+        )
+
+        response = await provider.invoke(request)
+    finally:
+        await provider.aclose()
+
+    assert response.raw_text, "Vertex MaaS OpenAI response should include text output"
+    assert "56" in response.raw_text
+
+    reasoning = response.choices[0].message.reasoning
+    assert isinstance(reasoning, str)
+    assert reasoning.strip()
+    if response.usage.reasoning_tokens is not None:
+        assert response.usage.reasoning_tokens >= 0
+
+
 async def test_vertex_multimodal_image_live() -> None:
     vertex = VertexSettings()
     project = vertex.gcp_project_id

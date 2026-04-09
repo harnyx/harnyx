@@ -8,7 +8,7 @@ import math
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 
 from harnyx_commons.domain.miner_task import (
     AnswerCitation,
@@ -16,15 +16,17 @@ from harnyx_commons.domain.miner_task import (
     ReferenceAnswer,
     Response,
     ScoreBreakdown,
+    ScorerReasoning,
 )
 from harnyx_commons.llm.json_utils import pydantic_postprocessor
 from harnyx_commons.llm.provider import LlmProviderPort
 from harnyx_commons.llm.provider_types import LlmProviderName
-from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest
+from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest, LlmResponse
 
 _COMPARISON_WEIGHT = 0.5
 _SIMILARITY_WEIGHT = 0.5
 _MAX_RENDERED_CITATIONS = 8
+_PAIRWISE_REASONING_SEPARATOR = "\n\n---\n\n"
 _PAIRWISE_SYSTEM_PROMPT = (
     "You are a strict evaluator comparing two answers to the same query.\n\n"
     "Scoring rules:\n"
@@ -47,7 +49,9 @@ _PAIRWISE_SYSTEM_PROMPT = (
     "two answers are otherwise similar and well supported, prefer the one whose "
     "validated citations are more targeted and relevant.\n"
     "- Ignore writing style unless it affects correctness.\n\n"
-    "Do not explain your choice. Return JSON only."
+    "Do not explain your choice.\n"
+    "Return JSON only with exactly one key: `preferred_position`.\n"
+    "Set `preferred_position` to either `first` or `second`."
 )
 
 
@@ -57,7 +61,22 @@ class TextEmbeddingPort(Protocol):
 
 
 class _PairwisePreference(BaseModel):
+    preferred_position: Literal["first", "second"] = Field(
+        validation_alias=AliasChoices("preferred_position", "chosen_answer")
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _PairwiseJudgeResult:
     preferred_position: Literal["first", "second"]
+    reasoning_text: str | None
+    reasoning_tokens: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class _PairwiseScore:
+    comparison_score: float
+    reasoning: ScorerReasoning | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,20 +113,21 @@ class EvaluationScoringService:
             miner_response=response.text,
             reference_response=task.reference_answer.text,
         )
-        comparison_score = await self._score_pairwise(
+        pairwise_score = await self._score_pairwise(
             query_text=task.query.text,
             miner_response=response,
             reference_response=task.reference_answer,
         )
         total_score = self._combine_scores(
-            comparison_score=comparison_score,
+            comparison_score=pairwise_score.comparison_score,
             similarity_score=similarity_score,
         )
         return ScoreBreakdown(
-            comparison_score=comparison_score,
+            comparison_score=pairwise_score.comparison_score,
             similarity_score=similarity_score,
             total_score=total_score,
             scoring_version=self._config.scoring_version,
+            reasoning=pairwise_score.reasoning,
         )
 
     def _combine_scores(
@@ -128,7 +148,7 @@ class EvaluationScoringService:
         query_text: str,
         miner_response: Response,
         reference_response: ReferenceAnswer,
-    ) -> float:
+    ) -> _PairwiseScore:
         miner_first = await self._judge_pair(
             query_text=query_text,
             first_answer=miner_response,
@@ -144,7 +164,10 @@ class EvaluationScoringService:
             miner_wins += 1
         if reference_first.preferred_position == "second":
             miner_wins += 1
-        return miner_wins / 2.0
+        return _PairwiseScore(
+            comparison_score=miner_wins / 2.0,
+            reasoning=_build_pairwise_reasoning_trace(miner_first, reference_first),
+        )
 
     async def _judge_pair(
         self,
@@ -152,7 +175,7 @@ class EvaluationScoringService:
         query_text: str,
         first_answer: Response | ReferenceAnswer,
         second_answer: Response | ReferenceAnswer,
-    ) -> _PairwisePreference:
+    ) -> _PairwiseJudgeResult:
         user_prompt = json.dumps(
             _build_pairwise_judge_payload(
                 query_text=query_text,
@@ -188,7 +211,12 @@ class EvaluationScoringService:
         parsed = response.postprocessed
         if parsed is None:
             raise RuntimeError("pairwise judge did not return structured output")
-        return _PairwisePreference.model_validate(parsed)
+        preference = _PairwisePreference.model_validate(parsed)
+        return _PairwiseJudgeResult(
+            preferred_position=preference.preferred_position,
+            reasoning_text=_extract_reasoning_text(response),
+            reasoning_tokens=response.usage.reasoning_tokens,
+        )
 
     async def _score_similarity(
         self,
@@ -237,6 +265,39 @@ def _cosine_similarity(left: tuple[float, ...], right: tuple[float, ...]) -> flo
 def _normalize_similarity(cosine_similarity: float) -> float:
     normalized_similarity = (cosine_similarity + 1.0) / 2.0
     return round(max(0.0, min(1.0, normalized_similarity)), 6)
+
+
+def _build_pairwise_reasoning_trace(
+    miner_first: _PairwiseJudgeResult,
+    reference_first: _PairwiseJudgeResult,
+) -> ScorerReasoning | None:
+    reasoning_texts = tuple(
+        text
+        for text in (miner_first.reasoning_text, reference_first.reasoning_text)
+        if text is not None
+    )
+    reasoning_tokens = _sum_reasoning_tokens(miner_first.reasoning_tokens, reference_first.reasoning_tokens)
+    if not reasoning_texts and reasoning_tokens is None:
+        return None
+    return ScorerReasoning(
+        text=_PAIRWISE_REASONING_SEPARATOR.join(reasoning_texts) if reasoning_texts else None,
+        reasoning_tokens=reasoning_tokens,
+    )
+
+
+def _sum_reasoning_tokens(*reasoning_tokens: int | None) -> int | None:
+    present_reasoning_tokens = tuple(token_count for token_count in reasoning_tokens if token_count is not None)
+    if not present_reasoning_tokens:
+        return None
+    return sum(present_reasoning_tokens)
+
+
+def _extract_reasoning_text(response: LlmResponse) -> str | None:
+    for choice in response.choices:
+        normalized_reasoning = choice.message.reasoning.strip() if choice.message.reasoning else ""
+        if normalized_reasoning:
+            return normalized_reasoning
+    return None
 
 
 def _build_pairwise_judge_payload(

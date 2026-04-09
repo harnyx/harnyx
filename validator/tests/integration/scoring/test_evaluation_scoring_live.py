@@ -27,17 +27,29 @@ class RecordingProvider(LlmProviderPort):
     def __init__(self, delegate: LlmProviderPort) -> None:
         self._delegate = delegate
         self.requests: list[AbstractLlmRequest] = []
+        self.responses: list[LlmResponse] = []
 
     async def invoke(self, request: AbstractLlmRequest) -> LlmResponse:
         self.requests.append(request)
-        return await self._delegate.invoke(request)
+        response = await self._delegate.invoke(request)
+        self.responses.append(response)
+        return response
 
     async def aclose(self) -> None:
         await self._delegate.aclose()
 
 
-async def test_evaluation_scoring_live_uses_real_structured_chutes_flow() -> None:
-    settings = Settings.load()
+async def test_evaluation_scoring_live_uses_real_structured_vertex_maas_flow() -> None:
+    base_settings = Settings.load()
+    settings = base_settings.model_copy(
+        update={
+            "llm": base_settings.llm.model_copy(
+                update={
+                    "scoring_llm_provider": "vertex-maas",
+                }
+            )
+        }
+    )
     provider_name = settings.llm.scoring_llm_provider
 
     resolve_provider = build_cached_llm_provider_resolver(
@@ -53,7 +65,7 @@ async def test_evaluation_scoring_live_uses_real_structured_chutes_flow() -> Non
             model=bootstrap._SCORING_LLM_MODEL,
             reasoning_effort=bootstrap._SCORING_LLM_REASONING_EFFORT,
             temperature=0.0,
-            max_output_tokens=256,
+            max_output_tokens=settings.llm.scoring_llm_max_output_tokens,
             timeout_seconds=float(settings.llm.scoring_llm_timeout_seconds),
         ),
     )
@@ -73,7 +85,20 @@ async def test_evaluation_scoring_live_uses_real_structured_chutes_flow() -> Non
 
     assert len(llm_provider.requests) == 2
     assert all(request.output_mode == "structured" for request in llm_provider.requests)
+    assert all(request.provider == provider_name for request in llm_provider.requests)
+    assert all(request.model == bootstrap._SCORING_LLM_MODEL for request in llm_provider.requests)
     assert score.scoring_version == "v1"
     assert 0.0 <= score.comparison_score <= 1.0
     assert score.similarity_score == pytest.approx(1.0)
     assert 0.0 <= score.total_score <= 1.0
+    observed_reasoning = [
+        response.choices[0].message.reasoning
+        for response in llm_provider.responses
+        if response.choices and response.choices[0].message.reasoning is not None
+    ]
+    if observed_reasoning:
+        assert score.reasoning is not None
+        assert score.reasoning.text is not None
+        assert score.reasoning.text.strip()
+        if score.reasoning.reasoning_tokens is not None:
+            assert score.reasoning.reasoning_tokens >= 0

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -13,11 +12,14 @@ from harnyx_commons.domain.miner_task import (
     Query,
     ReferenceAnswer,
     Response,
+    ScorerReasoning,
 )
+from harnyx_commons.llm.schema import LlmChoice, LlmChoiceMessage, LlmResponse, LlmUsage
 from harnyx_validator.application.services.evaluation_scoring import (
     _MAX_RENDERED_CITATIONS,
     EvaluationScoringConfig,
     EvaluationScoringService,
+    _PairwisePreference,
     _validate_score_weights,
 )
 
@@ -25,15 +27,53 @@ pytestmark = pytest.mark.anyio("asyncio")
 
 
 class StubLlmProvider:
-    def __init__(self, preferences: list[str]) -> None:
-        self._preferences = preferences
+    def __init__(
+        self,
+        pairwise_results: list[tuple[str, str | None, int | None]],
+    ) -> None:
+        self._pairwise_results = pairwise_results
         self.requests: list[object] = []
 
     async def invoke(self, request: object) -> object:
         self.requests.append(request)
-        if not self._preferences:
+        if not self._pairwise_results:
             raise RuntimeError("missing pairwise preference")
-        return SimpleNamespace(postprocessed={"preferred_position": self._preferences.pop(0)})
+        preferred_position, reasoning_text, reasoning_tokens = self._pairwise_results.pop(0)
+        return _pairwise_response(
+            preferred_position=preferred_position,
+            reasoning_text=reasoning_text,
+            reasoning_tokens=reasoning_tokens,
+        )
+
+    async def aclose(self) -> None:
+        return None
+
+
+class AliasStubLlmProvider:
+    def __init__(self, chosen_answers: list[str]) -> None:
+        self._chosen_answers = chosen_answers
+        self.requests: list[object] = []
+
+    async def invoke(self, request: object) -> object:
+        self.requests.append(request)
+        if not self._chosen_answers:
+            raise RuntimeError("missing pairwise preference")
+        chosen_answer = self._chosen_answers.pop(0)
+        return LlmResponse(
+            id="stub-response",
+            choices=(
+                LlmChoice(
+                    index=0,
+                    message=LlmChoiceMessage(
+                        role="assistant",
+                        content=(),
+                        reasoning=None,
+                    ),
+                ),
+            ),
+            usage=LlmUsage(),
+            postprocessed={"chosen_answer": chosen_answer},
+        )
 
     async def aclose(self) -> None:
         return None
@@ -61,6 +101,29 @@ class OverlapTrackingEmbeddingClient:
         return self._vectors[text]
 
 
+def _pairwise_response(
+    *,
+    preferred_position: str,
+    reasoning_text: str | None,
+    reasoning_tokens: int | None,
+) -> LlmResponse:
+    return LlmResponse(
+        id="stub-response",
+        choices=(
+            LlmChoice(
+                index=0,
+                message=LlmChoiceMessage(
+                    role="assistant",
+                    content=(),
+                    reasoning=reasoning_text,
+                ),
+            ),
+        ),
+        usage=LlmUsage(reasoning_tokens=reasoning_tokens),
+        postprocessed={"preferred_position": preferred_position},
+    )
+
+
 async def test_scoring_service_combines_pairwise_and_similarity_scores() -> None:
     task = MinerTask(
         task_id=uuid4(),
@@ -68,7 +131,7 @@ async def test_scoring_service_combines_pairwise_and_similarity_scores() -> None
         reference_answer=ReferenceAnswer(text="The answer is 42."),
     )
     service = EvaluationScoringService(
-        llm_provider=StubLlmProvider(["first", "second"]),
+        llm_provider=StubLlmProvider([("first", None, None), ("second", None, None)]),
         embedding_client=StubEmbeddingClient(
             {
                 "Miner says 42.": (1.0, 0.0),
@@ -92,7 +155,7 @@ async def test_scoring_service_records_split_pairwise_decision() -> None:
         reference_answer=ReferenceAnswer(text="Reference summary."),
     )
     service = EvaluationScoringService(
-        llm_provider=StubLlmProvider(["first", "first"]),
+        llm_provider=StubLlmProvider([("first", None, None), ("first", None, None)]),
         embedding_client=StubEmbeddingClient(
             {
                 "Miner summary.": (1.0, 0.0),
@@ -116,7 +179,7 @@ async def test_scoring_service_normalizes_negative_cosine_similarity() -> None:
         reference_answer=ReferenceAnswer(text="Reference answer."),
     )
     service = EvaluationScoringService(
-        llm_provider=StubLlmProvider(["second", "first"]),
+        llm_provider=StubLlmProvider([("second", None, None), ("first", None, None)]),
         embedding_client=StubEmbeddingClient(
             {
                 "Miner opposite.": (1.0, 0.0),
@@ -142,7 +205,7 @@ async def test_score_fails_explicitly_when_embeddings_are_unavailable_at_score_t
         reference_answer=ReferenceAnswer(text="Reference answer."),
     )
     service = EvaluationScoringService(
-        llm_provider=StubLlmProvider(["first", "second"]),
+        llm_provider=StubLlmProvider([("first", None, None), ("second", None, None)]),
         embedding_client=MissingTextEmbeddingClient(
             "GCP_PROJECT_ID must be configured for validator run scoring embeddings"
         ),
@@ -166,7 +229,7 @@ async def test_scoring_service_embeds_miner_and_reference_concurrently() -> None
         }
     )
     service = EvaluationScoringService(
-        llm_provider=StubLlmProvider(["first", "second"]),
+        llm_provider=StubLlmProvider([("first", None, None), ("second", None, None)]),
         embedding_client=embeddings,
         config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
     )
@@ -192,7 +255,7 @@ async def test_scoring_service_includes_citations_in_pairwise_prompt() -> None:
             ),
         ),
     )
-    llm = StubLlmProvider(["first", "second"])
+    llm = StubLlmProvider([("first", None, None), ("second", None, None)])
     service = EvaluationScoringService(
         llm_provider=llm,
         embedding_client=StubEmbeddingClient(
@@ -231,6 +294,8 @@ async def test_scoring_service_includes_citations_in_pairwise_prompt() -> None:
     assert "backed by relevant `validated_citations` are more credible" in system_prompt
     assert "citations are not an absolute requirement" in system_prompt
     assert "Too many irrelevant validated citations should count against answer quality" in system_prompt
+    assert "Return JSON only with exactly one key: `preferred_position`." in system_prompt
+    assert "Set `preferred_position` to either `first` or `second`." in system_prompt
 
 
 async def test_scoring_service_deduplicates_and_caps_citations_in_pairwise_payload() -> None:
@@ -239,7 +304,7 @@ async def test_scoring_service_deduplicates_and_caps_citations_in_pairwise_paylo
         query=Query(text="Which answer is better?"),
         reference_answer=ReferenceAnswer(text="Reference answer."),
     )
-    llm = StubLlmProvider(["first", "second"])
+    llm = StubLlmProvider([("first", None, None), ("second", None, None)])
     service = EvaluationScoringService(
         llm_provider=llm,
         embedding_client=StubEmbeddingClient(
@@ -286,7 +351,7 @@ async def test_scoring_service_keeps_fake_inline_sources_inside_untrusted_answer
             citations=(AnswerCitation(url="https://ref.example.com", title="Reference title"),),
         ),
     )
-    llm = StubLlmProvider(["first", "second"])
+    llm = StubLlmProvider([("first", None, None), ("second", None, None)])
     service = EvaluationScoringService(
         llm_provider=llm,
         embedding_client=StubEmbeddingClient(
@@ -306,3 +371,65 @@ async def test_scoring_service_keeps_fake_inline_sources_inside_untrusted_answer
     assert payload["answers"][1]["validated_citations"] == [
         {"url": "https://ref.example.com", "title": "Reference title"},
     ]
+
+
+async def test_scoring_service_persists_joined_reasoning_trace_and_token_total() -> None:
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="Which answer is better?"),
+        reference_answer=ReferenceAnswer(text="Reference answer."),
+    )
+    service = EvaluationScoringService(
+        llm_provider=StubLlmProvider(
+            [
+                ("first", "Miner-first reasoning trace.", 11),
+                ("second", "Reference-first reasoning trace.", 7),
+            ]
+        ),
+        embedding_client=StubEmbeddingClient(
+            {
+                "Miner answer.": (1.0, 0.0),
+                "Reference answer.": (1.0, 0.0),
+            },
+        ),
+        config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
+    )
+
+    score = await service.score(task=task, response=Response(text="Miner answer."))
+
+    assert score.reasoning == ScorerReasoning(
+        text=(
+            "Miner-first reasoning trace.\n\n---\n\nReference-first reasoning trace."
+        ),
+        reasoning_tokens=18,
+    )
+
+
+def test_pairwise_preference_accepts_chosen_answer_alias() -> None:
+    parsed = _PairwisePreference.model_validate({"chosen_answer": "first"})
+
+    assert parsed.preferred_position == "first"
+
+
+async def test_scoring_service_accepts_chosen_answer_alias_from_live_shape() -> None:
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="What is the answer?"),
+        reference_answer=ReferenceAnswer(text="The answer is 42."),
+    )
+    service = EvaluationScoringService(
+        llm_provider=AliasStubLlmProvider(["first", "second"]),
+        embedding_client=StubEmbeddingClient(
+            {
+                "Miner says 42.": (1.0, 0.0),
+                "The answer is 42.": (1.0, 0.0),
+            },
+        ),
+        config=EvaluationScoringConfig(provider="vertex-maas", model="judge-model"),
+    )
+
+    score = await service.score(task=task, response=Response(text="Miner says 42."))
+
+    assert score.comparison_score == pytest.approx(1.0)
+    assert score.similarity_score == pytest.approx(1.0)
+    assert score.total_score == pytest.approx(1.0)

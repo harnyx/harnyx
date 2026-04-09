@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 from collections.abc import Callable, Mapping
 from typing import Any, cast
 
+import google.auth
+import httpx
 from anthropic import AsyncAnthropicVertex
 from google import genai
+from google.auth.credentials import Credentials as GoogleCredentials
+from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.genai import errors, types
 
 from harnyx_commons.llm.provider import BaseLlmProvider
@@ -33,9 +38,11 @@ from .anthropic import (
 from .codec import (
     attach_search_metadata,
     build_choices,
+    build_vertex_maas_chat_payload,
     extract_usage,
     json_schema_from_model,
     normalize_messages,
+    parse_vertex_maas_chat_response,
     resolve_thinking_config,
     resolve_tool_config,
     serialize_provider_native_tools,
@@ -47,6 +54,15 @@ from .credentials import cleanup_credentials_file, prepare_credentials
 # v1beta1 exposes grounding metadata (e.g. retrievalQueries) that we use for
 # richer tool attribution in observability.
 _API_VERSION = "v1beta1"
+_CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+_VERTEX_MAAS_OPENAI_CHAT_MODELS = frozenset(
+    {
+        "publishers/openai/models/gpt-oss-20b-maas",
+        "publishers/openai/models/gpt-oss-120b-maas",
+        "openai/gpt-oss-20b-tee",
+        "openai/gpt-oss-120b-tee",
+    }
+)
 
 
 class VertexLlmProvider(BaseLlmProvider):
@@ -65,7 +81,10 @@ class VertexLlmProvider(BaseLlmProvider):
         if not project or not location:
             raise ValueError("Vertex project and location must be configured")
         super().__init__(provider_label="vertex", max_concurrent=max_concurrent)
+        self._project = project
+        self._location = location
         self._credentials, self._credentials_file = prepare_credentials(credentials_path, service_account_b64)
+        self._http_credentials: GoogleCredentials | None = self._credentials
         http_timeout = math.ceil(timeout * 1000) if timeout and timeout > 0 else None
         http_options = types.HttpOptions(
             api_version=_API_VERSION,
@@ -84,6 +103,7 @@ class VertexLlmProvider(BaseLlmProvider):
             region=location,
             credentials=self._credentials,
         )
+        self._http_client = httpx.AsyncClient(timeout=timeout)
         self._logger = logging.getLogger("harnyx_commons.llm.calls")
 
     async def _invoke(self, request: AbstractLlmRequest) -> LlmResponse:
@@ -103,6 +123,7 @@ class VertexLlmProvider(BaseLlmProvider):
         )
 
     async def aclose(self) -> None:
+        await self._http_client.aclose()
         await self._genai_async_client.aclose()
         self._genai_client.close()
         await self._anthropic_client.close()
@@ -199,6 +220,8 @@ class VertexLlmProvider(BaseLlmProvider):
         )
 
     async def _call_vertex_with_request(self, request: AbstractLlmRequest) -> LlmResponse:
+        if _should_use_vertex_maas_openai_chat(request):
+            return await self._call_vertex_maas_chat_completions(request)
         system_instruction, contents = normalize_messages(request.messages)
         tools, tool_config = self._tools_for(request)
         generation_config = self._build_generation_config(
@@ -208,6 +231,58 @@ class VertexLlmProvider(BaseLlmProvider):
             tool_config,
         )
         return await self._call_vertex(request, contents, generation_config)
+
+    async def _call_vertex_maas_chat_completions(self, request: AbstractLlmRequest) -> LlmResponse:
+        payload = build_vertex_maas_chat_payload(request)
+        access_token = await self._vertex_maas_access_token()
+        request_kwargs: dict[str, Any] = {
+            "headers": {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+            "json": payload,
+        }
+        if request.timeout_seconds is not None:
+            request_kwargs["timeout"] = request.timeout_seconds
+
+        response = await self._http_client.post(
+            _vertex_maas_chat_completions_url(project=self._project, location=self._location),
+            **request_kwargs,
+        )
+        response.raise_for_status()
+        raw_payload = response.json()
+        if not isinstance(raw_payload, Mapping):
+            raise RuntimeError("vertex maas chat completions returned non-object JSON payload")
+        llm_response = parse_vertex_maas_chat_response(raw_payload)
+        metadata = dict(llm_response.metadata or {})
+        metadata.setdefault("raw_response", dict(raw_payload))
+        return LlmResponse(
+            id=llm_response.id,
+            choices=llm_response.choices,
+            usage=llm_response.usage,
+            metadata=metadata,
+            finish_reason=llm_response.finish_reason,
+        )
+
+    async def _vertex_maas_access_token(self) -> str:
+        credentials = await self._vertex_maas_credentials()
+        request = GoogleAuthRequest()
+        await asyncio.to_thread(credentials.refresh, request)
+        token = credentials.token
+        if not token:
+            raise RuntimeError("vertex maas credentials refresh returned no access token")
+        return token
+
+    async def _vertex_maas_credentials(self) -> GoogleCredentials:
+        credentials = self._http_credentials
+        if credentials is not None:
+            return credentials
+        resolved_credentials, _project_id = await asyncio.to_thread(
+            google.auth.default,
+            scopes=(_CLOUD_PLATFORM_SCOPE,),
+        )
+        self._http_credentials = resolved_credentials
+        return resolved_credentials
 
     async def _call_claude_anthropic(self, request: AbstractLlmRequest) -> LlmResponse:
         system_content, messages = _anthropic_messages_from_request(request)
@@ -286,6 +361,12 @@ class VertexLlmProvider(BaseLlmProvider):
         exc: Exception,
         classify_exception: Callable[[Exception], tuple[bool, str]] | None = None,
     ) -> tuple[bool, str]:
+        if isinstance(exc, httpx.HTTPStatusError):
+            status = exc.response.status_code if exc.response is not None else None
+            retryable = status is not None and (status == 429 or status >= 500)
+            return retryable, f"http_{status}"
+        if isinstance(exc, httpx.HTTPError):
+            return True, exc.__class__.__name__
         if isinstance(exc, errors.APIError):
             code = exc.code
             message = str(exc)
@@ -308,6 +389,19 @@ class VertexLlmProvider(BaseLlmProvider):
 
 def _as_str(value: Any) -> str:
     return "" if value is None else str(value)
+
+
+def _should_use_vertex_maas_openai_chat(request: AbstractLlmRequest) -> bool:
+    provider = (request.provider or "").strip().lower()
+    model = request.model.strip().lower()
+    return provider == "vertex-maas" and model in _VERTEX_MAAS_OPENAI_CHAT_MODELS
+
+
+def _vertex_maas_chat_completions_url(*, project: str, location: str) -> str:
+    host = "aiplatform.googleapis.com" if location == "global" else f"{location}-aiplatform.googleapis.com"
+    return (
+        f"https://{host}/v1/projects/{project}/locations/{location}/endpoints/openapi/chat/completions"
+    )
 
 
 def _vertex_response_payload(response: Any) -> Mapping[str, Any]:

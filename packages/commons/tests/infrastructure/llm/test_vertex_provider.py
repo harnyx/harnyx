@@ -6,10 +6,18 @@ from collections.abc import Callable
 from typing import Any, cast
 
 import pytest
+from pydantic import BaseModel
 
 from harnyx_commons.clients import CHUTES
 from harnyx_commons.llm.provider_types import normalize_reasoning_effort
-from harnyx_commons.llm.providers.vertex.codec import build_choices, normalize_messages, resolve_thinking_config
+from harnyx_commons.llm.providers.vertex.codec import (
+    build_choices,
+    build_vertex_maas_chat_payload,
+    normalize_messages,
+    parse_vertex_maas_chat_response,
+    resolve_thinking_config,
+    vertex_maas_openai_chat_model_name,
+)
 from harnyx_commons.llm.providers.vertex.provider import VertexLlmProvider
 from harnyx_commons.llm.schema import (
     GroundedLlmRequest,
@@ -130,6 +138,66 @@ def _patch_google_client(
     monkeypatch.setattr("harnyx_commons.llm.providers.vertex.provider.genai.Client", _FakeClient)
 
 
+def _patch_vertex_maas_http_client(
+    monkeypatch: pytest.MonkeyPatch,
+    captured: dict[str, Any],
+    *,
+    response_payload: dict[str, Any] | None = None,
+) -> None:
+    payload = response_payload or {
+        "id": "chatcmpl-vertex",
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": "56",
+                    "reasoning_content": "I need to multiply 7 by 8.",
+                    "tool_calls": None,
+                },
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 7,
+            "completion_tokens": 3,
+            "reasoning_tokens": 5,
+            "total_tokens": 15,
+        },
+    }
+
+    class _FakeHttpResponse:
+        def __init__(self, json_payload: dict[str, Any]) -> None:
+            self._json_payload = json_payload
+            self.status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return self._json_payload
+
+    class _FakeAsyncHttpClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            captured["http_client_kwargs"] = kwargs
+
+        async def post(self, url: str, **kwargs: Any) -> _FakeHttpResponse:
+            captured["http_call"] = {"url": url, **kwargs}
+            return _FakeHttpResponse(payload)
+
+        async def aclose(self) -> None:
+            captured["http_closed"] = True
+
+    monkeypatch.setattr("harnyx_commons.llm.providers.vertex.provider.httpx.AsyncClient", _FakeAsyncHttpClient)
+
+
+def _async_return(value: Any) -> Callable[[], Any]:
+    async def _inner() -> Any:
+        return value
+
+    return _inner
+
+
 async def test_vertex_provider_invokes_generative_model(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
     captured: dict[str, Any] = {}
@@ -199,6 +267,85 @@ async def test_vertex_provider_invokes_generative_model(monkeypatch: pytest.Monk
     raw_response = response.metadata["raw_response"]
     assert isinstance(raw_response, dict)
     assert raw_response["text"] == "ok"
+
+
+async def test_vertex_maas_gpt_oss_routes_to_chat_completions(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    captured: dict[str, Any] = {}
+    _patch_google_client(monkeypatch, captured)
+    _patch_vertex_maas_http_client(monkeypatch, captured)
+
+    provider = VertexLlmProvider(
+        project="demo-project",
+        location="us-central1",
+        timeout=30.0,
+    )
+    monkeypatch.setattr(provider, "_vertex_maas_access_token", _async_return("access-token"))
+
+    request = LlmRequest(
+        provider="vertex-maas",
+        model="publishers/openai/models/gpt-oss-120b-maas",
+        messages=(
+            LlmMessage(
+                role="system",
+                content=(LlmMessageContentPart.input_text("stay concise"),),
+            ),
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text("What is 7 times 8?"),),
+            ),
+        ),
+        temperature=0.0,
+        max_output_tokens=64,
+        reasoning_effort="high",
+    )
+
+    response = await provider.invoke(request)
+
+    assert "model_call" not in captured
+    http_call = captured["http_call"]
+    assert http_call["url"].endswith("/endpoints/openapi/chat/completions")
+    assert http_call["headers"]["Authorization"] == "Bearer access-token"
+    payload = http_call["json"]
+    assert payload["model"] == "openai/gpt-oss-120b-maas"
+    assert payload["reasoning_effort"] == "high"
+    assert payload["max_tokens"] == 64
+    assert [message["role"] for message in payload["messages"]] == ["system", "user"]
+    assert response.raw_text == "56"
+    assert response.choices[0].message.reasoning == "I need to multiply 7 by 8."
+    assert response.usage.reasoning_tokens == 5
+
+
+async def test_vertex_provider_keeps_vertex_gpt_oss_on_generate_content(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    captured: dict[str, Any] = {}
+    _patch_google_client(monkeypatch, captured)
+    _patch_vertex_maas_http_client(monkeypatch, captured)
+
+    provider = VertexLlmProvider(
+        project="demo-project",
+        location="us-central1",
+        timeout=30.0,
+    )
+    monkeypatch.setattr(provider, "_vertex_maas_access_token", _async_return("access-token"))
+
+    request = LlmRequest(
+        provider="vertex",
+        model="publishers/openai/models/gpt-oss-120b-maas",
+        messages=(
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text("hello"),),
+            ),
+        ),
+        temperature=None,
+        max_output_tokens=32,
+    )
+
+    await provider.invoke(request)
+
+    assert "model_call" in captured
+    assert "http_call" not in captured
 
 
 async def test_vertex_provider_raw_response_metadata_is_json_safe(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -417,6 +564,119 @@ def test_vertex_codec_build_choices_preserves_signature_only_text_as_output() ->
     assert message.reasoning is None
 
 
+class _StructuredPairwisePreference(BaseModel):
+    preferred_position: str
+
+
+def test_vertex_maas_chat_payload_supports_structured_output() -> None:
+    request = LlmRequest(
+        provider="vertex-maas",
+        model="publishers/openai/models/gpt-oss-120b-maas",
+        messages=(
+            LlmMessage(
+                role="system",
+                content=(LlmMessageContentPart.input_text("Return JSON."),),
+            ),
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text("Choose first or second."),),
+            ),
+        ),
+        output_mode="structured",
+        output_schema=_StructuredPairwisePreference,
+        temperature=None,
+        max_output_tokens=64,
+        reasoning_effort="high",
+    )
+
+    payload = build_vertex_maas_chat_payload(request)
+
+    assert payload["response_format"]["type"] == "json_schema"
+    assert payload["response_format"]["json_schema"]["name"] == "_StructuredPairwisePreference"
+    assert payload["reasoning_effort"] == "high"
+    assert "temperature" not in payload
+
+
+def test_parse_vertex_maas_chat_response_maps_reasoning_tool_calls_and_usage() -> None:
+    payload = {
+        "id": "chatcmpl-123",
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": '{"preferred_position":"first"}',
+                        }
+                    ],
+                    "reasoning_content": [{"text": "I should prefer the first answer."}],
+                    "tool_calls": [
+                        {
+                            "id": "call-1",
+                            "function": {
+                                "name": "lookup",
+                                "arguments": {"query": "paris"},
+                            },
+                        }
+                    ],
+                },
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 14,
+            "completion_tokens": 7,
+            "reasoning_tokens": 3,
+            "total_tokens": 24,
+            "prompt_tokens_details": {"cached_tokens": 2},
+        },
+    }
+
+    response = parse_vertex_maas_chat_response(payload)
+
+    assert response.id == "chatcmpl-123"
+    assert response.raw_text == '{"preferred_position":"first"}'
+    assert response.choices[0].message.reasoning == "I should prefer the first answer."
+    assert response.choices[0].message.tool_calls[0].arguments == '{"query": "paris"}'
+    assert response.tool_calls[0].name == "lookup"
+    assert response.tool_calls[0].arguments == {"query": "paris"}
+    assert response.usage.prompt_tokens == 14
+    assert response.usage.prompt_cached_tokens == 2
+    assert response.usage.completion_tokens == 7
+    assert response.usage.reasoning_tokens == 3
+    assert response.usage.total_tokens == 24
+
+
+def test_vertex_maas_openai_chat_model_name_strips_publisher_prefix() -> None:
+    assert (
+        vertex_maas_openai_chat_model_name("publishers/openai/models/gpt-oss-120b-maas")
+        == "openai/gpt-oss-120b-maas"
+    )
+    assert vertex_maas_openai_chat_model_name("openai/gpt-oss-120b-maas") == "openai/gpt-oss-120b-maas"
+
+
+def test_vertex_verify_response_still_rejects_reasoning_only_output() -> None:
+    response = LlmResponse(
+        id="reasoning-only",
+        choices=(
+            LlmChoice(
+                index=0,
+                message=LlmChoiceMessage(
+                    role="assistant",
+                    content=(),
+                    tool_calls=None,
+                    reasoning="I reasoned but produced no final answer.",
+                ),
+                finish_reason="stop",
+            ),
+        ),
+        usage=LlmUsage(reasoning_tokens=5),
+        finish_reason="stop",
+    )
+
+    assert VertexLlmProvider._verify_response(response) == (False, True, "empty_output")
+
+
 async def test_vertex_provider_routes_claude_models_to_anthropic(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
     captured: dict[str, Any] = {"vertex_calls": 0, "anthropic_calls": 0}
@@ -477,6 +737,7 @@ async def test_vertex_provider_aclose_closes_owned_clients(
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
     captured: dict[str, Any] = {}
     _patch_google_client(monkeypatch, captured)
+    _patch_vertex_maas_http_client(monkeypatch, captured)
 
     provider = VertexLlmProvider(
         project="demo-project",
@@ -488,6 +749,7 @@ async def test_vertex_provider_aclose_closes_owned_clients(
 
     assert captured["google_async_closed"] is True
     assert captured["google_sync_closed"] is True
+    assert captured["http_closed"] is True
     assert len(anthropic_clients) == 1
     assert anthropic_clients[0].closed is True
 

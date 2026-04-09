@@ -63,6 +63,13 @@ class Response(_TextModel):
         return value
 
 
+class ScorerReasoning(BaseModel):
+    model_config = COMMONS_STRICT_CONFIG
+
+    text: str | None = Field(default=None, min_length=1)
+    reasoning_tokens: int | None = Field(default=None, ge=0)
+
+
 class ScoreBreakdown(BaseModel):
     model_config = COMMONS_STRICT_CONFIG
 
@@ -70,6 +77,7 @@ class ScoreBreakdown(BaseModel):
     similarity_score: float = Field(ge=0.0, le=1.0)
     total_score: float = Field(ge=0.0, le=1.0)
     scoring_version: str = Field(min_length=1)
+    reasoning: ScorerReasoning | None = None
 
 
 class EvaluationError(BaseModel):
@@ -119,5 +127,6 @@ __all__ = [
     "Query",
     "ReferenceAnswer",
     "Response",
+    "ScorerReasoning",
     "ScoreBreakdown",
 ]
