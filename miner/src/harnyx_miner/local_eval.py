@@ -48,7 +48,10 @@ from harnyx_validator.application.ports.subtensor import (
     ValidatorNodeInfo,
 )
 from harnyx_validator.application.scheduler import SchedulerConfig
-from harnyx_validator.application.services.evaluation_runner import EvaluationRunner
+from harnyx_validator.application.services.evaluation_runner import (
+    ArtifactEvaluationOutcome,
+    EvaluationRunner,
+)
 from harnyx_validator.application.services.evaluation_scoring import EvaluationScoringConfig, EvaluationScoringService
 from harnyx_validator.infrastructure.http.local_tool_host import LocalToolHostHandle, start_local_tool_host
 from harnyx_validator.runtime.bootstrap import (
@@ -311,7 +314,7 @@ class LocalEvaluationRuntime:
         artifact: ScriptArtifactSpec,
         batch_id: UUID,
         tasks: Sequence[MinerTask],
-    ) -> tuple[MinerTaskRunSubmission, ...]:
+    ) -> ArtifactEvaluationOutcome:
         if self._progress_reporter is not None:
             self._progress_reporter.begin_artifact(
                 label=artifact_label,
@@ -353,21 +356,19 @@ class LocalEvaluationRuntime:
                 session_registry=self._state.session_registry,
                 clock=_utcnow,
             )
-            submissions = tuple(
-                await self._runner.evaluate_artifact(
-                    batch_id=batch_id,
-                    artifact=artifact,
-                    tasks=tasks,
-                    orchestrator=orchestrator,
-                )
+            evaluation_outcome = await self._runner.evaluate_artifact(
+                batch_id=batch_id,
+                artifact=artifact,
+                tasks=tasks,
+                orchestrator=orchestrator,
             )
-            if self._progress_reporter is not None:
+            if self._progress_reporter is not None and evaluation_outcome.artifact_failure is None:
                 self._progress_reporter.finish_artifact(
                     label=artifact_label,
                     artifact=artifact,
-                    submissions=submissions,
+                    submissions=evaluation_outcome.submissions,
                 )
-            return submissions
+            return evaluation_outcome
         finally:
             if deployment is not None:
                 await asyncio.to_thread(self._sandbox_manager.stop, deployment)
@@ -545,7 +546,7 @@ async def _amain(argv: Sequence[str] | None) -> None:
         )
         if champion_artifact is not None and champion_bytes is not None:
             progress.log("running target and champion evaluations concurrently")
-            target_submissions, champion_submissions = await asyncio.gather(
+            target_outcome, champion_outcome = await asyncio.gather(
                 runtime.evaluate_artifact(
                     artifact_label="target",
                     agent_source=target_bytes,
@@ -561,13 +562,28 @@ async def _amain(argv: Sequence[str] | None) -> None:
                     tasks=tasks,
                 ),
             )
+            target_submissions = _require_completed_local_eval_outcome(
+                artifact_label="target",
+                artifact=target_artifact,
+                outcome=target_outcome,
+            )
+            champion_submissions = _require_completed_local_eval_outcome(
+                artifact_label="champion",
+                artifact=champion_artifact,
+                outcome=champion_outcome,
+            )
         else:
-            target_submissions = await runtime.evaluate_artifact(
+            target_outcome = await runtime.evaluate_artifact(
                 artifact_label="target",
                 agent_source=target_bytes,
                 artifact=target_artifact,
                 batch_id=batch_context.batch_id,
                 tasks=tasks,
+            )
+            target_submissions = _require_completed_local_eval_outcome(
+                artifact_label="target",
+                artifact=target_artifact,
+                outcome=target_outcome,
             )
 
         progress.log("writing reports")
@@ -608,6 +624,21 @@ async def _amain(argv: Sequence[str] | None) -> None:
                 "markdown_report": str(markdown_path),
             }
         )
+    )
+
+
+def _require_completed_local_eval_outcome(
+    *,
+    artifact_label: str,
+    artifact: ScriptArtifactSpec,
+    outcome: ArtifactEvaluationOutcome,
+) -> tuple[MinerTaskRunSubmission, ...]:
+    if outcome.artifact_failure is None:
+        return outcome.submissions
+    failure = outcome.artifact_failure
+    raise RuntimeError(
+        f"{artifact_label} local evaluation failed for artifact {artifact.artifact_id}: "
+        f"{failure.error_code} ({failure.message})"
     )
 
 

@@ -14,7 +14,7 @@ from harnyx_commons.tools.http_models import (
 
 def serialize_tool_execute_response(result: ToolInvocationResult) -> ToolExecuteResponseDTO:
     receipt = result.receipt
-    results = tuple(_serialize_tool_result(r) for r in receipt.metadata.results)
+    results = tuple(_serialize_tool_result(r) for r in receipt.details.results)
     usage = _serialize_usage(result)
     budget = ToolBudgetDTO(
         session_budget_usd=result.budget.session_budget_usd,
@@ -26,8 +26,8 @@ def serialize_tool_execute_response(result: ToolInvocationResult) -> ToolExecute
         receipt_id=receipt.receipt_id,
         response=result.response_payload,
         results=results,
-        result_policy=receipt.metadata.result_policy.value,
-        cost_usd=receipt.metadata.cost_usd,
+        result_policy=receipt.details.result_policy.value,
+        cost_usd=receipt.details.cost_usd,
         usage=usage,
         budget=budget,
     )

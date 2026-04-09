@@ -29,8 +29,11 @@ from harnyx_validator.application.ports.progress import ProgressRecorder
 from harnyx_validator.application.ports.subtensor import SubtensorClientPort
 from harnyx_validator.application.services.evaluation_runner import (
     LOCAL_RETRY_ATTEMPTS,
+    ArtifactEvaluationOutcome,
     ArtifactExecutionFailedError,
+    ArtifactFailure,
     EvaluationRunner,
+    TimeoutObservationEvidence,
     ValidatorBatchFailedError,
     ValidatorBatchFailureDetail,
 )
@@ -46,6 +49,13 @@ BATCH_ARTIFACT_BREAKER_THRESHOLD = 3
 _ARTIFACT_PREPARATION_BREAKER_ERROR_CODES = frozenset(
     ("artifact_fetch_failed", "artifact_staging_failed", "artifact_setup_failed")
 )
+
+
+@dataclass(frozen=True, slots=True)
+class TimeoutRetryState:
+    prior_observations: tuple[TimeoutObservationEvidence, ...] = ()
+
+
 @dataclass(frozen=True)
 class SchedulerConfig:
     """Static configuration used for session issuance."""
@@ -123,6 +133,8 @@ class EvaluationScheduler:
         submissions = []
         recorded_pairs = self._progress.recorded_pairs(batch_id) if self._progress is not None else frozenset()
         artifacts_with_breaker: set[UUID] = set()
+        successful_baseline_tps: float | None = None
+        timeout_retry_state_by_pair: dict[tuple[UUID, UUID], TimeoutRetryState] = {}
         for artifact in artifacts:
             remaining_tasks = tuple(
                 task
@@ -163,28 +175,34 @@ class EvaluationScheduler:
             batch_breaker_failure: ValidatorBatchFailedError | None = None
             try:
                 orchestrator = self._make_orchestrator(deployment.client)
-                try:
+                artifact_result = await self._evaluate_artifact_with_timeout_state(
+                    batch_id=batch_id,
+                    artifact=artifact,
+                    tasks=remaining_tasks,
+                    orchestrator=orchestrator,
+                    successful_baseline_tps=successful_baseline_tps,
+                    timeout_retry_state_by_pair=timeout_retry_state_by_pair,
+                )
+                submissions.extend(artifact_result.submissions)
+                successful_baseline_tps = artifact_result.slowest_successful_tps
+                timeout_retry_state_by_pair = {
+                    pair_key: TimeoutRetryState(prior_observations=observations)
+                    for pair_key, observations in artifact_result.timeout_observations_by_pair.items()
+                }
+                if artifact_result.artifact_failure is not None:
                     submissions.extend(
-                        await self._runner.evaluate_artifact(
+                        await self._record_remaining_tasks_for_artifact_failure(
                             batch_id=batch_id,
                             artifact=artifact,
-                            tasks=remaining_tasks,
-                            orchestrator=orchestrator,
-                        ),
-                    )
-                except ArtifactExecutionFailedError as exc:
-                    submissions.extend(
-                        await self._record_artifact_failure(
-                            batch_id=batch_id,
-                            artifact=artifact,
-                            failure=exc,
+                            failure=artifact_result.artifact_failure,
+                            remaining_tasks=artifact_result.unresolved_tasks,
                         )
                     )
-                    if exc.artifact_breaker_tripped:
+                    if artifact_result.artifact_failure.artifact_breaker_tripped:
                         batch_breaker_failure = self._batch_breaker_failure(
                             batch_id=batch_id,
                             artifact=artifact,
-                            failure_detail=exc.failure_detail,
+                            failure_detail=artifact_result.artifact_failure.failure_detail,
                             artifacts_with_breaker=artifacts_with_breaker,
                         )
             finally:
@@ -201,6 +219,55 @@ class EvaluationScheduler:
             batch_id=batch_id,
             tasks=tasks,
             runs=tuple(submissions),
+        )
+
+    async def _evaluate_artifact_with_timeout_state(
+        self,
+        *,
+        batch_id: UUID,
+        artifact: ScriptArtifactSpec,
+        tasks: tuple[MinerTask, ...],
+        orchestrator: TaskRunOrchestrator,
+        successful_baseline_tps: float | None,
+        timeout_retry_state_by_pair: dict[tuple[UUID, UUID], TimeoutRetryState],
+    ) -> ArtifactEvaluationOutcome:
+        artifact_result = ArtifactEvaluationOutcome(
+            submissions=(),
+            unresolved_tasks=tasks,
+            timeout_observations_by_pair={
+                pair_key: state.prior_observations
+                for pair_key, state in timeout_retry_state_by_pair.items()
+            },
+            slowest_successful_tps=successful_baseline_tps,
+        )
+        current_timeout_states = dict(timeout_retry_state_by_pair)
+        while artifact_result.unresolved_tasks:
+            artifact_result = await self._runner.evaluate_artifact_with_state(
+                batch_id=batch_id,
+                artifact=artifact,
+                tasks=artifact_result.unresolved_tasks,
+                orchestrator=orchestrator,
+                successful_baseline_tps=artifact_result.slowest_successful_tps,
+                timeout_observations_by_pair={
+                    pair_key: state.prior_observations
+                    for pair_key, state in current_timeout_states.items()
+                },
+                earlier_submissions=artifact_result.submissions,
+            )
+            current_timeout_states = {
+                pair_key: TimeoutRetryState(prior_observations=observations)
+                for pair_key, observations in artifact_result.timeout_observations_by_pair.items()
+            }
+            if artifact_result.artifact_failure is not None:
+                return artifact_result
+        return ArtifactEvaluationOutcome(
+            submissions=artifact_result.submissions,
+            unresolved_tasks=(),
+            timeout_observations_by_pair={
+                pair_key: state.prior_observations
+                for pair_key, state in current_timeout_states.items()
+            },
+            slowest_successful_tps=artifact_result.slowest_successful_tps,
         )
 
     async def _start_artifact_with_retry(
@@ -312,6 +379,24 @@ class EvaluationScheduler:
             )
         )
         return submissions
+
+    async def _record_remaining_tasks_for_artifact_failure(
+        self,
+        *,
+        batch_id: UUID,
+        artifact: ScriptArtifactSpec,
+        failure: ArtifactFailure,
+        remaining_tasks: tuple[MinerTask, ...],
+    ) -> tuple[MinerTaskRunSubmission, ...]:
+        return tuple(
+            await self._runner.record_failure_for_artifact(
+                batch_id=batch_id,
+                artifact=artifact,
+                tasks=remaining_tasks,
+                error_code=failure.error_code,
+                error_message=failure.message,
+            )
+        )
 
     def _artifact_execution_failure(
         self,

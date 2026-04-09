@@ -15,6 +15,7 @@ from harnyx_commons.llm.schema import (
     LlmResponse,
     LlmUsage,
 )
+from harnyx_commons.tools.executor import ToolInvocationOutput
 from harnyx_commons.tools.search_models import (
     FetchPageRequest,
     FetchPageResponse,
@@ -123,7 +124,7 @@ async def _invoke(
     tool: str,
     args: Sequence[object] | None = None,
     kwargs: Mapping[str, object] | None = None,
-) -> Mapping[str, Any]:
+) -> Any:
     return await invoker.invoke(
         tool,
         args=tuple(args or ()),
@@ -251,7 +252,7 @@ async def test_runtime_invoker_routes_llm_chat(model: str) -> None:
         allowed_models=ALLOWED_TOOL_MODELS,
     )
 
-    result = await _invoke(
+    invocation_output = await _invoke(
         invoker,
         "llm_chat",
         kwargs={
@@ -261,6 +262,8 @@ async def test_runtime_invoker_routes_llm_chat(model: str) -> None:
         },
     )
 
+    assert isinstance(invocation_output, ToolInvocationOutput)
+    result = invocation_output.public_payload
     assert result["choices"][0]["message"]["content"][0]["text"] == "ok"
     assert result["choices"][0]["message"]["tool_calls"][0]["name"] == "lookup"
     assert result["usage"]["total_tokens"] == 15
@@ -291,6 +294,35 @@ async def test_runtime_invoker_does_not_expose_internal_provider_metadata_for_ll
         allowed_models=ALLOWED_TOOL_MODELS,
     )
 
+    invocation_output = await _invoke(
+        invoker,
+        "llm_chat",
+        kwargs={
+            "messages": [{"role": "user", "content": "hi"}],
+            "model": ALLOWED_TOOL_MODELS[0],
+        },
+    )
+
+    assert isinstance(invocation_output, ToolInvocationOutput)
+    assert "harnyx_provider" not in invocation_output.public_payload
+    assert "harnyx_model" not in invocation_output.public_payload
+    assert stub_provider.calls[0].provider == "vertex-maas"
+    assert stub_provider.calls[0].model == ALLOWED_TOOL_MODELS[0]
+
+
+async def test_runtime_invoker_returns_public_payload_plus_execution_facts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stub_chutes = StubChutesProvider()
+    invoker = RuntimeToolInvoker(
+        FakeReceiptLog(),
+        llm_provider=stub_chutes,
+        llm_provider_name="chutes",
+        allowed_models=ALLOWED_TOOL_MODELS,
+    )
+    perf_counter_values = iter((10.0, 11.25))
+    monkeypatch.setattr("harnyx_commons.tools.runtime_invoker.time.perf_counter", lambda: next(perf_counter_values))
+
     result = await _invoke(
         invoker,
         "llm_chat",
@@ -300,10 +332,10 @@ async def test_runtime_invoker_does_not_expose_internal_provider_metadata_for_ll
         },
     )
 
-    assert "harnyx_provider" not in result
-    assert "harnyx_model" not in result
-    assert stub_provider.calls[0].provider == "vertex-maas"
-    assert stub_provider.calls[0].model == ALLOWED_TOOL_MODELS[0]
+    assert isinstance(result, ToolInvocationOutput)
+    assert result.execution is not None
+    assert result.execution.elapsed_ms == pytest.approx(1250.0)
+    assert "elapsed_ms" not in result.public_payload
 
 
 async def test_runtime_invoker_rejects_blank_search_ai_prompt() -> None:

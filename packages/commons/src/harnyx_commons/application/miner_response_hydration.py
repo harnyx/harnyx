@@ -81,9 +81,9 @@ def _lookup_referenceable_result(
         return None
     if not is_citation_source(receipt.tool):
         return None
-    if receipt.metadata.result_policy is not ToolResultPolicy.REFERENCEABLE:
+    if receipt.details.result_policy is not ToolResultPolicy.REFERENCEABLE:
         return None
-    for result in receipt.metadata.results:
+    for result in receipt.details.results:
         if result.result_id != result_id:
             continue
         if isinstance(result, SearchToolResult):

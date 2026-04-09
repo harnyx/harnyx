@@ -38,6 +38,11 @@ from harnyx_miner import local_eval
 from harnyx_miner.platform_monitoring import PlatformMonitoringClient, SelectedBatchContext
 from harnyx_miner_sdk.json_types import JsonValue
 from harnyx_validator.application.dto.evaluation import MinerTaskRunSubmission, ScriptArtifactSpec, TokenUsageSummary
+from harnyx_validator.application.services.evaluation_runner import (
+    ArtifactEvaluationOutcome,
+    ArtifactFailure,
+    ValidatorBatchFailureDetail,
+)
 from harnyx_validator.application.services.evaluation_scoring import EvaluationScoringConfig
 from harnyx_validator.domain.evaluation import MinerTaskRun
 
@@ -316,6 +321,8 @@ class _FakeRuntime:
         target_scores: tuple[float, ...] | None = None,
         champion_scores: tuple[float, ...] | None = None,
         delay_seconds: float = 0.0,
+        target_outcome: ArtifactEvaluationOutcome | None = None,
+        champion_outcome: ArtifactEvaluationOutcome | None = None,
     ) -> None:
         self.scoring_config = EvaluationScoringConfig(
             provider="chutes",
@@ -335,6 +342,8 @@ class _FakeRuntime:
         self._champion_artifact_id = champion_artifact_id
         self._tasks = tasks
         self._delay_seconds = delay_seconds
+        self._target_outcome = target_outcome
+        self._champion_outcome = champion_outcome
         self.in_flight = 0
         self.max_in_flight = 0
         self.closed = False
@@ -348,7 +357,7 @@ class _FakeRuntime:
         artifact: ScriptArtifactSpec,
         batch_id,
         tasks: Sequence[MinerTask],
-    ) -> tuple[MinerTaskRunSubmission, ...]:
+    ) -> ArtifactEvaluationOutcome:
         self.calls.append((agent_source.decode("utf-8"), str(artifact.artifact_id)))
         assert batch_id == self._batch_id
         assert tuple(tasks) == self._tasks
@@ -364,38 +373,49 @@ class _FakeRuntime:
             if self._delay_seconds > 0:
                 await asyncio.sleep(self._delay_seconds)
             if artifact.artifact_id == self._champion_artifact_id:
+                override = self._champion_outcome
                 scores = self._champion_scores
                 prefix = "champion"
             else:
+                override = self._target_outcome
                 scores = self._target_scores
                 prefix = "target"
-            submissions = tuple(
-                _submission(
-                    batch_id=batch_id,
-                    artifact=artifact,
-                    task=task,
-                    score=score,
-                    answer_text=f"{prefix} answer {index}",
-                    citations=(
-                        {
-                            "url": f"https://example.com/{prefix}/{index}",
-                            "title": f"{prefix.title()} source {index}",
-                            "note": f"{prefix.title()} note {index}",
-                        },
+
+            if override is None:
+                outcome = ArtifactEvaluationOutcome(
+                    submissions=tuple(
+                        _submission(
+                            batch_id=batch_id,
+                            artifact=artifact,
+                            task=task,
+                            score=score,
+                            answer_text=f"{prefix} answer {index}",
+                            citations=(
+                                {
+                                    "url": f"https://example.com/{prefix}/{index}",
+                                    "title": f"{prefix.title()} source {index}",
+                                    "note": f"{prefix.title()} note {index}",
+                                },
+                            ),
+                            attempt_count=2 if prefix == "target" and index == 0 else 1,
+                        )
+                        for index, (task, score) in enumerate(zip(tasks, scores, strict=True))
                     ),
-                    attempt_count=2 if prefix == "target" and index == 0 else 1,
+                    unresolved_tasks=(),
+                    timeout_observations_by_pair={},
                 )
-                for index, (task, score) in enumerate(zip(tasks, scores, strict=True))
-            )
+            else:
+                outcome = override
             if self.progress_reporter is not None:
-                for submission in submissions:
+                for submission in outcome.submissions:
                     self.progress_reporter.record(submission)
-                self.progress_reporter.finish_artifact(
-                    label=artifact_label,
-                    artifact=artifact,
-                    submissions=submissions,
-                )
-            return submissions
+                if outcome.artifact_failure is None:
+                    self.progress_reporter.finish_artifact(
+                        label=artifact_label,
+                        artifact=artifact,
+                        submissions=outcome.submissions,
+                    )
+            return outcome
         finally:
             self.in_flight -= 1
 
@@ -491,7 +511,7 @@ class _FakeToolHost:
 
 
 class _CapturingRunner:
-    def __init__(self, results: Sequence[tuple[MinerTaskRunSubmission, ...]]) -> None:
+    def __init__(self, results: Sequence[ArtifactEvaluationOutcome]) -> None:
         self._results = list(results)
         self.calls: list[dict[str, object]] = []
 
@@ -502,7 +522,7 @@ class _CapturingRunner:
         artifact: ScriptArtifactSpec,
         tasks: Sequence[MinerTask],
         orchestrator,
-    ) -> tuple[MinerTaskRunSubmission, ...]:
+    ) -> ArtifactEvaluationOutcome:
         sandbox_client = orchestrator._invoker._sandbox
         self.calls.append(
             {
@@ -906,15 +926,31 @@ async def test_local_runtime_executes_target_and_champion_via_sandbox_and_reuses
     tasks = (_task(uuid4(), "solo task"),)
     runner = _CapturingRunner(
         results=[
-            (_submission(batch_id=batch_id, artifact=target_artifact, task=tasks[0], score=0.9, answer_text="target"),),
-            (
-                _submission(
-                    batch_id=batch_id,
-                    artifact=champion_artifact,
-                    task=tasks[0],
-                    score=0.6,
-                    answer_text="champion",
+            ArtifactEvaluationOutcome(
+                submissions=(
+                    _submission(
+                        batch_id=batch_id,
+                        artifact=target_artifact,
+                        task=tasks[0],
+                        score=0.9,
+                        answer_text="target",
+                    ),
                 ),
+                unresolved_tasks=(),
+                timeout_observations_by_pair={},
+            ),
+            ArtifactEvaluationOutcome(
+                submissions=(
+                    _submission(
+                        batch_id=batch_id,
+                        artifact=champion_artifact,
+                        task=tasks[0],
+                        score=0.6,
+                        answer_text="champion",
+                    ),
+                ),
+                unresolved_tasks=(),
+                timeout_observations_by_pair={},
             ),
         ]
     )
@@ -1006,6 +1042,95 @@ async def test_local_runtime_executes_target_and_champion_via_sandbox_and_reuses
         assert options.env["AGENT_PATH"].endswith("/agent.py")
         assert options.volumes[0][1] == DEFAULT_STATE_DIR
         assert options.volumes[0][2] == "ro"
+
+
+def test_local_eval_does_not_write_reports_when_champion_outcome_has_artifact_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch_id = uuid4()
+    champion_artifact_id = uuid4()
+    tasks = (_task(uuid4(), "solo task"),)
+    detail = _batch_detail(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
+    results = _recorded_rows(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
+    monitoring = _FakeMonitoringClient(
+        batch_context=SelectedBatchContext(
+            batch_id=batch_id,
+            source="latest-completed",
+            detail=detail,
+            results=results,
+        ),
+        champion_script={
+            "uid": 2,
+            "artifact_id": str(champion_artifact_id),
+            "content_hash": "champion-hash",
+            "size_bytes": 128,
+            "content_b64": base64.b64encode(
+                b"from harnyx_miner_sdk.decorators import entrypoint\n"
+                b"from harnyx_miner_sdk.query import Query, Response\n"
+                b'@entrypoint("query")\n'
+                b"async def query(query: Query) -> Response:\n"
+                b'    return Response(text="champion")\n'
+            ).decode("ascii"),
+        },
+    )
+    champion_failure = ArtifactFailure(
+        error_code="sandbox_invocation_failed",
+        message="artifact breaker tripped",
+        failure_detail=ValidatorBatchFailureDetail(
+            error_code="sandbox_invocation_failed",
+            error_message="artifact breaker tripped",
+            occurred_at=datetime.now(UTC),
+            artifact_id=champion_artifact_id,
+            uid=2,
+        ),
+        artifact_breaker_tripped=True,
+    )
+    runtime = _FakeRuntime(
+        batch_id=batch_id,
+        champion_artifact_id=champion_artifact_id,
+        tasks=tasks,
+        target_outcome=ArtifactEvaluationOutcome(
+            submissions=(
+                _submission(
+                    batch_id=batch_id,
+                    artifact=ScriptArtifactSpec(
+                        uid=3,
+                        artifact_id=uuid4(),
+                        content_hash="target-hash",
+                        size_bytes=64,
+                    ),
+                    task=tasks[0],
+                    score=0.9,
+                    answer_text="target",
+                ),
+            ),
+            unresolved_tasks=(),
+            timeout_observations_by_pair={},
+        ),
+        champion_outcome=ArtifactEvaluationOutcome(
+            submissions=(),
+            unresolved_tasks=(tasks[0],),
+            timeout_observations_by_pair={},
+            artifact_failure=champion_failure,
+        ),
+    )
+    agent_path = tmp_path / "agent.py"
+    _write_agent(agent_path)
+
+    monkeypatch.setattr(local_eval.PlatformMonitoringClient, "from_env", staticmethod(lambda: monitoring))
+    monkeypatch.setattr(
+        local_eval.LocalEvaluationRuntime,
+        "create",
+        staticmethod(lambda *, progress_reporter=None: _bind_progress(runtime, progress_reporter)),
+    )
+    monkeypatch.setattr(local_eval, "platform_base_url_from_env", lambda: "https://platform.example.com")
+
+    with pytest.raises(SystemExit, match="sandbox_invocation_failed"):
+        local_eval.main(["--agent-path", str(agent_path), "--output-dir", str(tmp_path)])
+
+    assert not (tmp_path / f"local-eval-report-{batch_id}-vs-champion.json").exists()
+    assert not (tmp_path / f"local-eval-report-{batch_id}-vs-champion.md").exists()
 
 
 async def test_local_runtime_stops_started_sandbox_when_cancelled_during_startup(

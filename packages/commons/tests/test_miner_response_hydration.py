@@ -9,9 +9,9 @@ from pydantic import ValidationError
 from harnyx_commons.application.miner_response_hydration import hydrate_miner_response_payload
 from harnyx_commons.domain.miner_task import AnswerCitation, Response
 from harnyx_commons.domain.tool_call import (
-    ReceiptMetadata,
     SearchToolResult,
     ToolCall,
+    ToolCallDetails,
     ToolCallOutcome,
     ToolResultPolicy,
 )
@@ -29,7 +29,7 @@ def test_hydrate_miner_response_payload_hydrates_same_session_referenceable_resu
             tool="search_web",
             issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
             outcome=ToolCallOutcome.OK,
-            metadata=ReceiptMetadata(
+            details=ToolCallDetails(
                 request_hash="req",
                 response_hash="res",
                 result_policy=ToolResultPolicy.REFERENCEABLE,
@@ -78,7 +78,7 @@ def test_hydrate_miner_response_payload_drops_invalid_or_cross_session_citations
             tool="search_web",
             issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
             outcome=ToolCallOutcome.OK,
-            metadata=ReceiptMetadata(
+            details=ToolCallDetails(
                 request_hash="req",
                 response_hash="res",
                 result_policy=ToolResultPolicy.REFERENCEABLE,

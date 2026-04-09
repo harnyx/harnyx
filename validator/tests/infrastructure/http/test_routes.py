@@ -176,9 +176,9 @@ def test_execute_tool_endpoint_records_receipt() -> None:
     receipt_id = body["receipt_id"]
     receipt = provider.receipt_log.lookup(receipt_id)
     assert receipt is not None
-    assert body["results"][0]["result_id"] == receipt.metadata.results[0].result_id
-    assert body["result_policy"] == receipt.metadata.result_policy.value
-    assert receipt.metadata.request_hash
+    assert body["results"][0]["result_id"] == receipt.details.results[0].result_id
+    assert body["result_policy"] == receipt.details.result_policy.value
+    assert receipt.details.request_hash
     session_snapshot = provider.session_registry.get(provider.session.session_id)
     assert session_snapshot is not None
     assert session_snapshot.usage.total_cost_usd == pytest.approx(0.0001)

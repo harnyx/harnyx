@@ -14,10 +14,11 @@ from harnyx_commons.application.ports.session_registry import SessionRegistryPor
 from harnyx_commons.application.ports.token_registry import TokenRegistryPort
 from harnyx_commons.domain.session import Session, SessionStatus
 from harnyx_commons.domain.tool_call import (
-    ReceiptMetadata,
     SearchToolResult,
     ToolCall,
+    ToolCallDetails,
     ToolCallOutcome,
+    ToolExecutionFacts,
     ToolResult,
     ToolResultPolicy,
 )
@@ -44,7 +45,7 @@ class ToolInvoker(Protocol):
         *,
         args: Sequence[JsonValue],
         kwargs: Mapping[str, JsonValue],
-    ) -> JsonObject:
+    ) -> object:
         """Call the tool and return its response payload."""
 
 
@@ -70,6 +71,14 @@ class _ExecutionResult:
     llm_tokens: int
     usage_details: ToolCallUsage | None
     budget: ToolBudgetSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class ToolInvocationOutput:
+    """Internal tool result that keeps public payload separate from execution facts."""
+
+    public_payload: JsonObject
+    execution: ToolExecutionFacts | None = None
 
 
 class ToolExecutor:
@@ -112,11 +121,22 @@ class ToolExecutor:
             usage=result.usage_details,
         )
 
-    async def _invoke_tool_async(self, request: ToolInvocationRequest) -> JsonObject:
-        return await self._tool_invoker.invoke(
-            request.tool,
-            args=request.args,
-            kwargs=request.kwargs,
+    async def _invoke_tool_async(
+        self,
+        request: ToolInvocationRequest,
+    ) -> JsonObject:
+        return (await self._invoke_tool_output_async(request)).public_payload
+
+    async def _invoke_tool_output_async(
+        self,
+        request: ToolInvocationRequest,
+    ) -> ToolInvocationOutput:
+        return _normalize_invocation_output(
+            await self._tool_invoker.invoke(
+                request.tool,
+                args=request.args,
+                kwargs=request.kwargs,
+            )
         )
 
     def _extract_usage(
@@ -159,11 +179,11 @@ class ToolExecutor:
     ) -> _ExecutionResult:
         self._validate_token(session.session_id, request.token)
 
-        response_payload = await self._invoke_tool_async(request)
-        results, result_policy = self._build_results(request, response_payload)
+        invocation_output = await self._invoke_tool_output_async(request)
+        results, result_policy = self._build_results(request, invocation_output.public_payload)
         llm_tokens, usage_details, call_cost = self._extract_usage(
             request,
-            response_payload,
+            invocation_output.public_payload,
             results,
         )
         updated_session, should_raise_budget_exhausted = self._settle_usage(
@@ -177,10 +197,11 @@ class ToolExecutor:
         receipt = self._build_receipt(
             request,
             updated_session,
-            response_payload,
+            invocation_output.public_payload,
             results,
             result_policy,
             cost_usd=call_cost,
+            execution=invocation_output.execution,
         )
         self._receipts.record(receipt)
         if should_raise_budget_exhausted:
@@ -190,7 +211,7 @@ class ToolExecutor:
 
         return _ExecutionResult(
             receipt=receipt,
-            response_payload=response_payload,
+            response_payload=invocation_output.public_payload,
             results=results,
             llm_tokens=llm_tokens,
             usage_details=usage_details,
@@ -299,6 +320,7 @@ class ToolExecutor:
         results: tuple[ToolResult, ...],
         result_policy: ToolResultPolicy,
         cost_usd: float | None = None,
+        execution: ToolExecutionFacts | None = None,
     ) -> ToolCall:
         issued_at = self._clock()
         normalized_response: JsonValue | None = _normalize_payload(response_payload)
@@ -312,7 +334,7 @@ class ToolExecutor:
             tool=request.tool,
             issued_at=issued_at,
             outcome=ToolCallOutcome.OK,
-            metadata=ReceiptMetadata(
+            details=ToolCallDetails(
                 request_hash=_hash_payload(
                     {
                         "args": list(request.args),
@@ -325,8 +347,20 @@ class ToolExecutor:
                 result_policy=result_policy,
                 cost_usd=cost_usd,
                 extra=extra,
+                execution=execution,
             ),
         )
+
+
+def _normalize_invocation_output(value: object) -> ToolInvocationOutput:
+    if isinstance(value, ToolInvocationOutput):
+        return value
+    if not isinstance(value, Mapping):
+        raise ValueError("tool invoker must return a JSON object or ToolInvocationOutput")
+    public_payload = _normalize_payload(value)
+    if not isinstance(public_payload, dict):
+        raise ValueError("tool invoker JSON object normalized to a non-object payload")
+    return ToolInvocationOutput(public_payload=public_payload)
 
 
 def _normalize_payload(value: object) -> JsonValue | None:

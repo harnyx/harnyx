@@ -682,6 +682,47 @@ def test_progress_endpoint_keeps_ordered_runs_visible_when_lifecycle_is_failed()
     ]
 
 
+def test_progress_endpoint_includes_timeout_inconclusive_pair_result_when_batch_fails() -> None:
+    batch_id = uuid4()
+    task, submission = _make_failed_task_submission(
+        batch_id=batch_id,
+        error_code="timeout_inconclusive",
+    )
+    snapshot: RunProgressSnapshot = {
+        "batch_id": batch_id,
+        "total": 1,
+        "completed": 1,
+        "remaining": 0,
+        "tasks": (task,),
+        "miner_task_runs": (submission,),
+        "provider_evidence": (),
+    }
+    provider = DemoControlDependencyProvider(
+        snapshot=snapshot,
+        lifecycle="failed",
+        error_code="timeout_inconclusive",
+        failure_detail=ValidatorBatchFailureDetail(
+            error_code="timeout_inconclusive",
+            error_message="terminal timeout",
+            occurred_at=datetime(2026, 3, 26, 21, 0, tzinfo=UTC),
+            artifact_id=submission.run.artifact_id,
+            task_id=submission.run.task_id,
+            uid=submission.run.uid,
+            exception_type="ReadTimeout",
+        ),
+    )
+    app = _create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.get(f"/validator/miner-task-batches/{batch_id}/progress")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["failure_detail"]["error_code"] == "timeout_inconclusive"
+    assert body["miner_task_runs"][0]["specifics"]["error"]["code"] == "timeout_inconclusive"
+
+
 def test_progress_endpoint_replaces_blank_failure_message_at_transport_boundary() -> None:
     batch_id = uuid4()
     task, submission = _make_task_submission(batch_id=batch_id)

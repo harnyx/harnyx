@@ -10,9 +10,9 @@ from harnyx_commons.application.dto.session import SessionTokenRequest
 from harnyx_commons.application.session_manager import SessionManager
 from harnyx_commons.domain.miner_task import AnswerCitation, Query, Response
 from harnyx_commons.domain.tool_call import (
-    ReceiptMetadata,
     SearchToolResult,
     ToolCall,
+    ToolCallDetails,
     ToolCallOutcome,
     ToolResultPolicy,
 )
@@ -132,7 +132,7 @@ async def test_invoke_entrypoint_returns_tool_receipts() -> None:
         tool="search_web",
         issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
         outcome=ToolCallOutcome.OK,
-        metadata=ReceiptMetadata(request_hash="req", response_hash="res"),
+        details=ToolCallDetails(request_hash="req", response_hash="res"),
     )
     receipt_log.record(receipt)
 
@@ -158,7 +158,7 @@ async def test_invoke_entrypoint_hydrates_same_session_citations() -> None:
         tool="search_web",
         issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
         outcome=ToolCallOutcome.OK,
-        metadata=ReceiptMetadata(
+        details=ToolCallDetails(
             request_hash="req",
             response_hash="res",
             result_policy=ToolResultPolicy.REFERENCEABLE,

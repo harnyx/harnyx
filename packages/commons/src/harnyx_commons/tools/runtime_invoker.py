@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from typing import Literal, cast
@@ -11,6 +12,7 @@ from pydantic import BaseModel, ConfigDict
 from pydantic import JsonValue as PydanticJsonValue
 
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
+from harnyx_commons.domain.tool_call import ToolExecutionFacts
 from harnyx_commons.errors import ToolProviderError
 from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.llm.pricing import (
@@ -31,7 +33,7 @@ from harnyx_commons.llm.schema import (
     LlmResponse,
     LlmTool,
 )
-from harnyx_commons.tools.executor import ToolInvoker
+from harnyx_commons.tools.executor import ToolInvocationOutput, ToolInvoker
 from harnyx_commons.tools.normalize import normalize_response
 from harnyx_commons.tools.ports import WebSearchProviderPort
 from harnyx_commons.tools.search_models import (
@@ -114,7 +116,7 @@ class RuntimeToolInvoker(ToolInvoker):
         *,
         args: Sequence[JsonValue],
         kwargs: Mapping[str, JsonValue],
-    ) -> JsonObject:
+    ) -> JsonObject | ToolInvocationOutput:
         if tool_name == "test_tool":
             return self._invoke_test_tool(args, kwargs)
         if tool_name == "tooling_info":
@@ -236,7 +238,7 @@ class RuntimeToolInvoker(ToolInvoker):
         self,
         args: Sequence[JsonValue],
         kwargs: Mapping[str, JsonValue],
-    ) -> JsonObject:
+    ) -> ToolInvocationOutput:
         if self._llm_provider is None:
             raise LookupError("llm provider is not configured")
 
@@ -253,10 +255,15 @@ class RuntimeToolInvoker(ToolInvoker):
         )
 
         try:
+            started_at = time.perf_counter()
             llm_response = await self._llm_provider.invoke(request)
+            elapsed_ms = (time.perf_counter() - started_at) * 1000.0
         except LlmRetryExhaustedError as exc:
             raise ToolProviderError("tool provider failed") from exc
-        return _public_llm_response_payload(llm_response)
+        return ToolInvocationOutput(
+            public_payload=_public_llm_response_payload(llm_response),
+            execution=ToolExecutionFacts(elapsed_ms=elapsed_ms),
+        )
 
     def _parse_invocation(
         self,

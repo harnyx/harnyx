@@ -18,7 +18,6 @@ from harnyx_commons.errors import ToolProviderError
 from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
 from harnyx_commons.infrastructure.state.session_registry import InMemorySessionRegistry
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
-from harnyx_commons.json_types import JsonObject
 from harnyx_commons.llm.provider import LlmProviderPort
 from harnyx_commons.llm.provider_factory import build_cached_llm_provider_resolver
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
@@ -27,7 +26,7 @@ from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_commons.sandbox.runtime import build_sandbox_options, create_sandbox_manager
 from harnyx_commons.tools.desearch import DeSearchClient
 from harnyx_commons.tools.dto import ToolInvocationRequest
-from harnyx_commons.tools.executor import ToolExecutor
+from harnyx_commons.tools.executor import ToolExecutor, ToolInvocationOutput
 from harnyx_commons.tools.parallel import ParallelClient
 from harnyx_commons.tools.ports import WebSearchProviderPort
 from harnyx_commons.tools.runtime_invoker import (
@@ -120,14 +119,14 @@ class _ProviderTrackingToolExecutor(ToolExecutor):
         self._search_provider_name = search_provider_name
         self._llm_provider_name = llm_provider_name
 
-    async def _invoke_tool_async(self, request: ToolInvocationRequest) -> JsonObject:
+    async def _invoke_tool_output_async(self, request: ToolInvocationRequest) -> ToolInvocationOutput:
         provider_key = _provider_key_from_request(
             request=request,
             search_provider_name=self._search_provider_name,
             llm_provider_name=self._llm_provider_name,
         )
         try:
-            response = await super()._invoke_tool_async(request)
+            response = await super()._invoke_tool_output_async(request)
         except ToolProviderError:
             self._record_provider_call(request=request, provider_key=provider_key)
             if provider_key is not None:

@@ -60,8 +60,15 @@ class SearchToolResult(ToolResult):
 
 
 @dataclass(frozen=True, slots=True)
-class ReceiptMetadata:
-    """Supplemental metadata stored alongside a tool call receipt."""
+class ToolExecutionFacts:
+    """Execution facts captured at the private tool runtime boundary."""
+
+    elapsed_ms: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCallDetails:
+    """Supplemental details stored alongside a tool call receipt."""
 
     request_hash: str
     response_hash: str | None = None
@@ -70,6 +77,7 @@ class ReceiptMetadata:
     result_policy: ToolResultPolicy = ToolResultPolicy.LOG_ONLY
     cost_usd: float | None = None
     extra: Mapping[str, str] | None = None
+    execution: ToolExecutionFacts | None = None
 
     def __post_init__(self) -> None:
         if not self.request_hash.strip():
@@ -88,7 +96,7 @@ class ToolCall:
     tool: ToolName
     issued_at: datetime
     outcome: ToolCallOutcome
-    metadata: ReceiptMetadata
+    details: ToolCallDetails
 
     def __post_init__(self) -> None:
         if not self.receipt_id.strip():
@@ -104,7 +112,8 @@ class ToolCall:
 
 
 __all__ = [
-    "ReceiptMetadata",
+    "ToolCallDetails",
+    "ToolExecutionFacts",
     "SearchToolResult",
     "ToolCall",
     "ToolCallOutcome",

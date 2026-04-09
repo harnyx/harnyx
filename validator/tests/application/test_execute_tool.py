@@ -7,12 +7,12 @@ from uuid import uuid4
 import pytest
 
 from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
-from harnyx_commons.domain.tool_call import ToolCallOutcome
+from harnyx_commons.domain.tool_call import ToolCallOutcome, ToolExecutionFacts
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.llm.pricing import parse_tool_model, price_llm
 from harnyx_commons.llm.schema import LlmChoice, LlmChoiceMessage, LlmMessageContentPart, LlmResponse, LlmUsage
 from harnyx_commons.tools.dto import ToolInvocationRequest
-from harnyx_commons.tools.executor import ToolExecutor, ToolInvoker
+from harnyx_commons.tools.executor import ToolExecutor, ToolInvocationOutput, ToolInvoker
 from harnyx_commons.tools.usage_tracker import UsageTracker
 from harnyx_validator.application.evaluate_task_run import UsageSummarizer
 from harnyx_validator.domain.exceptions import BudgetExceededError
@@ -270,8 +270,8 @@ async def test_execute_tool_prices_search_web_by_referenceable_results() -> None
 
     receipt = receipt_log.lookup(result.receipt.receipt_id)
     assert receipt is not None
-    assert receipt.metadata.cost_usd == pytest.approx(0.0002)
-    assert len(receipt.metadata.results) == 2
+    assert receipt.details.cost_usd == pytest.approx(0.0002)
+    assert len(receipt.details.results) == 2
 
 
 async def test_execute_tool_prices_search_ai_by_referenceable_results() -> None:
@@ -327,8 +327,8 @@ async def test_execute_tool_prices_search_ai_by_referenceable_results() -> None:
 
     receipt = receipt_log.lookup(result.receipt.receipt_id)
     assert receipt is not None
-    assert receipt.metadata.cost_usd == pytest.approx(0.0008)
-    assert len(receipt.metadata.results) == 2
+    assert receipt.details.cost_usd == pytest.approx(0.0008)
+    assert len(receipt.details.results) == 2
 
 
 async def test_execute_tool_logs_response_preview(caplog: pytest.LogCaptureFixture) -> None:
@@ -600,6 +600,74 @@ async def test_execute_tool_ignores_stale_response_model_metadata_for_llm_chat()
     assert stored_session.usage.cost_by_provider["chutes"] == pytest.approx(
         price_llm(parse_tool_model(request_model), usage)
     )
+
+
+async def test_execute_tool_records_llm_elapsed_ms_only_in_receipt_details() -> None:
+    session = make_session(budget_usd=1.0)
+    token = generate_token()
+
+    class UsageToolInvoker(ToolInvoker):
+        async def invoke(
+            self,
+            tool_name: str,
+            *,
+            args: tuple[object, ...],
+            kwargs: dict[str, object],
+        ) -> ToolInvocationOutput:
+            response = LlmResponse(
+                id="offline-chutes",
+                choices=(
+                    LlmChoice(
+                        index=0,
+                        message=LlmChoiceMessage(
+                            role="assistant",
+                            content=(LlmMessageContentPart(type="text", text="ok"),),
+                        ),
+                    ),
+                ),
+                usage=LlmUsage(
+                    prompt_tokens=10,
+                    completion_tokens=5,
+                    total_tokens=15,
+                ),
+            )
+            return ToolInvocationOutput(
+                public_payload=response.to_payload(),
+                execution=ToolExecutionFacts(elapsed_ms=1250.0),
+            )
+
+    session_registry = FakeSessionRegistry()
+    session_registry.create(session)
+    receipt_log = FakeReceiptLog()
+    usage_tracker = UsageTracker()
+    token_registry = InMemoryTokenRegistry()
+    token_registry.register(session.session_id, token)
+
+    executor = ToolExecutor(
+        session_registry=session_registry,
+        receipt_log=receipt_log,
+        usage_tracker=usage_tracker,
+        tool_invoker=UsageToolInvoker(),
+        token_registry=token_registry,
+        clock=lambda: datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
+    )
+    request = ToolInvocationRequest(
+        session_id=session.session_id,
+        token=token,
+        tool="llm_chat",
+        args=(),
+        kwargs={
+            "model": "openai/gpt-oss-20b-TEE",
+            "messages": [{"role": "user", "content": "ping"}],
+        },
+    )
+
+    result = await executor.execute(request)
+
+    receipt = receipt_log.lookup(result.receipt.receipt_id)
+    assert receipt is not None
+    assert "elapsed_ms" not in result.response_payload
+    assert receipt.details.execution == ToolExecutionFacts(elapsed_ms=1250.0)
 
 
 async def test_execute_tool_allows_settlement_after_sibling_exhausts_session() -> None:
