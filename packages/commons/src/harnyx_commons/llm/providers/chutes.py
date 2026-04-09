@@ -60,12 +60,15 @@ class ChutesLlmProvider(BaseLlmProvider):
         self._auth_header = auth_header
 
     async def _invoke(self, request: AbstractLlmRequest) -> LlmResponse:
-        payload = self._build_payload(request)
         headers = self._auth_headers()
 
         return await self._call_with_retry(
             request,
-            call_coro=lambda: self._request_chutes(payload, headers, timeout_seconds=request.timeout_seconds),
+            call_coro=lambda current_request: self._request_chutes(
+                self._build_payload(current_request),
+                headers,
+                timeout_seconds=current_request.timeout_seconds,
+            ),
             verifier=self._verify_response,
             classify_exception=self._classify_exception,
         )

@@ -25,6 +25,7 @@ from harnyx_miner_sdk.llm import (
     LlmTool,
     LlmToolCall,
     LlmUsage,
+    PostprocessRecovery,
     PostprocessResult,
     ToolLlmRequest,
 )
@@ -46,6 +47,7 @@ class AbstractLlmRequest(ToolLlmRequest, ABC):
     reasoning_effort: str | None = None
     include: Sequence[str] | None = None
     timeout_seconds: float | None = None
+    allow_postprocess_recovery: bool = True
 
 
 @dataclass(frozen=True)
@@ -108,6 +110,7 @@ __all__ = [
     "LlmUsage",
     "LlmCitation",
     "LlmResponse",
+    "PostprocessRecovery",
     "PostprocessResult",
     "supports_tool_result_messages",
     "supports_grounded_additional_tools",

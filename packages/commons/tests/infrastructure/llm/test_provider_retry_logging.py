@@ -37,8 +37,8 @@ class _RetryOnceExceptionProvider(BaseLlmProvider):
         return _response()
 
     async def invoke_with_retry(self, request: AbstractLlmRequest) -> LlmResponse:
-        async def _call() -> LlmResponse:
-            return await self._invoke(request)
+        async def _call(current_request: AbstractLlmRequest) -> LlmResponse:
+            return await self._invoke(current_request)
 
         def _classify(exc: Exception) -> tuple[bool, str]:
             return True, f"transport_error: {exc}"

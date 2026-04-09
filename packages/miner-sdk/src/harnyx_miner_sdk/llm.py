@@ -287,6 +287,14 @@ class LlmResponse:
 
 
 @dataclass(frozen=True)
+class PostprocessRecovery:
+    """Typed recovery context emitted by request-specific postprocessors."""
+
+    kind: Literal["retry_with_feedback"]
+    failure_reason: str
+
+
+@dataclass(frozen=True)
 class PostprocessResult:
     """Outcome of applying a request-specific postprocessor."""
 
@@ -294,6 +302,7 @@ class PostprocessResult:
     retryable: bool
     reason: str | None = None
     processed: object | None = None
+    recovery: PostprocessRecovery | None = None
 
 
 _LLM_RESPONSE_ADAPTER = TypeAdapter(LlmResponse)
@@ -316,5 +325,6 @@ __all__ = [
     "LlmUsage",
     "LlmCitation",
     "LlmResponse",
+    "PostprocessRecovery",
     "PostprocessResult",
 ]

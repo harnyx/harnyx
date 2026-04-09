@@ -83,7 +83,7 @@ class _VerifierFailureProvider(BaseLlmProvider):
     async def _invoke(self, request: AbstractLlmRequest) -> LlmResponse:
         self.requests.append(request)
 
-        async def _call() -> LlmResponse:
+        async def _call(_: AbstractLlmRequest) -> LlmResponse:
             return self._response
 
         def _always_fail_verifier(_: LlmResponse) -> tuple[bool, bool, str | None]:

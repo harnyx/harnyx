@@ -11,8 +11,8 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass, field, is_dataclass
-from typing import Protocol, TypeVar, cast
+from dataclasses import asdict, dataclass, field, is_dataclass, replace
+from typing import Literal, Protocol, TypeVar, cast
 
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
@@ -41,7 +41,9 @@ from harnyx_commons.llm.schema import (
     LlmTool,
     LlmToolCall,
     LlmUsage,
+    PostprocessRecovery,
     PostprocessResult,
+    supports_tool_result_messages,
 )
 from harnyx_commons.observability.langfuse import (
     build_generation_metadata,
@@ -77,6 +79,7 @@ class RetryContext:
 
     policy: RetryPolicy
     reasons: list[str] = field(default_factory=list)
+    recovery_events: list[dict[str, object]] = field(default_factory=list)
     total_usage: LlmUsage = field(default_factory=LlmUsage)
     total_latency_ms: float = 0.0
     last_response: LlmResponse | None = None
@@ -134,6 +137,14 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         )
 
     async def invoke(self, request: AbstractLlmRequest) -> LlmResponse:
+        return await self._invoke_instrumented(request, acquire_semaphore=True)
+
+    async def _invoke_instrumented(
+        self,
+        request: AbstractLlmRequest,
+        *,
+        acquire_semaphore: bool,
+    ) -> LlmResponse:
         data: dict[str, object] = {
             "provider": self._provider_label,
             "model": request.model,
@@ -168,7 +179,7 @@ class BaseLlmProvider(ABC, LlmProviderPort):
                 start = time.perf_counter()
                 wait_ms = 0.0
                 try:
-                    if self._semaphore is None:
+                    if self._semaphore is None or not acquire_semaphore:
                         response = await self._invoke(request)
                     else:
                         wait_start = time.perf_counter()
@@ -295,7 +306,7 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         self,
         request: AbstractLlmRequest,
         *,
-        call_coro: Callable[[], Awaitable[LlmResponse]],
+        call_coro: Callable[[AbstractLlmRequest], Awaitable[LlmResponse]],
         verifier: Callable[[LlmResponse], tuple[bool, bool, str | None]],
         classify_exception: Callable[[Exception], tuple[bool, str]] | None = None,
         policy: RetryPolicy | None = None,
@@ -303,20 +314,22 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         """Execute LLM call with retry. Main orchestrator."""
         policy = policy or self._retry_policy
         ctx = RetryContext(policy)
+        current_request = request
 
         for attempt in range(policy.attempts):
             # Phase 1: Attempt
-            response = await self._try_call(attempt, ctx, request, call_coro, classify_exception)
+            response = await self._try_call(attempt, ctx, current_request, call_coro, classify_exception)
             if response is None:
                 continue
 
             # Phase 2: Verify
-            if not await self._try_verify(attempt, ctx, request, response, verifier):
+            if not await self._try_verify(attempt, ctx, current_request, response, verifier):
                 continue
 
             # Phase 3: Postprocess
-            processed, retry = await self._try_postprocess(attempt, ctx, request, response)
+            processed, retry, next_request = await self._try_postprocess(attempt, ctx, current_request, response)
             if retry:
+                current_request = next_request or current_request
                 continue
 
             # Success
@@ -329,13 +342,13 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         attempt: int,
         ctx: RetryContext,
         request: AbstractLlmRequest,
-        call_coro: Callable[[], Awaitable[LlmResponse]],
+        call_coro: Callable[[AbstractLlmRequest], Awaitable[LlmResponse]],
         classify_exception: Callable[[Exception], tuple[bool, str]] | None,
     ) -> LlmResponse | None:
         """Attempt the LLM call. Returns None if retry needed."""
         start = time.perf_counter()
         try:
-            response = await call_coro()
+            response = await call_coro(request)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -391,14 +404,25 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         ctx: RetryContext,
         request: AbstractLlmRequest,
         response: LlmResponse,
-    ) -> tuple[object | None, bool]:
-        """Postprocess response. Returns (processed, should_retry)."""
+    ) -> tuple[object | None, bool, AbstractLlmRequest | None]:
+        """Postprocess response. Returns (processed, should_retry, next_request)."""
         if request.postprocessor is None:
-            return None, False
+            return None, False, None
 
         result = request.postprocessor(response)
         if result.ok:
-            return result.processed, False
+            return result.processed, False, None
+
+        next_request: AbstractLlmRequest | None = None
+        if request.allow_postprocess_recovery and result.recovery is not None:
+            feedback_retry = self._build_postprocess_feedback_retry(
+                request=request,
+                response=response,
+                recovery=result.recovery,
+            )
+            if feedback_retry is not None:
+                next_request, recovery_event = feedback_retry
+                ctx.recovery_events.append(recovery_event)
 
         await self._handle_failure(
             attempt,
@@ -409,7 +433,77 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             result.retryable,
             response=response,
         )
-        return None, True
+        return None, True, next_request
+
+    def _build_postprocess_feedback_retry(
+        self,
+        *,
+        request: AbstractLlmRequest,
+        response: LlmResponse,
+        recovery: PostprocessRecovery,
+    ) -> tuple[AbstractLlmRequest, dict[str, object]] | None:
+        if recovery.kind != "retry_with_feedback":
+            return None
+
+        failed_message = _failed_response_message(response)
+        if failed_message is None:
+            return None
+
+        feedback_role = _feedback_role(request=request, response=response)
+        retry_request = self._build_postprocess_feedback_request(
+            request=request,
+            failed_message=failed_message,
+            feedback_role=feedback_role,
+            failure_reason=recovery.failure_reason,
+        )
+        recovery_event = {
+            "kind": recovery.kind,
+            "response_id": response.id,
+            "feedback_role": feedback_role,
+        }
+        self._llm_logger.info(
+            "llm.recovery.postprocess.retry_scheduled",
+            extra={
+                "data": {
+                    "provider": self._provider_label,
+                    "model": request.model,
+                    **recovery_event,
+                }
+            },
+        )
+        return retry_request, recovery_event
+
+    def _build_postprocess_feedback_request(
+        self,
+        *,
+        request: AbstractLlmRequest,
+        failed_message: LlmMessage,
+        feedback_role: Literal["user", "tool"],
+        failure_reason: str,
+    ) -> AbstractLlmRequest:
+        updated_internal_metadata = dict(request.internal_metadata or {})
+        updated_internal_metadata["postprocess_feedback_retry"] = True
+        updated_internal_metadata["postprocess_feedback_depth"] = (
+            int(updated_internal_metadata.get("postprocess_feedback_depth", 0)) + 1
+        )
+        base_messages = _base_messages_for_feedback_retry(request)
+        feedback_message = LlmMessage(
+            role=feedback_role,
+            content=(
+                LlmMessageContentPart.input_text(
+                    "Your previous response failed the original output contract.\n\n"
+                    f"Validation/parsing error:\n{failure_reason}\n\n"
+                    "Correct your previous response so it follows the original instructions, "
+                    "output contract, and formatting constraints. "
+                    "Do not add extra wrapper text or commentary unless the original instructions required it."
+                ),
+            ),
+        )
+        return replace(
+            request,
+            messages=(*base_messages, failed_message, feedback_message),
+            internal_metadata=updated_internal_metadata,
+        )
 
     async def _handle_failure(
         self,
@@ -440,6 +534,8 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         metadata = dict(response.metadata or {})
         metadata["attempts"] = len(ctx.reasons) + 1
         metadata["retry_reasons"] = tuple(ctx.reasons)
+        if ctx.recovery_events:
+            metadata["postprocess_recoveries"] = tuple(ctx.recovery_events)
 
         self._log_retry_complete(request=request, response=response, ctx=ctx)
 
@@ -465,6 +561,7 @@ class BaseLlmProvider(ABC, LlmProviderPort):
                     "attempts": len(ctx.reasons) + 1,
                     "latency_ms_total": round(ctx.total_latency_ms, 2),
                     "retry_reasons": tuple(ctx.reasons),
+                    "postprocess_recoveries": tuple(ctx.recovery_events),
                     "usage": _usage_snapshot(ctx.total_usage),
                 },
                 "json_fields": {
@@ -806,6 +903,47 @@ def _normalize_reasoning_text(value: object) -> str | None:
         return None
     normalized_text = value.strip()
     return normalized_text or None
+
+
+def _failed_response_message(response: LlmResponse) -> LlmMessage | None:
+    if not response.choices:
+        return None
+    message = response.choices[0].message
+    text_parts = tuple(
+        LlmMessageContentPart.input_text(part.text)
+        for part in message.content
+        if isinstance(part.text, str) and part.text.strip()
+    )
+    if not text_parts:
+        return None
+
+    response_role = message.role
+    role: Literal["assistant", "tool"]
+    if response_role == "tool":
+        role = "tool"
+    else:
+        role = "assistant"
+    return LlmMessage(role=role, content=text_parts)
+
+
+def _feedback_role(*, request: AbstractLlmRequest, response: LlmResponse) -> Literal["user", "tool"]:
+    if not response.choices:
+        return "user"
+    response_role = response.choices[0].message.role
+    if response_role != "tool":
+        return "user"
+    if supports_tool_result_messages(provider=request.provider, model=request.model):
+        return "tool"
+    return "user"
+
+
+def _base_messages_for_feedback_retry(request: AbstractLlmRequest) -> tuple[LlmMessage, ...]:
+    metadata = request.internal_metadata or {}
+    if not metadata.get("postprocess_feedback_retry"):
+        return tuple(request.messages)
+    if len(request.messages) < 2:
+        return tuple(request.messages)
+    return tuple(request.messages[:-2])
 
 
 def _validated_model(model: type[_ModelT], value: object) -> _ModelT | None:
