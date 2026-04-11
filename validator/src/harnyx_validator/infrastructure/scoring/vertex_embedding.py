@@ -2,15 +2,34 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import Protocol, cast
 
+import httpx
 from google import genai
-from google.genai import types
+from google.genai import errors, types
 
+from harnyx_commons.config.external_client import ExternalClientRetrySettings
+from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_commons.llm.providers.vertex.credentials import prepare_credentials
+from harnyx_commons.llm.retry_utils import RetryPolicy, backoff_ms
 
 _VERTEX_API_VERSION = "v1"
+
+
+class _EmbeddingValues(Protocol):
+    values: Sequence[float] | None
+
+
+class _EmbeddingResponse(Protocol):
+    embeddings: Sequence[_EmbeddingValues] | None
+
+
+class VertexEmbeddingRetryExhaustedError(LlmRetryExhaustedError):
+    """Retry flow failed after exhausting embedding attempts."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +37,7 @@ class VertexTextEmbeddingClient:
     client: genai.Client
     model: str
     dimensions: int
+    retry_policy: RetryPolicy
 
     @classmethod
     def from_vertex_settings(
@@ -53,29 +73,32 @@ class VertexTextEmbeddingClient:
             client=client,
             model=normalized_model,
             dimensions=dimensions,
+            retry_policy=ExternalClientRetrySettings().retry_policy,
         )
 
     async def embed(self, text: str) -> tuple[float, ...]:
         normalized = text.strip()
         if not normalized:
             raise ValueError("embedding input text must not be empty")
-        response = await self.client.aio.models.embed_content(
-            model=self.model,
-            contents=normalized,
-            config=types.EmbedContentConfig(output_dimensionality=self.dimensions),
-        )
-        embeddings = response.embeddings
-        if embeddings is None or not embeddings:
-            raise RuntimeError("embedding response missing embeddings")
-        values = embeddings[0].values
-        if values is None or not values:
-            raise RuntimeError("embedding response missing vector values")
-        vector = tuple(float(value) for value in values)
-        if len(vector) != self.dimensions:
-            raise RuntimeError(
-                f"embedding dimensions mismatch: expected={self.dimensions} actual={len(vector)}"
-            )
-        return vector
+        for attempt in range(self.retry_policy.attempts):
+            try:
+                response = await self.client.aio.models.embed_content(
+                    model=self.model,
+                    contents=normalized,
+                    config=types.EmbedContentConfig(output_dimensionality=self.dimensions),
+                )
+                return _extract_vector(
+                    cast(_EmbeddingResponse, response),
+                    expected_dimensions=self.dimensions,
+                )
+            except Exception as exc:
+                retryable, reason = _classify_embedding_exception(exc)
+                if not retryable:
+                    raise
+                if (attempt + 1) >= self.retry_policy.attempts:
+                    raise VertexEmbeddingRetryExhaustedError(reason) from exc
+                await asyncio.sleep(backoff_ms(attempt, self.retry_policy) / 1000)
+        raise AssertionError("embedding retry loop exited unexpectedly")
 
     async def aclose(self) -> None:
         await self.client.aio.aclose()
@@ -126,8 +149,39 @@ class LazyVertexTextEmbeddingClient:
         self._client = None
 
 
+def _classify_embedding_exception(exc: Exception) -> tuple[bool, str]:
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code if exc.response is not None else None
+        retryable = status is not None and (status == 429 or status >= 500)
+        return retryable, f"http_{status}"
+    if isinstance(exc, httpx.HTTPError):
+        return True, exc.__class__.__name__
+    if isinstance(exc, errors.APIError):
+        code = exc.code
+        message = str(exc)
+        retryable = code in {429, 503, 529}
+        return retryable, f"api_error:{code}:{message}"
+    return False, str(exc)
+
+
+def _extract_vector(response: _EmbeddingResponse, *, expected_dimensions: int) -> tuple[float, ...]:
+    embeddings = response.embeddings
+    if embeddings is None or not embeddings:
+        raise RuntimeError("embedding response missing embeddings")
+    values = embeddings[0].values
+    if values is None or not values:
+        raise RuntimeError("embedding response missing vector values")
+    vector = tuple(float(value) for value in values)
+    if len(vector) != expected_dimensions:
+        raise RuntimeError(
+            f"embedding dimensions mismatch: expected={expected_dimensions} actual={len(vector)}"
+        )
+    return vector
+
+
 __all__ = [
     "LazyVertexTextEmbeddingClient",
     "MissingTextEmbeddingClient",
+    "VertexEmbeddingRetryExhaustedError",
     "VertexTextEmbeddingClient",
 ]

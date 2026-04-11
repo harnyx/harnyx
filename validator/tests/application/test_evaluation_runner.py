@@ -54,6 +54,7 @@ from harnyx_validator.application.services.evaluation_runner import (
     ValidatorBatchFailureDetail,
 )
 from harnyx_validator.domain.evaluation import MinerTaskRun
+from harnyx_validator.infrastructure.scoring.vertex_embedding import VertexEmbeddingRetryExhaustedError
 from harnyx_validator.infrastructure.state.run_progress import InMemoryRunProgress
 from validator.tests.fixtures.fakes import FakeReceiptLog, FakeSessionRegistry
 from validator.tests.fixtures.subtensor import FakeSubtensorClient
@@ -672,6 +673,11 @@ class _MinerResponseValidationOrchestrator:
 class _ScoringRetryExhaustedOrchestrator:
     async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
         raise LlmRetryExhaustedError("embedding retries exhausted")
+
+
+class _EmbeddingRetryExhaustedOrchestrator:
+    async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
+        raise VertexEmbeddingRetryExhaustedError("embedding retries exhausted")
 
 
 async def test_evaluation_runner_records_exhausted_submission() -> None:
@@ -1346,6 +1352,53 @@ async def test_evaluation_runner_records_zero_score_for_scoring_retry_exhaustion
         artifact=artifact,
         tasks=(task,),
         orchestrator=cast(TaskRunOrchestrator, _ScoringRetryExhaustedOrchestrator()),
+    )
+
+    assert len(result.submissions) == 1
+    submission = result.submissions[0]
+    assert submission.score == 0.0
+    assert submission.run.details.error == EvaluationError(
+        code="scoring_llm_retry_exhausted",
+        message="embedding retries exhausted",
+    )
+    assert evaluation_store.records == [submission]
+
+
+async def test_evaluation_runner_records_embedding_retry_exhausted_submission() -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    evaluation_store = _RecordingEvaluationStore()
+    receipt_log = FakeReceiptLog()
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_store,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        clock=_ClockSequence(
+            datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+            datetime(2025, 10, 17, 12, 2, tzinfo=UTC),
+        ),
+    )
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="budget test"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+
+    result = await runner.evaluate_artifact(
+        batch_id=uuid4(),
+        artifact=artifact,
+        tasks=(task,),
+        orchestrator=cast(TaskRunOrchestrator, _EmbeddingRetryExhaustedOrchestrator()),
     )
 
     assert len(result.submissions) == 1

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from google.genai import errors
 
 from harnyx_commons.domain.miner_task import (
     AnswerCitation,
@@ -14,6 +16,7 @@ from harnyx_commons.domain.miner_task import (
     Response,
     ScorerReasoning,
 )
+from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import LlmChoice, LlmChoiceMessage, LlmResponse, LlmUsage
 from harnyx_validator.application.services.evaluation_scoring import (
     _MAX_RENDERED_CITATIONS,
@@ -22,6 +25,7 @@ from harnyx_validator.application.services.evaluation_scoring import (
     _PairwisePreference,
     _validate_score_weights,
 )
+from harnyx_validator.infrastructure.scoring.vertex_embedding import VertexTextEmbeddingClient
 
 pytestmark = pytest.mark.anyio("asyncio")
 
@@ -99,6 +103,33 @@ class OverlapTrackingEmbeddingClient:
         await asyncio.sleep(0.01)
         self.active_calls -= 1
         return self._vectors[text]
+
+
+class _StubAsyncEmbeddingModels:
+    def __init__(self, responses: list[object]) -> None:
+        self._responses = responses
+        self.calls = 0
+
+    async def embed_content(self, **_: object) -> object:
+        self.calls += 1
+        if not self._responses:
+            raise RuntimeError("missing embedding response")
+        response = self._responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+class _StubEmbeddingClient:
+    def __init__(self, responses: list[object]) -> None:
+        self.aio = SimpleNamespace(models=_StubAsyncEmbeddingModels(responses))
+
+    def close(self) -> None:
+        return None
+
+
+def _embedding_response(*values: float) -> object:
+    return SimpleNamespace(embeddings=[SimpleNamespace(values=list(values))])
 
 
 def _pairwise_response(
@@ -237,6 +268,25 @@ async def test_scoring_service_embeds_miner_and_reference_concurrently() -> None
     await service.score(task=task, response=Response(text="Miner answer."))
 
     assert embeddings.max_active_calls == 2
+
+
+async def test_vertex_embedding_retries_transient_429_before_success() -> None:
+    api_error = errors.APIError(
+        429,
+        {"error": {"message": "retry later", "status": "RESOURCE_EXHAUSTED"}},
+    )
+    client = _StubEmbeddingClient([api_error, _embedding_response(1.0, 2.0)])
+    embedding_client = VertexTextEmbeddingClient(
+        client=client,
+        model="gemini-embedding-001",
+        dimensions=2,
+        retry_policy=RetryPolicy(attempts=2, initial_ms=0, max_ms=0, jitter=0.0),
+    )
+
+    vector = await embedding_client.embed("hello world")
+
+    assert vector == (1.0, 2.0)
+    assert client.aio.models.calls == 2
 
 
 def test_validate_score_weights_requires_sum_of_one() -> None:
