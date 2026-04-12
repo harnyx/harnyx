@@ -14,7 +14,7 @@ from uuid import UUID
 
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.application.session_manager import SessionManager
-from harnyx_commons.domain.miner_task import MinerTask
+from harnyx_commons.domain.miner_task import MinerTask, MinerTaskErrorCode
 from harnyx_commons.sandbox.client import SandboxClient
 from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager
 from harnyx_commons.sandbox.options import SandboxOptions
@@ -46,8 +46,12 @@ _T = TypeVar("_T")
 
 logger = logging.getLogger("harnyx_validator.scheduler")
 BATCH_ARTIFACT_BREAKER_THRESHOLD = 3
-_ARTIFACT_PREPARATION_BREAKER_ERROR_CODES = frozenset(
-    ("artifact_fetch_failed", "artifact_staging_failed", "artifact_setup_failed")
+_ARTIFACT_PREPARATION_BREAKER_ERROR_CODES: frozenset[MinerTaskErrorCode] = frozenset(
+    (
+        MinerTaskErrorCode.ARTIFACT_FETCH_FAILED,
+        MinerTaskErrorCode.ARTIFACT_STAGING_FAILED,
+        MinerTaskErrorCode.ARTIFACT_SETUP_FAILED,
+    )
 )
 
 
@@ -289,10 +293,13 @@ class EvaluationScheduler:
             raise self._artifact_execution_failure(
                 artifact=artifact,
                 tasks=tasks,
-                error_code=exc.error_code,
+                error_code=MinerTaskErrorCode(exc.error_code),
                 error_message=str(exc),
                 exception_type=exc.exception_type,
-                artifact_breaker_tripped=exc.error_code in _ARTIFACT_PREPARATION_BREAKER_ERROR_CODES,
+                artifact_breaker_tripped=(
+                    MinerTaskErrorCode(exc.error_code)
+                    in _ARTIFACT_PREPARATION_BREAKER_ERROR_CODES
+                ),
             ) from exc
         except Exception as exc:
             logger.error(
@@ -303,7 +310,7 @@ class EvaluationScheduler:
             raise self._artifact_execution_failure(
                 artifact=artifact,
                 tasks=tasks,
-                error_code="artifact_setup_failed",
+                error_code=MinerTaskErrorCode.ARTIFACT_SETUP_FAILED,
                 error_message=str(exc),
                 exception_type=type(exc).__name__,
                 artifact_breaker_tripped=True,
@@ -334,7 +341,7 @@ class EvaluationScheduler:
         raise self._artifact_execution_failure(
             artifact=artifact,
             tasks=tasks,
-            error_code="sandbox_start_failed",
+            error_code=MinerTaskErrorCode.SANDBOX_START_FAILED,
             error_message=last_error_message or "artifact setup failed",
             exception_type=None,
             artifact_breaker_tripped=True,
@@ -403,7 +410,7 @@ class EvaluationScheduler:
         *,
         artifact: ScriptArtifactSpec,
         tasks: Sequence[MinerTask],
-        error_code: str,
+        error_code: MinerTaskErrorCode,
         error_message: str,
         exception_type: str | None,
         artifact_breaker_tripped: bool = False,
@@ -462,10 +469,10 @@ class EvaluationScheduler:
         if len(artifacts_with_breaker) < BATCH_ARTIFACT_BREAKER_THRESHOLD:
             return None
         return ValidatorBatchFailedError(
-            error_code="artifact_breaker_tripped",
+            error_code=MinerTaskErrorCode.ARTIFACT_BREAKER_TRIPPED,
             message="validator artifact breaker tripped across 3 artifacts",
             failure_detail=ValidatorBatchFailureDetail(
-                error_code="artifact_breaker_tripped",
+                error_code=MinerTaskErrorCode.ARTIFACT_BREAKER_TRIPPED,
                 error_message="validator artifact breaker tripped across 3 artifacts",
                 occurred_at=self._clock().astimezone(UTC),
                 artifact_id=failure_detail.artifact_id,

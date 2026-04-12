@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from uuid import UUID
 
 from pydantic import BaseModel, Field, TypeAdapter, field_validator, model_validator
@@ -80,11 +81,50 @@ class ScoreBreakdown(BaseModel):
     reasoning: ScorerReasoning | None = None
 
 
+class MinerTaskErrorCode(StrEnum):
+    # Shared serialized codes for miner-task pair outcomes.
+    ARTIFACT_BREAKER_TRIPPED = "artifact_breaker_tripped"
+    ARTIFACT_FETCH_FAILED = "artifact_fetch_failed"
+    ARTIFACT_HASH_MISMATCH = "artifact_hash_mismatch"
+    ARTIFACT_SETUP_FAILED = "artifact_setup_failed"
+    ARTIFACT_SIZE_INVALID = "artifact_size_invalid"
+    ARTIFACT_STAGING_FAILED = "artifact_staging_failed"
+    BATCH_EXECUTION_FAILED = "batch_execution_failed"
+    MINER_RESPONSE_INVALID = "miner_response_invalid"
+    MINER_UNHANDLED_EXCEPTION = "miner_unhandled_exception"
+    NEVER_RAN = "never_ran"
+    PROGRESS_SNAPSHOT_FAILED = "progress_snapshot_failed"
+    PROVIDER_BATCH_FAILURE = "provider_batch_failure"
+    SANDBOX_FAILED = "sandbox_failed"
+    SANDBOX_INVOCATION_FAILED = "sandbox_invocation_failed"
+    SANDBOX_START_FAILED = "sandbox_start_failed"
+    SCORING_LLM_RETRY_EXHAUSTED = "scoring_llm_retry_exhausted"
+    SCRIPT_VALIDATION_FAILED = "script_validation_failed"
+    SESSION_BUDGET_EXHAUSTED = "session_budget_exhausted"
+    TIMEOUT_INCONCLUSIVE = "timeout_inconclusive"
+    TIMEOUT_MINER_OWNED = "timeout_miner_owned"
+    TOOL_PROVIDER_FAILED = "tool_provider_failed"
+    UNEXPECTED_VALIDATOR_FAILURE = "unexpected_validator_failure"
+    VALIDATOR_FAILED = "validator_failed"
+    VALIDATOR_INTERNAL_TIMEOUT = "validator_internal_timeout"
+    VALIDATOR_TIMEOUT = "validator_timeout"
+
+
 class EvaluationError(BaseModel):
     model_config = COMMONS_STRICT_CONFIG
 
-    code: str = Field(min_length=1)
+    code: MinerTaskErrorCode
     message: str = Field(min_length=1)
+
+    @field_validator("code", mode="before")
+    @classmethod
+    def _normalize_code(
+        cls,
+        value: object,
+    ) -> object:
+        if isinstance(value, str):
+            return MinerTaskErrorCode(value)
+        return value
 
 
 class EvaluationDetails(BaseModel):
@@ -124,6 +164,7 @@ __all__ = [
     "EvaluationDetails",
     "EvaluationError",
     "MinerTask",
+    "MinerTaskErrorCode",
     "Query",
     "ReferenceAnswer",
     "Response",

@@ -17,6 +17,7 @@ from fastapi.security import APIKeyHeader
 from harnyx_commons.bittensor import VerificationError
 from harnyx_commons.domain.miner_task import (
     MinerTask,
+    MinerTaskErrorCode,
     Query,
     ReferenceAnswer,
 )
@@ -489,9 +490,9 @@ def _progress_internal_failure(
     return ProgressResponse(
         batch_id=str(batch_id),
         status="failed",
-        error_code="progress_snapshot_failed",
+        error_code=MinerTaskErrorCode.PROGRESS_SNAPSHOT_FAILED,
         failure_detail=FailureDetailResponse(
-            error_code="progress_snapshot_failed",
+            error_code=MinerTaskErrorCode.PROGRESS_SNAPSHOT_FAILED,
             error_message=str(exc) or type(exc).__name__,
             exception_type=type(exc).__name__,
             traceback="".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),

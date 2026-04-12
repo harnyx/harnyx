@@ -17,7 +17,12 @@ import httpx
 from harnyx_commons.application.dto.session import SessionEnvelope, SessionIssued, SessionTokenRequest
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.application.session_manager import SessionManager
-from harnyx_commons.domain.miner_task import EvaluationDetails, EvaluationError, MinerTask
+from harnyx_commons.domain.miner_task import (
+    EvaluationDetails,
+    EvaluationError,
+    MinerTask,
+    MinerTaskErrorCode,
+)
 from harnyx_commons.domain.session import SessionStatus
 from harnyx_commons.domain.tool_call import ToolCall
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
@@ -54,24 +59,33 @@ PROVIDER_BATCH_MIN_FAILURE_RATE = 0.95
 TIMEOUT_REVIEW_MAX_OBSERVATIONS = 3
 TIMEOUT_TPS_SLOWDOWN_FACTOR = 2.0
 TERMINAL_TIMEOUT_ERROR_MESSAGE = "terminal timeout"
-_ARTIFACT_BREAKER_ERROR_CODES = frozenset(("sandbox_invocation_failed",))
+_ARTIFACT_BREAKER_ERROR_CODES: frozenset[MinerTaskErrorCode] = frozenset(
+    (MinerTaskErrorCode.SANDBOX_INVOCATION_FAILED,)
+)
 
 
 def _elapsed_ms(*, issued_at: datetime, completed_at: datetime) -> float:
     return (completed_at - issued_at).total_seconds() * 1000.0
 
 
-class AttemptDecisionKind(StrEnum):
+class AttemptControlKind(StrEnum):
+    # Outer control-flow action for one task-attempt loop step.
     SUBMISSION = "submission"
     RETRY = "retry"
-    SANDBOX_TIMEOUT = "sandbox_timeout"
+    REVIEW_TIMEOUT = "review_timeout"
     TIMEOUT_UNRESOLVED = "timeout_unresolved"
     VALIDATOR_BATCH_FAILURE = "validator_batch_failure"
 
 
+class TimeoutAttributionKind(StrEnum):
+    # Timeout ownership result, not the persisted/public error code.
+    MINER_OWNED = "miner_owned"
+    NOT_MINER_OWNED = "not_miner_owned"
+
+
 @dataclass(frozen=True, slots=True)
 class TaskAttemptDecision:
-    kind: AttemptDecisionKind
+    kind: AttemptControlKind
     submission: MinerTaskRunSubmission | None = None
     retry_exc: Exception | None = None
     timeout_exc: SandboxInvocationError | None = None
@@ -109,7 +123,7 @@ class ArtifactExecutionFailedError(RuntimeError):
     def __init__(
         self,
         *,
-        error_code: str,
+        error_code: MinerTaskErrorCode,
         message: str,
         failure_detail: ValidatorBatchFailureDetail,
         completed_submissions: tuple[MinerTaskRunSubmission, ...],
@@ -154,7 +168,7 @@ class TimeoutObservationEvidence:
 
 @dataclass(frozen=True, slots=True)
 class ArtifactFailure:
-    error_code: str
+    error_code: MinerTaskErrorCode
     message: str
     failure_detail: ValidatorBatchFailureDetail
     artifact_breaker_tripped: bool = False
@@ -347,7 +361,7 @@ class EvaluationRunner:
                     successful_baseline_tps=dispatch.slowest_successful_tps,
                     prior_timeout_observations=dispatch.timeout_observations_by_pair.get(pair_key, ()),
                 )
-                if decision.kind is AttemptDecisionKind.SUBMISSION:
+                if decision.kind is AttemptControlKind.SUBMISSION:
                     submission = _require_submission(decision)
                     dispatch.submissions_by_index[task_index] = submission
                     dispatch.slowest_successful_tps = _merge_slowest_successful_tps(
@@ -361,14 +375,14 @@ class EvaluationRunner:
                             dispatch.artifact_breaker_submission = submission
                     continue
 
-                if decision.kind is AttemptDecisionKind.TIMEOUT_UNRESOLVED:
+                if decision.kind is AttemptControlKind.TIMEOUT_UNRESOLVED:
                     observation = _require_timeout_observation(decision)
                     prior_observations = dispatch.timeout_observations_by_pair.get(pair_key, ())
                     dispatch.timeout_observations_by_pair[pair_key] = (*prior_observations, observation)
                     dispatch.unresolved_tasks_by_index[task_index] = task
                     continue
 
-                if decision.kind is AttemptDecisionKind.VALIDATOR_BATCH_FAILURE:
+                if decision.kind is AttemptControlKind.VALIDATOR_BATCH_FAILURE:
                     if dispatch.validator_failure is None:
                         dispatch.validator_failure = _require_validator_failure(decision)
                     continue
@@ -429,10 +443,10 @@ class EvaluationRunner:
                     orchestrator=orchestrator,
                     final_attempt=attempt_number >= LOCAL_RETRY_ATTEMPTS,
                 )
-                if decision.kind is AttemptDecisionKind.SUBMISSION:
+                if decision.kind is AttemptControlKind.SUBMISSION:
                     return decision
 
-                if decision.kind is AttemptDecisionKind.SANDBOX_TIMEOUT:
+                if decision.kind is AttemptControlKind.REVIEW_TIMEOUT:
                     return self._resolve_timeout_attempt(
                         batch_id=batch_id,
                         artifact=artifact,
@@ -443,7 +457,7 @@ class EvaluationRunner:
                         prior_timeout_observations=prior_timeout_observations,
                     )
 
-                if decision.kind is AttemptDecisionKind.RETRY:
+                if decision.kind is AttemptControlKind.RETRY:
                     self._log_retry_attempt(
                         batch_id=batch_id,
                         artifact=artifact,
@@ -453,7 +467,7 @@ class EvaluationRunner:
                     )
                     continue
 
-                if decision.kind is AttemptDecisionKind.VALIDATOR_BATCH_FAILURE:
+                if decision.kind is AttemptControlKind.VALIDATOR_BATCH_FAILURE:
                     raise _require_validator_failure(decision)
 
                 raise RuntimeError("task retry loop returned unexpected decision")
@@ -494,7 +508,7 @@ class EvaluationRunner:
             )
         except SandboxInvocationError as exc:
             if _is_timeout_sandbox_invocation(exc):
-                return _sandbox_timeout_decision(exc)
+                return _review_timeout_decision(exc)
             provider_failures = self._consume_provider_failures(issued.session.session_id)
             return self._non_timeout_failure_decision(
                 batch_id=batch_id,
@@ -510,10 +524,10 @@ class EvaluationRunner:
                 return _retry_decision(exc)
             return _validator_batch_failure_decision(
                 ValidatorBatchFailedError(
-                    error_code="validator_internal_timeout",
+                    error_code=MinerTaskErrorCode.VALIDATOR_INTERNAL_TIMEOUT,
                     message=str(exc) or type(exc).__name__,
                     failure_detail=ValidatorBatchFailureDetail(
-                        error_code="validator_internal_timeout",
+                        error_code=MinerTaskErrorCode.VALIDATOR_INTERNAL_TIMEOUT,
                         error_message=str(exc) or type(exc).__name__,
                         occurred_at=self._clock(),
                         artifact_id=artifact.artifact_id,
@@ -551,7 +565,7 @@ class EvaluationRunner:
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
         tasks: Sequence[MinerTask],
-        error_code: str,
+        error_code: MinerTaskErrorCode,
         error_message: str,
     ) -> list[MinerTaskRunSubmission]:
         async def create_submission(task: MinerTask, issued: SessionIssued) -> MinerTaskRunSubmission:
@@ -602,7 +616,7 @@ class EvaluationRunner:
         uid: int,
         artifact_id: UUID,
         task: MinerTask,
-        error_code: str,
+        error_code: MinerTaskErrorCode,
         error_message: str,
     ) -> MinerTaskRunSubmission:
         return self._record_failed_submission(
@@ -623,7 +637,7 @@ class EvaluationRunner:
         uid: int,
         artifact_id: UUID,
         task: MinerTask,
-        error_code: str,
+        error_code: MinerTaskErrorCode,
         error_message: str,
         total_tool_usage: ToolUsageSummary | None = None,
         elapsed_ms: float | None = None,
@@ -659,7 +673,7 @@ class EvaluationRunner:
             uid=artifact.uid,
             artifact_id=artifact.artifact_id,
             task=task,
-            error_code="session_budget_exhausted",
+            error_code=MinerTaskErrorCode.SESSION_BUDGET_EXHAUSTED,
             error_message=error_message,
         )
 
@@ -671,7 +685,7 @@ class EvaluationRunner:
         uid: int,
         artifact_id: UUID,
         task: MinerTask,
-        error_code: str,
+        error_code: MinerTaskErrorCode,
         error_message: str,
         total_tool_usage: ToolUsageSummary | None = None,
         elapsed_ms: float | None = None,
@@ -712,7 +726,7 @@ class EvaluationRunner:
         artifact: ScriptArtifactSpec,
         task: MinerTask,
         session_id: UUID,
-        error_code: str,
+        error_code: MinerTaskErrorCode,
         error_message: str,
         log_message: str,
         exc: Exception,
@@ -753,12 +767,12 @@ class EvaluationRunner:
             session_id=session_id,
             envelope=envelope,
         )
-        timeout_outcome = _classify_timeout_outcome(
+        timeout_attribution = _classify_timeout_attribution(
             observation=observation,
             successful_baseline_tps=successful_baseline_tps,
             prior_timeout_observations=prior_timeout_observations,
         )
-        if timeout_outcome is AttemptDecisionKind.TIMEOUT_UNRESOLVED:
+        if timeout_attribution is None:
             self._receipts.clear_session(session_id)
             return _timeout_unresolved_decision(observation)
 
@@ -769,15 +783,15 @@ class EvaluationRunner:
             artifact_id=artifact.artifact_id,
             task=task,
             error_code=(
-                "timeout_miner_owned"
-                if timeout_outcome is AttemptDecisionKind.SUBMISSION
-                else "timeout_inconclusive"
+                MinerTaskErrorCode.TIMEOUT_MINER_OWNED
+                if timeout_attribution is TimeoutAttributionKind.MINER_OWNED
+                else MinerTaskErrorCode.TIMEOUT_INCONCLUSIVE
             ),
             error_message=TERMINAL_TIMEOUT_ERROR_MESSAGE,
             total_tool_usage=observation.session_summary,
             elapsed_ms=observation.session_elapsed_ms,
         )
-        if timeout_outcome is AttemptDecisionKind.SUBMISSION:
+        if timeout_attribution is TimeoutAttributionKind.MINER_OWNED:
             logger.error(
                 "miner task timed out with miner-owned attribution",
                 extra={
@@ -791,10 +805,10 @@ class EvaluationRunner:
             return _submission_decision(submission)
 
         raise ValidatorBatchFailedError(
-            error_code="timeout_inconclusive",
+            error_code=MinerTaskErrorCode.TIMEOUT_INCONCLUSIVE,
             message=TERMINAL_TIMEOUT_ERROR_MESSAGE,
             failure_detail=ValidatorBatchFailureDetail(
-                error_code="timeout_inconclusive",
+                error_code=MinerTaskErrorCode.TIMEOUT_INCONCLUSIVE,
                 error_message=TERMINAL_TIMEOUT_ERROR_MESSAGE,
                 occurred_at=self._clock(),
                 artifact_id=artifact.artifact_id,
@@ -820,10 +834,10 @@ class EvaluationRunner:
             if provider_batch_evidence is not None:
                 return _validator_batch_failure_decision(
                     ValidatorBatchFailedError(
-                        error_code="provider_batch_failure",
+                        error_code=MinerTaskErrorCode.PROVIDER_BATCH_FAILURE,
                         message=_provider_batch_failure_message(provider_batch_evidence),
                         failure_detail=ValidatorBatchFailureDetail(
-                            error_code="provider_batch_failure",
+                            error_code=MinerTaskErrorCode.PROVIDER_BATCH_FAILURE,
                             error_message=_provider_batch_failure_message(provider_batch_evidence),
                             occurred_at=self._clock(),
                             artifact_id=artifact.artifact_id,
@@ -841,7 +855,7 @@ class EvaluationRunner:
                     artifact=artifact,
                     task=task,
                     session_id=session_id,
-                    error_code="scoring_llm_retry_exhausted",
+                    error_code=MinerTaskErrorCode.SCORING_LLM_RETRY_EXHAUSTED,
                     error_message=str(exc),
                     log_message="validator scoring provider retries exhausted",
                     exc=exc,
@@ -855,7 +869,7 @@ class EvaluationRunner:
                     artifact=artifact,
                     task=task,
                     session_id=session_id,
-                    error_code="miner_response_invalid",
+                    error_code=MinerTaskErrorCode.MINER_RESPONSE_INVALID,
                     error_message=str(exc),
                     log_message="miner returned invalid response payload",
                     exc=exc,
@@ -869,7 +883,7 @@ class EvaluationRunner:
                     artifact=artifact,
                     task=task,
                     session_id=session_id,
-                    error_code="miner_unhandled_exception",
+                    error_code=MinerTaskErrorCode.MINER_UNHANDLED_EXCEPTION,
                     error_message=exc.detail_error or str(exc),
                     log_message="miner entrypoint raised unhandled exception",
                     exc=exc,
@@ -885,7 +899,7 @@ class EvaluationRunner:
                     artifact=artifact,
                     task=task,
                     session_id=session_id,
-                    error_code="sandbox_invocation_failed",
+                    error_code=MinerTaskErrorCode.SANDBOX_INVOCATION_FAILED,
                     error_message=str(exc),
                     log_message="sandbox invocation failed during miner task run",
                     exc=exc,
@@ -894,10 +908,10 @@ class EvaluationRunner:
 
         return _validator_batch_failure_decision(
             ValidatorBatchFailedError(
-                error_code="unexpected_validator_failure",
+                error_code=MinerTaskErrorCode.UNEXPECTED_VALIDATOR_FAILURE,
                 message=str(exc),
                 failure_detail=ValidatorBatchFailureDetail(
-                    error_code="unexpected_validator_failure",
+                    error_code=MinerTaskErrorCode.UNEXPECTED_VALIDATOR_FAILURE,
                     error_message=str(exc),
                     occurred_at=self._clock(),
                     artifact_id=artifact.artifact_id,
@@ -1035,7 +1049,7 @@ def _submission_decision(
     successful_baseline_tps: float | None = None,
 ) -> TaskAttemptDecision:
     return TaskAttemptDecision(
-        kind=AttemptDecisionKind.SUBMISSION,
+        kind=AttemptControlKind.SUBMISSION,
         submission=submission,
         successful_baseline_tps=successful_baseline_tps,
     )
@@ -1043,21 +1057,21 @@ def _submission_decision(
 
 def _retry_decision(exc: Exception) -> TaskAttemptDecision:
     return TaskAttemptDecision(
-        kind=AttemptDecisionKind.RETRY,
+        kind=AttemptControlKind.RETRY,
         retry_exc=exc,
     )
 
 
-def _sandbox_timeout_decision(exc: SandboxInvocationError) -> TaskAttemptDecision:
+def _review_timeout_decision(exc: SandboxInvocationError) -> TaskAttemptDecision:
     return TaskAttemptDecision(
-        kind=AttemptDecisionKind.SANDBOX_TIMEOUT,
+        kind=AttemptControlKind.REVIEW_TIMEOUT,
         timeout_exc=exc,
     )
 
 
 def _timeout_unresolved_decision(observation: TimeoutObservationEvidence) -> TaskAttemptDecision:
     return TaskAttemptDecision(
-        kind=AttemptDecisionKind.TIMEOUT_UNRESOLVED,
+        kind=AttemptControlKind.TIMEOUT_UNRESOLVED,
         timeout_observation=observation,
     )
 
@@ -1066,7 +1080,7 @@ def _validator_batch_failure_decision(
     validator_failure: ValidatorBatchFailedError,
 ) -> TaskAttemptDecision:
     return TaskAttemptDecision(
-        kind=AttemptDecisionKind.VALIDATOR_BATCH_FAILURE,
+        kind=AttemptControlKind.VALIDATOR_BATCH_FAILURE,
         validator_failure=validator_failure,
     )
 
@@ -1148,12 +1162,12 @@ def _receipt_total_tokens(receipt: ToolCall) -> int | None:
     return total_tokens
 
 
-def _classify_timeout_outcome(
+def _classify_timeout_attribution(
     *,
     observation: TimeoutObservationEvidence,
     successful_baseline_tps: float | None,
     prior_timeout_observations: tuple[TimeoutObservationEvidence, ...],
-) -> AttemptDecisionKind:
+) -> TimeoutAttributionKind | None:
     comparable_samples = observation.successful_llm_samples
     exhausted = len(prior_timeout_observations) + 1 >= TIMEOUT_REVIEW_MAX_OBSERVATIONS
     threshold_tps = (
@@ -1162,14 +1176,14 @@ def _classify_timeout_outcome(
         else successful_baseline_tps / TIMEOUT_TPS_SLOWDOWN_FACTOR
     )
     if threshold_tps is None:
-        return AttemptDecisionKind.SUBMISSION if exhausted else AttemptDecisionKind.TIMEOUT_UNRESOLVED
+        return TimeoutAttributionKind.MINER_OWNED if exhausted else None
     if any(sample.llm_tps >= threshold_tps for sample in comparable_samples):
-        return AttemptDecisionKind.SUBMISSION
+        return TimeoutAttributionKind.MINER_OWNED
     if not exhausted:
-        return AttemptDecisionKind.TIMEOUT_UNRESOLVED
+        return None
     if comparable_samples and all(sample.llm_tps < threshold_tps for sample in comparable_samples):
-        return AttemptDecisionKind.VALIDATOR_BATCH_FAILURE
-    return AttemptDecisionKind.SUBMISSION
+        return TimeoutAttributionKind.NOT_MINER_OWNED
+    return TimeoutAttributionKind.MINER_OWNED
 
 
 def _slowest_successful_llm_tps(receipts: Sequence[ToolCall]) -> float | None:
@@ -1212,7 +1226,7 @@ def _is_breaker_eligible_artifact_failure_submission(
     return error.code in _ARTIFACT_BREAKER_ERROR_CODES
 
 
-def _submission_error_code(submission: MinerTaskRunSubmission) -> str:
+def _submission_error_code(submission: MinerTaskRunSubmission) -> MinerTaskErrorCode:
     error = submission.run.details.error
     if error is None:
         raise RuntimeError("artifact failure submission requires error code")
@@ -1238,7 +1252,6 @@ __all__ = [
     "ARTIFACT_INFRA_FAILURE_THRESHOLD",
     "ArtifactFailure",
     "ArtifactExecutionFailedError",
-    "AttemptDecisionKind",
     "ArtifactEvaluationOutcome",
     "EvaluationRunner",
     "LOCAL_RETRY_ATTEMPTS",

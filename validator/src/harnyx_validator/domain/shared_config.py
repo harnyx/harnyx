@@ -1,4 +1,4 @@
-"""Shared strict Pydantic config for validator-owned models."""
+"""Shared strict Pydantic config for validator runtime models."""
 
 from __future__ import annotations
 

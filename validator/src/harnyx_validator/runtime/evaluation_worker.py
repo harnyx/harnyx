@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+from harnyx_commons.domain.miner_task import MinerTaskErrorCode
 from harnyx_validator.application.accept_batch import AcceptEvaluationBatch
 from harnyx_validator.application.services.evaluation_batch import EvaluationBatchConfig, MinerTaskBatchService
 from harnyx_validator.application.services.evaluation_runner import (
@@ -87,11 +88,11 @@ def _serialize_failure_detail(detail: ValidatorBatchFailureDetail) -> dict[str, 
 
 
 def _failure_kind(error_code: str) -> str:
-    if error_code == "provider_batch_failure":
+    if error_code == MinerTaskErrorCode.PROVIDER_BATCH_FAILURE:
         return "provider"
-    if error_code == "artifact_breaker_tripped":
+    if error_code == MinerTaskErrorCode.ARTIFACT_BREAKER_TRIPPED:
         return "artifact"
-    if error_code == "batch_execution_failed":
+    if error_code == MinerTaskErrorCode.BATCH_EXECUTION_FAILED:
         return "batch_execution"
     return "validator_batch"
 
@@ -99,7 +100,7 @@ def _failure_kind(error_code: str) -> str:
 def _provider_failure_scope_fields(
     detail: ValidatorBatchFailureDetail,
 ) -> tuple[dict[str, str], dict[str, object], list[str] | None]:
-    if detail.error_code != "provider_batch_failure":
+    if detail.error_code != MinerTaskErrorCode.PROVIDER_BATCH_FAILURE:
         return {}, {}, None
     match = _PROVIDER_BATCH_FAILURE_PATTERN.match(detail.error_message)
     if match is None:

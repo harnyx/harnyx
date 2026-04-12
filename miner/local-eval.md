@@ -73,7 +73,7 @@ The command can:
 - fetched champion code is not executed in the host Python process during `vs-champion`
 - task execution within an artifact now uses the same validator-style sandbox worker parallelism as validator runtime
 - in `vs-champion`, target and champion evaluations can run concurrently in separate sandboxes
-- scoring, retries, budgeting, and report generation still reuse the validator-owned evaluation path
+- scoring, retries, budgeting, and report generation still reuse the shared evaluation path
 
 ## Output
 
