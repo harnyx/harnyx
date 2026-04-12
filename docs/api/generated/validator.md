@@ -412,7 +412,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | --- | --- | --- | --- | --- |
 | `elapsed_ms` |  |  | opt | `number` (nullable) |
 | `error` |  |  | opt | [EvaluationError](#model-evaluationerror) (nullable) |
-|  | `code` |  | req | `string` |
+|  | `code` |  | req | [MinerTaskErrorCode](#model-minertaskerrorcode) |
 |  | `message` |  | req | `string` |
 | `score_breakdown` |  |  | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
 |  | `comparison_score` |  | req | `number` |
@@ -493,7 +493,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | --- | --- | --- | --- | --- |
 | `elapsed_ms` |  |  | opt | `number` (nullable) |
 | `error` |  |  | opt | [EvaluationError](#model-evaluationerror) (nullable) |
-|  | `code` |  | req | `string` |
+|  | `code` |  | req | [MinerTaskErrorCode](#model-minertaskerrorcode) |
 |  | `message` |  | req | `string` |
 | `score_breakdown` |  |  | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
 |  | `comparison_score` |  | req | `number` |
@@ -572,7 +572,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `code` |  |  | req | `string` |
+| `code` |  |  | req | [MinerTaskErrorCode](#model-minertaskerrorcode) |
 | `message` |  |  | req | `string` |
 
 <details>
@@ -583,9 +583,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
   "additionalProperties": false,
   "properties": {
     "code": {
-      "minLength": 1,
-      "title": "Code",
-      "type": "string"
+      "$ref": "#/components/schemas/MinerTaskErrorCode"
     },
     "message": {
       "minLength": 1,
@@ -1074,6 +1072,50 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 </details>
 
+<a id="model-minertaskerrorcode"></a>
+### Model: MinerTaskErrorCode
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "enum": [
+    "artifact_breaker_tripped",
+    "artifact_fetch_failed",
+    "artifact_hash_mismatch",
+    "artifact_setup_failed",
+    "artifact_size_invalid",
+    "artifact_staging_failed",
+    "batch_execution_failed",
+    "miner_response_invalid",
+    "miner_unhandled_exception",
+    "never_ran",
+    "progress_snapshot_failed",
+    "provider_batch_failure",
+    "sandbox_failed",
+    "sandbox_invocation_failed",
+    "sandbox_start_failed",
+    "scoring_llm_retry_exhausted",
+    "script_validation_failed",
+    "session_budget_exhausted",
+    "timeout_inconclusive",
+    "timeout_miner_owned",
+    "tool_provider_failed",
+    "unexpected_validator_failure",
+    "validator_failed",
+    "validator_internal_timeout",
+    "validator_timeout"
+  ],
+  "title": "MinerTaskErrorCode",
+  "type": "string"
+}
+```
+
+</details>
+
 <a id="model-minertaskrequestmodel"></a>
 ### Model: MinerTaskRequestModel
 
@@ -1244,7 +1286,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | `specifics` |  |  | req | [EvaluationDetails-Output](#model-evaluationdetails-output) |
 |  | `elapsed_ms` |  | opt | `number` (nullable) |
 |  | `error` |  | opt | [EvaluationError](#model-evaluationerror) (nullable) |
-|  |  | `code` | req | `string` |
+|  |  | `code` | req | [MinerTaskErrorCode](#model-minertaskerrorcode) |
 |  |  | `message` | req | `string` |
 |  | `score_breakdown` |  | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
 |  |  | `comparison_score` | req | `number` |
@@ -1726,7 +1768,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | `specifics` |  |  | req | [EvaluationDetails-Input](#model-evaluationdetails-input) |
 |  | `elapsed_ms` |  | opt | `number` (nullable) |
 |  | `error` |  | opt | [EvaluationError](#model-evaluationerror) (nullable) |
-|  |  | `code` | req | `string` |
+|  |  | `code` | req | [MinerTaskErrorCode](#model-minertaskerrorcode) |
 |  |  | `message` | req | `string` |
 |  | `score_breakdown` |  | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
 |  |  | `comparison_score` | req | `number` |
