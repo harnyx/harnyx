@@ -4,27 +4,30 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field
 
 from harnyx_commons.llm.provider import BaseLlmProvider
+from harnyx_commons.llm.providers.chutes_codec import (
+    _ChutesChatRequest,
+    _ChutesChatResponse,
+    _ChutesReasoningStreamState,
+    _parse_chutes_response_payload,
+)
+from harnyx_commons.llm.providers.openai_stream import (
+    OpenAiStreamError,
+    OpenAiStreamState,
+    iter_openai_sse_events,
+)
 from harnyx_commons.llm.schema import (
     AbstractLlmRequest,
-    LlmChoice,
-    LlmChoiceMessage,
-    LlmInputImagePart,
-    LlmInputTextPart,
-    LlmInputToolResultPart,
-    LlmMessage,
-    LlmMessageContentPart,
     LlmMessageToolCall,
     LlmResponse,
-    LlmTool,
-    LlmUsage,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,7 +68,7 @@ class ChutesLlmProvider(BaseLlmProvider):
         return await self._call_with_retry(
             request,
             call_coro=lambda current_request: self._request_chutes(
-                self._build_payload(current_request),
+                self._build_request(current_request),
                 headers,
                 timeout_seconds=current_request.timeout_seconds,
             ),
@@ -73,52 +76,34 @@ class ChutesLlmProvider(BaseLlmProvider):
             classify_exception=self._classify_exception,
         )
 
-    def _build_payload(self, request: AbstractLlmRequest) -> dict[str, Any]:
-        if request.grounded:
-            raise ValueError("grounded mode is not supported for chutes provider")
-        payload: dict[str, Any] = {
-            "provider": request.provider or "chutes",
-            "model": request.model,
-            "messages": [_serialize_message(message) for message in request.messages],
-        }
-
-        optional_fields = {
-            "temperature": request.temperature,
-            "max_output_tokens": request.max_output_tokens,
-            "tools": [_serialize_tool(spec) for spec in request.tools] if request.tools else None,
-            "tool_choice": request.tool_choice,
-            "include": list(request.include) if request.include else None,
-        }
-        payload |= {k: v for k, v in optional_fields.items() if v is not None}
-        response_format = _build_response_format(request)
-        if response_format is not None:
-            payload["response_format"] = response_format
-        if request.extra:
-            payload.update(dict(request.extra))
-        return payload
+    def _build_request(self, request: AbstractLlmRequest) -> _ChutesChatRequest:
+        return _ChutesChatRequest.from_request(request)
 
     def _auth_headers(self) -> dict[str, str]:
         return {self._auth_header: f"Bearer {self._api_key}"}
 
     async def _request_chutes(
         self,
-        payload: Mapping[str, Any],
+        payload: _ChutesChatRequest,
         headers: Mapping[str, str],
         *,
         timeout_seconds: float | None,
     ) -> LlmResponse:
         request_kwargs: dict[str, Any] = {
-            "json": payload,
+            "json": payload.model_dump(mode="json", exclude_none=True),
             "headers": headers,
         }
         if timeout_seconds is not None:
             request_kwargs["timeout"] = timeout_seconds
-        response = await self._client.post("v1/chat/completions", **request_kwargs)
-        response.raise_for_status()
-        body = await self._parse_body(response)
-        llm_response = self._payload_to_response(body)
+        body, ttft_ms = await self._stream_chat_completions(**request_kwargs)
+        llm_response = body.to_llm_response()
         metadata = dict(llm_response.metadata or {})
-        metadata.setdefault("raw_response", body.raw)
+        metadata.setdefault("raw_response", body.model_dump(mode="python", exclude_none=True))
+        self._log_stream_ttft(
+            model=payload.model,
+            response_id=body.id or "",
+            ttft_ms=ttft_ms,
+        )
         return LlmResponse(
             id=llm_response.id,
             choices=llm_response.choices,
@@ -127,22 +112,39 @@ class ChutesLlmProvider(BaseLlmProvider):
             finish_reason=llm_response.finish_reason,
         )
 
-    async def _parse_body(self, response: httpx.Response) -> _ChutesResponsePayload:
-        try:
-            payload = response.json()
-        except ValueError as exc:  # pragma: no cover - network dependent
-            raise RuntimeError("chutes chat completions returned non-JSON payload") from exc
-        return _parse_chutes_response_payload(payload)
+    async def _stream_chat_completions(self, **request_kwargs: Any) -> tuple[_ChutesChatResponse, float | None]:
+        started_at = time.perf_counter()
+        state = OpenAiStreamState()
+        reasoning_state = _ChutesReasoningStreamState()
+        ttft_ms: float | None = None
+        async with self._client.stream("POST", "v1/chat/completions", **request_kwargs) as response:
+            if response.is_error:
+                await response.aread()
+            response.raise_for_status()
+            async for event in iter_openai_sse_events(
+                response,
+                invalid_data_message="streamed chat completions returned non-JSON SSE data",
+                invalid_event_message="streamed chat completions SSE event must be a JSON object",
+            ):
+                reasoning_state.merge_event(event)
+                if state.merge_event(event, reasoning_keys=()):
+                    if ttft_ms is None:
+                        ttft_ms = round((time.perf_counter() - started_at) * 1000, 2)
+        return _ChutesChatResponse.from_stream_state(state, reasoning_state=reasoning_state), ttft_ms
 
-    @staticmethod
-    def _payload_to_response(payload: _ChutesResponsePayload) -> LlmResponse:
-        choices = payload.choices
-        usage = payload.usage or LlmUsage()
-        response_id = payload.response_id
-        return LlmResponse(
-            id=response_id,
-            choices=choices,
-            usage=usage,
+    def _log_stream_ttft(self, *, model: str, response_id: str, ttft_ms: float | None) -> None:
+        if ttft_ms is None:
+            return
+        logger.debug(
+            "chutes.stream.ttft",
+            extra={
+                "data": {
+                    "provider": self._provider_label,
+                    "model": model,
+                    "response_id": response_id,
+                    "ttft_ms": ttft_ms,
+                }
+            },
         )
 
     @staticmethod
@@ -161,15 +163,18 @@ class ChutesLlmProvider(BaseLlmProvider):
         exc: Exception,
         classify_exception: Callable[[Exception], tuple[bool, str]] | None = None,
     ) -> tuple[bool, str]:
-        if isinstance(exc, httpx.HTTPStatusError):
-            status = exc.response.status_code if exc.response else None
-            retryable = status is not None and (status == 429 or status >= 500)
-            detail = _summarize_response(exc.response) if exc.response is not None else ""
-            if detail:
-                return retryable, f"http_{status}: {detail}"
-            return retryable, f"http_{status}"
-        if isinstance(exc, httpx.HTTPError):
-            return True, exc.__class__.__name__
+        match exc:
+            case httpx.HTTPStatusError():
+                status = exc.response.status_code if exc.response else None
+                retryable = status is not None and (status == 429 or status >= 500)
+                detail = _summarize_response(exc.response) if exc.response is not None else ""
+                if detail:
+                    return retryable, f"http_{status}: {detail}"
+                return retryable, f"http_{status}"
+            case httpx.HTTPError():
+                return True, exc.__class__.__name__
+            case OpenAiStreamError():
+                return exc.retryable, exc.reason
         if classify_exception is not None:
             return classify_exception(exc)
         return False, str(exc)
@@ -277,270 +282,14 @@ def _normalize_embedding_base_url(base_url: str | None, model: str) -> str:
     return normalized_base_url
 
 
-def _serialize_tool(spec: LlmTool) -> dict[str, Any]:
-    if spec.type == "function" and spec.function is not None:
-        return {
-            "type": "function",
-            "function": dict(spec.function),
-        }
-    tool_payload: dict[str, Any] = {"type": spec.type}
-    if spec.config:
-        tool_payload.update(dict(spec.config))
-    return tool_payload
-
-
-def _build_response_format(request: AbstractLlmRequest) -> dict[str, Any] | None:
-    match request.output_mode:
-        case "text":
-            return None
-        case "json_object":
-            return {"type": "json_object"}
-        case "structured":
-            schema_type = request.output_schema
-            if schema_type is None:
-                raise ValueError("structured output requires output_schema")
-            return {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": schema_type.__name__,
-                    "schema": _json_schema_from_model(schema_type),
-                },
-            }
-        case _:
-            raise ValueError(f"unsupported chutes output_mode: {request.output_mode!r}")
-
-
-def _json_schema_from_model(model: type[BaseModel]) -> dict[str, Any]:
-    return dict(model.model_json_schema())
-
-
-def _serialize_message(message: LlmMessage) -> dict[str, Any]:
-    fragments: list[str] = []
-    tool_results: list[LlmInputToolResultPart] = []
-    for part in message.content:
-        match part:
-            case LlmInputTextPart(text=text):
-                fragments.append(text)
-            case LlmInputImagePart():
-                raise ValueError("chutes provider does not support image content parts")
-            case LlmInputToolResultPart() as tool_result:
-                tool_results.append(tool_result)
-            case _:
-                raise ValueError(f"unsupported Chutes request content part type: {part!r}")
-
-    if tool_results:
-        if fragments:
-            raise ValueError("chutes input_tool_result messages cannot mix text parts")
-        if len(tool_results) != 1:
-            raise ValueError("chutes input_tool_result messages must include exactly one part")
-        tool_result = tool_results[0]
-        return {
-            "role": "tool",
-            "tool_call_id": tool_result.tool_call_id,
-            "name": tool_result.name,
-            "content": tool_result.output_json,
-        }
-
-    return {
-        "role": message.role,
-        "content": "\n".join(fragments),
-    }
-
-
-@dataclass(frozen=True, slots=True)
-class _ChutesResponsePayload:
-    raw: dict[str, Any]
-    response_id: str
-    choices: tuple[LlmChoice, ...]
-    usage: LlmUsage | None
-
-
-class _ChutesReasoningObject(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    thought_text_parts: list[str] = Field(default_factory=list)
-    text: str | None = None
-    summary: str | None = None
-    content: str | None = None
-
-    @property
-    def reasoning_text(self) -> str | None:
-        normalized_parts = tuple(part.strip() for part in self.thought_text_parts if part.strip())
-        if normalized_parts:
-            return "\n\n".join(normalized_parts)
-
-        for candidate in (self.text, self.summary, self.content):
-            normalized_text = _normalize_reasoning_text(candidate)
-            if normalized_text is not None:
-                return normalized_text
-        return None
-
-
-def _parse_chutes_response_payload(value: object) -> _ChutesResponsePayload:
-    payload = _require_object_mapping(value, label="chutes chat completions payload must be a JSON object")
-    return _ChutesResponsePayload(
-        raw=payload,
-        response_id=_as_str(payload.get("id")),
-        choices=_build_choices(payload.get("choices")),
-        usage=_extract_usage(payload.get("usage")),
-    )
-
-
-def _build_choices(choices_payload: object) -> tuple[LlmChoice, ...]:
-    if choices_payload is None:
-        return ()
-    if not isinstance(choices_payload, list):
-        return ()
-
-    choices: list[LlmChoice] = []
-    for idx, choice_payload in enumerate(choices_payload):
-        choice = _choice_from_payload(choice_payload, index=idx)
-        if choice is not None:
-            choices.append(choice)
-    return tuple(choices)
-
-
-def _choice_from_payload(choice_payload: object, *, index: int) -> LlmChoice | None:
-    choice = _mapping_with_string_keys(choice_payload)
-    if choice is None:
-        return None
-    message = _mapping_with_string_keys(choice.get("message"))
-    if message is None:
-        return None
-
-    parts = _message_parts(message)
-    tool_calls = _message_tool_calls(message)
-    reasoning = _message_reasoning(message)
-    if not parts:
-        parts = (LlmMessageContentPart(type="text", text=""),)
-
-    return LlmChoice(
-        index=index,
-        message=LlmChoiceMessage(
-            role="assistant",
-            content=parts,
-            tool_calls=tool_calls,
-            reasoning=reasoning,
-        ),
-        finish_reason="stop",
-    )
-
-
-def _message_parts(message: Mapping[str, object]) -> tuple[LlmMessageContentPart, ...]:
-    content_value = message.get("content")
-    if isinstance(content_value, str):
-        return (LlmMessageContentPart(type="text", text=content_value),)
-    if isinstance(content_value, list):
-        parts: list[LlmMessageContentPart] = []
-        for part in content_value:
-            part_mapping = _mapping_with_string_keys(part)
-            if part_mapping is None:
-                continue
-            text_raw = part_mapping.get("text")
-            if not isinstance(text_raw, str):
-                continue
-            type_raw = part_mapping.get("type")
-            if type_raw is not None and not isinstance(type_raw, str):
-                continue
-            parts.append(
-                LlmMessageContentPart(
-                    type=type_raw or "text",
-                    text=text_raw,
-                )
-            )
-        return tuple(parts)
-    return ()
-
-
-def _message_tool_calls(message: Mapping[str, object]) -> tuple[LlmMessageToolCall, ...]:
-    tool_calls_value = message.get("tool_calls")
-    if tool_calls_value is None:
-        return ()
-    if not isinstance(tool_calls_value, list):
-        raise RuntimeError("chutes message tool_calls must be an array")
-
-    calls: list[LlmMessageToolCall] = []
-    for index, call_payload in enumerate(tool_calls_value):
-        call = _tool_call_from_payload(call_payload, index=index)
-        if call is not None:
-            calls.append(call)
-    return tuple(calls)
-
-
-def _message_reasoning(message: Mapping[str, object]) -> str | None:
-    reasoning_value = message.get("reasoning")
-    if reasoning_value is None:
-        return None
-    if isinstance(reasoning_value, str):
-        return _normalize_reasoning_text(reasoning_value)
-    if isinstance(reasoning_value, Mapping):
-        return _reasoning_text_from_object(
-            _require_object_mapping(reasoning_value, label="chutes message reasoning must be a JSON object")
-        )
-    raise RuntimeError("chutes message reasoning must be a string or JSON object")
-
-
-def _reasoning_text_from_object(reasoning_value: Mapping[str, object]) -> str | None:
-    try:
-        reasoning_payload = _ChutesReasoningObject.model_validate(reasoning_value, strict=True)
-    except ValidationError as exc:
-        raise RuntimeError("chutes message reasoning object shape is invalid") from exc
-    return reasoning_payload.reasoning_text
-
-
-def _normalize_reasoning_text(value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-    normalized_text = value.strip()
-    return normalized_text or None
-
-
-def _tool_call_from_payload(payload: object, index: int) -> LlmMessageToolCall | None:
-    call = _mapping_with_string_keys(payload)
-    if call is None:
-        return None
-    function = _mapping_with_string_keys(call.get("function"))
-    if function is None:
-        return None
-
-    name_raw = function.get("name")
-    if not isinstance(name_raw, str) or not name_raw:
-        return None
-    arguments_raw = function.get("arguments")
-    if isinstance(arguments_raw, Mapping):
-        arguments = json.dumps(arguments_raw)
-    elif isinstance(arguments_raw, str):
-        arguments = arguments_raw
-    else:
-        return None
-
-    return LlmMessageToolCall(
-        id=str(call.get("id", f"toolcall-{index}")),
-        type=str(call.get("type", "function")),
-        name=name_raw,
-        arguments=arguments,
-    )
-
-
-def _extract_usage(usage_payload: object) -> LlmUsage | None:
-    if usage_payload is None:
-        return None
-    usage_mapping = _require_object_mapping(usage_payload, label="chutes usage payload must be a JSON object")
-    prompt_tokens = usage_mapping.get("prompt_tokens")
-    completion_tokens = usage_mapping.get("completion_tokens")
-    total_tokens = usage_mapping.get("total_tokens")
-    return LlmUsage(
-        prompt_tokens=_optional_int(prompt_tokens),
-        completion_tokens=_optional_int(completion_tokens),
-        total_tokens=_optional_int(total_tokens),
-    )
-
-
 def _summarize_response(response: httpx.Response) -> str:
     try:
         data = response.json()
-    except ValueError:
-        data = response.text
+    except (ValueError, RuntimeError):
+        try:
+            data = response.text
+        except RuntimeError:
+            data = ""
     summary_payload = _parse_response_summary_payload(data)
     summary_value = summary_payload.detail if summary_payload.detail is not None else summary_payload.raw
     text = str(summary_value)
@@ -554,40 +303,11 @@ class _ResponseSummaryPayload:
 
 
 def _parse_response_summary_payload(value: object) -> _ResponseSummaryPayload:
-    data_mapping = _mapping_with_string_keys(value)
-    if data_mapping is None:
-        return _ResponseSummaryPayload(raw=value, detail=None)
-    return _ResponseSummaryPayload(raw=value, detail=data_mapping.get("detail"))
-
-
-def _mapping_with_string_keys(value: object) -> dict[str, object] | None:
-    if not isinstance(value, Mapping):
-        return None
-    result: dict[str, object] = {}
-    for key, item in value.items():
-        if not isinstance(key, str):
-            return None
-        result[key] = item
-    return result
-
-
-def _require_object_mapping(value: object, *, label: str) -> dict[str, Any]:
-    result = _mapping_with_string_keys(value)
-    if result is None:
-        raise RuntimeError(label)
-    return result
-
-
-def _as_str(value: Any) -> str:
-    return "" if value is None else str(value)
-
-
-def _optional_int(value: object) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, (int, float, str, bytes, bytearray)):
-        return int(value)
-    raise TypeError("usage token fields must be numeric")
+    match value:
+        case {"detail": detail, **_rest}:
+            return _ResponseSummaryPayload(raw=value, detail=detail)
+        case _:
+            return _ResponseSummaryPayload(raw=value, detail=None)
 
 
 def _iter_tool_calls(response: LlmResponse) -> tuple[LlmMessageToolCall, ...]:
@@ -609,4 +329,5 @@ __all__ = [
     "ChutesLlmProvider",
     "ChutesTextEmbeddingClient",
     "resolve_chutes_embedding_base_url",
+    "_parse_chutes_response_payload",
 ]

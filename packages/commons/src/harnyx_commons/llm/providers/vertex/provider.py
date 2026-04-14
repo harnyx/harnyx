@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from collections.abc import Callable, Mapping
-from typing import Any, cast
+import time
+from collections.abc import Callable
+from typing import Any
 
 import google.auth
 import httpx
@@ -17,6 +18,12 @@ from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.genai import errors, types
 
 from harnyx_commons.llm.provider import BaseLlmProvider
+from harnyx_commons.llm.providers.openai_stream import (
+    OpenAiStreamError,
+    OpenAiStreamState,
+    iter_openai_sse_events,
+    normalize_openai_text_fragments,
+)
 from harnyx_commons.llm.schema import (
     AbstractLlmRequest,
     LlmInputImagePart,
@@ -36,13 +43,11 @@ from .anthropic import (
     resolve_anthropic_thinking_budget,
 )
 from .codec import (
-    attach_search_metadata,
-    build_choices,
-    build_vertex_maas_chat_payload,
+    _VertexMaasChatRequest,
+    _VertexMaasChatResponse,
     extract_usage,
     json_schema_from_model,
     normalize_messages,
-    parse_vertex_maas_chat_response,
     resolve_thinking_config,
     resolve_tool_config,
     serialize_provider_native_tools,
@@ -50,6 +55,7 @@ from .codec import (
     supports_thinking_config,
 )
 from .credentials import cleanup_credentials_file, prepare_credentials
+from .gemini_stream_codec import GeminiAccumulatedResponse
 
 # v1beta1 exposes grounding metadata (e.g. retrievalQueries) that we use for
 # richer tool attribution in observability.
@@ -197,19 +203,31 @@ class VertexLlmProvider(BaseLlmProvider):
         contents: list[Any],
         generation_config: types.GenerateContentConfig | None,
     ) -> LlmResponse:
-        response = await self._genai_async_client.models.generate_content(
+        started_at = time.perf_counter()
+        accumulated = GeminiAccumulatedResponse()
+        latest_response: Any | None = None
+        ttft_ms: float | None = None
+        stream = await self._genai_async_client.models.generate_content_stream(
             model=request.model,
             contents=contents,
             config=generation_config,
         )
-        choices = build_choices(response)
-        primary_finish_reason = choices[0].finish_reason if choices else None
-        usage = extract_usage(response.usage_metadata) or LlmUsage()
-        response_id = _as_str(response.response_id)
+        async for chunk in stream:
+            latest_response = chunk
+            if _merge_gemini_chunk(accumulated, chunk) and ttft_ms is None:
+                ttft_ms = round((time.perf_counter() - started_at) * 1000, 2)
+        if latest_response is None:
+            raise RuntimeError("vertex streaming generation returned no response chunks")
 
-        metadata, usage = attach_search_metadata(response, usage)
+        choices = accumulated.to_choices()
+        primary_finish_reason = choices[0].finish_reason if choices else None
+        usage = extract_usage(latest_response.usage_metadata) or LlmUsage()
+        response_id = _as_str(latest_response.response_id)
+
+        metadata, usage = accumulated.metadata(usage)
         combined_metadata = dict(metadata or {})
-        combined_metadata.setdefault("raw_response", _vertex_response_payload(response))
+        combined_metadata.setdefault("raw_response", accumulated.raw_response_payload(latest_response))
+        self._log_stream_ttft(branch="gemini", model=request.model, response_id=response_id, ttft_ms=ttft_ms)
 
         return LlmResponse(
             id=response_id,
@@ -233,29 +251,50 @@ class VertexLlmProvider(BaseLlmProvider):
         return await self._call_vertex(request, contents, generation_config)
 
     async def _call_vertex_maas_chat_completions(self, request: AbstractLlmRequest) -> LlmResponse:
-        payload = build_vertex_maas_chat_payload(request)
+        payload = _VertexMaasChatRequest.from_request(request)
         access_token = await self._vertex_maas_access_token()
         request_kwargs: dict[str, Any] = {
             "headers": {
                 "Authorization": f"Bearer {access_token}",
                 "Content-Type": "application/json; charset=utf-8",
             },
-            "json": payload,
+            "json": payload.model_dump(mode="json", exclude_none=True),
         }
         if request.timeout_seconds is not None:
             request_kwargs["timeout"] = request.timeout_seconds
 
-        response = await self._http_client.post(
+        started_at = time.perf_counter()
+        state = OpenAiStreamState()
+        ttft_ms: float | None = None
+        async with self._http_client.stream(
+            "POST",
             _vertex_maas_chat_completions_url(project=self._project, location=self._location),
             **request_kwargs,
-        )
-        response.raise_for_status()
-        raw_payload = response.json()
-        if not isinstance(raw_payload, Mapping):
-            raise RuntimeError("vertex maas chat completions returned non-object JSON payload")
-        llm_response = parse_vertex_maas_chat_response(raw_payload)
+        ) as response:
+            response.raise_for_status()
+            async for event in iter_openai_sse_events(
+                response,
+                invalid_data_message="vertex maas streaming returned non-JSON SSE data",
+                invalid_event_message="vertex maas streaming SSE event must be a JSON object",
+            ):
+                if state.merge_event(
+                    event,
+                    reasoning_keys=("reasoning_content", "reasoning"),
+                    normalize_content_fragment=_vertex_stream_text_fragments,
+                    normalize_reasoning_fragment=_vertex_stream_text_fragments,
+                ):
+                    if ttft_ms is None:
+                        ttft_ms = round((time.perf_counter() - started_at) * 1000, 2)
+        response_body = _VertexMaasChatResponse.from_stream_state(state)
+        llm_response = response_body.to_llm_response()
         metadata = dict(llm_response.metadata or {})
-        metadata.setdefault("raw_response", dict(raw_payload))
+        metadata.setdefault("raw_response", response_body.raw_payload())
+        self._log_stream_ttft(
+            branch="vertex_maas_openai",
+            model=request.model,
+            response_id=llm_response.id,
+            ttft_ms=ttft_ms,
+        )
         return LlmResponse(
             id=llm_response.id,
             choices=llm_response.choices,
@@ -328,11 +367,18 @@ class VertexLlmProvider(BaseLlmProvider):
 
         kwargs = base_kwargs | {k: v for k, v in optional_kwargs.items() if v is not None}
 
-        response = await self._anthropic_client.messages.create(timeout=request.timeout_seconds or 900, **kwargs)
+        started_at = time.perf_counter()
+        ttft_ms: float | None = None
+        async with self._anthropic_client.messages.stream(timeout=request.timeout_seconds or 900, **kwargs) as stream:
+            async for text in stream.text_stream:
+                if text and ttft_ms is None:
+                    ttft_ms = round((time.perf_counter() - started_at) * 1000, 2)
+            response = await stream.get_final_message()
         llm_response = build_anthropic_response(response)
 
         metadata = dict(llm_response.metadata or {})
-        metadata.setdefault("raw_response", _vertex_response_payload(response))
+        metadata.setdefault("raw_response", _raw_response_payload(response))
+        self._log_stream_ttft(branch="claude", model=request.model, response_id=llm_response.id, ttft_ms=ttft_ms)
 
         usage_with_calls = llm_response.usage
         if llm_response.usage.web_search_calls in (None, 0):
@@ -361,17 +407,20 @@ class VertexLlmProvider(BaseLlmProvider):
         exc: Exception,
         classify_exception: Callable[[Exception], tuple[bool, str]] | None = None,
     ) -> tuple[bool, str]:
-        if isinstance(exc, httpx.HTTPStatusError):
-            status = exc.response.status_code if exc.response is not None else None
-            retryable = status is not None and (status == 429 or status >= 500)
-            return retryable, f"http_{status}"
-        if isinstance(exc, httpx.HTTPError):
-            return True, exc.__class__.__name__
-        if isinstance(exc, errors.APIError):
-            code = exc.code
-            message = str(exc)
-            retryable = code in { 429, 503, 529 }
-            return retryable, f"api_error:{code}:{message}"
+        match exc:
+            case httpx.HTTPStatusError():
+                status = exc.response.status_code if exc.response is not None else None
+                retryable = status is not None and (status == 429 or status >= 500)
+                return retryable, f"http_{status}"
+            case httpx.HTTPError():
+                return True, exc.__class__.__name__
+            case errors.APIError():
+                code = exc.code
+                message = str(exc)
+                retryable = code in {429, 503, 529}
+                return retryable, f"api_error:{code}:{message}"
+            case OpenAiStreamError():
+                return exc.retryable, exc.reason
         if classify_exception is not None:
             return classify_exception(exc)
         return False, str(exc)
@@ -383,12 +432,37 @@ class VertexLlmProvider(BaseLlmProvider):
     ) -> tuple[bool, str]:
         return classify_anthropic_exception(exc, classify_exception)
 
-    def _as_mapping(self, response: LlmResponse) -> Mapping[str, Any]:
-        return cast(Mapping[str, Any], response.to_payload())
+    def _log_stream_ttft(self, *, branch: str, model: str, response_id: str, ttft_ms: float | None) -> None:
+        if ttft_ms is None:
+            return
+        self._logger.debug(
+            "llm.vertex.stream.ttft",
+            extra={
+                "data": {
+                    "provider": self._provider_label,
+                    "branch": branch,
+                    "model": model,
+                    "response_id": response_id,
+                    "ttft_ms": ttft_ms,
+                }
+            },
+        )
 
 
 def _as_str(value: Any) -> str:
     return "" if value is None else str(value)
+
+
+def _raw_response_payload(response: Any) -> dict[str, Any]:
+    return response.model_dump(mode="json")
+
+
+def _merge_gemini_chunk(accumulated: GeminiAccumulatedResponse, chunk: Any) -> bool:
+    return accumulated.merge_chunk(chunk)
+
+
+def _vertex_stream_text_fragments(value: object) -> tuple[str, ...]:
+    return normalize_openai_text_fragments(value, multipart_joiner="\n\n")
 
 
 def _should_use_vertex_maas_openai_chat(request: AbstractLlmRequest) -> bool:
@@ -402,10 +476,6 @@ def _vertex_maas_chat_completions_url(*, project: str, location: str) -> str:
     return (
         f"https://{host}/v1/projects/{project}/locations/{location}/endpoints/openapi/chat/completions"
     )
-
-
-def _vertex_response_payload(response: Any) -> Mapping[str, Any]:
-    return cast(Mapping[str, Any], response.model_dump(mode="json"))
 
 
 def _anthropic_messages_from_request(

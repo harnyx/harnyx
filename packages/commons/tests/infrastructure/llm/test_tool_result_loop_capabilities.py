@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from harnyx_commons.llm.providers.chutes import ChutesLlmProvider
-from harnyx_commons.llm.providers.chutes import _serialize_message as _serialize_chutes_message
+from harnyx_commons.llm.providers.openai_chat_codec import OpenAiChatMessagePayload
 from harnyx_commons.llm.schema import (
     LlmChoice,
     LlmChoiceMessage,
@@ -29,7 +29,7 @@ def test_tool_result_loop_capabilities_are_centralized() -> None:
 
 
 def test_chutes_serializes_tool_result_message_as_tool_role_message() -> None:
-    payload = _serialize_chutes_message(
+    payload = OpenAiChatMessagePayload.from_message(
         LlmMessage(
             role="user",
             content=(
@@ -39,8 +39,11 @@ def test_chutes_serializes_tool_result_message_as_tool_role_message() -> None:
                     output_json='{"path":"README.md","content":"demo"}',
                 ),
             ),
-        )
-    )
+        ),
+        image_error_message="chutes provider does not support image content parts",
+        tool_mix_error_message="chutes input_tool_result messages cannot mix text parts",
+        tool_count_error_message="chutes input_tool_result messages must include exactly one part",
+    ).model_dump(mode="python", exclude_none=True)
 
     assert payload["role"] == "tool"
     assert payload["tool_call_id"] == "call-2"

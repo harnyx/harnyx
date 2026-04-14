@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 from collections.abc import Callable
 from typing import Any, cast
 
@@ -10,15 +11,24 @@ from pydantic import BaseModel
 
 from harnyx_commons.clients import CHUTES
 from harnyx_commons.llm.provider_types import normalize_reasoning_effort
+from harnyx_commons.llm.providers.openai_stream import (
+    OpenAiChoiceState,
+    OpenAiStreamError,
+    OpenAiStreamState,
+    OpenAiToolCallState,
+    _OpenAiStreamEvent,
+    _OpenAiToolCallDelta,
+    normalize_openai_text_fragments,
+)
 from harnyx_commons.llm.providers.vertex.codec import (
+    _VertexMaasChatRequest,
+    _VertexMaasChatResponse,
     build_choices,
-    build_vertex_maas_chat_payload,
     normalize_messages,
-    parse_vertex_maas_chat_response,
     resolve_thinking_config,
     vertex_maas_openai_chat_model_name,
 )
-from harnyx_commons.llm.providers.vertex.provider import VertexLlmProvider
+from harnyx_commons.llm.providers.vertex.provider import VertexLlmProvider, _vertex_stream_text_fragments
 from harnyx_commons.llm.schema import (
     GroundedLlmRequest,
     LlmChoice,
@@ -79,6 +89,20 @@ class FakeResponse:
         return {"text": self.text}
 
 
+@pytest.mark.parametrize("code", [500, 502, 503, 504, "500"])
+def test_vertex_classify_stream_error_preserves_server_retry_policy(code: int | str) -> None:
+    exc = OpenAiStreamError(
+        message="temporarily unavailable",
+        error_type="server_error",
+        code=code,
+    )
+
+    retryable, reason = VertexLlmProvider._classify_exception(exc)
+
+    assert retryable is True
+    assert reason == f"stream_error:{code}:server_error:temporarily unavailable"
+
+
 @pytest.fixture(autouse=True)
 def anthropic_clients(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
     created: list[Any] = []
@@ -86,6 +110,9 @@ def anthropic_clients(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
     class _FailingMessages:
         async def create(self, **kwargs: Any) -> Any:
             raise AssertionError(f"unexpected AsyncAnthropicVertex.messages.create call: {kwargs!r}")
+
+        def stream(self, **kwargs: Any) -> Any:
+            raise AssertionError(f"unexpected AsyncAnthropicVertex.messages.stream call: {kwargs!r}")
 
     class _FakeAsyncAnthropicVertex:
         def __init__(self, **kwargs: Any) -> None:
@@ -119,6 +146,22 @@ def _patch_google_client(
             }
             captured["model_call"] = latest
             return response_factory()
+
+        async def generate_content_stream(self, *, model: str, contents: Any, config: Any) -> Any:
+            latest = {
+                "model": model,
+                "contents": contents,
+                "config": config,
+            }
+            captured["model_stream_call"] = latest
+
+            async def _stream() -> Any:
+                response = response_factory()
+                chunks = response if isinstance(response, list) else [response]
+                for chunk in chunks:
+                    yield chunk
+
+            return _stream()
 
     class _FakeAsyncClient:
         def __init__(self) -> None:
@@ -174,16 +217,29 @@ def _patch_vertex_maas_http_client(
         def raise_for_status(self) -> None:
             return None
 
-        def json(self) -> dict[str, Any]:
-            return self._json_payload
+        async def aiter_lines(self) -> Any:
+            yield f"data: {json.dumps(self._json_payload)}"
+            yield ""
+            yield "data: [DONE]"
+            yield ""
+
+    class _FakeStreamContext:
+        def __init__(self, response: _FakeHttpResponse) -> None:
+            self._response = response
+
+        async def __aenter__(self) -> _FakeHttpResponse:
+            return self._response
+
+        async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+            return False
 
     class _FakeAsyncHttpClient:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             captured["http_client_kwargs"] = kwargs
 
-        async def post(self, url: str, **kwargs: Any) -> _FakeHttpResponse:
-            captured["http_call"] = {"url": url, **kwargs}
-            return _FakeHttpResponse(payload)
+        def stream(self, method: str, url: str, **kwargs: Any) -> _FakeStreamContext:
+            captured["http_call"] = {"method": method, "url": url, **kwargs}
+            return _FakeStreamContext(_FakeHttpResponse(payload))
 
         async def aclose(self) -> None:
             captured["http_closed"] = True
@@ -198,8 +254,12 @@ def _async_return(value: Any) -> Callable[[], Any]:
     return _inner
 
 
-async def test_vertex_provider_invokes_generative_model(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_vertex_provider_invokes_generative_model(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    caplog.set_level(logging.DEBUG, logger="harnyx_commons.llm.calls")
     captured: dict[str, Any] = {}
     _patch_google_client(monkeypatch, captured)
 
@@ -247,7 +307,7 @@ async def test_vertex_provider_invokes_generative_model(monkeypatch: pytest.Monk
     assert http_options.api_version == "v1beta1"
     assert client_kwargs["credentials"] is None
 
-    model_call = captured["model_call"]
+    model_call = captured["model_stream_call"]
     assert model_call["model"] == "publishers/openai/models/gpt-oss-20b-maas"
     assert model_call["contents"][0].role == "user"
     config = model_call["config"]
@@ -267,10 +327,625 @@ async def test_vertex_provider_invokes_generative_model(monkeypatch: pytest.Monk
     raw_response = response.metadata["raw_response"]
     assert isinstance(raw_response, dict)
     assert raw_response["text"] == "ok"
+    assert "ttft_ms" not in response.metadata
+
+    records = [record for record in caplog.records if record.message == "llm.vertex.stream.ttft"]
+    assert records
+    data = records[0].__dict__["data"]
+    assert data["branch"] == "gemini"
+    assert isinstance(data["ttft_ms"], float)
+    assert data["ttft_ms"] >= 0.0
 
 
-async def test_vertex_maas_gpt_oss_routes_to_chat_completions(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_vertex_provider_gemini_stream_aggregates_text_and_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+
+    class _Usage(FakeUsage):
+        pass
+
+    class _GroundingMetadata:
+        web_search_queries = ["harnyx subnet"]
+
+    class _ThoughtPart:
+        text = "reasoning step"
+        function_call = None
+        thought = True
+        thought_signature = "sig-1"
+
+    class _TextPartHello:
+        text = "Hello "
+        function_call = None
+        thought = False
+        thought_signature = None
+
+    class _TextPartWorld:
+        text = "world"
+        function_call = None
+        thought = False
+        thought_signature = None
+
+    class _ChunkOneContent:
+        parts = [_ThoughtPart(), _TextPartHello()]
+
+    class _ChunkTwoContent:
+        parts = [_TextPartWorld()]
+
+    class _FinishReason:
+        value = "STOP"
+
+    class _ChunkOneCandidate:
+        content = _ChunkOneContent()
+        finish_reason = None
+        grounding_metadata = _GroundingMetadata()
+
+    class _ChunkTwoCandidate:
+        content = _ChunkTwoContent()
+        finish_reason = _FinishReason()
+        grounding_metadata = None
+
+    class _ChunkOne:
+        text = "Hello "
+        response_id = "gemini-stream-response"
+        usage_metadata = _Usage(12, 5, 17)
+        candidates = [_ChunkOneCandidate()]
+
+        def model_dump(self, *, mode: str = "python") -> dict[str, Any]:
+            return {
+                "text": "Hello ",
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "thought": True,
+                                    "text": "reasoning step",
+                                    "thought_signature": "sig-1",
+                                },
+                                {
+                                    "text": "Hello ",
+                                },
+                            ]
+                        },
+                        "grounding_metadata": {
+                            "web_search_queries": ["harnyx subnet"],
+                        },
+                    }
+                ],
+            }
+
+    class _ChunkTwo:
+        text = "world"
+        response_id = "gemini-stream-response"
+        usage_metadata = _Usage(12, 5, 17)
+        candidates = [_ChunkTwoCandidate()]
+
+        def model_dump(self, *, mode: str = "python") -> dict[str, Any]:
+            return {
+                "text": "world",
+                "candidates": [
+                    {
+                        "finish_reason": "STOP",
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": "world",
+                                }
+                            ]
+                        }
+                    }
+                ],
+            }
+
+    captured: dict[str, Any] = {}
+    _patch_google_client(monkeypatch, captured, response_factory=lambda: [_ChunkOne(), _ChunkTwo()])
+
+    provider = VertexLlmProvider(
+        project="demo-project",
+        location="us-central1",
+        timeout=30.0,
+    )
+
+    request = LlmRequest(
+        provider="vertex",
+        model="gemini-2.5-pro",
+        messages=(
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text("hello"),),
+            ),
+        ),
+        temperature=None,
+        max_output_tokens=64,
+        output_mode="text",
+    )
+
+    response = await provider.invoke(request)
+
+    assert response.raw_text == "Hello world"
+    assert response.usage.web_search_calls == 1
+    assert response.metadata is not None
+    assert response.metadata["web_search_queries"] == ("harnyx subnet",)
+    raw_response = response.metadata["raw_response"]
+    assert raw_response["text"] == "Hello world"
+    assert raw_response["candidates"][0]["grounding_metadata"]["web_search_queries"] == ["harnyx subnet"]
+    assert raw_response["candidates"][0]["content"]["parts"][0]["thought_signature"] == "sig-1"
+    assert raw_response["candidates"][0]["finish_reason"] == "STOP"
+
+
+async def test_vertex_provider_gemini_stream_preserves_reasoning_chunk_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+
+    class _Usage(FakeUsage):
+        pass
+
+    class _ThoughtPartOne:
+        text = "think "
+        function_call = None
+        thought = True
+        thought_signature = "sig-1"
+
+    class _ThoughtPartTwo:
+        text = "more"
+        function_call = None
+        thought = True
+        thought_signature = "sig-2"
+
+    class _TextPart:
+        text = "done"
+        function_call = None
+        thought = False
+        thought_signature = None
+
+    class _ChunkOneContent:
+        parts = [_ThoughtPartOne()]
+
+    class _ChunkTwoContent:
+        parts = [_ThoughtPartTwo(), _TextPart()]
+
+    class _FinishReason:
+        value = "STOP"
+
+    class _ChunkOneCandidate:
+        content = _ChunkOneContent()
+        finish_reason = None
+        grounding_metadata = None
+
+    class _ChunkTwoCandidate:
+        content = _ChunkTwoContent()
+        finish_reason = _FinishReason()
+        grounding_metadata = None
+
+    class _ChunkOne:
+        text = ""
+        response_id = "gemini-stream-response"
+        usage_metadata = _Usage(12, 5, 17)
+        candidates = [_ChunkOneCandidate()]
+
+        def model_dump(self, *, mode: str = "python") -> dict[str, Any]:
+            return {
+                "text": "",
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "thought": True,
+                                    "text": "think ",
+                                    "thought_signature": "sig-1",
+                                }
+                            ]
+                        }
+                    }
+                ],
+            }
+
+    class _ChunkTwo:
+        text = "done"
+        response_id = "gemini-stream-response"
+        usage_metadata = _Usage(12, 5, 17)
+        candidates = [_ChunkTwoCandidate()]
+
+        def model_dump(self, *, mode: str = "python") -> dict[str, Any]:
+            return {
+                "text": "done",
+                "candidates": [
+                    {
+                        "finish_reason": "STOP",
+                        "content": {
+                            "parts": [
+                                {
+                                    "thought": True,
+                                    "text": "more",
+                                    "thought_signature": "sig-2",
+                                },
+                                {
+                                    "text": "done",
+                                },
+                            ]
+                        },
+                    }
+                ],
+            }
+
+    captured: dict[str, Any] = {}
+    _patch_google_client(monkeypatch, captured, response_factory=lambda: [_ChunkOne(), _ChunkTwo()])
+
+    provider = VertexLlmProvider(
+        project="demo-project",
+        location="us-central1",
+        timeout=30.0,
+    )
+
+    request = LlmRequest(
+        provider="vertex",
+        model="gemini-2.5-pro",
+        messages=(
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text("hello"),),
+            ),
+        ),
+        temperature=None,
+        max_output_tokens=64,
+        output_mode="text",
+    )
+
+    response = await provider.invoke(request)
+
+    assert response.raw_text == "done"
+    assert response.choices[0].message.reasoning == "think more"
+
+
+async def test_vertex_provider_gemini_stream_dedupes_repeated_search_queries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+
+    class _Usage(FakeUsage):
+        pass
+
+    class _GroundingMetadata:
+        web_search_queries = ["harnyx subnet"]
+
+    class _TextPartOne:
+        text = "Hello "
+        function_call = None
+        thought = False
+        thought_signature = None
+
+    class _TextPartTwo:
+        text = "world"
+        function_call = None
+        thought = False
+        thought_signature = None
+
+    class _ChunkOneContent:
+        parts = [_TextPartOne()]
+
+    class _ChunkTwoContent:
+        parts = [_TextPartTwo()]
+
+    class _ChunkOneCandidate:
+        content = _ChunkOneContent()
+        finish_reason = None
+        grounding_metadata = _GroundingMetadata()
+
+    class _ChunkTwoCandidate:
+        content = _ChunkTwoContent()
+        finish_reason = None
+        grounding_metadata = _GroundingMetadata()
+
+    class _ChunkOne:
+        text = "Hello "
+        response_id = "gemini-stream-response"
+        usage_metadata = _Usage(12, 5, 17)
+        candidates = [_ChunkOneCandidate()]
+
+        def model_dump(self, *, mode: str = "python") -> dict[str, Any]:
+            return {
+                "text": "Hello ",
+                "candidates": [
+                    {
+                        "content": {"parts": [{"text": "Hello "}]},
+                        "grounding_metadata": {"web_search_queries": ["harnyx subnet"]},
+                    }
+                ],
+            }
+
+    class _ChunkTwo:
+        text = "world"
+        response_id = "gemini-stream-response"
+        usage_metadata = _Usage(12, 5, 17)
+        candidates = [_ChunkTwoCandidate()]
+
+        def model_dump(self, *, mode: str = "python") -> dict[str, Any]:
+            return {
+                "text": "world",
+                "candidates": [
+                    {
+                        "content": {"parts": [{"text": "world"}]},
+                        "grounding_metadata": {"web_search_queries": ["harnyx subnet"]},
+                    }
+                ],
+            }
+
+    captured: dict[str, Any] = {}
+    _patch_google_client(monkeypatch, captured, response_factory=lambda: [_ChunkOne(), _ChunkTwo()])
+
+    provider = VertexLlmProvider(
+        project="demo-project",
+        location="us-central1",
+        timeout=30.0,
+    )
+
+    response = await provider.invoke(
+        LlmRequest(
+            provider="vertex",
+            model="gemini-2.5-pro",
+            messages=(
+                LlmMessage(
+                    role="user",
+                    content=(LlmMessageContentPart.input_text("hello"),),
+                ),
+            ),
+            temperature=None,
+            max_output_tokens=64,
+            output_mode="text",
+        )
+    )
+
+    assert response.raw_text == "Hello world"
+    assert response.usage.web_search_calls == 1
+    assert response.metadata is not None
+    assert response.metadata["web_search_queries"] == ("harnyx subnet",)
+
+
+async def test_vertex_provider_gemini_stream_merges_snapshot_tool_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+
+    class _Usage(FakeUsage):
+        pass
+
+    class _FunctionCallOne:
+        id = "call-1"
+        name = "lookup"
+        args = {"query": "har"}
+
+    class _FunctionCallTwo:
+        id = "call-1"
+        name = "lookup"
+        args = {"query": "harnyx"}
+
+    class _PartOne:
+        text = None
+        function_call = _FunctionCallOne()
+        thought = False
+        thought_signature = None
+
+    class _PartTwo:
+        text = None
+        function_call = _FunctionCallTwo()
+        thought = False
+        thought_signature = None
+
+    class _ContentOne:
+        parts = [_PartOne()]
+
+    class _ContentTwo:
+        parts = [_PartTwo()]
+
+    class _ChunkOneCandidate:
+        content = _ContentOne()
+        finish_reason = None
+        grounding_metadata = None
+
+    class _FinishReason:
+        value = "STOP"
+
+    class _ChunkTwoCandidate:
+        content = _ContentTwo()
+        finish_reason = _FinishReason()
+        grounding_metadata = None
+
+    class _ChunkOne:
+        text = None
+        response_id = "gemini-tool-response"
+        usage_metadata = _Usage(12, 5, 17)
+        candidates = [_ChunkOneCandidate()]
+
+        def model_dump(self, *, mode: str = "python") -> dict[str, Any]:
+            return {"candidates": [{"content": {"parts": [{}]}}]}
+
+    class _ChunkTwo:
+        text = None
+        response_id = "gemini-tool-response"
+        usage_metadata = _Usage(12, 5, 17)
+        candidates = [_ChunkTwoCandidate()]
+
+        def model_dump(self, *, mode: str = "python") -> dict[str, Any]:
+            return {"candidates": [{"content": {"parts": [{}]}, "finish_reason": "STOP"}]}
+
+    captured: dict[str, Any] = {}
+    _patch_google_client(monkeypatch, captured, response_factory=lambda: [_ChunkOne(), _ChunkTwo()])
+
+    provider = VertexLlmProvider(
+        project="demo-project",
+        location="us-central1",
+        timeout=30.0,
+    )
+
+    response = await provider.invoke(
+        LlmRequest(
+            provider="vertex",
+            model="gemini-2.5-pro",
+            messages=(
+                LlmMessage(
+                    role="user",
+                    content=(LlmMessageContentPart.input_text("hello"),),
+                ),
+            ),
+            temperature=None,
+            max_output_tokens=64,
+            output_mode="text",
+        )
+    )
+
+    assert response.raw_text is None
+    assert response.tool_calls is not None
+    assert len(response.tool_calls) == 1
+    assert response.tool_calls[0].name == "lookup"
+    assert response.tool_calls[0].arguments == {"query": "harnyx"}
+    assert response.choices[0].message.tool_calls is not None
+    assert response.choices[0].message.tool_calls[0].id == "call-1"
+
+
+async def test_vertex_provider_gemini_stream_overwrites_partial_tool_call_same_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+
+    class _Usage(FakeUsage):
+        pass
+
+    class _FunctionCallOne:
+        id = None
+        name = None
+        args = {"query": "har"}
+
+    class _FunctionCallTwo:
+        id = "call-1"
+        name = "lookup"
+        args = {"query": "harnyx"}
+
+    class _PartOne:
+        text = None
+        function_call = _FunctionCallOne()
+        thought = False
+        thought_signature = None
+
+    class _PartTwo:
+        text = None
+        function_call = _FunctionCallTwo()
+        thought = False
+        thought_signature = None
+
+    class _ContentOne:
+        parts = [_PartOne()]
+
+    class _ContentTwo:
+        parts = [_PartTwo()]
+
+    class _ChunkOneCandidate:
+        content = _ContentOne()
+        finish_reason = None
+        grounding_metadata = None
+
+    class _FinishReason:
+        value = "STOP"
+
+    class _ChunkTwoCandidate:
+        content = _ContentTwo()
+        finish_reason = _FinishReason()
+        grounding_metadata = None
+
+    class _ChunkOne:
+        text = None
+        response_id = "gemini-tool-response"
+        usage_metadata = _Usage(12, 5, 17)
+        candidates = [_ChunkOneCandidate()]
+
+        def model_dump(self, *, mode: str = "python") -> dict[str, Any]:
+            return {"candidates": [{"content": {"parts": [{}]}}]}
+
+    class _ChunkTwo:
+        text = None
+        response_id = "gemini-tool-response"
+        usage_metadata = _Usage(12, 5, 17)
+        candidates = [_ChunkTwoCandidate()]
+
+        def model_dump(self, *, mode: str = "python") -> dict[str, Any]:
+            return {"candidates": [{"content": {"parts": [{}]}, "finish_reason": "STOP"}]}
+
+    captured: dict[str, Any] = {}
+    _patch_google_client(monkeypatch, captured, response_factory=lambda: [_ChunkOne(), _ChunkTwo()])
+
+    provider = VertexLlmProvider(
+        project="demo-project",
+        location="us-central1",
+        timeout=30.0,
+    )
+
+    response = await provider.invoke(
+        LlmRequest(
+            provider="vertex",
+            model="gemini-2.5-pro",
+            messages=(
+                LlmMessage(
+                    role="user",
+                    content=(LlmMessageContentPart.input_text("hello"),),
+                ),
+            ),
+            temperature=None,
+            max_output_tokens=64,
+            output_mode="text",
+        )
+    )
+
+    assert response.raw_text is None
+    assert response.tool_calls is not None
+    assert len(response.tool_calls) == 1
+    assert response.tool_calls[0].name == "lookup"
+    assert response.tool_calls[0].arguments == {"query": "harnyx"}
+    assert response.choices[0].message.tool_calls is not None
+    assert len(response.choices[0].message.tool_calls) == 1
+    assert response.choices[0].message.tool_calls[0].id == "call-1"
+
+
+def test_openai_choice_state_skips_tool_call_without_function_name() -> None:
+    state = OpenAiChoiceState(
+        tool_calls={
+            0: OpenAiToolCallState(
+                id="tc-1",
+                type="function",
+                arguments_text='{"query":"harnyx"}',
+            )
+        }
+    )
+
+    assert state.tool_call_values() is None
+
+
+def test_openai_tool_call_state_replaces_dict_argument_snapshots() -> None:
+    state = OpenAiToolCallState(id="tc-1", type="function", name="lookup")
+
+    assert state.merge_delta(
+        _OpenAiToolCallDelta.model_validate(
+            {"function": {"arguments": {"query": "a"}}}
+        )
+    )
+    assert state.merge_delta(
+        _OpenAiToolCallDelta.model_validate(
+            {"function": {"arguments": {"query": "ab"}}}
+        )
+    )
+
+    tool_call = state.to_tool_call(index=0)
+    assert tool_call is not None
+    assert tool_call.arguments == '{"query": "ab"}'
+
+
+async def test_vertex_maas_gpt_oss_routes_to_chat_completions(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    caplog.set_level(logging.DEBUG, logger="harnyx_commons.llm.calls")
     captured: dict[str, Any] = {}
     _patch_google_client(monkeypatch, captured)
     _patch_vertex_maas_http_client(monkeypatch, captured)
@@ -302,18 +977,29 @@ async def test_vertex_maas_gpt_oss_routes_to_chat_completions(monkeypatch: pytes
 
     response = await provider.invoke(request)
 
-    assert "model_call" not in captured
+    assert "model_stream_call" not in captured
     http_call = captured["http_call"]
+    assert http_call["method"] == "POST"
     assert http_call["url"].endswith("/endpoints/openapi/chat/completions")
     assert http_call["headers"]["Authorization"] == "Bearer access-token"
     payload = http_call["json"]
     assert payload["model"] == "openai/gpt-oss-120b-maas"
+    assert payload["stream"] is True
     assert payload["reasoning_effort"] == "high"
     assert payload["max_tokens"] == 64
     assert [message["role"] for message in payload["messages"]] == ["system", "user"]
     assert response.raw_text == "56"
     assert response.choices[0].message.reasoning == "I need to multiply 7 by 8."
     assert response.usage.reasoning_tokens == 5
+    assert response.metadata is not None
+    assert "ttft_ms" not in response.metadata
+
+    records = [record for record in caplog.records if record.message == "llm.vertex.stream.ttft"]
+    assert records
+    data = records[0].__dict__["data"]
+    assert data["branch"] == "vertex_maas_openai"
+    assert isinstance(data["ttft_ms"], float)
+    assert data["ttft_ms"] >= 0.0
 
 
 async def test_vertex_provider_keeps_vertex_gpt_oss_on_generate_content(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -344,7 +1030,7 @@ async def test_vertex_provider_keeps_vertex_gpt_oss_on_generate_content(monkeypa
 
     await provider.invoke(request)
 
-    assert "model_call" in captured
+    assert "model_stream_call" in captured
     assert "http_call" not in captured
 
 
@@ -460,7 +1146,7 @@ async def test_vertex_provider_normalizes_assistant_and_tool_roles(monkeypatch: 
 
     await provider.invoke(request)
 
-    contents = captured["model_call"]["contents"]
+    contents = captured["model_stream_call"]["contents"]
     assert [entry.role for entry in contents] == ["user", "model", "user"]
 
 
@@ -589,7 +1275,7 @@ def test_vertex_maas_chat_payload_supports_structured_output() -> None:
         reasoning_effort="high",
     )
 
-    payload = build_vertex_maas_chat_payload(request)
+    payload = _VertexMaasChatRequest.from_request(request).model_dump(mode="python", exclude_none=True)
 
     assert payload["response_format"]["type"] == "json_schema"
     assert payload["response_format"]["json_schema"]["name"] == "_StructuredPairwisePreference"
@@ -597,7 +1283,7 @@ def test_vertex_maas_chat_payload_supports_structured_output() -> None:
     assert "temperature" not in payload
 
 
-def test_parse_vertex_maas_chat_response_maps_reasoning_tool_calls_and_usage() -> None:
+def test_vertex_maas_response_payload_maps_reasoning_tool_calls_and_usage() -> None:
     payload = {
         "id": "chatcmpl-123",
         "choices": [
@@ -632,7 +1318,7 @@ def test_parse_vertex_maas_chat_response_maps_reasoning_tool_calls_and_usage() -
         },
     }
 
-    response = parse_vertex_maas_chat_response(payload)
+    response = _VertexMaasChatResponse.model_validate(payload).to_llm_response()
 
     assert response.id == "chatcmpl-123"
     assert response.raw_text == '{"preferred_position":"first"}'
@@ -645,6 +1331,162 @@ def test_parse_vertex_maas_chat_response_maps_reasoning_tool_calls_and_usage() -
     assert response.usage.completion_tokens == 7
     assert response.usage.reasoning_tokens == 3
     assert response.usage.total_tokens == 24
+
+
+def test_openai_stream_state_deduplicates_vertex_reasoning_keys_per_event() -> None:
+    state = OpenAiStreamState()
+    event = {
+        "id": "chatcmpl-123",
+        "choices": [
+            {
+                "index": 0,
+                "delta": {
+                    "reasoning": "step",
+                    "reasoning_content": "step",
+                },
+            }
+        ],
+    }
+
+    merged = state.merge_event(
+        event=_OpenAiStreamEvent.model_validate(event),
+        reasoning_keys=("reasoning_content", "reasoning"),
+    )
+
+    assert merged is True
+    payload = _VertexMaasChatResponse.from_stream_state(state)
+    assert payload.raw_payload() == {
+        "id": "chatcmpl-123",
+        "choices": [{"index": 0, "message": {"content": "", "reasoning_content": "step"}}],
+        "usage": None,
+    }
+
+
+def test_openai_stream_state_preserves_vertex_multipart_join_semantics() -> None:
+    state = OpenAiStreamState()
+    event = _OpenAiStreamEvent.model_validate(
+        {
+            "id": "chatcmpl-123",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "content": [
+                            {"text": "first paragraph"},
+                            {"text": "second paragraph"},
+                        ],
+                        "reasoning_content": [
+                            {"text": "step one"},
+                            {"text": "step two"},
+                        ],
+                    },
+                }
+            ],
+        }
+    )
+
+    merged = state.merge_event(
+        event=event,
+        reasoning_keys=("reasoning_content", "reasoning"),
+        normalize_content_fragment=lambda value: normalize_openai_text_fragments(value, multipart_joiner="\n\n"),
+        normalize_reasoning_fragment=lambda value: normalize_openai_text_fragments(value, multipart_joiner="\n\n"),
+    )
+
+    assert merged is True
+    payload = _VertexMaasChatResponse.from_stream_state(state)
+    assert payload.raw_payload() == {
+        "id": "chatcmpl-123",
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "content": "first paragraph\n\nsecond paragraph",
+                    "reasoning_content": "step one\n\nstep two",
+                },
+            }
+        ],
+        "usage": None,
+    }
+
+
+def test_vertex_maas_response_payload_preserves_multi_event_interleaving() -> None:
+    state = OpenAiStreamState()
+
+    first_event = _OpenAiStreamEvent.model_validate(
+        {
+            "id": "chatcmpl-123",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "content": "first ",
+                        "reasoning_content": "think-1",
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call-1",
+                                "function": {
+                                    "name": "lookup",
+                                    "arguments": '{"q":',
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+        }
+    )
+    second_event = _OpenAiStreamEvent.model_validate(
+        {
+            "id": "chatcmpl-123",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "content": "second",
+                        "reasoning": "think-2",
+                        "reasoning_content": "think-2",
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {
+                                    "arguments": ' "paris"}',
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 3,
+                "total_tokens": 8,
+            },
+        }
+    )
+
+    assert state.merge_event(
+        first_event,
+        reasoning_keys=("reasoning_content", "reasoning"),
+        normalize_content_fragment=_vertex_stream_text_fragments,
+        normalize_reasoning_fragment=_vertex_stream_text_fragments,
+    )
+    assert state.merge_event(
+        second_event,
+        reasoning_keys=("reasoning_content", "reasoning"),
+        normalize_content_fragment=_vertex_stream_text_fragments,
+        normalize_reasoning_fragment=_vertex_stream_text_fragments,
+    )
+
+    payload = _VertexMaasChatResponse.from_stream_state(state)
+    response = payload.to_llm_response()
+
+    assert response.raw_text == "first second"
+    assert response.choices[0].message.reasoning == "think-1think-2"
+    assert response.choices[0].message.tool_calls[0].name == "lookup"
+    assert response.choices[0].message.tool_calls[0].arguments == '{"q": "paris"}'
+    assert response.usage.total_tokens == 8
 
 
 def test_vertex_maas_openai_chat_model_name_strips_publisher_prefix() -> None:
@@ -727,7 +1569,125 @@ async def test_vertex_provider_routes_claude_models_to_anthropic(monkeypatch: py
     assert response.raw_text == "ok"
 
     assert captured["anthropic_calls"] == 1
-    assert "model_call" not in captured
+    assert "model_stream_call" not in captured
+
+
+async def test_vertex_claude_stream_default_reconstructs_final_response(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    caplog.set_level(logging.DEBUG, logger="harnyx_commons.llm.calls")
+    captured: dict[str, Any] = {}
+    _patch_google_client(monkeypatch, captured)
+
+    provider = VertexLlmProvider(
+        project="demo-project",
+        location="us-central1",
+        timeout=CHUTES.timeout_seconds,
+    )
+
+    class _FakeFinalAnthropicMessage:
+        id = "claude-stream-response"
+
+        def model_dump(self, *, mode: str = "python") -> dict[str, Any]:
+            return {"id": self.id, "mode": mode}
+
+    class _FakeStreamManager:
+        def __init__(self) -> None:
+            self._final_message = _FakeFinalAnthropicMessage()
+
+        async def __aenter__(self) -> _FakeStreamManager:
+            return self
+
+        async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+            return False
+
+        @property
+        def text_stream(self) -> Any:
+            async def _iter() -> Any:
+                yield "ok"
+
+            return _iter()
+
+        async def get_final_message(self) -> _FakeFinalAnthropicMessage:
+            return self._final_message
+
+    captured_stream_kwargs: dict[str, Any] = {}
+
+    def fake_stream(**kwargs: Any) -> _FakeStreamManager:
+        captured_stream_kwargs.update(kwargs)
+        return _FakeStreamManager()
+
+    monkeypatch.setattr(provider._anthropic_client.messages, "stream", fake_stream)
+    monkeypatch.setattr(
+        "harnyx_commons.llm.providers.vertex.provider.build_anthropic_response",
+        lambda response: LlmResponse(
+            id=response.id,
+            choices=(
+                LlmChoice(
+                    index=0,
+                    message=LlmChoiceMessage(
+                        role="assistant",
+                        content=(LlmMessageContentPart(type="text", text="ok"),),
+                        tool_calls=None,
+                    ),
+                    finish_reason="stop",
+                ),
+            ),
+            usage=LlmUsage(prompt_tokens=2, completion_tokens=1, total_tokens=3),
+            metadata=None,
+            finish_reason="stop",
+        ),
+    )
+
+    request = LlmRequest(
+        provider="vertex",
+        model="/anthropic/models/claude-sonnet-4-5@20250929",
+        messages=(
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text("hello"),),
+            ),
+        ),
+        temperature=None,
+        max_output_tokens=64,
+    )
+
+    response = await provider.invoke(request)
+
+    assert captured_stream_kwargs["model"] == "claude-sonnet-4-5@20250929"
+    assert response.raw_text == "ok"
+    assert response.metadata is not None
+    assert response.metadata["raw_response"] == {"id": "claude-stream-response", "mode": "json"}
+    assert "ttft_ms" not in response.metadata
+
+    records = [record for record in caplog.records if record.message == "llm.vertex.stream.ttft"]
+    assert records
+    data = records[0].__dict__["data"]
+    assert data["branch"] == "claude"
+    assert isinstance(data["ttft_ms"], float)
+    assert data["ttft_ms"] >= 0.0
+
+
+async def test_vertex_maas_payload_forces_stream_even_when_extra_overrides() -> None:
+    request = LlmRequest(
+        provider="vertex-maas",
+        model="publishers/openai/models/gpt-oss-120b-maas",
+        messages=(
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text("hello"),),
+            ),
+        ),
+        temperature=0.0,
+        max_output_tokens=64,
+        extra={"stream": False},
+    )
+
+    payload = _VertexMaasChatRequest.from_request(request).model_dump(mode="python", exclude_none=True)
+
+    assert payload["stream"] is True
 
 
 async def test_vertex_provider_aclose_closes_owned_clients(
@@ -847,7 +1807,7 @@ async def test_vertex_provider_injects_google_search_tool(monkeypatch: pytest.Mo
 
     await provider.invoke(request)
 
-    config = captured["model_call"]["config"]
+    config = captured["model_stream_call"]["config"]
     response_mime_type = config.response_mime_type
     assert response_mime_type is None
     assert config.tools
@@ -901,7 +1861,7 @@ async def test_vertex_provider_includes_provider_native_grounded_tools(monkeypat
 
     await provider.invoke(request)
 
-    config = captured["model_call"]["config"]
+    config = captured["model_stream_call"]["config"]
     assert config.tools
     assert len(config.tools) == 2
     assert config.tools[0].google_search is not None
@@ -947,7 +1907,7 @@ async def test_vertex_serializes_input_tool_result_as_function_response(monkeypa
 
     await provider.invoke(request)
 
-    contents = captured["model_call"]["contents"]
+    contents = captured["model_stream_call"]["contents"]
     assert contents
     part = contents[0].parts[0]
     function_response = part.function_response

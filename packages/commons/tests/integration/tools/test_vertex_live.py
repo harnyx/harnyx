@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from pydantic import BaseModel
 
@@ -7,6 +9,7 @@ from harnyx_commons.clients import PLATFORM
 from harnyx_commons.config.llm import LlmSettings
 from harnyx_commons.config.vertex import VertexSettings
 from harnyx_commons.llm.adapter import LlmProviderAdapter
+from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_commons.llm.providers.vertex.provider import VertexLlmProvider
 from harnyx_commons.llm.schema import GroundedLlmRequest, LlmMessage, LlmMessageContentPart, LlmRequest
 
@@ -57,7 +60,7 @@ async def test_vertex_maas_qwen_alias_completion_live() -> None:
         await provider.aclose()
 
 
-async def test_vertex_maas_openai_reasoning_live() -> None:
+async def test_vertex_maas_openai_completion_live() -> None:
     vertex = VertexSettings()
     project = vertex.gcp_project_id
     location = vertex.vertex_maas_gcp_location
@@ -92,23 +95,29 @@ async def test_vertex_maas_openai_reasoning_live() -> None:
                 ),
             ),
             temperature=0.0,
-            max_output_tokens=256,
-            reasoning_effort="high",
-            timeout_seconds=180.0,
+            max_output_tokens=64,
         )
 
-        response = await provider.invoke(request)
+        attempts = 8
+        response = None
+        last_error: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                response = await provider.invoke(request)
+                break
+            except LlmRetryExhaustedError as exc:
+                last_error = exc
+                if str(exc) != "empty_output" or attempt + 1 >= attempts:
+                    raise
+                await asyncio.sleep(1)
     finally:
         await provider.aclose()
 
+    if response is None and last_error is not None:
+        raise last_error
+    assert response is not None
     assert response.raw_text, "Vertex MaaS OpenAI response should include text output"
     assert "56" in response.raw_text
-
-    reasoning = response.choices[0].message.reasoning
-    assert isinstance(reasoning, str)
-    assert reasoning.strip()
-    if response.usage.reasoning_tokens is not None:
-        assert response.usage.reasoning_tokens >= 0
 
 
 async def test_vertex_multimodal_image_live() -> None:

@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import json
 import mimetypes
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import Any
 
 import httpx
 from google.genai import types
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, model_validator
 
 from harnyx_commons.llm.provider_types import normalize_reasoning_effort
+from harnyx_commons.llm.providers.openai_chat_codec import (
+    OpenAiChatRequestParts,
+    json_schema_from_model,
+)
+from harnyx_commons.llm.providers.openai_stream import OpenAiChoiceState, OpenAiStreamState
 from harnyx_commons.llm.schema import (
     AbstractLlmRequest,
     LlmChoice,
@@ -29,10 +34,12 @@ from harnyx_commons.llm.schema import (
 )
 
 _IMAGE_FETCH_TIMEOUT_SECONDS = 20.0
+_STRING_KEY_MAPPING_ADAPTER = TypeAdapter(dict[str, object])
+class _VertexMaasChatRequest(BaseModel):
+    model_config = ConfigDict(extra="allow", strict=True)
 
-
-class _VertexMaasRequestPayload(BaseModel):
     model: str
+    stream: bool = True
     messages: list[dict[str, Any]]
     temperature: float | None = None
     max_tokens: int | None = None
@@ -41,6 +48,38 @@ class _VertexMaasRequestPayload(BaseModel):
     reasoning_effort: str | None = None
     include: list[str] | None = None
     response_format: dict[str, Any] | None = None
+
+    @classmethod
+    def from_request(cls, request: AbstractLlmRequest) -> _VertexMaasChatRequest:
+        request_parts = OpenAiChatRequestParts.from_request(
+            request,
+            provider_name="Vertex MaaS",
+            image_error_message="vertex-maas GPT OSS requests do not support image content parts",
+            tool_mix_error_message="vertex-maas tool messages cannot mix text and input_tool_result parts",
+            tool_count_error_message="vertex-maas tool messages must include exactly one input_tool_result part",
+        )
+        payload = cls(
+            model=vertex_maas_openai_chat_model_name(request.model),
+            messages=[message.model_dump(mode="python", exclude_none=True) for message in request_parts.messages],
+            temperature=request.temperature,
+            max_tokens=request.max_output_tokens,
+            tools=(
+                [tool.model_dump(mode="python", exclude_none=True) for tool in request_parts.tools]
+                if request_parts.tools
+                else None
+            ),
+            tool_choice=request_parts.tool_choice,
+            reasoning_effort=request.reasoning_effort,
+            include=request_parts.include,
+            response_format=(
+                request_parts.response_format.model_dump(mode="python", exclude_none=True)
+                if request_parts.response_format is not None
+                else None
+            ),
+        )
+        if request.extra:
+            payload = payload.model_copy(update=dict(request.extra))
+        return payload.model_copy(update={"stream": True})
 
 
 class _VertexMaasToolFunctionPayload(BaseModel):
@@ -53,16 +92,91 @@ class _VertexMaasToolCallPayload(BaseModel):
     function: _VertexMaasToolFunctionPayload
 
 
-class _VertexMaasChoiceMessagePayload(BaseModel):
-    content: str | list[dict[str, Any]] | None = None
-    reasoning_content: str | list[dict[str, Any]] | None = None
-    reasoning: str | None = None
-    tool_calls: list[_VertexMaasToolCallPayload] | None = None
+class _VertexMaasTextPart(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    type: str | None = None
+    text: str | None = None
+
+
+_VERTEX_MAAS_TEXT_ADAPTER = TypeAdapter(str | list[_VertexMaasTextPart] | None)
 
 
 class _VertexMaasChoicePayload(BaseModel):
-    message: _VertexMaasChoiceMessagePayload
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    index: int | None = None
+    content: str | list[_VertexMaasTextPart] | None = None
+    reasoning_content: str | list[_VertexMaasTextPart] | None = None
+    reasoning: str | None = None
+    tool_calls: list[_VertexMaasToolCallPayload] | None = None
     finish_reason: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _flatten_message_payload(cls, value: object) -> object:
+        try:
+            payload = _STRING_KEY_MAPPING_ADAPTER.validate_python(value)
+        except ValidationError:
+            return value
+        message_payload = payload.get("message")
+        if message_payload is None:
+            return payload
+        try:
+            message = _STRING_KEY_MAPPING_ADAPTER.validate_python(message_payload)
+        except ValidationError:
+            return payload
+        return {**payload, **message}
+
+    @classmethod
+    def from_stream_choice(cls, *, index: int, state: OpenAiChoiceState) -> _VertexMaasChoicePayload:
+        return cls(
+            index=index,
+            content=state.content_text,
+            reasoning_content=state.reasoning_text or None,
+            tool_calls=_vertex_maas_tool_call_payloads(state),
+            finish_reason=state.finish_reason,
+        )
+
+    def text_content(self) -> str | None:
+        return _extract_vertex_maas_text(self.content, require_text_type=True)
+
+    def reasoning_text(self) -> str | None:
+        return _extract_vertex_maas_text(self.reasoning_content) or _extract_vertex_maas_text(self.reasoning)
+
+    def to_choice(self, *, index: int) -> LlmChoice:
+        return LlmChoice(
+            index=self.index if self.index is not None else index,
+            message=LlmChoiceMessage(
+                role="assistant",
+                content=((_text_part(text_content),) if (text_content := self.text_content()) else ()),
+                tool_calls=_vertex_maas_tool_calls(self.tool_calls),
+                reasoning=self.reasoning_text(),
+            ),
+            finish_reason=self.finish_reason or "stop",
+        )
+
+    def raw_payload(self) -> dict[str, Any]:
+        message_payload = {
+            "content": self.content,
+            "reasoning_content": self.reasoning_content,
+            "reasoning": self.reasoning,
+            "tool_calls": (
+                [tool_call.model_dump(mode="python", exclude_none=True) for tool_call in self.tool_calls]
+                if self.tool_calls
+                else None
+            ),
+        }
+        payload = {
+            "index": self.index,
+            "finish_reason": self.finish_reason,
+            "message": {
+                key: value
+                for key, value in message_payload.items()
+                if value is not None
+            },
+        }
+        return {key: value for key, value in payload.items() if value is not None}
 
 
 class _VertexMaasUsagePayload(BaseModel):
@@ -73,10 +187,49 @@ class _VertexMaasUsagePayload(BaseModel):
     reasoning_tokens: int | None = None
 
 
-class _VertexMaasResponsePayload(BaseModel):
+class _VertexMaasChatResponse(BaseModel):
     id: str | None = None
     choices: list[_VertexMaasChoicePayload]
     usage: _VertexMaasUsagePayload | None = None
+
+    @classmethod
+    def from_stream_state(cls, state: OpenAiStreamState) -> _VertexMaasChatResponse:
+        choices = [
+            _VertexMaasChoicePayload.from_stream_choice(index=index, state=choice_state)
+            for index, choice_state in sorted(state.choices.items())
+        ]
+        usage = _VertexMaasUsagePayload.model_validate(state.usage) if state.usage is not None else None
+        return cls(id=state.response_id or None, choices=choices, usage=usage)
+
+    def to_llm_response(self) -> LlmResponse:
+        choices = tuple(choice.to_choice(index=index) for index, choice in enumerate(self.choices))
+        usage_payload = self.usage
+        usage = LlmUsage(
+            prompt_tokens=usage_payload.prompt_tokens if usage_payload else None,
+            prompt_cached_tokens=(
+                usage_payload.prompt_tokens_details.get("cached_tokens")
+                if usage_payload and usage_payload.prompt_tokens_details
+                else None
+            ),
+            completion_tokens=usage_payload.completion_tokens if usage_payload else None,
+            total_tokens=usage_payload.total_tokens if usage_payload else None,
+            reasoning_tokens=usage_payload.reasoning_tokens if usage_payload else None,
+        )
+        response_id = self.id or ""
+        finish_reason = choices[0].finish_reason if choices else None
+        return LlmResponse(
+            id=response_id,
+            choices=choices,
+            usage=usage,
+            finish_reason=finish_reason,
+        )
+
+    def raw_payload(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "choices": [choice.raw_payload() for choice in self.choices],
+            "usage": self.usage.model_dump(mode="python", exclude_none=True) if self.usage is not None else None,
+        }
 
 
 def _to_vertex_request_role(role: str) -> str:
@@ -127,147 +280,6 @@ def serialize_provider_native_tools(tools: Sequence[LlmTool] | None) -> list[typ
     return serialized
 
 
-def build_vertex_maas_chat_payload(request: AbstractLlmRequest) -> dict[str, Any]:
-    response_format: dict[str, Any] | None = None
-    match request.output_mode:
-        case "text":
-            response_format = None
-        case "json_object":
-            response_format = {"type": "json_object"}
-        case "structured":
-            schema_type = request.output_schema
-            if schema_type is None:
-                raise ValueError("structured output requires output_schema")
-            response_format = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": schema_type.__name__,
-                    "schema": json_schema_from_model(schema_type),
-                },
-            }
-        case _:
-            raise ValueError(f"unsupported Vertex MaaS output_mode: {request.output_mode!r}")
-
-    payload = _VertexMaasRequestPayload(
-        model=vertex_maas_openai_chat_model_name(request.model),
-        messages=[_serialize_vertex_maas_chat_message(message) for message in request.messages],
-        temperature=request.temperature,
-        max_tokens=request.max_output_tokens,
-        tools=serialize_vertex_maas_openai_tools(request.tools),
-        tool_choice=request.tool_choice,
-        reasoning_effort=request.reasoning_effort,
-        include=list(request.include) if request.include else None,
-        response_format=response_format,
-    ).model_dump(exclude_none=True)
-    if request.extra:
-        payload.update(dict(request.extra))
-    return payload
-
-
-def serialize_vertex_maas_openai_tools(tools: Sequence[LlmTool] | None) -> list[dict[str, Any]] | None:
-    if not tools:
-        return None
-
-    serialized: list[dict[str, Any]] = []
-    for tool in tools:
-        if tool.type == "function" and tool.function is not None:
-            serialized.append(
-                {
-                    "type": "function",
-                    "function": dict(tool.function),
-                }
-            )
-            continue
-
-        tool_payload: dict[str, Any] = {"type": tool.type}
-        if tool.config:
-            tool_payload.update(dict(tool.config))
-        serialized.append(tool_payload)
-    return serialized
-
-
-def parse_vertex_maas_chat_response(payload: Mapping[str, Any]) -> LlmResponse:
-    parsed = _VertexMaasResponsePayload.model_validate(payload)
-    choices = tuple(
-        LlmChoice(
-            index=index,
-            message=LlmChoiceMessage(
-                role="assistant",
-                content=(
-                    (_text_part(content_text),)
-                    if (
-                        content_text := _extract_vertex_maas_text(
-                            choice.message.content,
-                            require_text_type=True,
-                        )
-                    )
-                    else ()
-                ),
-                tool_calls=_vertex_maas_tool_calls(choice.message.tool_calls),
-                reasoning=(
-                    _extract_vertex_maas_text(choice.message.reasoning_content)
-                    or _extract_vertex_maas_text(choice.message.reasoning)
-                ),
-            ),
-            finish_reason=choice.finish_reason or "stop",
-        )
-        for index, choice in enumerate(parsed.choices)
-    )
-    usage_payload = parsed.usage
-    usage = LlmUsage(
-        prompt_tokens=usage_payload.prompt_tokens if usage_payload else None,
-        prompt_cached_tokens=(
-            usage_payload.prompt_tokens_details.get("cached_tokens")
-            if usage_payload and usage_payload.prompt_tokens_details
-            else None
-        ),
-        completion_tokens=usage_payload.completion_tokens if usage_payload else None,
-        total_tokens=usage_payload.total_tokens if usage_payload else None,
-        reasoning_tokens=usage_payload.reasoning_tokens if usage_payload else None,
-    )
-    response_id = parsed.id or ""
-    finish_reason = choices[0].finish_reason if choices else None
-    return LlmResponse(
-        id=response_id,
-        choices=choices,
-        usage=usage,
-        finish_reason=finish_reason,
-    )
-
-
-def _serialize_vertex_maas_chat_message(message: LlmMessage) -> dict[str, Any]:
-    fragments: list[str] = []
-    tool_results: list[LlmInputToolResultPart] = []
-    for part in message.content:
-        match part:
-            case LlmInputTextPart(text=text):
-                fragments.append(text)
-            case LlmInputToolResultPart() as tool_result:
-                tool_results.append(tool_result)
-            case LlmInputImagePart():
-                raise ValueError("vertex-maas GPT OSS requests do not support image content parts")
-            case _:
-                raise ValueError(f"unsupported Vertex MaaS request content part type: {part!r}")
-
-    if tool_results:
-        if fragments:
-            raise ValueError("vertex-maas tool messages cannot mix text and input_tool_result parts")
-        if len(tool_results) != 1:
-            raise ValueError("vertex-maas tool messages must include exactly one input_tool_result part")
-        tool_result = tool_results[0]
-        return {
-            "role": "tool",
-            "tool_call_id": tool_result.tool_call_id,
-            "name": tool_result.name,
-            "content": tool_result.output_json,
-        }
-
-    return {
-        "role": message.role,
-        "content": "\n".join(fragments),
-    }
-
-
 def vertex_maas_openai_chat_model_name(model: str) -> str:
     normalized = model.strip()
     prefix = "publishers/"
@@ -280,24 +292,30 @@ def vertex_maas_openai_chat_model_name(model: str) -> str:
 
 
 def _extract_vertex_maas_text(
-    value: str | list[dict[str, Any]] | None,
+    value: object,
     *,
     require_text_type: bool = False,
 ) -> str | None:
-    if value is None:
+    try:
+        normalized = _VERTEX_MAAS_TEXT_ADAPTER.validate_python(value)
+    except ValidationError:
         return None
-    if isinstance(value, str):
-        stripped = value.strip()
-        return stripped or None
-
-    text_fragments = [
-        text.strip()
-        for item in value
-        if not require_text_type or item.get("type") == "text"
-        if isinstance((text := item.get("text")), str)
-        if text.strip()
-    ]
-    return "\n\n".join(text_fragments) or None
+    match normalized:
+        case None:
+            return None
+        case str() as text:
+            stripped = text.strip()
+            return stripped or None
+        case list() as parts:
+            text_fragments = [
+                text.strip()
+                for part in parts
+                if (not require_text_type or part.type == "text")
+                if (text := part.text)
+                if text.strip()
+            ]
+            return "\n\n".join(text_fragments) or None
+    return None
 
 
 def _vertex_maas_tool_calls(
@@ -318,6 +336,22 @@ def _vertex_maas_tool_calls(
         )
         for index, tool_call in enumerate(value)
     )
+
+
+def _vertex_maas_tool_call_payloads(state: OpenAiChoiceState) -> list[_VertexMaasToolCallPayload] | None:
+    tool_calls = state.tool_call_values()
+    if not tool_calls:
+        return None
+    return [
+        _VertexMaasToolCallPayload(
+            id=tool_call.id,
+            function=_VertexMaasToolFunctionPayload(
+                name=tool_call.name,
+                arguments=tool_call.arguments,
+            ),
+        )
+        for tool_call in tool_calls
+    ]
 
 
 def resolve_tool_config(
@@ -576,14 +610,6 @@ def attach_search_metadata(
         }, usage
     return None, usage
 
-
-def json_schema_from_model(model: type[BaseModel]) -> dict[str, Any]:
-    schema = model.model_json_schema()
-    if not isinstance(schema, dict):  # pragma: no cover - pydantic guarantees dict
-        raise TypeError("output_schema must produce a JSON object")
-    return dict(schema)
-
-
 __all__ = [
     "normalize_messages",
     "serialize_tools",
@@ -594,5 +620,7 @@ __all__ = [
     "build_choices",
     "extract_usage",
     "attach_search_metadata",
+    "_VertexMaasChatRequest",
+    "_VertexMaasChatResponse",
     "json_schema_from_model",
 ]

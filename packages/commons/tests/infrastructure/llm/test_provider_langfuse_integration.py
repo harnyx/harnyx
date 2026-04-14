@@ -226,6 +226,8 @@ async def test_invoke_success_updates_generation_payload(monkeypatch: pytest.Mon
         "source": "stub",
         "raw_response": {"response_id": "provider-raw"},
     }
+    assert "ttft_ms" not in update_call.metadata
+    assert "ttft_ms" not in update_call.metadata["response_metadata"]
     assert update_call.metadata["raw"] == {
         "request": provider_module._request_snapshot(request),
         "response_payload": response.payload,

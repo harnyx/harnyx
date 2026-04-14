@@ -10,6 +10,13 @@ from harnyx_commons.llm.providers.chutes import (
     _parse_chutes_response_payload,
     resolve_chutes_embedding_base_url,
 )
+from harnyx_commons.llm.providers.chutes_codec import _ChutesChatResponse, _ChutesReasoningStreamState
+from harnyx_commons.llm.providers.openai_stream import (
+    OpenAiStreamError,
+    OpenAiStreamState,
+    _OpenAiStreamEvent,
+    iter_openai_sse_events,
+)
 from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest, LlmResponse, LlmUsage
 
 
@@ -29,7 +36,7 @@ def test_parse_payload_skips_malformed_choice_and_keeps_valid_choice() -> None:
     parsed = _parse_chutes_response_payload(payload)
 
     assert len(parsed.choices) == 1
-    assert parsed.choices[0].message.content[0].text == "ok"
+    assert parsed.to_llm_response().choices[0].message.content[0].text == "ok"
 
 
 def test_all_malformed_choices_fall_back_to_retryable_empty_choices_verifier() -> None:
@@ -101,7 +108,7 @@ def test_parse_payload_ignores_malformed_tool_call_and_keeps_valid_choice() -> N
     parsed = _parse_chutes_response_payload(payload)
 
     assert len(parsed.choices) == 1
-    assert parsed.choices[0].message.content[0].text == "ok"
+    assert parsed.to_llm_response().choices[0].message.content[0].text == "ok"
     tool_calls = parsed.choices[0].message.tool_calls or ()
     assert tuple(call.id for call in tool_calls) == ("tc-valid",)
 
@@ -136,7 +143,7 @@ def test_parse_payload_normalizes_string_reasoning_field() -> None:
             {
                 "message": {
                     "content": "ok",
-                    "reasoning": "model supplied unsupported reasoning shape",
+                    "reasoning": "  model supplied unsupported reasoning shape  ",
                 },
             },
         ],
@@ -212,10 +219,98 @@ def test_classify_http_status_includes_upstream_detail() -> None:
     assert reason == "http_400: response_format.json_schema is invalid"
 
 
+def test_classify_http_status_handles_closed_stream_response() -> None:
+    request = httpx.Request("POST", "https://example.com/v1/chat/completions")
+    response = httpx.Response(
+        503,
+        request=request,
+        stream=httpx.ByteStream(b'{"detail":"temporarily unavailable"}'),
+    )
+    response.close()
+    exc = httpx.HTTPStatusError("upstream failure", request=request, response=response)
+
+    retryable, reason = ChutesLlmProvider._classify_exception(exc)
+
+    assert retryable is True
+    assert reason == "http_503"
+
+
+@pytest.mark.parametrize("code", [500, 502, 503, 504, "500"])
+def test_classify_stream_error_preserves_server_retry_policy(code: int | str) -> None:
+    exc = OpenAiStreamError(
+        message="temporarily unavailable",
+        error_type="server_error",
+        code=code,
+    )
+
+    retryable, reason = ChutesLlmProvider._classify_exception(exc)
+
+    assert retryable is True
+    assert reason == f"stream_error:{code}:server_error:temporarily unavailable"
+
+
+@pytest.mark.anyio("asyncio")
+async def test_iter_openai_sse_events_raises_upstream_in_band_error() -> None:
+    response = httpx.Response(
+        200,
+        text='data: {"error":{"message":"temporarily unavailable","type":"server_error"}}\n\n',
+    )
+
+    with pytest.raises(OpenAiStreamError, match="temporarily unavailable"):
+        async for _ in iter_openai_sse_events(
+            response,
+            invalid_data_message="invalid_data",
+            invalid_event_message="invalid_event",
+        ):
+            pass
+
+
+@pytest.mark.anyio("asyncio")
+async def test_iter_openai_sse_events_rejects_wrapped_event_envelope() -> None:
+    response = httpx.Response(
+        200,
+        text='data: {"event":{"choices":[{"message":{"content":"ok"}}]}}\n\n',
+    )
+
+    with pytest.raises(RuntimeError, match="invalid_data"):
+        async for _ in iter_openai_sse_events(
+            response,
+            invalid_data_message="invalid_data",
+            invalid_event_message="invalid_event",
+        ):
+            pass
+
+
+def test_streamed_fallback_reasoning_preserves_exact_chunk_text() -> None:
+    state = OpenAiStreamState()
+    reasoning_state = _ChutesReasoningStreamState()
+
+    first_event = _OpenAiStreamEvent.model_validate(
+        {"choices": [{"index": 0, "message": {"content": "ok", "reasoning": "step"}}]}
+    )
+    second_event = _OpenAiStreamEvent.model_validate(
+        {"choices": [{"index": 0, "message": {"reasoning": " "}}]}
+    )
+    third_event = _OpenAiStreamEvent.model_validate(
+        {"choices": [{"index": 0, "message": {"reasoning": "two"}, "finish_reason": "stop"}]}
+    )
+
+    reasoning_state.merge_event(first_event)
+    assert state.merge_event(first_event, reasoning_keys=()) is True
+    reasoning_state.merge_event(second_event)
+    assert state.merge_event(second_event, reasoning_keys=()) is False
+    reasoning_state.merge_event(third_event)
+    assert state.merge_event(third_event, reasoning_keys=()) is False
+
+    response = _ChutesChatResponse.from_stream_state(state, reasoning_state=reasoning_state)
+
+    assert response.to_llm_response().choices[0].message.reasoning == "step two"
+
+
 def test_build_payload_accepts_json_object_output_mode() -> None:
     provider = ChutesLlmProvider(base_url="https://example.com", api_key="test-key")
 
-    payload = provider._build_payload(
+    payload = provider._build_request(
         LlmRequest(
             provider="chutes",
             model="deepseek-ai/DeepSeek-V3.1",
@@ -229,7 +324,7 @@ def test_build_payload_accepts_json_object_output_mode() -> None:
             max_output_tokens=64,
             output_mode="json_object",
         )
-    )
+    ).model_dump(mode="python", exclude_none=True)
 
     assert payload["response_format"] == {"type": "json_object"}
 
@@ -237,7 +332,7 @@ def test_build_payload_accepts_json_object_output_mode() -> None:
 def test_build_payload_accepts_structured_output_mode() -> None:
     provider = ChutesLlmProvider(base_url="https://example.com", api_key="test-key")
 
-    payload = provider._build_payload(
+    payload = provider._build_request(
         LlmRequest(
             provider="chutes",
             model="deepseek-ai/DeepSeek-V3.1",
@@ -252,7 +347,7 @@ def test_build_payload_accepts_structured_output_mode() -> None:
             output_mode="structured",
             output_schema=_JudgeDecision,
         )
-    )
+    ).model_dump(mode="python", exclude_none=True)
 
     response_format = payload["response_format"]
     assert response_format == {
