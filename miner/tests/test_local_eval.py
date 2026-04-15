@@ -1467,3 +1467,37 @@ def test_resolve_batch_context_rejects_explicit_non_completed_batch() -> None:
     assert client._client.calls == [
         (f"/v1/monitoring/miner-task-batches/{batch_id}", None),
     ]
+
+
+def test_get_batch_results_uses_lightweight_monitoring_route() -> None:
+    batch_id = uuid4()
+
+    class _StubClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, object]] = []
+
+        def get(self, path: str, params=None):
+            self.calls.append((path, params))
+            request = httpx.Request("GET", f"https://platform.example.com{path}")
+            if path == f"/v1/monitoring/miner-task-batches/{batch_id}/results":
+                return httpx.Response(200, json=[], request=request)
+            pytest.fail(f"unexpected path: {path}")
+
+        def close(self) -> None:
+            return None
+
+    client = PlatformMonitoringClient(base_url="https://platform.example.com")
+    client._client.close()
+    client._client = _StubClient()
+
+    rows = client.get_batch_results(batch_id)
+
+    assert rows == ()
+    assert client._client.calls == [
+        (
+            f"/v1/monitoring/miner-task-batches/{batch_id}/results",
+            {
+                "include_failed_delivery_rows": "true",
+            },
+        ),
+    ]

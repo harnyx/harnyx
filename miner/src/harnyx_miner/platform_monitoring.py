@@ -69,7 +69,6 @@ class PlatformMonitoringClient:
         payload = self._request_json(
             f"/v1/monitoring/miner-task-batches/{batch_id}/results",
             params={
-                "include_payload": "true",
                 "include_failed_delivery_rows": "true",
             },
         )
