@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
-from typing import Literal
+from typing import Literal, cast
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
 from harnyx_commons.domain.miner_task import (
     DEFAULT_MINER_TASK_BUDGET_USD,
@@ -17,7 +18,9 @@ from harnyx_commons.domain.miner_task import (
     Response,
 )
 from harnyx_commons.domain.session import LlmUsageTotals, Session, SessionStatus
+from harnyx_commons.domain.tool_call import ToolCall
 from harnyx_commons.tools.http_models import ToolExecuteResponseDTO, ToolResultDTO
+from harnyx_commons.tools.types import TOOL_NAMES
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskBatchSpec,
     MinerTaskRunSubmission,
@@ -35,6 +38,7 @@ _VALIDATOR_TRANSPORT_CONFIG = ConfigDict(
     strict=True,
     str_strip_whitespace=True,
 )
+_TOOL_CALLS_ADAPTER = TypeAdapter(tuple[ToolCall, ...])
 
 
 class BatchAcceptResponse(BaseModel):
@@ -225,6 +229,7 @@ class RestoreMinerTaskRunSubmissionModel(BaseModel):
     validator: ValidatorModel
     run: RestoreMinerTaskRunModel
     score: float = Field(ge=0.0, le=1.0)
+    execution_log: tuple[ToolCall, ...] = ()
     usage: UsageModel
     session: SessionModel
     specifics: EvaluationDetails
@@ -233,6 +238,13 @@ class RestoreMinerTaskRunSubmissionModel(BaseModel):
     @classmethod
     def _validate_batch_id(cls, value: str) -> str:
         return _validate_uuid_string(value)
+
+    @field_validator("execution_log", mode="before")
+    @classmethod
+    def _validate_execution_log(cls, value: object) -> tuple[ToolCall, ...] | object:
+        if isinstance(value, tuple) and all(isinstance(entry, ToolCall) for entry in value):
+            return value
+        return _TOOL_CALLS_ADAPTER.validate_python(_filter_unknown_execution_log_entries(value))
 
     def to_domain(self, *, batch: MinerTaskBatchSpec) -> MinerTaskRunSubmission:
         batch_id = UUID(self.batch_id)
@@ -266,6 +278,7 @@ class RestoreMinerTaskRunSubmissionModel(BaseModel):
                 ),
             ),
             score=self.score,
+            execution_log=self.execution_log,
             usage=self.usage.to_domain(),
             session=session,
         )
@@ -278,9 +291,31 @@ class MinerTaskRunSubmissionModel(BaseModel):
     validator: ValidatorModel
     run: MinerTaskRunModel
     score: float = Field(ge=0.0, le=1.0)
+    execution_log: tuple[ToolCall, ...] = ()
     usage: UsageModel
     session: SessionModel
     specifics: EvaluationDetails
+
+
+def _filter_unknown_execution_log_entries(value: object) -> object:
+    if not isinstance(value, list | tuple):
+        return value
+    filtered: list[object] = []
+    for entry in value:
+        if _should_skip_execution_log_entry(entry):
+            continue
+        filtered.append(entry)
+    return filtered
+
+
+def _should_skip_execution_log_entry(entry: object) -> bool:
+    if isinstance(entry, ToolCall):
+        return False
+    if not isinstance(entry, Mapping):
+        return False
+    mapping = cast(Mapping[str, object], entry)
+    tool = mapping.get("tool")
+    return isinstance(tool, str) and tool not in TOOL_NAMES
 
 
 def _serialize_failure_detail_message(detail: ValidatorBatchFailureDetail) -> str:

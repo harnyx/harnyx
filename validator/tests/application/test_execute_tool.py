@@ -605,6 +605,10 @@ async def test_execute_tool_ignores_stale_response_model_metadata_for_llm_chat()
 async def test_execute_tool_records_llm_elapsed_ms_only_in_receipt_details() -> None:
     session = make_session(budget_usd=1.0)
     token = generate_token()
+    precheck_at = datetime(2025, 10, 17, 12, 4, 59, tzinfo=UTC)
+    started_at = datetime(2025, 10, 17, 12, 5, tzinfo=UTC)
+    finished_at = datetime(2025, 10, 17, 12, 5, 2, tzinfo=UTC)
+    clock_values = iter((precheck_at, started_at, finished_at, finished_at))
 
     class UsageToolInvoker(ToolInvoker):
         async def invoke(
@@ -649,7 +653,7 @@ async def test_execute_tool_records_llm_elapsed_ms_only_in_receipt_details() -> 
         usage_tracker=usage_tracker,
         tool_invoker=UsageToolInvoker(),
         token_registry=token_registry,
-        clock=lambda: datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
+        clock=lambda: next(clock_values),
     )
     request = ToolInvocationRequest(
         session_id=session.session_id,
@@ -667,7 +671,18 @@ async def test_execute_tool_records_llm_elapsed_ms_only_in_receipt_details() -> 
     receipt = receipt_log.lookup(result.receipt.receipt_id)
     assert receipt is not None
     assert "elapsed_ms" not in result.response_payload
-    assert receipt.details.execution == ToolExecutionFacts(elapsed_ms=1250.0)
+    assert receipt.details.request_payload == {
+        "args": [],
+        "kwargs": {
+            "model": "openai/gpt-oss-20b-TEE",
+            "messages": [{"role": "user", "content": "ping"}],
+        },
+    }
+    assert receipt.details.execution == ToolExecutionFacts(
+        elapsed_ms=1250.0,
+        started_at=started_at,
+        finished_at=finished_at,
+    )
 
 
 async def test_execute_tool_allows_settlement_after_sibling_exhausts_session() -> None:

@@ -64,6 +64,8 @@ class ToolExecutionFacts:
     """Execution facts captured at the private tool runtime boundary."""
 
     elapsed_ms: float | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +73,7 @@ class ToolCallDetails:
     """Supplemental details stored alongside a tool call receipt."""
 
     request_hash: str
+    request_payload: JsonValue | None = None
     response_hash: str | None = None
     response_payload: JsonValue | None = None
     results: tuple[ToolResult, ...] = ()

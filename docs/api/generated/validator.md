@@ -43,6 +43,14 @@ Body: [MinerTaskBatchRequestModel](#model-minertaskbatchrequestmodel)
 |  | `total_calls` |  | req | `integer` |
 | `restore_runs` |  |  | opt | array[[RestoreMinerTaskRunSubmissionModel](#model-restoreminertaskrunsubmissionmodel)] |
 |  | `batch_id` |  | req | `string` |
+|  | `execution_log` |  | opt | array[[ToolCall-Input](#model-toolcall-input)] (default: []) |
+|  |  | `details` | req | [ToolCallDetails-Input](#model-toolcalldetails-input) |
+|  |  | `issued_at` | req | `string` (format: date-time) |
+|  |  | `outcome` | req | [ToolCallOutcome](#model-toolcalloutcome) |
+|  |  | `receipt_id` | req | `string` |
+|  |  | `session_id` | req | `string` (format: uuid) |
+|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, llm_chat, test_tool, tooling_info]) |
+|  |  | `uid` | req | `integer` |
 |  | `run` |  | req | [RestoreMinerTaskRunModel](#model-restoreminertaskrunmodel) |
 |  |  | `artifact_id` | req | `string` |
 |  |  | `completed_at` | opt | `string` (nullable) |
@@ -137,6 +145,14 @@ Body: [ProgressResponse](#model-progressresponse)
 |  | `uid` |  | opt | `integer` (nullable) |
 | `miner_task_runs` |  |  | req | array[[MinerTaskRunSubmissionModel](#model-minertaskrunsubmissionmodel)] |
 |  | `batch_id` |  | req | `string` |
+|  | `execution_log` |  | opt | array[[ToolCall-Output](#model-toolcall-output)] (default: []) |
+|  |  | `details` | req | [ToolCallDetails-Output](#model-toolcalldetails-output) |
+|  |  | `issued_at` | req | `string` (format: date-time) |
+|  |  | `outcome` | req | [ToolCallOutcome](#model-toolcalloutcome) |
+|  |  | `receipt_id` | req | `string` |
+|  |  | `session_id` | req | `string` (format: uuid) |
+|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, llm_chat, test_tool, tooling_info]) |
+|  |  | `uid` | req | `integer` |
 |  | `run` |  | req | [MinerTaskRunModel](#model-minertaskrunmodel) |
 |  |  | `artifact_id` | req | `string` |
 |  |  | `completed_at` | opt | `string` (nullable) |
@@ -260,7 +276,7 @@ Body: [ToolExecuteRequestDTO](#model-toolexecuterequestdto)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `args` |  |  | opt | array[[JsonValue](#model-jsonvalue)] (default: []) |
+| `args` |  |  | opt | array[[pydantic__types__JsonValue](#model-pydantic__types__jsonvalue)] (default: []) |
 | `kwargs` |  |  | opt | `object` (default: {}) |
 | `tool` |  |  | req | `string` (enum: [search_web, search_ai, fetch_page, llm_chat, test_tool, tooling_info]) |
 
@@ -278,12 +294,12 @@ Body: [ToolExecuteResponseDTO](#model-toolexecuteresponsedto)
 |  | `session_used_budget_usd` |  | req | `number` |
 | `cost_usd` |  |  | opt | `number` (nullable) |
 | `receipt_id` |  |  | req | `string` |
-| `response` |  |  | req | [JsonValue](#model-jsonvalue) |
+| `response` |  |  | req | [pydantic__types__JsonValue](#model-pydantic__types__jsonvalue) |
 | `result_policy` |  |  | req | `string` |
 | `results` |  |  | req | array[[ToolResultDTO](#model-toolresultdto)] |
 |  | `index` |  | req | `integer` |
 |  | `note` |  | opt | `string` (nullable) |
-|  | `raw` |  | opt | [JsonValue](#model-jsonvalue) (nullable) |
+|  | `raw` |  | opt | [pydantic__types__JsonValue](#model-pydantic__types__jsonvalue) (nullable) |
 |  | `result_id` |  | req | `string` |
 |  | `title` |  | opt | `string` (nullable) |
 |  | `url` |  | opt | `string` (nullable) |
@@ -707,6 +723,94 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 </details>
 
+<a id="model-harnyx_miner_sdk__json_types__jsonvalue-input"></a>
+### Model: harnyx_miner_sdk__json_types__JsonValue-Input
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "anyOf": [
+    {
+      "type": "string"
+    },
+    {
+      "type": "integer"
+    },
+    {
+      "type": "number"
+    },
+    {
+      "type": "boolean"
+    },
+    {
+      "items": {
+        "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Input"
+      },
+      "type": "array"
+    },
+    {
+      "additionalProperties": {
+        "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Input"
+      },
+      "type": "object"
+    },
+    {
+      "type": "null"
+    }
+  ]
+}
+```
+
+</details>
+
+<a id="model-harnyx_miner_sdk__json_types__jsonvalue-output"></a>
+### Model: harnyx_miner_sdk__json_types__JsonValue-Output
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "anyOf": [
+    {
+      "type": "string"
+    },
+    {
+      "type": "integer"
+    },
+    {
+      "type": "number"
+    },
+    {
+      "type": "boolean"
+    },
+    {
+      "items": {
+        "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Output"
+      },
+      "type": "array"
+    },
+    {
+      "additionalProperties": {
+        "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Output"
+      },
+      "type": "object"
+    },
+    {
+      "type": "null"
+    }
+  ]
+}
+```
+
+</details>
+
 <a id="model-httpvalidationerror"></a>
 ### Model: HTTPValidationError
 
@@ -734,20 +838,6 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
   "title": "HTTPValidationError",
   "type": "object"
 }
-```
-
-</details>
-
-<a id="model-jsonvalue"></a>
-### Model: JsonValue
-
-(no documented fields)
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{}
 ```
 
 </details>
@@ -972,6 +1062,14 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `total_calls` |  | req | `integer` |
 | `restore_runs` |  |  | opt | array[[RestoreMinerTaskRunSubmissionModel](#model-restoreminertaskrunsubmissionmodel)] |
 |  | `batch_id` |  | req | `string` |
+|  | `execution_log` |  | opt | array[[ToolCall-Input](#model-toolcall-input)] (default: []) |
+|  |  | `details` | req | [ToolCallDetails-Input](#model-toolcalldetails-input) |
+|  |  | `issued_at` | req | `string` (format: date-time) |
+|  |  | `outcome` | req | [ToolCallOutcome](#model-toolcalloutcome) |
+|  |  | `receipt_id` | req | `string` |
+|  |  | `session_id` | req | `string` (format: uuid) |
+|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, llm_chat, test_tool, tooling_info]) |
+|  |  | `uid` | req | `integer` |
 |  | `run` |  | req | [RestoreMinerTaskRunModel](#model-restoreminertaskrunmodel) |
 |  |  | `artifact_id` | req | `string` |
 |  |  | `completed_at` | opt | `string` (nullable) |
@@ -1263,6 +1361,23 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `batch_id` |  |  | req | `string` |
+| `execution_log` |  |  | opt | array[[ToolCall-Output](#model-toolcall-output)] (default: []) |
+|  | `details` |  | req | [ToolCallDetails-Output](#model-toolcalldetails-output) |
+|  |  | `cost_usd` | opt | `number` (nullable) |
+|  |  | `execution` | opt | [ToolExecutionFacts](#model-toolexecutionfacts) (nullable) |
+|  |  | `extra` | opt | `object` (nullable) |
+|  |  | `request_hash` | req | `string` |
+|  |  | `request_payload` | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+|  |  | `response_hash` | opt | `string` (nullable) |
+|  |  | `response_payload` | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+|  |  | `result_policy` | opt | [ToolResultPolicy](#model-toolresultpolicy) (default: log_only) |
+|  |  | `results` | opt | array[[ToolResult-Output](#model-toolresult-output)] (default: []) |
+|  | `issued_at` |  | req | `string` (format: date-time) |
+|  | `outcome` |  | req | [ToolCallOutcome](#model-toolcalloutcome) |
+|  | `receipt_id` |  | req | `string` |
+|  | `session_id` |  | req | `string` (format: uuid) |
+|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, llm_chat, test_tool, tooling_info]) |
+|  | `uid` |  | req | `integer` |
 | `run` |  |  | req | [MinerTaskRunModel](#model-minertaskrunmodel) |
 |  | `artifact_id` |  | req | `string` |
 |  | `completed_at` |  | opt | `string` (nullable) |
@@ -1319,6 +1434,14 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "minLength": 1,
       "title": "Batch Id",
       "type": "string"
+    },
+    "execution_log": {
+      "default": [],
+      "items": {
+        "$ref": "#/components/schemas/ToolCall-Output"
+      },
+      "title": "Execution Log",
+      "type": "array"
     },
     "run": {
       "$ref": "#/components/schemas/MinerTaskRunModel"
@@ -1377,6 +1500,14 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `uid` |  | opt | `integer` (nullable) |
 | `miner_task_runs` |  |  | req | array[[MinerTaskRunSubmissionModel](#model-minertaskrunsubmissionmodel)] |
 |  | `batch_id` |  | req | `string` |
+|  | `execution_log` |  | opt | array[[ToolCall-Output](#model-toolcall-output)] (default: []) |
+|  |  | `details` | req | [ToolCallDetails-Output](#model-toolcalldetails-output) |
+|  |  | `issued_at` | req | `string` (format: date-time) |
+|  |  | `outcome` | req | [ToolCallOutcome](#model-toolcalloutcome) |
+|  |  | `receipt_id` | req | `string` |
+|  |  | `session_id` | req | `string` (format: uuid) |
+|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, llm_chat, test_tool, tooling_info]) |
+|  |  | `uid` | req | `integer` |
 |  | `run` |  | req | [MinerTaskRunModel](#model-minertaskrunmodel) |
 |  |  | `artifact_id` | req | `string` |
 |  |  | `completed_at` | opt | `string` (nullable) |
@@ -1550,6 +1681,20 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
   "title": "ProviderEvidenceModel",
   "type": "object"
 }
+```
+
+</details>
+
+<a id="model-pydantic__types__jsonvalue"></a>
+### Model: pydantic__types__JsonValue
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{}
 ```
 
 </details>
@@ -1751,6 +1896,23 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `batch_id` |  |  | req | `string` |
+| `execution_log` |  |  | opt | array[[ToolCall-Input](#model-toolcall-input)] (default: []) |
+|  | `details` |  | req | [ToolCallDetails-Input](#model-toolcalldetails-input) |
+|  |  | `cost_usd` | opt | `number` (nullable) |
+|  |  | `execution` | opt | [ToolExecutionFacts](#model-toolexecutionfacts) (nullable) |
+|  |  | `extra` | opt | `object` (nullable) |
+|  |  | `request_hash` | req | `string` |
+|  |  | `request_payload` | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+|  |  | `response_hash` | opt | `string` (nullable) |
+|  |  | `response_payload` | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+|  |  | `result_policy` | opt | [ToolResultPolicy](#model-toolresultpolicy) (default: log_only) |
+|  |  | `results` | opt | array[[ToolResult-Input](#model-toolresult-input)] (default: []) |
+|  | `issued_at` |  | req | `string` (format: date-time) |
+|  | `outcome` |  | req | [ToolCallOutcome](#model-toolcalloutcome) |
+|  | `receipt_id` |  | req | `string` |
+|  | `session_id` |  | req | `string` (format: uuid) |
+|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, llm_chat, test_tool, tooling_info]) |
+|  | `uid` |  | req | `integer` |
 | `run` |  |  | req | [RestoreMinerTaskRunModel](#model-restoreminertaskrunmodel) |
 |  | `artifact_id` |  | req | `string` |
 |  | `completed_at` |  | opt | `string` (nullable) |
@@ -1801,6 +1963,14 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "minLength": 1,
       "title": "Batch Id",
       "type": "string"
+    },
+    "execution_log": {
+      "default": [],
+      "items": {
+        "$ref": "#/components/schemas/ToolCall-Input"
+      },
+      "title": "Execution Log",
+      "type": "array"
     },
     "run": {
       "$ref": "#/components/schemas/RestoreMinerTaskRunModel"
@@ -2145,12 +2315,450 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 </details>
 
+<a id="model-toolcall-input"></a>
+### Model: ToolCall-Input
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `details` |  |  | req | [ToolCallDetails-Input](#model-toolcalldetails-input) |
+|  | `cost_usd` |  | opt | `number` (nullable) |
+|  | `execution` |  | opt | [ToolExecutionFacts](#model-toolexecutionfacts) (nullable) |
+|  |  | `elapsed_ms` | opt | `number` (nullable) |
+|  |  | `finished_at` | opt | `string` (format: date-time; nullable) |
+|  |  | `started_at` | opt | `string` (format: date-time; nullable) |
+|  | `extra` |  | opt | `object` (nullable) |
+|  | `request_hash` |  | req | `string` |
+|  | `request_payload` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+|  | `response_hash` |  | opt | `string` (nullable) |
+|  | `response_payload` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+|  | `result_policy` |  | opt | [ToolResultPolicy](#model-toolresultpolicy) (default: log_only) |
+|  | `results` |  | opt | array[[ToolResult-Input](#model-toolresult-input)] (default: []) |
+|  |  | `index` | req | `integer` |
+|  |  | `raw` | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+|  |  | `result_id` | req | `string` |
+| `issued_at` |  |  | req | `string` (format: date-time) |
+| `outcome` |  |  | req | [ToolCallOutcome](#model-toolcalloutcome) |
+| `receipt_id` |  |  | req | `string` |
+| `session_id` |  |  | req | `string` (format: uuid) |
+| `tool` |  |  | req | `string` (enum: [search_web, search_ai, fetch_page, llm_chat, test_tool, tooling_info]) |
+| `uid` |  |  | req | `integer` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "details": {
+      "$ref": "#/components/schemas/ToolCallDetails-Input"
+    },
+    "issued_at": {
+      "format": "date-time",
+      "title": "Issued At",
+      "type": "string"
+    },
+    "outcome": {
+      "$ref": "#/components/schemas/ToolCallOutcome"
+    },
+    "receipt_id": {
+      "title": "Receipt Id",
+      "type": "string"
+    },
+    "session_id": {
+      "format": "uuid",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "tool": {
+      "enum": [
+        "search_web",
+        "search_ai",
+        "fetch_page",
+        "llm_chat",
+        "test_tool",
+        "tooling_info"
+      ],
+      "title": "Tool",
+      "type": "string"
+    },
+    "uid": {
+      "title": "Uid",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "receipt_id",
+    "session_id",
+    "uid",
+    "tool",
+    "issued_at",
+    "outcome",
+    "details"
+  ],
+  "title": "ToolCall",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-toolcall-output"></a>
+### Model: ToolCall-Output
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `details` |  |  | req | [ToolCallDetails-Output](#model-toolcalldetails-output) |
+|  | `cost_usd` |  | opt | `number` (nullable) |
+|  | `execution` |  | opt | [ToolExecutionFacts](#model-toolexecutionfacts) (nullable) |
+|  |  | `elapsed_ms` | opt | `number` (nullable) |
+|  |  | `finished_at` | opt | `string` (format: date-time; nullable) |
+|  |  | `started_at` | opt | `string` (format: date-time; nullable) |
+|  | `extra` |  | opt | `object` (nullable) |
+|  | `request_hash` |  | req | `string` |
+|  | `request_payload` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+|  | `response_hash` |  | opt | `string` (nullable) |
+|  | `response_payload` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+|  | `result_policy` |  | opt | [ToolResultPolicy](#model-toolresultpolicy) (default: log_only) |
+|  | `results` |  | opt | array[[ToolResult-Output](#model-toolresult-output)] (default: []) |
+|  |  | `index` | req | `integer` |
+|  |  | `raw` | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+|  |  | `result_id` | req | `string` |
+| `issued_at` |  |  | req | `string` (format: date-time) |
+| `outcome` |  |  | req | [ToolCallOutcome](#model-toolcalloutcome) |
+| `receipt_id` |  |  | req | `string` |
+| `session_id` |  |  | req | `string` (format: uuid) |
+| `tool` |  |  | req | `string` (enum: [search_web, search_ai, fetch_page, llm_chat, test_tool, tooling_info]) |
+| `uid` |  |  | req | `integer` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "details": {
+      "$ref": "#/components/schemas/ToolCallDetails-Output"
+    },
+    "issued_at": {
+      "format": "date-time",
+      "title": "Issued At",
+      "type": "string"
+    },
+    "outcome": {
+      "$ref": "#/components/schemas/ToolCallOutcome"
+    },
+    "receipt_id": {
+      "title": "Receipt Id",
+      "type": "string"
+    },
+    "session_id": {
+      "format": "uuid",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "tool": {
+      "enum": [
+        "search_web",
+        "search_ai",
+        "fetch_page",
+        "llm_chat",
+        "test_tool",
+        "tooling_info"
+      ],
+      "title": "Tool",
+      "type": "string"
+    },
+    "uid": {
+      "title": "Uid",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "receipt_id",
+    "session_id",
+    "uid",
+    "tool",
+    "issued_at",
+    "outcome",
+    "details"
+  ],
+  "title": "ToolCall",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-toolcalldetails-input"></a>
+### Model: ToolCallDetails-Input
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `cost_usd` |  |  | opt | `number` (nullable) |
+| `execution` |  |  | opt | [ToolExecutionFacts](#model-toolexecutionfacts) (nullable) |
+|  | `elapsed_ms` |  | opt | `number` (nullable) |
+|  | `finished_at` |  | opt | `string` (format: date-time; nullable) |
+|  | `started_at` |  | opt | `string` (format: date-time; nullable) |
+| `extra` |  |  | opt | `object` (nullable) |
+| `request_hash` |  |  | req | `string` |
+| `request_payload` |  |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+| `response_hash` |  |  | opt | `string` (nullable) |
+| `response_payload` |  |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+| `result_policy` |  |  | opt | [ToolResultPolicy](#model-toolresultpolicy) (default: log_only) |
+| `results` |  |  | opt | array[[ToolResult-Input](#model-toolresult-input)] (default: []) |
+|  | `index` |  | req | `integer` |
+|  | `raw` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+|  | `result_id` |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "cost_usd": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Cost Usd"
+    },
+    "execution": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/ToolExecutionFacts"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "extra": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Extra"
+    },
+    "request_hash": {
+      "title": "Request Hash",
+      "type": "string"
+    },
+    "request_payload": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Input"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "response_hash": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Response Hash"
+    },
+    "response_payload": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Input"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "result_policy": {
+      "$ref": "#/components/schemas/ToolResultPolicy",
+      "default": "log_only"
+    },
+    "results": {
+      "default": [],
+      "items": {
+        "$ref": "#/components/schemas/ToolResult-Input"
+      },
+      "title": "Results",
+      "type": "array"
+    }
+  },
+  "required": [
+    "request_hash"
+  ],
+  "title": "ToolCallDetails",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-toolcalldetails-output"></a>
+### Model: ToolCallDetails-Output
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `cost_usd` |  |  | opt | `number` (nullable) |
+| `execution` |  |  | opt | [ToolExecutionFacts](#model-toolexecutionfacts) (nullable) |
+|  | `elapsed_ms` |  | opt | `number` (nullable) |
+|  | `finished_at` |  | opt | `string` (format: date-time; nullable) |
+|  | `started_at` |  | opt | `string` (format: date-time; nullable) |
+| `extra` |  |  | opt | `object` (nullable) |
+| `request_hash` |  |  | req | `string` |
+| `request_payload` |  |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+| `response_hash` |  |  | opt | `string` (nullable) |
+| `response_payload` |  |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+| `result_policy` |  |  | opt | [ToolResultPolicy](#model-toolresultpolicy) (default: log_only) |
+| `results` |  |  | opt | array[[ToolResult-Output](#model-toolresult-output)] (default: []) |
+|  | `index` |  | req | `integer` |
+|  | `raw` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+|  | `result_id` |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "cost_usd": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Cost Usd"
+    },
+    "execution": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/ToolExecutionFacts"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "extra": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Extra"
+    },
+    "request_hash": {
+      "title": "Request Hash",
+      "type": "string"
+    },
+    "request_payload": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Output"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "response_hash": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Response Hash"
+    },
+    "response_payload": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Output"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "result_policy": {
+      "$ref": "#/components/schemas/ToolResultPolicy",
+      "default": "log_only"
+    },
+    "results": {
+      "default": [],
+      "items": {
+        "$ref": "#/components/schemas/ToolResult-Output"
+      },
+      "title": "Results",
+      "type": "array"
+    }
+  },
+  "required": [
+    "request_hash"
+  ],
+  "title": "ToolCallDetails",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-toolcalloutcome"></a>
+### Model: ToolCallOutcome
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "description": "High-level outcome for a tool invocation.",
+  "enum": [
+    "ok",
+    "provider_error",
+    "budget_exceeded",
+    "timeout"
+  ],
+  "title": "ToolCallOutcome",
+  "type": "string"
+}
+```
+
+</details>
+
 <a id="model-toolexecuterequestdto"></a>
 ### Model: ToolExecuteRequestDTO
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `args` |  |  | opt | array[[JsonValue](#model-jsonvalue)] (default: []) |
+| `args` |  |  | opt | array[[pydantic__types__JsonValue](#model-pydantic__types__jsonvalue)] (default: []) |
 | `kwargs` |  |  | opt | `object` (default: {}) |
 | `tool` |  |  | req | `string` (enum: [search_web, search_ai, fetch_page, llm_chat, test_tool, tooling_info]) |
 
@@ -2164,14 +2772,14 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     "args": {
       "default": [],
       "items": {
-        "$ref": "#/components/schemas/JsonValue"
+        "$ref": "#/components/schemas/pydantic__types__JsonValue"
       },
       "title": "Args",
       "type": "array"
     },
     "kwargs": {
       "additionalProperties": {
-        "$ref": "#/components/schemas/JsonValue"
+        "$ref": "#/components/schemas/pydantic__types__JsonValue"
       },
       "default": {},
       "title": "Kwargs",
@@ -2212,12 +2820,12 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `session_used_budget_usd` |  | req | `number` |
 | `cost_usd` |  |  | opt | `number` (nullable) |
 | `receipt_id` |  |  | req | `string` |
-| `response` |  |  | req | [JsonValue](#model-jsonvalue) |
+| `response` |  |  | req | [pydantic__types__JsonValue](#model-pydantic__types__jsonvalue) |
 | `result_policy` |  |  | req | `string` |
 | `results` |  |  | req | array[[ToolResultDTO](#model-toolresultdto)] |
 |  | `index` |  | req | `integer` |
 |  | `note` |  | opt | `string` (nullable) |
-|  | `raw` |  | opt | [JsonValue](#model-jsonvalue) (nullable) |
+|  | `raw` |  | opt | [pydantic__types__JsonValue](#model-pydantic__types__jsonvalue) (nullable) |
 |  | `result_id` |  | req | `string` |
 |  | `title` |  | opt | `string` (nullable) |
 |  | `url` |  | opt | `string` (nullable) |
@@ -2251,7 +2859,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "type": "string"
     },
     "response": {
-      "$ref": "#/components/schemas/JsonValue"
+      "$ref": "#/components/schemas/pydantic__types__JsonValue"
     },
     "result_policy": {
       "title": "Result Policy",
@@ -2289,6 +2897,154 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 </details>
 
+<a id="model-toolexecutionfacts"></a>
+### Model: ToolExecutionFacts
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `elapsed_ms` |  |  | opt | `number` (nullable) |
+| `finished_at` |  |  | opt | `string` (format: date-time; nullable) |
+| `started_at` |  |  | opt | `string` (format: date-time; nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "elapsed_ms": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Elapsed Ms"
+    },
+    "finished_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Finished At"
+    },
+    "started_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Started At"
+    }
+  },
+  "title": "ToolExecutionFacts",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-toolresult-input"></a>
+### Model: ToolResult-Input
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `index` |  |  | req | `integer` |
+| `raw` |  |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+| `result_id` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "index": {
+      "title": "Index",
+      "type": "integer"
+    },
+    "raw": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Input"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "result_id": {
+      "title": "Result Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "index",
+    "result_id"
+  ],
+  "title": "ToolResult",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-toolresult-output"></a>
+### Model: ToolResult-Output
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `index` |  |  | req | `integer` |
+| `raw` |  |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+| `result_id` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "index": {
+      "title": "Index",
+      "type": "integer"
+    },
+    "raw": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Output"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "result_id": {
+      "title": "Result Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "index",
+    "result_id"
+  ],
+  "title": "ToolResult",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-toolresultdto"></a>
 ### Model: ToolResultDTO
 
@@ -2296,7 +3052,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | --- | --- | --- | --- | --- |
 | `index` |  |  | req | `integer` |
 | `note` |  |  | opt | `string` (nullable) |
-| `raw` |  |  | opt | [JsonValue](#model-jsonvalue) (nullable) |
+| `raw` |  |  | opt | [pydantic__types__JsonValue](#model-pydantic__types__jsonvalue) (nullable) |
 | `result_id` |  |  | req | `string` |
 | `title` |  |  | opt | `string` (nullable) |
 | `url` |  |  | opt | `string` (nullable) |
@@ -2325,7 +3081,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     "raw": {
       "anyOf": [
         {
-          "$ref": "#/components/schemas/JsonValue"
+          "$ref": "#/components/schemas/pydantic__types__JsonValue"
         },
         {
           "type": "null"
@@ -2365,6 +3121,28 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
   ],
   "title": "ToolResultDTO",
   "type": "object"
+}
+```
+
+</details>
+
+<a id="model-toolresultpolicy"></a>
+### Model: ToolResultPolicy
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "description": "Indicates whether tool results can be cited.",
+  "enum": [
+    "referenceable",
+    "log_only"
+  ],
+  "title": "ToolResultPolicy",
+  "type": "string"
 }
 ```
 

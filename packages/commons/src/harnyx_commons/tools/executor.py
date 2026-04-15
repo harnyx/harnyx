@@ -105,10 +105,20 @@ class ToolExecutor:
         """Execute a tool call on behalf of the supplied session."""
         session = self._load_session(request.session_id)
         log_context = _build_tool_log_context(request, session)
+        request_payload = _normalize_payload(
+            {
+                "args": list(request.args),
+                "kwargs": dict(request.kwargs),
+            }
+        )
         tool_logger.info("tool call started", extra={**log_context, "event": "tool_call_start"})
 
         try:
-            result = await self._execute_and_record_async(session, request)
+            result = await self._execute_and_record_async(
+                session,
+                request,
+                request_payload=request_payload,
+            )
         except Exception as exc:
             self._log_failure(log_context, exc)
             raise
@@ -176,10 +186,13 @@ class ToolExecutor:
         self,
         session: Session,
         request: ToolInvocationRequest,
+        *,
+        request_payload: JsonValue | None,
     ) -> _ExecutionResult:
+        started_at = self._clock()
         self._validate_token(session.session_id, request.token)
-
         invocation_output = await self._invoke_tool_output_async(request)
+        finished_at = self._clock()
         results, result_policy = self._build_results(request, invocation_output.public_payload)
         llm_tokens, usage_details, call_cost = self._extract_usage(
             request,
@@ -200,8 +213,13 @@ class ToolExecutor:
             invocation_output.public_payload,
             results,
             result_policy,
+            request_payload=request_payload,
             cost_usd=call_cost,
-            execution=invocation_output.execution,
+            execution=_merge_execution_facts(
+                invocation_output.execution,
+                started_at=started_at,
+                finished_at=finished_at,
+            ),
         )
         self._receipts.record(receipt)
         if should_raise_budget_exhausted:
@@ -319,6 +337,8 @@ class ToolExecutor:
         response_payload: object,
         results: tuple[ToolResult, ...],
         result_policy: ToolResultPolicy,
+        *,
+        request_payload: JsonValue | None,
         cost_usd: float | None = None,
         execution: ToolExecutionFacts | None = None,
     ) -> ToolCall:
@@ -335,12 +355,8 @@ class ToolExecutor:
             issued_at=issued_at,
             outcome=ToolCallOutcome.OK,
             details=ToolCallDetails(
-                request_hash=_hash_payload(
-                    {
-                        "args": list(request.args),
-                        "kwargs": dict(request.kwargs),
-                    },
-                ),
+                request_hash=_hash_payload(request_payload),
+                request_payload=request_payload,
                 response_hash=_hash_payload(response_payload),
                 response_payload=normalized_response,
                 results=results,
@@ -361,6 +377,19 @@ def _normalize_invocation_output(value: object) -> ToolInvocationOutput:
     if not isinstance(public_payload, dict):
         raise ValueError("tool invoker JSON object normalized to a non-object payload")
     return ToolInvocationOutput(public_payload=public_payload)
+
+
+def _merge_execution_facts(
+    execution: ToolExecutionFacts | None,
+    *,
+    started_at: datetime,
+    finished_at: datetime,
+) -> ToolExecutionFacts:
+    return ToolExecutionFacts(
+        elapsed_ms=None if execution is None else execution.elapsed_ms,
+        started_at=started_at,
+        finished_at=finished_at,
+    )
 
 
 def _normalize_payload(value: object) -> JsonValue | None:

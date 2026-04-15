@@ -360,6 +360,7 @@ class _RetryThenSuccessOrchestrator:
             ),
             total_tool_usage=_search_usage(self._receipt_log, request.session_id),
         )
+        tool_receipts = tuple(self._receipt_log.for_session(request.session_id))
         self._receipt_log.clear_session(request.session_id)
         return TaskRunOutcome(
             run=MinerTaskRun(
@@ -371,6 +372,7 @@ class _RetryThenSuccessOrchestrator:
                 details=details,
                 completed_at=datetime(2025, 10, 17, 12, 2, tzinfo=UTC),
             ),
+            tool_receipts=tool_receipts,
             usage=TokenUsageSummary.empty(),
         )
 
@@ -734,6 +736,7 @@ async def test_evaluation_runner_records_exhausted_submission() -> None:
     assert submission.run.details.error.message == "session exhausted during entrypoint invocation"
     assert submission.run.details.total_tool_usage.search_tool.call_count == 1
     assert submission.run.details.total_tool_usage.search_tool_cost == pytest.approx(0.25)
+    assert tuple(receipt.receipt_id for receipt in submission.execution_log) == ("receipt-1",)
     assert receipt_log.for_session(submission.run.session_id) == ()
     assert evaluation_store.records == [submission]
 
@@ -784,6 +787,7 @@ async def test_evaluation_runner_retries_transient_invocation_with_same_session_
     assert submission.score == pytest.approx(0.75)
     assert submission.run.details.total_tool_usage.search_tool.call_count == 2
     assert submission.run.details.total_tool_usage.search_tool_cost == pytest.approx(0.5)
+    assert sorted(receipt.receipt_id for receipt in submission.execution_log) == ["receipt-1", "receipt-2"]
     assert receipt_log.for_session(submission.run.session_id) == ()
     assert evaluation_store.records == [submission]
 

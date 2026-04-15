@@ -602,6 +602,7 @@ class EvaluationRunner:
             validator_uid=self._validator_uid_value(),
             run=outcome.run,
             score=breakdown.total_score,
+            execution_log=outcome.tool_receipts,
             usage=outcome.usage,
             session=envelope.session,
         )
@@ -693,6 +694,7 @@ class EvaluationRunner:
         session_id = envelope.session.session_id
         completed_at = self._clock()
         usage, summarized_tool_usage = self._summarize_session(envelope)
+        execution_log = tuple(self._receipts.for_session(session_id))
         details = EvaluationDetails(
             error=EvaluationError(code=error_code, message=error_message),
             total_tool_usage=total_tool_usage or summarized_tool_usage,
@@ -713,6 +715,7 @@ class EvaluationRunner:
             validator_uid=self._validator_uid_value(),
             run=run,
             score=0.0,
+            execution_log=execution_log,
             usage=usage,
             session=envelope.session,
         )

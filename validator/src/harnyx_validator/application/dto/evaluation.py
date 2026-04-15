@@ -158,6 +158,7 @@ class MinerTaskRunSubmission(BaseModel):
     validator_uid: int = Field(ge=0)
     run: MinerTaskRun
     score: float = Field(ge=0.0, le=1.0)
+    execution_log: tuple[ToolCall, ...] = ()
     usage: TokenUsageSummary = Field(default_factory=TokenUsageSummary.empty)
     session: Session
 

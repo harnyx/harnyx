@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import TypeAdapter
 
 import harnyx_validator.infrastructure.http.routes as routes_mod
 from harnyx_commons.bittensor import VerificationError
@@ -21,6 +22,12 @@ from harnyx_commons.domain.miner_task import (
     ScorerReasoning,
 )
 from harnyx_commons.domain.session import LlmUsageTotals, Session, SessionUsage
+from harnyx_commons.domain.tool_call import (
+    ToolCall,
+    ToolCallDetails,
+    ToolCallOutcome,
+    ToolExecutionFacts,
+)
 from harnyx_commons.domain.tool_usage import (
     LlmModelUsageCost,
     LlmUsageSummary,
@@ -399,6 +406,7 @@ def _make_task_submission(*, batch_id: UUID) -> tuple[MinerTask, MinerTaskRunSub
         validator_uid=4,
         run=run,
         score=0.9,
+        execution_log=_sample_execution_log(run.session_id, run.uid),
         usage=TokenUsageSummary.empty(),
         session=session,
     )
@@ -439,10 +447,38 @@ def _make_failed_task_submission(*, batch_id: UUID, error_code: str) -> tuple[Mi
         validator_uid=4,
         run=run,
         score=0.0,
+        execution_log=_sample_execution_log(run.session_id, run.uid),
         usage=TokenUsageSummary.empty(),
         session=session,
     )
     return task, submission
+
+
+def _sample_execution_log(session_id: UUID, uid: int) -> tuple[ToolCall, ...]:
+    started_at = datetime(2026, 3, 8, 0, 0, 1, tzinfo=UTC)
+    finished_at = datetime(2026, 3, 8, 0, 0, 3, tzinfo=UTC)
+    return (
+        ToolCall(
+            receipt_id="receipt-1",
+            session_id=session_id,
+            uid=uid,
+            tool="search_web",
+            issued_at=started_at,
+            outcome=ToolCallOutcome.OK,
+            details=ToolCallDetails(
+                request_hash="request-hash",
+                request_payload={"args": [], "kwargs": {"query": "what happened?"}},
+                response_hash="response-hash",
+                response_payload={"results": [{"title": "Example"}]},
+                cost_usd=0.001,
+                execution=ToolExecutionFacts(
+                    elapsed_ms=2000.0,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                ),
+            ),
+        ),
+    )
 
 
 def _make_batch_payload(
@@ -490,6 +526,10 @@ def _make_restore_run_payload(submission: MinerTaskRunSubmission) -> dict[str, o
             "response": None if submission.run.response is None else {"text": submission.run.response.text},
         },
         "score": submission.score,
+        "execution_log": TypeAdapter(tuple[ToolCall, ...]).dump_python(
+            submission.execution_log,
+            mode="json",
+        ),
         "usage": {
             "total_prompt_tokens": submission.usage.total_prompt_tokens,
             "total_completion_tokens": submission.usage.total_completion_tokens,
@@ -618,6 +658,23 @@ def test_progress_endpoint_includes_specifics_and_task_fields() -> None:
         "reasoning_tokens": 18,
     }
     assert specifics["elapsed_ms"] == pytest.approx(2500.0)
+    execution_log = run["execution_log"]
+    assert len(execution_log) == 1
+    assert execution_log[0]["receipt_id"] == "receipt-1"
+    assert execution_log[0]["session_id"] == str(submission.run.session_id)
+    assert execution_log[0]["tool"] == "search_web"
+    assert execution_log[0]["issued_at"] == "2026-03-08T00:00:01Z"
+    assert execution_log[0]["details"]["request_payload"] == {
+        "args": [],
+        "kwargs": {"query": "what happened?"},
+    }
+    assert execution_log[0]["details"]["response_payload"] == {"results": [{"title": "Example"}]}
+    assert execution_log[0]["details"]["cost_usd"] == pytest.approx(0.001)
+    assert execution_log[0]["details"]["execution"] == {
+        "elapsed_ms": pytest.approx(2000.0),
+        "started_at": "2026-03-08T00:00:01Z",
+        "finished_at": "2026-03-08T00:00:03Z",
+    }
 
 
 def test_progress_endpoint_keeps_ordered_runs_visible_when_lifecycle_is_failed() -> None:
@@ -1008,8 +1065,51 @@ def test_accept_batch_endpoint_forwards_restore_runs() -> None:
     assert restored.run.response == submission.run.response
     assert restored.run.completed_at == submission.run.completed_at
     assert restored.score == submission.score
+    assert restored.execution_log == submission.execution_log
     assert restored.session.session_id == submission.session.session_id
     assert restored.session.uid == submission.session.uid
+
+
+def test_accept_batch_endpoint_drops_unknown_restore_execution_log_tools() -> None:
+    batch_id = uuid4()
+    task, submission = _make_task_submission(batch_id=batch_id)
+    snapshot: RunProgressSnapshot = {
+        "batch_id": batch_id,
+        "total": 0,
+        "completed": 0,
+        "remaining": 0,
+        "tasks": (),
+        "miner_task_runs": (),
+        "provider_evidence": (),
+    }
+    provider = DemoControlDependencyProvider(snapshot=snapshot)
+    app = _create_test_app(provider)
+    client = TestClient(app)
+
+    restore_run = _make_restore_run_payload(submission)
+    execution_log = list(restore_run["execution_log"])
+    future_entry = dict(execution_log[0])
+    future_entry["tool"] = "future_tool"
+    restore_run["execution_log"] = [future_entry, *execution_log]
+
+    response = client.post(
+        "/validator/miner-task-batches/batch",
+        json={
+            **_make_batch_payload(
+                batch_id=batch_id,
+                task_id=task.task_id,
+                artifact_id=submission.run.artifact_id,
+                query_text=task.query.text,
+            ),
+            "restore_runs": [restore_run],
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(provider.accept_batch.received_restore_runs) == 1
+    restored = provider.accept_batch.received_restore_runs[0]
+    assert [entry.tool for entry in restored.execution_log] == ["search_web"]
+    assert restored.execution_log[0] == submission.execution_log[0]
 
 
 def test_accept_batch_endpoint_forwards_terminal_timeout_failed_restore_run_and_provider_evidence() -> None:
@@ -1060,6 +1160,7 @@ def test_accept_batch_endpoint_forwards_terminal_timeout_failed_restore_run_and_
         code="timeout_inconclusive",
         message="terminal timeout",
     )
+    assert restored.execution_log == submission.execution_log
     assert provider.accept_batch.received_restore_provider_evidence == (
         {
             "provider": "openai",

@@ -436,6 +436,7 @@ def _serialize_run(
             response=submission.run.response,
         ),
         score=submission.score,
+        execution_log=submission.execution_log,
         usage=_serialize_usage_block(submission.usage),
         session=_serialize_session_block(submission.session),
         specifics=submission.run.details,
