@@ -6,6 +6,7 @@ import pytest
 from pydantic import SecretStr
 
 import harnyx_validator.infrastructure.scoring.vertex_embedding as vertex_embedding
+from harnyx_commons.config.bedrock import BedrockSettings
 from harnyx_commons.config.llm import LlmSettings
 from harnyx_commons.config.observability import ObservabilitySettings
 from harnyx_commons.config.platform_api import PlatformApiSettings
@@ -77,11 +78,13 @@ def test_build_llm_clients_uses_shared_cached_resolver(monkeypatch: pytest.Monke
             vertex_timeout_seconds=60.0,
             gcp_service_account_credential_b64=SecretStr("vertex-creds"),
         ),
+        bedrock=BedrockSettings.model_construct(region="us-east-1"),
     )
     calls: list[str] = []
 
-    def fake_build_cached_llm_provider_resolver(*, llm_settings, vertex_settings):
+    def fake_build_cached_llm_provider_resolver(*, llm_settings, bedrock_settings, vertex_settings):
         assert llm_settings is settings.llm
+        assert bedrock_settings is settings.bedrock
         assert vertex_settings is settings.vertex
 
         def resolve(name: str):
@@ -107,6 +110,7 @@ def test_build_local_eval_tooling_clients_allows_missing_search_provider() -> No
             scoring_llm_provider="chutes",
             chutes_api_key=SecretStr("test-key"),
         ),
+        bedrock=BedrockSettings.model_construct(region="us-east-1"),
         vertex=VertexSettings.model_construct(
             gcp_project_id="project",
             gcp_location="us-central1",

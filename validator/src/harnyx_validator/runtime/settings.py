@@ -7,6 +7,7 @@ import logging
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from harnyx_commons.config.bedrock import BedrockSettings
 from harnyx_commons.config.llm import LlmSettings
 from harnyx_commons.config.observability import ObservabilitySettings
 from harnyx_commons.config.platform_api import PlatformApiSettings
@@ -74,6 +75,7 @@ class Settings(BaseSettings):
 
     # --- Component settings ---
     llm: LlmSettings = Field(default_factory=LlmSettings)
+    bedrock: BedrockSettings = Field(default_factory=BedrockSettings)
     vertex: VertexSettings = Field(default_factory=VertexSettings)
     sandbox: SandboxSettings = Field(default_factory=load_validator_sandbox_settings)
     platform_api: PlatformApiSettings = Field(default_factory=PlatformApiSettings)

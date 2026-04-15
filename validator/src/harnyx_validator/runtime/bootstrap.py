@@ -20,6 +20,7 @@ from harnyx_commons.infrastructure.state.session_registry import InMemorySession
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.llm.provider import LlmProviderPort
 from harnyx_commons.llm.provider_factory import build_cached_llm_provider_resolver
+from harnyx_commons.llm.provider_types import BEDROCK_PROVIDER
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
 from harnyx_commons.sandbox.docker import DockerSandboxManager
 from harnyx_commons.sandbox.options import SandboxOptions
@@ -320,8 +321,13 @@ def _build_llm_clients(
     settings: Settings,
 ) -> tuple[WebSearchProviderPort | None, LlmProviderPort | None, LlmProviderPort | None]:
     search_client = _create_search_client(settings)
+    if settings.llm.tool_llm_provider == BEDROCK_PROVIDER:
+        raise ValueError("TOOL_LLM_PROVIDER='bedrock' is not supported")
+    if settings.llm.scoring_llm_provider == BEDROCK_PROVIDER:
+        raise ValueError("SCORING_LLM_PROVIDER='bedrock' is not supported")
     resolve_provider = build_cached_llm_provider_resolver(
         llm_settings=settings.llm,
+        bedrock_settings=settings.bedrock,
         vertex_settings=settings.vertex,
     )
     tool_llm_provider = resolve_provider(settings.llm.tool_llm_provider)
@@ -332,8 +338,13 @@ def _build_llm_clients(
 def _build_local_eval_tooling_clients(
     settings: Settings,
 ) -> tuple[WebSearchProviderPort | None, LlmProviderPort | None, LlmProviderPort]:
+    if settings.llm.tool_llm_provider == BEDROCK_PROVIDER:
+        raise ValueError("TOOL_LLM_PROVIDER='bedrock' is not supported")
+    if settings.llm.scoring_llm_provider == BEDROCK_PROVIDER:
+        raise ValueError("SCORING_LLM_PROVIDER='bedrock' is not supported")
     resolve_provider = build_cached_llm_provider_resolver(
         llm_settings=settings.llm,
+        bedrock_settings=settings.bedrock,
         vertex_settings=settings.vertex,
     )
     search_client = (

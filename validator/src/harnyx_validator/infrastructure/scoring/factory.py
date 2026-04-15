@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from harnyx_commons.llm.provider_types import CHUTES_PROVIDER, VERTEX_MAAS_PROVIDER, LlmProviderName
+from harnyx_commons.llm.provider_types import BEDROCK_PROVIDER, CHUTES_PROVIDER, VERTEX_MAAS_PROVIDER, LlmProviderName
 from harnyx_commons.llm.providers.chutes import ChutesTextEmbeddingClient
 from harnyx_validator.infrastructure.scoring.vertex_embedding import LazyVertexTextEmbeddingClient
 
@@ -23,6 +23,8 @@ def create_scoring_embedding_client(
     vertex_timeout_seconds: float,
     chutes_base_url: str | None = None,
 ) -> ScoringEmbeddingClient:
+    if provider_name == BEDROCK_PROVIDER:
+        raise ValueError("SCORING_LLM_PROVIDER='bedrock' is not supported")
     if provider_name == CHUTES_PROVIDER:
         if not chutes_api_key:
             raise RuntimeError("CHUTES_API_KEY must be configured for chutes scoring embeddings")

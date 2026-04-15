@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from pydantic import SecretStr
 
+from harnyx_commons.config.bedrock import BedrockSettings
 from harnyx_commons.config.llm import LlmSettings
 from harnyx_commons.config.vertex import VertexSettings
 from harnyx_commons.llm import provider_factory
 
 
 def test_llm_settings_default_provider_concurrency_targets_match_activation_slice() -> None:
+    assert LlmSettings.model_fields["bedrock_max_concurrent"].default == 20
     assert LlmSettings.model_fields["chutes_max_concurrent"].default == 20
     assert LlmSettings.model_fields["vertex_max_concurrent"].default == 30
 
@@ -24,6 +26,9 @@ def test_build_cached_llm_provider_resolver_caches_by_provider_name(
     class _FakeChutesProvider(_FakeProvider):
         pass
 
+    class _FakeBedrockProvider(_FakeProvider):
+        pass
+
     class _FakeVertexProvider(_FakeProvider):
         pass
 
@@ -32,15 +37,22 @@ def test_build_cached_llm_provider_resolver_caches_by_provider_name(
             self.provider_name = provider_name
             self.delegate = delegate
 
+    monkeypatch.setattr(provider_factory, "BedrockLlmProvider", _FakeBedrockProvider)
     monkeypatch.setattr(provider_factory, "ChutesLlmProvider", _FakeChutesProvider)
     monkeypatch.setattr(provider_factory, "VertexLlmProvider", _FakeVertexProvider)
     monkeypatch.setattr(provider_factory, "LlmProviderAdapter", _FakeAdapter)
 
     resolver = provider_factory.build_cached_llm_provider_resolver(
         llm_settings=LlmSettings.model_construct(
+            bedrock_max_concurrent=5,
             chutes_api_key=SecretStr("test-key"),
             chutes_max_concurrent=7,
             vertex_max_concurrent=11,
+        ),
+        bedrock_settings=BedrockSettings.model_construct(
+            region="us-east-1",
+            connect_timeout_seconds=5.0,
+            read_timeout_seconds=60.0,
         ),
         vertex_settings=VertexSettings.model_construct(
             gcp_project_id="project",
@@ -53,8 +65,9 @@ def test_build_cached_llm_provider_resolver_caches_by_provider_name(
 
     first = resolver("chutes")
     second = resolver("chutes")
-    third = resolver("vertex")
-    fourth = resolver("vertex-maas")
+    third = resolver("bedrock")
+    fourth = resolver("vertex")
+    fifth = resolver("vertex-maas")
 
     assert first is second
     assert captured == [
@@ -65,6 +78,15 @@ def test_build_cached_llm_provider_resolver_caches_by_provider_name(
                 "api_key": "test-key",
                 "timeout": provider_factory.CHUTES.timeout_seconds,
                 "max_concurrent": 7,
+            },
+        ),
+        (
+            "_FakeBedrockProvider",
+            {
+                "region": "us-east-1",
+                "connect_timeout_seconds": 5.0,
+                "read_timeout_seconds": 60.0,
+                "max_concurrent": 5,
             },
         ),
         (
@@ -88,5 +110,6 @@ def test_build_cached_llm_provider_resolver_caches_by_provider_name(
             },
         ),
     ]
-    assert third.provider_name == "vertex"
-    assert fourth.provider_name == "vertex-maas"
+    assert third.provider_name == "bedrock"
+    assert fourth.provider_name == "vertex"
+    assert fifth.provider_name == "vertex-maas"

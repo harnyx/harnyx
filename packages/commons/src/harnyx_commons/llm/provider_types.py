@@ -7,11 +7,12 @@ from __future__ import annotations
 
 from typing import Literal
 
+BEDROCK_PROVIDER = "bedrock"
 CHUTES_PROVIDER = "chutes"
 VERTEX_PROVIDER = "vertex"
 VERTEX_MAAS_PROVIDER = "vertex-maas"
 
-LlmProviderName = Literal["chutes", "vertex", "vertex-maas"]
+LlmProviderName = Literal["bedrock", "chutes", "vertex", "vertex-maas"]
 
 
 def normalize_reasoning_effort(reasoning_effort: str | None) -> str | None:
@@ -29,6 +30,7 @@ def normalize_reasoning_effort(reasoning_effort: str | None) -> str | None:
 
 
 __all__ = [
+    "BEDROCK_PROVIDER",
     "CHUTES_PROVIDER",
     "LlmProviderName",
     "VERTEX_MAAS_PROVIDER",

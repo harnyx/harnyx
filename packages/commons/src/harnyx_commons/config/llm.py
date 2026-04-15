@@ -92,6 +92,7 @@ class LlmSettings(BaseSettings):
 
     # --- Concurrency limits ---
     vertex_max_concurrent: int = Field(default=30, alias="VERTEX_MAX_CONCURRENT")
+    bedrock_max_concurrent: int = Field(default=20, alias="BEDROCK_MAX_CONCURRENT")
     chutes_max_concurrent: int = Field(default=20, alias="CHUTES_MAX_CONCURRENT")
     desearch_max_concurrent: int = Field(default=5, alias="DESEARCH_MAX_CONCURRENT")
     parallel_max_concurrent: int = Field(default=5, alias="PARALLEL_MAX_CONCURRENT")

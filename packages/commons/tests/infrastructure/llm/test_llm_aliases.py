@@ -79,6 +79,43 @@ async def test_adapter_falls_back_to_global_entry() -> None:
     assert delegate.requests[0].model == "publishers/openai/models/gpt-oss-20b-maas"
 
 
+async def test_bedrock_adapter_uses_provider_specific_tee_alias() -> None:
+    delegate = StubProvider()
+    provider = LlmProviderAdapter(provider_name="bedrock", delegate=delegate)
+
+    request = LlmRequest(
+        provider="bedrock",
+        model="openai/gpt-oss-20b-TEE",
+        messages=(),
+        temperature=None,
+        max_output_tokens=None,
+        output_mode="text",
+    )
+
+    await provider.invoke(request)
+
+    assert delegate.requests[0].model == "openai.gpt-oss-20b-1:0"
+
+
+async def test_bedrock_adapter_does_not_fall_back_to_global_alias() -> None:
+    aliases = {"openai/gpt-oss-20b-TEE": "wrong-global-alias"}
+    delegate = StubProvider()
+    provider = LlmProviderAdapter(provider_name="bedrock", delegate=delegate, model_aliases=aliases)
+
+    request = LlmRequest(
+        provider="bedrock",
+        model="openai/gpt-oss-20b-TEE",
+        messages=(),
+        temperature=None,
+        max_output_tokens=None,
+        output_mode="text",
+    )
+
+    await provider.invoke(request)
+
+    assert delegate.requests[0].model == "openai/gpt-oss-20b-TEE"
+
+
 @pytest.mark.parametrize("model", ALLOWED_TOOL_MODELS)
 async def test_adapter_applies_default_vertex_maas_aliases(model: str) -> None:
     expected_aliases = {

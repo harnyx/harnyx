@@ -54,6 +54,7 @@ async def test_evaluation_scoring_live_uses_real_structured_vertex_maas_flow() -
 
     resolve_provider = build_cached_llm_provider_resolver(
         llm_settings=settings.llm,
+        bedrock_settings=settings.bedrock,
         vertex_settings=settings.vertex,
     )
     llm_provider = RecordingProvider(resolve_provider(provider_name))

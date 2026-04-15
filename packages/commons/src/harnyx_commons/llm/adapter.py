@@ -15,6 +15,8 @@ from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
 # Translate the public open-model ids only for the explicit Vertex MaaS
 # contract. Plain `vertex` stays on the standard Vertex model surface.
 _DEFAULT_MODEL_ALIASES: Mapping[str, str] = {
+    "bedrock:openai/gpt-oss-20b-TEE": "openai.gpt-oss-20b-1:0",
+    "bedrock:openai/gpt-oss-120b-TEE": "openai.gpt-oss-120b-1:0",
     "vertex-maas:openai/gpt-oss-20b-TEE": "publishers/openai/models/gpt-oss-20b-maas",
     "vertex-maas:openai/gpt-oss-120b-TEE": "publishers/openai/models/gpt-oss-120b-maas",
     "vertex-maas:Qwen/Qwen3-Next-80B-A3B-Instruct": "publishers/qwen/models/qwen3-next-80b-a3b-instruct-maas",
@@ -69,7 +71,10 @@ def _adapt_model_aliases(provider: str, request: AbstractLlmRequest, aliases: Ma
 
     provider_key = f"{provider}:{normalized_model}".lower()
     global_key = normalized_model.lower()
-    resolved = aliases.get(provider_key) or aliases.get(global_key)
+    if provider == "bedrock":
+        resolved = aliases.get(provider_key)
+    else:
+        resolved = aliases.get(provider_key) or aliases.get(global_key)
     if resolved is None or resolved == model:
         return request
     return replace(request, model=resolved)
