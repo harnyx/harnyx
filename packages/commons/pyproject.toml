@@ -21,6 +21,7 @@ dependencies = [
   "anthropic>=0.75.0",
   "opentelemetry-sdk>=1.39",
   "opentelemetry-exporter-otlp-proto-http>=1.39",
+  "opentelemetry-exporter-prometheus>=0.62b0",
 ]
 
 [project.optional-dependencies]
