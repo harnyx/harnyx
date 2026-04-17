@@ -12,7 +12,7 @@ from harnyx_commons.llm import provider_factory
 def test_llm_settings_default_provider_concurrency_targets_match_activation_slice() -> None:
     assert LlmSettings.model_fields["bedrock_max_concurrent"].default == 20
     assert LlmSettings.model_fields["chutes_max_concurrent"].default == 20
-    assert LlmSettings.model_fields["vertex_max_concurrent"].default == 30
+    assert LlmSettings.model_fields["vertex_max_concurrent"].default == 10
 
 
 def test_build_cached_llm_provider_resolver_caches_by_provider_name(
