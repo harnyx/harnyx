@@ -38,7 +38,7 @@ Edit `.env` and set at least:
 
 The defaults in `.env.example` already target mainnet (`finney`) and netuid `67`. The checked-in default is `SEARCH_PROVIDER=desearch`. If you need a fallback search provider, the validator also supports `parallel`; set `SEARCH_PROVIDER=parallel` and `PARALLEL_API_KEY`. Validator sandbox execution defaults to `harnyx/harnyx-subnet-sandbox:finney`; set `SANDBOX_IMAGE=harnyx/harnyx-subnet-sandbox:testnet` for staging/testnet, or use another explicit value only when you intentionally want to test or pin a different sandbox image.
 
-Validator scoring keeps `SCORING_LLM_PROVIDER` configurable, but the scoring model contract is fixed in code to `openai/gpt-oss-120b-TEE` with `reasoning_effort="high"`. Do not set `SCORING_LLM_MODEL` or `SCORING_LLM_REASONING_EFFORT` in `.env`.
+Validator scoring keeps `SCORING_LLM_PROVIDER` configurable, but the scoring model contract is fixed in code to `moonshotai/Kimi-K2.5-TEE` with `reasoning_effort="high"`.
 
 ### Optional Sentry
 

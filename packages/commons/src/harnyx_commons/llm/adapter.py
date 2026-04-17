@@ -17,6 +17,7 @@ from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
 _DEFAULT_MODEL_ALIASES: Mapping[str, str] = {
     "bedrock:openai/gpt-oss-20b-TEE": "openai.gpt-oss-20b-1:0",
     "bedrock:openai/gpt-oss-120b-TEE": "openai.gpt-oss-120b-1:0",
+    "bedrock:moonshotai/Kimi-K2.5-TEE": "moonshotai.kimi-k2.5",
     "vertex-maas:openai/gpt-oss-20b-TEE": "publishers/openai/models/gpt-oss-20b-maas",
     "vertex-maas:openai/gpt-oss-120b-TEE": "publishers/openai/models/gpt-oss-120b-maas",
     "vertex-maas:Qwen/Qwen3-Next-80B-A3B-Instruct": "publishers/qwen/models/qwen3-next-80b-a3b-instruct-maas",

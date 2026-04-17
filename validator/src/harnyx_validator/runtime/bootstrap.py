@@ -84,7 +84,7 @@ logger = logging.getLogger("harnyx_validator.runtime")
 
 _SCORING_EMBEDDING_MODEL = "gemini-embedding-001"
 _SCORING_CHUTES_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
-_SCORING_LLM_MODEL = "openai/gpt-oss-120b-TEE"
+_SCORING_LLM_MODEL = "moonshotai/Kimi-K2.5-TEE"
 _SCORING_LLM_REASONING_EFFORT = "high"
 TOKEN_MAX_PARALLEL_CALLS = 2
 _SEARCH_PROVIDER_TOOLS = frozenset(("search_web", "search_ai", "fetch_page"))
@@ -375,10 +375,17 @@ def _resolve_scoring_judge_route(settings: Settings) -> ResolvedLlmRoute:
     return resolve_llm_route(
         surface="scoring",
         default_provider=settings.llm.scoring_llm_provider,
-        model=_SCORING_LLM_MODEL,
+        model=_effective_scoring_llm_model(settings),
         overrides=settings.llm.llm_model_provider_overrides,
         allowed_providers={"bedrock", "chutes", "vertex", "vertex-maas"},
     )
+
+
+def _effective_scoring_llm_model(settings: Settings) -> str:
+    override = settings.llm.scoring_llm_model_override_value
+    if override is not None:
+        return override
+    return _SCORING_LLM_MODEL
 
 
 def _build_tooling(

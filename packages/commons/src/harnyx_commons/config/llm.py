@@ -75,6 +75,7 @@ class LlmSettings(BaseSettings):
     scoring_llm_provider: LlmProviderName = Field(default="chutes", alias="SCORING_LLM_PROVIDER")
     scoring_llm_temperature: float | None = Field(default=None, alias="SCORING_LLM_TEMPERATURE")
     scoring_llm_max_output_tokens: int = Field(default=DEFAULT_MAX_OUTPUT_TOKENS, alias="SCORING_LLM_MAX_OUTPUT_TOKENS")
+    scoring_llm_model_override: str | None = Field(default=None, alias="SCORING_LLM_MODEL_OVERRIDE")
 
     # --- Content review (platform-only) ---
     content_review_llm_provider: LlmProviderName | None = Field(default=None, alias="CONTENT_REVIEW_LLM_PROVIDER")
@@ -119,6 +120,13 @@ class LlmSettings(BaseSettings):
     @property
     def chutes_api_key_value(self) -> str:
         return self.chutes_api_key.get_secret_value()
+
+    @property
+    def scoring_llm_model_override_value(self) -> str | None:
+        if self.scoring_llm_model_override is None:
+            return None
+        normalized = self.scoring_llm_model_override.strip()
+        return normalized or None
 
     @property
     def llm_model_provider_overrides(self) -> LlmModelProviderOverrides:

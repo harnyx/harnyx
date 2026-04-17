@@ -601,6 +601,17 @@ async def test_bedrock_provider_rejects_unsupported_delta_variants(
         (
             LlmRequest(
                 provider="bedrock",
+                model="moonshotai/Kimi-K2.5-TEE",
+                messages=(LlmMessage(role="user", content=(LlmMessageContentPart.input_text("hello"),)),),
+                temperature=None,
+                max_output_tokens=None,
+                output_mode="text",
+            ),
+            "unsupported Bedrock model",
+        ),
+        (
+            LlmRequest(
+                provider="bedrock",
                 model="openai.gpt-oss-20b-1:0",
                 messages=(LlmMessage(role="user", content=(LlmMessageContentPart.input_text("hello"),)),),
                 temperature=None,
@@ -643,6 +654,24 @@ async def test_bedrock_provider_rejects_unsupported_requests(
 
     with pytest.raises(ValueError, match=message):
         await provider.invoke(invalid_request)
+
+
+async def test_bedrock_provider_accepts_native_kimi_model_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_session(
+        monkeypatch,
+        events=(
+            {"messageStart": {"role": "assistant"}},
+            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "56"}}},
+            {"messageStop": {"stopReason": "end_turn"}},
+            {"metadata": {"usage": {"inputTokens": 5, "outputTokens": 2, "totalTokens": 7}}},
+        ),
+    )
+    provider = _provider()
+    request = replace(_base_request(), model="moonshotai.kimi-k2.5")
+
+    response = await provider.invoke(request)
+
+    assert response.raw_text == "56"
 
 
 def test_bedrock_provider_classifies_client_errors() -> None:

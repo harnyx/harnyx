@@ -116,6 +116,43 @@ async def test_bedrock_adapter_does_not_fall_back_to_global_alias() -> None:
     assert delegate.requests[0].model == "openai/gpt-oss-20b-TEE"
 
 
+async def test_bedrock_adapter_uses_provider_specific_kimi_alias() -> None:
+    delegate = StubProvider()
+    provider = LlmProviderAdapter(provider_name="bedrock", delegate=delegate)
+
+    request = LlmRequest(
+        provider="bedrock",
+        model="moonshotai/Kimi-K2.5-TEE",
+        messages=(),
+        temperature=None,
+        max_output_tokens=None,
+        output_mode="text",
+    )
+
+    await provider.invoke(request)
+
+    assert delegate.requests[0].model == "moonshotai.kimi-k2.5"
+
+
+async def test_bedrock_adapter_does_not_fall_back_to_global_kimi_alias() -> None:
+    aliases = {"moonshotai/Kimi-K2.5-TEE": "wrong-global-alias"}
+    delegate = StubProvider()
+    provider = LlmProviderAdapter(provider_name="bedrock", delegate=delegate, model_aliases=aliases)
+
+    request = LlmRequest(
+        provider="bedrock",
+        model="moonshotai/Kimi-K2.5-TEE",
+        messages=(),
+        temperature=None,
+        max_output_tokens=None,
+        output_mode="text",
+    )
+
+    await provider.invoke(request)
+
+    assert delegate.requests[0].model == "moonshotai/Kimi-K2.5-TEE"
+
+
 @pytest.mark.parametrize("model", ALLOWED_TOOL_MODELS)
 async def test_adapter_applies_default_vertex_maas_aliases(model: str) -> None:
     expected_aliases = {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from uuid import uuid4
 
 import pytest
@@ -38,32 +39,33 @@ class RecordingProvider(LlmProviderPort):
     async def aclose(self) -> None:
         await self._delegate.aclose()
 
-
-async def test_evaluation_scoring_live_uses_real_structured_vertex_maas_flow() -> None:
+async def test_evaluation_scoring_live_uses_real_structured_runtime_flow() -> None:
     base_settings = Settings.load()
     settings = base_settings.model_copy(
         update={
             "llm": base_settings.llm.model_copy(
                 update={
-                    "scoring_llm_provider": "vertex-maas",
+                    "llm_model_provider_overrides_json": json.dumps(
+                        {"scoring": {bootstrap._SCORING_LLM_MODEL: "bedrock"}}
+                    )
                 }
             )
         }
     )
-    provider_name = settings.llm.scoring_llm_provider
+    scoring_route = bootstrap._resolve_scoring_judge_route(settings)
 
     resolve_provider = build_cached_llm_provider_resolver(
         llm_settings=settings.llm,
         bedrock_settings=settings.bedrock,
         vertex_settings=settings.vertex,
     )
-    llm_provider = RecordingProvider(resolve_provider(provider_name))
+    llm_provider = RecordingProvider(resolve_provider(scoring_route.provider))
     service = EvaluationScoringService(
         llm_provider=llm_provider,
         embedding_client=StubEmbeddingClient(),
         config=EvaluationScoringConfig(
-            provider=provider_name,
-            model=bootstrap._SCORING_LLM_MODEL,
+            provider=scoring_route.provider,
+            model=scoring_route.model,
             reasoning_effort=bootstrap._SCORING_LLM_REASONING_EFFORT,
             temperature=0.0,
             max_output_tokens=settings.llm.scoring_llm_max_output_tokens,
@@ -86,8 +88,8 @@ async def test_evaluation_scoring_live_uses_real_structured_vertex_maas_flow() -
 
     assert len(llm_provider.requests) == 2
     assert all(request.output_mode == "structured" for request in llm_provider.requests)
-    assert all(request.provider == provider_name for request in llm_provider.requests)
-    assert all(request.model == bootstrap._SCORING_LLM_MODEL for request in llm_provider.requests)
+    assert all(request.provider == scoring_route.provider for request in llm_provider.requests)
+    assert all(request.model == scoring_route.model for request in llm_provider.requests)
     assert score.scoring_version == "v1"
     assert 0.0 <= score.comparison_score <= 1.0
     assert score.similarity_score == pytest.approx(1.0)

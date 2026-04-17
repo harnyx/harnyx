@@ -81,7 +81,7 @@ def test_validator_runtime_allows_scoring_override_to_bedrock(monkeypatch: pytes
             "llm": settings.llm.model_copy(
                 update={
                     "llm_model_provider_overrides_json": json.dumps(
-                        {"scoring": {"openai/gpt-oss-120b-TEE": "bedrock"}}
+                        {"scoring": {bootstrap._SCORING_LLM_MODEL: "bedrock"}}
                     ),
                 }
             )
@@ -99,7 +99,7 @@ def test_validator_runtime_allows_scoring_override_to_bedrock(monkeypatch: pytes
 
     assert scoring_provider == "provider:bedrock"
     assert scoring_route.provider == "bedrock"
-    assert scoring_route.model == "openai/gpt-oss-120b-TEE"
+    assert scoring_route.model == bootstrap._SCORING_LLM_MODEL
     assert local_scoring_provider == "provider:bedrock"
     assert local_scoring_route == scoring_route
 

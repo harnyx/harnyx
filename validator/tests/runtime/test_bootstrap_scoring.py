@@ -140,6 +140,46 @@ def test_build_local_eval_tooling_clients_allows_missing_search_provider() -> No
     )
 
 
+def test_build_llm_clients_uses_scoring_model_override_for_route_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings.model_construct(
+        llm=LlmSettings.model_construct(
+            search_provider="parallel",
+            parallel_base_url="https://proxy.parallel.test",
+            parallel_api_key=SecretStr("parallel-key"),
+            parallel_max_concurrent=7,
+            tool_llm_provider="chutes",
+            scoring_llm_provider="vertex",
+            scoring_llm_model_override="custom/internal-model",
+            llm_model_provider_overrides_json=json.dumps({"scoring": {"custom/internal-model": "bedrock"}}),
+        ),
+        vertex=VertexSettings.model_construct(
+            gcp_project_id="project",
+            gcp_location="us-central1",
+            vertex_maas_gcp_location="us-east5",
+            vertex_timeout_seconds=60.0,
+            gcp_service_account_credential_b64=SecretStr("vertex-creds"),
+        ),
+        bedrock=BedrockSettings.model_construct(region="us-east-1"),
+    )
+
+    class _FakeRegistry:
+        def resolve(self, name: str) -> str:
+            return f"provider:{name}"
+
+    monkeypatch.setattr(bootstrap, "build_cached_llm_provider_registry", lambda **_: _FakeRegistry())
+
+    _, _, scoring_provider, scoring_route = _build_llm_clients(settings)
+
+    assert scoring_provider == "provider:bedrock"
+    assert scoring_route == ResolvedLlmRoute(
+        surface="scoring",
+        provider="bedrock",
+        model="custom/internal-model",
+    )
+
+
 def test_build_state_activates_two_parallel_tool_calls_per_token() -> None:
     state = bootstrap._build_state()
 
@@ -211,6 +251,66 @@ def test_create_scoring_service_does_not_require_vertex_config_at_bootstrap() ->
     assert service._config.provider == "chutes"
     assert service._config.model == bootstrap._SCORING_LLM_MODEL
     assert service._config.reasoning_effort == bootstrap._SCORING_LLM_REASONING_EFFORT
+
+
+def test_create_scoring_service_uses_effective_route_model_and_provider() -> None:
+    settings = Settings.model_construct(
+        rpc_listen_host="127.0.0.1",
+        rpc_port=8100,
+        llm=LlmSettings.model_construct(
+            scoring_llm_provider="vertex",
+            scoring_llm_temperature=None,
+            scoring_llm_max_output_tokens=1024,
+            scoring_llm_timeout_seconds=30.0,
+            chutes_api_key=SecretStr("test-key"),
+        ),
+        vertex=VertexSettings.model_construct(
+            gcp_project_id="project",
+            gcp_location="us-central1",
+            vertex_maas_gcp_location="us-east5",
+            vertex_timeout_seconds=60.0,
+            gcp_service_account_credential_b64=SecretStr("vertex-creds"),
+        ),
+        sandbox=SandboxSettings.model_construct(
+            sandbox_image="harnyx-sandbox:test",
+            sandbox_network="harnyx-sandbox-net",
+            sandbox_pull_policy="always",
+        ),
+        platform_api=PlatformApiSettings.model_construct(
+            platform_base_url=None,
+            validator_public_base_url=None,
+        ),
+        observability=ObservabilitySettings.model_construct(
+            enable_cloud_logging=False,
+            gcp_project_id=None,
+        ),
+        subtensor=SubtensorSettings.model_construct(
+            network="local",
+            endpoint="ws://127.0.0.1:9945",
+            netuid=1,
+            wallet_name="harnyx-validator",
+            hotkey_name="default",
+            hotkey_mnemonic=None,
+            wait_for_inclusion=True,
+            wait_for_finalization=False,
+            transaction_mode="immortal",
+            transaction_period=None,
+        ),
+    )
+
+    service = _create_scoring_service(
+        settings,
+        provider=SimpleNamespace(),
+        scoring_route=ResolvedLlmRoute(
+            surface="scoring",
+            provider="bedrock",
+            model="custom/internal-model",
+        ),
+    )
+
+    assert service._config.provider == "bedrock"
+    assert service._config.model == "custom/internal-model"
+    assert isinstance(service._embeddings, LazyVertexTextEmbeddingClient)
 
 
 def test_create_scoring_service_uses_chutes_embeddings_for_chutes_provider() -> None:
