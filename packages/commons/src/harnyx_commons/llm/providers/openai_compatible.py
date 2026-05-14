@@ -254,6 +254,7 @@ class _OpenAiCompatibleUsagePayload(BaseModel):
     completion_tokens: int | None = None
     total_tokens: int | None = None
     reasoning_tokens: int | None = None
+    cost: float | None = Field(default=None, ge=0.0)
     completion_tokens_details: _OpenAiCompatibleUsageDetails | None = None
 
     def to_usage(self) -> LlmUsage:

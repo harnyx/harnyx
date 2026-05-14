@@ -112,6 +112,7 @@ def create_local_tool_host(*, uid: int = 1, session_ttl_minutes: int = 30) -> Lo
     tool_invoker = build_miner_sandbox_tool_invoker(
         receipts,
         web_search_client=search_client,
+        web_search_provider_name=llm_settings.search_provider,
         llm_provider=llm_provider,
         llm_provider_name="chutes",
         allowed_models=ALLOWED_TOOL_MODELS,

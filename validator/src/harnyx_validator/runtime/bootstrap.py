@@ -365,6 +365,7 @@ def _build_tooling(
     tool_invoker = build_miner_sandbox_tool_invoker(
         state.receipt_log,
         web_search_client=search_client,
+        web_search_provider_name=resolved.llm.search_provider,
         llm_provider=tool_llm_provider,
         llm_provider_name=resolved.llm.tool_llm_provider,
         allowed_models=ALLOWED_TOOL_MODELS,

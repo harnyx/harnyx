@@ -110,12 +110,16 @@ class UsageSummarizer:
         budget: SessionUsage,
     ) -> ToolUsageSummary:
         search_summary, total_search_cost = self._summarize_search_usage(receipts)
-        llm_summary, total_llm_cost = self._summarize_llm_usage(budget)
+        llm_summary, total_llm_cost = self._summarize_llm_usage(budget, receipts)
         return ToolUsageSummary(
             search_tool=search_summary,
             search_tool_cost=total_search_cost,
             llm=llm_summary,
             llm_cost=total_llm_cost,
+            reference_total_cost_usd=budget.reference_total_cost_usd,
+            reference_cost_by_provider=dict(budget.reference_cost_by_provider),
+            actual_total_cost_usd=budget.actual_total_cost_usd,
+            actual_cost_by_provider=dict(budget.actual_cost_by_provider),
         )
 
     def _summarize_search_usage(
@@ -123,6 +127,7 @@ class UsageSummarizer:
         receipts: Sequence[ToolCall],
     ) -> tuple[SearchToolUsageSummary, float]:
         total_cost = 0.0
+        actual_cost_total: float | None = 0.0
         call_count = 0
 
         for receipt in receipts:
@@ -131,14 +136,29 @@ class UsageSummarizer:
             if not receipt.is_successful():
                 continue
             total_cost += self._search_cost(receipt.tool, receipt)
+            actual_cost = _actual_receipt_cost(receipt)
+            actual_cost_total = _accumulate_actual_summary_cost(
+                actual_cost_total,
+                reference_cost_usd=_reference_receipt_cost(receipt),
+                actual_cost_usd=actual_cost,
+            )
             call_count += 1
 
         return (
-            SearchToolUsageSummary(call_count=call_count, cost=round(total_cost, 6)),
+            SearchToolUsageSummary(
+                call_count=call_count,
+                cost=round(total_cost, 6),
+                reference_cost=round(total_cost, 6),
+                actual_cost=actual_cost_total,
+            ),
             total_cost,
         )
 
-    def _summarize_llm_usage(self, budget: SessionUsage) -> tuple[LlmUsageSummary, float]:
+    def _summarize_llm_usage(
+        self,
+        budget: SessionUsage,
+        receipts: Sequence[ToolCall],
+    ) -> tuple[LlmUsageSummary, float]:
         call_count = 0
         prompt_tokens = 0
         completion_tokens = 0
@@ -146,6 +166,7 @@ class UsageSummarizer:
         reasoning_tokens = 0
         total_cost = 0.0
         providers: dict[str, dict[str, LlmModelUsageCost]] = {}
+        actual_cost_by_model = _actual_llm_cost_by_model(receipts)
 
         for _, models in budget.llm_usage_totals.items():
             for model, totals in models.items():
@@ -161,7 +182,12 @@ class UsageSummarizer:
                 )
                 model_provider = tool_model.split("/", 1)[0]
                 provider_models = providers.setdefault(model_provider, {})
-                provider_models[str(tool_model)] = LlmModelUsageCost(usage=totals, cost=cost)
+                provider_models[str(tool_model)] = LlmModelUsageCost(
+                    usage=totals,
+                    cost=cost,
+                    reference_cost=cost,
+                    actual_cost=actual_cost_by_model.get(str(tool_model)),
+                )
                 call_count += totals.call_count
                 prompt_tokens += totals.prompt_tokens
                 completion_tokens += totals.completion_tokens
@@ -178,6 +204,8 @@ class UsageSummarizer:
                 reasoning_tokens=reasoning_tokens,
                 providers=providers,
                 cost=round(total_cost, 6),
+                reference_cost=round(total_cost, 6),
+                actual_cost=_actual_llm_total_cost(receipts),
             ),
             total_cost,
         )
@@ -196,6 +224,79 @@ class UsageSummarizer:
             total_tokens=totals.total_tokens or 0,
             reasoning_tokens=totals.reasoning_tokens or 0,
         )
+
+
+def _reference_receipt_cost(receipt: ToolCall) -> float | None:
+    if receipt.details.reference_cost_usd is not None:
+        return float(receipt.details.reference_cost_usd)
+    if receipt.details.cost_usd is not None:
+        return float(receipt.details.cost_usd)
+    return None
+
+
+def _actual_receipt_cost(receipt: ToolCall) -> float | None:
+    return None if receipt.details.actual_cost_usd is None else float(receipt.details.actual_cost_usd)
+
+
+def _accumulate_actual_summary_cost(
+    current: float | None,
+    *,
+    reference_cost_usd: float | None,
+    actual_cost_usd: float | None,
+) -> float | None:
+    if reference_cost_usd is None:
+        return current
+    if reference_cost_usd == 0.0 and actual_cost_usd is None:
+        return current
+    if actual_cost_usd is None:
+        return None
+    if current is None:
+        return None
+    return current + actual_cost_usd
+
+
+def _actual_llm_total_cost(receipts: Sequence[ToolCall]) -> float | None:
+    total: float | None = 0.0
+    for receipt in receipts:
+        if receipt.tool != "llm_chat":
+            continue
+        total = _accumulate_actual_summary_cost(
+            total,
+            reference_cost_usd=_reference_receipt_cost(receipt),
+            actual_cost_usd=_actual_receipt_cost(receipt),
+        )
+    return total
+
+
+def _actual_llm_cost_by_model(receipts: Sequence[ToolCall]) -> dict[str, float | None]:
+    totals: dict[str, float | None] = {}
+    for receipt in receipts:
+        if receipt.tool != "llm_chat":
+            continue
+        model = _receipt_model(receipt)
+        if model is None:
+            continue
+        totals[model] = _accumulate_actual_summary_cost(
+            totals.get(model, 0.0),
+            reference_cost_usd=_reference_receipt_cost(receipt),
+            actual_cost_usd=_actual_receipt_cost(receipt),
+        )
+    return totals
+
+
+def _receipt_model(receipt: ToolCall) -> str | None:
+    payload = receipt.details.request_payload
+    if not isinstance(payload, dict):
+        return None
+    kwargs = payload.get("kwargs")
+    if isinstance(kwargs, dict):
+        model = kwargs.get("model")
+        return model if isinstance(model, str) else None
+    args = payload.get("args")
+    if isinstance(args, list) and args and isinstance(args[0], dict):
+        model = args[0].get("model")
+        return model if isinstance(model, str) else None
+    return None
 
 
 class TaskRunOrchestrator:

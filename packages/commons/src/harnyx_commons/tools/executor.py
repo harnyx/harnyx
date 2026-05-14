@@ -87,6 +87,8 @@ class ToolInvocationOutput:
 
     public_payload: JsonObject
     execution: ToolExecutionFacts | None = None
+    actual_cost_usd: float | None = None
+    actual_cost_provider: str | None = None
 
 
 class ToolExecutor:
@@ -213,6 +215,8 @@ class ToolExecutor:
         llm_tokens: int,
         usage_details: ToolCallUsage | None,
         call_cost: float | None,
+        actual_cost_usd: float | None,
+        actual_cost_provider: str | None,
     ) -> Session:
         return self._usage_tracker.record_tool_call(
             session,
@@ -220,6 +224,8 @@ class ToolExecutor:
             llm_tokens=llm_tokens,
             usage=usage_details if usage_details is not None else None,
             cost_usd=call_cost,
+            actual_cost_usd=actual_cost_usd,
+            actual_cost_provider=actual_cost_provider,
         )
 
     async def _execute_and_record_async(
@@ -312,6 +318,8 @@ class ToolExecutor:
             results=results,
             result_policy=result_policy,
             cost_usd=call_cost,
+            actual_cost_usd=invocation_output.actual_cost_usd,
+            actual_cost_provider=invocation_output.actual_cost_provider,
             execution=_merge_execution_facts(
                 invocation_output.execution,
                 started_at=started_at,
@@ -326,6 +334,8 @@ class ToolExecutor:
                 llm_tokens=llm_tokens,
                 usage_details=usage_details,
                 call_cost=call_cost,
+                actual_cost_usd=invocation_output.actual_cost_usd,
+                actual_cost_provider=invocation_output.actual_cost_provider,
             ),
         )
         if completion is None:
@@ -370,6 +380,8 @@ class ToolExecutor:
         llm_tokens: int,
         usage_details: ToolCallUsage | None,
         call_cost: float | None,
+        actual_cost_usd: float | None,
+        actual_cost_provider: str | None,
     ) -> tuple[Session, bool]:
         budget_exhausted_by_this_call = False
 
@@ -389,6 +401,8 @@ class ToolExecutor:
                 llm_tokens,
                 usage_details,
                 call_cost,
+                actual_cost_usd,
+                actual_cost_provider,
             )
             exhausted = _mark_session_exhausted_if_needed(updated)
             if exhausted.status is SessionStatus.EXHAUSTED and not was_already_exhausted:
@@ -455,7 +469,6 @@ class ToolExecutor:
     def _validate_token(self, session_id: UUID, presented: str) -> None:
         if not self._tokens.verify(session_id, presented):
             raise PermissionError("invalid session token presented for tool execution")
-
 
 def _normalize_invocation_output(value: object) -> ToolInvocationOutput:
     if isinstance(value, ToolInvocationOutput):

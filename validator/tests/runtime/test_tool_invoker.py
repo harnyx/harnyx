@@ -160,6 +160,30 @@ class StubChutesProvider:
         )
 
 
+class StubOpenRouterProvider(StubChutesProvider):
+    async def invoke(self, request: LlmRequest) -> LlmResponse:
+        self.calls.append(request)
+        return LlmResponse(
+            id="resp-test",
+            choices=(
+                LlmChoice(
+                    index=0,
+                    message=LlmChoiceMessage(
+                        role="assistant",
+                        content=(LlmMessageContentPart(type="text", text="ok"),),
+                    ),
+                    finish_reason="stop",
+                ),
+            ),
+            usage=LlmUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+            metadata={
+                "effective_provider": "openrouter",
+                "raw_response": {"usage": {"cost": 0.0042}},
+            },
+            finish_reason="stop",
+        )
+
+
 class SlowLlmProvider(StubChutesProvider):
     async def invoke(self, request: LlmRequest) -> LlmResponse:
         await asyncio.sleep(1.0)
@@ -190,12 +214,16 @@ async def test_runtime_invoker_routes_search_payload() -> None:
     invoker = RuntimeToolInvoker(
         FakeReceiptLog(),
         web_search_client=stub_desearch,
+        web_search_provider_name="parallel",
         allowed_models=ALLOWED_TOOL_MODELS,
     )
 
     result = await _invoke(invoker, "search_web", kwargs={"search_queries": ["harnyx", "subnet"]})
 
-    assert result == {"data": []}
+    assert isinstance(result, ToolInvocationOutput)
+    assert result.public_payload == {"data": []}
+    assert result.actual_cost_usd == pytest.approx(0.005)
+    assert result.actual_cost_provider == "parallel"
     assert stub_desearch.calls == [("web", {"search_queries": ("harnyx", "subnet")})]
 
 
@@ -209,7 +237,8 @@ async def test_runtime_invoker_routes_search_web_timeout() -> None:
 
     result = await _invoke(invoker, "search_web", kwargs={"search_queries": ["harnyx"], "timeout": 5})
 
-    assert result == {"data": []}
+    assert isinstance(result, ToolInvocationOutput)
+    assert result.public_payload == {"data": []}
     assert stub_desearch.calls == [("web", {"search_queries": ("harnyx",), "timeout": 5.0})]
 
 
@@ -273,6 +302,25 @@ async def test_runtime_invoker_rejects_prompt_for_search_web() -> None:
     )
 
 
+async def test_runtime_invoker_rejects_negative_search_web_num_before_parallel_pricing() -> None:
+    stub_desearch = StubDeSearchClient()
+    invoker = RuntimeToolInvoker(
+        FakeReceiptLog(),
+        web_search_client=stub_desearch,
+        web_search_provider_name="parallel",
+        allowed_models=ALLOWED_TOOL_MODELS,
+    )
+
+    with pytest.raises(ValidationError) as excinfo:
+        await _invoke(invoker, "search_web", kwargs={"search_queries": ["harnyx"], "num": -1})
+
+    assert any(
+        err.get("type") == "greater_than_equal" and err.get("loc") == ("num",)
+        for err in excinfo.value.errors()
+    )
+    assert stub_desearch.calls == []
+
+
 async def test_runtime_invoker_routes_fetch_page() -> None:
     stub_desearch = StubDeSearchClient()
     invoker = RuntimeToolInvoker(
@@ -283,7 +331,8 @@ async def test_runtime_invoker_routes_fetch_page() -> None:
 
     result = await _invoke(invoker, "fetch_page", kwargs={"url": "https://example.com"})
 
-    assert result["data"][0]["content"] == "page text"
+    assert isinstance(result, ToolInvocationOutput)
+    assert result.public_payload["data"][0]["content"] == "page text"
     assert stub_desearch.calls[-1] == ("fetch_page", {"url": "https://example.com"})
 
 
@@ -297,7 +346,8 @@ async def test_runtime_invoker_routes_fetch_page_timeout() -> None:
 
     result = await _invoke(invoker, "fetch_page", kwargs={"url": "https://example.com", "timeout": 5})
 
-    assert result["data"][0]["content"] == "page text"
+    assert isinstance(result, ToolInvocationOutput)
+    assert result.public_payload["data"][0]["content"] == "page text"
     assert stub_desearch.calls[-1] == ("fetch_page", {"url": "https://example.com", "timeout": 5.0})
 
 
@@ -342,9 +392,10 @@ async def test_runtime_invoker_routes_search_ai() -> None:
         kwargs={"prompt": "harnyx subnet", "count": 10},
     )
 
-    assert result["data"][0]["url"] == "https://example.com"
-    assert result["data"][0]["title"] == "Example"
-    assert result["data"][0]["note"] == "Summary"
+    assert isinstance(result, ToolInvocationOutput)
+    assert result.public_payload["data"][0]["url"] == "https://example.com"
+    assert result.public_payload["data"][0]["title"] == "Example"
+    assert result.public_payload["data"][0]["note"] == "Summary"
 
     assert stub_desearch.calls[-1] == ("search_ai", {"prompt": "harnyx subnet", "count": 10})
 
@@ -363,7 +414,8 @@ async def test_runtime_invoker_routes_search_ai_timeout() -> None:
         kwargs={"prompt": "harnyx subnet", "count": 10, "timeout": 5},
     )
 
-    assert result["data"][0]["url"] == "https://example.com"
+    assert isinstance(result, ToolInvocationOutput)
+    assert result.public_payload["data"][0]["url"] == "https://example.com"
     assert stub_desearch.calls[-1] == ("search_ai", {"prompt": "harnyx subnet", "count": 10, "timeout": 5.0})
 
 
@@ -707,11 +759,11 @@ async def test_runtime_invoker_rejects_raw_llm_chat_provider_body_kwargs() -> No
 async def test_runtime_invoker_returns_public_payload_plus_execution_facts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    stub_chutes = StubChutesProvider()
+    stub_chutes = StubOpenRouterProvider()
     invoker = RuntimeToolInvoker(
         FakeReceiptLog(),
         llm_provider=stub_chutes,
-        llm_provider_name="chutes",
+        llm_provider_name="openrouter",
         allowed_models=ALLOWED_TOOL_MODELS,
     )
     perf_counter_values = iter((10.0, 11.25))
@@ -729,7 +781,10 @@ async def test_runtime_invoker_returns_public_payload_plus_execution_facts(
     assert isinstance(result, ToolInvocationOutput)
     assert result.execution is not None
     assert result.execution.elapsed_ms == pytest.approx(1250.0)
+    assert result.actual_cost_usd == pytest.approx(0.0042)
+    assert result.actual_cost_provider == "openrouter"
     assert "elapsed_ms" not in result.public_payload
+    assert "actual_cost_usd" not in result.public_payload
 
 
 async def test_runtime_invoker_rejects_blank_search_ai_prompt() -> None:

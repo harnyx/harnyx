@@ -22,6 +22,11 @@ SEARCH_PRICING_PER_REFERENCEABLE_RESULT: dict[SearchToolName, float] = {
     "fetch_page": 0.0005,
 }
 
+PARALLEL_SEARCH_BASE_RESULTS = 10
+PARALLEL_SEARCH_BASE_COST_USD = 0.005
+PARALLEL_SEARCH_ADDITIONAL_RESULT_COST_USD = 0.001
+PARALLEL_EXTRACT_URL_COST_USD = 0.001
+
 
 @dataclass(frozen=True)
 class ModelPricing:
@@ -70,8 +75,32 @@ def price_search(tool_name: SearchToolName, *, referenceable_results: int) -> fl
     return float(referenceable_results) * SEARCH_PRICING_PER_REFERENCEABLE_RESULT[tool_name]
 
 
+def price_parallel_search(*, requested_results: int | None) -> float:
+    """Return provider-billed USD cost for one Parallel Search request."""
+    count = PARALLEL_SEARCH_BASE_RESULTS if requested_results is None else requested_results
+    if count < 0:
+        raise ValueError("requested_results must be non-negative when supplied")
+    extra_results = max(0, count - PARALLEL_SEARCH_BASE_RESULTS)
+    return PARALLEL_SEARCH_BASE_COST_USD + (
+        float(extra_results) * PARALLEL_SEARCH_ADDITIONAL_RESULT_COST_USD
+    )
+
+
+def price_parallel_extract(*, url_count: int) -> float:
+    """Return provider-billed USD cost for one Parallel Extract request."""
+    if url_count < 0:
+        raise ValueError("url_count must be non-negative")
+    return float(url_count) * PARALLEL_EXTRACT_URL_COST_USD
+
+
 __all__ = [
+    "PARALLEL_EXTRACT_URL_COST_USD",
+    "PARALLEL_SEARCH_ADDITIONAL_RESULT_COST_USD",
+    "PARALLEL_SEARCH_BASE_COST_USD",
+    "PARALLEL_SEARCH_BASE_RESULTS",
     "price_llm",
+    "price_parallel_extract",
+    "price_parallel_search",
     "price_search",
     "MODEL_PRICING",
     "SEARCH_PRICING_PER_REFERENCEABLE_RESULT",

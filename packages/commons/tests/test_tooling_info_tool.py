@@ -7,6 +7,7 @@ from harnyx_commons.llm.pricing import (
     MODEL_PRICING,
     SEARCH_PRICING_PER_REFERENCEABLE_RESULT,
     price_llm,
+    price_parallel_search,
 )
 from harnyx_commons.llm.schema import LlmUsage
 from harnyx_commons.llm.tool_models import ALLOWED_TOOL_MODELS, parse_tool_model
@@ -124,6 +125,17 @@ def test_zero_reasoning_price_falls_back_to_output_price() -> None:
     assert price_llm(parse_tool_model("google/gemma-4-31B-turbo-TEE"), usage) == pytest.approx(0.89)
     assert price_llm(parse_tool_model("openai/gpt-oss-20b"), usage) == pytest.approx(0.31)
     assert price_llm(parse_tool_model("openai/gpt-oss-120b"), usage) == pytest.approx(0.399)
+
+
+@pytest.mark.parametrize(
+    ("requested_results", "expected_cost"),
+    ((None, 0.005), (1, 0.005), (10, 0.005), (11, 0.006), (25, 0.02)),
+)
+def test_parallel_search_actual_pricing_uses_base_price_for_up_to_ten_results(
+    requested_results: int | None,
+    expected_cost: float,
+) -> None:
+    assert price_parallel_search(requested_results=requested_results) == pytest.approx(expected_cost)
 
 
 @pytest.mark.parametrize("model", ("openai/gpt-oss-20b-TEE", "openai/gpt-oss-120b-TEE"))

@@ -61,3 +61,6 @@ async def test_chutes_tool_route_invokes_openrouter_gpt_oss_live(model: str, pro
     assert response.metadata is not None
     assert response.metadata["effective_provider"] == "openrouter"
     assert response.metadata["effective_model"] == model
+    raw_usage = response.metadata["raw_response"]["usage"]
+    assert isinstance(raw_usage["cost"], (int, float))
+    assert raw_usage["cost"] >= 0.0

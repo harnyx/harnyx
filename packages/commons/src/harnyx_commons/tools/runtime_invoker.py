@@ -20,8 +20,11 @@ from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.llm.pricing import (
     MODEL_PRICING,
     SEARCH_PRICING_PER_REFERENCEABLE_RESULT,
+    price_parallel_extract,
+    price_parallel_search,
 )
 from harnyx_commons.llm.provider import LlmProviderPort, LlmRetryExhaustedError
+from harnyx_commons.llm.provider_types import OPENROUTER_PROVIDER
 from harnyx_commons.llm.schema import (
     LlmChoice,
     LlmChoiceMessage,
@@ -36,7 +39,6 @@ from harnyx_commons.llm.schema import (
 from harnyx_commons.llm.tool_models import ALLOWED_TOOL_MODELS, ToolModelName, parse_tool_model
 from harnyx_commons.tools.dto import tool_payload_from_args_kwargs
 from harnyx_commons.tools.executor import ToolInvocationOutput, ToolInvoker
-from harnyx_commons.tools.normalize import normalize_response
 from harnyx_commons.tools.ports import WebSearchProviderPort
 from harnyx_commons.tools.search_models import (
     FetchPageRequest,
@@ -127,6 +129,7 @@ def build_miner_sandbox_tool_invoker(
     receipt_log: ReceiptLogPort,
     *,
     web_search_client: WebSearchProviderPort | None = None,
+    web_search_provider_name: str | None = None,
     llm_provider: LlmProviderPort | None = None,
     llm_provider_name: str | None = None,
     allowed_models: tuple[ToolModelName, ...] = ALLOWED_TOOL_MODELS,
@@ -134,6 +137,7 @@ def build_miner_sandbox_tool_invoker(
     return RuntimeToolInvoker(
         receipt_log,
         web_search_client=web_search_client,
+        web_search_provider_name=web_search_provider_name,
         llm_provider=llm_provider,
         llm_provider_name=llm_provider_name,
         advertised_tool_names=MINER_SANDBOX_TOOL_NAMES,
@@ -149,6 +153,7 @@ class RuntimeToolInvoker(ToolInvoker):
         receipt_log: ReceiptLogPort,
         *,
         web_search_client: WebSearchProviderPort | None = None,
+        web_search_provider_name: str | None = None,
         llm_provider: LlmProviderPort | None = None,
         llm_provider_name: str | None = None,
         advertised_tool_names: tuple[ToolName, ...] | None = None,
@@ -157,6 +162,7 @@ class RuntimeToolInvoker(ToolInvoker):
         self._receipts = receipt_log
         self._logger = logging.getLogger("harnyx_commons.tools.runtime_invoker")
         self._web_search = web_search_client
+        self._web_search_provider_name = web_search_provider_name
         self._llm_provider = llm_provider
         self._llm_provider_name = llm_provider_name or "llm"
         self._advertised_tool_names = tuple(sorted(advertised_tool_names or TOOL_NAMES))
@@ -261,13 +267,12 @@ class RuntimeToolInvoker(ToolInvoker):
             },
         )
 
-    @normalize_response
     async def _dispatch_search(
         self,
         tool_name: SearchToolName,
         args: Sequence[JsonValue],
         kwargs: Mapping[str, JsonValue],
-    ) -> JsonObject:
+    ) -> ToolInvocationOutput:
         web_search = self._web_search
         if web_search is None:
             raise LookupError("search client is not configured")
@@ -280,7 +285,12 @@ class RuntimeToolInvoker(ToolInvoker):
                 lambda: web_search.search_web(request_model_web),
             )
             as_mapping = response_web.model_dump(exclude_none=True, mode="json")
-            return cast(JsonObject, as_mapping)
+            return _search_invocation_output(
+                cast(JsonObject, as_mapping),
+                provider_name=self._web_search_provider_name,
+                tool_name=tool_name,
+                request=request_model_web,
+            )
         elif tool_name == "search_ai":
             request_ai = SearchAiSearchRequest.model_validate(payload)
             response = await _invoke_with_optional_timeout(
@@ -289,7 +299,12 @@ class RuntimeToolInvoker(ToolInvoker):
                 lambda: web_search.search_ai(request_ai),
             )
             as_mapping = response.model_dump(exclude_none=True, mode="json")
-            return cast(JsonObject, as_mapping)
+            return _search_invocation_output(
+                cast(JsonObject, as_mapping),
+                provider_name=self._web_search_provider_name,
+                tool_name=tool_name,
+                request=request_ai,
+            )
         elif tool_name == "fetch_page":
             request_page = FetchPageRequest.model_validate(payload)
             response_page = await _invoke_with_optional_timeout(
@@ -298,7 +313,12 @@ class RuntimeToolInvoker(ToolInvoker):
                 lambda: web_search.fetch_page(request_page),
             )
             as_mapping = response_page.model_dump(exclude_none=True, mode="json")
-            return cast(JsonObject, as_mapping)
+            return _search_invocation_output(
+                cast(JsonObject, as_mapping),
+                provider_name=self._web_search_provider_name,
+                tool_name=tool_name,
+                request=request_page,
+            )
         raise LookupError(f"search tool '{tool_name}' is not supported")
 
     async def _dispatch_llm(
@@ -335,6 +355,8 @@ class RuntimeToolInvoker(ToolInvoker):
         return ToolInvocationOutput(
             public_payload=_public_llm_response_payload(llm_response),
             execution=ToolExecutionFacts(elapsed_ms=elapsed_ms),
+            actual_cost_usd=_openrouter_actual_cost_usd(llm_response),
+            actual_cost_provider=_openrouter_actual_cost_provider(llm_response),
         )
 
     def _parse_invocation(
@@ -501,6 +523,78 @@ def _public_llm_tool_call_payload(call: LlmMessageToolCall) -> JsonObject:
         "name": call.name,
         "arguments": call.arguments,
     }
+
+
+def _search_invocation_output(
+    public_payload: JsonObject,
+    *,
+    provider_name: str | None,
+    tool_name: SearchToolName,
+    request: SearchWebSearchRequest | SearchAiSearchRequest | FetchPageRequest,
+) -> ToolInvocationOutput:
+    actual_cost_usd = _parallel_actual_search_cost_usd(
+        provider_name=provider_name,
+        tool_name=tool_name,
+        request=request,
+    )
+    return ToolInvocationOutput(
+        public_payload=public_payload,
+        actual_cost_usd=actual_cost_usd,
+        actual_cost_provider="parallel" if actual_cost_usd is not None else None,
+    )
+
+
+def _parallel_actual_search_cost_usd(
+    *,
+    provider_name: str | None,
+    tool_name: SearchToolName,
+    request: SearchWebSearchRequest | SearchAiSearchRequest | FetchPageRequest,
+) -> float | None:
+    if provider_name != "parallel":
+        return None
+    if tool_name == "search_web":
+        if not isinstance(request, SearchWebSearchRequest):
+            raise TypeError("search_web actual pricing requires SearchWebSearchRequest")
+        return price_parallel_search(requested_results=request.num)
+    if tool_name == "search_ai":
+        if not isinstance(request, SearchAiSearchRequest):
+            raise TypeError("search_ai actual pricing requires SearchAiSearchRequest")
+        return price_parallel_search(requested_results=request.count)
+    if tool_name == "fetch_page":
+        if not isinstance(request, FetchPageRequest):
+            raise TypeError("fetch_page actual pricing requires FetchPageRequest")
+        return price_parallel_extract(url_count=1)
+    raise LookupError(f"search tool '{tool_name}' is not supported")
+
+
+def _openrouter_actual_cost_usd(response: LlmResponse) -> float | None:
+    if _openrouter_actual_cost_provider(response) != OPENROUTER_PROVIDER:
+        return None
+    raw_response = (response.metadata or {}).get("raw_response")
+    if not isinstance(raw_response, Mapping):
+        return None
+    raw_response_mapping = cast(Mapping[str, object], raw_response)
+    usage = raw_response_mapping.get("usage")
+    if not isinstance(usage, Mapping):
+        return None
+    usage_mapping = cast(Mapping[str, object], usage)
+    cost = usage_mapping.get("cost")
+    if cost is None:
+        return None
+    if not isinstance(cost, (int, float)):
+        raise ValueError("OpenRouter usage.cost must be numeric when supplied")
+    if cost < 0.0:
+        raise ValueError("OpenRouter usage.cost must be non-negative")
+    return float(cost)
+
+
+def _openrouter_actual_cost_provider(response: LlmResponse) -> str | None:
+    metadata = response.metadata or {}
+    if metadata.get("effective_provider") == OPENROUTER_PROVIDER:
+        return OPENROUTER_PROVIDER
+    if metadata.get("selected_provider") == OPENROUTER_PROVIDER:
+        return OPENROUTER_PROVIDER
+    return None
 
 __all__ = [
     "ALLOWED_TOOL_MODELS",

@@ -15,7 +15,7 @@ class SearchWebSearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     search_queries: tuple[str, ...] = Field(min_length=1)
-    num: int | None = None
+    num: int | None = Field(default=None, ge=0)
     timeout: ToolInvocationTimeout | None = None
 
     @field_validator("search_queries", mode="before")

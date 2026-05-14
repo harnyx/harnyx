@@ -167,8 +167,10 @@ async def test_openai_compatible_provider_normalizes_streamed_chat_response() ->
     assert response.raw_text == "ok"
     assert response.finish_reason == "stop"
     assert response.usage.total_tokens == 5
+    assert not hasattr(response.usage, "cost")
     assert response.metadata is not None
     assert response.metadata["raw_response"]["id"] == "chatcmpl-1"
+    assert response.metadata["raw_response"]["usage"]["cost"] == pytest.approx(0.00123)
 
 
 async def test_openai_compatible_thinking_omitted_is_noop() -> None:
@@ -377,7 +379,7 @@ def _streaming_response() -> httpx.Response:
         (
             'data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":"ok"}}]}',
             'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],'
-            '"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}',
+            '"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5,"cost":0.00123}}',
             "data: [DONE]",
             "",
         )

@@ -480,15 +480,19 @@ async def test_execute_tool_prices_search_web_by_referenceable_results() -> None
             *,
             args: tuple[object, ...],
             kwargs: dict[str, object],
-        ) -> dict[str, object]:
+        ) -> ToolInvocationOutput:
             assert tool_name == "search_web"
-            return {
-                "data": [
-                    {"link": "https://a.example", "snippet": "A"},
-                    {"link": "", "snippet": "ignored"},
-                    {"link": "https://b.example", "snippet": "B"},
-                ]
-            }
+            return ToolInvocationOutput(
+                public_payload={
+                    "data": [
+                        {"link": "https://a.example", "snippet": "A"},
+                        {"link": "", "snippet": "ignored"},
+                        {"link": "https://b.example", "snippet": "B"},
+                    ]
+                },
+                actual_cost_usd=0.005,
+                actual_cost_provider="parallel",
+            )
 
     session_registry = FakeSessionRegistry()
     session_registry.create(session)
@@ -511,10 +515,17 @@ async def test_execute_tool_prices_search_web_by_referenceable_results() -> None
     stored_session = session_registry.get(session.session_id)
     assert stored_session is not None
     assert stored_session.usage.total_cost_usd == pytest.approx(0.0002)
+    assert stored_session.usage.reference_total_cost_usd == pytest.approx(0.0002)
+    assert stored_session.usage.actual_total_cost_usd == pytest.approx(0.005)
+    assert stored_session.usage.actual_cost_by_provider == {"parallel": pytest.approx(0.005)}
+    assert "actual_cost_usd" not in result.response_payload
 
     receipt = receipt_log.lookup(result.receipt.receipt_id)
     assert receipt is not None
     assert receipt.details.cost_usd == pytest.approx(0.0002)
+    assert receipt.details.reference_cost_usd == pytest.approx(0.0002)
+    assert receipt.details.actual_cost_usd == pytest.approx(0.005)
+    assert receipt.details.actual_cost_provider == "parallel"
     assert len(receipt.details.results) == 2
 
 
@@ -984,7 +995,7 @@ async def test_execute_tool_records_llm_tokens_for_llm_chat(model: str) -> None:
             *,
             args: tuple[object, ...],
             kwargs: dict[str, object],
-        ) -> dict[str, object]:
+        ) -> ToolInvocationOutput:
             response = LlmResponse(
                 id="offline-chutes",
                 choices=(
@@ -998,7 +1009,11 @@ async def test_execute_tool_records_llm_tokens_for_llm_chat(model: str) -> None:
                 ),
                 usage=usage,
             )
-            return response.to_payload()
+            return ToolInvocationOutput(
+                public_payload=response.to_payload(),
+                actual_cost_usd=0.003,
+                actual_cost_provider="openrouter",
+            )
 
     session_registry = FakeSessionRegistry()
     session_registry.create(session)
@@ -1040,12 +1055,18 @@ async def test_execute_tool_records_llm_tokens_for_llm_chat(model: str) -> None:
     assert usage_totals.call_count == 1
     assert result.response_payload["usage"]["total_tokens"] == 15
     assert result.response_payload["usage"]["reasoning_tokens"] == 7
+    assert "actual_cost_usd" not in result.response_payload
     assert stored_session.usage.total_cost_usd == pytest.approx(
         price_llm(parse_tool_model(model), usage)
     )
+    assert stored_session.usage.reference_total_cost_usd == pytest.approx(
+        price_llm(parse_tool_model(model), usage)
+    )
+    assert stored_session.usage.actual_total_cost_usd == pytest.approx(0.003)
     assert stored_session.usage.cost_by_provider["chutes"] == pytest.approx(
         price_llm(parse_tool_model(model), usage)
     )
+    assert stored_session.usage.actual_cost_by_provider["openrouter"] == pytest.approx(0.003)
 
 
 async def test_execute_tool_records_llm_tokens_for_first_positional_llm_chat_payload() -> None:

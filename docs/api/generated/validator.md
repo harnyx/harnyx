@@ -440,18 +440,26 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `scoring_version` |  | req | `string` |
 |  | `total_score` |  | req | `number` |
 | `total_tool_usage` |  |  | opt | [ToolUsageSummary-Input](#model-toolusagesummary-input) |
+|  | `actual_cost_by_provider` |  | opt | `object` |
+|  | `actual_total_cost_usd` |  | opt | `number` (nullable) |
 |  | `llm` |  | opt | [LlmUsageSummary-Input](#model-llmusagesummary-input) |
+|  |  | `actual_cost` | opt | `number` (nullable) |
 |  |  | `call_count` | opt | `integer` (default: 0) |
 |  |  | `completion_tokens` | opt | `integer` (default: 0) |
 |  |  | `cost` | opt | `number` (default: 0.0) |
 |  |  | `prompt_tokens` | opt | `integer` (default: 0) |
 |  |  | `providers` | opt | `object` |
 |  |  | `reasoning_tokens` | opt | `integer` (default: 0) |
+|  |  | `reference_cost` | opt | `number` (default: 0.0) |
 |  |  | `total_tokens` | opt | `integer` (default: 0) |
 |  | `llm_cost` |  | opt | `number` (default: 0.0) |
+|  | `reference_cost_by_provider` |  | opt | `object` |
+|  | `reference_total_cost_usd` |  | opt | `number` (default: 0.0) |
 |  | `search_tool` |  | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
+|  |  | `actual_cost` | opt | `number` (nullable) |
 |  |  | `call_count` | opt | `integer` (default: 0) |
 |  |  | `cost` | opt | `number` (default: 0.0) |
+|  |  | `reference_cost` | opt | `number` (default: 0.0) |
 |  | `search_tool_cost` |  | opt | `number` (default: 0.0) |
 
 <details>
@@ -521,18 +529,26 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `scoring_version` |  | req | `string` |
 |  | `total_score` |  | req | `number` |
 | `total_tool_usage` |  |  | opt | [ToolUsageSummary-Output](#model-toolusagesummary-output) |
+|  | `actual_cost_by_provider` |  | opt | `object` |
+|  | `actual_total_cost_usd` |  | opt | `number` (nullable) |
 |  | `llm` |  | opt | [LlmUsageSummary-Output](#model-llmusagesummary-output) |
+|  |  | `actual_cost` | opt | `number` (nullable) |
 |  |  | `call_count` | opt | `integer` (default: 0) |
 |  |  | `completion_tokens` | opt | `integer` (default: 0) |
 |  |  | `cost` | opt | `number` (default: 0.0) |
 |  |  | `prompt_tokens` | opt | `integer` (default: 0) |
 |  |  | `providers` | opt | `object` |
 |  |  | `reasoning_tokens` | opt | `integer` (default: 0) |
+|  |  | `reference_cost` | opt | `number` (default: 0.0) |
 |  |  | `total_tokens` | opt | `integer` (default: 0) |
 |  | `llm_cost` |  | opt | `number` (default: 0.0) |
+|  | `reference_cost_by_provider` |  | opt | `object` |
+|  | `reference_total_cost_usd` |  | opt | `number` (default: 0.0) |
 |  | `search_tool` |  | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
+|  |  | `actual_cost` | opt | `number` (nullable) |
 |  |  | `call_count` | opt | `integer` (default: 0) |
 |  |  | `cost` | opt | `number` (default: 0.0) |
+|  |  | `reference_cost` | opt | `number` (default: 0.0) |
 |  | `search_tool_cost` |  | opt | `number` (default: 0.0) |
 
 <details>
@@ -849,7 +865,9 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `actual_cost` |  |  | opt | `number` (nullable) |
 | `cost` |  |  | opt | `number` (default: 0.0) |
+| `reference_cost` |  |  | opt | `number` (default: 0.0) |
 | `usage` |  |  | opt | [LlmUsageTotals](#model-llmusagetotals) |
 |  | `call_count` |  | opt | `integer` (default: 0) |
 |  | `completion_tokens` |  | opt | `integer` (default: 0) |
@@ -863,9 +881,25 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 ```json
 {
   "properties": {
+    "actual_cost": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Actual Cost"
+    },
     "cost": {
       "default": 0.0,
       "title": "Cost",
+      "type": "number"
+    },
+    "reference_cost": {
+      "default": 0.0,
+      "title": "Reference Cost",
       "type": "number"
     },
     "usage": {
@@ -884,12 +918,14 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `actual_cost` |  |  | opt | `number` (nullable) |
 | `call_count` |  |  | opt | `integer` (default: 0) |
 | `completion_tokens` |  |  | opt | `integer` (default: 0) |
 | `cost` |  |  | opt | `number` (default: 0.0) |
 | `prompt_tokens` |  |  | opt | `integer` (default: 0) |
 | `providers` |  |  | opt | `object` |
 | `reasoning_tokens` |  |  | opt | `integer` (default: 0) |
+| `reference_cost` |  |  | opt | `number` (default: 0.0) |
 | `total_tokens` |  |  | opt | `integer` (default: 0) |
 
 <details>
@@ -898,6 +934,17 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 ```json
 {
   "properties": {
+    "actual_cost": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Actual Cost"
+    },
     "call_count": {
       "default": 0,
       "title": "Call Count",
@@ -932,6 +979,11 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "default": 0,
       "title": "Reasoning Tokens",
       "type": "integer"
+    },
+    "reference_cost": {
+      "default": 0.0,
+      "title": "Reference Cost",
+      "type": "number"
     },
     "total_tokens": {
       "default": 0,
@@ -951,12 +1003,14 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `actual_cost` |  |  | opt | `number` (nullable) |
 | `call_count` |  |  | opt | `integer` (default: 0) |
 | `completion_tokens` |  |  | opt | `integer` (default: 0) |
 | `cost` |  |  | opt | `number` (default: 0.0) |
 | `prompt_tokens` |  |  | opt | `integer` (default: 0) |
 | `providers` |  |  | opt | `object` |
 | `reasoning_tokens` |  |  | opt | `integer` (default: 0) |
+| `reference_cost` |  |  | opt | `number` (default: 0.0) |
 | `total_tokens` |  |  | opt | `integer` (default: 0) |
 
 <details>
@@ -965,6 +1019,17 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 ```json
 {
   "properties": {
+    "actual_cost": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Actual Cost"
+    },
     "call_count": {
       "default": 0,
       "title": "Call Count",
@@ -999,6 +1064,11 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "default": 0,
       "title": "Reasoning Tokens",
       "type": "integer"
+    },
+    "reference_cost": {
+      "default": 0.0,
+      "title": "Reference Cost",
+      "type": "number"
     },
     "total_tokens": {
       "default": 0,
@@ -1385,9 +1455,12 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | `batch_id` |  |  | req | `string` |
 | `execution_log` |  |  | opt | array[[ToolCall-Output](#model-toolcall-output)] (default: []) |
 |  | `details` |  | req | [ToolCallDetails-Output](#model-toolcalldetails-output) |
+|  |  | `actual_cost_provider` | opt | `string` (nullable) |
+|  |  | `actual_cost_usd` | opt | `number` (nullable) |
 |  |  | `cost_usd` | opt | `number` (nullable) |
 |  |  | `execution` | opt | [ToolExecutionFacts](#model-toolexecutionfacts) (nullable) |
 |  |  | `extra` | opt | `object` (nullable) |
+|  |  | `reference_cost_usd` | opt | `number` (nullable) |
 |  |  | `request_hash` | req | `string` |
 |  |  | `request_payload` | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
 |  |  | `response_hash` | opt | `string` (nullable) |
@@ -1431,8 +1504,12 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  |  | `scoring_version` | req | `string` |
 |  |  | `total_score` | req | `number` |
 |  | `total_tool_usage` |  | opt | [ToolUsageSummary-Output](#model-toolusagesummary-output) |
+|  |  | `actual_cost_by_provider` | opt | `object` |
+|  |  | `actual_total_cost_usd` | opt | `number` (nullable) |
 |  |  | `llm` | opt | [LlmUsageSummary-Output](#model-llmusagesummary-output) |
 |  |  | `llm_cost` | opt | `number` (default: 0.0) |
+|  |  | `reference_cost_by_provider` | opt | `object` |
+|  |  | `reference_total_cost_usd` | opt | `number` (default: 0.0) |
 |  |  | `search_tool` | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
 |  |  | `search_tool_cost` | opt | `number` (default: 0.0) |
 | `usage` |  |  | req | [UsageModel](#model-usagemodel) |
@@ -1933,9 +2010,12 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | `batch_id` |  |  | req | `string` |
 | `execution_log` |  |  | opt | array[[ToolCall-Input](#model-toolcall-input)] (default: []) |
 |  | `details` |  | req | [ToolCallDetails-Input](#model-toolcalldetails-input) |
+|  |  | `actual_cost_provider` | opt | `string` (nullable) |
+|  |  | `actual_cost_usd` | opt | `number` (nullable) |
 |  |  | `cost_usd` | opt | `number` (nullable) |
 |  |  | `execution` | opt | [ToolExecutionFacts](#model-toolexecutionfacts) (nullable) |
 |  |  | `extra` | opt | `object` (nullable) |
+|  |  | `reference_cost_usd` | opt | `number` (nullable) |
 |  |  | `request_hash` | req | `string` |
 |  |  | `request_payload` | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
 |  |  | `response_hash` | opt | `string` (nullable) |
@@ -1973,8 +2053,12 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  |  | `scoring_version` | req | `string` |
 |  |  | `total_score` | req | `number` |
 |  | `total_tool_usage` |  | opt | [ToolUsageSummary-Input](#model-toolusagesummary-input) |
+|  |  | `actual_cost_by_provider` | opt | `object` |
+|  |  | `actual_total_cost_usd` | opt | `number` (nullable) |
 |  |  | `llm` | opt | [LlmUsageSummary-Input](#model-llmusagesummary-input) |
 |  |  | `llm_cost` | opt | `number` (default: 0.0) |
+|  |  | `reference_cost_by_provider` | opt | `object` |
+|  |  | `reference_total_cost_usd` | opt | `number` (default: 0.0) |
 |  |  | `search_tool` | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
 |  |  | `search_tool_cost` | opt | `number` (default: 0.0) |
 | `usage` |  |  | req | [UsageModel](#model-usagemodel) |
@@ -2206,8 +2290,10 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `actual_cost` |  |  | opt | `number` (nullable) |
 | `call_count` |  |  | opt | `integer` (default: 0) |
 | `cost` |  |  | opt | `number` (default: 0.0) |
+| `reference_cost` |  |  | opt | `number` (default: 0.0) |
 
 <details>
 <summary>JSON schema</summary>
@@ -2215,6 +2301,17 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 ```json
 {
   "properties": {
+    "actual_cost": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Actual Cost"
+    },
     "call_count": {
       "default": 0,
       "title": "Call Count",
@@ -2223,6 +2320,11 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     "cost": {
       "default": 0.0,
       "title": "Cost",
+      "type": "number"
+    },
+    "reference_cost": {
+      "default": 0.0,
+      "title": "Reference Cost",
       "type": "number"
     }
   },
@@ -2347,12 +2449,15 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `details` |  |  | req | [ToolCallDetails-Input](#model-toolcalldetails-input) |
+|  | `actual_cost_provider` |  | opt | `string` (nullable) |
+|  | `actual_cost_usd` |  | opt | `number` (nullable) |
 |  | `cost_usd` |  | opt | `number` (nullable) |
 |  | `execution` |  | opt | [ToolExecutionFacts](#model-toolexecutionfacts) (nullable) |
 |  |  | `elapsed_ms` | opt | `number` (nullable) |
 |  |  | `finished_at` | opt | `string` (format: date-time; nullable) |
 |  |  | `started_at` | opt | `string` (format: date-time; nullable) |
 |  | `extra` |  | opt | `object` (nullable) |
+|  | `reference_cost_usd` |  | opt | `number` (nullable) |
 |  | `request_hash` |  | req | `string` |
 |  | `request_payload` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
 |  | `response_hash` |  | opt | `string` (nullable) |
@@ -2434,12 +2539,15 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `details` |  |  | req | [ToolCallDetails-Output](#model-toolcalldetails-output) |
+|  | `actual_cost_provider` |  | opt | `string` (nullable) |
+|  | `actual_cost_usd` |  | opt | `number` (nullable) |
 |  | `cost_usd` |  | opt | `number` (nullable) |
 |  | `execution` |  | opt | [ToolExecutionFacts](#model-toolexecutionfacts) (nullable) |
 |  |  | `elapsed_ms` | opt | `number` (nullable) |
 |  |  | `finished_at` | opt | `string` (format: date-time; nullable) |
 |  |  | `started_at` | opt | `string` (format: date-time; nullable) |
 |  | `extra` |  | opt | `object` (nullable) |
+|  | `reference_cost_usd` |  | opt | `number` (nullable) |
 |  | `request_hash` |  | req | `string` |
 |  | `request_payload` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
 |  | `response_hash` |  | opt | `string` (nullable) |
@@ -2520,12 +2628,15 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `actual_cost_provider` |  |  | opt | `string` (nullable) |
+| `actual_cost_usd` |  |  | opt | `number` (nullable) |
 | `cost_usd` |  |  | opt | `number` (nullable) |
 | `execution` |  |  | opt | [ToolExecutionFacts](#model-toolexecutionfacts) (nullable) |
 |  | `elapsed_ms` |  | opt | `number` (nullable) |
 |  | `finished_at` |  | opt | `string` (format: date-time; nullable) |
 |  | `started_at` |  | opt | `string` (format: date-time; nullable) |
 | `extra` |  |  | opt | `object` (nullable) |
+| `reference_cost_usd` |  |  | opt | `number` (nullable) |
 | `request_hash` |  |  | req | `string` |
 | `request_payload` |  |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
 | `response_hash` |  |  | opt | `string` (nullable) |
@@ -2542,6 +2653,28 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 ```json
 {
   "properties": {
+    "actual_cost_provider": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Actual Cost Provider"
+    },
+    "actual_cost_usd": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Actual Cost Usd"
+    },
     "cost_usd": {
       "anyOf": [
         {
@@ -2576,6 +2709,17 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
         }
       ],
       "title": "Extra"
+    },
+    "reference_cost_usd": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Reference Cost Usd"
     },
     "request_hash": {
       "title": "Request Hash",
@@ -2640,12 +2784,15 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `actual_cost_provider` |  |  | opt | `string` (nullable) |
+| `actual_cost_usd` |  |  | opt | `number` (nullable) |
 | `cost_usd` |  |  | opt | `number` (nullable) |
 | `execution` |  |  | opt | [ToolExecutionFacts](#model-toolexecutionfacts) (nullable) |
 |  | `elapsed_ms` |  | opt | `number` (nullable) |
 |  | `finished_at` |  | opt | `string` (format: date-time; nullable) |
 |  | `started_at` |  | opt | `string` (format: date-time; nullable) |
 | `extra` |  |  | opt | `object` (nullable) |
+| `reference_cost_usd` |  |  | opt | `number` (nullable) |
 | `request_hash` |  |  | req | `string` |
 | `request_payload` |  |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
 | `response_hash` |  |  | opt | `string` (nullable) |
@@ -2662,6 +2809,28 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 ```json
 {
   "properties": {
+    "actual_cost_provider": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Actual Cost Provider"
+    },
+    "actual_cost_usd": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Actual Cost Usd"
+    },
     "cost_usd": {
       "anyOf": [
         {
@@ -2696,6 +2865,17 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
         }
       ],
       "title": "Extra"
+    },
+    "reference_cost_usd": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Reference Cost Usd"
     },
     "request_hash": {
       "title": "Request Hash",
@@ -3238,18 +3418,26 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `actual_cost_by_provider` |  |  | opt | `object` |
+| `actual_total_cost_usd` |  |  | opt | `number` (nullable) |
 | `llm` |  |  | opt | [LlmUsageSummary-Input](#model-llmusagesummary-input) |
+|  | `actual_cost` |  | opt | `number` (nullable) |
 |  | `call_count` |  | opt | `integer` (default: 0) |
 |  | `completion_tokens` |  | opt | `integer` (default: 0) |
 |  | `cost` |  | opt | `number` (default: 0.0) |
 |  | `prompt_tokens` |  | opt | `integer` (default: 0) |
 |  | `providers` |  | opt | `object` |
 |  | `reasoning_tokens` |  | opt | `integer` (default: 0) |
+|  | `reference_cost` |  | opt | `number` (default: 0.0) |
 |  | `total_tokens` |  | opt | `integer` (default: 0) |
 | `llm_cost` |  |  | opt | `number` (default: 0.0) |
+| `reference_cost_by_provider` |  |  | opt | `object` |
+| `reference_total_cost_usd` |  |  | opt | `number` (default: 0.0) |
 | `search_tool` |  |  | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
+|  | `actual_cost` |  | opt | `number` (nullable) |
 |  | `call_count` |  | opt | `integer` (default: 0) |
 |  | `cost` |  | opt | `number` (default: 0.0) |
+|  | `reference_cost` |  | opt | `number` (default: 0.0) |
 | `search_tool_cost` |  |  | opt | `number` (default: 0.0) |
 
 <details>
@@ -3258,12 +3446,42 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 ```json
 {
   "properties": {
+    "actual_cost_by_provider": {
+      "additionalProperties": {
+        "type": "number"
+      },
+      "title": "Actual Cost By Provider",
+      "type": "object"
+    },
+    "actual_total_cost_usd": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Actual Total Cost Usd"
+    },
     "llm": {
       "$ref": "#/components/schemas/LlmUsageSummary-Input"
     },
     "llm_cost": {
       "default": 0.0,
       "title": "Llm Cost",
+      "type": "number"
+    },
+    "reference_cost_by_provider": {
+      "additionalProperties": {
+        "type": "number"
+      },
+      "title": "Reference Cost By Provider",
+      "type": "object"
+    },
+    "reference_total_cost_usd": {
+      "default": 0.0,
+      "title": "Reference Total Cost Usd",
       "type": "number"
     },
     "search_tool": {
@@ -3287,18 +3505,26 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `actual_cost_by_provider` |  |  | opt | `object` |
+| `actual_total_cost_usd` |  |  | opt | `number` (nullable) |
 | `llm` |  |  | opt | [LlmUsageSummary-Output](#model-llmusagesummary-output) |
+|  | `actual_cost` |  | opt | `number` (nullable) |
 |  | `call_count` |  | opt | `integer` (default: 0) |
 |  | `completion_tokens` |  | opt | `integer` (default: 0) |
 |  | `cost` |  | opt | `number` (default: 0.0) |
 |  | `prompt_tokens` |  | opt | `integer` (default: 0) |
 |  | `providers` |  | opt | `object` |
 |  | `reasoning_tokens` |  | opt | `integer` (default: 0) |
+|  | `reference_cost` |  | opt | `number` (default: 0.0) |
 |  | `total_tokens` |  | opt | `integer` (default: 0) |
 | `llm_cost` |  |  | opt | `number` (default: 0.0) |
+| `reference_cost_by_provider` |  |  | opt | `object` |
+| `reference_total_cost_usd` |  |  | opt | `number` (default: 0.0) |
 | `search_tool` |  |  | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
+|  | `actual_cost` |  | opt | `number` (nullable) |
 |  | `call_count` |  | opt | `integer` (default: 0) |
 |  | `cost` |  | opt | `number` (default: 0.0) |
+|  | `reference_cost` |  | opt | `number` (default: 0.0) |
 | `search_tool_cost` |  |  | opt | `number` (default: 0.0) |
 
 <details>
@@ -3307,12 +3533,42 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 ```json
 {
   "properties": {
+    "actual_cost_by_provider": {
+      "additionalProperties": {
+        "type": "number"
+      },
+      "title": "Actual Cost By Provider",
+      "type": "object"
+    },
+    "actual_total_cost_usd": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Actual Total Cost Usd"
+    },
     "llm": {
       "$ref": "#/components/schemas/LlmUsageSummary-Output"
     },
     "llm_cost": {
       "default": 0.0,
       "title": "Llm Cost",
+      "type": "number"
+    },
+    "reference_cost_by_provider": {
+      "additionalProperties": {
+        "type": "number"
+      },
+      "title": "Reference Cost By Provider",
+      "type": "object"
+    },
+    "reference_total_cost_usd": {
+      "default": 0.0,
+      "title": "Reference Total Cost Usd",
       "type": "number"
     },
     "search_tool": {

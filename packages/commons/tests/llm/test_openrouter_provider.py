@@ -180,7 +180,8 @@ async def test_openrouter_provider_serializes_openrouter_request_contract(model:
                 'data: {"id":"resp-1","choices":[{"index":0,"delta":{"content":"ok"}}]}',
                 (
                     'data: {"id":"resp-1","choices":[{"index":0,"delta":{},'
-                    '"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+                    '"finish_reason":"stop"}],'
+                    '"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"cost":0.0042}}'
                 ),
                 "data: [DONE]",
                 "",
@@ -221,6 +222,8 @@ async def test_openrouter_provider_serializes_openrouter_request_contract(model:
     assert captured["json"]["provider"] == {"order": ["Cerebras"], "require_parameters": True}
     assert response.raw_text == "ok"
     assert response.usage.total_tokens == 2
+    assert response.metadata is not None
+    assert response.metadata["raw_response"]["usage"]["cost"] == pytest.approx(0.0042)
 
 
 def _fake_factory(

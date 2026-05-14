@@ -5,7 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import StrEnum
+from typing import Final, cast
 from uuid import UUID
+
+_UNSET: Final = object()
 
 
 class SessionStatus(StrEnum):
@@ -78,12 +81,28 @@ class SessionUsage:
 
     total_cost_usd: float = 0.0
     cost_by_provider: dict[str, float] = field(default_factory=dict)
+    reference_total_cost_usd: float = 0.0
+    reference_cost_by_provider: dict[str, float] = field(default_factory=dict)
+    actual_total_cost_usd: float | None = 0.0
+    actual_cost_by_provider: dict[str, float] = field(default_factory=dict)
     llm_tokens_last_call: int = 0
     llm_usage_totals: dict[str, dict[str, LlmUsageTotals]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if self.reference_total_cost_usd == 0.0 and self.total_cost_usd != 0.0:
+            object.__setattr__(self, "reference_total_cost_usd", self.total_cost_usd)
+        if self.total_cost_usd == 0.0 and self.reference_total_cost_usd != 0.0:
+            object.__setattr__(self, "total_cost_usd", self.reference_total_cost_usd)
+        if not self.reference_cost_by_provider and self.cost_by_provider:
+            object.__setattr__(self, "reference_cost_by_provider", dict(self.cost_by_provider))
+        if not self.cost_by_provider and self.reference_cost_by_provider:
+            object.__setattr__(self, "cost_by_provider", dict(self.reference_cost_by_provider))
         if self.total_cost_usd < 0.0:
             raise ValueError("total_cost_usd must be non-negative")
+        if self.reference_total_cost_usd < 0.0:
+            raise ValueError("reference_total_cost_usd must be non-negative")
+        if self.actual_total_cost_usd is not None and self.actual_total_cost_usd < 0.0:
+            raise ValueError("actual_total_cost_usd must be non-negative when supplied")
         if self.llm_tokens_last_call < 0:
             raise ValueError("llm_tokens_last_call must be non-negative")
 
@@ -94,16 +113,46 @@ class SessionUsage:
         llm_usage_totals: dict[str, dict[str, LlmUsageTotals]] | None = None,
         total_cost_usd: float | None = None,
         cost_by_provider: dict[str, float] | None = None,
+        reference_total_cost_usd: float | None = None,
+        reference_cost_by_provider: dict[str, float] | None = None,
+        actual_total_cost_usd: float | None | object = _UNSET,
+        actual_cost_by_provider: dict[str, float] | None = None,
     ) -> SessionUsage:
         """Return a new usage record with updated counters."""
+        updated_reference_total = (
+            self.reference_total_cost_usd
+            if reference_total_cost_usd is None
+            else reference_total_cost_usd
+        )
+        updated_reference_by_provider = (
+            self.reference_cost_by_provider
+            if reference_cost_by_provider is None
+            else reference_cost_by_provider
+        )
         return replace(
             self,
             llm_tokens_last_call=(
                 self.llm_tokens_last_call if llm_tokens_last_call is None else llm_tokens_last_call
             ),
             llm_usage_totals=self.llm_usage_totals if llm_usage_totals is None else llm_usage_totals,
-            total_cost_usd=self.total_cost_usd if total_cost_usd is None else total_cost_usd,
-            cost_by_provider=self.cost_by_provider if cost_by_provider is None else cost_by_provider,
+            total_cost_usd=(
+                updated_reference_total if total_cost_usd is None else total_cost_usd
+            ),
+            cost_by_provider=(
+                updated_reference_by_provider if cost_by_provider is None else cost_by_provider
+            ),
+            reference_total_cost_usd=updated_reference_total,
+            reference_cost_by_provider=updated_reference_by_provider,
+            actual_total_cost_usd=(
+                self.actual_total_cost_usd
+                if actual_total_cost_usd is _UNSET
+                else cast(float | None, actual_total_cost_usd)
+            ),
+            actual_cost_by_provider=(
+                self.actual_cost_by_provider
+                if actual_cost_by_provider is None
+                else actual_cost_by_provider
+            ),
         )
 
     def require_usage_totals(self) -> dict[str, dict[str, LlmUsageTotals]]:
