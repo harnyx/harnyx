@@ -71,8 +71,8 @@ _VERTEX_MAAS_OPENAI_CHAT_MODELS = frozenset(
         "zai-org/glm-5-maas",
         "publishers/qwen/models/qwen3-next-80b-a3b-instruct-maas",
         "qwen3-235b-a22b-instruct-2507-maas",
-        "openai/gpt-oss-20b-tee",
-        "openai/gpt-oss-120b-tee",
+        "openai/gpt-oss-20b",
+        "openai/gpt-oss-120b",
     }
 )
 _VERTEX_MAAS_MODEL_LOCATIONS = {

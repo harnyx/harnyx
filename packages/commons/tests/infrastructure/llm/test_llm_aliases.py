@@ -17,7 +17,8 @@ pytestmark = pytest.mark.anyio("asyncio")
 VERTEX_ALIASED_TOOL_MODELS = {
     "deepseek-ai/DeepSeek-V3.1-TEE": "deepseek-ai/deepseek-v3.1-maas",
     "deepseek-ai/DeepSeek-V3.2-TEE": "deepseek-ai/deepseek-v3.2-maas",
-    "openai/gpt-oss-120b-TEE": "publishers/openai/models/gpt-oss-120b-maas",
+    "openai/gpt-oss-20b": "publishers/openai/models/gpt-oss-20b-maas",
+    "openai/gpt-oss-120b": "publishers/openai/models/gpt-oss-120b-maas",
     "zai-org/GLM-5-TEE": "zai-org/glm-5-maas",
     "Qwen/Qwen3-Next-80B-A3B-Instruct": "publishers/qwen/models/qwen3-next-80b-a3b-instruct-maas",
 }
@@ -53,15 +54,15 @@ class StubProvider:
 
 async def test_adapter_prefers_provider_specific_entry() -> None:
     aliases = {
-        "vertex:openai/gpt-oss-20b-TEE": "publishers/openai/models/gpt-oss-20b-maas",
-        "openai/gpt-oss-20b-TEE": "publishers/openai/models/gpt-oss-20b-maas-global",
+        "vertex:openai/gpt-oss-20b": "publishers/openai/models/gpt-oss-20b-maas",
+        "openai/gpt-oss-20b": "publishers/openai/models/gpt-oss-20b-maas-global",
     }
     delegate = StubProvider()
     provider = LlmProviderAdapter(provider_name="vertex", delegate=delegate, model_aliases=aliases)
 
     request = LlmRequest(
         provider="vertex",
-        model="openai/gpt-oss-20b-TEE",
+        model="openai/gpt-oss-20b",
         messages=(),
         temperature=None,
         max_output_tokens=None,
@@ -74,13 +75,13 @@ async def test_adapter_prefers_provider_specific_entry() -> None:
 
 
 async def test_adapter_falls_back_to_global_entry() -> None:
-    aliases = {"openai/gpt-oss-20b-TEE": "publishers/openai/models/gpt-oss-20b-maas"}
+    aliases = {"openai/gpt-oss-20b": "publishers/openai/models/gpt-oss-20b-maas"}
     delegate = StubProvider()
     provider = LlmProviderAdapter(provider_name="vertex", delegate=delegate, model_aliases=aliases)
 
     request = LlmRequest(
         provider="vertex",
-        model="openai/gpt-oss-20b-TEE",
+        model="openai/gpt-oss-20b",
         messages=(),
         temperature=None,
         max_output_tokens=None,

@@ -89,7 +89,7 @@ async def test_vertex_openai_maas_completion_live() -> None:
     try:
         request = LlmRequest(
             provider="vertex",
-            model="openai/gpt-oss-120b-TEE",
+            model="openai/gpt-oss-120b",
             messages=(
                 LlmMessage(
                     role="user",
