@@ -160,6 +160,23 @@ def test_resolve_llm_route_routes_chutes_selected_openrouter_only_model_to_openr
     assert route == ResolvedLlmRoute(surface="tool", provider="openrouter", model=model)
 
 
+def test_resolve_llm_route_custom_gpt_oss_20b_override_wins_over_openrouter_fallback() -> None:
+    route = resolve_llm_route(
+        surface="tool",
+        default_provider="chutes",
+        model="openai/gpt-oss-20b",
+        overrides={"tool": {"openai/gpt-oss-20b": "custom-openai-compatible:gpt-oss-20b-gke"}},
+        allowed_providers={"chutes", "vertex"},
+        allow_custom_openai_compatible=True,
+    )
+
+    assert route == ResolvedLlmRoute(
+        surface="tool",
+        provider="custom-openai-compatible:gpt-oss-20b-gke",
+        model="openai/gpt-oss-20b",
+    )
+
+
 @pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b"))
 def test_resolve_llm_route_routes_chutes_override_openrouter_only_model_to_openrouter(model: str) -> None:
     route = resolve_llm_route(
