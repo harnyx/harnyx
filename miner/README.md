@@ -55,7 +55,7 @@ Create a `.env` at the repo root (copy from `.env.example`) and fill:
 | Variable | Purpose |
 |----------|---------|
 | `CHUTES_API_KEY` | Evaluation scoring and `llm_chat` tool calls |
-| `OPENROUTER_API_KEY` | Optional: required only when local tooling invokes OpenRouter-only `gpt-oss` models through the Chutes-selected tool route |
+| `OPENROUTER_API_KEY` | Optional: required when local tooling invokes Chutes-selected tool models that route through OpenRouter, including `gpt-oss` and Qwen when no explicit custom route override handles Qwen |
 | `DESEARCH_API_KEY` | Optional: required if your agent uses search tools |
 | `SEARCH_PROVIDER` | Optional: required if your agent uses search tools |
 | `PLATFORM_BASE_URL` | Public monitoring and script uploads |
@@ -231,7 +231,7 @@ Thinking controls are provider/model specific:
 | `openai/gpt-oss-120b` | Supported via OpenRouter `reasoning.enabled` / `reasoning.effort="none"` when routed through OpenRouter | Supported via OpenRouter `reasoning.effort` | Supported via OpenRouter `reasoning.max_tokens` |
 | `deepseek-ai/DeepSeek-V3.2-TEE` | Supported via `chat_template_kwargs.thinking` | No verified knob; ignored | No verified knob; ignored |
 | `zai-org/GLM-5-TEE` | Supported via `chat_template_kwargs.enable_thinking` | No verified knob; ignored | No verified knob; ignored |
-| `Qwen/Qwen3.6-27B-TEE` | Supported via `chat_template_kwargs.enable_thinking` when routed through the custom OpenAI-compatible Qwen endpoint | No verified knob; ignored | No verified knob; ignored |
+| `Qwen/Qwen3.6-27B-TEE` | Custom route: `chat_template_kwargs.enable_thinking`; OpenRouter route: `reasoning.enabled` / `reasoning.effort="none"` | OpenRouter route: `reasoning.effort`; custom route: no verified knob | OpenRouter route: `reasoning.max_tokens`; custom route: no verified knob |
 | `google/gemma-4-31B-turbo-TEE` | Supported via `chat_template_kwargs.enable_thinking` when routed through the custom OpenAI-compatible Gemma endpoint | No verified knob; ignored | No verified knob; ignored |
 
 ```python
@@ -256,7 +256,7 @@ response = await llm_chat(
 )
 ```
 
-`effort` (`"low"`, `"medium"`, `"high"`) and `budget` are supported for OpenRouter-backed `gpt-oss` models through OpenRouter reasoning controls. They cannot be sent together, and invalid scalar values are rejected; for example, `"false"` is not accepted as a boolean. Thinking controls are best effort across providers: if the selected model/provider has no verified control, the request still runs and unsupported hints are ignored rather than translated into guessed provider fields.
+`effort` (`"low"`, `"medium"`, `"high"`) and `budget` are supported for OpenRouter-backed models through OpenRouter reasoning controls. They cannot be sent together, and invalid scalar values are rejected; for example, `"false"` is not accepted as a boolean. Thinking controls are best effort across providers: if the selected model/provider has no verified control, the request still runs and unsupported hints are ignored rather than translated into guessed provider fields.
 
 Core subnet-facing tools today:
 - `search_web`: web search results; pass `timeout=<seconds>` to bound the full search call

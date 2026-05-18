@@ -18,11 +18,16 @@ pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio(
     (
         ("openai/gpt-oss-20b", '{"openai/gpt-oss-20b":{"require_parameters":true}}'),
         ("openai/gpt-oss-120b", '{"openai/gpt-oss-120b":{"require_parameters":true}}'),
+        ("Qwen/Qwen3.6-27B-TEE", '{"Qwen/Qwen3.6-27B-TEE":{"require_parameters":true}}'),
     ),
 )
-async def test_chutes_tool_route_invokes_openrouter_gpt_oss_live(model: str, provider_options_json: str) -> None:
+async def test_chutes_tool_route_invokes_openrouter_routed_model_live(
+    model: str,
+    provider_options_json: str,
+) -> None:
     settings = LlmSettings(
         TOOL_LLM_PROVIDER="chutes",
+        LLM_MODEL_PROVIDER_OVERRIDES_JSON="{}",
         OPENROUTER_MODEL_PROVIDER_OPTIONS_JSON=provider_options_json,
     )
     assert settings.openrouter_api_key_value, "OPENROUTER_API_KEY must be configured"

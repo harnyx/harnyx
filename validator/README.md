@@ -17,7 +17,7 @@ Before starting, ensure you have:
 - RAM: 4 GiB (8 GiB recommended)
 - Disk: 20 GB
 - Network: platform must reach your validator on TCP 8100; set `VALIDATOR_PUBLIC_BASE_URL` accordingly
-- Third-party APIs: Chutes (`CHUTES_API_KEY`) + DeSearch (`DESEARCH_API_KEY`), plus OpenRouter (`OPENROUTER_API_KEY`) only if your validator serves OpenRouter-only tool models.
+- Third-party APIs: Chutes (`CHUTES_API_KEY`) + DeSearch (`DESEARCH_API_KEY`), plus OpenRouter (`OPENROUTER_API_KEY`) if your validator serves Chutes-selected tool models that route through OpenRouter.
 
 ## Step 1: Create your env file
 
@@ -34,14 +34,14 @@ Edit `.env` and set at least:
 | `PLATFORM_BASE_URL` | Platform API endpoint (finney/mainnet: `https://api.harnyx.ai`, testnet: `https://api.staging.harnyx.ai`) |
 | `VALIDATOR_PUBLIC_BASE_URL` | How the platform can reach your validator |
 | `CHUTES_API_KEY` | API key for LLM calls |
-| `OPENROUTER_API_KEY` | Optional API key for OpenRouter-only `llm_chat` models such as `openai/gpt-oss-20b` and `openai/gpt-oss-120b` |
+| `OPENROUTER_API_KEY` | Optional API key for Chutes-selected OpenRouter-routed `llm_chat` models such as `openai/gpt-oss-20b`, `openai/gpt-oss-120b`, and `Qwen/Qwen3.6-27B-TEE` when no explicit custom route override handles that model |
 | `DESEARCH_API_KEY` | API key for search tools |
 
 The defaults in `.env.example` already target mainnet (`finney`) and netuid `67`. The checked-in default is `SEARCH_PROVIDER=desearch`. If you need a fallback search provider, the validator also supports `parallel`; set `SEARCH_PROVIDER=parallel` and `PARALLEL_API_KEY`. Validator sandbox execution defaults to `harnyx/harnyx-subnet-sandbox:finney`; set `SANDBOX_IMAGE=harnyx/harnyx-subnet-sandbox:testnet` for staging/testnet, or use another explicit value only when you intentionally want to test or pin a different sandbox image. `VALIDATOR_TASK_PARALLELISM` controls per-artifact task workers and defaults to `10`; internal deployments that should retain the prior concurrency set it to `5`.
 
 Validator scoring keeps `SCORING_LLM_PROVIDER` configurable, but the scoring model contract is fixed in code to `moonshotai/Kimi-K2.5-TEE` with `reasoning_effort="high"`. The pairwise scoring prompt, request shape, and score mapping live in `public/packages/commons/src/harnyx_commons/miner_task_scoring.py`; validator runtime code only wires providers, sandbox execution, and submission flow.
 
-When `TOOL_LLM_PROVIDER=chutes`, validator tool routing internally sends OpenRouter-only `gpt-oss` models to OpenRouter because Chutes does not serve those models. `OPENROUTER_API_KEY` is checked only when one of those models is invoked; validators that do not serve them can leave the key blank. Do not set `TOOL_LLM_PROVIDER=openrouter`; `openrouter` is an internal route target, not an operator-selectable provider.
+When `TOOL_LLM_PROVIDER=chutes`, validator tool routing internally sends configured OpenRouter-routed models to OpenRouter. `OPENROUTER_API_KEY` is checked only when one of those models is invoked; validators that do not serve them can leave the key blank. Explicit `LLM_MODEL_PROVIDER_OVERRIDES_JSON` entries still win, so internal deployments can route Qwen to `custom-openai-compatible:qwen36-cloud-run` without invoking OpenRouter for Qwen. Do not set `TOOL_LLM_PROVIDER=openrouter`; `openrouter` is an internal route target, not an operator-selectable provider.
 
 ### Optional Sentry
 

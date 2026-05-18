@@ -140,14 +140,14 @@ def test_custom_route_target_is_canonicalized() -> None:
     assert parsed["tool"]["google/gemma-4-31B-turbo-TEE"] == "custom-openai-compatible:gemma4-cloud-run-turbo"
 
 
-@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b"))
+@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b", "Qwen/Qwen3.6-27B-TEE"))
 def test_parse_llm_model_provider_overrides_rejects_internal_openrouter_target(model: str) -> None:
     with pytest.raises(ValueError, match="not allowed"):
         parse_llm_model_provider_overrides(f'{{"tool":{{"{model}":"openrouter"}}}}')
 
 
-@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b"))
-def test_resolve_llm_route_routes_chutes_selected_openrouter_only_model_to_openrouter(model: str) -> None:
+@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b", "Qwen/Qwen3.6-27B-TEE"))
+def test_resolve_llm_route_routes_chutes_selected_openrouter_routed_model_to_openrouter(model: str) -> None:
     route = resolve_llm_route(
         surface="tool",
         default_provider="chutes",
@@ -177,8 +177,25 @@ def test_resolve_llm_route_custom_gpt_oss_20b_override_wins_over_openrouter_fall
     )
 
 
-@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b"))
-def test_resolve_llm_route_routes_chutes_override_openrouter_only_model_to_openrouter(model: str) -> None:
+def test_resolve_llm_route_custom_qwen36_override_wins_over_openrouter_fallback() -> None:
+    route = resolve_llm_route(
+        surface="tool",
+        default_provider="chutes",
+        model="Qwen/Qwen3.6-27B-TEE",
+        overrides={"tool": {"Qwen/Qwen3.6-27B-TEE": "custom-openai-compatible:qwen36-cloud-run"}},
+        allowed_providers={"chutes", "vertex"},
+        allow_custom_openai_compatible=True,
+    )
+
+    assert route == ResolvedLlmRoute(
+        surface="tool",
+        provider="custom-openai-compatible:qwen36-cloud-run",
+        model="Qwen/Qwen3.6-27B-TEE",
+    )
+
+
+@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b", "Qwen/Qwen3.6-27B-TEE"))
+def test_resolve_llm_route_routes_chutes_override_openrouter_routed_model_to_openrouter(model: str) -> None:
     route = resolve_llm_route(
         surface="tool",
         default_provider="vertex",
@@ -191,7 +208,7 @@ def test_resolve_llm_route_routes_chutes_override_openrouter_only_model_to_openr
     assert route == ResolvedLlmRoute(surface="tool", provider="openrouter", model=model)
 
 
-@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b"))
+@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b", "Qwen/Qwen3.6-27B-TEE"))
 def test_resolve_llm_route_does_not_special_case_non_chutes_selection(model: str) -> None:
     route = resolve_llm_route(
         surface="tool",

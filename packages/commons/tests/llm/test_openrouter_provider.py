@@ -28,6 +28,10 @@ from harnyx_commons.llm.schema import (
 
 pytestmark = pytest.mark.anyio("asyncio")
 
+QWEN36_MODEL = "Qwen/Qwen3.6-27B-TEE"
+QWEN36_OPENROUTER_MODEL = "qwen/qwen3.6-27b"
+OPENROUTER_ROUTED_MODELS = ("openai/gpt-oss-20b", "openai/gpt-oss-120b", QWEN36_MODEL)
+
 
 class _FakeOpenAiProvider:
     def __init__(self) -> None:
@@ -63,7 +67,7 @@ class _FakeClient:
         self.closed = True
 
 
-@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b"))
+@pytest.mark.parametrize("model", OPENROUTER_ROUTED_MODELS)
 async def test_openrouter_provider_requires_key_only_when_openrouter_model_is_invoked(model: str) -> None:
     factory_calls: list[str] = []
     provider = OpenRouterLlmProvider(
@@ -92,7 +96,7 @@ async def test_openrouter_provider_rejects_unsupported_model_before_key_lookup()
     assert factory_calls == []
 
 
-@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b"))
+@pytest.mark.parametrize("model", OPENROUTER_ROUTED_MODELS)
 async def test_openrouter_provider_merges_per_model_provider_options(model: str) -> None:
     fake_provider = _FakeOpenAiProvider()
     fake_client = _FakeClient()
@@ -135,7 +139,7 @@ async def test_openrouter_provider_merges_per_model_provider_options(model: str)
     assert fake_client.closed is True
 
 
-@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b"))
+@pytest.mark.parametrize("model", OPENROUTER_ROUTED_MODELS)
 async def test_openrouter_provider_omits_provider_options_when_model_has_no_config(model: str) -> None:
     fake_provider = _FakeOpenAiProvider()
     fake_client = _FakeClient()
@@ -168,7 +172,7 @@ def test_build_openrouter_chat_provider_rejects_blank_key() -> None:
         build_openrouter_chat_provider(" ")
 
 
-@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b"))
+@pytest.mark.parametrize("model", OPENROUTER_ROUTED_MODELS)
 async def test_openrouter_provider_serializes_openrouter_request_contract(model: str) -> None:
     captured: dict[str, Any] = {}
 
@@ -217,17 +221,20 @@ async def test_openrouter_provider_serializes_openrouter_request_contract(model:
     response = await provider.invoke(_request(model=model))
     await provider.aclose()
 
+    expected_payload_model = QWEN36_OPENROUTER_MODEL if model == QWEN36_MODEL else model
     assert captured["url"] == f"{OPENROUTER_BASE_URL}/chat/completions"
     assert captured["authorization"] == "Bearer test-openrouter-key"
-    assert captured["json"]["model"] == model
+    assert captured["json"]["model"] == expected_payload_model
     assert captured["json"]["provider"] == {"order": ["Cerebras"], "require_parameters": True}
     assert response.raw_text == "ok"
     assert response.usage.total_tokens == 2
     assert response.metadata is not None
+    assert response.metadata["effective_provider"] == "openrouter"
+    assert response.metadata["effective_model"] == model
     assert response.metadata["raw_response"]["usage"]["cost"] == pytest.approx(0.0042)
 
 
-@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b"))
+@pytest.mark.parametrize("model", OPENROUTER_ROUTED_MODELS)
 @pytest.mark.parametrize(
     ("thinking", "expected_reasoning"),
     (
@@ -288,7 +295,7 @@ async def test_openrouter_provider_serializes_thinking_as_reasoning(
     assert captured["json"]["provider"] == {"order": ["Cerebras"], "require_parameters": True}
 
 
-@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b"))
+@pytest.mark.parametrize("model", OPENROUTER_ROUTED_MODELS)
 @pytest.mark.parametrize("thinking", (None, LlmThinkingConfig(enabled=True)))
 async def test_openrouter_provider_rejects_non_object_request_reasoning_extra(
     model: str,
@@ -310,7 +317,7 @@ async def test_openrouter_provider_rejects_non_object_request_reasoning_extra(
         )
 
 
-@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b"))
+@pytest.mark.parametrize("model", OPENROUTER_ROUTED_MODELS)
 async def test_openrouter_provider_merges_request_reasoning_extra_with_typed_thinking(model: str) -> None:
     fake_provider = _FakeOpenAiProvider()
     fake_client = _FakeClient()

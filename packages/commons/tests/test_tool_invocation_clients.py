@@ -24,7 +24,7 @@ GEMMA_MODEL = "google/gemma-4-31B-turbo-TEE"
 GEMMA_ROUTE_TARGET = "custom-openai-compatible:gemma4-cloud-run-turbo"
 QWEN36_MODEL = "Qwen/Qwen3.6-27B-TEE"
 QWEN36_ROUTE_TARGET = "custom-openai-compatible:qwen36-cloud-run"
-OPENROUTER_MODELS = ("openai/gpt-oss-20b", "openai/gpt-oss-120b")
+OPENROUTER_ROUTED_MODELS = ("openai/gpt-oss-20b", "openai/gpt-oss-120b", QWEN36_MODEL)
 
 
 class _FakeLlmProvider:
@@ -70,18 +70,24 @@ class _FakeLlmRegistry:
 
 
 def _llm_settings() -> LlmSettings:
+    return _llm_settings_with_tool_overrides(
+        {
+            GEMMA_MODEL: GEMMA_ROUTE_TARGET,
+            QWEN36_MODEL: QWEN36_ROUTE_TARGET,
+        }
+    )
+
+
+def _llm_settings_without_qwen36_override() -> LlmSettings:
+    return _llm_settings_with_tool_overrides({GEMMA_MODEL: GEMMA_ROUTE_TARGET})
+
+
+def _llm_settings_with_tool_overrides(tool_overrides: dict[str, str]) -> LlmSettings:
     return LlmSettings.model_construct(
         search_provider=None,
         tool_llm_provider="chutes",
         chutes_api_key=SecretStr("test-key"),
-        llm_model_provider_overrides_json=json.dumps(
-            {
-                "tool": {
-                    GEMMA_MODEL: GEMMA_ROUTE_TARGET,
-                    QWEN36_MODEL: QWEN36_ROUTE_TARGET,
-                }
-            }
-        ),
+        llm_model_provider_overrides_json=json.dumps({"tool": tool_overrides}),
         openai_compatible_endpoints_json=json.dumps(
             [
                 {
@@ -222,16 +228,17 @@ async def test_tool_invocation_clients_route_qwen36_tool_model_to_custom_endpoin
 
 
 @pytest.mark.anyio("asyncio")
-@pytest.mark.parametrize("model", OPENROUTER_MODELS)
+@pytest.mark.parametrize("model", OPENROUTER_ROUTED_MODELS)
 async def test_tool_invocation_clients_route_chutes_selected_openrouter_model_to_openrouter(
     monkeypatch: pytest.MonkeyPatch,
     model: str,
 ) -> None:
     registry = _FakeLlmRegistry()
     monkeypatch.setattr(invocation_clients, "build_cached_llm_provider_registry", lambda **_: registry)
+    llm_settings = _llm_settings_without_qwen36_override() if model == QWEN36_MODEL else _llm_settings()
 
     clients = build_tool_invocation_clients(
-        llm_settings=_llm_settings(),
+        llm_settings=llm_settings,
         bedrock_settings=BedrockSettings.model_construct(region="us-east-1"),
         vertex_settings=VertexSettings.model_construct(gcp_project_id="project", gcp_location="us-central1"),
     )

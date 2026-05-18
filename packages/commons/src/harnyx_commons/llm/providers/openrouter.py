@@ -17,7 +17,14 @@ from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse, LlmThinki
 
 OPENROUTER_ENDPOINT_ID = "openrouter"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-OPENROUTER_ONLY_MODELS = ("openai/gpt-oss-20b", "openai/gpt-oss-120b")
+OPENROUTER_SUPPORTED_MODELS = (
+    "openai/gpt-oss-20b",
+    "openai/gpt-oss-120b",
+    "Qwen/Qwen3.6-27B-TEE",
+)
+OPENROUTER_MODEL_ALIASES: Mapping[str, str] = {
+    "Qwen/Qwen3.6-27B-TEE": "qwen/qwen3.6-27b",
+}
 
 
 OpenRouterChatProviderFactory = Callable[[str], tuple[OpenAiCompatibleLlmProvider, httpx.AsyncClient]]
@@ -31,7 +38,7 @@ class OpenRouterLlmProvider(LlmProviderPort):
         model_provider_options: Mapping[str, OpenRouterModelProviderOptions],
         openrouter_chat_provider_factory: OpenRouterChatProviderFactory | None = None,
     ) -> None:
-        unknown_models = set(model_provider_options) - set(OPENROUTER_ONLY_MODELS)
+        unknown_models = set(model_provider_options) - set(OPENROUTER_SUPPORTED_MODELS)
         if unknown_models:
             unknown = ", ".join(sorted(unknown_models))
             raise ValueError(f"OpenRouter provider options configured for unsupported models: {unknown}")
@@ -43,7 +50,7 @@ class OpenRouterLlmProvider(LlmProviderPort):
 
     async def invoke(self, request: AbstractLlmRequest) -> LlmResponse:
         model = request.model.strip()
-        if model not in OPENROUTER_ONLY_MODELS:
+        if model not in OPENROUTER_SUPPORTED_MODELS:
             raise ValueError(f"OpenRouter provider does not support model {request.model!r}")
         openrouter_provider = self._ensure_openrouter_provider(model=model)
         response = await openrouter_provider.invoke(self._openrouter_request(request, model=model))
@@ -83,7 +90,12 @@ class OpenRouterLlmProvider(LlmProviderPort):
     def _openrouter_request(self, request: AbstractLlmRequest, *, model: str) -> AbstractLlmRequest:
         extra = _merge_extra(request.extra, self._model_provider_options.get(model))
         extra = _merge_reasoning_extra(extra, request.thinking)
-        return replace(request, provider=OPENROUTER_PROVIDER, extra=extra or None)
+        return replace(
+            request,
+            provider=OPENROUTER_PROVIDER,
+            model=OPENROUTER_MODEL_ALIASES.get(model, model),
+            extra=extra or None,
+        )
 
 
 def build_openrouter_chat_provider(api_key: str) -> tuple[OpenAiCompatibleLlmProvider, httpx.AsyncClient]:
@@ -159,7 +171,8 @@ def _reasoning_payload(thinking: LlmThinkingConfig | None) -> dict[str, Any] | N
 __all__ = [
     "OPENROUTER_BASE_URL",
     "OPENROUTER_ENDPOINT_ID",
-    "OPENROUTER_ONLY_MODELS",
+    "OPENROUTER_MODEL_ALIASES",
+    "OPENROUTER_SUPPORTED_MODELS",
     "OpenRouterLlmProvider",
     "build_openrouter_chat_provider",
 ]

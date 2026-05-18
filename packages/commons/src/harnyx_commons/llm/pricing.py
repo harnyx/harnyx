@@ -1,8 +1,8 @@
 """Pricing helpers for validator tool budgeting.
 
-LLM prices here are reference rates for budgeting miner tool calls. Chutes-backed
-models use Chutes rates, and hardcoded OpenRouter-only models use OpenRouter
-rates. External benchmarking uses its own pricing
+LLM prices here are reference rates for budgeting miner tool calls. Model rates
+follow the configured reference provider for each canonical tool model.
+External benchmarking uses its own pricing
 (`apps/platform/scripts/miner_task_benchmark.py`) and must not import this module.
 """
 
@@ -53,7 +53,7 @@ MODEL_PRICING: Mapping[ToolModelName, ModelPricing] = {
 
 
 def price_llm(model: ToolModelName, usage: LlmUsage) -> float:
-    """Return USD cost for a single LLM call using Chutes reference pricing."""
+    """Return USD cost for a single LLM call using reference pricing."""
     pricing = MODEL_PRICING[model]
 
     prompt_tokens = float(usage.prompt_tokens or 0)
