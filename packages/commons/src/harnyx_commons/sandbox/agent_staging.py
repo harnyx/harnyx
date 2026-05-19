@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 DEFAULT_AGENT_FILENAME = "agent.py"
-MAX_AGENT_BYTES = 256_000
+MAX_AGENT_BYTES = 1_000_000
 _LOG_SNIPPET_LIMIT = 512
 _DIRECTORY_MODE = 0o755
 _FILE_MODE = 0o644

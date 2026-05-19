@@ -1,6 +1,6 @@
 [project]
 name = "harnyx-commons"
-version = "0.1.3"
+version = "0.1.4"
 description = "Shared SDK utilities and sandbox harness for the Harnyx Subnet."
 readme = "README.md"
 requires-python = ">=3.11,<3.12"

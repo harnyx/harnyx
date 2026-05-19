@@ -4,9 +4,8 @@ import hashlib
 import runpy
 from pathlib import Path
 
+from harnyx_commons.sandbox.agent_staging import MAX_AGENT_BYTES
 from harnyx_miner_sdk.decorators import clear_entrypoints, entrypoint_exists
-
-MAX_AGENT_BYTES = 256_000
 
 
 def require_existing_agent_path(raw_path: str, *, label: str = "agent path") -> Path:

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from harnyx_commons.sandbox.agent_staging import AgentSourceValidationError, stage_agent_source
+from harnyx_commons.sandbox.agent_staging import MAX_AGENT_BYTES, AgentSourceValidationError, stage_agent_source
 
 
 def _mode(path: Path) -> int:
@@ -68,6 +68,38 @@ def test_stage_agent_source_rejects_oversized_source_as_script_validation(tmp_pa
             key="artifact-1",
             data=b"x" * 5,
             max_bytes=4,
+        )
+
+
+def test_default_max_agent_bytes_is_one_mb() -> None:
+    assert MAX_AGENT_BYTES == 1_000_000
+
+
+def test_stage_agent_source_accepts_default_max_size(tmp_path: Path) -> None:
+    source = b"#" * (MAX_AGENT_BYTES - 1) + b"\n"
+
+    artifact = stage_agent_source(
+        state_dir=tmp_path,
+        container_root="/workspace/.harnyx_state",
+        namespace="local_eval_agents",
+        key="exact-limit",
+        data=source,
+    )
+
+    assert len(source) == MAX_AGENT_BYTES
+    assert artifact.host_path.read_bytes() == source
+
+
+def test_stage_agent_source_rejects_default_max_size_plus_one(tmp_path: Path) -> None:
+    source = b"#" * MAX_AGENT_BYTES + b"\n"
+
+    with pytest.raises(AgentSourceValidationError, match="agent exceeds size limit"):
+        stage_agent_source(
+            state_dir=tmp_path,
+            container_root="/workspace/.harnyx_state",
+            namespace="local_eval_agents",
+            key="over-limit",
+            data=source,
         )
 
 

@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from harnyx_miner.agent_source import load_agent_query_entrypoint, validate_agent_query_entrypoint
+from harnyx_miner.agent_source import (
+    MAX_AGENT_BYTES,
+    load_agent_query_entrypoint,
+    validate_agent_bytes,
+    validate_agent_query_entrypoint,
+)
 from harnyx_miner_sdk.decorators import clear_entrypoints, entrypoint_exists, get_entrypoint
 
 
@@ -25,6 +30,23 @@ def test_load_agent_query_entrypoint_rejects_missing_query(tmp_path: Path) -> No
     with pytest.raises(RuntimeError, match="agent did not register entrypoint 'query'"):
         load_agent_query_entrypoint(agent_path)
     clear_entrypoints()
+
+
+def test_max_agent_bytes_is_one_mb() -> None:
+    assert MAX_AGENT_BYTES == 1_000_000
+
+
+def test_validate_agent_bytes_accepts_exact_limit() -> None:
+    source = b"#" * (MAX_AGENT_BYTES - 1) + b"\n"
+
+    assert validate_agent_bytes(source) == source
+
+
+def test_validate_agent_bytes_rejects_limit_plus_one() -> None:
+    source = b"#" * MAX_AGENT_BYTES + b"\n"
+
+    with pytest.raises(ValueError, match=str(MAX_AGENT_BYTES)):
+        validate_agent_bytes(source)
 
 
 def test_load_agent_query_entrypoint_keeps_registered_query_available(tmp_path: Path) -> None:

@@ -69,7 +69,7 @@ If you set `BENCHMARK_LLM_PROVIDER=vertex`, also configure Vertex credentials su
 
 ### Step 2: Write your agent
 
-You submit **one UTF-8 Python source file** (≤ 256KB). Validators will:
+You submit **one UTF-8 Python source file** (<= 1,000,000 bytes / 1 MB). Validators will:
 
 1. Stage it as `agent.py`
 2. Load it via `runpy.run_path`
