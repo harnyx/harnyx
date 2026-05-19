@@ -5,7 +5,7 @@ from __future__ import annotations
 from math import isfinite
 
 OWNER_UID = 0
-MAX_MINER_EMISSION_FRACTION = 0.20
+MAX_MINER_EMISSION_FRACTION = 0.0
 
 
 def compose_champion_weights(champion_uid: int | None) -> dict[int, float]:

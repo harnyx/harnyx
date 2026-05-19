@@ -8,13 +8,13 @@ from harnyx_commons.miner_task_emission import (
 )
 
 
-def test_apply_miner_emission_cap_scales_miner_share_by_batch_score() -> None:
+def test_apply_miner_emission_cap_burns_all_miner_emission() -> None:
     weights = apply_miner_emission_cap({7: 0.6, 8: 0.4}, batch_score=0.5)
 
     assert weights == {
-        0: pytest.approx(0.90),
-        7: pytest.approx(0.06),
-        8: pytest.approx(0.04),
+        0: pytest.approx(1.0),
+        7: pytest.approx(0.0),
+        8: pytest.approx(0.0),
     }
     assert sum(weights.values()) == pytest.approx(1.0)
 
@@ -23,9 +23,9 @@ def test_apply_miner_emission_cap_ignores_owner_weight_in_base_vector() -> None:
     weights = apply_miner_emission_cap({0: 0.8, 7: 0.6, 8: 0.4}, batch_score=1.0)
 
     assert weights == {
-        0: pytest.approx(0.80),
-        7: pytest.approx(0.12),
-        8: pytest.approx(0.08),
+        0: pytest.approx(1.0),
+        7: pytest.approx(0.0),
+        8: pytest.approx(0.0),
     }
 
 
