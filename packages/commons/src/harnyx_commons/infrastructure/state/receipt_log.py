@@ -72,7 +72,13 @@ class InMemoryReceiptLog(ReceiptLogPort):
                 raise RuntimeError("completed receipt session does not match pending receipt")
             if receipt.tool != pending.tool:
                 raise RuntimeError("completed receipt tool does not match pending receipt")
-            settlement = settle_usage()
+            try:
+                settlement = settle_usage()
+            except BaseException:
+                self._record_locked(receipt)
+                self._remove_pending_locked(receipt.receipt_id)
+                self._condition.notify_all()
+                raise
             self._record_locked(receipt)
             self._remove_pending_locked(receipt.receipt_id)
             self._condition.notify_all()

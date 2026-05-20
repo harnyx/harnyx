@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from harnyx_commons.errors import ToolInvocationTimeoutError, ToolProviderError
+from harnyx_commons.llm.provider import LlmProviderConfigurationError
 from harnyx_commons.llm.schema import (
     LlmChoice,
     LlmChoiceMessage,
@@ -206,6 +207,18 @@ class ProviderTimeoutLlmProvider(StubChutesProvider):
     async def invoke(self, request: LlmRequest) -> LlmResponse:
         self.calls.append(request)
         raise TimeoutError("provider timed out")
+
+
+class ProviderConfigurationErrorLlmProvider(StubChutesProvider):
+    async def invoke(self, request: LlmRequest) -> LlmResponse:
+        self.calls.append(request)
+        raise LlmProviderConfigurationError("OPENROUTER_API_KEY must be configured")
+
+
+class ProviderCapabilityValueErrorLlmProvider(StubChutesProvider):
+    async def invoke(self, request: LlmRequest) -> LlmResponse:
+        self.calls.append(request)
+        raise ValueError("Bedrock first cut does not support tool definitions")
 
 
 async def _invoke(
@@ -609,6 +622,52 @@ async def test_runtime_invoker_preserves_llm_chat_provider_timeout() -> None:
         )
     assert isinstance(excinfo.value.__cause__, TimeoutError)
     assert str(excinfo.value.__cause__) == "provider timed out"
+
+
+async def test_runtime_invoker_maps_llm_provider_error_to_tool_provider_error() -> None:
+    provider = ProviderConfigurationErrorLlmProvider()
+    invoker = RuntimeToolInvoker(
+        FakeReceiptLog(),
+        llm_provider=provider,
+        llm_provider_name="openrouter",
+        allowed_models=ALLOWED_TOOL_MODELS,
+    )
+
+    with pytest.raises(ToolProviderError) as excinfo:
+        await _invoke(
+            invoker,
+            "llm_chat",
+            kwargs={
+                "messages": [{"role": "user", "content": "hi"}],
+                "model": ALLOWED_TOOL_MODELS[0],
+                "timeout": 5,
+            },
+        )
+    assert isinstance(excinfo.value.__cause__, LlmProviderConfigurationError)
+    assert str(excinfo.value.__cause__) == "OPENROUTER_API_KEY must be configured"
+    assert len(provider.calls) == 1
+
+
+async def test_runtime_invoker_preserves_llm_chat_provider_capability_value_error() -> None:
+    provider = ProviderCapabilityValueErrorLlmProvider()
+    invoker = RuntimeToolInvoker(
+        FakeReceiptLog(),
+        llm_provider=provider,
+        llm_provider_name="chutes",
+        allowed_models=ALLOWED_TOOL_MODELS,
+    )
+
+    with pytest.raises(ValueError, match="does not support tool definitions"):
+        await _invoke(
+            invoker,
+            "llm_chat",
+            kwargs={
+                "messages": [{"role": "user", "content": "hi"}],
+                "model": ALLOWED_TOOL_MODELS[0],
+                "timeout": 5,
+            },
+        )
+    assert len(provider.calls) == 1
 
 
 async def test_runtime_invoker_accepts_local_tool_timeouts() -> None:

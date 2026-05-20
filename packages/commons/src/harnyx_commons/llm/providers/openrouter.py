@@ -10,7 +10,7 @@ import httpx
 from pydantic import SecretStr
 
 from harnyx_commons.config.llm import OpenAiCompatibleEndpointConfig, OpenRouterModelProviderOptions
-from harnyx_commons.llm.provider import LlmProviderPort
+from harnyx_commons.llm.provider import LlmProviderConfigurationError, LlmProviderPort
 from harnyx_commons.llm.provider_types import OPENROUTER_PROVIDER
 from harnyx_commons.llm.providers.openai_compatible import OpenAiCompatibleLlmProvider
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse, LlmThinkingConfig
@@ -81,7 +81,9 @@ class OpenRouterLlmProvider(LlmProviderPort):
             return self._openrouter_provider
         normalized_key = self._openrouter_api_key.get_secret_value().strip()
         if not normalized_key:
-            raise ValueError(f"OPENROUTER_API_KEY must be configured to use OpenRouter model {model}")
+            raise LlmProviderConfigurationError(
+                f"OPENROUTER_API_KEY must be configured to use OpenRouter model {model}"
+            )
         provider, client = self._openrouter_chat_provider_factory(normalized_key)
         self._openrouter_provider = provider
         self._openrouter_client = client
@@ -101,7 +103,7 @@ class OpenRouterLlmProvider(LlmProviderPort):
 def build_openrouter_chat_provider(api_key: str) -> tuple[OpenAiCompatibleLlmProvider, httpx.AsyncClient]:
     normalized_key = api_key.strip()
     if not normalized_key:
-        raise ValueError("OPENROUTER_API_KEY must be configured to build OpenRouter provider")
+        raise LlmProviderConfigurationError("OPENROUTER_API_KEY must be configured to build OpenRouter provider")
     client = httpx.AsyncClient(
         base_url=OPENROUTER_BASE_URL,
         headers={"Authorization": f"Bearer {normalized_key}"},

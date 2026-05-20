@@ -263,11 +263,21 @@ class ToolExecutor:
                 debug_call_id=debug_call_id,
                 request_payload=request_payload,
             )
-        except asyncio.CancelledError:
-            self._receipts.abandon_pending_receipt(receipt_id)
+        except asyncio.CancelledError as exc:
+            self._try_materialize_failed_pending_receipt(
+                session=session,
+                started_call=started_call,
+                started_at=started_at,
+                exc=exc,
+            )
             raise
-        except Exception:
-            self._receipts.abandon_pending_receipt(receipt_id)
+        except Exception as exc:
+            self._try_materialize_failed_pending_receipt(
+                session=session,
+                started_call=started_call,
+                started_at=started_at,
+                exc=exc,
+            )
             raise
         return result
 
@@ -281,30 +291,7 @@ class ToolExecutor:
         debug_call_id: str,
         request_payload: JsonValue | None,
     ) -> _ExecutionResult:
-        try:
-            invocation_output = await self._invoke_tool_output_async(request)
-        except (ToolProviderError, ToolInvocationTimeoutError) as exc:
-            finished_at = self._clock()
-            failed_receipt = started_call.materialize(
-                outcome=_tool_failure_outcome(exc),
-                response_payload=None,
-                results=(),
-                cost_usd=None,
-                extra={
-                    "error_type": exc.__class__.__name__,
-                    "error_message": str(exc),
-                },
-                execution=ToolExecutionFacts(
-                    elapsed_ms=_elapsed_ms_between(started_at, finished_at),
-                    started_at=started_at,
-                    finished_at=finished_at,
-                ),
-            )
-            self._receipts.complete_pending_receipt(
-                failed_receipt,
-                settle_usage=lambda: (session, False),
-            )
-            raise
+        invocation_output = await self._invoke_tool_output_async(request)
         finished_at = self._clock()
         results, result_policy = self._build_results(request, invocation_output.public_payload)
         llm_tokens, usage_details, call_cost = self._extract_usage(
@@ -371,6 +358,35 @@ class ToolExecutor:
             )
 
         return result
+
+    def _try_materialize_failed_pending_receipt(
+        self,
+        *,
+        session: Session,
+        started_call: StartedToolCall,
+        started_at: datetime,
+        exc: BaseException,
+    ) -> None:
+        finished_at = self._clock()
+        error_extra = _failed_receipt_error_extra(exc)
+        failed_receipt = started_call.materialize(
+            outcome=_tool_failure_outcome(exc),
+            response_payload=None,
+            results=(),
+            cost_usd=None,
+            extra=error_extra,
+            execution=ToolExecutionFacts(
+                elapsed_ms=_elapsed_ms_between(started_at, finished_at),
+                started_at=started_at,
+                finished_at=finished_at,
+            ),
+        )
+        completion = self._receipts.complete_pending_receipt(
+            failed_receipt,
+            settle_usage=lambda: (session, False),
+        )
+        if completion is None:
+            return
 
     def _settle_usage(
         self,
@@ -500,11 +516,28 @@ def _elapsed_ms_between(started_at: datetime, finished_at: datetime) -> float:
 
 
 def _tool_failure_outcome(
-    exc: ToolProviderError | ToolInvocationTimeoutError,
+    exc: BaseException,
 ) -> ToolCallOutcome:
-    if isinstance(exc, ToolInvocationTimeoutError):
+    if isinstance(exc, (asyncio.CancelledError, ToolInvocationTimeoutError)):
         return ToolCallOutcome.TIMEOUT
-    return ToolCallOutcome.PROVIDER_ERROR
+    if isinstance(exc, ToolProviderError):
+        return ToolCallOutcome.PROVIDER_ERROR
+    if isinstance(exc, BudgetExceededError):
+        return ToolCallOutcome.BUDGET_EXCEEDED
+    return ToolCallOutcome.INTERNAL_ERROR
+
+
+def _failed_receipt_error_extra(exc: BaseException) -> dict[str, str]:
+    source = exc.__cause__ or exc
+    error_message = str(source) or source.__class__.__name__
+    extra = {
+        "error_type": exc.__class__.__name__,
+        "error_message": error_message,
+    }
+    if exc.__cause__ is not None:
+        extra["error_cause_type"] = exc.__cause__.__class__.__name__
+        extra["error_cause_message"] = error_message
+    return extra
 
 
 def _normalize_payload(value: object) -> JsonValue | None:

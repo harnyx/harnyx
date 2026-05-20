@@ -78,6 +78,14 @@ class RetryContext:
         return (attempt + 1) >= self.policy.attempts
 
 
+class LlmProviderError(RuntimeError):
+    """Provider-owned failure before or during an LLM operation."""
+
+
+class LlmProviderConfigurationError(LlmProviderError):
+    """LLM provider is missing required configuration."""
+
+
 class LlmRetryExhaustedError(RuntimeError):
     """Retry flow failed after exhausting attempts."""
 

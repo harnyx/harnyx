@@ -81,6 +81,10 @@ _VERTEX_MAAS_MODEL_LOCATIONS = {
 }
 
 
+class _VertexProviderProtocolError(RuntimeError):
+    """Raised when Vertex returns an invalid provider response shape."""
+
+
 class VertexLlmProvider(BaseLlmProvider):
     """Bridges the generic LLM port to Vertex Generative AI models."""
 
@@ -224,7 +228,7 @@ class VertexLlmProvider(BaseLlmProvider):
             if _merge_gemini_chunk(accumulated, chunk) and ttft_ms is None:
                 ttft_ms = round((time.perf_counter() - started_at) * 1000, 2)
         if latest_response is None:
-            raise RuntimeError("vertex streaming generation returned no response chunks")
+            raise _VertexProviderProtocolError("vertex streaming generation returned no response chunks")
 
         choices = accumulated.to_choices()
         primary_finish_reason = choices[0].finish_reason if choices else None
@@ -438,6 +442,8 @@ class VertexLlmProvider(BaseLlmProvider):
                 return retryable, f"api_error:{code}:{message}"
             case OpenAiStreamError():
                 return exc.retryable, exc.reason
+            case _VertexProviderProtocolError():
+                return True, str(exc)
         if classify_exception is not None:
             return classify_exception(exc)
         return False, str(exc)

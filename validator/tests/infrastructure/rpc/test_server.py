@@ -10,11 +10,14 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import Response
+from pydantic import SecretStr
 
 from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
+from harnyx_commons.domain.tool_call import ToolCallOutcome
 from harnyx_commons.errors import ToolProviderError
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
+from harnyx_commons.llm.providers.openrouter import OpenRouterLlmProvider
 from harnyx_commons.llm.routing import ResolvedLlmRoute
 from harnyx_commons.llm.schema import (
     LlmChoice,
@@ -493,6 +496,62 @@ def test_execute_tool_endpoint_rejects_non_string_llm_model_without_provider_cal
 
     assert response.status_code == 400
     assert provider.progress_tracker.provider_evidence(provider.batch_id) == ()
+
+
+def test_execute_tool_endpoint_records_openrouter_missing_key_as_failed_receipt() -> None:
+    provider = TrackingDependencyProvider(
+        llm_provider=OpenRouterLlmProvider(
+            openrouter_api_key=SecretStr(""),
+            model_provider_options={},
+        ),
+        llm_provider_name="openrouter",
+    )
+    app = create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/tools/execute",
+        json={
+            "tool": "llm_chat",
+            "args": [],
+            "kwargs": {
+                "messages": [{"role": "user", "content": "hi"}],
+                "model": "openai/gpt-oss-120b",
+            },
+        },
+        headers={
+            "x-platform-token": DEMO_SESSION_TOKEN,
+            SESSION_ID_HEADER: str(provider.session.session_id),
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "tool execution failed"}
+    receipts = tuple(provider.receipt_log.for_session(provider.session.session_id))
+    assert len(receipts) == 1
+    assert receipts[0].outcome is ToolCallOutcome.PROVIDER_ERROR
+    assert receipts[0].details.extra is not None
+    assert receipts[0].details.extra["error_type"] == "ToolProviderError"
+    expected_failure_reason = (
+        "OPENROUTER_API_KEY must be configured to use OpenRouter model "
+        "openai/gpt-oss-120b"
+    )
+    assert receipts[0].details.extra["error_message"] == expected_failure_reason
+    assert receipts[0].details.extra["error_cause_type"] == "LlmProviderConfigurationError"
+    assert receipts[0].details.extra["error_cause_message"] == expected_failure_reason
+    expected_provider_failure = {
+        "provider": "openrouter",
+        "model": "openai/gpt-oss-120b",
+        "total_calls": 1,
+        "failed_calls": 1,
+        "failure_reason": expected_failure_reason,
+    }
+    assert provider.progress_tracker.provider_evidence(provider.batch_id) == (
+        expected_provider_failure,
+    )
+    assert provider.progress_tracker.consume_provider_failures(provider.session.session_id) == (
+        expected_provider_failure,
+    )
 
 
 def test_execute_tool_endpoint_records_provider_call_on_live_llm_success() -> None:

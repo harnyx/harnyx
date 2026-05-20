@@ -22,6 +22,7 @@ class ToolCallOutcome(StrEnum):
     OK = "ok"
     PROVIDER_ERROR = "provider_error"
     BUDGET_EXCEEDED = "budget_exceeded"
+    INTERNAL_ERROR = "internal_error"
     TIMEOUT = "timeout"
 
 

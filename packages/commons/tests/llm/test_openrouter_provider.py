@@ -8,6 +8,7 @@ import pytest
 from pydantic import SecretStr
 
 from harnyx_commons.config.llm import OpenAiCompatibleEndpointConfig, OpenRouterModelProviderOptions
+from harnyx_commons.llm.provider import LlmProviderConfigurationError
 from harnyx_commons.llm.providers.openai_compatible import OpenAiCompatibleLlmProvider
 from harnyx_commons.llm.providers.openrouter import (
     OPENROUTER_BASE_URL,
@@ -76,7 +77,7 @@ async def test_openrouter_provider_requires_key_only_when_openrouter_model_is_in
         openrouter_chat_provider_factory=lambda api_key: _fake_factory(api_key, factory_calls),
     )
 
-    with pytest.raises(ValueError, match="OPENROUTER_API_KEY must be configured"):
+    with pytest.raises(LlmProviderConfigurationError, match="OPENROUTER_API_KEY must be configured"):
         await provider.invoke(_request(model=model))
 
     assert factory_calls == []
@@ -168,7 +169,7 @@ def test_openrouter_provider_rejects_options_for_models_it_does_not_own() -> Non
 
 
 def test_build_openrouter_chat_provider_rejects_blank_key() -> None:
-    with pytest.raises(ValueError, match="OPENROUTER_API_KEY must be configured"):
+    with pytest.raises(LlmProviderConfigurationError, match="OPENROUTER_API_KEY must be configured"):
         build_openrouter_chat_provider(" ")
 
 

@@ -3083,6 +3083,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     "ok",
     "provider_error",
     "budget_exceeded",
+    "internal_error",
     "timeout"
   ],
   "title": "ToolCallOutcome",

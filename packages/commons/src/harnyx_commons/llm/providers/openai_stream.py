@@ -366,16 +366,31 @@ def _parse_sse_event_payload(
             code=502,
         ) from exc
     except ValidationError as exc:
-        raise RuntimeError(invalid_event_message) from exc
+        raise OpenAiStreamError(
+            message=invalid_event_message,
+            error_type="server_error",
+            code=502,
+        ) from exc
     except ValueError as exc:
-        raise RuntimeError(invalid_data_message) from exc
+        raise OpenAiStreamError(
+            message=invalid_data_message,
+            error_type="server_error",
+            code=502,
+        ) from exc
     if envelope.error is not None:
         raise OpenAiStreamError(
             message=envelope.error.message,
             error_type=envelope.error.type,
             code=envelope.error.code,
         )
-    return _OpenAiStreamEvent.model_validate(payload)
+    try:
+        return _OpenAiStreamEvent.model_validate(payload)
+    except ValidationError as exc:
+        raise OpenAiStreamError(
+            message=invalid_event_message,
+            error_type="server_error",
+            code=502,
+        ) from exc
 
 
 def normalize_openai_text_fragments(

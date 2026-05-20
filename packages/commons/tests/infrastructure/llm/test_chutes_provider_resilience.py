@@ -523,13 +523,41 @@ async def test_iter_openai_sse_events_rejects_wrapped_event_envelope() -> None:
         text='data: {"event":{"choices":[{"message":{"content":"ok"}}]}}\n\n',
     )
 
-    with pytest.raises(RuntimeError, match="invalid_data"):
+    with pytest.raises(OpenAiStreamError, match="invalid_data") as exc_info:
         async for _ in iter_openai_sse_events(
             response,
             invalid_data_message="invalid_data",
             invalid_event_message="invalid_event",
         ):
             pass
+
+    exc = exc_info.value
+    assert exc.message == "invalid_data"
+    assert exc.code == 502
+    assert exc.error_type == "server_error"
+    assert exc.retryable is True
+
+
+@pytest.mark.anyio("asyncio")
+async def test_iter_openai_sse_events_rejects_non_object_event_as_stream_error() -> None:
+    response = httpx.Response(
+        200,
+        text="data: []\n\n",
+    )
+
+    with pytest.raises(OpenAiStreamError, match="invalid_event") as exc_info:
+        async for _ in iter_openai_sse_events(
+            response,
+            invalid_data_message="invalid_data",
+            invalid_event_message="invalid_event",
+        ):
+            pass
+
+    exc = exc_info.value
+    assert exc.message == "invalid_event"
+    assert exc.code == 502
+    assert exc.error_type == "server_error"
+    assert exc.retryable is True
 
 
 def test_streamed_fallback_reasoning_preserves_exact_chunk_text() -> None:

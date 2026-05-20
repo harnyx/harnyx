@@ -11,6 +11,7 @@ from google.genai import errors
 from pydantic import BaseModel
 
 from harnyx_commons.clients import CHUTES
+from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_commons.llm.provider_types import normalize_reasoning_effort
 from harnyx_commons.llm.providers.openai_stream import (
     OpenAiChoiceState,
@@ -29,7 +30,11 @@ from harnyx_commons.llm.providers.vertex.codec import (
     resolve_thinking_config,
     vertex_maas_openai_chat_model_name,
 )
-from harnyx_commons.llm.providers.vertex.provider import VertexLlmProvider, _vertex_stream_text_fragments
+from harnyx_commons.llm.providers.vertex.provider import (
+    VertexLlmProvider,
+    _vertex_stream_text_fragments,
+    _VertexProviderProtocolError,
+)
 from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import (
     GroundedLlmRequest,
@@ -182,6 +187,7 @@ def _patch_google_client(
                 "config": config,
             }
             captured["model_stream_call"] = latest
+            captured["model_stream_call_count"] = int(captured.get("model_stream_call_count", 0)) + 1
 
             async def _stream() -> Any:
                 response = response_factory()
@@ -435,6 +441,51 @@ async def test_vertex_provider_invokes_generative_model(
     assert data["branch"] == "gemini"
     assert isinstance(data["ttft_ms"], float)
     assert data["ttft_ms"] >= 0.0
+
+
+async def test_vertex_provider_retries_empty_gemini_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    captured: dict[str, Any] = {}
+    _patch_google_client(monkeypatch, captured, response_factory=lambda: [])
+
+    provider = VertexLlmProvider(
+        project="demo-project",
+        location="us-central1",
+    )
+    provider._retry_policy = RetryPolicy(attempts=2, initial_ms=0, max_ms=0, jitter=0.0)
+
+    request = LlmRequest(
+        provider="vertex",
+        model="gemini-2.5-pro",
+        messages=(
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text("hello"),),
+            ),
+        ),
+        temperature=None,
+        max_output_tokens=64,
+        output_mode="text",
+    )
+
+    with pytest.raises(
+        LlmRetryExhaustedError,
+        match="vertex streaming generation returned no response chunks",
+    ):
+        await provider.invoke(request)
+
+    assert captured["model_stream_call_count"] == 2
+
+
+def test_vertex_classify_empty_stream_protocol_error_retries() -> None:
+    retryable, reason = VertexLlmProvider._classify_exception(
+        _VertexProviderProtocolError("vertex streaming generation returned no response chunks")
+    )
+
+    assert retryable is True
+    assert reason == "vertex streaming generation returned no response chunks"
 
 
 async def test_vertex_provider_gemini_stream_aggregates_text_and_metadata(

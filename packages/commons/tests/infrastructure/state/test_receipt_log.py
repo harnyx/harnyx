@@ -50,6 +50,81 @@ def test_receipt_log_waits_until_pending_llm_receipt_finishes() -> None:
     )
 
 
+def test_receipt_log_keeps_pending_receipt_until_usage_settlement_finishes() -> None:
+    receipt_log = InMemoryReceiptLog()
+    session = _session()
+    started_call = _started_call(session, receipt_id="receipt-1", active_attempt=1)
+    receipt = _ok_receipt(started_call)
+    receipt_log.start_pending_receipt(started_call=started_call)
+    settlement_started = threading.Event()
+    settlement_release = threading.Event()
+    completion_result: list[tuple[Session, bool] | None] = []
+    wait_result: list[tuple[ToolCall, ...]] = []
+
+    def settle_usage() -> tuple[Session, bool]:
+        settlement_started.set()
+        assert settlement_release.wait(timeout=1.0)
+        return session, False
+
+    def complete() -> None:
+        completion_result.append(receipt_log.complete_pending_receipt(receipt, settle_usage))
+
+    def wait_for_unknown() -> None:
+        wait_result.append(
+            receipt_log.wait_and_materialize_unknown_receipts(
+                session.session_id,
+                session_active_attempt=1,
+                tool="llm_chat",
+                timeout_seconds=0.0,
+                clock=_clock,
+            )
+        )
+
+    completion_thread = threading.Thread(target=complete)
+    completion_thread.start()
+    assert settlement_started.wait(timeout=1.0)
+
+    wait_thread = threading.Thread(target=wait_for_unknown)
+    wait_thread.start()
+    wait_thread.join(timeout=0.05)
+    assert wait_thread.is_alive()
+    assert wait_result == []
+
+    settlement_release.set()
+    completion_thread.join(timeout=1.0)
+    wait_thread.join(timeout=1.0)
+
+    assert completion_result == [(session, False)]
+    assert wait_result == [()]
+    assert receipt_log.lookup(receipt.receipt_id) == receipt
+
+
+def test_receipt_log_records_successful_receipt_when_usage_settlement_fails() -> None:
+    receipt_log = InMemoryReceiptLog()
+    session = _session()
+    started_call = _started_call(session, receipt_id="receipt-1", active_attempt=1)
+    receipt = _ok_receipt(started_call)
+    receipt_log.start_pending_receipt(started_call=started_call)
+
+    def settle_usage() -> tuple[Session, bool]:
+        raise RuntimeError("settlement failed")
+
+    with pytest.raises(RuntimeError, match="settlement failed"):
+        receipt_log.complete_pending_receipt(receipt, settle_usage)
+
+    assert receipt_log.lookup(receipt.receipt_id) == receipt
+    assert (
+        receipt_log.wait_and_materialize_unknown_receipts(
+            session.session_id,
+            session_active_attempt=1,
+            tool="llm_chat",
+            timeout_seconds=0.0,
+            clock=_clock,
+        )
+        == ()
+    )
+
+
 def test_receipt_log_materializes_unknown_pending_receipt_as_timeout_tool_call() -> None:
     receipt_log = InMemoryReceiptLog()
     session = _session()

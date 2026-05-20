@@ -326,7 +326,7 @@ async def test_execute_tool_does_not_record_late_provider_failure_after_unknown_
     assert stored_session.usage.llm_usage_totals == {}
 
 
-async def test_execute_tool_abandons_pending_receipt_when_cancelled() -> None:
+async def test_execute_tool_records_timeout_receipt_when_cancelled() -> None:
     session = make_session(budget_usd=1.0)
     token = generate_token()
     invoker = BlockingLlmInvoker()
@@ -353,16 +353,19 @@ async def test_execute_tool_abandons_pending_receipt_when_cancelled() -> None:
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    assert (
-        receipt_log.wait_and_materialize_unknown_receipts(
-            session.session_id,
-            session_active_attempt=session.active_attempt,
-            tool="llm_chat",
-            timeout_seconds=0.0,
-            clock=lambda: datetime(2025, 10, 17, 12, 10, tzinfo=UTC),
-        )
-        == ()
-    )
+    receipts = tuple(receipt_log.for_session(session.session_id))
+    assert len(receipts) == 1
+    assert receipts[0].outcome is ToolCallOutcome.TIMEOUT
+    assert receipts[0].details.extra is not None
+    assert receipts[0].details.extra["error_type"] == "CancelledError"
+    assert receipt_log.wait_and_materialize_unknown_receipts(
+        session.session_id,
+        session_active_attempt=session.active_attempt,
+        tool="llm_chat",
+        timeout_seconds=0.0,
+        clock=lambda: datetime(2025, 10, 17, 12, 10, tzinfo=UTC),
+    ) == ()
+
 
 async def test_execute_tool_supports_tooling_info_without_consuming_budget() -> None:
     session = make_session()
@@ -713,7 +716,7 @@ async def test_execute_tool_records_failed_receipt_before_reraising_provider_err
             kwargs: dict[str, object],
         ) -> dict[str, object]:
             assert tool_name == "search_web"
-            raise ToolProviderError("tool provider failed")
+            raise ToolProviderError("tool provider failed") from ValueError("upstream detail")
 
     executor, receipt_log, session_registry = build_executor_with_invoker(
         session,
@@ -739,11 +742,53 @@ async def test_execute_tool_records_failed_receipt_before_reraising_provider_err
     assert receipt.details.cost_usd is None
     assert receipt.details.extra is not None
     assert receipt.details.extra["error_type"] == "ToolProviderError"
-    assert receipt.details.extra["error_message"] == "tool provider failed"
+    assert receipt.details.extra["error_message"] == "upstream detail"
+    assert receipt.details.extra["error_cause_type"] == "ValueError"
+    assert receipt.details.extra["error_cause_message"] == "upstream detail"
     assert receipt.details.execution is not None
     assert receipt.details.execution.started_at is not None
     assert receipt.details.execution.finished_at is not None
     assert receipt.details.execution.elapsed_ms == pytest.approx(0.0)
+    stored = session_registry.get(session.session_id)
+    assert stored is not None
+    assert stored.usage.total_cost_usd == pytest.approx(0.0)
+
+
+async def test_execute_tool_records_failed_receipt_before_reraising_generic_error() -> None:
+    session = make_session()
+    token = generate_token()
+
+    class FailingInvoker(ToolInvoker):
+        async def invoke(
+            self,
+            tool_name: str,
+            *,
+            args: tuple[object, ...],
+            kwargs: dict[str, object],
+        ) -> dict[str, object]:
+            raise ValueError("model openai/gpt-oss-120b is not allowed")
+
+    executor, receipt_log, session_registry = build_executor_with_invoker(
+        session,
+        token=token,
+        invoker=FailingInvoker(),
+    )
+
+    with pytest.raises(ValueError, match="not allowed"):
+        await executor.execute(make_request(session, token=token))
+
+    receipts = tuple(receipt_log.for_session(session.session_id))
+    assert len(receipts) == 1
+    receipt = receipts[0]
+    assert receipt.tool == "search_web"
+    assert receipt.outcome is ToolCallOutcome.INTERNAL_ERROR
+    assert receipt.details.response_hash is None
+    assert receipt.details.response_payload is None
+    assert receipt.details.results == ()
+    assert receipt.details.cost_usd is None
+    assert receipt.details.extra is not None
+    assert receipt.details.extra["error_type"] == "ValueError"
+    assert receipt.details.extra["error_message"] == "model openai/gpt-oss-120b is not allowed"
     stored = session_registry.get(session.session_id)
     assert stored is not None
     assert stored.usage.total_cost_usd == pytest.approx(0.0)
@@ -791,7 +836,7 @@ async def test_execute_tool_does_not_record_receipt_for_invalid_session_token() 
     assert tuple(receipt_log.for_session(session.session_id)) == ()
 
 
-async def test_execute_tool_does_not_record_failed_receipt_for_invalid_invoker_output() -> None:
+async def test_execute_tool_records_failed_receipt_for_invalid_invoker_output() -> None:
     session = make_session()
     token = generate_token()
 
@@ -814,7 +859,11 @@ async def test_execute_tool_does_not_record_failed_receipt_for_invalid_invoker_o
     with pytest.raises(ValueError, match="tool invoker must return"):
         await executor.execute(make_request(session, token=token))
 
-    assert tuple(receipt_log.for_session(session.session_id)) == ()
+    receipts = tuple(receipt_log.for_session(session.session_id))
+    assert len(receipts) == 1
+    assert receipts[0].outcome is ToolCallOutcome.INTERNAL_ERROR
+    assert receipts[0].details.extra is not None
+    assert receipts[0].details.extra["error_type"] == "ValueError"
 
 
 async def test_execute_tool_skips_failure_debug_payload_when_debug_disabled(
@@ -1586,7 +1635,7 @@ async def test_execute_tool_budget_exhaustion_records_one_successful_receipt_onl
     assert "error_type" not in receipt.details.extra
 
 
-async def test_execute_tool_does_not_record_failed_receipt_for_receipt_persistence_failure() -> None:
+async def test_execute_tool_attempts_failed_receipt_for_receipt_persistence_failure() -> None:
     session = make_session()
     token = generate_token()
 
@@ -1617,11 +1666,15 @@ async def test_execute_tool_does_not_record_failed_receipt_for_receipt_persisten
     with pytest.raises(RuntimeError, match="receipt log write failed"):
         await executor.execute(make_request(session, token=token))
 
-    assert len(receipt_log.attempted_receipts) == 1
-    assert receipt_log.attempted_receipts[0].outcome is ToolCallOutcome.OK
+    assert [receipt.outcome for receipt in receipt_log.attempted_receipts] == [
+        ToolCallOutcome.OK,
+        ToolCallOutcome.INTERNAL_ERROR,
+    ]
+    assert receipt_log.attempted_receipts[1].details.extra is not None
+    assert receipt_log.attempted_receipts[1].details.extra["error_type"] == "RuntimeError"
 
 
-async def test_execute_tool_does_not_record_failed_receipt_for_usage_settlement_failure() -> None:
+async def test_execute_tool_preserves_successful_receipt_for_usage_settlement_failure() -> None:
     session = make_session()
     token = generate_token()
 
@@ -1660,4 +1713,9 @@ async def test_execute_tool_does_not_record_failed_receipt_for_usage_settlement_
     with pytest.raises(RuntimeError, match="became error during tool accounting"):
         await executor.execute(make_request(session, token=token))
 
-    assert tuple(receipt_log.for_session(session.session_id)) == ()
+    receipts = tuple(receipt_log.for_session(session.session_id))
+    assert len(receipts) == 1
+    assert receipts[0].outcome is ToolCallOutcome.OK
+    assert receipts[0].details.response_payload == {"data": []}
+    assert receipts[0].details.extra is not None
+    assert "error_type" not in receipts[0].details.extra

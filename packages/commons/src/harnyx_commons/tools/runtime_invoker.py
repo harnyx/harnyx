@@ -23,7 +23,7 @@ from harnyx_commons.llm.pricing import (
     price_parallel_extract,
     price_parallel_search,
 )
-from harnyx_commons.llm.provider import LlmProviderPort, LlmRetryExhaustedError
+from harnyx_commons.llm.provider import LlmProviderError, LlmProviderPort, LlmRetryExhaustedError
 from harnyx_commons.llm.provider_types import OPENROUTER_PROVIDER
 from harnyx_commons.llm.schema import (
     LlmChoice,
@@ -350,7 +350,9 @@ class RuntimeToolInvoker(ToolInvoker):
                 lambda: llm_provider.invoke(request),
             )
             elapsed_ms = (time.perf_counter() - started_at) * 1000.0
-        except LlmRetryExhaustedError as exc:
+        except (ToolProviderError, ToolInvocationTimeoutError):
+            raise
+        except (LlmProviderError, LlmRetryExhaustedError) as exc:
             raise ToolProviderError("tool provider failed") from exc
         return ToolInvocationOutput(
             public_payload=_public_llm_response_payload(llm_response),
