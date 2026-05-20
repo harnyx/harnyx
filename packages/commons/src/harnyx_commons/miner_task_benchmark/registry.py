@@ -13,19 +13,30 @@ from harnyx_commons.miner_task_benchmark.deepsearchqa.loader import (
     load_deepsearchqa_snapshot,
 )
 from harnyx_commons.miner_task_benchmark.types import BenchmarkDatasetSnapshot
+from harnyx_commons.miner_task_benchmark.webwalkerqa.loader import (
+    WEBWALKERQA_SUITE_SLUG,
+    list_webwalkerqa_snapshots,
+    load_webwalkerqa_snapshot,
+)
 
 BenchmarkSnapshotCatalogLoader = Callable[[], tuple[BenchmarkDatasetSnapshot, ...]]
-BenchmarkActiveSnapshotLoader = Callable[[], BenchmarkDatasetSnapshot]
+BenchmarkCurrentSnapshotLoader = Callable[[], BenchmarkDatasetSnapshot]
 BenchmarkSnapshotVersionKey = tuple[str, str]
 
 _BENCHMARK_SNAPSHOT_CATALOG_LOADERS: dict[str, BenchmarkSnapshotCatalogLoader] = {
-    DEEPSEARCHQA_SUITE_SLUG: list_deepsearchqa_snapshots,
     DEEPRESEARCH9K_L1_SUITE_SLUG: list_deepresearch9k_l1_snapshots,
+    DEEPSEARCHQA_SUITE_SLUG: list_deepsearchqa_snapshots,
+    WEBWALKERQA_SUITE_SLUG: list_webwalkerqa_snapshots,
 }
-_BENCHMARK_ACTIVE_SNAPSHOT_LOADERS: dict[str, BenchmarkActiveSnapshotLoader] = {
-    DEEPSEARCHQA_SUITE_SLUG: load_deepsearchqa_snapshot,
+_BENCHMARK_CURRENT_SNAPSHOT_LOADERS: dict[str, BenchmarkCurrentSnapshotLoader] = {
     DEEPRESEARCH9K_L1_SUITE_SLUG: load_deepresearch9k_l1_snapshot,
+    DEEPSEARCHQA_SUITE_SLUG: load_deepsearchqa_snapshot,
+    WEBWALKERQA_SUITE_SLUG: load_webwalkerqa_snapshot,
 }
+
+
+def list_current_benchmark_suite_slugs() -> tuple[str, ...]:
+    return tuple(sorted(_BENCHMARK_CURRENT_SNAPSHOT_LOADERS))
 
 
 def load_benchmark_snapshot(
@@ -39,10 +50,10 @@ def load_benchmark_snapshot(
         scoring_version=scoring_version,
     )
     if expected_version is None:
-        active_loader = _BENCHMARK_ACTIVE_SNAPSHOT_LOADERS.get(suite_slug)
-        if active_loader is None:
+        current_loader = _BENCHMARK_CURRENT_SNAPSHOT_LOADERS.get(suite_slug)
+        if current_loader is None:
             raise RuntimeError(f"unknown benchmark suite_slug: {suite_slug}")
-        return active_loader()
+        return current_loader()
 
     catalog_loader = _BENCHMARK_SNAPSHOT_CATALOG_LOADERS.get(suite_slug)
     if catalog_loader is None:
@@ -64,24 +75,24 @@ def load_benchmark_snapshot(
 
 
 def load_active_benchmark_snapshot() -> BenchmarkDatasetSnapshot:
-    if len(_BENCHMARK_ACTIVE_SNAPSHOT_LOADERS) != 1:
+    if len(_BENCHMARK_CURRENT_SNAPSHOT_LOADERS) != 1:
         raise RuntimeError("active benchmark suite is ambiguous; resolve an explicit suite_slug")
-    _, loader = next(iter(_BENCHMARK_ACTIVE_SNAPSHOT_LOADERS.items()))
+    _, loader = next(iter(_BENCHMARK_CURRENT_SNAPSHOT_LOADERS.items()))
     return loader()
 
 
 def list_current_benchmark_snapshots() -> tuple[BenchmarkDatasetSnapshot, ...]:
     return tuple(
         loader()
-        for _, loader in sorted(_BENCHMARK_ACTIVE_SNAPSHOT_LOADERS.items(), key=lambda entry: entry[0])
+        for _, loader in sorted(_BENCHMARK_CURRENT_SNAPSHOT_LOADERS.items(), key=lambda entry: entry[0])
     )
 
 
 def load_current_benchmark_snapshot(suite_slug: str) -> BenchmarkDatasetSnapshot:
-    active_loader = _BENCHMARK_ACTIVE_SNAPSHOT_LOADERS.get(suite_slug)
-    if active_loader is None:
+    current_loader = _BENCHMARK_CURRENT_SNAPSHOT_LOADERS.get(suite_slug)
+    if current_loader is None:
         raise RuntimeError(f"unknown current benchmark suite_slug: {suite_slug}")
-    return active_loader()
+    return current_loader()
 
 
 def _expected_snapshot_version(
@@ -98,6 +109,7 @@ def _expected_snapshot_version(
 
 __all__ = [
     "list_current_benchmark_snapshots",
+    "list_current_benchmark_suite_slugs",
     "load_active_benchmark_snapshot",
     "load_benchmark_snapshot",
     "load_current_benchmark_snapshot",

@@ -13,7 +13,7 @@ We are running Harnyx miner AutoResearch.
 
 Work from the miner directory. Read README.md first, then read program.md and follow it exactly as your standing research policy.
 
-Set up the run, run uv run prepare.py --benchmark-suite <suite-slug>, initialize results.tsv and .autoresearch/experiment-ledger.md, then begin the loop. Do not redesign the framework. Only edit train.py. Start from concrete failures, pick one bottleneck, write a hypothesis, run focused diagnostics, and only run full eval when program.md allows it.
+Set up the run, choose the benchmark suite with the operator, run uv run prepare.py --benchmark-suite <suite>, initialize results.tsv and .autoresearch/experiment-ledger.md, then begin the loop. Do not redesign the framework. Only edit train.py. Start from concrete failures, pick one bottleneck, write a hypothesis, run focused diagnostics, and only run full eval when program.md allows it.
 ```
 
 After setup confirmation, the agent should keep going until you interrupt it.
@@ -38,7 +38,7 @@ What each value is for:
 
 | Variable | Needed for |
 |----------|------------|
-| `PLATFORM_BASE_URL` | `uv run prepare.py` batch discovery, local eval context, and later manual submit commands |
+| `PLATFORM_BASE_URL` | `uv run prepare.py --benchmark-suite <suite>` batch discovery, local eval context, and later manual submit commands |
 | `CHUTES_API_KEY` | local-eval judging and miner `llm_chat` calls when Chutes is the tool/scoring provider |
 | `TOOL_LLM_PROVIDER` | provider used for miner `llm_chat` tool calls; the public example defaults to `chutes` |
 | `SEARCH_PROVIDER` | provider used for miner `search_web` calls |
@@ -50,7 +50,7 @@ If using `SEARCH_PROVIDER=parallel`, set `PARALLEL_API_KEY` instead of `DESEARCH
 
 If using `BENCHMARK_LLM_PROVIDER=vertex`, also configure Vertex credentials such as `GCP_PROJECT_ID`, `GCP_LOCATION`, and the usual Google application credentials for your machine.
 
-The agent may discover missing variables when `uv run prepare.py`, local eval, local benchmark, `llm_chat`, or `search_web` fails. Setting them before the run avoids wasting research cycles on setup failures.
+The agent may discover missing variables when `uv run prepare.py --benchmark-suite <suite>`, local eval, local benchmark, `llm_chat`, or `search_web` fails. Setting them before the run avoids wasting research cycles on setup failures.
 
 ## Run Setup
 

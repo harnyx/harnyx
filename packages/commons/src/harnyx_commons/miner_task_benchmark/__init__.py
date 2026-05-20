@@ -17,6 +17,7 @@ from harnyx_commons.miner_task_benchmark.identity import (
 )
 from harnyx_commons.miner_task_benchmark.registry import (
     list_current_benchmark_snapshots,
+    list_current_benchmark_suite_slugs,
     load_active_benchmark_snapshot,
     load_benchmark_snapshot,
     load_current_benchmark_snapshot,
@@ -46,14 +47,22 @@ from harnyx_commons.miner_task_benchmark.types import (
     BenchmarkDatasetManifest,
     BenchmarkDatasetSnapshot,
 )
+from harnyx_commons.miner_task_benchmark.webwalkerqa import (
+    WEBWALKERQA_SUITE_NAME,
+    WEBWALKERQA_SUITE_SLUG,
+    list_webwalkerqa_snapshots,
+    load_webwalkerqa_snapshot,
+)
 
 __all__ = [
     "BENCHMARK_SAMPLE_SIZE",
-    "DEEPSEARCHQA_SUITE_NAME",
-    "DEEPSEARCHQA_SUITE_SLUG",
     "DEEPRESEARCH9K_L1_SUITE_NAME",
     "DEEPRESEARCH9K_L1_SUITE_SLUG",
+    "DEEPSEARCHQA_SUITE_NAME",
+    "DEEPSEARCHQA_SUITE_SLUG",
     "SUPPORTED_BENCHMARK_SCORING_VERSION",
+    "WEBWALKERQA_SUITE_NAME",
+    "WEBWALKERQA_SUITE_SLUG",
     "BenchmarkAnswerType",
     "BenchmarkCorrectnessScore",
     "BenchmarkCorrectnessScoringConfig",
@@ -74,13 +83,16 @@ __all__ = [
     "derive_benchmark_run_state",
     "is_supported_benchmark_scoring_version",
     "list_current_benchmark_snapshots",
-    "list_deepsearchqa_snapshots",
+    "list_current_benchmark_suite_slugs",
     "list_deepresearch9k_l1_snapshots",
+    "list_deepsearchqa_snapshots",
+    "list_webwalkerqa_snapshots",
     "load_active_benchmark_snapshot",
     "load_benchmark_snapshot",
     "load_current_benchmark_snapshot",
-    "load_deepsearchqa_snapshot",
     "load_deepresearch9k_l1_snapshot",
+    "load_deepsearchqa_snapshot",
+    "load_webwalkerqa_snapshot",
     "project_benchmark_run_state",
     "sample_benchmark_items",
     "unsupported_benchmark_scoring_version_error",

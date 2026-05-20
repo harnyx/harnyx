@@ -17,7 +17,7 @@ To set up a new experiment, work with the user to:
    - `README.md` - miner context.
    - `prepare.py` - fixed batch pinning, local-eval invocation, and report parsing. Do not modify.
    - `train.py` - the only file you modify. This is the miner agent and experiment command.
-5. **Pin the evaluators**: run `uv run prepare.py --benchmark-suite <suite-slug>`. If the user wants a specific completed batch, run `uv run prepare.py --benchmark-suite <suite-slug> --batch-id <batch-id>`.
+5. **Pin the evaluators**: choose the benchmark suite with the user, then run `uv run prepare.py --benchmark-suite <suite-slug>`. If the user wants a specific completed batch, run `uv run prepare.py --benchmark-suite <suite-slug> --batch-id <batch-id>`.
 6. **Initialize results.tsv** with just the header row:
 
 ```
@@ -74,7 +74,7 @@ local_eval_cost_usd:  0.020000
 benchmark_cost_usd:   0.015000
 error_count:          0
 batch_id:             00000000-0000-0000-0000-000000000001
-benchmark:            deepsearchqa dataset_version=... scoring_version=...
+benchmark:            webwalkerqa dataset_version=... scoring_version=...
 local_eval_json_report:  .autoresearch/reports/20260430-120000/local-eval/local-eval-report-...
 benchmark_json_report:   .autoresearch/reports/20260430-120000/benchmark/local-benchmark-report-...
 ```

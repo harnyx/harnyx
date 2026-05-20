@@ -315,7 +315,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--benchmark-suite",
         required=True,
-        help="Benchmark suite slug to pin for local benchmark runs, for example deepsearchqa or deepresearch9k-l1.",
+        help=(
+            "Benchmark suite slug to pin for local benchmark runs, "
+            "for example webwalkerqa, deepsearchqa, or deepresearch9k-l1."
+        ),
     )
     parser.add_argument(
         "--benchmark-sample-size",

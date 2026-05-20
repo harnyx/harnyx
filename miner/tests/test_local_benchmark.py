@@ -193,6 +193,7 @@ def test_local_benchmark_lists_current_suites(
     assert [suite["suite_slug"] for suite in payload["suites"]] == [
         "deepresearch9k-l1",
         "deepsearchqa",
+        "webwalkerqa",
     ]
 
 

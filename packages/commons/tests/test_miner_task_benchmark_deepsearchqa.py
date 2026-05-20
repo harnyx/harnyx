@@ -13,6 +13,7 @@ from harnyx_commons.miner_task_benchmark import (
     benchmark_run_id_for_source_batch,
     benchmark_task_id_for_item,
     list_current_benchmark_snapshots,
+    list_current_benchmark_suite_slugs,
     list_deepsearchqa_snapshots,
     load_active_benchmark_snapshot,
     load_benchmark_snapshot,
@@ -46,15 +47,23 @@ def test_benchmark_registry_loads_deepsearchqa_snapshot_generically() -> None:
         )
         == snapshot
     )
+    assert "deepsearchqa" in list_current_benchmark_suite_slugs()
+    assert snapshot in list_current_benchmark_snapshots()
     assert load_current_benchmark_snapshot("deepsearchqa") == snapshot
 
 
-def test_benchmark_registry_has_two_current_suites_without_single_active_default() -> None:
+def test_benchmark_registry_has_three_current_suites_without_single_active_default() -> None:
     snapshots = list_current_benchmark_snapshots()
 
     assert tuple(snapshot.manifest.suite_slug for snapshot in snapshots) == (
         "deepresearch9k-l1",
         "deepsearchqa",
+        "webwalkerqa",
+    )
+    assert list_current_benchmark_suite_slugs() == (
+        "deepresearch9k-l1",
+        "deepsearchqa",
+        "webwalkerqa",
     )
     assert load_current_benchmark_snapshot(DEEPRESEARCH9K_L1_SUITE_SLUG).manifest.row_count == 3000
     try:
@@ -62,7 +71,7 @@ def test_benchmark_registry_has_two_current_suites_without_single_active_default
     except RuntimeError as exc:
         assert "ambiguous" in str(exc)
     else:
-        raise AssertionError("load_active_benchmark_snapshot must not resolve when two suites are current")
+        raise AssertionError("load_active_benchmark_snapshot must not resolve when multiple suites are current")
 
 
 def test_deepsearchqa_loader_retains_current_snapshot_in_version_catalog() -> None:
@@ -104,7 +113,7 @@ def test_benchmark_registry_resolves_explicit_active_version_only(monkeypatch) -
         lambda: (current,),
     )
     monkeypatch.setitem(
-        registry_mod._BENCHMARK_ACTIVE_SNAPSHOT_LOADERS,
+        registry_mod._BENCHMARK_CURRENT_SNAPSHOT_LOADERS,
         "deepsearchqa",
         lambda: current,
     )

@@ -179,6 +179,43 @@ def test_prepare_builds_local_benchmark_command(tmp_path: Path) -> None:
     ]
 
 
+def test_prepare_requires_explicit_benchmark_suite(capsys: pytest.CaptureFixture[str]) -> None:
+    prepare = _load_prepare_module()
+
+    with pytest.raises(SystemExit) as exc_info:
+        prepare.main(())
+
+    assert exc_info.value.code == 2
+    assert "--benchmark-suite" in capsys.readouterr().err
+
+
+def test_prepare_resolves_explicit_benchmark_suite(monkeypatch: pytest.MonkeyPatch) -> None:
+    prepare = _load_prepare_module()
+    captured: dict[str, object] = {}
+
+    class _Manifest:
+        suite_slug = "webwalkerqa"
+        dataset_version = "2026-05-14-webwalkerqa-test-single-source-easy"
+        scoring_version = "correctness-v1"
+
+    class _Snapshot:
+        manifest = _Manifest()
+
+    def fake_load_current_benchmark_snapshot(suite_slug: str):
+        captured["suite_slug"] = suite_slug
+        return _Snapshot()
+
+    monkeypatch.setattr(prepare, "load_current_benchmark_snapshot", fake_load_current_benchmark_snapshot)
+
+    pin = prepare._resolve_benchmark(benchmark_suite="webwalkerqa", sample_size=20)
+
+    assert captured["suite_slug"] == "webwalkerqa"
+    assert pin.suite_slug == "webwalkerqa"
+    assert pin.dataset_version == "2026-05-14-webwalkerqa-test-single-source-easy"
+    assert pin.scoring_version == "correctness-v1"
+    assert pin.sample_size == 20
+
+
 def test_prepare_parses_local_benchmark_report_summary(tmp_path: Path) -> None:
     prepare = _load_prepare_module()
     report_path = tmp_path / "local-benchmark-report.json"
@@ -258,7 +295,7 @@ def test_auto_research_runbook_documents_operator_startup_contract() -> None:
     assert "## What To Tell The Agent" in runbook
     assert "Read README.md first, then read program.md" in runbook
     assert "Only edit train.py" in runbook
-    assert "uv run prepare.py" in runbook
+    assert "uv run prepare.py --benchmark-suite" in runbook
     assert "results.tsv" in runbook
     assert ".autoresearch/experiment-ledger.md" in runbook
     assert "PLATFORM_BASE_URL" in runbook

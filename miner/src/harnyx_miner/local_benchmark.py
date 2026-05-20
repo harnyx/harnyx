@@ -137,7 +137,7 @@ def _create_invocation_only_runtime(
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Evaluate a local miner artifact against explicit packaged benchmark items.",
+        description="Evaluate a local miner artifact against an explicit benchmark suite.",
     )
     parser.add_argument("--agent-path", help="Path to the local miner agent file.")
     parser.add_argument(
@@ -146,7 +146,10 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--suite",
-        help="Benchmark suite slug. Required unless --list-suites is used.",
+        help=(
+            "Benchmark suite slug. Required unless --list-suites is used, "
+            "for example webwalkerqa, deepsearchqa, or deepresearch9k-l1."
+        ),
     )
     parser.add_argument("--dataset-version", help="Pinned benchmark dataset version.")
     parser.add_argument("--scoring-version", help="Pinned benchmark scoring version.")

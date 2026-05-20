@@ -1,0 +1,13 @@
+{
+  "suite_slug": "webwalkerqa",
+  "suite_name": "WebWalkerQA Easy",
+  "dataset_version": "2026-05-14-webwalkerqa-test-single-source-easy",
+  "scoring_version": "correctness-v1",
+  "source_url": "https://raw.githubusercontent.com/RUC-NLPIR/WebThinker/main/data/WebWalkerQA/test.json",
+  "source_page_url": "https://github.com/RUC-NLPIR/WebThinker/tree/main/data/WebWalkerQA",
+  "license": "MIT",
+  "sha256": "26743935e573cca30571793bc28f3798d2a7ce73c6c0981e1bd54a5fe476fe46",
+  "row_count": 80,
+  "file_name": "test.json",
+  "fetched_at": "2026-05-14"
+}

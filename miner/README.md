@@ -60,7 +60,7 @@ Create a `.env` at the repo root (copy from `.env.example`) and fill:
 | `SEARCH_PROVIDER` | Optional: required if your agent uses search tools |
 | `PLATFORM_BASE_URL` | Public monitoring and script uploads |
 | `BENCHMARK_LLM_PROVIDER` | Optional benchmark judge provider; defaults to `chutes` |
-| `BENCHMARK_LLM_MODEL` | Required when running the DeepSearchQA local benchmark |
+| `BENCHMARK_LLM_MODEL` | Required when running a local benchmark |
 
 The checked-in default is `SEARCH_PROVIDER=desearch`. If you need a fallback search provider, miner tooling also supports `parallel`; set `SEARCH_PROVIDER=parallel` and `PARALLEL_API_KEY`.
 If you set `BENCHMARK_LLM_PROVIDER=vertex`, also configure Vertex credentials such as `GCP_PROJECT_ID` and `GCP_LOCATION`.
@@ -313,7 +313,7 @@ uv run --package harnyx-miner harnyx-miner-local-benchmark --list-suites
 
 ```bash
 uv run --package harnyx-miner harnyx-miner-local-benchmark \
-  --suite deepresearch9k-l1 \
+  --suite webwalkerqa \
   --agent-path ./agent.py \
   --source-batch-id <completed-batch-id>
 ```
