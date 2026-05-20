@@ -40,6 +40,9 @@ include = [
   "src/harnyx_commons/miner_task_benchmark/deepsearchqa/data/current_version.json",
   "src/harnyx_commons/miner_task_benchmark/deepsearchqa/data/versions/*/*.csv",
   "src/harnyx_commons/miner_task_benchmark/deepsearchqa/data/versions/*/*.json",
+  "src/harnyx_commons/miner_task_benchmark/deepresearch9k_l1/data/current_version.json",
+  "src/harnyx_commons/miner_task_benchmark/deepresearch9k_l1/data/versions/*/*.csv",
+  "src/harnyx_commons/miner_task_benchmark/deepresearch9k_l1/data/versions/*/*.json",
 ]
 
 [tool.deptry.package_module_name_map]

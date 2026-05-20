@@ -304,22 +304,28 @@ By default it selects the latest completed public batch and runs `vs-champion`. 
 
 See [`local-eval.md`](local-eval.md) for prerequisites, modes, reports, and the full local-eval workflow. If you are using a code agent, the public step-based skills in [`skills/README.md`](skills/README.md) can help structure that loop.
 
-To run the open DeepSearchQA benchmark against a pinned source batch, use:
+To run an open benchmark suite against a pinned source batch, list the available
+suites and then choose one explicitly:
+
+```bash
+uv run --package harnyx-miner harnyx-miner-local-benchmark --list-suites
+```
 
 ```bash
 uv run --package harnyx-miner harnyx-miner-local-benchmark \
+  --suite deepresearch9k-l1 \
   --agent-path ./agent.py \
   --source-batch-id <completed-batch-id>
 ```
 
 This writes a structured JSON report with the open benchmark question, reference answer, generated answer, binary correctness result, cost, runtime, and errors for each item.
-The local benchmark uses the public `harnyx_commons.miner_task_benchmark` boundary for packaged DeepSearchQA data, deterministic benchmark IDs, scoring, sampling, metric aggregation, and scoring-version checks. It does not depend on private platform internals.
+The local benchmark uses the public `harnyx_commons.miner_task_benchmark` boundary for packaged benchmark data, deterministic benchmark IDs, scoring, sampling, metric aggregation, and scoring-version checks. Miners must pass `--suite` so the report names the exact benchmark suite and version under test; there is no default suite. It does not depend on private platform internals.
 
 For upstream-style autonomous experimentation, see [`AUTO-RESEARCH.md`](AUTO-RESEARCH.md). That guide gives the operator prompt, environment checklist, setup commands, and safety boundaries. The agent-facing research policy lives in [`program.md`](program.md).
 
 That flow keeps the surface intentionally small:
 
-- `prepare.py` pins the local-eval batch plus DeepSearchQA benchmark snapshot and owns fixed support.
+- `prepare.py` pins the local-eval batch plus the explicitly selected benchmark snapshot and owns fixed support.
 - `train.py` is the only file the agent edits and the command run for each experiment.
 - `results.tsv` records Score A, Score B, cost, and status for each experiment and stays untracked.
 

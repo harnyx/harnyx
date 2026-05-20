@@ -2,7 +2,7 @@
 Fixed support for Harnyx miner autoresearch experiments.
 
 Usage:
-    uv run prepare.py
+    uv run prepare.py --benchmark-suite <suite-slug>
 
 Experiment agents should read this file for context, but should not edit it.
 The editable experiment file is train.py.
@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
 
-from harnyx_commons.miner_task_benchmark import load_active_benchmark_snapshot
+from harnyx_commons.miner_task_benchmark import load_current_benchmark_snapshot
 from harnyx_miner.env import load_public_env
 from harnyx_miner.platform_monitoring import PlatformMonitoringClient
 
@@ -66,11 +66,16 @@ class BenchmarkSummary:
     json_report: Path
 
 
-def prepare(batch_id: str | None = None, *, benchmark_sample_size: int = DEFAULT_BENCHMARK_SAMPLE_SIZE) -> str:
+def prepare(
+    batch_id: str | None = None,
+    *,
+    benchmark_suite: str,
+    benchmark_sample_size: int = DEFAULT_BENCHMARK_SAMPLE_SIZE,
+) -> str:
     """Pin the local-eval batch and local benchmark snapshot used by this autoresearch run."""
     load_public_env()
     resolved_batch_id = _normalize_batch_id(batch_id) if batch_id else _resolve_latest_completed_batch_id()
-    benchmark = _resolve_active_benchmark(sample_size=benchmark_sample_size)
+    benchmark = _resolve_benchmark(benchmark_suite=benchmark_suite, sample_size=benchmark_sample_size)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     BATCH_ID_PATH.write_text(f"{resolved_batch_id}\n", encoding="utf-8")
@@ -308,13 +313,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Prepare a Harnyx miner autoresearch run.")
     parser.add_argument("--batch-id", help="Specific completed batch id to pin. Defaults to latest completed batch.")
     parser.add_argument(
+        "--benchmark-suite",
+        required=True,
+        help="Benchmark suite slug to pin for local benchmark runs, for example deepsearchqa or deepresearch9k-l1.",
+    )
+    parser.add_argument(
         "--benchmark-sample-size",
         type=int,
         default=DEFAULT_BENCHMARK_SAMPLE_SIZE,
-        help=f"Number of DeepSearchQA benchmark items to pin. Default: {DEFAULT_BENCHMARK_SAMPLE_SIZE}.",
+        help=f"Number of benchmark items to pin. Default: {DEFAULT_BENCHMARK_SAMPLE_SIZE}.",
     )
     args = parser.parse_args(list(argv) if argv is not None else None)
-    prepare(batch_id=args.batch_id, benchmark_sample_size=args.benchmark_sample_size)
+    prepare(
+        batch_id=args.batch_id,
+        benchmark_suite=args.benchmark_suite,
+        benchmark_sample_size=args.benchmark_sample_size,
+    )
     return 0
 
 
@@ -326,11 +340,11 @@ def _resolve_latest_completed_batch_id() -> str:
         client.close()
 
 
-def _resolve_active_benchmark(*, sample_size: int) -> BenchmarkPin:
+def _resolve_benchmark(*, benchmark_suite: str, sample_size: int) -> BenchmarkPin:
     if sample_size <= 0:
         raise ValueError("benchmark sample size must be positive")
 
-    snapshot = load_active_benchmark_snapshot()
+    snapshot = load_current_benchmark_snapshot(benchmark_suite)
     return BenchmarkPin(
         suite_slug=snapshot.manifest.suite_slug,
         dataset_version=snapshot.manifest.dataset_version,
@@ -345,13 +359,17 @@ def _normalize_batch_id(raw: str) -> str:
 
 def _read_pinned_batch_id() -> str:
     if not BATCH_ID_PATH.exists():
-        raise RuntimeError("missing .autoresearch/batch_id; run `uv run prepare.py` first")
+        raise RuntimeError(
+            "missing .autoresearch/batch_id; run `uv run prepare.py --benchmark-suite <suite-slug>` first"
+        )
     return _normalize_batch_id(BATCH_ID_PATH.read_text(encoding="utf-8").strip())
 
 
 def _read_pinned_benchmark() -> BenchmarkPin:
     if not BENCHMARK_PATH.exists():
-        raise RuntimeError("missing .autoresearch/benchmark.json; run `uv run prepare.py` first")
+        raise RuntimeError(
+            "missing .autoresearch/benchmark.json; run `uv run prepare.py --benchmark-suite <suite-slug>` first"
+        )
     payload = _read_json_object(BENCHMARK_PATH)
     return BenchmarkPin(
         suite_slug=_string(payload.get("suite_slug"), "benchmark suite_slug"),

@@ -17,7 +17,7 @@ To set up a new experiment, work with the user to:
    - `README.md` - miner context.
    - `prepare.py` - fixed batch pinning, local-eval invocation, and report parsing. Do not modify.
    - `train.py` - the only file you modify. This is the miner agent and experiment command.
-5. **Pin the evaluators**: run `uv run prepare.py`. If the user wants a specific completed batch, run `uv run prepare.py --batch-id <batch-id>`.
+5. **Pin the evaluators**: run `uv run prepare.py --benchmark-suite <suite-slug>`. If the user wants a specific completed batch, run `uv run prepare.py --benchmark-suite <suite-slug> --batch-id <batch-id>`.
 6. **Initialize results.tsv** with just the header row:
 
 ```
@@ -46,13 +46,13 @@ Debug or oracle experiments are allowed during research when they help isolate a
 
 ## Fixed evaluators
 
-Each committed full experiment evaluates `train.py` against the pinned local-eval batch and the pinned DeepSearchQA benchmark snapshot. Launch it simply as:
+Each committed full experiment evaluates `train.py` against the pinned local-eval batch and the pinned benchmark snapshot selected by `prepare.py`. Launch it simply as:
 
 ```
 uv run train.py
 ```
 
-Score A is the primary local batch-eval score against the current champion. Score B is the DeepSearchQA benchmark score against open canonical answers. Neither score is a perfect generalization test, but the pair is the fixed metric for this run.
+Score A is the primary local batch-eval score against the current champion. Score B is the selected benchmark score against open canonical answers. Neither score is a perfect generalization test, but the pair is the fixed metric for this run.
 
 Cost and complexity are soft constraints. A cost increase is acceptable for a meaningful score gain, but do not make the agent expensive or fragile for tiny gains. All else equal, simpler is better. A small improvement from deleting code is valuable. A tiny score gain from a large brittle rewrite is usually not worth keeping.
 

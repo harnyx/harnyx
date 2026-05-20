@@ -26,7 +26,7 @@ from harnyx_commons.miner_task_benchmark import (
     benchmark_backing_batch_id_for_run,
     benchmark_run_id_for_source_batch,
     benchmark_task_id_for_item,
-    load_active_benchmark_snapshot,
+    load_current_benchmark_snapshot,
 )
 from harnyx_miner import local_benchmark
 from harnyx_validator.application.dto.evaluation import (
@@ -160,6 +160,42 @@ def test_local_benchmark_help_uses_benchmark_parser(capsys: pytest.CaptureFixtur
     assert "--logging.debug" not in help_text
 
 
+def test_local_benchmark_requires_explicit_suite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent_path = tmp_path / "agent.py"
+    agent_path.write_text("print('candidate')\n", encoding="utf-8")
+    monkeypatch.setattr(local_benchmark, "load_public_env", lambda: None)
+
+    with pytest.raises(ValueError, match="--suite is required"):
+        asyncio.run(
+            local_benchmark._amain(
+                (
+                    "--agent-path",
+                    str(agent_path),
+                    "--source-batch-id",
+                    "00000000-0000-4000-8000-00000000b501",
+                )
+            )
+        )
+
+
+def test_local_benchmark_lists_current_suites(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(local_benchmark, "load_public_env", lambda: None)
+
+    asyncio.run(local_benchmark._amain(("--list-suites",)))
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [suite["suite_slug"] for suite in payload["suites"]] == [
+        "deepresearch9k-l1",
+        "deepsearchqa",
+    ]
+
+
 def test_local_benchmark_uses_invocation_only_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -241,6 +277,8 @@ def test_local_benchmark_uses_invocation_only_runtime(
                 str(agent_path),
                 "--source-batch-id",
                 "00000000-0000-4000-8000-00000000b501",
+                "--suite",
+                "deepsearchqa",
                 "--sample-size",
                 "1",
                 "--output-dir",
@@ -281,7 +319,7 @@ def test_miner_local_benchmark_ids_match_current_platform_values() -> None:
 
 
 def test_miner_local_deepsearchqa_loader_loads_packaged_snapshot() -> None:
-    snapshot = load_active_benchmark_snapshot()
+    snapshot = load_current_benchmark_snapshot("deepsearchqa")
 
     assert snapshot.manifest.suite_slug == "deepsearchqa"
     assert snapshot.manifest.dataset_version == "2026-04-02-google-main"
@@ -353,6 +391,7 @@ def test_local_benchmark_report_includes_answers_and_summary(tmp_path: Path) -> 
         ),
         output_dir=tmp_path,
         elapsed_seconds=12.5,
+        parallelism=1,
     )
 
     assert report["summary"]["item_count"] == 2

@@ -7,13 +7,16 @@ from uuid import UUID
 
 import harnyx_commons.miner_task_benchmark.registry as registry_mod
 from harnyx_commons.miner_task_benchmark import (
+    DEEPRESEARCH9K_L1_SUITE_SLUG,
     BenchmarkDatasetSnapshot,
     benchmark_backing_batch_id_for_run,
     benchmark_run_id_for_source_batch,
     benchmark_task_id_for_item,
+    list_current_benchmark_snapshots,
     list_deepsearchqa_snapshots,
     load_active_benchmark_snapshot,
     load_benchmark_snapshot,
+    load_current_benchmark_snapshot,
     load_deepsearchqa_snapshot,
     sample_benchmark_items,
 )
@@ -43,7 +46,23 @@ def test_benchmark_registry_loads_deepsearchqa_snapshot_generically() -> None:
         )
         == snapshot
     )
-    assert load_active_benchmark_snapshot() == snapshot
+    assert load_current_benchmark_snapshot("deepsearchqa") == snapshot
+
+
+def test_benchmark_registry_has_two_current_suites_without_single_active_default() -> None:
+    snapshots = list_current_benchmark_snapshots()
+
+    assert tuple(snapshot.manifest.suite_slug for snapshot in snapshots) == (
+        "deepresearch9k-l1",
+        "deepsearchqa",
+    )
+    assert load_current_benchmark_snapshot(DEEPRESEARCH9K_L1_SUITE_SLUG).manifest.row_count == 3000
+    try:
+        load_active_benchmark_snapshot()
+    except RuntimeError as exc:
+        assert "ambiguous" in str(exc)
+    else:
+        raise AssertionError("load_active_benchmark_snapshot must not resolve when two suites are current")
 
 
 def test_deepsearchqa_loader_retains_current_snapshot_in_version_catalog() -> None:

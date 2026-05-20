@@ -83,7 +83,7 @@ class _FakeLlmRegistry:
 
 
 def test_llm_settings_default_scoring_timeout_is_300_seconds() -> None:
-    assert LlmSettings().scoring_llm_timeout_seconds == pytest.approx(300.0)
+    assert LlmSettings(_env_file=None).scoring_llm_timeout_seconds == pytest.approx(300.0)
 
 
 def _settings_with_gemma_tool_route() -> Settings:

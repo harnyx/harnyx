@@ -18,15 +18,17 @@ def test_llm_settings_default_provider_concurrency_targets_match_activation_slic
 
 
 def test_default_llm_timeout_surfaces_are_300_seconds() -> None:
-    assert LlmSettings().llm_timeout_seconds == pytest.approx(300.0)
-    assert LlmSettings().scoring_llm_timeout_seconds == pytest.approx(300.0)
-    assert VertexSettings().vertex_timeout_seconds == pytest.approx(300.0)
-    assert BedrockSettings().read_timeout_seconds == pytest.approx(300.0)
+    settings = LlmSettings(_env_file=None)
+
+    assert settings.llm_timeout_seconds == pytest.approx(300.0)
+    assert settings.scoring_llm_timeout_seconds == pytest.approx(300.0)
+    assert VertexSettings(_env_file=None).vertex_timeout_seconds == pytest.approx(300.0)
+    assert BedrockSettings(_env_file=None).read_timeout_seconds == pytest.approx(300.0)
     assert provider_factory.CHUTES.timeout_seconds == pytest.approx(300.0)
 
 
 def test_default_scoring_llm_max_output_tokens_is_20480() -> None:
-    assert LlmSettings().scoring_llm_max_output_tokens == 20480
+    assert LlmSettings(_env_file=None).scoring_llm_max_output_tokens == 20480
 
 
 def test_build_cached_llm_provider_resolver_caches_by_provider_name(

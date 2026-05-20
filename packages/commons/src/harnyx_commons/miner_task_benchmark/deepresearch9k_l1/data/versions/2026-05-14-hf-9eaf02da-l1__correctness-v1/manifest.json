@@ -1,0 +1,13 @@
+{
+  "suite_slug": "deepresearch9k-l1",
+  "suite_name": "DeepResearch-9K L1",
+  "dataset_version": "2026-05-14-hf-9eaf02da-l1",
+  "scoring_version": "correctness-v1",
+  "source_url": "https://huggingface.co/datasets/artillerywu/DeepResearch-9K/resolve/9eaf02da8608b91dc9440503ce10889160c14347/DeepResearch-9K/train-00000-of-00001.parquet",
+  "source_page_url": "https://huggingface.co/datasets/artillerywu/DeepResearch-9K",
+  "license": "unknown",
+  "sha256": "dd182417907628910ecc0e0de8d84474c5d2bab7b8c35ea421223f7da6a9effe",
+  "row_count": 3000,
+  "file_name": "deepresearch9k-l1.csv",
+  "fetched_at": "2026-05-14"
+}

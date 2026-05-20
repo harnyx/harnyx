@@ -40,6 +40,7 @@ from harnyx_commons.miner_task_benchmark import (
     benchmark_run_id_for_source_batch,
     benchmark_task_id_for_item,
     is_supported_benchmark_scoring_version,
+    list_current_benchmark_snapshots,
     load_benchmark_snapshot,
     sample_benchmark_items,
     unsupported_benchmark_scoring_version_error,
@@ -52,15 +53,14 @@ from harnyx_miner.agent_source import (
 )
 from harnyx_miner.env import load_public_env
 from harnyx_validator.application.dto.evaluation import MinerTaskRunSubmission, ScriptArtifactSpec
-from harnyx_validator.application.services.evaluation_runner import ArtifactEvaluationOutcome
 from harnyx_validator.version import VALIDATOR_RELEASE_VERSION
 
 if TYPE_CHECKING:
     from harnyx_miner.local_eval import LocalEvaluationRuntime
 
 _DEFAULT_OUTPUT_PREFIX = "local-benchmark-report"
-_DEFAULT_SUITE_SLUG = "deepsearchqa"
 _DEFAULT_SAMPLE_SIZE = BENCHMARK_SAMPLE_SIZE
+_DEFAULT_PARALLELISM = 1
 _LOCAL_BENCHMARK_UID = 1
 _INVOCATION_ONLY_SCORING_CONFIG = EvaluationScoringConfig(
     provider="chutes",
@@ -137,26 +137,35 @@ def _create_invocation_only_runtime(
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Evaluate a local miner artifact against pinned DeepSearchQA benchmark items.",
+        description="Evaluate a local miner artifact against explicit packaged benchmark items.",
     )
-    parser.add_argument("--agent-path", required=True, help="Path to the local miner agent file.")
+    parser.add_argument("--agent-path", help="Path to the local miner agent file.")
     parser.add_argument(
         "--source-batch-id",
-        required=True,
         help="Pinned source batch id used to derive the deterministic benchmark sample.",
     )
     parser.add_argument(
         "--suite",
-        default=_DEFAULT_SUITE_SLUG,
-        help=f"Benchmark suite slug. Default: {_DEFAULT_SUITE_SLUG}.",
+        help="Benchmark suite slug. Required unless --list-suites is used.",
     )
     parser.add_argument("--dataset-version", help="Pinned benchmark dataset version.")
     parser.add_argument("--scoring-version", help="Pinned benchmark scoring version.")
+    parser.add_argument(
+        "--list-suites",
+        action="store_true",
+        help="List current benchmark suites and exit.",
+    )
     parser.add_argument(
         "--sample-size",
         type=int,
         default=_DEFAULT_SAMPLE_SIZE,
         help=f"Number of benchmark items to run. Default: {_DEFAULT_SAMPLE_SIZE}.",
+    )
+    parser.add_argument(
+        "--parallelism",
+        type=int,
+        default=_DEFAULT_PARALLELISM,
+        help=f"Concurrent benchmark item sandboxes. Default: {_DEFAULT_PARALLELISM}.",
     )
     parser.add_argument(
         "--output-dir",
@@ -169,12 +178,23 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 async def _amain(argv: Sequence[str] | None) -> None:
     args = _parse_args(argv)
     load_public_env()
+    if args.list_suites:
+        _print_current_suites()
+        return
+    if not args.agent_path:
+        raise ValueError("--agent-path is required")
+    if not args.source_batch_id:
+        raise ValueError("--source-batch-id is required")
+    if not args.suite:
+        raise ValueError("--suite is required")
     target_path = require_existing_agent_path(args.agent_path)
     source_batch_id = UUID(args.source_batch_id)
     output_dir = Path(args.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     if args.sample_size <= 0:
         raise ValueError("--sample-size must be positive")
+    if args.parallelism <= 0:
+        raise ValueError("--parallelism must be positive")
 
     snapshot = load_benchmark_snapshot(
         args.suite,
@@ -229,25 +249,20 @@ async def _amain(argv: Sequence[str] | None) -> None:
             scoring_config=_INVOCATION_ONLY_SCORING_CONFIG,
         )
         scoring = _build_benchmark_scoring_bundle()
-        _emit_progress("running candidate against benchmark items")
-        outcome = await runtime.evaluate_artifact(
-            artifact_label="benchmark-target",
-            agent_source=target_bytes,
-            artifact=target_artifact,
-            batch_id=backing_batch_id,
-            tasks=tasks,
-            scoring_service=invocation_scoring,
+        _emit_progress(
+            "running candidate against benchmark items: "
+            f"parallelism={args.parallelism}"
         )
-        submissions = _require_completed_benchmark_outcome(
-            artifact=target_artifact,
-            outcome=outcome,
-        )
-        _emit_progress("scoring benchmark answers")
-        results = await _score_items(
+        results = await _evaluate_and_score_items(
+            runtime=runtime,
+            target_bytes=target_bytes,
+            target_artifact=target_artifact,
+            backing_batch_id=backing_batch_id,
             items=sampled_items,
             tasks=tasks,
-            submissions=submissions,
+            invocation_scoring=invocation_scoring,
             scoring_service=scoring.service,
+            parallelism=args.parallelism,
         )
     finally:
         if runtime is not None:
@@ -268,6 +283,7 @@ async def _amain(argv: Sequence[str] | None) -> None:
         scoring_config=scoring.config,
         output_dir=output_dir,
         elapsed_seconds=elapsed_seconds,
+        parallelism=args.parallelism,
     )
     json_path = _write_report(
         report=report,
@@ -364,100 +380,161 @@ def _build_benchmark_scoring_bundle() -> _BenchmarkScoringBundle:
     )
 
 
-def _require_completed_benchmark_outcome(
+def _print_current_suites() -> None:
+    suites = [
+        {
+            "suite_slug": snapshot.manifest.suite_slug,
+            "suite_name": snapshot.manifest.suite_name,
+            "dataset_version": snapshot.manifest.dataset_version,
+            "scoring_version": snapshot.manifest.scoring_version,
+            "row_count": snapshot.manifest.row_count,
+        }
+        for snapshot in list_current_benchmark_snapshots()
+    ]
+    print(json.dumps({"suites": suites}, sort_keys=True))
+
+
+async def _evaluate_and_score_items(
     *,
-    artifact: ScriptArtifactSpec,
-    outcome: ArtifactEvaluationOutcome,
-) -> tuple[MinerTaskRunSubmission, ...]:
-    if outcome.artifact_failure is None:
-        return outcome.submissions
-    failure = outcome.artifact_failure
-    raise RuntimeError(
-        f"benchmark target evaluation failed for artifact {artifact.artifact_id}: "
-        f"{failure.error_code} ({failure.message})"
+    runtime: LocalEvaluationRuntime,
+    target_bytes: bytes,
+    target_artifact: ScriptArtifactSpec,
+    backing_batch_id: UUID,
+    items: Sequence[BenchmarkDatasetItem],
+    tasks: Sequence[MinerTask],
+    invocation_scoring: EvaluationScoringService,
+    scoring_service: BenchmarkCorrectnessScoringService,
+    parallelism: int,
+) -> tuple[_BenchmarkItemResult, ...]:
+    semaphore = asyncio.Semaphore(parallelism)
+
+    async def _run_item(item: BenchmarkDatasetItem, task: MinerTask) -> _BenchmarkItemResult:
+        async with semaphore:
+            return await _evaluate_and_score_item(
+                runtime=runtime,
+                target_bytes=target_bytes,
+                target_artifact=target_artifact,
+                backing_batch_id=backing_batch_id,
+                item=item,
+                task=task,
+                invocation_scoring=invocation_scoring,
+                scoring_service=scoring_service,
+            )
+
+    return tuple(
+        await asyncio.gather(
+            *(_run_item(item, task) for item, task in zip(items, tasks, strict=True))
+        )
     )
 
 
-async def _score_items(
+async def _evaluate_and_score_item(
     *,
-    items: Sequence[BenchmarkDatasetItem],
-    tasks: Sequence[MinerTask],
-    submissions: Sequence[MinerTaskRunSubmission],
+    runtime: LocalEvaluationRuntime,
+    target_bytes: bytes,
+    target_artifact: ScriptArtifactSpec,
+    backing_batch_id: UUID,
+    item: BenchmarkDatasetItem,
+    task: MinerTask,
+    invocation_scoring: EvaluationScoringService,
     scoring_service: BenchmarkCorrectnessScoringService,
-) -> tuple[_BenchmarkItemResult, ...]:
-    task_by_item = {item.item_index: task for item, task in zip(items, tasks, strict=True)}
-    submission_by_task = {submission.run.task_id: submission for submission in submissions}
-    results: list[_BenchmarkItemResult] = []
-    for item in items:
-        task = task_by_item[item.item_index]
-        submission = submission_by_task.get(task.task_id)
-        if submission is None:
-            results.append(
-                _BenchmarkItemResult(
-                    item=item,
-                    task=task,
-                    submission=None,
-                    score=None,
-                    error_code="missing_submission",
-                    error_message="candidate did not produce a benchmark submission",
-                )
-            )
-            continue
-        run_error = submission.run.details.error
-        if run_error is not None:
-            results.append(
-                _BenchmarkItemResult(
-                    item=item,
-                    task=task,
-                    submission=submission,
-                    score=None,
-                    error_code=str(run_error.code),
-                    error_message=run_error.message,
-                )
-            )
-            continue
-        response = submission.run.response
-        if response is None:
-            results.append(
-                _BenchmarkItemResult(
-                    item=item,
-                    task=task,
-                    submission=submission,
-                    score=None,
-                    error_code="missing_response",
-                    error_message="candidate run completed without a response",
-                )
-            )
-            continue
-        try:
-            score = await scoring_service.score(
-                question=item.problem,
-                reference_answer=item.answer,
-                generated_answer=response.text,
-            )
-        except Exception as exc:
-            results.append(
-                _BenchmarkItemResult(
-                    item=item,
-                    task=task,
-                    submission=submission,
-                    score=None,
-                    error_code="benchmark_scoring_failed",
-                    error_message=str(exc),
-                )
-            )
-            continue
-        results.append(
-            _BenchmarkItemResult(
-                item=item,
-                task=task,
-                submission=submission,
-                score=score,
-                error_code=None,
-                error_message=None,
-            )
+) -> _BenchmarkItemResult:
+    try:
+        outcome = await runtime.evaluate_artifact(
+            artifact_label=f"benchmark-target-{item.item_index}",
+            agent_source=target_bytes,
+            artifact=target_artifact,
+            batch_id=backing_batch_id,
+            tasks=(task,),
+            scoring_service=invocation_scoring,
         )
-    return tuple(results)
+    except Exception as exc:
+        return _BenchmarkItemResult(
+            item=item,
+            task=task,
+            submission=None,
+            score=None,
+            error_code="runner_exception",
+            error_message=str(exc),
+        )
+    if outcome.artifact_failure is not None:
+        failure = outcome.artifact_failure
+        return _BenchmarkItemResult(
+            item=item,
+            task=task,
+            submission=None,
+            score=None,
+            error_code=str(failure.error_code),
+            error_message=failure.message,
+        )
+    submission_by_task = {submission.run.task_id: submission for submission in outcome.submissions}
+    return await _score_item_submission(
+        item=item,
+        task=task,
+        submission=submission_by_task.get(task.task_id),
+        scoring_service=scoring_service,
+    )
+
+
+async def _score_item_submission(
+    *,
+    item: BenchmarkDatasetItem,
+    task: MinerTask,
+    submission: MinerTaskRunSubmission | None,
+    scoring_service: BenchmarkCorrectnessScoringService,
+) -> _BenchmarkItemResult:
+    if submission is None:
+        return _BenchmarkItemResult(
+            item=item,
+            task=task,
+            submission=None,
+            score=None,
+            error_code="missing_submission",
+            error_message="candidate did not produce a benchmark submission",
+        )
+    run_error = submission.run.details.error
+    if run_error is not None:
+        return _BenchmarkItemResult(
+            item=item,
+            task=task,
+            submission=submission,
+            score=None,
+            error_code=str(run_error.code),
+            error_message=run_error.message,
+        )
+    response = submission.run.response
+    if response is None:
+        return _BenchmarkItemResult(
+            item=item,
+            task=task,
+            submission=submission,
+            score=None,
+            error_code="missing_response",
+            error_message="candidate run completed without a response",
+        )
+    try:
+        score = await scoring_service.score(
+            question=item.problem,
+            reference_answer=item.answer,
+            generated_answer=response.text,
+        )
+    except Exception as exc:
+        return _BenchmarkItemResult(
+            item=item,
+            task=task,
+            submission=submission,
+            score=None,
+            error_code="benchmark_scoring_failed",
+            error_message=str(exc),
+        )
+    return _BenchmarkItemResult(
+        item=item,
+        task=task,
+        submission=submission,
+        score=score,
+        error_code=None,
+        error_message=None,
+    )
 
 
 def _build_report(
@@ -473,6 +550,7 @@ def _build_report(
     scoring_config: BenchmarkCorrectnessScoringConfig,
     output_dir: Path,
     elapsed_seconds: float,
+    parallelism: int,
 ) -> dict[str, object]:
     metrics = aggregate_benchmark_metrics(tuple(_item_outcome(result) for result in results))
     cost_totals = _aggregate_cost_totals(
@@ -507,7 +585,9 @@ def _build_report(
             "validator_version": VALIDATOR_RELEASE_VERSION,
             "sample_size": len(results),
             "execution_boundary": "docker-sandbox",
-            "scoring_boundary": "deepsearchqa-correctness-judge",
+            "sandbox_item_parallelism": 1,
+            "benchmark_item_parallelism": parallelism,
+            "scoring_boundary": "benchmark-correctness-judge",
         },
         "scoring_context": {
             "provider": scoring_config.provider,

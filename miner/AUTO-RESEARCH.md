@@ -13,7 +13,7 @@ We are running Harnyx miner AutoResearch.
 
 Work from the miner directory. Read README.md first, then read program.md and follow it exactly as your standing research policy.
 
-Set up the run, run uv run prepare.py, initialize results.tsv and .autoresearch/experiment-ledger.md, then begin the loop. Do not redesign the framework. Only edit train.py. Start from concrete failures, pick one bottleneck, write a hypothesis, run focused diagnostics, and only run full eval when program.md allows it.
+Set up the run, run uv run prepare.py --benchmark-suite <suite-slug>, initialize results.tsv and .autoresearch/experiment-ledger.md, then begin the loop. Do not redesign the framework. Only edit train.py. Start from concrete failures, pick one bottleneck, write a hypothesis, run focused diagnostics, and only run full eval when program.md allows it.
 ```
 
 After setup confirmation, the agent should keep going until you interrupt it.
@@ -43,8 +43,8 @@ What each value is for:
 | `TOOL_LLM_PROVIDER` | provider used for miner `llm_chat` tool calls; the public example defaults to `chutes` |
 | `SEARCH_PROVIDER` | provider used for miner `search_web` calls |
 | `DESEARCH_API_KEY` | required when `SEARCH_PROVIDER=desearch` |
-| `BENCHMARK_LLM_PROVIDER` | provider for DeepSearchQA benchmark correctness judging |
-| `BENCHMARK_LLM_MODEL` | model for DeepSearchQA benchmark correctness judging |
+| `BENCHMARK_LLM_PROVIDER` | provider for benchmark correctness judging |
+| `BENCHMARK_LLM_MODEL` | model for benchmark correctness judging |
 
 If using `SEARCH_PROVIDER=parallel`, set `PARALLEL_API_KEY` instead of `DESEARCH_API_KEY`.
 
@@ -69,16 +69,16 @@ cd miner
 The agent should follow [`program.md`](program.md), but the expected setup is:
 
 ```bash
-uv run prepare.py
+uv run prepare.py --benchmark-suite <suite-slug>
 printf 'commit\tscore_a\tscore_b\tcost_usd\tstatus\tdescription\n' > results.tsv
 mkdir -p .autoresearch
 touch .autoresearch/experiment-ledger.md
 ```
 
-`prepare.py` pins the current completed local-eval batch and the active DeepSearchQA benchmark snapshot. To force a specific completed batch:
+`prepare.py` pins the current completed local-eval batch and the explicitly selected benchmark snapshot. To force a specific completed batch:
 
 ```bash
-uv run prepare.py --batch-id <completed-batch-id>
+uv run prepare.py --benchmark-suite <suite-slug> --batch-id <completed-batch-id>
 ```
 
 ## What The Agent Should Edit
