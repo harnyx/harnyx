@@ -41,6 +41,7 @@ from harnyx_validator.application.dto.evaluation import (
     TokenUsageSummary,
 )
 from harnyx_validator.application.invoke_entrypoint import SandboxInvocationError
+from harnyx_validator.application.ports.progress import RunProgressPage, RunProgressSummary, SequencedRun
 from harnyx_validator.application.ports.subtensor import ValidatorNodeInfo
 from harnyx_validator.application.scheduler import EvaluationScheduler, SchedulerConfig
 from harnyx_validator.application.services.evaluation_runner import (
@@ -123,15 +124,68 @@ class DummyReceiptLog(ReceiptLogPort):
 class DummyProgressRecorder:
     def __init__(self, recorded: frozenset[tuple[UUID, UUID]] = frozenset()) -> None:
         self._recorded = set(recorded)
+        self._submissions_by_pair: dict[tuple[UUID, UUID], MinerTaskRunSubmission] = {}
+        self._sequence_by_pair: dict[tuple[UUID, UUID], int] = {}
+        self._pair_by_sequence: dict[int, tuple[UUID, UUID]] = {}
+        self._next_sequence = 1
 
     def register(self, _batch) -> None:
         return None
 
     def record(self, result: MinerTaskRunSubmission) -> None:
-        self._recorded.add((result.run.artifact_id, result.run.task_id))
+        pair = (result.run.artifact_id, result.run.task_id)
+        self._recorded.add(pair)
+        if pair not in self._sequence_by_pair:
+            sequence = self._next_sequence
+            self._next_sequence += 1
+            self._sequence_by_pair[pair] = sequence
+            self._pair_by_sequence[sequence] = pair
+        self._submissions_by_pair[pair] = result
 
     def recorded_pairs(self, _batch_id: UUID) -> frozenset[tuple[UUID, UUID]]:
         return frozenset(self._recorded)
+
+    def summary(self, batch_id: UUID) -> RunProgressSummary:
+        completed = len(self._recorded)
+        return {
+            "batch_id": batch_id,
+            "total": completed,
+            "completed": completed,
+            "remaining": 0,
+            "latest_sequence": self._next_sequence - 1,
+            "provider_evidence": (),
+        }
+
+    def completed_run_page(
+        self,
+        _batch_id: UUID,
+        *,
+        after_sequence: int,
+        limit: int,
+    ) -> RunProgressPage:
+        latest_sequence = self._next_sequence - 1
+        sequences = tuple(range(after_sequence + 1, min(latest_sequence, after_sequence + limit) + 1))
+        items: list[SequencedRun] = []
+        for sequence in sequences:
+            pair = self._pair_by_sequence.get(sequence)
+            if pair is None:
+                continue
+            items.append(
+                {
+                    "sequence": sequence,
+                    "submission": self._submissions_by_pair[pair],
+                }
+            )
+        next_after_sequence = items[-1]["sequence"] if items else after_sequence
+        return {
+            "batch_id": _batch_id,
+            "after_sequence": after_sequence,
+            "limit": limit,
+            "latest_sequence": latest_sequence,
+            "next_after_sequence": next_after_sequence,
+            "has_more": next_after_sequence < latest_sequence,
+            "items": tuple(items),
+        }
 
     def register_task_session(
         self,
@@ -371,6 +425,7 @@ async def test_scheduler_runs_all_tasks_for_each_artifact(
             session_ttl=timedelta(minutes=5),
             artifact_parallelism=2,
         ),
+        progress=DummyProgressRecorder(),
     )
 
     artifacts = (
@@ -383,9 +438,9 @@ async def test_scheduler_runs_all_tasks_for_each_artifact(
     assert len(sandbox_manager.starts) == 2
     assert len(sandbox_manager.stops) == 2
     assert len(recorded_requests) == len(tasks) * 2
-    assert len(result.runs) == len(recorded_requests)
+    assert result.completed_run_count == len(recorded_requests)
     assert result.tasks == tasks
-    assert len(evaluation_records.records_by_batch) == len(result.runs)
+    assert len(evaluation_records.records_by_batch) == result.completed_run_count
 
     batch_logs = [extra for message, extra in captured_logs if message == "miner-task batch execution started"]
     artifact_logs = [extra for message, extra in captured_logs if message == "miner-task artifact execution finished"]
@@ -496,12 +551,13 @@ async def test_scheduler_caps_task_sessions_across_whole_batch(
             artifact_parallelism=2,
             artifact_task_parallelism=2,
         ),
+        progress=DummyProgressRecorder(),
     )
     scheduler._runner = _TrackedRunner()
 
     result = await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
 
-    assert len(result.runs) == len(tasks) * len(artifacts)
+    assert result.completed_run_count == len(tasks) * len(artifacts)
     assert max_active_task_sessions == 2
 
 
@@ -527,6 +583,7 @@ async def test_scheduler_flattens_runs_in_requested_artifact_order_when_completi
             session_ttl=timedelta(minutes=5),
             artifact_parallelism=2,
         ),
+        progress=DummyProgressRecorder(),
     )
     batch_id = uuid4()
     first_artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
@@ -570,7 +627,7 @@ async def test_scheduler_flattens_runs_in_requested_artifact_order_when_completi
         requested_artifacts=(first_artifact, second_artifact),
     )
 
-    assert result.runs == (first_submission, second_submission)
+    assert result.completed_run_count == 2
 
 
 async def test_scheduler_refills_artifact_slots_without_waiting_for_all_started_artifacts(
@@ -595,6 +652,7 @@ async def test_scheduler_refills_artifact_slots_without_waiting_for_all_started_
             session_ttl=timedelta(minutes=5),
             artifact_parallelism=2,
         ),
+        progress=DummyProgressRecorder(),
     )
     batch_id = uuid4()
     first_artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
@@ -663,7 +721,7 @@ async def test_scheduler_refills_artifact_slots_without_waiting_for_all_started_
 
     result = await run_task
 
-    assert result.runs == (first_submission, second_submission, third_submission)
+    assert result.completed_run_count == 3
 
 
 async def test_scheduler_defers_timeout_unresolved_retry_until_queued_artifacts_run(
@@ -688,6 +746,7 @@ async def test_scheduler_defers_timeout_unresolved_retry_until_queued_artifacts_
             session_ttl=timedelta(minutes=5),
             artifact_parallelism=1,
         ),
+        progress=DummyProgressRecorder(),
     )
     batch_id = uuid4()
     first_artifact = ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0)
@@ -752,7 +811,7 @@ async def test_scheduler_defers_timeout_unresolved_retry_until_queued_artifacts_
         (first_artifact.artifact_id, 1),
     ]
     assert len(retry_snapshots[0][pair_key].prior_observations) == 1
-    assert result.runs == (first_submission, second_submission)
+    assert result.completed_run_count == 2
 
 
 async def test_scheduler_gates_retry_rounds_across_concurrent_artifact_workers(
@@ -777,6 +836,7 @@ async def test_scheduler_gates_retry_rounds_across_concurrent_artifact_workers(
             session_ttl=timedelta(minutes=5),
             artifact_parallelism=2,
         ),
+        progress=DummyProgressRecorder(),
     )
     batch_id = uuid4()
     first_artifact = ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0)
@@ -883,7 +943,7 @@ async def test_scheduler_gates_retry_rounds_across_concurrent_artifact_workers(
     assert call_order.index((first_artifact.artifact_id, 2)) > call_order.index(
         (second_artifact.artifact_id, 1)
     )
-    assert result.runs == (first_submission, second_submission)
+    assert result.completed_run_count == 2
 
 
 async def test_scheduler_publishes_partial_submissions_before_deferred_retry(
@@ -909,6 +969,7 @@ async def test_scheduler_publishes_partial_submissions_before_deferred_retry(
             session_ttl=timedelta(minutes=5),
             artifact_parallelism=1,
         ),
+        progress=DummyProgressRecorder(),
     )
     batch_id = uuid4()
     artifact = ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0)
@@ -972,7 +1033,7 @@ async def test_scheduler_publishes_partial_submissions_before_deferred_retry(
     )
 
     assert seen_earlier_submissions == [(partial_submission,)]
-    assert result.runs == (partial_submission, final_submission, blocking_submission)
+    assert result.completed_run_count == 3
 
 
 async def test_scheduler_timeout_state_merge_is_owned_pair_monotonic() -> None:
@@ -1027,6 +1088,7 @@ async def test_scheduler_stops_dequeuing_queued_artifacts_when_validator_failure
                 second_artifact_stopped.set()
 
     sandbox_manager = ControlledSandboxManager()
+    progress = DummyProgressRecorder()
     blocking_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="test-validator-race-blocking")
     try:
         scheduler = EvaluationScheduler(
@@ -1045,6 +1107,7 @@ async def test_scheduler_stops_dequeuing_queued_artifacts_when_validator_failure
                 session_ttl=timedelta(minutes=5),
                 artifact_parallelism=2,
             ),
+            progress=progress,
         )
         batch_id = uuid4()
         failure_discovered = asyncio.Event()
@@ -1078,6 +1141,7 @@ async def test_scheduler_stops_dequeuing_queued_artifacts_when_validator_failure
                         ),
                     )
                 await failure_discovered.wait()
+                progress.record(successful_submission)
                 return ArtifactEvaluationOutcome(
                     submissions=(successful_submission,),
                     unresolved_tasks=(),
@@ -1098,8 +1162,9 @@ async def test_scheduler_stops_dequeuing_queued_artifacts_when_validator_failure
         await asyncio.sleep(0.05)
         failure_teardown_release.set()
 
-        with pytest.raises(ValidatorBatchFailedError, match="terminal timeout"):
+        with pytest.raises(ValidatorBatchFailedError, match="terminal timeout") as exc_info:
             await run_task
+        assert exc_info.value.completed_submissions == (successful_submission,)
     finally:
         failure_teardown_release.set()
         blocking_executor.shutdown(wait=True, cancel_futures=True)
@@ -1132,6 +1197,7 @@ async def test_scheduler_shares_live_completed_artifact_baseline_with_concurrent
             session_ttl=timedelta(minutes=5),
             artifact_parallelism=2,
         ),
+        progress=DummyProgressRecorder(),
     )
     batch_id = uuid4()
     first_artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
@@ -1183,7 +1249,7 @@ async def test_scheduler_shares_live_completed_artifact_baseline_with_concurrent
     )
 
     assert seen_completed_baselines == [_llm_baseline(40.0)]
-    assert result.runs == (first_submission, second_submission)
+    assert result.completed_run_count == 2
 
 
 async def test_scheduler_logs_setup_failure_timing_summary(
@@ -1229,6 +1295,7 @@ async def test_scheduler_logs_setup_failure_timing_summary(
             session_ttl=timedelta(minutes=5),
             artifact_parallelism=1,
         ),
+        progress=DummyProgressRecorder(),
     )
 
     artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
@@ -1298,6 +1365,7 @@ async def test_scheduler_logs_teardown_failure_timing_summary(
             session_ttl=timedelta(minutes=5),
             artifact_parallelism=1,
         ),
+        progress=DummyProgressRecorder(),
     )
 
     artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
@@ -1380,6 +1448,7 @@ async def test_scheduler_preserves_validator_batch_failure_when_teardown_also_fa
             session_ttl=timedelta(minutes=5),
             artifact_parallelism=1,
         ),
+        progress=DummyProgressRecorder(),
     )
 
     async def fail_evaluation(**kwargs):
@@ -1456,6 +1525,7 @@ async def test_scheduler_logs_evaluation_timing_summary_for_validator_batch_fail
             token_secret_bytes=8,
             session_ttl=timedelta(minutes=5),
         ),
+        progress=DummyProgressRecorder(),
     )
 
     async def fail_evaluation(**kwargs):
@@ -1531,6 +1601,7 @@ async def test_scheduler_logs_partial_progress_for_unexpected_failure(
             token_secret_bytes=8,
             session_ttl=timedelta(minutes=5),
         ),
+        progress=DummyProgressRecorder(),
     )
 
     artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
@@ -1593,6 +1664,7 @@ async def test_scheduler_cancels_remaining_artifact_workers_when_one_raises_unex
             session_ttl=timedelta(minutes=5),
             artifact_parallelism=2,
         ),
+        progress=DummyProgressRecorder(),
     )
     second_worker_started = asyncio.Event()
     second_worker_cancelled = asyncio.Event()
@@ -1666,6 +1738,7 @@ async def test_scheduler_logs_accounted_summary_for_validator_batch_failure_afte
             token_secret_bytes=8,
             session_ttl=timedelta(minutes=5),
         ),
+        progress=DummyProgressRecorder(),
     )
 
     artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
@@ -1763,6 +1836,7 @@ async def test_scheduler_preserves_validator_batch_failure_after_partial_progres
             token_secret_bytes=8,
             session_ttl=timedelta(minutes=5),
         ),
+        progress=DummyProgressRecorder(),
     )
 
     artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
@@ -1861,6 +1935,7 @@ async def test_scheduler_logs_partial_progress_when_setup_failure_backfill_raise
             token_secret_bytes=8,
             session_ttl=timedelta(minutes=5),
         ),
+        progress=DummyProgressRecorder(),
     )
 
     artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
@@ -1942,6 +2017,7 @@ async def test_scheduler_logs_partial_progress_for_validator_batch_failure(
             token_secret_bytes=8,
             session_ttl=timedelta(minutes=5),
         ),
+        progress=DummyProgressRecorder(),
     )
 
     artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
@@ -2041,12 +2117,13 @@ async def test_scheduler_avoids_asyncio_to_thread_for_blocking_work(
             token_secret_bytes=8,
             session_ttl=timedelta(minutes=5),
         ),
+        progress=DummyProgressRecorder(),
     )
 
     artifacts = (ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0),)
     result = await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
 
-    assert len(result.runs) == 1
+    assert result.completed_run_count == 1
     assert len(sandbox_manager.starts) == 1
     assert len(sandbox_manager.stops) == 1
 
@@ -2114,6 +2191,7 @@ async def test_scheduler_cancellation_does_not_wait_for_blocking_lane_shutdown(
             token_secret_bytes=8,
             session_ttl=timedelta(minutes=5),
         ),
+        progress=DummyProgressRecorder(),
     )
 
     run_task = asyncio.create_task(
@@ -2166,6 +2244,7 @@ async def test_scheduler_records_zero_score_when_sandbox_invocation_errors(
             token_secret_bytes=8,
             session_ttl=timedelta(minutes=5),
         ),
+        progress=DummyProgressRecorder(),
     )
 
     artifacts = (ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0),)
@@ -2238,18 +2317,19 @@ async def test_scheduler_retries_only_transient_sandbox_invocation_errors(
             token_secret_bytes=8,
             session_ttl=timedelta(minutes=5),
         ),
+        progress=DummyProgressRecorder(),
     )
 
     artifacts = (ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0),)
     result = await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
 
-    assert len(result.runs) == 2
+    assert result.completed_run_count == 2
     assert len(evaluation_records.records_by_batch) == 2
     assert orchestrator.calls == 3
-    assert result.runs[0].score == pytest.approx(0.75)
-    assert result.runs[0].run.response == Response(text="answer first")
-    assert result.runs[1].score == pytest.approx(0.75)
-    assert result.runs[1].run.response == Response(text="answer second")
+    assert evaluation_records.records_by_batch[0].score == pytest.approx(0.75)
+    assert evaluation_records.records_by_batch[0].run.response == Response(text="answer first")
+    assert evaluation_records.records_by_batch[1].score == pytest.approx(0.75)
+    assert evaluation_records.records_by_batch[1].run.response == Response(text="answer second")
 
 
 async def test_scheduler_fails_batch_for_generic_post_invoke_error(
@@ -2307,6 +2387,7 @@ async def test_scheduler_fails_batch_for_generic_post_invoke_error(
             token_secret_bytes=8,
             session_ttl=timedelta(minutes=5),
         ),
+        progress=DummyProgressRecorder(),
     )
 
     artifacts = (ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0),)
@@ -2359,6 +2440,7 @@ async def test_scheduler_records_retry_exhausted_internal_timeout_as_task_failur
             token_secret_bytes=8,
             session_ttl=timedelta(minutes=5),
         ),
+        progress=DummyProgressRecorder(),
     )
 
     artifacts = (ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0),)
@@ -2450,6 +2532,7 @@ async def test_scheduler_uses_successful_baseline_across_execution_for_timeout_i
             token_secret_bytes=8,
             session_ttl=timedelta(minutes=5),
         ),
+        progress=DummyProgressRecorder(),
     )
     artifacts = (ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0),)
 
@@ -2492,6 +2575,7 @@ async def test_retry_round_preserves_earlier_completed_runs_when_later_round_abo
             session_ttl=timedelta(minutes=5),
             artifact_parallelism=1,
         ),
+        progress=DummyProgressRecorder(),
     )
     batch_id = uuid4()
     artifact = ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0)
@@ -2569,6 +2653,7 @@ async def test_retry_round_passes_earlier_runs_back_to_runner_for_breaker_start(
             session_ttl=timedelta(minutes=5),
             artifact_parallelism=1,
         ),
+        progress=DummyProgressRecorder(),
     )
     batch_id = uuid4()
     artifact = ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0)
@@ -2610,7 +2695,7 @@ async def test_retry_round_passes_earlier_runs_back_to_runner_for_breaker_start(
 
     assert seen_earlier_submissions[0] == ()
     assert seen_earlier_submissions[1] == (earlier_failure,)
-    assert result.runs == (earlier_failure,)
+    assert result.completed_run_count == 1
 
 
 async def test_scheduler_stops_after_conclusive_failure_outcome_without_running_later_artifacts(
@@ -2640,6 +2725,7 @@ async def test_scheduler_stops_after_conclusive_failure_outcome_without_running_
             session_ttl=timedelta(minutes=5),
             artifact_parallelism=1,
         ),
+        progress=DummyProgressRecorder(),
     )
     batch_id = uuid4()
     first_artifact = ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0)
@@ -2739,6 +2825,7 @@ async def test_scheduler_validator_batch_failure_keeps_single_owner_for_complete
         sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
         clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
         config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        progress=DummyProgressRecorder(),
     )
     batch_id = uuid4()
     artifact = ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0)
@@ -2849,14 +2936,15 @@ async def test_scheduler_retries_sandbox_start_once_before_running_tasks(
             token_secret_bytes=8,
             session_ttl=timedelta(minutes=5),
         ),
+        progress=DummyProgressRecorder(),
     )
 
     artifacts = (ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0),)
     result = await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
 
     assert len(sandbox_manager.starts) == 2
-    assert len(result.runs) == 1
-    assert result.runs[0].score == pytest.approx(0.75)
+    assert result.completed_run_count == 1
+    assert evaluation_records.records_by_batch[0].score == pytest.approx(0.75)
 
 
 async def test_scheduler_does_not_synthesize_zero_score_rows_for_conclusive_setup_failures(
@@ -2891,6 +2979,7 @@ async def test_scheduler_does_not_synthesize_zero_score_rows_for_conclusive_setu
             token_secret_bytes=8,
             session_ttl=timedelta(minutes=5),
         ),
+        progress=DummyProgressRecorder(),
     )
 
     artifacts = (ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0),)
@@ -2937,6 +3026,7 @@ async def test_scheduler_fails_batch_immediately_on_conclusive_sandbox_start_fai
             session_ttl=timedelta(minutes=5),
             artifact_parallelism=1,
         ),
+        progress=DummyProgressRecorder(),
     )
 
     artifacts = tuple(
@@ -2985,6 +3075,7 @@ async def test_scheduler_fails_batch_immediately_on_conclusive_artifact_fetch_fa
             token_secret_bytes=8,
             session_ttl=timedelta(minutes=5),
         ),
+        progress=DummyProgressRecorder(),
     )
 
     artifacts = tuple(
@@ -3036,6 +3127,7 @@ async def test_scheduler_fails_batch_immediately_on_conclusive_artifact_hash_mis
             token_secret_bytes=8,
             session_ttl=timedelta(minutes=5),
         ),
+        progress=DummyProgressRecorder(),
     )
 
     artifacts = tuple(
@@ -3084,15 +3176,16 @@ async def test_scheduler_records_script_validation_failures_for_all_tasks_withou
             token_secret_bytes=8,
             session_ttl=timedelta(minutes=5),
         ),
+        progress=DummyProgressRecorder(),
     )
 
     artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="hash-3", size_bytes=0)
     result = await scheduler.run(batch_id=uuid4(), requested_artifacts=(artifact,))
 
     assert len(sandbox_manager.starts) == 0
-    assert len(result.runs) == len(tasks)
+    assert result.completed_run_count == len(tasks)
     assert len(evaluation_records.records_by_batch) == len(tasks)
-    for submission in result.runs:
+    for submission in evaluation_records.records_by_batch:
         assert submission.score == 0.0
         assert submission.run.details.error == EvaluationError(
             code="script_validation_failed",
@@ -3132,6 +3225,7 @@ async def test_scheduler_fails_batch_on_first_conclusive_evaluation_failure(
             session_ttl=timedelta(minutes=5),
             artifact_parallelism=1,
         ),
+        progress=DummyProgressRecorder(),
     )
 
     class ArtifactFailingRunner:
@@ -3191,6 +3285,7 @@ async def test_evaluation_runner_issues_session_with_task_budget(
             token_secret_bytes=8,
             session_ttl=timedelta(minutes=5),
         ),
+        progress=DummyProgressRecorder(),
     )
 
     task = _task("budgeted", budget_usd=0.123)
@@ -3265,8 +3360,8 @@ async def test_scheduler_runs_only_remaining_pairs(
 
     assert len(sandbox_manager.starts) == 1
     assert [(uid, task.task_id) for uid, task in recorded_requests] == [(artifact.uid, tasks[1].task_id)]
-    assert len(result.runs) == 1
-    assert result.runs[0].run.task_id == tasks[1].task_id
+    assert result.completed_run_count == 1
+    assert evaluation_records.records_by_batch[0].run.task_id == tasks[1].task_id
 
 
 async def test_scheduler_skips_artifact_when_all_pairs_are_already_recorded(
@@ -3333,4 +3428,4 @@ async def test_scheduler_skips_artifact_when_all_pairs_are_already_recorded(
 
     assert len(sandbox_manager.starts) == 1
     assert all(uid == second_artifact.uid for uid, _artifact_id in recorded_requests)
-    assert len(result.runs) == len(tasks)
+    assert result.completed_run_count == len(tasks)

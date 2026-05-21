@@ -1,40 +1,28 @@
-"""In-memory tracker for per-batch miner-task progress."""
+"""File-backed tracker for per-batch miner-task progress."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TypeAlias, TypedDict
+from datetime import datetime
+from pathlib import Path
+from threading import RLock
+from typing import TypeAlias
 from uuid import UUID
 
 from harnyx_validator.application.dto.evaluation import MinerTaskBatchSpec, MinerTaskRunSubmission
-from harnyx_validator.application.ports.progress import ProviderFailureEvidence
+from harnyx_validator.application.ports.progress import (
+    ProviderFailureEvidence,
+    RunProgressPage,
+    RunProgressSummary,
+    SequencedRun,
+)
+from harnyx_validator.infrastructure.state.run_progress_blob_store import (
+    RunSubmissionBlobRef,
+    RunSubmissionBlobStore,
+)
 
 ProviderEvidenceSnapshot: TypeAlias = ProviderFailureEvidence
-
-
-class RunProgressSummary(TypedDict):
-    batch_id: UUID
-    total: int
-    completed: int
-    remaining: int
-    latest_sequence: int
-    provider_evidence: tuple[ProviderEvidenceSnapshot, ...]
-
-
-class SequencedRun(TypedDict):
-    sequence: int
-    submission: MinerTaskRunSubmission
-
-
-class RunProgressPage(TypedDict):
-    batch_id: UUID
-    after_sequence: int
-    limit: int
-    latest_sequence: int
-    next_after_sequence: int
-    has_more: bool
-    items: tuple[SequencedRun, ...]
 
 
 @dataclass(slots=True)
@@ -50,12 +38,14 @@ class _ProviderEvidenceCounter:
 
 
 @dataclass(slots=True)
-class InMemoryRunProgress:
+class FileBackedRunProgress:
+    storage_root: Path
+    segment_size_bytes: int = 64 * 1024 * 1024
     batches_by_id: dict[UUID, MinerTaskBatchSpec] = field(default_factory=dict)
     expected_by_batch: dict[UUID, int] = field(default_factory=dict)
-    results_by_batch: dict[
+    submission_refs_by_batch: dict[
         UUID,
-        dict[tuple[UUID, UUID], MinerTaskRunSubmission],
+        dict[tuple[UUID, UUID], RunSubmissionBlobRef],
     ] = field(default_factory=dict)
     sequence_by_pair_by_batch: dict[UUID, dict[tuple[UUID, UUID], int]] = field(default_factory=dict)
     pair_by_sequence_by_batch: dict[UUID, dict[int, tuple[UUID, UUID]]] = field(default_factory=dict)
@@ -66,27 +56,39 @@ class InMemoryRunProgress:
         dict[tuple[str, str], _ProviderEvidenceCounter],
     ] = field(default_factory=dict)
     failed_provider_keys_by_session: dict[UUID, set[tuple[str, str]]] = field(default_factory=dict)
+    blob_store: RunSubmissionBlobStore = field(init=False)
+    _lock: RLock = field(default_factory=RLock, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.storage_root = self.storage_root.expanduser()
+        self.blob_store = RunSubmissionBlobStore(
+            self.storage_root,
+            segment_size_bytes=self.segment_size_bytes,
+        )
 
     def register(self, batch: MinerTaskBatchSpec) -> None:
-        existing = self.batches_by_id.get(batch.batch_id)
-        if existing is not None:
-            if existing != batch:
-                raise RuntimeError("batch_id already exists with different contents")
-            return
+        with self._lock:
+            existing = self.batches_by_id.get(batch.batch_id)
+            if existing is not None:
+                if existing != batch:
+                    raise RuntimeError("batch_id already exists with different contents")
+                return
 
-        self.batches_by_id[batch.batch_id] = batch
-        self.expected_by_batch[batch.batch_id] = len(batch.tasks) * len(batch.artifacts)
-        self.sequence_by_pair_by_batch.setdefault(batch.batch_id, {})
-        self.pair_by_sequence_by_batch.setdefault(batch.batch_id, {})
-        self.next_sequence_by_batch.setdefault(batch.batch_id, 1)
+            self.batches_by_id[batch.batch_id] = batch
+            self.expected_by_batch[batch.batch_id] = len(batch.tasks) * len(batch.artifacts)
+            self.submission_refs_by_batch.setdefault(batch.batch_id, {})
+            self.sequence_by_pair_by_batch.setdefault(batch.batch_id, {})
+            self.pair_by_sequence_by_batch.setdefault(batch.batch_id, {})
+            self.next_sequence_by_batch.setdefault(batch.batch_id, 1)
 
     def record(self, result: MinerTaskRunSubmission) -> None:
-        bucket = self.results_by_batch.setdefault(result.batch_id, {})
-        self._record_submission(
-            batch_id=result.batch_id,
-            bucket=bucket,
-            result=result,
-        )
+        with self._lock:
+            refs = self.submission_refs_by_batch.setdefault(result.batch_id, {})
+            self._record_submission(
+                batch_id=result.batch_id,
+                refs=refs,
+                result=result,
+            )
 
     def restore_completed_runs(
         self,
@@ -94,31 +96,32 @@ class InMemoryRunProgress:
         submissions: Sequence[MinerTaskRunSubmission],
         provider_evidence: Sequence[ProviderEvidenceSnapshot] = (),
     ) -> None:
-        self.register(batch)
-        staged_results = dict(self.results_by_batch.get(batch.batch_id, {}))
-        staged_sequence_by_pair = dict(self.sequence_by_pair_by_batch.get(batch.batch_id, {}))
-        staged_pair_by_sequence = dict(self.pair_by_sequence_by_batch.get(batch.batch_id, {}))
-        next_sequence = int(self.next_sequence_by_batch.get(batch.batch_id, 1))
-        for submission in submissions:
-            if submission.batch_id != batch.batch_id:
-                raise RuntimeError("restored submission batch_id mismatch")
-            next_sequence = self._record_submission(
-                batch_id=batch.batch_id,
-                bucket=staged_results,
-                result=submission,
-                sequence_by_pair=staged_sequence_by_pair,
-                pair_by_sequence=staged_pair_by_sequence,
-                next_sequence=next_sequence,
-                commit_next_sequence=False,
+        with self._lock:
+            self.register(batch)
+            staged_refs = dict(self.submission_refs_by_batch.get(batch.batch_id, {}))
+            staged_sequence_by_pair = dict(self.sequence_by_pair_by_batch.get(batch.batch_id, {}))
+            staged_pair_by_sequence = dict(self.pair_by_sequence_by_batch.get(batch.batch_id, {}))
+            next_sequence = int(self.next_sequence_by_batch.get(batch.batch_id, 1))
+            for submission in submissions:
+                if submission.batch_id != batch.batch_id:
+                    raise RuntimeError("restored submission batch_id mismatch")
+                next_sequence = self._record_submission(
+                    batch_id=batch.batch_id,
+                    refs=staged_refs,
+                    result=submission,
+                    sequence_by_pair=staged_sequence_by_pair,
+                    pair_by_sequence=staged_pair_by_sequence,
+                    next_sequence=next_sequence,
+                    commit_next_sequence=False,
+                )
+            self.submission_refs_by_batch[batch.batch_id] = staged_refs
+            self.sequence_by_pair_by_batch[batch.batch_id] = staged_sequence_by_pair
+            self.pair_by_sequence_by_batch[batch.batch_id] = staged_pair_by_sequence
+            self.next_sequence_by_batch[batch.batch_id] = next_sequence
+            self.provider_counters_by_batch[batch.batch_id] = self._merged_provider_counters(
+                batch.batch_id,
+                provider_evidence,
             )
-        self.results_by_batch[batch.batch_id] = staged_results
-        self.sequence_by_pair_by_batch[batch.batch_id] = staged_sequence_by_pair
-        self.pair_by_sequence_by_batch[batch.batch_id] = staged_pair_by_sequence
-        self.next_sequence_by_batch[batch.batch_id] = next_sequence
-        self.provider_counters_by_batch[batch.batch_id] = self._merged_provider_counters(
-            batch.batch_id,
-            provider_evidence,
-        )
 
     def _merged_provider_counters(
         self,
@@ -146,8 +149,9 @@ class InMemoryRunProgress:
         return merged
 
     def recorded_pairs(self, batch_id: UUID) -> frozenset[tuple[UUID, UUID]]:
-        bucket = self.results_by_batch.get(batch_id, {})
-        return frozenset(bucket)
+        with self._lock:
+            refs = self.submission_refs_by_batch.get(batch_id, {})
+            return frozenset(refs)
 
     def register_task_session(
         self,
@@ -155,7 +159,8 @@ class InMemoryRunProgress:
         batch_id: UUID,
         session_id: UUID,
     ) -> None:
-        self.session_context_by_id[session_id] = _SessionRunContext(batch_id=batch_id)
+        with self._lock:
+            self.session_context_by_id[session_id] = _SessionRunContext(batch_id=batch_id)
 
     def record_provider_call(
         self,
@@ -164,15 +169,16 @@ class InMemoryRunProgress:
         provider: str,
         model: str,
     ) -> None:
-        key = _provider_model_key(provider=provider, model=model)
-        context = self.session_context_by_id.get(session_id)
-        if context is None:
-            return
-        counter = self.provider_counters_by_batch.setdefault(context.batch_id, {}).setdefault(
-            key,
-            _ProviderEvidenceCounter(),
-        )
-        counter.total_calls += 1
+        with self._lock:
+            key = _provider_model_key(provider=provider, model=model)
+            context = self.session_context_by_id.get(session_id)
+            if context is None:
+                return
+            counter = self.provider_counters_by_batch.setdefault(context.batch_id, {}).setdefault(
+                key,
+                _ProviderEvidenceCounter(),
+            )
+            counter.total_calls += 1
 
     def record_provider_failure(
         self,
@@ -182,62 +188,67 @@ class InMemoryRunProgress:
         model: str,
         reason: str,
     ) -> None:
-        key = _provider_model_key(provider=provider, model=model)
-        context = self.session_context_by_id.get(session_id)
-        if context is None:
-            return
-        counter = self.provider_counters_by_batch.setdefault(context.batch_id, {}).setdefault(
-            key,
-            _ProviderEvidenceCounter(),
-        )
-        counter.failed_calls += 1
-        failure_reason = reason.strip()
-        if failure_reason:
-            counter.failure_reason = failure_reason
-        keys = self.failed_provider_keys_by_session.setdefault(session_id, set())
-        keys.add(key)
+        with self._lock:
+            key = _provider_model_key(provider=provider, model=model)
+            context = self.session_context_by_id.get(session_id)
+            if context is None:
+                return
+            counter = self.provider_counters_by_batch.setdefault(context.batch_id, {}).setdefault(
+                key,
+                _ProviderEvidenceCounter(),
+            )
+            counter.failed_calls += 1
+            failure_reason = reason.strip()
+            if failure_reason:
+                counter.failure_reason = failure_reason
+            keys = self.failed_provider_keys_by_session.setdefault(session_id, set())
+            keys.add(key)
 
     def consume_provider_failures(self, session_id: UUID) -> tuple[ProviderEvidenceSnapshot, ...]:
-        keys = self.failed_provider_keys_by_session.pop(session_id, None)
-        if not keys:
-            return ()
-        context = self.session_context_by_id.get(session_id)
-        if context is None:
-            return ()
-        snapshots: list[ProviderEvidenceSnapshot] = []
-        for key in sorted(keys):
-            snapshot = self._provider_evidence_snapshot(batch_id=context.batch_id, key=key)
-            if snapshot is None:
-                continue
-            snapshots.append(snapshot)
-        return tuple(snapshots)
+        with self._lock:
+            keys = self.failed_provider_keys_by_session.pop(session_id, None)
+            if not keys:
+                return ()
+            context = self.session_context_by_id.get(session_id)
+            if context is None:
+                return ()
+            snapshots: list[ProviderEvidenceSnapshot] = []
+            for key in sorted(keys):
+                snapshot = self._provider_evidence_snapshot(batch_id=context.batch_id, key=key)
+                if snapshot is None:
+                    continue
+                snapshots.append(snapshot)
+            return tuple(snapshots)
 
     def clear_task_session(self, session_id: UUID) -> None:
-        self.session_context_by_id.pop(session_id, None)
-        self.failed_provider_keys_by_session.pop(session_id, None)
+        with self._lock:
+            self.session_context_by_id.pop(session_id, None)
+            self.failed_provider_keys_by_session.pop(session_id, None)
 
     def provider_evidence(self, batch_id: UUID) -> tuple[ProviderEvidenceSnapshot, ...]:
-        provider_counters = self.provider_counters_by_batch.get(batch_id, {})
-        snapshots: list[ProviderEvidenceSnapshot] = []
-        for provider, model in sorted(provider_counters):
-            snapshot = self._provider_evidence_snapshot(batch_id=batch_id, key=(provider, model))
-            if snapshot is None:
-                continue
-            snapshots.append(snapshot)
-        return tuple(snapshots)
+        with self._lock:
+            provider_counters = self.provider_counters_by_batch.get(batch_id, {})
+            snapshots: list[ProviderEvidenceSnapshot] = []
+            for provider, model in sorted(provider_counters):
+                snapshot = self._provider_evidence_snapshot(batch_id=batch_id, key=(provider, model))
+                if snapshot is None:
+                    continue
+                snapshots.append(snapshot)
+            return tuple(snapshots)
 
     def summary(self, batch_id: UUID) -> RunProgressSummary:
-        total = int(self.expected_by_batch.get(batch_id, 0))
-        completed = len(self.results_by_batch.get(batch_id, {}))
-        remaining = max(0, total - completed)
-        return {
-            "batch_id": batch_id,
-            "total": total,
-            "completed": completed,
-            "remaining": remaining,
-            "latest_sequence": self._latest_sequence(batch_id),
-            "provider_evidence": self.provider_evidence(batch_id),
-        }
+        with self._lock:
+            total = int(self.expected_by_batch.get(batch_id, 0))
+            completed = len(self.submission_refs_by_batch.get(batch_id, {}))
+            remaining = max(0, total - completed)
+            return {
+                "batch_id": batch_id,
+                "total": total,
+                "completed": completed,
+                "remaining": remaining,
+                "latest_sequence": self._latest_sequence(batch_id),
+                "provider_evidence": self._provider_evidence_unlocked(batch_id),
+            }
 
     def completed_run_page(
         self,
@@ -251,19 +262,26 @@ class InMemoryRunProgress:
         if limit < 1:
             raise RuntimeError("limit must be positive")
 
-        results = self.results_by_batch.get(batch_id, {})
-        pair_by_sequence = self.pair_by_sequence_by_batch.get(batch_id, {})
-        latest_sequence = self._latest_sequence(batch_id)
-        items: list[SequencedRun] = []
-        window_end = min(latest_sequence, after_sequence + limit)
-        for sequence in range(after_sequence + 1, window_end + 1):
-            pair = pair_by_sequence.get(sequence)
-            if pair is None:
-                raise RuntimeError("progress sequence points at missing pair")
-            submission = results.get(pair)
-            if submission is None:
-                raise RuntimeError("progress sequence points at missing result")
-            items.append({"sequence": sequence, "submission": submission})
+        with self._lock:
+            refs = self.submission_refs_by_batch.get(batch_id, {})
+            pair_by_sequence = self.pair_by_sequence_by_batch.get(batch_id, {})
+            latest_sequence = self._latest_sequence(batch_id)
+            requested_sequences = tuple(range(after_sequence + 1, min(latest_sequence, after_sequence + limit) + 1))
+            requested_refs: list[RunSubmissionBlobRef] = []
+            for sequence in requested_sequences:
+                pair = pair_by_sequence.get(sequence)
+                if pair is None:
+                    raise RuntimeError("progress sequence points at missing pair")
+                ref = refs.get(pair)
+                if ref is None:
+                    raise RuntimeError("progress sequence points at missing result")
+                requested_refs.append(ref)
+            submissions = self.blob_store.read_many(requested_refs)
+
+        items: list[SequencedRun] = [
+            {"sequence": sequence, "submission": submission}
+            for sequence, submission in zip(requested_sequences, submissions, strict=True)
+        ]
         next_after_sequence = items[-1]["sequence"] if items else after_sequence
         return {
             "batch_id": batch_id,
@@ -274,6 +292,34 @@ class InMemoryRunProgress:
             "has_more": next_after_sequence < latest_sequence,
             "items": tuple(items),
         }
+
+    def discard_batch(self, batch_id: UUID) -> bool:
+        with self._lock:
+            removed = self.batches_by_id.pop(batch_id, None) is not None
+            removed = self.expected_by_batch.pop(batch_id, None) is not None or removed
+            removed = self.submission_refs_by_batch.pop(batch_id, None) is not None or removed
+            removed = self.sequence_by_pair_by_batch.pop(batch_id, None) is not None or removed
+            removed = self.pair_by_sequence_by_batch.pop(batch_id, None) is not None or removed
+            removed = self.next_sequence_by_batch.pop(batch_id, None) is not None or removed
+            removed = self.provider_counters_by_batch.pop(batch_id, None) is not None or removed
+
+            session_ids = tuple(
+                session_id
+                for session_id, context in self.session_context_by_id.items()
+                if context.batch_id == batch_id
+            )
+            for session_id in session_ids:
+                removed = self.session_context_by_id.pop(session_id, None) is not None or removed
+                removed = self.failed_provider_keys_by_session.pop(session_id, None) is not None or removed
+
+            return self.blob_store.delete_batch(batch_id) or removed
+
+    def prune_stale_batch_dirs_older_than(self, cutoff: datetime) -> tuple[UUID, ...]:
+        with self._lock:
+            return self.blob_store.prune_stale_batch_dirs(
+                cutoff=cutoff,
+                protected_batch_ids=frozenset(self.batches_by_id),
+            )
 
     def _latest_sequence(self, batch_id: UUID) -> int:
         return max(0, int(self.next_sequence_by_batch.get(batch_id, 1)) - 1)
@@ -303,7 +349,7 @@ class InMemoryRunProgress:
         self,
         *,
         batch_id: UUID,
-        bucket: dict[tuple[UUID, UUID], MinerTaskRunSubmission],
+        refs: dict[tuple[UUID, UUID], RunSubmissionBlobRef],
         result: MinerTaskRunSubmission,
         sequence_by_pair: dict[tuple[UUID, UUID], int] | None = None,
         pair_by_sequence: dict[int, tuple[UUID, UUID]] | None = None,
@@ -318,8 +364,9 @@ class InMemoryRunProgress:
             next_sequence = int(self.next_sequence_by_batch.get(batch_id, 1))
 
         pair = _submission_pair(result)
-        existing = bucket.get(pair)
-        if existing is not None:
+        existing_ref = refs.get(pair)
+        if existing_ref is not None:
+            existing = self.blob_store.read(existing_ref)
             if existing != result:
                 raise RuntimeError(
                     "batch already recorded a different result for artifact/task pair"
@@ -336,13 +383,28 @@ class InMemoryRunProgress:
             return next_sequence
 
         assigned_sequence = next_sequence
-        bucket[pair] = result
+        ref = self.blob_store.append(
+            batch_id=batch_id,
+            sequence=assigned_sequence,
+            submission=result,
+        )
+        refs[pair] = ref
         sequence_by_pair[pair] = assigned_sequence
         pair_by_sequence[assigned_sequence] = pair
         next_sequence = assigned_sequence + 1
         if commit_next_sequence:
             self.next_sequence_by_batch[batch_id] = next_sequence
         return next_sequence
+
+    def _provider_evidence_unlocked(self, batch_id: UUID) -> tuple[ProviderEvidenceSnapshot, ...]:
+        provider_counters = self.provider_counters_by_batch.get(batch_id, {})
+        snapshots: list[ProviderEvidenceSnapshot] = []
+        for provider, model in sorted(provider_counters):
+            snapshot = self._provider_evidence_snapshot(batch_id=batch_id, key=(provider, model))
+            if snapshot is None:
+                continue
+            snapshots.append(snapshot)
+        return tuple(snapshots)
 
 
 def _submission_pair(result: MinerTaskRunSubmission) -> tuple[UUID, UUID]:
@@ -360,7 +422,7 @@ def _provider_model_key(*, provider: str, model: str) -> tuple[str, str]:
 
 
 __all__ = [
-    "InMemoryRunProgress",
+    "FileBackedRunProgress",
     "ProviderEvidenceSnapshot",
     "RunProgressPage",
     "RunProgressSummary",

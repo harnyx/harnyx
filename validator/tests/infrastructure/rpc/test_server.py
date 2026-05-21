@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 import threading
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -46,7 +48,7 @@ from harnyx_commons.tools.token_semaphore import (
 from harnyx_commons.tools.types import ToolName
 from harnyx_commons.tools.usage_tracker import UsageTracker
 from harnyx_validator.infrastructure.http.routes import ToolRouteDeps, add_tool_routes
-from harnyx_validator.infrastructure.state.run_progress import InMemoryRunProgress
+from harnyx_validator.infrastructure.state.run_progress import FileBackedRunProgress
 from harnyx_validator.runtime.bootstrap import ALLOWED_TOOL_MODELS, _ProviderTrackingToolExecutor
 from validator.tests.fixtures.fakes import FakeReceiptLog, FakeSessionRegistry
 
@@ -226,7 +228,10 @@ class TrackingDependencyProvider:
         self.session_registry = FakeSessionRegistry()
         self.receipt_log = FakeReceiptLog()
         self.tokens = InMemoryTokenRegistry()
-        self.progress_tracker = InMemoryRunProgress()
+        self._progress_storage = tempfile.TemporaryDirectory(prefix="harnyx-test-run-progress-")
+        self.progress_tracker = FileBackedRunProgress(
+            storage_root=Path(self._progress_storage.name) / "run-progress"
+        )
         self.batch_id = uuid4()
         self.artifact_id = uuid4()
 

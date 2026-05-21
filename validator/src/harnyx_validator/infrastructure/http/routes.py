@@ -30,7 +30,11 @@ from harnyx_validator.application.dto.evaluation import (
     MinerTaskRunSubmission,
     TokenUsageSummary,
 )
-from harnyx_validator.application.ports.progress import ProviderFailureEvidence
+from harnyx_validator.application.ports.progress import (
+    ProviderFailureEvidence,
+    RunProgressPage,
+    RunProgressSummary,
+)
 from harnyx_validator.application.services.evaluation_runner import ValidatorBatchFailureDetail
 from harnyx_validator.application.status import BatchActivityTracker, StatusProvider
 from harnyx_validator.infrastructure.http.schemas import (
@@ -52,7 +56,6 @@ from harnyx_validator.infrastructure.http.schemas import (
     ValidatorStatusResponse,
 )
 from harnyx_validator.infrastructure.observability.sentry import capture_exception
-from harnyx_validator.infrastructure.state.run_progress import RunProgressPage, RunProgressSummary
 from harnyx_validator.runtime.resource_usage import ValidatorResourceUsageSnapshot
 
 logger = logging.getLogger("harnyx_validator.http")

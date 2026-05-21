@@ -74,7 +74,7 @@ class BatchExecutionPlanner:
         orchestrator_factory: OrchestratorFactory,
         sandbox_options_factory: SandboxOptionsFactory,
         agent_resolver: AgentResolver,
-        progress: ProgressRecorder | None,
+        progress: ProgressRecorder,
         config: EvaluationBatchConfig,
         activity: BatchActivityTracker | None = None,
     ) -> None:

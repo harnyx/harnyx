@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
+import threading
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -24,7 +27,11 @@ from harnyx_validator.application.dto.evaluation import (
     TokenUsageSummary,
 )
 from harnyx_validator.domain.evaluation import MinerTaskRun
-from harnyx_validator.infrastructure.state.run_progress import InMemoryRunProgress
+from harnyx_validator.infrastructure.state.run_progress import FileBackedRunProgress
+
+
+def _progress(tmp_path: Path) -> FileBackedRunProgress:
+    return FileBackedRunProgress(storage_root=tmp_path / "run-progress")
 
 
 def _make_batch(*, batch_id: UUID | None = None, query_text: str = "example") -> MinerTaskBatchSpec:
@@ -147,18 +154,36 @@ def _make_failed_submission(
     )
 
 
+def _set_tree_mtime(path: Path, when: datetime) -> None:
+    timestamp = when.timestamp()
+    os.utime(path, (timestamp, timestamp))
+    if path.is_dir():
+        for child in path.rglob("*"):
+            os.utime(child, (timestamp, timestamp))
+
+
 def _make_distinct_multi_submissions(
     batch: MinerTaskBatchSpec,
 ) -> tuple[MinerTaskRunSubmission, ...]:
     template = _make_submission(batch)
 
     def build_submission(*, artifact_index: int, task_index: int, score: float) -> MinerTaskRunSubmission:
+        details = template.run.details.model_copy(
+            update={
+                "score_breakdown": ScoreBreakdown(
+                    comparison_score=score,
+                    total_score=score,
+                    scoring_version="v1",
+                )
+            }
+        )
         run = template.run.model_copy(
             update={
                 "session_id": uuid4(),
                 "uid": batch.artifacts[artifact_index].uid,
                 "artifact_id": batch.artifacts[artifact_index].artifact_id,
                 "task_id": batch.tasks[task_index].task_id,
+                "details": details,
             }
         )
         session = replace(
@@ -177,8 +202,8 @@ def _make_distinct_multi_submissions(
     )
 
 
-def test_run_progress_recorded_pairs_returns_exact_finished_pairs() -> None:
-    progress = InMemoryRunProgress()
+def test_run_progress_recorded_pairs_returns_exact_finished_pairs(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
     batch = _make_multi_batch()
     first_submission = _make_submission(batch)
     second_run = first_submission.run.model_copy(
@@ -210,8 +235,8 @@ def test_run_progress_recorded_pairs_returns_exact_finished_pairs() -> None:
     )
 
 
-def test_run_progress_register_is_idempotent_for_exact_replay() -> None:
-    progress = InMemoryRunProgress()
+def test_run_progress_register_is_idempotent_for_exact_replay(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
     batch = _make_batch()
 
     progress.register(batch)
@@ -224,8 +249,8 @@ def test_run_progress_register_is_idempotent_for_exact_replay() -> None:
     assert summary["latest_sequence"] == 0
 
 
-def test_run_progress_register_rejects_conflicting_replay() -> None:
-    progress = InMemoryRunProgress()
+def test_run_progress_register_rejects_conflicting_replay(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
     batch_id = uuid4()
     batch = _make_batch(batch_id=batch_id, query_text="original")
     conflicting = _make_batch(batch_id=batch_id, query_text="different")
@@ -236,8 +261,8 @@ def test_run_progress_register_rejects_conflicting_replay() -> None:
         progress.register(conflicting)
 
 
-def test_run_progress_record_is_idempotent_for_duplicate_pair() -> None:
-    progress = InMemoryRunProgress()
+def test_run_progress_record_is_idempotent_for_duplicate_pair(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
     batch = _make_batch()
     submission = _make_submission(batch)
 
@@ -254,8 +279,8 @@ def test_run_progress_record_is_idempotent_for_duplicate_pair() -> None:
     assert page["items"] == ({"sequence": 1, "submission": submission},)
 
 
-def test_run_progress_restore_completed_runs_records_terminal_timeout_failed_submission() -> None:
-    progress = InMemoryRunProgress()
+def test_run_progress_restore_completed_runs_records_terminal_timeout_failed_submission(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
     batch = _make_batch()
     failed_submission = _make_failed_submission(batch, error_code="timeout_miner_owned")
 
@@ -273,8 +298,8 @@ def test_run_progress_restore_completed_runs_records_terminal_timeout_failed_sub
     }
 
 
-def test_run_progress_record_rejects_conflicting_duplicate_pair() -> None:
-    progress = InMemoryRunProgress()
+def test_run_progress_record_rejects_conflicting_duplicate_pair(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
     batch = _make_batch()
     submission = _make_submission(batch, score=1.0)
     conflicting = _make_submission(batch, score=0.0)
@@ -299,8 +324,8 @@ def test_run_progress_record_rejects_conflicting_duplicate_pair() -> None:
         progress.record(conflicting)
 
 
-def test_run_progress_restore_provider_evidence_is_monotonic_for_duplicate_replay() -> None:
-    progress = InMemoryRunProgress()
+def test_run_progress_restore_provider_evidence_is_monotonic_for_duplicate_replay(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
     batch = _make_batch()
     session_id = uuid4()
 
@@ -363,8 +388,8 @@ def test_run_progress_restore_provider_evidence_is_monotonic_for_duplicate_repla
     )
 
 
-def test_run_progress_includes_failure_reason_in_consumed_provider_failures() -> None:
-    progress = InMemoryRunProgress()
+def test_run_progress_includes_failure_reason_in_consumed_provider_failures(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
     batch = _make_batch()
     session_id = uuid4()
 
@@ -391,8 +416,8 @@ def test_run_progress_includes_failure_reason_in_consumed_provider_failures() ->
     assert progress.provider_evidence(batch.batch_id) == expected
 
 
-def test_run_progress_rejected_restore_does_not_mutate_provider_evidence() -> None:
-    progress = InMemoryRunProgress()
+def test_run_progress_rejected_restore_does_not_mutate_provider_evidence(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
     batch = _make_batch()
     other_batch = _make_batch()
     session_id = uuid4()
@@ -428,8 +453,8 @@ def test_run_progress_rejected_restore_does_not_mutate_provider_evidence() -> No
     assert progress.provider_evidence(batch.batch_id) == before
 
 
-def test_run_progress_rejected_restore_does_not_advance_sequence_cursor() -> None:
-    progress = InMemoryRunProgress()
+def test_run_progress_rejected_restore_does_not_advance_sequence_cursor(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
     batch = _make_batch()
     submission = _make_submission(batch, score=1.0)
     conflicting = _make_submission(batch, score=0.0).model_copy(
@@ -458,8 +483,8 @@ def test_run_progress_rejected_restore_does_not_advance_sequence_cursor() -> Non
     assert page["items"] == ({"sequence": 1, "submission": submission},)
 
 
-def test_run_progress_page_preserves_record_sequence_without_global_task_order() -> None:
-    progress = InMemoryRunProgress()
+def test_run_progress_page_preserves_record_sequence_without_global_task_order(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
     batch = _make_multi_batch()
     submissions = _make_distinct_multi_submissions(batch)
 
@@ -480,8 +505,8 @@ def test_run_progress_page_preserves_record_sequence_without_global_task_order()
     )
 
 
-def test_run_progress_page_returns_cursor_window_without_rescanning_prefix() -> None:
-    progress = InMemoryRunProgress()
+def test_run_progress_page_returns_cursor_window_without_rescanning_prefix(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
     batch = _make_multi_batch()
     submissions = _make_distinct_multi_submissions(batch)
 
@@ -497,8 +522,8 @@ def test_run_progress_page_returns_cursor_window_without_rescanning_prefix() -> 
     assert page["items"] == ({"sequence": 3, "submission": submissions[2]},)
 
 
-def test_run_progress_page_rejects_missing_dense_sequence() -> None:
-    progress = InMemoryRunProgress()
+def test_run_progress_page_rejects_missing_dense_sequence(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
     batch = _make_multi_batch()
     submissions = _make_distinct_multi_submissions(batch)
 
@@ -510,3 +535,125 @@ def test_run_progress_page_rejects_missing_dense_sequence() -> None:
 
     with pytest.raises(RuntimeError, match="progress sequence points at missing pair"):
         progress.completed_run_page(batch.batch_id, after_sequence=0, limit=10)
+
+
+def test_run_progress_discard_batch_removes_indexes_and_blob_dir(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
+    batch = _make_batch()
+    submission = _make_submission(batch)
+    session_id = uuid4()
+
+    progress.register(batch)
+    progress.register_task_session(batch_id=batch.batch_id, session_id=session_id)
+    progress.record_provider_call(session_id=session_id, provider="desearch", model="search_web")
+    progress.record_provider_failure(
+        session_id=session_id,
+        provider="desearch",
+        model="search_web",
+        reason="rate limited",
+    )
+    progress.record(submission)
+
+    batch_dir = progress.storage_root / str(batch.batch_id)
+    assert batch_dir.exists()
+    assert progress.completed_run_page(batch.batch_id, after_sequence=0, limit=10)["items"]
+
+    assert progress.discard_batch(batch.batch_id) is True
+
+    assert not batch_dir.exists()
+    assert progress.recorded_pairs(batch.batch_id) == frozenset()
+    assert progress.provider_evidence(batch.batch_id) == ()
+    assert progress.consume_provider_failures(session_id) == ()
+    assert progress.summary(batch.batch_id) == {
+        "batch_id": batch.batch_id,
+        "total": 0,
+        "completed": 0,
+        "remaining": 0,
+        "latest_sequence": 0,
+        "provider_evidence": (),
+    }
+
+
+def test_run_progress_prunes_only_stale_unindexed_uuid_dirs(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(hours=1)
+    stale = now - timedelta(hours=2)
+    fresh = now
+    stale_batch_id = uuid4()
+    fresh_batch_id = uuid4()
+    non_uuid_dir = progress.storage_root / "not-a-batch"
+    uuid_file = progress.storage_root / str(uuid4())
+    stale_dir = progress.storage_root / str(stale_batch_id)
+    fresh_dir = progress.storage_root / str(fresh_batch_id)
+
+    batch = _make_batch()
+    progress.register(batch)
+    progress.record(_make_submission(batch))
+    active_dir = progress.storage_root / str(batch.batch_id)
+
+    for directory in (stale_dir, fresh_dir, non_uuid_dir):
+        directory.mkdir(parents=True)
+        (directory / "runs-000001.blob").write_bytes(b"data")
+    uuid_file.write_text("not a directory", encoding="utf-8")
+
+    _set_tree_mtime(stale_dir, stale)
+    _set_tree_mtime(fresh_dir, fresh)
+    _set_tree_mtime(non_uuid_dir, stale)
+    _set_tree_mtime(active_dir, stale)
+    _set_tree_mtime(uuid_file, stale)
+
+    removed = progress.prune_stale_batch_dirs_older_than(cutoff)
+
+    assert removed == (stale_batch_id,)
+    assert not stale_dir.exists()
+    assert fresh_dir.exists()
+    assert active_dir.exists()
+    assert non_uuid_dir.exists()
+    assert uuid_file.exists()
+
+
+def test_run_progress_completed_page_and_discard_are_lock_coordinated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    progress = _progress(tmp_path)
+    batch = _make_batch()
+    submission = _make_submission(batch)
+    read_started = threading.Event()
+    release_read = threading.Event()
+    discard_finished = threading.Event()
+    page_result: dict[str, object] = {}
+    original_read_many = progress.blob_store.read_many
+
+    def blocking_read_many(refs):
+        read_started.set()
+        assert release_read.wait(timeout=1.0)
+        return original_read_many(refs)
+
+    progress.register(batch)
+    progress.record(submission)
+    monkeypatch.setattr(progress.blob_store, "read_many", blocking_read_many)
+
+    page_thread = threading.Thread(
+        target=lambda: page_result.update(
+            progress.completed_run_page(batch.batch_id, after_sequence=0, limit=10)
+        )
+    )
+    discard_thread = threading.Thread(
+        target=lambda: (progress.discard_batch(batch.batch_id), discard_finished.set())
+    )
+
+    page_thread.start()
+    assert read_started.wait(timeout=1.0)
+    discard_thread.start()
+    assert not discard_finished.wait(timeout=0.05)
+
+    release_read.set()
+    page_thread.join(timeout=1.0)
+    discard_thread.join(timeout=1.0)
+
+    assert not page_thread.is_alive()
+    assert not discard_thread.is_alive()
+    assert page_result["items"] == ({"sequence": 1, "submission": submission},)
+    assert not (progress.storage_root / str(batch.batch_id)).exists()

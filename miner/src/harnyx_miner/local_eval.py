@@ -73,6 +73,7 @@ from harnyx_validator.application.services.evaluation_runner import (
     EvaluationRunner,
 )
 from harnyx_validator.infrastructure.http.local_tool_host import LocalToolHostHandle, start_local_tool_host
+from harnyx_validator.infrastructure.state.run_progress import FileBackedRunProgress
 from harnyx_validator.runtime.bootstrap import (
     _build_state,
     _build_tooling,
@@ -262,6 +263,85 @@ class _CliProgressReporter(ProgressRecorder):
         )
 
 
+@dataclass(slots=True)
+class _LocalProgressRecorder(ProgressRecorder):
+    _display: _CliProgressReporter | None
+    _storage: FileBackedRunProgress
+
+    def register(self, batch: MinerTaskBatchSpec) -> None:
+        self._storage.register(batch)
+        if self._display is not None:
+            self._display.register(batch)
+
+    def record(self, result: MinerTaskRunSubmission) -> None:
+        self._storage.record(result)
+        if self._display is not None:
+            self._display.record(result)
+
+    def restore_completed_runs(
+        self,
+        batch: MinerTaskBatchSpec,
+        submissions: Sequence[MinerTaskRunSubmission],
+        provider_evidence: Sequence[ProviderFailureEvidence] = (),
+    ) -> None:
+        self._storage.restore_completed_runs(
+            batch,
+            submissions,
+            provider_evidence=provider_evidence,
+        )
+        if self._display is not None:
+            self._display.restore_completed_runs(
+                batch,
+                submissions,
+                provider_evidence=provider_evidence,
+            )
+
+    def recorded_pairs(self, batch_id: UUID) -> frozenset[tuple[UUID, UUID]]:
+        return self._storage.recorded_pairs(batch_id)
+
+    def register_task_session(
+        self,
+        *,
+        batch_id: UUID,
+        session_id: UUID,
+    ) -> None:
+        self._storage.register_task_session(batch_id=batch_id, session_id=session_id)
+
+    def record_provider_call(
+        self,
+        *,
+        session_id: UUID,
+        provider: str,
+        model: str,
+    ) -> None:
+        self._storage.record_provider_call(
+            session_id=session_id,
+            provider=provider,
+            model=model,
+        )
+
+    def record_provider_failure(
+        self,
+        *,
+        session_id: UUID,
+        provider: str,
+        model: str,
+        reason: str,
+    ) -> None:
+        self._storage.record_provider_failure(
+            session_id=session_id,
+            provider=provider,
+            model=model,
+            reason=reason,
+        )
+
+    def consume_provider_failures(self, session_id: UUID) -> tuple[ProviderFailureEvidence, ...]:
+        return self._storage.consume_provider_failures(session_id)
+
+    def clear_task_session(self, session_id: UUID) -> None:
+        self._storage.clear_task_session(session_id)
+
+
 class _LocalEvalFailureCategory(StrEnum):
     SANDBOX_STARTUP = "sandbox_startup"
     EVALUATED_APPLICATION = "evaluated_application"
@@ -287,9 +367,14 @@ class LocalEvaluationRuntime:
     _progress_reporter: _CliProgressReporter | None
 
     @classmethod
-    def create(cls, *, progress_reporter: _CliProgressReporter | None = None) -> LocalEvaluationRuntime:
+    def create(
+        cls,
+        *,
+        run_progress_root: Path,
+        progress_reporter: _CliProgressReporter | None = None,
+    ) -> LocalEvaluationRuntime:
         settings = Settings.load()
-        state = _build_state()
+        state = _build_state(settings, progress_storage_root=run_progress_root)
         invocation_clients = build_tool_invocation_clients(
             llm_settings=settings.llm,
             bedrock_settings=settings.bedrock,
@@ -321,10 +406,11 @@ class LocalEvaluationRuntime:
         *,
         scoring_service: EvaluationScoringService,
         scoring_config: EvaluationScoringConfig,
+        run_progress_root: Path,
         progress_reporter: _CliProgressReporter | None = None,
     ) -> LocalEvaluationRuntime:
         settings = Settings.load()
-        state = _build_state()
+        state = _build_state(settings, progress_storage_root=run_progress_root)
         invocation_clients = build_tool_invocation_clients(
             llm_settings=settings.llm,
             bedrock_settings=settings.bedrock,
@@ -362,6 +448,10 @@ class LocalEvaluationRuntime:
             search_client=search_client,
             tool_llm_provider=tool_llm_provider,
         )
+        progress = _LocalProgressRecorder(
+            _display=progress_reporter,
+            _storage=state.progress_tracker,
+        )
         runner = EvaluationRunner(
             subtensor_client=_LocalSubtensorClient(),
             session_manager=state.session_manager,
@@ -373,7 +463,7 @@ class LocalEvaluationRuntime:
                 artifact_task_parallelism=_DEFAULT_LOCAL_ARTIFACT_TASK_PARALLELISM,
             ),
             clock=_utcnow,
-            progress=progress_reporter,
+            progress=progress,
         )
         return cls(
             settings=settings,
@@ -486,7 +576,7 @@ class LocalEvaluationRuntime:
                     artifact=artifact,
                     submissions=evaluation_outcome.submissions,
                 )
-            return evaluation_outcome
+            return _compact_artifact_outcome_for_local_report(evaluation_outcome)
         except Exception as exc:
             if failure_bundle_recorded:
                 raise
@@ -813,7 +903,11 @@ async def _amain(argv: Sequence[str] | None) -> None:
                 f"champion artifact ready: artifact_id={champion_artifact.artifact_id} uid={champion_artifact.uid}"
             )
         progress.log("starting local evaluation runtime")
-        runtime = LocalEvaluationRuntime.create(progress_reporter=progress)
+        run_progress_root = output_dir / ".harnyx-local-run-progress" / str(batch_context.batch_id)
+        runtime = LocalEvaluationRuntime.create(
+            run_progress_root=run_progress_root,
+            progress_reporter=progress,
+        )
         progress.log(
             f"running local evaluations: artifact_task_parallelism={_DEFAULT_LOCAL_ARTIFACT_TASK_PARALLELISM}"
         )
@@ -963,6 +1057,23 @@ def _require_completed_local_eval_outcome(
         f"{artifact_label} local evaluation failed for artifact {artifact.artifact_id}: "
         f"{failure.error_code} ({failure.message})"
     )
+
+
+def _compact_artifact_outcome_for_local_report(
+    outcome: ArtifactEvaluationOutcome,
+) -> ArtifactEvaluationOutcome:
+    return replace(
+        outcome,
+        submissions=tuple(
+            _compact_submission_for_local_report(submission) for submission in outcome.submissions
+        ),
+    )
+
+
+def _compact_submission_for_local_report(
+    submission: MinerTaskRunSubmission,
+) -> MinerTaskRunSubmission:
+    return submission.model_copy(update={"execution_log": ()})
 
 
 def _load_batch_tasks(detail: Mapping[str, object]) -> tuple[MinerTask, ...]:

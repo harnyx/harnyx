@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -288,8 +290,8 @@ def test_build_llm_clients_uses_scoring_model_override_for_route_resolution(
     )
 
 
-def test_build_state_uses_separate_tool_concurrency_lanes() -> None:
-    state = bootstrap._build_state()
+def test_build_state_uses_separate_tool_concurrency_lanes(tmp_path: Path) -> None:
+    state = bootstrap._build_state(Settings(), progress_storage_root=tmp_path / "run-progress")
     session_id = uuid4()
     token = "token"  # noqa: S105
     llm_invocations = [
@@ -345,6 +347,23 @@ def test_build_state_uses_separate_tool_concurrency_lanes() -> None:
     state.tool_concurrency_limiter.release(other_model_invocation)
     for invocation in search_invocations:
         state.tool_concurrency_limiter.release(invocation)
+
+
+def test_build_state_prunes_stale_run_progress_dirs(tmp_path: Path) -> None:
+    run_progress_root = tmp_path / "run-progress"
+    stale_batch_id = uuid4()
+    stale_dir = run_progress_root / str(stale_batch_id)
+    stale_dir.mkdir(parents=True)
+    stale_blob = stale_dir / "runs-000001.blob"
+    stale_blob.write_bytes(b"stale")
+    os.utime(stale_dir, (0, 0))
+    os.utime(stale_blob, (0, 0))
+    settings = Settings.model_construct(run_progress_retention_seconds=3600)
+
+    state = bootstrap._build_state(settings, progress_storage_root=run_progress_root)
+
+    assert state.progress_tracker.storage_root == run_progress_root
+    assert not stale_dir.exists()
 
 
 def test_create_scoring_service_does_not_require_vertex_config_at_bootstrap() -> None:

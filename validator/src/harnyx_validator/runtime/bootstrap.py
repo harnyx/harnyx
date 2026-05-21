@@ -7,7 +7,8 @@ import logging
 from collections.abc import Callable
 from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Protocol, cast
 
 import bittensor as bt
@@ -59,8 +60,8 @@ from harnyx_validator.infrastructure.platform.registration_client import (
     register_with_retry,
 )
 from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
-from harnyx_validator.infrastructure.state.evaluation_record import InMemoryEvaluationRecordStore
-from harnyx_validator.infrastructure.state.run_progress import InMemoryRunProgress
+from harnyx_validator.infrastructure.state.evaluation_record import CompactEvaluationRecordStore
+from harnyx_validator.infrastructure.state.run_progress import FileBackedRunProgress
 from harnyx_validator.infrastructure.subtensor.client import RuntimeSubtensorClient
 from harnyx_validator.infrastructure.subtensor.hotkey import create_wallet
 from harnyx_validator.infrastructure.tools.platform_client import HttpPlatformClient
@@ -86,7 +87,7 @@ class _ProviderTrackingToolExecutor(ToolExecutor):
         tool_invoker: RuntimeToolInvoker,
         token_registry: InMemoryTokenRegistry,
         clock: Callable[[], datetime],
-        progress: InMemoryRunProgress,
+        progress: FileBackedRunProgress,
         search_provider_name: str | None,
         llm_route_resolver: Callable[[str], ResolvedLlmRoute],
     ) -> None:
@@ -159,7 +160,7 @@ class RuntimeContext:
     token_registry: InMemoryTokenRegistry
     receipt_log: InMemoryReceiptLog
     evaluation_records: EvaluationRecordPort
-    progress_tracker: InMemoryRunProgress
+    progress_tracker: FileBackedRunProgress
     usage_tracker: UsageTracker
     search_client: WebSearchProviderPort | None
     llm_provider_registry: CachedLlmProviderRegistry
@@ -196,7 +197,7 @@ class InMemoryState:
     token_registry: InMemoryTokenRegistry
     receipt_log: InMemoryReceiptLog
     evaluation_records: EvaluationRecordPort
-    progress_tracker: InMemoryRunProgress
+    progress_tracker: FileBackedRunProgress
     batch_inbox: InMemoryBatchInbox
     batch_activity: BatchActivityTracker
     usage_tracker: UsageTracker
@@ -209,7 +210,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
     resolved = settings or Settings.load()
     logger.info("loading validator runtime configuration", extra={"settings": resolved})
 
-    state = _build_state()
+    state = _build_state(resolved)
     platform_client, platform_hotkey, subtensor_client = _build_external_clients(resolved)
 
     search_client, llm_provider_registry, tool_llm_provider, scoring_llm_provider, scoring_route = _build_llm_clients(
@@ -283,12 +284,21 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
     )
 
 
-def _build_state() -> InMemoryState:
+def _build_state(
+    settings: Settings,
+    *,
+    progress_storage_root: Path | None = None,
+) -> InMemoryState:
     session_registry = InMemorySessionRegistry()
     token_registry = InMemoryTokenRegistry()
     receipt_log = InMemoryReceiptLog()
-    evaluation_records = InMemoryEvaluationRecordStore()
-    progress_tracker = InMemoryRunProgress()
+    evaluation_records = CompactEvaluationRecordStore()
+    progress_tracker = FileBackedRunProgress(
+        storage_root=progress_storage_root or settings.validator_state_dir / "run-progress",
+    )
+    progress_tracker.prune_stale_batch_dirs_older_than(
+        datetime.now(UTC) - timedelta(seconds=settings.run_progress_retention_seconds)
+    )
     batch_inbox = InMemoryBatchInbox()
     batch_activity = BatchActivityTracker()
     tool_concurrency_limiter = ToolConcurrencyLimiter(DEFAULT_TOOL_CONCURRENCY_LIMITS)
@@ -580,7 +590,7 @@ def _make_control_provider(
     accept_batch: AcceptEvaluationBatch,
     status_provider: StatusProvider,
     inbound_auth: BittensorSr25519InboundVerifier,
-    progress_tracker: InMemoryRunProgress,
+    progress_tracker: FileBackedRunProgress,
     validator_hotkey: bt.Keypair,
     resource_usage_provider: ValidatorResourceUsageProvider | None = None,
     batch_activity: BatchActivityTracker | None = None,

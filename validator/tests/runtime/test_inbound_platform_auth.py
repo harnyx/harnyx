@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from threading import Event
 
 import bittensor as bt
@@ -12,7 +13,7 @@ from harnyx_validator.application.accept_batch import AcceptEvaluationBatch
 from harnyx_validator.application.status import StatusProvider
 from harnyx_validator.infrastructure.auth.sr25519 import BittensorSr25519InboundVerifier
 from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
-from harnyx_validator.infrastructure.state.run_progress import InMemoryRunProgress
+from harnyx_validator.infrastructure.state.run_progress import FileBackedRunProgress
 from harnyx_validator.runtime import bootstrap
 from harnyx_validator.runtime.settings import Settings
 
@@ -23,6 +24,10 @@ class _StubHotkey:
 
     def sign(self, payload: bytes) -> bytes:
         return payload
+
+
+def _progress(tmp_path: Path) -> FileBackedRunProgress:
+    return FileBackedRunProgress(storage_root=tmp_path / "run-progress")
 
 
 def _build_signed_header(
@@ -402,7 +407,9 @@ def test_inbound_verifier_refresh_failure_keeps_last_known_hotkeys(monkeypatch) 
 
 
 @pytest.mark.anyio
-async def test_control_provider_offloads_auth_verification_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_control_provider_offloads_auth_verification_to_thread(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     observed: dict[str, object] = {}
 
     def fake_verify_request(
@@ -431,10 +438,10 @@ async def test_control_provider_offloads_auth_verification_to_thread(monkeypatch
     monkeypatch.setattr(bootstrap.asyncio, "to_thread", fake_to_thread)
 
     deps = bootstrap._make_control_provider(
-        AcceptEvaluationBatch(InMemoryBatchInbox(), StatusProvider(), InMemoryRunProgress()),
+        AcceptEvaluationBatch(InMemoryBatchInbox(), StatusProvider(), _progress(tmp_path)),
         StatusProvider(),
         inbound_auth,
-        InMemoryRunProgress(),
+        _progress(tmp_path),
         _StubHotkey(),
     )()
 
@@ -470,7 +477,7 @@ def test_inbound_verifier_stop_timeout_returns_false() -> None:
 
 
 @pytest.mark.anyio
-async def test_make_control_provider_verifies_request_inline(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_make_control_provider_verifies_request_inline(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     verify_calls: list[tuple[object, dict[str, object]]] = []
 
     def _record_verify_request(verifier: object, **kwargs: object) -> str:
@@ -479,7 +486,7 @@ async def test_make_control_provider_verifies_request_inline(monkeypatch: pytest
 
     monkeypatch.setattr(bootstrap, "_verify_request", _record_verify_request)
 
-    progress_tracker = InMemoryRunProgress()
+    progress_tracker = _progress(tmp_path)
     status_provider = StatusProvider()
     accept_batch = AcceptEvaluationBatch(
         inbox=InMemoryBatchInbox(),
@@ -507,19 +514,22 @@ async def test_make_control_provider_verifies_request_inline(monkeypatch: pytest
     )
 
     assert caller == "caller"
-    assert verify_calls == [(
-        inbound_auth,
-        {
-        "method": "GET",
-        "path_qs": "/validator/status?verbose=1",
-        "body": b"",
-        "authorization_header": 'Bittensor ss58="5demo",sig="00"',
-        },
-    )]
+    assert verify_calls == [
+        (
+            inbound_auth,
+            {
+                "method": "GET",
+                "path_qs": "/validator/status?verbose=1",
+                "body": b"",
+                "authorization_header": 'Bittensor ss58="5demo",sig="00"',
+            },
+        )
+    ]
 
 
 def test_make_control_provider_reuses_fallback_resource_usage_provider(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     created: list[object] = []
 
@@ -530,10 +540,10 @@ def test_make_control_provider_reuses_fallback_resource_usage_provider(
     monkeypatch.setattr(bootstrap, "ValidatorResourceUsageProvider", _StubResourceUsageProvider)
 
     provider = bootstrap._make_control_provider(
-        AcceptEvaluationBatch(InMemoryBatchInbox(), StatusProvider(), InMemoryRunProgress()),
+        AcceptEvaluationBatch(InMemoryBatchInbox(), StatusProvider(), _progress(tmp_path)),
         StatusProvider(),
         object(),
-        InMemoryRunProgress(),
+        _progress(tmp_path),
         _StubHotkey(),
     )
 

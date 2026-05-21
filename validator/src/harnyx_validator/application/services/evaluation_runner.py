@@ -257,7 +257,7 @@ class EvaluationRunner:
         receipt_log: ReceiptLogPort,
         config: SchedulerConfig,
         clock: Clock,
-        progress: ProgressRecorder | None = None,
+        progress: ProgressRecorder,
         usage_summarizer: UsageSummarizer | None = None,
     ) -> None:
         self._subtensor = subtensor_client
@@ -1170,18 +1170,13 @@ class EvaluationRunner:
         )
 
     def _record_submission(self, submission: MinerTaskRunSubmission) -> None:
+        self._progress.record(submission)
         self._evaluation_records.record(submission)
-        if self._progress is not None:
-            self._progress.record(submission)
 
     def _consume_provider_failures(self, session_id: UUID) -> tuple[ProviderFailureEvidence, ...]:
-        if self._progress is None:
-            return ()
         return self._progress.consume_provider_failures(session_id)
 
     def _clear_task_session(self, session_id: UUID) -> None:
-        if self._progress is None:
-            return
         self._progress.clear_task_session(session_id)
 
     def _validator_uid_value(self) -> int:
@@ -1210,11 +1205,10 @@ class EvaluationRunner:
             token=token,
         )
         issued = self._sessions.issue(request)
-        if self._progress is not None:
-            self._progress.register_task_session(
-                batch_id=batch_id,
-                session_id=issued.session.session_id,
-            )
+        self._progress.register_task_session(
+            batch_id=batch_id,
+            session_id=issued.session.session_id,
+        )
         return issued
 
     def _begin_session_attempt(self, session_id: UUID) -> SessionIssued:

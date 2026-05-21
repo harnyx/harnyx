@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -75,6 +77,56 @@ def test_settings_accepts_artifact_task_parallelism_override(monkeypatch) -> Non
     settings = Settings.load()
 
     assert settings.artifact_task_parallelism == 5
+
+
+def test_settings_defaults_validator_state_dir(monkeypatch) -> None:
+    monkeypatch.delenv("VALIDATOR_STATE_DIR", raising=False)
+
+    settings = Settings.load()
+
+    assert settings.validator_state_dir == Path("/workspace/.harnyx_state")
+
+
+def test_settings_accepts_validator_state_dir_override(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VALIDATOR_STATE_DIR", str(tmp_path / "validator-state"))
+
+    settings = Settings.load()
+
+    assert settings.validator_state_dir == tmp_path / "validator-state"
+
+
+def test_settings_defaults_run_progress_retention(monkeypatch) -> None:
+    monkeypatch.delenv("VALIDATOR_RUN_PROGRESS_RETENTION_SECONDS", raising=False)
+    monkeypatch.delenv("VALIDATOR_RUN_PROGRESS_CLEANUP_INTERVAL_SECONDS", raising=False)
+
+    settings = Settings.load()
+
+    assert settings.run_progress_retention_seconds == 24 * 60 * 60
+    assert settings.run_progress_cleanup_interval_seconds == 10 * 60
+
+
+def test_settings_accepts_run_progress_retention_overrides(monkeypatch) -> None:
+    monkeypatch.setenv("VALIDATOR_RUN_PROGRESS_RETENTION_SECONDS", "3600")
+    monkeypatch.setenv("VALIDATOR_RUN_PROGRESS_CLEANUP_INTERVAL_SECONDS", "30")
+
+    settings = Settings.load()
+
+    assert settings.run_progress_retention_seconds == 3600
+    assert settings.run_progress_cleanup_interval_seconds == 30
+
+
+def test_settings_rejects_non_positive_run_progress_retention(monkeypatch) -> None:
+    monkeypatch.setenv("VALIDATOR_RUN_PROGRESS_RETENTION_SECONDS", "0")
+
+    with pytest.raises(ValidationError):
+        Settings.load()
+
+
+def test_settings_rejects_non_positive_run_progress_cleanup_interval(monkeypatch) -> None:
+    monkeypatch.setenv("VALIDATOR_RUN_PROGRESS_CLEANUP_INTERVAL_SECONDS", "0")
+
+    with pytest.raises(ValidationError):
+        Settings.load()
 
 
 def test_settings_rejects_non_positive_artifact_task_parallelism(monkeypatch) -> None:

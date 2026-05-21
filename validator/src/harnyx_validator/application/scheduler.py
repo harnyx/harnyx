@@ -55,6 +55,7 @@ _T = TypeVar("_T")
 
 logger = logging.getLogger("harnyx_validator.scheduler")
 measurement_logger = logging.getLogger("harnyx_validator.measurement")
+_BATCH_FAILURE_PROGRESS_PAGE_SIZE = 500
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,7 +206,7 @@ class _CompletedArtifactResult:
 
 @dataclass(slots=True)
 class _BatchArtifactDispatchState:
-    submissions_by_artifact_index: list[tuple[MinerTaskRunSubmission, ...] | None]
+    completed_run_count: int = 0
     validator_model_llm_baseline: ValidatorModelLlmBaseline = field(
         default_factory=ValidatorModelLlmBaseline.empty
     )
@@ -231,6 +232,20 @@ def _count_submission_outcomes(
             continue
         failure_count += 1
     return success_count, failure_count
+
+
+def _completed_submission_delta(
+    *,
+    submissions: Sequence[MinerTaskRunSubmission],
+    earlier_submissions: Sequence[MinerTaskRunSubmission],
+) -> int:
+    earlier_pairs = {_submission_pair(submission) for submission in earlier_submissions}
+    current_pairs = {_submission_pair(submission) for submission in submissions}
+    return len(current_pairs - earlier_pairs)
+
+
+def _submission_pair(submission: MinerTaskRunSubmission) -> tuple[UUID, UUID]:
+    return (submission.run.artifact_id, submission.run.task_id)
 
 
 def _copy_owned_timeout_states(
@@ -368,7 +383,7 @@ class EvaluationScheduler:
         sandbox_options_factory: SandboxOptionsFactory,
         clock: Clock,
         config: SchedulerConfig,
-        progress: ProgressRecorder | None = None,
+        progress: ProgressRecorder,
         activity: BatchActivityTracker | None = None,
     ) -> None:
         self._tasks = tuple(tasks)
@@ -419,7 +434,8 @@ class EvaluationScheduler:
         artifacts: tuple[ScriptArtifactSpec, ...],
         blocking_executor: Executor,
     ) -> MinerTaskBatchRunResult:
-        recorded_pairs = self._progress.recorded_pairs(batch_id) if self._progress is not None else frozenset()
+        recorded_pairs = self._progress.recorded_pairs(batch_id)
+        recorded_progress_sequence = self._progress.summary(batch_id)["latest_sequence"]
         artifact_parallelism = min(max(1, self._config.artifact_parallelism), len(artifacts))
         task_session_limiter = _BatchTaskSessionLimiter(
             self._config.artifact_task_parallelism,
@@ -436,9 +452,7 @@ class EvaluationScheduler:
             artifact_task_parallelism=self._config.artifact_task_parallelism,
             recorded_pair_count=len(recorded_pairs),
         )
-        dispatch = _BatchArtifactDispatchState(
-            submissions_by_artifact_index=[None] * len(artifacts),
-        )
+        dispatch = _BatchArtifactDispatchState()
         work_coordinator = _ArtifactWorkCoordinator(
             tuple(
                 _ArtifactWorkItem(
@@ -480,12 +494,14 @@ class EvaluationScheduler:
             raise self._build_final_batch_failure(
                 batch_id=batch_id,
                 dispatch=dispatch,
+                completed_runs_after_sequence=recorded_progress_sequence,
+                recorded_pairs=recorded_pairs,
             )
 
         return MinerTaskBatchRunResult(
             batch_id=batch_id,
             tasks=tasks,
-            runs=self._flatten_submissions_in_requested_artifact_order(dispatch.submissions_by_artifact_index),
+            completed_run_count=dispatch.completed_run_count,
         )
 
     async def _run_artifact_worker(
@@ -543,7 +559,10 @@ class EvaluationScheduler:
             )
 
             async with dispatch.merge_lock:
-                dispatch.submissions_by_artifact_index[work_item.artifact_index - 1] = artifact_result.submissions
+                dispatch.completed_run_count += _completed_submission_delta(
+                    submissions=artifact_result.submissions,
+                    earlier_submissions=work_item.earlier_submissions,
+                )
                 dispatch.validator_model_llm_baseline = dispatch.validator_model_llm_baseline.merge(
                     artifact_result.validator_model_llm_baseline,
                 )
@@ -1118,6 +1137,8 @@ class EvaluationScheduler:
         *,
         batch_id: UUID,
         dispatch: _BatchArtifactDispatchState,
+        completed_runs_after_sequence: int,
+        recorded_pairs: frozenset[tuple[UUID, UUID]],
     ) -> ValidatorBatchFailedError:
         canonical_validator_failure_index = (
             min(dispatch.validator_batch_failures_by_artifact_index)
@@ -1129,27 +1150,52 @@ class EvaluationScheduler:
             raise RuntimeError("published batch failure missing when finalizing batch failure")
         if canonical_validator_failure_index is not None:
             failure = dispatch.validator_batch_failures_by_artifact_index[canonical_validator_failure_index]
+        completed_submissions = self._completed_submissions_for_final_failure(
+            batch_id=batch_id,
+            after_sequence=completed_runs_after_sequence,
+            recorded_pairs=recorded_pairs,
+            failure=failure,
+        )
         return ValidatorBatchFailedError(
             error_code=failure.error_code,
             message=str(failure),
             failure_detail=failure.failure_detail,
-            completed_submissions=self._flatten_submissions_in_requested_artifact_order(
-                dispatch.submissions_by_artifact_index
-            ),
+            completed_submissions=completed_submissions,
             remaining_tasks=failure.remaining_tasks,
         )
 
-    def _flatten_submissions_in_requested_artifact_order(
+    def _completed_submissions_for_final_failure(
         self,
-        submissions_by_artifact_index: list[tuple[MinerTaskRunSubmission, ...] | None],
+        *,
+        batch_id: UUID,
+        after_sequence: int,
+        recorded_pairs: frozenset[tuple[UUID, UUID]],
+        failure: ValidatorBatchFailedError,
     ) -> tuple[MinerTaskRunSubmission, ...]:
-        return tuple(
-            submission
-            for artifact_submissions in submissions_by_artifact_index
-            if artifact_submissions is not None
-            for submission in artifact_submissions
-        )
+        completed_by_pair: dict[tuple[UUID, UUID], MinerTaskRunSubmission] = {}
+        while True:
+            page = self._progress.completed_run_page(
+                batch_id,
+                after_sequence=after_sequence,
+                limit=_BATCH_FAILURE_PROGRESS_PAGE_SIZE,
+            )
+            for item in page["items"]:
+                submission = item["submission"]
+                pair = _submission_pair(submission)
+                if pair not in recorded_pairs:
+                    completed_by_pair[pair] = submission
+            if not page["has_more"]:
+                break
+            next_after_sequence = page["next_after_sequence"]
+            if next_after_sequence <= after_sequence:
+                raise RuntimeError("completed run progress page did not advance")
+            after_sequence = next_after_sequence
 
+        for submission in failure.completed_submissions or ():
+            pair = _submission_pair(submission)
+            if pair not in recorded_pairs:
+                completed_by_pair.setdefault(pair, submission)
+        return tuple(completed_by_pair.values())
 
 async def _run_blocking_call(
     executor: Executor,

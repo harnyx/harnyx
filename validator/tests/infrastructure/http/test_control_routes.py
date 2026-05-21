@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -51,7 +52,7 @@ from harnyx_validator.infrastructure.http.routes import (
     add_control_routes,
 )
 from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
-from harnyx_validator.infrastructure.state.run_progress import InMemoryRunProgress
+from harnyx_validator.infrastructure.state.run_progress import FileBackedRunProgress
 from harnyx_validator.runtime.resource_usage import ValidatorResourceUsageSnapshot
 
 
@@ -223,11 +224,11 @@ class DemoControlDependencyProvider:
 
 
 class RealAcceptBatchDependencyProvider:
-    def __init__(self) -> None:
+    def __init__(self, *, storage_root: Path) -> None:
         self.validator_hotkey = _StubHotkey()
         self.inbox = InMemoryBatchInbox()
         self.status_provider = StatusProvider()
-        self.progress_tracker = InMemoryRunProgress()
+        self.progress_tracker = FileBackedRunProgress(storage_root=storage_root)
         self.accept_batch = AcceptEvaluationBatch(
             inbox=self.inbox,
             status=self.status_provider,
@@ -842,8 +843,8 @@ def test_failed_status_keeps_failure_detail_and_runs_page_keeps_sequence() -> No
     assert all("query" not in item["submission"]["run"] for item in runs_body["items"])
 
 
-def test_runs_endpoint_preserves_real_record_sequence_without_artifact_sorting() -> None:
-    provider = RealAcceptBatchDependencyProvider()
+def test_runs_endpoint_preserves_real_record_sequence_without_artifact_sorting(tmp_path: Path) -> None:
+    provider = RealAcceptBatchDependencyProvider(storage_root=tmp_path / "run-progress")
     app = _create_test_app(provider)
     client = TestClient(app)
     batch_id = uuid4()
@@ -898,6 +899,57 @@ def test_runs_endpoint_preserves_real_record_sequence_without_artifact_sorting()
         str(second_artifact.artifact_id),
         str(first_artifact.artifact_id),
     ]
+
+
+def test_runs_endpoint_returns_empty_page_after_terminal_progress_cleanup(tmp_path: Path) -> None:
+    provider = RealAcceptBatchDependencyProvider(storage_root=tmp_path / "run-progress")
+    app = _create_test_app(provider)
+    client = TestClient(app)
+    batch_id = uuid4()
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="What happened?"),
+        reference_answer=ReferenceAnswer(text="The reference answer."),
+    )
+    artifact = ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="hash-a", size_bytes=42)
+    batch = MinerTaskBatchSpec(
+        batch_id=batch_id,
+        cutoff_at="2026-03-08T00:00:00+00:00",
+        created_at="2026-03-08T00:00:00+00:00",
+        tasks=(task,),
+        artifacts=(artifact,),
+    )
+    submission = _make_submission_for_batch_pair(
+        batch_id=batch_id,
+        task=task,
+        artifact=artifact,
+    )
+    terminal_at = datetime(2026, 5, 20, 12, 0, tzinfo=UTC)
+
+    provider.accept_batch.execute(batch)
+    assert provider.inbox.next() == batch
+    provider.accept_batch.mark_processing(batch_id)
+    provider.progress_tracker.record(submission)
+    provider.accept_batch.mark_completed(batch_id, terminal_at=terminal_at)
+    assert provider.accept_batch.prune_terminal_batch(
+        batch_id,
+        older_than=terminal_at,
+        cleanup=provider.progress_tracker.discard_batch,
+    )
+
+    response = client.get(f"/validator/miner-task-batches/{batch_id}/runs?after_sequence=0&limit=10")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "batch_id": str(batch_id),
+        "after_sequence": 0,
+        "limit": 10,
+        "latest_sequence": 0,
+        "next_after_sequence": 0,
+        "has_more": False,
+        "items": [],
+        "failure_detail": None,
+    }
 
 
 def test_runs_endpoint_openapi_declares_page_bounds() -> None:
@@ -1534,8 +1586,8 @@ def test_accept_batch_endpoint_rejects_non_strict_artifact_uid_payload() -> None
     assert provider.accept_batch.received_batch is None
 
 
-def test_accept_batch_endpoint_is_idempotent_for_exact_duplicate_replay() -> None:
-    provider = RealAcceptBatchDependencyProvider()
+def test_accept_batch_endpoint_is_idempotent_for_exact_duplicate_replay(tmp_path: Path) -> None:
+    provider = RealAcceptBatchDependencyProvider(storage_root=tmp_path / "run-progress")
     app = _create_test_app(provider)
     client = TestClient(app)
     batch_id = uuid4()
@@ -1593,8 +1645,8 @@ def test_status_endpoint_returns_unknown_for_unaccepted_batch() -> None:
     }
 
 
-def test_accept_batch_endpoint_rejects_conflicting_duplicate_replay() -> None:
-    provider = RealAcceptBatchDependencyProvider()
+def test_accept_batch_endpoint_rejects_conflicting_duplicate_replay(tmp_path: Path) -> None:
+    provider = RealAcceptBatchDependencyProvider(storage_root=tmp_path / "run-progress")
     app = _create_test_app(provider)
     client = TestClient(app)
     batch_id = uuid4()

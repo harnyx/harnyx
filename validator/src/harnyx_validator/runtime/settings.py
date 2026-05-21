@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -82,6 +83,20 @@ class Settings(BaseSettings):
     artifact_task_parallelism: int = Field(
         default=20,
         alias="VALIDATOR_TASK_PARALLELISM",
+        ge=1,
+    )
+    validator_state_dir: Path = Field(
+        default=Path("/workspace/.harnyx_state"),
+        alias="VALIDATOR_STATE_DIR",
+    )
+    run_progress_retention_seconds: int = Field(
+        default=24 * 60 * 60,
+        alias="VALIDATOR_RUN_PROGRESS_RETENTION_SECONDS",
+        ge=1,
+    )
+    run_progress_cleanup_interval_seconds: int = Field(
+        default=10 * 60,
+        alias="VALIDATOR_RUN_PROGRESS_CLEANUP_INTERVAL_SECONDS",
         ge=1,
     )
 

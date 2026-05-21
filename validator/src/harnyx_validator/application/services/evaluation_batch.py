@@ -13,14 +13,12 @@ from uuid import UUID
 
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.application.session_manager import SessionManager
-from harnyx_commons.domain.miner_task import MinerTask
 from harnyx_commons.sandbox.client import SandboxClient
 from harnyx_commons.sandbox.docker import DockerSandboxManager
 from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskBatchRunResult,
     MinerTaskBatchSpec,
-    MinerTaskRunSubmission,
     ScriptArtifactSpec,
 )
 from harnyx_validator.application.evaluate_task_run import TaskRunOrchestrator
@@ -44,46 +42,6 @@ from harnyx_validator.application.status import BatchActivityTracker, StatusProv
 
 logger = logging.getLogger("harnyx_validator.miner_task_batch")
 
-_LOG_SNIPPET_LIMIT = 512
-
-
-def _truncate(value: str | None, *, limit: int = _LOG_SNIPPET_LIMIT) -> str | None:
-    if value is None:
-        return None
-    text = value.strip()
-    if len(text) <= limit:
-        return text
-    return text[: limit - 3] + "..."
-
-
-def _format_run_log(
-    *,
-    batch_id: UUID,
-    task: MinerTask,
-    submission: MinerTaskRunSubmission,
-) -> str:
-    run = submission.run
-    details = run.details
-    parts = [
-        f"batch_id={batch_id}",
-        f"uid={run.uid}",
-        f"artifact_id={run.artifact_id}",
-        f"task_id={run.task_id}",
-        f"score={submission.score:.3f}",
-    ]
-    if details.error is not None:
-        parts.append(f"error_code={details.error.code}")
-    lines = ["Miner task run result " + " ".join(parts)]
-    query_text = _truncate(task.query.text)
-    if query_text:
-        lines.append(f"  query: {query_text}")
-    response_text = _truncate(run.response.text if run.response is not None else None)
-    if response_text:
-        lines.append(f"  response: {response_text}")
-    if details.error is not None:
-        lines.append(f"  error: {_truncate(details.error.message)}")
-    return "\n".join(lines)
-
 
 class MinerTaskBatchService:
     """Processes miner-task batches by coordinating sandbox and scheduler."""
@@ -101,10 +59,10 @@ class MinerTaskBatchService:
         orchestrator_factory: Callable[[SandboxClient], TaskRunOrchestrator],
         sandbox_options_factory: Callable[[], SandboxOptions],
         agent_resolver: AgentResolver,
+        progress: ProgressRecorder,
         status_provider: StatusProvider | None = None,
         activity: BatchActivityTracker | None = None,
         config: EvaluationBatchConfig | None = None,
-        progress: ProgressRecorder | None = None,
     ) -> None:
         self._platform = platform_client
         self._status = status_provider
@@ -217,7 +175,6 @@ class MinerTaskBatchService:
         elapsed_seconds: float,
     ) -> None:
         self._log_batch_summary(batch_id, batch_result)
-        self._log_each_run(batch_id, batch_result)
         self._log_completion(batch_id, elapsed_seconds)
 
     def _log_batch_summary(self, batch_id: UUID, batch_result: MinerTaskBatchRunResult) -> None:
@@ -226,23 +183,9 @@ class MinerTaskBatchService:
             extra={
                 "batch_id": str(batch_id),
                 "tasks": len(batch_result.tasks),
-                "runs": len(batch_result.runs),
+                "runs": batch_result.completed_run_count,
             },
         )
-
-    def _log_each_run(self, batch_id: UUID, batch_result: MinerTaskBatchRunResult) -> None:
-        tasks_by_id = {task.task_id: task for task in batch_result.tasks}
-        for submission in batch_result.runs:
-            task = tasks_by_id.get(submission.run.task_id)
-            if task is None:
-                raise RuntimeError(f"task {submission.run.task_id} missing from batch result")
-            logger.info(
-                _format_run_log(
-                    batch_id=batch_id,
-                    task=task,
-                    submission=submission,
-                ),
-            )
 
     def _log_completion(self, batch_id: UUID, elapsed_seconds: float) -> None:
         logger.info(

@@ -30,7 +30,7 @@ from harnyx_validator.application.services.evaluation_runner import ValidatorBat
 from harnyx_validator.application.status import StatusProvider
 from harnyx_validator.domain.evaluation import MinerTaskRun
 from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
-from harnyx_validator.infrastructure.state.run_progress import InMemoryRunProgress
+from harnyx_validator.infrastructure.state.run_progress import FileBackedRunProgress
 from validator.tests.fixtures.fakes import FakeReceiptLog
 from validator.tests.fixtures.subtensor import FakeSubtensorClient
 
@@ -49,6 +49,10 @@ def blocking_executor() -> ThreadPoolExecutor:
 class DummyEvaluationRecordStore:
     def record(self, _result: MinerTaskRunSubmission) -> None:
         return None
+
+
+def _progress(tmp_path: Path) -> FileBackedRunProgress:
+    return FileBackedRunProgress(storage_root=tmp_path / "run-progress")
 
 
 def _task(text: str) -> MinerTask:
@@ -135,7 +139,7 @@ def test_batch_execution_planner_passes_task_parallelism_to_scheduler(
         orchestrator_factory=lambda client: client,
         sandbox_options_factory=lambda: SandboxOptions(image="sandbox:test", container_name="sandbox-base"),
         agent_resolver=lambda *_args: {},
-        progress=None,
+        progress=_progress(tmp_path),
         config=config,
     )
     batch = _batch()
@@ -165,6 +169,7 @@ async def test_process_async_fails_batch_after_scheduler_escape(
         orchestrator_factory=lambda client: client,
         sandbox_options_factory=lambda: SandboxOptions(image="sandbox:test", container_name="sandbox-base"),
         agent_resolver=lambda *_args: {},
+        progress=_progress(tmp_path),
         status_provider=status,
         config=EvaluationBatchConfig(state_dir=str(tmp_path)),
     )
@@ -212,7 +217,7 @@ async def test_process_async_fails_from_build_run_context_failure(
 ) -> None:
     batch = _batch()
     status = StatusProvider()
-    progress = InMemoryRunProgress()
+    progress = _progress(tmp_path)
     accept_batch = AcceptEvaluationBatch(
         inbox=InMemoryBatchInbox(),
         status=status,

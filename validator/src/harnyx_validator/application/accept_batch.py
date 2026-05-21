@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from threading import Lock
 from typing import Literal
 from uuid import UUID
@@ -23,6 +24,7 @@ class _AcceptedBatchState:
     lifecycle: BatchLifecycle
     error_code: str | None = None
     failure_detail: ValidatorBatchFailureDetail | None = None
+    terminal_at: datetime | None = None
 
 
 @dataclass(slots=True)
@@ -55,7 +57,11 @@ class AcceptEvaluationBatch:
             )
             if state is not None:
                 if state.lifecycle == "queued" and self._all_pairs_recorded(state.batch):
-                    self._accepted_batches[batch.batch_id] = replace(state, lifecycle="completed")
+                    self._accepted_batches[batch.batch_id] = replace(
+                        state,
+                        lifecycle="completed",
+                        terminal_at=_utcnow(),
+                    )
                     self.inbox.discard(batch.batch_id)
                     self._update_status_queue_length()
                 return
@@ -63,6 +69,7 @@ class AcceptEvaluationBatch:
                 self._accepted_batches[batch.batch_id] = _AcceptedBatchState(
                     batch=batch,
                     lifecycle="completed",
+                    terminal_at=_utcnow(),
                 )
                 return
             self._queue_new_batch(batch)
@@ -75,20 +82,31 @@ class AcceptEvaluationBatch:
             if state.lifecycle != "queued":
                 raise RuntimeError(f"batch_id {batch_id} cannot begin processing from {state.lifecycle}")
             if self._all_pairs_recorded(state.batch):
-                self._accepted_batches[batch_id] = replace(state, lifecycle="completed", error_code=None)
+                self._accepted_batches[batch_id] = replace(
+                    state,
+                    lifecycle="completed",
+                    error_code=None,
+                    terminal_at=_utcnow(),
+                )
                 return False
             self._accepted_batches[batch_id] = replace(
                 state,
                 lifecycle="processing",
                 error_code=None,
                 failure_detail=None,
+                terminal_at=None,
             )
             return True
 
     def mark_processing(self, batch_id: UUID) -> None:
         self._set_lifecycle(batch_id, "processing")
 
-    def mark_completed(self, batch_id: UUID) -> None:
+    def mark_completed(
+        self,
+        batch_id: UUID,
+        *,
+        terminal_at: datetime | None = None,
+    ) -> None:
         with self._lock:
             state = self._require_state(batch_id)
             if not self._all_pairs_recorded(state.batch):
@@ -98,6 +116,7 @@ class AcceptEvaluationBatch:
                 lifecycle="completed",
                 error_code=None,
                 failure_detail=None,
+                terminal_at=terminal_at or _utcnow(),
             )
 
     def mark_failed(
@@ -106,6 +125,7 @@ class AcceptEvaluationBatch:
         *,
         error_code: str,
         failure_detail: ValidatorBatchFailureDetail | None,
+        terminal_at: datetime | None = None,
     ) -> None:
         with self._lock:
             state = self._require_state(batch_id)
@@ -114,6 +134,7 @@ class AcceptEvaluationBatch:
                 lifecycle="failed",
                 error_code=error_code,
                 failure_detail=failure_detail,
+                terminal_at=terminal_at or _utcnow(),
             )
 
     def lifecycle_for(self, batch_id: UUID) -> BatchLifecycle | None:
@@ -137,6 +158,56 @@ class AcceptEvaluationBatch:
                 return None
             return state.failure_detail
 
+    def terminal_batches_older_than(self, cutoff: datetime) -> tuple[UUID, ...]:
+        normalized_cutoff = _as_utc(cutoff)
+        with self._lock:
+            return tuple(
+                batch_id
+                for batch_id, state in self._accepted_batches.items()
+                if _is_terminal(state)
+                and state.terminal_at is not None
+                and _as_utc(state.terminal_at) <= normalized_cutoff
+            )
+
+    def forget_terminal_batch(self, batch_id: UUID, *, older_than: datetime) -> bool:
+        normalized_cutoff = _as_utc(older_than)
+        with self._lock:
+            state = self._accepted_batches.get(batch_id)
+            if (
+                state is None
+                or not _is_terminal(state)
+                or state.terminal_at is None
+                or _as_utc(state.terminal_at) > normalized_cutoff
+            ):
+                return False
+            self._accepted_batches.pop(batch_id)
+            self.inbox.discard(batch_id)
+            self._update_status_queue_length()
+            return True
+
+    def prune_terminal_batch(
+        self,
+        batch_id: UUID,
+        *,
+        older_than: datetime,
+        cleanup: Callable[[UUID], object],
+    ) -> bool:
+        normalized_cutoff = _as_utc(older_than)
+        with self._lock:
+            state = self._accepted_batches.get(batch_id)
+            if (
+                state is None
+                or not _is_terminal(state)
+                or state.terminal_at is None
+                or _as_utc(state.terminal_at) > normalized_cutoff
+            ):
+                return False
+            cleanup(batch_id)
+            self._accepted_batches.pop(batch_id)
+            self.inbox.discard(batch_id)
+            self._update_status_queue_length()
+            return True
+
     def _queue_new_batch(self, batch: MinerTaskBatchSpec) -> None:
         self._accepted_batches[batch.batch_id] = _AcceptedBatchState(batch=batch, lifecycle="queued")
         self.inbox.put(batch)
@@ -153,6 +224,7 @@ class AcceptEvaluationBatch:
                 lifecycle=lifecycle,
                 error_code=None,
                 failure_detail=None,
+                terminal_at=None,
             )
 
     def _require_state(self, batch_id: UUID) -> _AcceptedBatchState:
@@ -172,6 +244,20 @@ class AcceptEvaluationBatch:
     def _update_status_queue_length(self) -> None:
         if self.status is not None:
             self.status.state.queued_batches = len(self.inbox)
+
+
+def _is_terminal(state: _AcceptedBatchState) -> bool:
+    return state.lifecycle in {"completed", "failed"}
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 __all__ = ["AcceptEvaluationBatch", "BatchLifecycle"]

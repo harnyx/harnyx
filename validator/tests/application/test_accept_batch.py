@@ -409,6 +409,91 @@ def test_accept_batch_mark_completed_marks_completed_when_all_pairs_are_recorded
     assert status.state.queued_batches == 0
 
 
+def test_accept_batch_records_terminal_timestamp_for_completed_batch() -> None:
+    inbox = InMemoryBatchInbox()
+    status = StatusProvider()
+    progress = ProgressSpy()
+    accept_batch = AcceptEvaluationBatch(inbox=inbox, status=status, progress=progress)
+    batch = _make_batch()
+    terminal_at = datetime(2026, 5, 20, 12, 0, tzinfo=UTC)
+
+    accept_batch.execute(batch)
+    assert inbox.next() == batch
+    accept_batch.mark_processing(batch.batch_id)
+    progress.set_recorded_pairs(batch, _all_pairs(batch))
+
+    accept_batch.mark_completed(batch.batch_id, terminal_at=terminal_at)
+
+    assert accept_batch.terminal_batches_older_than(terminal_at - timedelta(seconds=1)) == ()
+    assert accept_batch.terminal_batches_older_than(terminal_at) == (batch.batch_id,)
+
+
+def test_accept_batch_forget_terminal_batch_rejects_active_or_fresh_batches() -> None:
+    inbox = InMemoryBatchInbox()
+    status = StatusProvider()
+    progress = ProgressSpy()
+    accept_batch = AcceptEvaluationBatch(inbox=inbox, status=status, progress=progress)
+    cutoff = datetime(2026, 5, 20, 12, 0, tzinfo=UTC)
+    queued_batch = _make_batch()
+    processing_batch = _make_batch()
+    fresh_terminal_batch = _make_batch()
+    expired_terminal_batch = _make_batch()
+
+    accept_batch.execute(queued_batch)
+    accept_batch.execute(processing_batch)
+    assert inbox.discard(processing_batch.batch_id)
+    accept_batch.mark_processing(processing_batch.batch_id)
+
+    for batch, terminal_at in (
+        (fresh_terminal_batch, cutoff + timedelta(seconds=1)),
+        (expired_terminal_batch, cutoff - timedelta(seconds=1)),
+    ):
+        accept_batch.execute(batch)
+        assert inbox.discard(batch.batch_id)
+        progress.set_recorded_pairs(batch, _all_pairs(batch))
+        accept_batch.mark_processing(batch.batch_id)
+        accept_batch.mark_completed(batch.batch_id, terminal_at=terminal_at)
+    status.state.queued_batches = len(inbox)
+
+    assert accept_batch.forget_terminal_batch(queued_batch.batch_id, older_than=cutoff) is False
+    assert accept_batch.forget_terminal_batch(processing_batch.batch_id, older_than=cutoff) is False
+    assert accept_batch.forget_terminal_batch(fresh_terminal_batch.batch_id, older_than=cutoff) is False
+    assert accept_batch.forget_terminal_batch(expired_terminal_batch.batch_id, older_than=cutoff) is True
+
+    assert accept_batch.lifecycle_for(queued_batch.batch_id) == "queued"
+    assert accept_batch.lifecycle_for(processing_batch.batch_id) == "processing"
+    assert accept_batch.lifecycle_for(fresh_terminal_batch.batch_id) == "completed"
+    assert accept_batch.lifecycle_for(expired_terminal_batch.batch_id) is None
+    assert len(inbox) == 1
+    assert status.state.queued_batches == 1
+
+
+def test_accept_batch_prunes_terminal_batch_after_cleanup_succeeds() -> None:
+    inbox = InMemoryBatchInbox()
+    status = StatusProvider()
+    progress = ProgressSpy()
+    accept_batch = AcceptEvaluationBatch(inbox=inbox, status=status, progress=progress)
+    cutoff = datetime(2026, 5, 20, 12, 0, tzinfo=UTC)
+    batch = _make_batch()
+    cleanup_calls: list[UUID] = []
+
+    accept_batch.execute(batch)
+    assert inbox.next() == batch
+    progress.set_recorded_pairs(batch, _all_pairs(batch))
+    accept_batch.mark_processing(batch.batch_id)
+    accept_batch.mark_completed(batch.batch_id, terminal_at=cutoff - timedelta(seconds=1))
+
+    pruned = accept_batch.prune_terminal_batch(
+        batch.batch_id,
+        older_than=cutoff,
+        cleanup=cleanup_calls.append,
+    )
+
+    assert pruned is True
+    assert cleanup_calls == [batch.batch_id]
+    assert accept_batch.lifecycle_for(batch.batch_id) is None
+
+
 def test_accept_batch_rejects_conflicting_replay() -> None:
     inbox = InMemoryBatchInbox()
     status = StatusProvider()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import cast
 from uuid import uuid4
 
@@ -64,11 +65,15 @@ from harnyx_validator.application.services.evaluation_runner import (
 )
 from harnyx_validator.domain.evaluation import MinerTaskRun
 from harnyx_validator.infrastructure.scoring.vertex_embedding import VertexEmbeddingRetryExhaustedError
-from harnyx_validator.infrastructure.state.run_progress import InMemoryRunProgress
+from harnyx_validator.infrastructure.state.run_progress import FileBackedRunProgress
 from validator.tests.fixtures.fakes import FakeReceiptLog, FakeSessionRegistry
 from validator.tests.fixtures.subtensor import FakeSubtensorClient
 
 pytestmark = pytest.mark.anyio("asyncio")
+
+
+def _progress(tmp_path: Path) -> FileBackedRunProgress:
+    return FileBackedRunProgress(storage_root=tmp_path / "run-progress")
 
 
 class _ClockSequence:
@@ -733,7 +738,7 @@ class _RetryThenExhaustedOrchestrator:
 
 
 def _record_provider_failure(
-    progress: InMemoryRunProgress,
+    progress: FileBackedRunProgress,
     *,
     request: MinerTaskRunRequest,
     provider: str = "desearch",
@@ -754,7 +759,7 @@ def _record_provider_failure(
 
 
 def _seed_provider_evidence(
-    progress: InMemoryRunProgress,
+    progress: FileBackedRunProgress,
     *,
     batch_id,
     provider: str,
@@ -784,7 +789,7 @@ def _seed_provider_evidence(
 
 
 class _ProviderFailureThenSandboxFailureOrchestrator:
-    def __init__(self, *, progress: InMemoryRunProgress) -> None:
+    def __init__(self, *, progress: FileBackedRunProgress) -> None:
         self._progress = progress
         self.calls = 0
 
@@ -800,7 +805,7 @@ class _ProviderFailureThenSuccessOrchestrator:
     def __init__(
         self,
         *,
-        progress: InMemoryRunProgress,
+        progress: FileBackedRunProgress,
     ) -> None:
         self._progress = progress
         self.calls = 0
@@ -812,7 +817,7 @@ class _ProviderFailureThenSuccessOrchestrator:
 
 
 class _ProviderBatchFailureOrchestrator:
-    def __init__(self, *, progress: InMemoryRunProgress) -> None:
+    def __init__(self, *, progress: FileBackedRunProgress) -> None:
         self._progress = progress
         self.calls = 0
 
@@ -930,7 +935,7 @@ class _SuccessfulOrchestrator:
         return _successful_outcome(request)
 
 
-async def test_evaluation_runner_records_exhausted_submission() -> None:
+async def test_evaluation_runner_records_exhausted_submission(tmp_path: Path) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -947,6 +952,7 @@ async def test_evaluation_runner_records_exhausted_submission() -> None:
             datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
             datetime(2025, 10, 17, 12, 2, tzinfo=UTC),
         ),
+        progress=_progress(tmp_path),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -989,7 +995,9 @@ async def test_evaluation_runner_records_exhausted_submission() -> None:
     assert evaluation_store.records == [submission]
 
 
-async def test_evaluation_runner_retries_transient_invocation_with_same_session_and_accumulated_usage() -> None:
+async def test_evaluation_runner_retries_transient_invocation_with_same_session_and_accumulated_usage(
+    tmp_path: Path,
+) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -1003,6 +1011,7 @@ async def test_evaluation_runner_retries_transient_invocation_with_same_session_
         receipt_log=receipt_log,
         config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -1040,7 +1049,7 @@ async def test_evaluation_runner_retries_transient_invocation_with_same_session_
     assert evaluation_store.records == [submission]
 
 
-async def test_evaluation_runner_fails_batch_on_generic_post_invoke_failure() -> None:
+async def test_evaluation_runner_fails_batch_on_generic_post_invoke_failure(tmp_path: Path) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -1054,6 +1063,7 @@ async def test_evaluation_runner_fails_batch_on_generic_post_invoke_failure() ->
         receipt_log=receipt_log,
         config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -1084,7 +1094,7 @@ async def test_evaluation_runner_fails_batch_on_generic_post_invoke_failure() ->
     assert evaluation_store.records == []
 
 
-async def test_evaluation_runner_retries_scoring_timeout_within_same_session_before_success() -> None:
+async def test_evaluation_runner_retries_scoring_timeout_within_same_session_before_success(tmp_path: Path) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -1098,6 +1108,7 @@ async def test_evaluation_runner_retries_scoring_timeout_within_same_session_bef
         receipt_log=receipt_log,
         config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -1129,7 +1140,9 @@ async def test_evaluation_runner_retries_scoring_timeout_within_same_session_bef
     assert evaluation_store.records == list(result.submissions)
 
 
-async def test_evaluation_runner_miner_timeout_without_successful_baseline_stays_unresolved_and_retries_later() -> None:
+async def test_evaluation_runner_miner_timeout_without_successful_baseline_stays_unresolved_and_retries_later(
+    tmp_path: Path,
+) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -1143,6 +1156,7 @@ async def test_evaluation_runner_miner_timeout_without_successful_baseline_stays
         receipt_log=receipt_log,
         config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -1184,6 +1198,7 @@ async def test_evaluation_runner_miner_timeout_without_successful_baseline_stays
 
 async def test_evaluation_runner_records_unknown_inflight_timeout_tool_call_at_exhaustion(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(evaluation_runner_module, "IN_FLIGHT_LLM_TIMEOUT_REVIEW_WAIT_SECONDS", 0.0)
     subtensor = FakeSubtensorClient()
@@ -1199,6 +1214,7 @@ async def test_evaluation_runner_records_unknown_inflight_timeout_tool_call_at_e
         receipt_log=receipt_log,
         config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -1263,6 +1279,7 @@ async def test_evaluation_runner_records_unknown_inflight_timeout_tool_call_at_e
 
 async def test_evaluation_runner_carries_prior_unknown_inflight_timeout_tool_call_to_terminal_submission(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(evaluation_runner_module, "IN_FLIGHT_LLM_TIMEOUT_REVIEW_WAIT_SECONDS", 0.0)
     subtensor = FakeSubtensorClient()
@@ -1278,6 +1295,7 @@ async def test_evaluation_runner_carries_prior_unknown_inflight_timeout_tool_cal
         receipt_log=receipt_log,
         config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -1331,7 +1349,7 @@ async def test_evaluation_runner_carries_prior_unknown_inflight_timeout_tool_cal
     assert evaluation_store.records == [submission]
 
 
-async def test_evaluation_runner_fails_batch_after_scoring_timeout_retry_exhaustion() -> None:
+async def test_evaluation_runner_fails_batch_after_scoring_timeout_retry_exhaustion(tmp_path: Path) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -1345,6 +1363,7 @@ async def test_evaluation_runner_fails_batch_after_scoring_timeout_retry_exhaust
         receipt_log=receipt_log,
         config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -1375,7 +1394,7 @@ async def test_evaluation_runner_fails_batch_after_scoring_timeout_retry_exhaust
     assert evaluation_store.records == []
 
 
-async def test_evaluation_runner_records_miner_timeout_miner_owned_within_threshold() -> None:
+async def test_evaluation_runner_records_miner_timeout_miner_owned_within_threshold(tmp_path: Path) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -1389,6 +1408,7 @@ async def test_evaluation_runner_records_miner_timeout_miner_owned_within_thresh
         receipt_log=receipt_log,
         config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -1425,7 +1445,7 @@ async def test_evaluation_runner_records_miner_timeout_miner_owned_within_thresh
     )
 
 
-async def test_evaluation_runner_treats_http_client_timeoutexception_as_sandbox_timeout() -> None:
+async def test_evaluation_runner_treats_http_client_timeoutexception_as_sandbox_timeout(tmp_path: Path) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -1439,6 +1459,7 @@ async def test_evaluation_runner_treats_http_client_timeoutexception_as_sandbox_
         receipt_log=receipt_log,
         config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -1476,7 +1497,7 @@ async def test_evaluation_runner_treats_http_client_timeoutexception_as_sandbox_
     )
 
 
-async def test_evaluation_runner_records_miner_timeout_inconclusive_after_exhaustion() -> None:
+async def test_evaluation_runner_records_miner_timeout_inconclusive_after_exhaustion(tmp_path: Path) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -1490,6 +1511,7 @@ async def test_evaluation_runner_records_miner_timeout_inconclusive_after_exhaus
         receipt_log=receipt_log,
         config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -1534,7 +1556,9 @@ async def test_evaluation_runner_records_miner_timeout_inconclusive_after_exhaus
     assert recorded_submission.session.status is SessionStatus.ERROR
 
 
-async def test_evaluate_task_with_retry_merges_completed_artifact_baseline_before_timeout_review() -> None:
+async def test_evaluate_task_with_retry_merges_completed_artifact_baseline_before_timeout_review(
+    tmp_path: Path,
+) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -1546,6 +1570,7 @@ async def test_evaluate_task_with_retry_merges_completed_artifact_baseline_befor
         receipt_log=FakeReceiptLog(),
         config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -1593,7 +1618,7 @@ async def test_evaluate_task_with_retry_merges_completed_artifact_baseline_befor
     assert seen_baselines == [_llm_baseline(40.0)]
 
 
-async def test_evaluation_runner_does_not_treat_non_504_timeouterror_as_sandbox_timeout() -> None:
+async def test_evaluation_runner_does_not_treat_non_504_timeouterror_as_sandbox_timeout(tmp_path: Path) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -1607,6 +1632,7 @@ async def test_evaluation_runner_does_not_treat_non_504_timeouterror_as_sandbox_
         receipt_log=receipt_log,
         config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -1650,7 +1676,7 @@ async def test_evaluation_runner_does_not_treat_non_504_timeouterror_as_sandbox_
     assert exc.remaining_tasks == ()
 
 
-async def test_evaluation_runner_defaults_miner_timeout_to_owned_without_comparable_receipts() -> None:
+async def test_evaluation_runner_defaults_miner_timeout_to_owned_without_comparable_receipts(tmp_path: Path) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -1664,6 +1690,7 @@ async def test_evaluation_runner_defaults_miner_timeout_to_owned_without_compara
         receipt_log=receipt_log,
         config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -1700,7 +1727,9 @@ async def test_evaluation_runner_defaults_miner_timeout_to_owned_without_compara
     )
 
 
-async def test_evaluation_runner_uses_only_successful_current_session_llm_receipts_for_timeout_evidence() -> None:
+async def test_evaluation_runner_uses_only_successful_current_session_llm_receipts_for_timeout_evidence(
+    tmp_path: Path,
+) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -1714,6 +1743,7 @@ async def test_evaluation_runner_uses_only_successful_current_session_llm_receip
         receipt_log=receipt_log,
         config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -1750,7 +1780,7 @@ async def test_evaluation_runner_uses_only_successful_current_session_llm_receip
     )
 
 
-async def test_evaluation_runner_records_zero_score_for_invalid_miner_response() -> None:
+async def test_evaluation_runner_records_zero_score_for_invalid_miner_response(tmp_path: Path) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -1764,6 +1794,7 @@ async def test_evaluation_runner_records_zero_score_for_invalid_miner_response()
         receipt_log=receipt_log,
         config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -1794,7 +1825,7 @@ async def test_evaluation_runner_records_zero_score_for_invalid_miner_response()
     assert evaluation_store.records == [submission]
 
 
-async def test_evaluation_runner_records_zero_score_for_scoring_retry_exhaustion() -> None:
+async def test_evaluation_runner_records_zero_score_for_scoring_retry_exhaustion(tmp_path: Path) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -1808,6 +1839,7 @@ async def test_evaluation_runner_records_zero_score_for_scoring_retry_exhaustion
         receipt_log=receipt_log,
         config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -1842,6 +1874,7 @@ async def test_evaluation_runner_records_zero_score_for_scoring_retry_exhaustion
 
 async def test_evaluation_runner_logs_session_summary_for_success(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
@@ -1863,6 +1896,7 @@ async def test_evaluation_runner_logs_session_summary_for_success(
         receipt_log=receipt_log,
         config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -1901,6 +1935,7 @@ async def test_evaluation_runner_logs_session_summary_for_success(
 
 async def test_evaluation_runner_logs_session_summary_for_scoring_retry_exhaustion(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
@@ -1922,6 +1957,7 @@ async def test_evaluation_runner_logs_session_summary_for_scoring_retry_exhausti
         receipt_log=receipt_log,
         config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -1962,6 +1998,7 @@ async def test_evaluation_runner_logs_session_summary_for_scoring_retry_exhausti
 
 async def test_evaluation_runner_logs_session_summary_for_timeout_validator_batch_failure(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
@@ -1983,6 +2020,7 @@ async def test_evaluation_runner_logs_session_summary_for_timeout_validator_batc
         receipt_log=receipt_log,
         config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -2030,7 +2068,7 @@ async def test_evaluation_runner_logs_session_summary_for_timeout_validator_batc
     assert payload["error_code"] == "timeout_inconclusive"
 
 
-async def test_evaluation_runner_records_embedding_retry_exhausted_submission() -> None:
+async def test_evaluation_runner_records_embedding_retry_exhausted_submission(tmp_path: Path) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -2044,6 +2082,7 @@ async def test_evaluation_runner_records_embedding_retry_exhausted_submission() 
         receipt_log=receipt_log,
         config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -2076,7 +2115,7 @@ async def test_evaluation_runner_records_embedding_retry_exhausted_submission() 
     assert evaluation_store.records == [submission]
 
 
-async def test_evaluation_runner_records_budget_exhausted_when_retry_starts_near_limit() -> None:
+async def test_evaluation_runner_records_budget_exhausted_when_retry_starts_near_limit(tmp_path: Path) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -2093,6 +2132,7 @@ async def test_evaluation_runner_records_budget_exhausted_when_retry_starts_near
             datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
             datetime(2025, 10, 17, 12, 2, tzinfo=UTC),
         ),
+        progress=_progress(tmp_path),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -2133,14 +2173,16 @@ async def test_evaluation_runner_records_budget_exhausted_when_retry_starts_near
     assert evaluation_store.records == [submission]
 
 
-async def test_evaluation_runner_keeps_valid_response_when_provider_failure_stays_below_threshold() -> None:
+async def test_evaluation_runner_keeps_valid_response_when_provider_failure_stays_below_threshold(
+    tmp_path: Path,
+) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
     session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
     evaluation_store = _RecordingEvaluationStore()
     receipt_log = FakeReceiptLog()
-    progress = InMemoryRunProgress()
+    progress = _progress(tmp_path)
     runner = EvaluationRunner(
         subtensor_client=subtensor,
         session_manager=session_manager,
@@ -2188,14 +2230,16 @@ async def test_evaluation_runner_keeps_valid_response_when_provider_failure_stay
     )
 
 
-async def test_evaluation_runner_fails_batch_when_successful_fallback_crosses_provider_threshold() -> None:
+async def test_evaluation_runner_fails_batch_when_successful_fallback_crosses_provider_threshold(
+    tmp_path: Path,
+) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
     session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
     evaluation_store = _RecordingEvaluationStore()
     receipt_log = FakeReceiptLog()
-    progress = InMemoryRunProgress()
+    progress = _progress(tmp_path)
     batch_id = uuid4()
     _seed_provider_evidence(
         progress,
@@ -2247,14 +2291,14 @@ async def test_evaluation_runner_fails_batch_when_successful_fallback_crosses_pr
     assert evaluation_store.records == []
 
 
-async def test_evaluation_runner_escalates_provider_failure_only_after_batch_threshold() -> None:
+async def test_evaluation_runner_escalates_provider_failure_only_after_batch_threshold(tmp_path: Path) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
     session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
     evaluation_store = _RecordingEvaluationStore()
     receipt_log = FakeReceiptLog()
-    progress = InMemoryRunProgress()
+    progress = _progress(tmp_path)
     batch_id = uuid4()
     _seed_provider_evidence(
         progress,
@@ -2306,7 +2350,7 @@ async def test_evaluation_runner_escalates_provider_failure_only_after_batch_thr
     assert evaluation_store.records == []
 
 
-async def test_evaluation_runner_records_zero_score_for_unhandled_miner_exception() -> None:
+async def test_evaluation_runner_records_zero_score_for_unhandled_miner_exception(tmp_path: Path) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -2323,6 +2367,7 @@ async def test_evaluation_runner_records_zero_score_for_unhandled_miner_exceptio
             datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
             datetime(2025, 10, 17, 12, 2, tzinfo=UTC),
         ),
+        progress=_progress(tmp_path),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -2351,7 +2396,7 @@ async def test_evaluation_runner_records_zero_score_for_unhandled_miner_exceptio
     assert evaluation_store.records == [submission]
 
 
-async def test_evaluation_runner_keeps_query_runtime_type_error_as_miner_unhandled_exception() -> None:
+async def test_evaluation_runner_keeps_query_runtime_type_error_as_miner_unhandled_exception(tmp_path: Path) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -2368,6 +2413,7 @@ async def test_evaluation_runner_keeps_query_runtime_type_error_as_miner_unhandl
             datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
             datetime(2025, 10, 17, 12, 2, tzinfo=UTC),
         ),
+        progress=_progress(tmp_path),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -2408,6 +2454,7 @@ async def test_evaluation_runner_keeps_query_runtime_type_error_as_miner_unhandl
 async def test_evaluation_runner_records_zero_score_for_script_validation_failures(
     orchestrator: TaskRunOrchestrator,
     error_code: str,
+    tmp_path: Path,
 ) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
@@ -2425,6 +2472,7 @@ async def test_evaluation_runner_records_zero_score_for_script_validation_failur
             datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
             datetime(2025, 10, 17, 12, 2, tzinfo=UTC),
         ),
+        progress=_progress(tmp_path),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -2464,6 +2512,7 @@ async def test_evaluation_runner_records_zero_score_for_script_validation_failur
 )
 async def test_evaluate_artifact_with_state_preserves_sandbox_infrastructure_failures(
     orchestrator: TaskRunOrchestrator,
+    tmp_path: Path,
 ) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
@@ -2482,6 +2531,7 @@ async def test_evaluate_artifact_with_state_preserves_sandbox_infrastructure_fai
             artifact_task_parallelism=1,
         ),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -2510,14 +2560,14 @@ async def test_evaluate_artifact_with_state_preserves_sandbox_infrastructure_fai
     assert exc.failure_detail.error_code == "sandbox_invocation_failed"
 
 
-async def test_evaluation_runner_does_not_let_stale_provider_marker_poison_later_attempt() -> None:
+async def test_evaluation_runner_does_not_let_stale_provider_marker_poison_later_attempt(tmp_path: Path) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
     session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
     evaluation_store = _RecordingEvaluationStore()
     receipt_log = FakeReceiptLog()
-    progress = InMemoryRunProgress()
+    progress = _progress(tmp_path)
     batch_id = uuid4()
     runner = EvaluationRunner(
         subtensor_client=subtensor,
@@ -2561,7 +2611,7 @@ async def test_evaluation_runner_does_not_let_stale_provider_marker_poison_later
     assert evaluation_store.records == list(exc.completed_submissions)
 
 
-async def test_evaluation_runner_uses_bounded_continuous_worker_pool() -> None:
+async def test_evaluation_runner_uses_bounded_continuous_worker_pool(tmp_path: Path) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -2579,6 +2629,7 @@ async def test_evaluation_runner_uses_bounded_continuous_worker_pool() -> None:
             artifact_task_parallelism=5,
         ),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     tasks = tuple(
         MinerTask(
@@ -2648,7 +2699,7 @@ async def test_evaluation_runner_uses_bounded_continuous_worker_pool() -> None:
     assert len(evaluation_store.records) == 6
 
 
-async def test_evaluation_runner_keeps_miner_failures_local_and_preserves_input_order() -> None:
+async def test_evaluation_runner_keeps_miner_failures_local_and_preserves_input_order(tmp_path: Path) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -2662,6 +2713,7 @@ async def test_evaluation_runner_keeps_miner_failures_local_and_preserves_input_
         receipt_log=receipt_log,
         config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     tasks = (
         MinerTask(
@@ -2737,7 +2789,7 @@ async def test_evaluation_runner_keeps_miner_failures_local_and_preserves_input_
     assert len(evaluation_store.records) == 3
 
 
-async def test_evaluation_runner_fails_batch_after_first_conclusive_validator_owned_submission() -> None:
+async def test_evaluation_runner_fails_batch_after_first_conclusive_validator_owned_submission(tmp_path: Path) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -2755,6 +2807,7 @@ async def test_evaluation_runner_fails_batch_after_first_conclusive_validator_ow
             artifact_task_parallelism=5,
         ),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     tasks = tuple(
         MinerTask(
@@ -2777,9 +2830,7 @@ async def test_evaluation_runner_fails_batch_after_first_conclusive_validator_ow
             self.first_wave_started = asyncio.Event()
             self.conclusive_failure_recorded = asyncio.Event()
             self.release_by_text = {task.query.text: asyncio.Event() for task in tasks}
-            self.second_attempt_release_by_text = {
-                task.query.text: asyncio.Event() for task in tasks[:2]
-            }
+            self.second_attempt_release_by_text = {task.query.text: asyncio.Event() for task in tasks[:2]}
             self.attempts_by_text: dict[str, int] = {}
 
         async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
@@ -2841,7 +2892,7 @@ async def test_evaluation_runner_fails_batch_after_first_conclusive_validator_ow
     assert tasks[1].task_id in recorded_ids
 
 
-async def test_evaluation_runner_preserves_earlier_completed_runs_when_later_round_aborts() -> None:
+async def test_evaluation_runner_preserves_earlier_completed_runs_when_later_round_aborts(tmp_path: Path) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -2855,6 +2906,7 @@ async def test_evaluation_runner_preserves_earlier_completed_runs_when_later_rou
         receipt_log=receipt_log,
         config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     batch_id = uuid4()
     first_task = MinerTask(
@@ -2922,7 +2974,9 @@ async def test_evaluation_runner_preserves_earlier_completed_runs_when_later_rou
     assert exc.remaining_tasks == (later_task,)
 
 
-async def test_evaluate_artifact_with_state_preserves_earlier_submissions_for_conclusive_failure() -> None:
+async def test_evaluate_artifact_with_state_preserves_earlier_submissions_for_conclusive_failure(
+    tmp_path: Path,
+) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -2936,6 +2990,7 @@ async def test_evaluate_artifact_with_state_preserves_earlier_submissions_for_co
         receipt_log=receipt_log,
         config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     batch_id = uuid4()
     earlier_task = MinerTask(
@@ -2987,7 +3042,9 @@ async def test_evaluate_artifact_with_state_preserves_earlier_submissions_for_co
     assert exc.remaining_tasks == ()
 
 
-async def test_evaluate_artifact_with_state_preserves_partial_submissions_for_validator_batch_failure() -> None:
+async def test_evaluate_artifact_with_state_preserves_partial_submissions_for_validator_batch_failure(
+    tmp_path: Path,
+) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -3005,6 +3062,7 @@ async def test_evaluate_artifact_with_state_preserves_partial_submissions_for_va
             artifact_task_parallelism=1,
         ),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     batch_id = uuid4()
     completed_task = MinerTask(
@@ -3062,7 +3120,9 @@ async def test_evaluate_artifact_with_state_preserves_partial_submissions_for_va
     assert exc.remaining_tasks == (pending_task,)
 
 
-async def test_evaluate_artifact_with_state_preserves_partial_submissions_for_unexpected_failure() -> None:
+async def test_evaluate_artifact_with_state_preserves_partial_submissions_for_unexpected_failure(
+    tmp_path: Path,
+) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -3080,6 +3140,7 @@ async def test_evaluate_artifact_with_state_preserves_partial_submissions_for_un
             artifact_task_parallelism=1,
         ),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     batch_id = uuid4()
     completed_task = MinerTask(
@@ -3128,7 +3189,7 @@ async def test_evaluate_artifact_with_state_preserves_partial_submissions_for_un
     assert isinstance(exc.cause, RuntimeError)
 
 
-async def test_record_failure_for_artifact_preserves_partial_submissions_when_recording_fails() -> None:
+async def test_record_failure_for_artifact_preserves_partial_submissions_when_recording_fails(tmp_path: Path) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -3142,6 +3203,7 @@ async def test_record_failure_for_artifact_preserves_partial_submissions_when_re
         receipt_log=receipt_log,
         config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     first_task = MinerTask(
         task_id=uuid4(),
@@ -3176,7 +3238,7 @@ async def test_record_failure_for_artifact_preserves_partial_submissions_when_re
     assert isinstance(exc.cause, RuntimeError)
 
 
-async def test_evaluation_runner_supports_serialized_artifact_execution() -> None:
+async def test_evaluation_runner_supports_serialized_artifact_execution(tmp_path: Path) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -3194,6 +3256,7 @@ async def test_evaluation_runner_supports_serialized_artifact_execution() -> Non
             artifact_task_parallelism=1,
         ),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
     )
     tasks = tuple(
         MinerTask(

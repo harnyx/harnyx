@@ -117,8 +117,6 @@ def _artifact_failure(artifact: ScriptArtifactSpec) -> ArtifactFailure:
     )
 
 
-
-
 def _usage_totals() -> dict[str, dict[str, LlmUsageTotals]]:
     return {
         "openai": {
@@ -540,6 +538,7 @@ class _FailingAsyncResource(_FakeAsyncResource):
 
 def test_local_eval_runtime_create_binds_sandbox_publish_to_loopback(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     captured: dict[str, object] = {}
     scoring_llm_provider = _FakeAsyncResource()
@@ -556,7 +555,7 @@ def test_local_eval_runtime_create_binds_sandbox_publish_to_loopback(
         sandbox=SimpleNamespace(
             sandbox_image="local/harnyx-sandbox:0.1.0-dev",
             sandbox_pull_policy="missing",
-        )
+        ),
     )
 
     def create_sandbox_manager(**kwargs: object) -> _FakeSandboxManager:
@@ -564,7 +563,11 @@ def test_local_eval_runtime_create_binds_sandbox_publish_to_loopback(
         return _FakeSandboxManager()
 
     monkeypatch.setattr(local_eval.Settings, "load", staticmethod(lambda: settings))
-    monkeypatch.setattr(local_eval, "_build_state", lambda: _minimal_local_eval_state())
+    monkeypatch.setattr(
+        local_eval,
+        "_build_state",
+        lambda *_args, **_kwargs: _minimal_local_eval_state(tmp_path),
+    )
     monkeypatch.setattr(
         local_eval,
         "build_tool_invocation_clients",
@@ -593,7 +596,10 @@ def test_local_eval_runtime_create_binds_sandbox_publish_to_loopback(
     )
     monkeypatch.setattr(local_eval, "create_sandbox_manager", create_sandbox_manager)
 
-    runtime = local_eval.LocalEvaluationRuntime.create(progress_reporter=None)
+    runtime = local_eval.LocalEvaluationRuntime.create(
+        run_progress_root=tmp_path / "run-progress",
+        progress_reporter=None,
+    )
 
     assert captured["host"] == "127.0.0.1"
     assert captured["published_port_bind_host"] == "127.0.0.1"
@@ -678,9 +684,7 @@ class _FakeSandboxClient(SandboxClient):
         session_id: UUID,
     ) -> Mapping[str, JsonValue]:
         del payload, context, token, session_id
-        raise AssertionError(
-            f"sandbox client invoke should not be reached in this unit test: entrypoint={entrypoint}"
-        )
+        raise AssertionError(f"sandbox client invoke should not be reached in this unit test: entrypoint={entrypoint}")
 
     def close(self) -> None:
         return None
@@ -859,13 +863,14 @@ def _single_failure_agent(root: Path) -> bytes:
     return agents[0].read_bytes()
 
 
-def _minimal_local_eval_state() -> SimpleNamespace:
+def _minimal_local_eval_state(tmp_path: Path) -> SimpleNamespace:
     return SimpleNamespace(
         session_registry=object(),
         token_registry=object(),
         receipt_log=object(),
         session_manager=object(),
         evaluation_records=object(),
+        progress_tracker=local_eval.FileBackedRunProgress(storage_root=tmp_path / "run-progress"),
         tool_concurrency_limiter=object(),
     )
 
@@ -923,13 +928,11 @@ def test_local_eval_writes_default_reports_for_latest_completed_vs_champion(
             "content_hash": "champion-hash",
             "size_bytes": 128,
             "content_b64": base64.b64encode(
-
-                    b"from harnyx_miner_sdk.decorators import entrypoint\n"
-                    b"from harnyx_miner_sdk.query import Query, Response\n"
-                    b'@entrypoint("query")\n'
-                    b"async def query(query: Query) -> Response:\n"
-                    b'    return Response(text="champion")\n'
-
+                b"from harnyx_miner_sdk.decorators import entrypoint\n"
+                b"from harnyx_miner_sdk.query import Query, Response\n"
+                b'@entrypoint("query")\n'
+                b"async def query(query: Query) -> Response:\n"
+                b'    return Response(text="champion")\n'
             ).decode("ascii"),
         },
     )
@@ -945,7 +948,9 @@ def test_local_eval_writes_default_reports_for_latest_completed_vs_champion(
     monkeypatch.setattr(
         local_eval.LocalEvaluationRuntime,
         "create",
-        staticmethod(lambda *, progress_reporter=None: _bind_progress(runtime, progress_reporter)),
+        staticmethod(
+            lambda *, progress_reporter=None, run_progress_root=None: _bind_progress(runtime, progress_reporter)
+        ),
     )
     monkeypatch.setattr(local_eval, "platform_base_url_from_env", lambda: "https://platform.example.com")
 
@@ -1020,6 +1025,7 @@ def test_render_answer_markdown_uses_shared_models_and_ignores_empty_optional_ci
 
 def test_invocation_only_runtime_factory_skips_default_scoring_provider(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     settings = cast(
         Any,
@@ -1033,6 +1039,7 @@ def test_invocation_only_runtime_factory_skips_default_scoring_provider(
         session_manager=object(),
         evaluation_records=object(),
         receipt_log=object(),
+        progress_tracker=local_eval.FileBackedRunProgress(storage_root=tmp_path / "run-progress"),
     )
     scoring_service = cast(Any, object())
     scoring_config = EvaluationScoringConfig(
@@ -1042,7 +1049,7 @@ def test_invocation_only_runtime_factory_skips_default_scoring_provider(
     )
 
     monkeypatch.setattr(local_eval.Settings, "load", staticmethod(lambda: settings))
-    monkeypatch.setattr(local_eval, "_build_state", lambda: state)
+    monkeypatch.setattr(local_eval, "_build_state", lambda *_args, **_kwargs: state)
     monkeypatch.setattr(
         local_eval,
         "build_tool_invocation_clients",
@@ -1058,12 +1065,14 @@ def test_invocation_only_runtime_factory_skips_default_scoring_provider(
     runtime = local_eval.LocalEvaluationRuntime.create_invocation_only(
         scoring_service=scoring_service,
         scoring_config=scoring_config,
+        run_progress_root=tmp_path / "run-progress",
     )
 
     assert runtime.settings is settings
     assert runtime.scoring_service is scoring_service
     assert runtime.scoring_config is scoring_config
     assert runtime._scoring_llm_provider is None
+
 
 def test_local_eval_target_only_skips_champion_fetch_and_keeps_recorded_context(
     tmp_path: Path,
@@ -1105,7 +1114,9 @@ def test_local_eval_target_only_skips_champion_fetch_and_keeps_recorded_context(
     monkeypatch.setattr(
         local_eval.LocalEvaluationRuntime,
         "create",
-        staticmethod(lambda *, progress_reporter=None: _bind_progress(runtime, progress_reporter)),
+        staticmethod(
+            lambda *, progress_reporter=None, run_progress_root=None: _bind_progress(runtime, progress_reporter)
+        ),
     )
     monkeypatch.setattr(local_eval, "platform_base_url_from_env", lambda: "https://platform.example.com")
 
@@ -1156,10 +1167,7 @@ def test_local_eval_target_only_continues_when_recorded_results_fetch_fails(
             source="explicit",
             detail=detail,
             recorded_results=_unavailable_recorded_results_snapshot(
-                path=(
-                    f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/"
-                    f"{champion_artifact_id}/results"
-                )
+                path=(f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/{champion_artifact_id}/results")
             ),
         ),
         champion_script={
@@ -1182,7 +1190,9 @@ def test_local_eval_target_only_continues_when_recorded_results_fetch_fails(
     monkeypatch.setattr(
         local_eval.LocalEvaluationRuntime,
         "create",
-        staticmethod(lambda *, progress_reporter=None: _bind_progress(runtime, progress_reporter)),
+        staticmethod(
+            lambda *, progress_reporter=None, run_progress_root=None: _bind_progress(runtime, progress_reporter)
+        ),
     )
     monkeypatch.setattr(local_eval, "platform_base_url_from_env", lambda: "https://platform.example.com")
 
@@ -1207,10 +1217,7 @@ def test_local_eval_target_only_continues_when_recorded_results_fetch_fails(
     assert report["recorded_platform_context"]["results_status"] == {
         "state": "unavailable",
         "error": {
-            "path": (
-                f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/"
-                f"{champion_artifact_id}/results"
-            ),
+            "path": (f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/{champion_artifact_id}/results"),
             "status_code": 503,
             "detail": "upstream connect error",
         },
@@ -1237,10 +1244,7 @@ def test_local_eval_vs_champion_continues_when_recorded_results_fetch_fails(
             source="latest-completed",
             detail=detail,
             recorded_results=_unavailable_recorded_results_snapshot(
-                path=(
-                    f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/"
-                    f"{champion_artifact_id}/results"
-                )
+                path=(f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/{champion_artifact_id}/results")
             ),
         ),
         champion_script={
@@ -1269,7 +1273,9 @@ def test_local_eval_vs_champion_continues_when_recorded_results_fetch_fails(
     monkeypatch.setattr(
         local_eval.LocalEvaluationRuntime,
         "create",
-        staticmethod(lambda *, progress_reporter=None: _bind_progress(runtime, progress_reporter)),
+        staticmethod(
+            lambda *, progress_reporter=None, run_progress_root=None: _bind_progress(runtime, progress_reporter)
+        ),
     )
     monkeypatch.setattr(local_eval, "platform_base_url_from_env", lambda: "https://platform.example.com")
 
@@ -1299,10 +1305,7 @@ def test_local_eval_target_only_continues_when_recorded_results_transport_fails(
             source="explicit",
             detail=detail,
             recorded_results=_request_error_recorded_results_snapshot(
-                path=(
-                    f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/"
-                    f"{champion_artifact_id}/results"
-                )
+                path=(f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/{champion_artifact_id}/results")
             ),
         ),
         champion_script={
@@ -1325,7 +1328,9 @@ def test_local_eval_target_only_continues_when_recorded_results_transport_fails(
     monkeypatch.setattr(
         local_eval.LocalEvaluationRuntime,
         "create",
-        staticmethod(lambda *, progress_reporter=None: _bind_progress(runtime, progress_reporter)),
+        staticmethod(
+            lambda *, progress_reporter=None, run_progress_root=None: _bind_progress(runtime, progress_reporter)
+        ),
     )
     monkeypatch.setattr(local_eval, "platform_base_url_from_env", lambda: "https://platform.example.com")
 
@@ -1348,10 +1353,7 @@ def test_local_eval_target_only_continues_when_recorded_results_transport_fails(
     assert report["recorded_platform_context"]["results_status"] == {
         "state": "unavailable",
         "error": {
-            "path": (
-                f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/"
-                f"{champion_artifact_id}/results"
-            ),
+            "path": (f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/{champion_artifact_id}/results"),
             "status_code": 0,
             "detail": "connection terminated",
         },
@@ -1390,13 +1392,11 @@ def test_local_eval_vs_champion_uses_platform_cascade_not_raw_total_only(
             "content_hash": "champion-hash",
             "size_bytes": 128,
             "content_b64": base64.b64encode(
-
-                    b"from harnyx_miner_sdk.decorators import entrypoint\n"
-                    b"from harnyx_miner_sdk.query import Query, Response\n"
-                    b'@entrypoint("query")\n'
-                    b"async def query(query: Query) -> Response:\n"
-                    b'    return Response(text="champion")\n'
-
+                b"from harnyx_miner_sdk.decorators import entrypoint\n"
+                b"from harnyx_miner_sdk.query import Query, Response\n"
+                b'@entrypoint("query")\n'
+                b"async def query(query: Query) -> Response:\n"
+                b'    return Response(text="champion")\n'
             ).decode("ascii"),
         },
     )
@@ -1414,7 +1414,9 @@ def test_local_eval_vs_champion_uses_platform_cascade_not_raw_total_only(
     monkeypatch.setattr(
         local_eval.LocalEvaluationRuntime,
         "create",
-        staticmethod(lambda *, progress_reporter=None: _bind_progress(runtime, progress_reporter)),
+        staticmethod(
+            lambda *, progress_reporter=None, run_progress_root=None: _bind_progress(runtime, progress_reporter)
+        ),
     )
     monkeypatch.setattr(local_eval, "platform_base_url_from_env", lambda: "https://platform.example.com")
 
@@ -1459,7 +1461,7 @@ def test_local_eval_head_to_head_winner_uses_raw_totals_not_rounded_totals(
                 b"from harnyx_miner_sdk.query import Query, Response\n"
                 b'@entrypoint("query")\n'
                 b"async def query(query: Query) -> Response:\n"
-                b'    return Response(text=\"champion\")\n'
+                b'    return Response(text="champion")\n'
             ).decode("ascii"),
         },
     )
@@ -1477,7 +1479,9 @@ def test_local_eval_head_to_head_winner_uses_raw_totals_not_rounded_totals(
     monkeypatch.setattr(
         local_eval.LocalEvaluationRuntime,
         "create",
-        staticmethod(lambda *, progress_reporter=None: _bind_progress(runtime, progress_reporter)),
+        staticmethod(
+            lambda *, progress_reporter=None, run_progress_root=None: _bind_progress(runtime, progress_reporter)
+        ),
     )
     monkeypatch.setattr(local_eval, "platform_base_url_from_env", lambda: "https://platform.example.com")
 
@@ -1541,7 +1545,9 @@ def test_local_eval_runs_target_and_champion_concurrently(
     monkeypatch.setattr(
         local_eval.LocalEvaluationRuntime,
         "create",
-        staticmethod(lambda *, progress_reporter=None: _bind_progress(runtime, progress_reporter)),
+        staticmethod(
+            lambda *, progress_reporter=None, run_progress_root=None: _bind_progress(runtime, progress_reporter)
+        ),
     )
     monkeypatch.setattr(local_eval, "platform_base_url_from_env", lambda: "https://platform.example.com")
 
@@ -1931,7 +1937,9 @@ def test_local_eval_does_not_write_reports_when_champion_outcome_has_artifact_fa
     monkeypatch.setattr(
         local_eval.LocalEvaluationRuntime,
         "create",
-        staticmethod(lambda *, progress_reporter=None: _bind_progress(runtime, progress_reporter)),
+        staticmethod(
+            lambda *, progress_reporter=None, run_progress_root=None: _bind_progress(runtime, progress_reporter)
+        ),
     )
     monkeypatch.setattr(local_eval, "platform_base_url_from_env", lambda: "https://platform.example.com")
 
@@ -1942,8 +1950,7 @@ def test_local_eval_does_not_write_reports_when_champion_outcome_has_artifact_fa
     assert not (tmp_path / f"local-eval-report-{batch_id}-vs-champion.md").exists()
 
 
-async def test_local_runtime_stops_started_sandbox_when_cancelled_during_startup(
-) -> None:
+async def test_local_runtime_stops_started_sandbox_when_cancelled_during_startup() -> None:
     batch_id = uuid4()
     artifact = ScriptArtifactSpec(
         uid=3,
@@ -2045,7 +2052,7 @@ def test_local_eval_vs_champion_fails_before_runtime_when_champion_script_is_inv
     )
     created = False
 
-    def _create_runtime(*, progress_reporter=None) -> _FakeRuntime:
+    def _create_runtime(*, progress_reporter=None, run_progress_root=None) -> _FakeRuntime:
         nonlocal created
         created = True
         runtime.progress_reporter = progress_reporter
@@ -2107,7 +2114,9 @@ def test_local_eval_vs_champion_preflight_does_not_execute_fetched_champion_code
     monkeypatch.setattr(
         local_eval.LocalEvaluationRuntime,
         "create",
-        staticmethod(lambda *, progress_reporter=None: _bind_progress(runtime, progress_reporter)),
+        staticmethod(
+            lambda *, progress_reporter=None, run_progress_root=None: _bind_progress(runtime, progress_reporter)
+        ),
     )
     monkeypatch.setattr(local_eval, "platform_base_url_from_env", lambda: "https://platform.example.com")
     monkeypatch.setattr(
@@ -2172,7 +2181,9 @@ def test_local_eval_logs_progress_to_stderr_and_keeps_stdout_json_clean(
     monkeypatch.setattr(
         local_eval.LocalEvaluationRuntime,
         "create",
-        staticmethod(lambda *, progress_reporter=None: _bind_progress(runtime, progress_reporter)),
+        staticmethod(
+            lambda *, progress_reporter=None, run_progress_root=None: _bind_progress(runtime, progress_reporter)
+        ),
     )
     monkeypatch.setattr(local_eval, "platform_base_url_from_env", lambda: "https://platform.example.com")
 
@@ -2273,7 +2284,7 @@ def test_local_eval_still_fails_before_runtime_when_batch_detail_fetch_fails(
     )
     created = False
 
-    def _create_runtime(*, progress_reporter=None) -> _FakeRuntime:
+    def _create_runtime(*, progress_reporter=None, run_progress_root=None) -> _FakeRuntime:
         nonlocal created
         del progress_reporter
         created = True
@@ -2306,7 +2317,7 @@ def test_local_eval_still_fails_before_runtime_when_latest_batch_lookup_fails(
     )
     created = False
 
-    def _create_runtime(*, progress_reporter=None) -> _FakeRuntime:
+    def _create_runtime(*, progress_reporter=None, run_progress_root=None) -> _FakeRuntime:
         nonlocal created
         del progress_reporter
         created = True

@@ -254,11 +254,12 @@ def test_local_benchmark_uses_invocation_only_runtime(
         async def aclose(self) -> None:
             captured["scoring_closed"] = True
 
-    def _create_invocation_only_runtime(*, scoring_service, scoring_config):
+    def _create_invocation_only_runtime(*, scoring_service, scoring_config, run_progress_root):
         events.append("create_invocation_only")
         assert events == ["load_public_env", "create_invocation_only"]
         captured["invocation_scoring"] = scoring_service
         captured["invocation_config"] = scoring_config
+        captured["run_progress_root"] = run_progress_root
         return _FakeRuntime()
 
     monkeypatch.setattr(local_benchmark, "load_public_env", lambda: events.append("load_public_env"))
@@ -293,6 +294,7 @@ def test_local_benchmark_uses_invocation_only_runtime(
     assert payload["mean_total_score"] == 1.0
     assert payload["item_count"] == 1
     assert captured["invocation_config"] is local_benchmark._INVOCATION_ONLY_SCORING_CONFIG
+    assert captured["run_progress_root"] == tmp_path / ".harnyx-local-benchmark-progress" / payload["run_id"]
     assert captured["runtime_closed"] is True
     assert captured["scoring_closed"] is True
 

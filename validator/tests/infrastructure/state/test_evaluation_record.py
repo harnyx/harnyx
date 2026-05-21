@@ -14,10 +14,11 @@ from harnyx_commons.domain.miner_task import (
     ScoreBreakdown,
 )
 from harnyx_commons.domain.session import Session, SessionUsage
+from harnyx_commons.domain.tool_call import ToolCall, ToolCallDetails, ToolCallOutcome
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
 from harnyx_validator.application.dto.evaluation import MinerTaskRunSubmission, TokenUsageSummary
 from harnyx_validator.domain.evaluation import MinerTaskRun
-from harnyx_validator.infrastructure.state.evaluation_record import InMemoryEvaluationRecordStore
+from harnyx_validator.infrastructure.state.evaluation_record import CompactEvaluationRecordStore
 
 
 def _make_submission(
@@ -65,33 +66,52 @@ def _make_submission(
         validator_uid=4,
         run=run,
         score=score,
+        execution_log=(
+            ToolCall(
+                receipt_id="receipt-1",
+                session_id=run.session_id,
+                uid=run.uid,
+                tool="fetch_page",
+                issued_at=run.completed_at,
+                outcome=ToolCallOutcome.OK,
+                details=ToolCallDetails(
+                    request_hash="request-hash",
+                    response_hash="response-hash",
+                    response_payload={"content": "large page content"},
+                ),
+            ),
+        ),
         usage=TokenUsageSummary.empty(),
         session=session,
     )
 
 
-def test_in_memory_store_records_miner_task_run_submissions() -> None:
-    store = InMemoryEvaluationRecordStore()
+def _compact(submission: MinerTaskRunSubmission) -> MinerTaskRunSubmission:
+    return submission.model_copy(update={"execution_log": ()})
+
+
+def test_compact_store_records_logless_miner_task_run_submissions() -> None:
+    store = CompactEvaluationRecordStore()
     submission = _make_submission()
 
     store.record(submission)
 
     records = store.records()
-    assert records == (submission,)
+    assert records == (_compact(submission),)
 
 
-def test_in_memory_store_duplicate_identical_pair_is_a_noop() -> None:
-    store = InMemoryEvaluationRecordStore()
+def test_compact_store_duplicate_identical_pair_is_a_noop() -> None:
+    store = CompactEvaluationRecordStore()
     submission = _make_submission()
 
     store.record(submission)
     store.record(submission)
 
-    assert store.records() == (submission,)
+    assert store.records() == (_compact(submission),)
 
 
-def test_in_memory_store_rejects_conflicting_duplicate_pair() -> None:
-    store = InMemoryEvaluationRecordStore()
+def test_compact_store_rejects_conflicting_duplicate_pair() -> None:
+    store = CompactEvaluationRecordStore()
     batch_id = uuid4()
     artifact_id = uuid4()
     task_id = uuid4()

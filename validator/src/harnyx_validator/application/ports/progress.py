@@ -3,11 +3,35 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Protocol
+from typing import Protocol, TypedDict
 from uuid import UUID
 
 from harnyx_commons.miner_task_failure_policy import ProviderFailureEvidence
 from harnyx_validator.application.dto.evaluation import MinerTaskBatchSpec, MinerTaskRunSubmission
+
+
+class RunProgressSummary(TypedDict):
+    batch_id: UUID
+    total: int
+    completed: int
+    remaining: int
+    latest_sequence: int
+    provider_evidence: tuple[ProviderFailureEvidence, ...]
+
+
+class SequencedRun(TypedDict):
+    sequence: int
+    submission: MinerTaskRunSubmission
+
+
+class RunProgressPage(TypedDict):
+    batch_id: UUID
+    after_sequence: int
+    limit: int
+    latest_sequence: int
+    next_after_sequence: int
+    has_more: bool
+    items: tuple[SequencedRun, ...]
 
 
 class ProgressRecorder(Protocol):
@@ -26,6 +50,18 @@ class ProgressRecorder(Protocol):
         ...
 
     def recorded_pairs(self, batch_id: UUID) -> frozenset[tuple[UUID, UUID]]:
+        ...
+
+    def summary(self, batch_id: UUID) -> RunProgressSummary:
+        ...
+
+    def completed_run_page(
+        self,
+        batch_id: UUID,
+        *,
+        after_sequence: int,
+        limit: int,
+    ) -> RunProgressPage:
         ...
 
     def register_task_session(
@@ -62,4 +98,10 @@ class ProgressRecorder(Protocol):
         ...
 
 
-__all__ = ["ProgressRecorder", "ProviderFailureEvidence"]
+__all__ = [
+    "ProgressRecorder",
+    "ProviderFailureEvidence",
+    "RunProgressPage",
+    "RunProgressSummary",
+    "SequencedRun",
+]

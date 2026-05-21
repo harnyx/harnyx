@@ -36,6 +36,7 @@ from harnyx_validator.application.services.evaluation_runner import (
 from harnyx_validator.application.status import BatchActivityTracker, StatusProvider
 from harnyx_validator.domain.evaluation import MinerTaskRun
 from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
+from harnyx_validator.infrastructure.state.run_progress import FileBackedRunProgress
 from harnyx_validator.runtime.evaluation_worker import EvaluationWorker
 
 
@@ -357,6 +358,74 @@ async def test_evaluation_worker_stop_does_not_close_batch_service_and_restart_i
 
 
 @pytest.mark.anyio
+async def test_evaluation_worker_prunes_terminal_run_progress_after_retention(tmp_path) -> None:
+    inbox = InMemoryBatchInbox()
+    status = StatusProvider()
+    progress = FileBackedRunProgress(storage_root=tmp_path / "run-progress")
+    accept_batch = AcceptEvaluationBatch(inbox=inbox, status=status, progress=progress)
+    current_time = datetime(2026, 5, 20, 12, 0, tzinfo=UTC)
+    fake_service = FakeBatchService(on_process=lambda batch: progress.record(_completed_submission(batch)))
+    worker = EvaluationWorker(
+        batch_service=fake_service,
+        batch_inbox=inbox,
+        status_provider=status,
+        batch_tracker=accept_batch,
+        progress_tracker=progress,
+        run_progress_retention_seconds=10,
+        run_progress_cleanup_interval_seconds=1,
+        clock=lambda: current_time,
+    )
+    batch = _sample_batch()
+    accept_batch.execute(batch)
+
+    worker.start()
+    assert await asyncio.to_thread(fake_service.processed_event.wait, timeout=1.0)
+    await asyncio.sleep(0.05)
+
+    current_time += timedelta(seconds=11)
+    worker._prune_terminal_run_progress()
+    await worker.stop(timeout=1.0)
+
+    assert accept_batch.lifecycle_for(batch.batch_id) is None
+    assert progress.summary(batch.batch_id)["total"] == 0
+    assert not (tmp_path / "run-progress" / str(batch.batch_id)).exists()
+
+
+@pytest.mark.anyio
+async def test_evaluation_worker_does_not_prune_terminal_run_progress_before_retention(tmp_path) -> None:
+    inbox = InMemoryBatchInbox()
+    status = StatusProvider()
+    progress = FileBackedRunProgress(storage_root=tmp_path / "run-progress")
+    accept_batch = AcceptEvaluationBatch(inbox=inbox, status=status, progress=progress)
+    current_time = datetime(2026, 5, 20, 12, 0, tzinfo=UTC)
+    fake_service = FakeBatchService(on_process=lambda batch: progress.record(_completed_submission(batch)))
+    worker = EvaluationWorker(
+        batch_service=fake_service,
+        batch_inbox=inbox,
+        status_provider=status,
+        batch_tracker=accept_batch,
+        progress_tracker=progress,
+        run_progress_retention_seconds=10,
+        run_progress_cleanup_interval_seconds=1,
+        clock=lambda: current_time,
+    )
+    batch = _sample_batch()
+    accept_batch.execute(batch)
+
+    worker.start()
+    assert await asyncio.to_thread(fake_service.processed_event.wait, timeout=1.0)
+    await asyncio.sleep(0.05)
+
+    current_time += timedelta(seconds=9)
+    worker._prune_terminal_run_progress()
+    await worker.stop(timeout=1.0)
+
+    assert accept_batch.lifecycle_for(batch.batch_id) == "completed"
+    assert progress.summary(batch.batch_id)["total"] == 1
+    assert (tmp_path / "run-progress" / str(batch.batch_id)).exists()
+
+
+@pytest.mark.anyio
 async def test_evaluation_worker_marks_batch_failed_when_unexpected_error_happens_after_progress() -> None:
     inbox = InMemoryBatchInbox()
     status = StatusProvider()
@@ -610,7 +679,12 @@ def test_create_evaluation_worker_from_context_passes_settings_parallelism(monke
     batch_activity = BatchActivityTracker()
 
     context = SimpleNamespace(
-        settings=SimpleNamespace(artifact_parallelism=4, artifact_task_parallelism=5),
+        settings=SimpleNamespace(
+            artifact_parallelism=4,
+            artifact_task_parallelism=5,
+            run_progress_retention_seconds=123,
+            run_progress_cleanup_interval_seconds=45,
+        ),
         platform_client=object(),
         subtensor_client=object(),
         sandbox_manager=object(),
@@ -634,4 +708,7 @@ def test_create_evaluation_worker_from_context_passes_settings_parallelism(monke
     assert isinstance(config, EvaluationBatchConfig)
     assert config.artifact_parallelism == 4
     assert config.artifact_task_parallelism == 5
+    assert worker._run_progress_retention == timedelta(seconds=123)
+    assert worker._run_progress_cleanup_interval_seconds == 45
+    assert worker._progress_tracker is context.progress_tracker
     assert captured["activity"] is batch_activity

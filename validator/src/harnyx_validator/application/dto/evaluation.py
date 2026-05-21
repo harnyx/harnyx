@@ -188,7 +188,7 @@ class MinerTaskBatchRunResult(BaseModel):
 
     batch_id: UUID
     tasks: tuple[MinerTask, ...]
-    runs: tuple[MinerTaskRunSubmission, ...]
+    completed_run_count: int = Field(ge=0)
 
 
 __all__ = [

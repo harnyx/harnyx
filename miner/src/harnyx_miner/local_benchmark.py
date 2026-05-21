@@ -126,12 +126,14 @@ def _create_invocation_only_runtime(
     *,
     scoring_service: EvaluationScoringService,
     scoring_config: EvaluationScoringConfig,
+    run_progress_root: Path,
 ) -> LocalEvaluationRuntime:
     from harnyx_miner.local_eval import LocalEvaluationRuntime
 
     return LocalEvaluationRuntime.create_invocation_only(
         scoring_service=scoring_service,
         scoring_config=scoring_config,
+        run_progress_root=run_progress_root,
     )
 
 
@@ -212,6 +214,7 @@ async def _amain(argv: Sequence[str] | None) -> None:
         dataset_version=snapshot.manifest.dataset_version,
         scoring_version=snapshot.manifest.scoring_version,
     )
+    run_progress_root = output_dir / ".harnyx-local-benchmark-progress" / str(run_id)
     backing_batch_id = benchmark_backing_batch_id_for_run(
         suite_slug=snapshot.manifest.suite_slug,
         run_id=run_id,
@@ -250,6 +253,7 @@ async def _amain(argv: Sequence[str] | None) -> None:
         runtime = _create_invocation_only_runtime(
             scoring_service=invocation_scoring,
             scoring_config=_INVOCATION_ONLY_SCORING_CONFIG,
+            run_progress_root=run_progress_root,
         )
         scoring = _build_benchmark_scoring_bundle()
         _emit_progress(

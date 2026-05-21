@@ -6,7 +6,9 @@ import asyncio
 import logging
 import re
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -20,6 +22,7 @@ from harnyx_validator.application.services.evaluation_runner import (
 from harnyx_validator.application.status import StatusProvider
 from harnyx_validator.infrastructure.observability.sentry import capture_exception
 from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
+from harnyx_validator.infrastructure.state.run_progress import FileBackedRunProgress
 from harnyx_validator.runtime.agent_artifact import create_platform_agent_resolver
 
 if TYPE_CHECKING:
@@ -36,6 +39,8 @@ _PROVIDER_BATCH_FAILURE_PATTERN = re.compile(
 
 # Re-export config for convenience
 EVALUATION_CONFIG = EvaluationBatchConfig()
+_DEFAULT_RUN_PROGRESS_RETENTION_SECONDS = 24 * 60 * 60
+_DEFAULT_RUN_PROGRESS_CLEANUP_INTERVAL_SECONDS = 10 * 60
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +166,10 @@ def _batch_failure_capture_payload(
     )
 
 
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
 class EvaluationWorker:
     """Async evaluation worker that drains the inbox and processes batches.
 
@@ -178,11 +187,23 @@ class EvaluationWorker:
         batch_inbox: InMemoryBatchInbox,
         status_provider: StatusProvider | None = None,
         batch_tracker: AcceptEvaluationBatch | None = None,
+        progress_tracker: FileBackedRunProgress | None = None,
+        run_progress_retention_seconds: int = _DEFAULT_RUN_PROGRESS_RETENTION_SECONDS,
+        run_progress_cleanup_interval_seconds: int = _DEFAULT_RUN_PROGRESS_CLEANUP_INTERVAL_SECONDS,
+        clock: Callable[[], datetime] = _utcnow,
     ) -> None:
+        if run_progress_retention_seconds <= 0:
+            raise ValueError("run_progress_retention_seconds must be positive")
+        if run_progress_cleanup_interval_seconds <= 0:
+            raise ValueError("run_progress_cleanup_interval_seconds must be positive")
         self._batch_service = batch_service
         self._inbox = batch_inbox
         self._status = status_provider
         self._batch_tracker = batch_tracker
+        self._progress_tracker = progress_tracker
+        self._run_progress_retention = timedelta(seconds=run_progress_retention_seconds)
+        self._run_progress_cleanup_interval_seconds = run_progress_cleanup_interval_seconds
+        self._clock = clock
         self._stop = threading.Event()
         self._task: asyncio.Task[None] | None = None
 
@@ -212,8 +233,13 @@ class EvaluationWorker:
 
     async def _run(self) -> None:
         while not self._stop.is_set():
-            batch = await asyncio.to_thread(self._inbox.get, stop_event=self._stop)
+            batch = await asyncio.to_thread(
+                self._inbox.get,
+                timeout=self._run_progress_cleanup_interval_seconds,
+                stop_event=self._stop,
+            )
             if batch is None:
+                self._prune_terminal_run_progress()
                 continue
 
             if self._batch_tracker is not None:
@@ -221,6 +247,7 @@ class EvaluationWorker:
                 if not should_process:
                     if self._status is not None:
                         self._status.state.queued_batches = len(self._inbox)
+                    self._prune_terminal_run_progress()
                     continue
             if self._status is not None:
                 self._status.state.queued_batches = len(self._inbox)
@@ -228,7 +255,8 @@ class EvaluationWorker:
             try:
                 await self._batch_service.process_async(batch)
                 if self._batch_tracker is not None:
-                    self._batch_tracker.mark_completed(batch.batch_id)
+                    self._batch_tracker.mark_completed(batch.batch_id, terminal_at=self._clock())
+                self._prune_terminal_run_progress()
             except ValidatorBatchFailedError as exc:
                 payload = _batch_failure_capture_payload(batch_id=batch.batch_id, exc=exc)
                 capture_exception(
@@ -243,6 +271,7 @@ class EvaluationWorker:
                         batch.batch_id,
                         error_code=exc.error_code,
                         failure_detail=exc.failure_detail,
+                        terminal_at=self._clock(),
                     )
                 logger.exception(
                     "batch processing failed",
@@ -251,6 +280,7 @@ class EvaluationWorker:
                 if self._status is not None:
                     self._status.state.last_error = exc.error_code
                     self._status.state.running = False
+                self._prune_terminal_run_progress()
             except Exception as exc:
                 capture_exception(exc)
                 if self._batch_tracker is not None:
@@ -258,6 +288,7 @@ class EvaluationWorker:
                         batch.batch_id,
                         error_code="unexpected_batch_failure",
                         failure_detail=None,
+                        terminal_at=self._clock(),
                     )
                 logger.exception(
                     "batch processing raised unexpectedly after service-owned recovery boundary",
@@ -266,6 +297,26 @@ class EvaluationWorker:
                 if self._status is not None:
                     self._status.state.last_error = "unexpected_batch_failure"
                     self._status.state.running = False
+                self._prune_terminal_run_progress()
+
+    def _prune_terminal_run_progress(self) -> None:
+        if self._batch_tracker is None or self._progress_tracker is None:
+            return
+        cutoff = self._clock() - self._run_progress_retention
+        for batch_id in self._batch_tracker.terminal_batches_older_than(cutoff):
+            try:
+                pruned = self._batch_tracker.prune_terminal_batch(
+                    batch_id,
+                    older_than=cutoff,
+                    cleanup=self._progress_tracker.discard_batch,
+                )
+                if pruned:
+                    logger.info("pruned terminal run progress", extra={"batch_id": str(batch_id)})
+            except Exception:
+                logger.exception(
+                    "failed to prune terminal run progress",
+                    extra={"batch_id": str(batch_id)},
+                )
 
 
 def create_evaluation_worker(
@@ -274,6 +325,9 @@ def create_evaluation_worker(
     batch_inbox: InMemoryBatchInbox,
     status_provider: StatusProvider | None = None,
     batch_tracker: AcceptEvaluationBatch | None = None,
+    progress_tracker: FileBackedRunProgress | None = None,
+    run_progress_retention_seconds: int = _DEFAULT_RUN_PROGRESS_RETENTION_SECONDS,
+    run_progress_cleanup_interval_seconds: int = _DEFAULT_RUN_PROGRESS_CLEANUP_INTERVAL_SECONDS,
 ) -> EvaluationWorker:
     """Factory function to create an EvaluationWorker with injected dependencies."""
     return EvaluationWorker(
@@ -281,6 +335,9 @@ def create_evaluation_worker(
         batch_inbox=batch_inbox,
         status_provider=status_provider,
         batch_tracker=batch_tracker,
+        progress_tracker=progress_tracker,
+        run_progress_retention_seconds=run_progress_retention_seconds,
+        run_progress_cleanup_interval_seconds=run_progress_cleanup_interval_seconds,
     )
 
 
@@ -320,6 +377,9 @@ def create_evaluation_worker_from_context(context: RuntimeContext) -> Evaluation
         batch_inbox=context.batch_inbox,
         status_provider=context.status_provider,
         batch_tracker=batch_tracker,
+        progress_tracker=context.progress_tracker,
+        run_progress_retention_seconds=context.settings.run_progress_retention_seconds,
+        run_progress_cleanup_interval_seconds=context.settings.run_progress_cleanup_interval_seconds,
     )
 
 
