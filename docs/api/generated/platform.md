@@ -10,6 +10,8 @@ Generated from FastAPI OpenAPI.
   - [POST /v1/miner-task-batches/batch](#endpoint-post-v1-miner-task-batches-batch)
   - [GET /v1/miner-task-batches/batch/{batch_id}](#endpoint-get-v1-miner-task-batches-batch-batch_id)
   - [GET /v1/miner-task-batches/{batch_id}/artifacts/{artifact_id}](#endpoint-get-v1-miner-task-batches-batch_id-artifacts-artifact_id)
+  - [GET /v1/miner-task-batches/{batch_id}/restore](#endpoint-get-v1-miner-task-batches-batch_id-restore)
+  - [GET /v1/miner-task-batches/{batch_id}/restore/runs](#endpoint-get-v1-miner-task-batches-batch_id-restore-runs)
 - [miners](#miners)
   - [POST /v1/miners/scripts](#endpoint-post-v1-miners-scripts)
 - [repo-search](#repo-search)
@@ -257,6 +259,127 @@ Download a stored script artifact for a batch.
 
 **Responses**
 `200` Successful Response
+
+`422` Validation Error
+Content-Type: `application/json`
+Body: [HTTPValidationError](#model-httpvalidationerror)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
+|  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
+|  | `msg` |  | req | `string` |
+|  | `type` |  | req | `string` |
+
+
+#### restore
+
+<a id="endpoint-get-v1-miner-task-batches-batch_id-restore"></a>
+##### GET /v1/miner-task-batches/{batch_id}/restore
+
+Return restore metadata for the caller validator and batch.
+
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
+
+**Parameters**
+| Param | In | Req | Notes |
+| --- | --- | --- | --- |
+| `batch_id` | path | req | `string` (format: uuid) |
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: [MinerTaskBatchRestoreMetadataResponse](#model-minertaskbatchrestoremetadataresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `batch_id` |  |  | req | `string` (format: uuid) |
+| `page_limit` |  |  | req | `integer` |
+| `provider_model_evidence` |  |  | opt | array[[ProviderModelEvidence](#model-providermodelevidence)] (default: []) |
+|  | `failed_calls` |  | req | `integer` |
+|  | `failure_reason` |  | opt | `string` (nullable) |
+|  | `model` |  | req | `string` |
+|  | `provider` |  | req | `string` |
+|  | `total_calls` |  | req | `integer` |
+| `snapshot_received_at` |  |  | req | `string` (format: date-time) |
+| `total_restore_runs` |  |  | req | `integer` |
+
+`422` Validation Error
+Content-Type: `application/json`
+Body: [HTTPValidationError](#model-httpvalidationerror)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
+|  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
+|  | `msg` |  | req | `string` |
+|  | `type` |  | req | `string` |
+
+
+##### runs
+
+<a id="endpoint-get-v1-miner-task-batches-batch_id-restore-runs"></a>
+###### GET /v1/miner-task-batches/{batch_id}/restore/runs
+
+Return one bounded restore page for the caller validator and batch.
+
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
+
+**Parameters**
+| Param | In | Req | Notes |
+| --- | --- | --- | --- |
+| `batch_id` | path | req | `string` (format: uuid) |
+| `snapshot_received_at` | query | req | `string` (format: date-time) |
+| `cursor` | query | opt | `integer` (default: 0) |
+| `limit` | query | opt | `integer` (default: 500) |
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: [MinerTaskBatchRestoreRunsPageResponse](#model-minertaskbatchrestorerunspageresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `batch_id` |  |  | req | `string` (format: uuid) |
+| `cursor` |  |  | req | `integer` |
+| `items` |  |  | opt | array[[MinerTaskRunRequest](#model-minertaskrunrequest)] (default: []) |
+|  | `batch_id` |  | req | `string` (format: uuid) |
+|  | `execution_log` |  | opt | array[[ToolCall](#model-toolcall)] (default: []) |
+|  |  | `details` | req | [ToolCallDetails](#model-toolcalldetails) |
+|  |  | `issued_at` | req | `string` (format: date-time) |
+|  |  | `outcome` | req | [ToolCallOutcome](#model-toolcalloutcome) |
+|  |  | `receipt_id` | req | `string` |
+|  |  | `session_id` | req | `string` (format: uuid) |
+|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, llm_chat, test_tool, tooling_info]) |
+|  |  | `uid` | req | `integer` |
+|  | `run` |  | req | [MinerTaskRunSection](#model-minertaskrunsection) |
+|  |  | `artifact_id` | req | `string` (format: uuid) |
+|  |  | `completed_at` | opt | `string` (format: date-time; nullable) |
+|  |  | `response` | opt | [Response](#model-response) (nullable) |
+|  |  | `task_id` | req | `string` (format: uuid) |
+|  | `score` |  | opt | `number` (nullable) |
+|  | `session` |  | req | [SessionModel](#model-sessionmodel) |
+|  |  | `expires_at` | req | `string` |
+|  |  | `issued_at` | req | `string` |
+|  |  | `session_id` | req | `string` (format: uuid) |
+|  |  | `status` | req | `string` |
+|  |  | `uid` | req | `integer` |
+|  | `specifics` |  | req | [EvaluationDetails](#model-evaluationdetails) |
+|  |  | `elapsed_ms` | opt | `number` (nullable) |
+|  |  | `error` | opt | [EvaluationError](#model-evaluationerror) (nullable) |
+|  |  | `score_breakdown` | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
+|  |  | `total_tool_usage` | opt | [ToolUsageSummary](#model-toolusagesummary) |
+|  | `usage` |  | req | [UsageModel](#model-usagemodel) |
+|  |  | `by_provider` | opt | `object` |
+|  |  | `call_count` | req | `integer` |
+|  |  | `total_completion_tokens` | req | `integer` |
+|  |  | `total_prompt_tokens` | req | `integer` |
+|  |  | `total_tokens` | req | `integer` |
+|  | `validator` |  | req | [ValidatorSection](#model-validatorsection) |
+|  |  | `uid` | req | `integer` |
+| `limit` |  |  | req | `integer` |
+| `next_cursor` |  |  | opt | `integer` (nullable) |
+| `snapshot_received_at` |  |  | req | `string` (format: date-time) |
 
 `422` Validation Error
 Content-Type: `application/json`
@@ -1038,6 +1161,130 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
+<a id="model-evaluationdetails"></a>
+### Model: EvaluationDetails
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `elapsed_ms` |  |  | opt | `number` (nullable) |
+| `error` |  |  | opt | [EvaluationError](#model-evaluationerror) (nullable) |
+|  | `code` |  | req | [MinerTaskErrorCode](#model-minertaskerrorcode) |
+|  | `message` |  | req | `string` |
+| `score_breakdown` |  |  | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
+|  | `comparison_score` |  | req | `number` |
+|  | `reasoning` |  | opt | [ScorerReasoning](#model-scorerreasoning) (nullable) |
+|  |  | `reasoning_tokens` | opt | `integer` (nullable) |
+|  |  | `text` | opt | `string` (nullable) |
+|  | `scoring_version` |  | req | `string` |
+|  | `total_score` |  | req | `number` |
+| `total_tool_usage` |  |  | opt | [ToolUsageSummary](#model-toolusagesummary) |
+|  | `actual_cost_by_provider` |  | opt | `object` |
+|  | `actual_total_cost_usd` |  | opt | `number` (nullable) |
+|  | `llm` |  | opt | [LlmUsageSummary](#model-llmusagesummary) |
+|  |  | `actual_cost` | opt | `number` (nullable) |
+|  |  | `call_count` | opt | `integer` (default: 0) |
+|  |  | `completion_tokens` | opt | `integer` (default: 0) |
+|  |  | `cost` | opt | `number` (default: 0.0) |
+|  |  | `prompt_tokens` | opt | `integer` (default: 0) |
+|  |  | `providers` | opt | `object` |
+|  |  | `reasoning_tokens` | opt | `integer` (default: 0) |
+|  |  | `reference_cost` | opt | `number` (default: 0.0) |
+|  |  | `total_tokens` | opt | `integer` (default: 0) |
+|  | `llm_cost` |  | opt | `number` (default: 0.0) |
+|  | `reference_cost_by_provider` |  | opt | `object` |
+|  | `reference_total_cost_usd` |  | opt | `number` (default: 0.0) |
+|  | `search_tool` |  | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
+|  |  | `actual_cost` | opt | `number` (nullable) |
+|  |  | `call_count` | opt | `integer` (default: 0) |
+|  |  | `cost` | opt | `number` (default: 0.0) |
+|  |  | `reference_cost` | opt | `number` (default: 0.0) |
+|  | `search_tool_cost` |  | opt | `number` (default: 0.0) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "elapsed_ms": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Elapsed Ms"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/EvaluationError"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "score_breakdown": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/ScoreBreakdown"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "total_tool_usage": {
+      "$ref": "#/components/schemas/ToolUsageSummary"
+    }
+  },
+  "title": "EvaluationDetails",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-evaluationerror"></a>
+### Model: EvaluationError
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `code` |  |  | req | [MinerTaskErrorCode](#model-minertaskerrorcode) |
+| `message` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "code": {
+      "$ref": "#/components/schemas/MinerTaskErrorCode"
+    },
+    "message": {
+      "minLength": 1,
+      "title": "Message",
+      "type": "string"
+    }
+  },
+  "required": [
+    "code",
+    "message"
+  ],
+  "title": "EvaluationError",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-externalevalresultmodel"></a>
 ### Model: ExternalEvalResultModel
 
@@ -1572,6 +1819,50 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
+<a id="model-harnyx_miner_sdk__json_types__jsonvalue-output"></a>
+### Model: harnyx_miner_sdk__json_types__JsonValue-Output
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "anyOf": [
+    {
+      "type": "string"
+    },
+    {
+      "type": "integer"
+    },
+    {
+      "type": "number"
+    },
+    {
+      "type": "boolean"
+    },
+    {
+      "items": {
+        "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Output"
+      },
+      "type": "array"
+    },
+    {
+      "additionalProperties": {
+        "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Output"
+      },
+      "type": "object"
+    },
+    {
+      "type": "null"
+    }
+  ]
+}
+```
+
+</details>
+
 <a id="model-httpvalidationerror"></a>
 ### Model: HTTPValidationError
 
@@ -1597,6 +1888,194 @@ Body: [WeightsResponse](#model-weightsresponse)
     }
   },
   "title": "HTTPValidationError",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-llmmodelusagecost"></a>
+### Model: LlmModelUsageCost
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `actual_cost` |  |  | opt | `number` (nullable) |
+| `cost` |  |  | opt | `number` (default: 0.0) |
+| `reference_cost` |  |  | opt | `number` (default: 0.0) |
+| `usage` |  |  | opt | [LlmUsageTotals](#model-llmusagetotals) |
+|  | `call_count` |  | opt | `integer` (default: 0) |
+|  | `completion_tokens` |  | opt | `integer` (default: 0) |
+|  | `prompt_tokens` |  | opt | `integer` (default: 0) |
+|  | `reasoning_tokens` |  | opt | `integer` (default: 0) |
+|  | `total_tokens` |  | opt | `integer` (default: 0) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "actual_cost": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Actual Cost"
+    },
+    "cost": {
+      "default": 0.0,
+      "title": "Cost",
+      "type": "number"
+    },
+    "reference_cost": {
+      "default": 0.0,
+      "title": "Reference Cost",
+      "type": "number"
+    },
+    "usage": {
+      "$ref": "#/components/schemas/LlmUsageTotals"
+    }
+  },
+  "title": "LlmModelUsageCost",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-llmusagesummary"></a>
+### Model: LlmUsageSummary
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `actual_cost` |  |  | opt | `number` (nullable) |
+| `call_count` |  |  | opt | `integer` (default: 0) |
+| `completion_tokens` |  |  | opt | `integer` (default: 0) |
+| `cost` |  |  | opt | `number` (default: 0.0) |
+| `prompt_tokens` |  |  | opt | `integer` (default: 0) |
+| `providers` |  |  | opt | `object` |
+| `reasoning_tokens` |  |  | opt | `integer` (default: 0) |
+| `reference_cost` |  |  | opt | `number` (default: 0.0) |
+| `total_tokens` |  |  | opt | `integer` (default: 0) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "actual_cost": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Actual Cost"
+    },
+    "call_count": {
+      "default": 0,
+      "title": "Call Count",
+      "type": "integer"
+    },
+    "completion_tokens": {
+      "default": 0,
+      "title": "Completion Tokens",
+      "type": "integer"
+    },
+    "cost": {
+      "default": 0.0,
+      "title": "Cost",
+      "type": "number"
+    },
+    "prompt_tokens": {
+      "default": 0,
+      "title": "Prompt Tokens",
+      "type": "integer"
+    },
+    "providers": {
+      "additionalProperties": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/LlmModelUsageCost"
+        },
+        "type": "object"
+      },
+      "title": "Providers",
+      "type": "object"
+    },
+    "reasoning_tokens": {
+      "default": 0,
+      "title": "Reasoning Tokens",
+      "type": "integer"
+    },
+    "reference_cost": {
+      "default": 0.0,
+      "title": "Reference Cost",
+      "type": "number"
+    },
+    "total_tokens": {
+      "default": 0,
+      "title": "Total Tokens",
+      "type": "integer"
+    }
+  },
+  "title": "LlmUsageSummary",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-llmusagetotals"></a>
+### Model: LlmUsageTotals
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `call_count` |  |  | opt | `integer` (default: 0) |
+| `completion_tokens` |  |  | opt | `integer` (default: 0) |
+| `prompt_tokens` |  |  | opt | `integer` (default: 0) |
+| `reasoning_tokens` |  |  | opt | `integer` (default: 0) |
+| `total_tokens` |  |  | opt | `integer` (default: 0) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "call_count": {
+      "default": 0,
+      "title": "Call Count",
+      "type": "integer"
+    },
+    "completion_tokens": {
+      "default": 0,
+      "title": "Completion Tokens",
+      "type": "integer"
+    },
+    "prompt_tokens": {
+      "default": 0,
+      "title": "Prompt Tokens",
+      "type": "integer"
+    },
+    "reasoning_tokens": {
+      "default": 0,
+      "title": "Reasoning Tokens",
+      "type": "integer"
+    },
+    "total_tokens": {
+      "default": 0,
+      "title": "Total Tokens",
+      "type": "integer"
+    }
+  },
+  "title": "LlmUsageTotals",
   "type": "object"
 }
 ```
@@ -1769,6 +2248,222 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
+<a id="model-minertaskbatchrestoremetadataresponse"></a>
+### Model: MinerTaskBatchRestoreMetadataResponse
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `batch_id` |  |  | req | `string` (format: uuid) |
+| `page_limit` |  |  | req | `integer` |
+| `provider_model_evidence` |  |  | opt | array[[ProviderModelEvidence](#model-providermodelevidence)] (default: []) |
+|  | `failed_calls` |  | req | `integer` |
+|  | `failure_reason` |  | opt | `string` (nullable) |
+|  | `model` |  | req | `string` |
+|  | `provider` |  | req | `string` |
+|  | `total_calls` |  | req | `integer` |
+| `snapshot_received_at` |  |  | req | `string` (format: date-time) |
+| `total_restore_runs` |  |  | req | `integer` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "batch_id": {
+      "format": "uuid",
+      "title": "Batch Id",
+      "type": "string"
+    },
+    "page_limit": {
+      "minimum": 1.0,
+      "title": "Page Limit",
+      "type": "integer"
+    },
+    "provider_model_evidence": {
+      "default": [],
+      "items": {
+        "$ref": "#/components/schemas/ProviderModelEvidence"
+      },
+      "title": "Provider Model Evidence",
+      "type": "array"
+    },
+    "snapshot_received_at": {
+      "format": "date-time",
+      "title": "Snapshot Received At",
+      "type": "string"
+    },
+    "total_restore_runs": {
+      "minimum": 0.0,
+      "title": "Total Restore Runs",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "batch_id",
+    "snapshot_received_at",
+    "total_restore_runs",
+    "page_limit"
+  ],
+  "title": "MinerTaskBatchRestoreMetadataResponse",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-minertaskbatchrestorerunspageresponse"></a>
+### Model: MinerTaskBatchRestoreRunsPageResponse
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `batch_id` |  |  | req | `string` (format: uuid) |
+| `cursor` |  |  | req | `integer` |
+| `items` |  |  | opt | array[[MinerTaskRunRequest](#model-minertaskrunrequest)] (default: []) |
+|  | `batch_id` |  | req | `string` (format: uuid) |
+|  | `execution_log` |  | opt | array[[ToolCall](#model-toolcall)] (default: []) |
+|  |  | `details` | req | [ToolCallDetails](#model-toolcalldetails) |
+|  |  | `issued_at` | req | `string` (format: date-time) |
+|  |  | `outcome` | req | [ToolCallOutcome](#model-toolcalloutcome) |
+|  |  | `receipt_id` | req | `string` |
+|  |  | `session_id` | req | `string` (format: uuid) |
+|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, llm_chat, test_tool, tooling_info]) |
+|  |  | `uid` | req | `integer` |
+|  | `run` |  | req | [MinerTaskRunSection](#model-minertaskrunsection) |
+|  |  | `artifact_id` | req | `string` (format: uuid) |
+|  |  | `completed_at` | opt | `string` (format: date-time; nullable) |
+|  |  | `response` | opt | [Response](#model-response) (nullable) |
+|  |  | `task_id` | req | `string` (format: uuid) |
+|  | `score` |  | opt | `number` (nullable) |
+|  | `session` |  | req | [SessionModel](#model-sessionmodel) |
+|  |  | `expires_at` | req | `string` |
+|  |  | `issued_at` | req | `string` |
+|  |  | `session_id` | req | `string` (format: uuid) |
+|  |  | `status` | req | `string` |
+|  |  | `uid` | req | `integer` |
+|  | `specifics` |  | req | [EvaluationDetails](#model-evaluationdetails) |
+|  |  | `elapsed_ms` | opt | `number` (nullable) |
+|  |  | `error` | opt | [EvaluationError](#model-evaluationerror) (nullable) |
+|  |  | `score_breakdown` | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
+|  |  | `total_tool_usage` | opt | [ToolUsageSummary](#model-toolusagesummary) |
+|  | `usage` |  | req | [UsageModel](#model-usagemodel) |
+|  |  | `by_provider` | opt | `object` |
+|  |  | `call_count` | req | `integer` |
+|  |  | `total_completion_tokens` | req | `integer` |
+|  |  | `total_prompt_tokens` | req | `integer` |
+|  |  | `total_tokens` | req | `integer` |
+|  | `validator` |  | req | [ValidatorSection](#model-validatorsection) |
+|  |  | `uid` | req | `integer` |
+| `limit` |  |  | req | `integer` |
+| `next_cursor` |  |  | opt | `integer` (nullable) |
+| `snapshot_received_at` |  |  | req | `string` (format: date-time) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "batch_id": {
+      "format": "uuid",
+      "title": "Batch Id",
+      "type": "string"
+    },
+    "cursor": {
+      "minimum": 0.0,
+      "title": "Cursor",
+      "type": "integer"
+    },
+    "items": {
+      "default": [],
+      "items": {
+        "$ref": "#/components/schemas/MinerTaskRunRequest"
+      },
+      "title": "Items",
+      "type": "array"
+    },
+    "limit": {
+      "minimum": 1.0,
+      "title": "Limit",
+      "type": "integer"
+    },
+    "next_cursor": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Next Cursor"
+    },
+    "snapshot_received_at": {
+      "format": "date-time",
+      "title": "Snapshot Received At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "batch_id",
+    "snapshot_received_at",
+    "cursor",
+    "limit"
+  ],
+  "title": "MinerTaskBatchRestoreRunsPageResponse",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-minertaskerrorcode"></a>
+### Model: MinerTaskErrorCode
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "enum": [
+    "artifact_breaker_tripped",
+    "artifact_fetch_failed",
+    "artifact_hash_mismatch",
+    "artifact_setup_failed",
+    "artifact_size_invalid",
+    "artifact_staging_failed",
+    "batch_execution_failed",
+    "miner_response_invalid",
+    "miner_unhandled_exception",
+    "never_ran",
+    "progress_snapshot_failed",
+    "provider_batch_failure",
+    "sandbox_failed",
+    "sandbox_invocation_failed",
+    "sandbox_start_failed",
+    "scoring_llm_retry_exhausted",
+    "script_validation_failed",
+    "session_budget_exhausted",
+    "timeout_inconclusive",
+    "timeout_miner_owned",
+    "tool_provider_failed",
+    "unexpected_validator_failure",
+    "validator_failed",
+    "validator_internal_timeout",
+    "validator_timeout"
+  ],
+  "title": "MinerTaskErrorCode",
+  "type": "string"
+}
+```
+
+</details>
+
 <a id="model-minertaskinputmodel"></a>
 ### Model: MinerTaskInputModel
 
@@ -1822,6 +2517,203 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
+<a id="model-minertaskrunrequest"></a>
+### Model: MinerTaskRunRequest
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `batch_id` |  |  | req | `string` (format: uuid) |
+| `execution_log` |  |  | opt | array[[ToolCall](#model-toolcall)] (default: []) |
+|  | `details` |  | req | [ToolCallDetails](#model-toolcalldetails) |
+|  |  | `actual_cost_provider` | opt | `string` (nullable) |
+|  |  | `actual_cost_usd` | opt | `number` (nullable) |
+|  |  | `cost_usd` | opt | `number` (nullable) |
+|  |  | `execution` | opt | [ToolExecutionFacts](#model-toolexecutionfacts) (nullable) |
+|  |  | `extra` | opt | `object` (nullable) |
+|  |  | `reference_cost_usd` | opt | `number` (nullable) |
+|  |  | `request_hash` | req | `string` |
+|  |  | `request_payload` | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+|  |  | `response_hash` | opt | `string` (nullable) |
+|  |  | `response_payload` | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+|  |  | `result_policy` | opt | [ToolResultPolicy](#model-toolresultpolicy) (default: log_only) |
+|  |  | `results` | opt | array[[ToolResult](#model-toolresult)] (default: []) |
+|  | `issued_at` |  | req | `string` (format: date-time) |
+|  | `outcome` |  | req | [ToolCallOutcome](#model-toolcalloutcome) |
+|  | `receipt_id` |  | req | `string` |
+|  | `session_id` |  | req | `string` (format: uuid) |
+|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, llm_chat, test_tool, tooling_info]) |
+|  | `uid` |  | req | `integer` |
+| `run` |  |  | req | [MinerTaskRunSection](#model-minertaskrunsection) |
+|  | `artifact_id` |  | req | `string` (format: uuid) |
+|  | `completed_at` |  | opt | `string` (format: date-time; nullable) |
+|  | `response` |  | opt | [Response](#model-response) (nullable) |
+|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  |  | `text` | req | `string` |
+|  | `task_id` |  | req | `string` (format: uuid) |
+| `score` |  |  | opt | `number` (nullable) |
+| `session` |  |  | req | [SessionModel](#model-sessionmodel) |
+|  | `expires_at` |  | req | `string` |
+|  | `issued_at` |  | req | `string` |
+|  | `session_id` |  | req | `string` (format: uuid) |
+|  | `status` |  | req | `string` |
+|  | `uid` |  | req | `integer` |
+| `specifics` |  |  | req | [EvaluationDetails](#model-evaluationdetails) |
+|  | `elapsed_ms` |  | opt | `number` (nullable) |
+|  | `error` |  | opt | [EvaluationError](#model-evaluationerror) (nullable) |
+|  |  | `code` | req | [MinerTaskErrorCode](#model-minertaskerrorcode) |
+|  |  | `message` | req | `string` |
+|  | `score_breakdown` |  | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
+|  |  | `comparison_score` | req | `number` |
+|  |  | `reasoning` | opt | [ScorerReasoning](#model-scorerreasoning) (nullable) |
+|  |  | `scoring_version` | req | `string` |
+|  |  | `total_score` | req | `number` |
+|  | `total_tool_usage` |  | opt | [ToolUsageSummary](#model-toolusagesummary) |
+|  |  | `actual_cost_by_provider` | opt | `object` |
+|  |  | `actual_total_cost_usd` | opt | `number` (nullable) |
+|  |  | `llm` | opt | [LlmUsageSummary](#model-llmusagesummary) |
+|  |  | `llm_cost` | opt | `number` (default: 0.0) |
+|  |  | `reference_cost_by_provider` | opt | `object` |
+|  |  | `reference_total_cost_usd` | opt | `number` (default: 0.0) |
+|  |  | `search_tool` | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
+|  |  | `search_tool_cost` | opt | `number` (default: 0.0) |
+| `usage` |  |  | req | [UsageModel](#model-usagemodel) |
+|  | `by_provider` |  | opt | `object` |
+|  | `call_count` |  | req | `integer` |
+|  | `total_completion_tokens` |  | req | `integer` |
+|  | `total_prompt_tokens` |  | req | `integer` |
+|  | `total_tokens` |  | req | `integer` |
+| `validator` |  |  | req | [ValidatorSection](#model-validatorsection) |
+|  | `uid` |  | req | `integer` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "batch_id": {
+      "format": "uuid",
+      "title": "Batch Id",
+      "type": "string"
+    },
+    "execution_log": {
+      "default": [],
+      "items": {
+        "$ref": "#/components/schemas/ToolCall"
+      },
+      "title": "Execution Log",
+      "type": "array"
+    },
+    "run": {
+      "$ref": "#/components/schemas/MinerTaskRunSection"
+    },
+    "score": {
+      "anyOf": [
+        {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Score"
+    },
+    "session": {
+      "$ref": "#/components/schemas/SessionModel"
+    },
+    "specifics": {
+      "$ref": "#/components/schemas/EvaluationDetails"
+    },
+    "usage": {
+      "$ref": "#/components/schemas/UsageModel"
+    },
+    "validator": {
+      "$ref": "#/components/schemas/ValidatorSection"
+    }
+  },
+  "required": [
+    "batch_id",
+    "validator",
+    "run",
+    "usage",
+    "session",
+    "specifics"
+  ],
+  "title": "MinerTaskRunRequest",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-minertaskrunsection"></a>
+### Model: MinerTaskRunSection
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `artifact_id` |  |  | req | `string` (format: uuid) |
+| `completed_at` |  |  | opt | `string` (format: date-time; nullable) |
+| `response` |  |  | opt | [Response](#model-response) (nullable) |
+|  | `citations` |  | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  |  | `note` | opt | `string` (nullable) |
+|  |  | `title` | opt | `string` (nullable) |
+|  |  | `url` | req | `string` |
+|  | `text` |  | req | `string` |
+| `task_id` |  |  | req | `string` (format: uuid) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "artifact_id": {
+      "format": "uuid",
+      "title": "Artifact Id",
+      "type": "string"
+    },
+    "completed_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Completed At"
+    },
+    "response": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/Response"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "task_id": {
+      "format": "uuid",
+      "title": "Task Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "artifact_id",
+    "task_id"
+  ],
+  "title": "MinerTaskRunSection",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-overrideminertaskdatasetmodel"></a>
 ### Model: OverrideMinerTaskDatasetModel
 
@@ -1856,6 +2748,65 @@ Body: [WeightsResponse](#model-weightsresponse)
     "tasks"
   ],
   "title": "OverrideMinerTaskDatasetModel",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-providermodelevidence"></a>
+### Model: ProviderModelEvidence
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `failed_calls` |  |  | req | `integer` |
+| `failure_reason` |  |  | opt | `string` (nullable) |
+| `model` |  |  | req | `string` |
+| `provider` |  |  | req | `string` |
+| `total_calls` |  |  | req | `integer` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "failed_calls": {
+      "title": "Failed Calls",
+      "type": "integer"
+    },
+    "failure_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Failure Reason"
+    },
+    "model": {
+      "title": "Model",
+      "type": "string"
+    },
+    "provider": {
+      "title": "Provider",
+      "type": "string"
+    },
+    "total_calls": {
+      "title": "Total Calls",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "provider",
+    "model",
+    "total_calls",
+    "failed_calls"
+  ],
+  "title": "ProviderModelEvidence",
   "type": "object"
 }
 ```
@@ -2052,6 +3003,160 @@ Body: [WeightsResponse](#model-weightsresponse)
     "commit_sha"
   ],
   "title": "RepoSearchEnsureIndexRequestModel",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-response"></a>
+### Model: Response
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `citations` |  |  | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  | `note` |  | opt | `string` (nullable) |
+|  | `title` |  | opt | `string` (nullable) |
+|  | `url` |  | req | `string` |
+| `text` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "citations": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/components/schemas/AnswerCitation"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Citations"
+    },
+    "text": {
+      "minLength": 1,
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "required": [
+    "text"
+  ],
+  "title": "Response",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-scorebreakdown"></a>
+### Model: ScoreBreakdown
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `comparison_score` |  |  | req | `number` |
+| `reasoning` |  |  | opt | [ScorerReasoning](#model-scorerreasoning) (nullable) |
+|  | `reasoning_tokens` |  | opt | `integer` (nullable) |
+|  | `text` |  | opt | `string` (nullable) |
+| `scoring_version` |  |  | req | `string` |
+| `total_score` |  |  | req | `number` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "comparison_score": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Comparison Score",
+      "type": "number"
+    },
+    "reasoning": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/ScorerReasoning"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "scoring_version": {
+      "minLength": 1,
+      "title": "Scoring Version",
+      "type": "string"
+    },
+    "total_score": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Total Score",
+      "type": "number"
+    }
+  },
+  "required": [
+    "comparison_score",
+    "total_score",
+    "scoring_version"
+  ],
+  "title": "ScoreBreakdown",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-scorerreasoning"></a>
+### Model: ScorerReasoning
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `reasoning_tokens` |  |  | opt | `integer` (nullable) |
+| `text` |  |  | opt | `string` (nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "reasoning_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Reasoning Tokens"
+    },
+    "text": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Text"
+    }
+  },
+  "title": "ScorerReasoning",
   "type": "object"
 }
 ```
@@ -2280,6 +3385,113 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
+<a id="model-searchtoolusagesummary"></a>
+### Model: SearchToolUsageSummary
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `actual_cost` |  |  | opt | `number` (nullable) |
+| `call_count` |  |  | opt | `integer` (default: 0) |
+| `cost` |  |  | opt | `number` (default: 0.0) |
+| `reference_cost` |  |  | opt | `number` (default: 0.0) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "actual_cost": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Actual Cost"
+    },
+    "call_count": {
+      "default": 0,
+      "title": "Call Count",
+      "type": "integer"
+    },
+    "cost": {
+      "default": 0.0,
+      "title": "Cost",
+      "type": "number"
+    },
+    "reference_cost": {
+      "default": 0.0,
+      "title": "Reference Cost",
+      "type": "number"
+    }
+  },
+  "title": "SearchToolUsageSummary",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-sessionmodel"></a>
+### Model: SessionModel
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `expires_at` |  |  | req | `string` |
+| `issued_at` |  |  | req | `string` |
+| `session_id` |  |  | req | `string` (format: uuid) |
+| `status` |  |  | req | `string` |
+| `uid` |  |  | req | `integer` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "expires_at": {
+      "minLength": 1,
+      "title": "Expires At",
+      "type": "string"
+    },
+    "issued_at": {
+      "minLength": 1,
+      "title": "Issued At",
+      "type": "string"
+    },
+    "session_id": {
+      "format": "uuid",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "status": {
+      "minLength": 1,
+      "title": "Status",
+      "type": "string"
+    },
+    "uid": {
+      "minimum": 0.0,
+      "title": "Uid",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "session_id",
+    "uid",
+    "status",
+    "issued_at",
+    "expires_at"
+  ],
+  "title": "SessionModel",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-spanmodel"></a>
 ### Model: SpanModel
 
@@ -2342,6 +3554,503 @@ Body: [WeightsResponse](#model-weightsresponse)
     "status"
   ],
   "title": "StatusResponse",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-toolcall"></a>
+### Model: ToolCall
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `details` |  |  | req | [ToolCallDetails](#model-toolcalldetails) |
+|  | `actual_cost_provider` |  | opt | `string` (nullable) |
+|  | `actual_cost_usd` |  | opt | `number` (nullable) |
+|  | `cost_usd` |  | opt | `number` (nullable) |
+|  | `execution` |  | opt | [ToolExecutionFacts](#model-toolexecutionfacts) (nullable) |
+|  |  | `elapsed_ms` | opt | `number` (nullable) |
+|  |  | `finished_at` | opt | `string` (format: date-time; nullable) |
+|  |  | `started_at` | opt | `string` (format: date-time; nullable) |
+|  |  | `ttft_ms` | opt | `number` (nullable) |
+|  | `extra` |  | opt | `object` (nullable) |
+|  | `reference_cost_usd` |  | opt | `number` (nullable) |
+|  | `request_hash` |  | req | `string` |
+|  | `request_payload` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+|  | `response_hash` |  | opt | `string` (nullable) |
+|  | `response_payload` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+|  | `result_policy` |  | opt | [ToolResultPolicy](#model-toolresultpolicy) (default: log_only) |
+|  | `results` |  | opt | array[[ToolResult](#model-toolresult)] (default: []) |
+|  |  | `index` | req | `integer` |
+|  |  | `raw` | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+|  |  | `result_id` | req | `string` |
+| `issued_at` |  |  | req | `string` (format: date-time) |
+| `outcome` |  |  | req | [ToolCallOutcome](#model-toolcalloutcome) |
+| `receipt_id` |  |  | req | `string` |
+| `session_id` |  |  | req | `string` (format: uuid) |
+| `tool` |  |  | req | `string` (enum: [search_web, search_ai, fetch_page, llm_chat, test_tool, tooling_info]) |
+| `uid` |  |  | req | `integer` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "details": {
+      "$ref": "#/components/schemas/ToolCallDetails"
+    },
+    "issued_at": {
+      "format": "date-time",
+      "title": "Issued At",
+      "type": "string"
+    },
+    "outcome": {
+      "$ref": "#/components/schemas/ToolCallOutcome"
+    },
+    "receipt_id": {
+      "title": "Receipt Id",
+      "type": "string"
+    },
+    "session_id": {
+      "format": "uuid",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "tool": {
+      "enum": [
+        "search_web",
+        "search_ai",
+        "fetch_page",
+        "llm_chat",
+        "test_tool",
+        "tooling_info"
+      ],
+      "title": "Tool",
+      "type": "string"
+    },
+    "uid": {
+      "title": "Uid",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "receipt_id",
+    "session_id",
+    "uid",
+    "tool",
+    "issued_at",
+    "outcome",
+    "details"
+  ],
+  "title": "ToolCall",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-toolcalldetails"></a>
+### Model: ToolCallDetails
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `actual_cost_provider` |  |  | opt | `string` (nullable) |
+| `actual_cost_usd` |  |  | opt | `number` (nullable) |
+| `cost_usd` |  |  | opt | `number` (nullable) |
+| `execution` |  |  | opt | [ToolExecutionFacts](#model-toolexecutionfacts) (nullable) |
+|  | `elapsed_ms` |  | opt | `number` (nullable) |
+|  | `finished_at` |  | opt | `string` (format: date-time; nullable) |
+|  | `started_at` |  | opt | `string` (format: date-time; nullable) |
+|  | `ttft_ms` |  | opt | `number` (nullable) |
+| `extra` |  |  | opt | `object` (nullable) |
+| `reference_cost_usd` |  |  | opt | `number` (nullable) |
+| `request_hash` |  |  | req | `string` |
+| `request_payload` |  |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+| `response_hash` |  |  | opt | `string` (nullable) |
+| `response_payload` |  |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+| `result_policy` |  |  | opt | [ToolResultPolicy](#model-toolresultpolicy) (default: log_only) |
+| `results` |  |  | opt | array[[ToolResult](#model-toolresult)] (default: []) |
+|  | `index` |  | req | `integer` |
+|  | `raw` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+|  | `result_id` |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "actual_cost_provider": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Actual Cost Provider"
+    },
+    "actual_cost_usd": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Actual Cost Usd"
+    },
+    "cost_usd": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Cost Usd"
+    },
+    "execution": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/ToolExecutionFacts"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "extra": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Extra"
+    },
+    "reference_cost_usd": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Reference Cost Usd"
+    },
+    "request_hash": {
+      "title": "Request Hash",
+      "type": "string"
+    },
+    "request_payload": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Output"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "response_hash": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Response Hash"
+    },
+    "response_payload": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Output"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "result_policy": {
+      "$ref": "#/components/schemas/ToolResultPolicy",
+      "default": "log_only"
+    },
+    "results": {
+      "default": [],
+      "items": {
+        "$ref": "#/components/schemas/ToolResult"
+      },
+      "title": "Results",
+      "type": "array"
+    }
+  },
+  "required": [
+    "request_hash"
+  ],
+  "title": "ToolCallDetails",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-toolcalloutcome"></a>
+### Model: ToolCallOutcome
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "description": "High-level outcome for a tool invocation.",
+  "enum": [
+    "ok",
+    "provider_error",
+    "budget_exceeded",
+    "internal_error",
+    "timeout"
+  ],
+  "title": "ToolCallOutcome",
+  "type": "string"
+}
+```
+
+</details>
+
+<a id="model-toolexecutionfacts"></a>
+### Model: ToolExecutionFacts
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `elapsed_ms` |  |  | opt | `number` (nullable) |
+| `finished_at` |  |  | opt | `string` (format: date-time; nullable) |
+| `started_at` |  |  | opt | `string` (format: date-time; nullable) |
+| `ttft_ms` |  |  | opt | `number` (nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "elapsed_ms": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Elapsed Ms"
+    },
+    "finished_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Finished At"
+    },
+    "started_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Started At"
+    },
+    "ttft_ms": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Ttft Ms"
+    }
+  },
+  "title": "ToolExecutionFacts",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-toolresult"></a>
+### Model: ToolResult
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `index` |  |  | req | `integer` |
+| `raw` |  |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+| `result_id` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "index": {
+      "title": "Index",
+      "type": "integer"
+    },
+    "raw": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Output"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "result_id": {
+      "title": "Result Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "index",
+    "result_id"
+  ],
+  "title": "ToolResult",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-toolresultpolicy"></a>
+### Model: ToolResultPolicy
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "description": "Indicates whether tool results can be cited.",
+  "enum": [
+    "referenceable",
+    "log_only"
+  ],
+  "title": "ToolResultPolicy",
+  "type": "string"
+}
+```
+
+</details>
+
+<a id="model-toolusagesummary"></a>
+### Model: ToolUsageSummary
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `actual_cost_by_provider` |  |  | opt | `object` |
+| `actual_total_cost_usd` |  |  | opt | `number` (nullable) |
+| `llm` |  |  | opt | [LlmUsageSummary](#model-llmusagesummary) |
+|  | `actual_cost` |  | opt | `number` (nullable) |
+|  | `call_count` |  | opt | `integer` (default: 0) |
+|  | `completion_tokens` |  | opt | `integer` (default: 0) |
+|  | `cost` |  | opt | `number` (default: 0.0) |
+|  | `prompt_tokens` |  | opt | `integer` (default: 0) |
+|  | `providers` |  | opt | `object` |
+|  | `reasoning_tokens` |  | opt | `integer` (default: 0) |
+|  | `reference_cost` |  | opt | `number` (default: 0.0) |
+|  | `total_tokens` |  | opt | `integer` (default: 0) |
+| `llm_cost` |  |  | opt | `number` (default: 0.0) |
+| `reference_cost_by_provider` |  |  | opt | `object` |
+| `reference_total_cost_usd` |  |  | opt | `number` (default: 0.0) |
+| `search_tool` |  |  | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
+|  | `actual_cost` |  | opt | `number` (nullable) |
+|  | `call_count` |  | opt | `integer` (default: 0) |
+|  | `cost` |  | opt | `number` (default: 0.0) |
+|  | `reference_cost` |  | opt | `number` (default: 0.0) |
+| `search_tool_cost` |  |  | opt | `number` (default: 0.0) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "actual_cost_by_provider": {
+      "additionalProperties": {
+        "type": "number"
+      },
+      "title": "Actual Cost By Provider",
+      "type": "object"
+    },
+    "actual_total_cost_usd": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Actual Total Cost Usd"
+    },
+    "llm": {
+      "$ref": "#/components/schemas/LlmUsageSummary"
+    },
+    "llm_cost": {
+      "default": 0.0,
+      "title": "Llm Cost",
+      "type": "number"
+    },
+    "reference_cost_by_provider": {
+      "additionalProperties": {
+        "type": "number"
+      },
+      "title": "Reference Cost By Provider",
+      "type": "object"
+    },
+    "reference_total_cost_usd": {
+      "default": 0.0,
+      "title": "Reference Total Cost Usd",
+      "type": "number"
+    },
+    "search_tool": {
+      "$ref": "#/components/schemas/SearchToolUsageSummary"
+    },
+    "search_tool_cost": {
+      "default": 0.0,
+      "title": "Search Tool Cost",
+      "type": "number"
+    }
+  },
+  "title": "ToolUsageSummary",
   "type": "object"
 }
 ```
@@ -2434,6 +4143,117 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
+<a id="model-usagemodel"></a>
+### Model: UsageModel
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `by_provider` |  |  | opt | `object` |
+| `call_count` |  |  | req | `integer` |
+| `total_completion_tokens` |  |  | req | `integer` |
+| `total_prompt_tokens` |  |  | req | `integer` |
+| `total_tokens` |  |  | req | `integer` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "by_provider": {
+      "additionalProperties": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/UsageModelEntry"
+        },
+        "type": "object"
+      },
+      "title": "By Provider",
+      "type": "object"
+    },
+    "call_count": {
+      "minimum": 0.0,
+      "title": "Call Count",
+      "type": "integer"
+    },
+    "total_completion_tokens": {
+      "minimum": 0.0,
+      "title": "Total Completion Tokens",
+      "type": "integer"
+    },
+    "total_prompt_tokens": {
+      "minimum": 0.0,
+      "title": "Total Prompt Tokens",
+      "type": "integer"
+    },
+    "total_tokens": {
+      "minimum": 0.0,
+      "title": "Total Tokens",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "total_prompt_tokens",
+    "total_completion_tokens",
+    "total_tokens",
+    "call_count"
+  ],
+  "title": "UsageModel",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-usagemodelentry"></a>
+### Model: UsageModelEntry
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `call_count` |  |  | req | `integer` |
+| `completion_tokens` |  |  | req | `integer` |
+| `prompt_tokens` |  |  | req | `integer` |
+| `total_tokens` |  |  | req | `integer` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "call_count": {
+      "minimum": 0.0,
+      "title": "Call Count",
+      "type": "integer"
+    },
+    "completion_tokens": {
+      "minimum": 0.0,
+      "title": "Completion Tokens",
+      "type": "integer"
+    },
+    "prompt_tokens": {
+      "minimum": 0.0,
+      "title": "Prompt Tokens",
+      "type": "integer"
+    },
+    "total_tokens": {
+      "minimum": 0.0,
+      "title": "Total Tokens",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "call_count"
+  ],
+  "title": "UsageModelEntry",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-validationerror"></a>
 ### Model: ValidationError
 
@@ -2478,6 +4298,34 @@ Body: [WeightsResponse](#model-weightsresponse)
     "type"
   ],
   "title": "ValidationError",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-validatorsection"></a>
+### Model: ValidatorSection
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `uid` |  |  | req | `integer` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "uid": {
+      "title": "Uid",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "uid"
+  ],
+  "title": "ValidatorSection",
   "type": "object"
 }
 ```

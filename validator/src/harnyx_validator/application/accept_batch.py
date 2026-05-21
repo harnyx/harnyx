@@ -15,7 +15,7 @@ from harnyx_validator.application.services.evaluation_runner import ValidatorBat
 from harnyx_validator.application.status import StatusProvider
 from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
 
-BatchLifecycle = Literal["queued", "processing", "completed", "failed"]
+BatchLifecycle = Literal["restoring", "queued", "processing", "completed", "failed"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +44,7 @@ class AcceptEvaluationBatch:
         restore_runs: Sequence[MinerTaskRunSubmission] = (),
         restore_provider_evidence: Sequence[ProviderFailureEvidence] = (),
     ) -> None:
+        """Compatibility path for immediate local restore and queueing."""
         with self._lock:
             state = self._accepted_batch_state(batch.batch_id)
             if state is not None:
@@ -73,6 +74,81 @@ class AcceptEvaluationBatch:
                 )
                 return
             self._queue_new_batch(batch)
+
+    def register_for_restore(self, batch: MinerTaskBatchSpec) -> bool:
+        with self._lock:
+            state = self._accepted_batch_state(batch.batch_id)
+            if state is not None:
+                if state.batch != batch:
+                    raise RuntimeError("batch_id already exists with different contents")
+                return False
+            self.progress.register(batch)
+            if self._all_pairs_recorded(batch):
+                self._accepted_batches[batch.batch_id] = _AcceptedBatchState(
+                    batch=batch,
+                    lifecycle="completed",
+                    terminal_at=_utcnow(),
+                )
+                return False
+            self._accepted_batches[batch.batch_id] = _AcceptedBatchState(
+                batch=batch,
+                lifecycle="restoring",
+                terminal_at=None,
+            )
+            return True
+
+    def restore_completed_runs(
+        self,
+        batch: MinerTaskBatchSpec,
+        runs: Sequence[MinerTaskRunSubmission],
+        provider_evidence: Sequence[ProviderFailureEvidence] = (),
+    ) -> None:
+        with self._lock:
+            state = self._require_state(batch.batch_id)
+            if state.batch != batch:
+                raise RuntimeError("batch_id already exists with different contents")
+            self.progress.restore_completed_runs(batch, runs, provider_evidence)
+
+    def queue_after_restore(self, batch_id: UUID) -> None:
+        with self._lock:
+            state = self._require_state(batch_id)
+            if state.lifecycle == "queued" and self._all_pairs_recorded(state.batch):
+                self._accepted_batches[batch_id] = replace(
+                    state,
+                    lifecycle="completed",
+                    error_code=None,
+                    failure_detail=None,
+                    terminal_at=_utcnow(),
+                )
+                self.inbox.discard(batch_id)
+                self._update_status_queue_length()
+                return
+            if state.lifecycle in {"queued", "processing", "completed", "failed"}:
+                return
+            if self._all_pairs_recorded(state.batch):
+                self._accepted_batches[batch_id] = replace(
+                    state,
+                    lifecycle="completed",
+                    error_code=None,
+                    failure_detail=None,
+                    terminal_at=_utcnow(),
+                )
+                self.inbox.discard(batch_id)
+                self._update_status_queue_length()
+                return
+            self._accepted_batches[batch_id] = replace(
+                state,
+                lifecycle="queued",
+                error_code=None,
+                failure_detail=None,
+                terminal_at=None,
+            )
+            self.inbox.put(state.batch)
+            self._update_status_queue_length()
+
+    def batch_for(self, batch_id: UUID) -> MinerTaskBatchSpec:
+        with self._lock:
+            return self._require_state(batch_id).batch
 
     def begin_processing(self, batch_id: UUID) -> bool:
         with self._lock:
@@ -143,6 +219,12 @@ class AcceptEvaluationBatch:
             if state is None:
                 return None
             return state.lifecycle
+
+    def public_lifecycle_for(self, batch_id: UUID) -> BatchLifecycle | None:
+        lifecycle = self.lifecycle_for(batch_id)
+        if lifecycle == "restoring":
+            return "queued"
+        return lifecycle
 
     def error_code_for(self, batch_id: UUID) -> str | None:
         with self._lock:

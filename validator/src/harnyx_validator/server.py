@@ -46,6 +46,7 @@ else:
 
 _runtime = build_runtime(_settings)
 _evaluation_worker = create_evaluation_worker_from_context(_runtime)
+_restore_worker = _runtime.restore_worker
 _weight_worker = create_weight_worker(
     submission_service=_runtime.weight_submission_service,
     status_provider=_runtime.status_provider,
@@ -57,10 +58,16 @@ logger = logging.getLogger("harnyx_validator.server")
 
 async def _stop_runtime_components(
     *,
+    restore_started: bool,
     evaluation_started: bool,
     weight_started: bool,
     auth_started: bool,
 ) -> None:
+    if restore_started:
+        try:
+            await _restore_worker.stop(timeout=WORKER_STOP_TIMEOUT_SECONDS)
+        except Exception:
+            logger.exception("failed stopping restore worker during shutdown")
     if evaluation_started:
         try:
             await _evaluation_worker.stop(timeout=WORKER_STOP_TIMEOUT_SECONDS)
@@ -82,18 +89,22 @@ async def _stop_runtime_components(
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     auth_started = False
     weight_started = False
+    restore_started = False
     evaluation_started = False
     try:
         _runtime.inbound_auth_verifier.start()
         auth_started = True
         _weight_worker.start()
         weight_started = True
+        _restore_worker.start()
+        restore_started = True
         _evaluation_worker.start()
         evaluation_started = True
         yield
     finally:
         try:
             await _stop_runtime_components(
+                restore_started=restore_started,
                 evaluation_started=evaluation_started,
                 weight_started=weight_started,
                 auth_started=auth_started,

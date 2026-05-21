@@ -33,7 +33,7 @@ from harnyx_validator.domain.evaluation import MinerTaskRun
 from harnyx_validator.domain.shared_config import VALIDATOR_STRICT_CONFIG
 
 _VALIDATOR_TRANSPORT_CONFIG = ConfigDict(
-    extra="ignore",
+    extra="forbid",
     frozen=True,
     strict=True,
     str_strip_whitespace=True,
@@ -171,8 +171,6 @@ class MinerTaskBatchRequestModel(BaseModel):
     created_at: str = Field(min_length=1)
     tasks: list[MinerTaskRequestModel] = Field(min_length=1)
     artifacts: list[ScriptArtifactRequestModel] = Field(min_length=1)
-    restore_runs: list[RestoreMinerTaskRunSubmissionModel] = Field(default_factory=list)
-    restore_provider_evidence: list[ProviderEvidenceModel] = Field(default_factory=list)
 
     @field_validator("batch_id")
     @classmethod
@@ -187,14 +185,6 @@ class MinerTaskBatchRequestModel(BaseModel):
             tasks=tuple(task.to_domain_task() for task in self.tasks),
             artifacts=tuple(artifact.to_domain() for artifact in self.artifacts),
         )
-
-    def to_domain_restore_runs(self) -> tuple[MinerTaskRunSubmission, ...]:
-        batch = self.to_domain()
-        return tuple(entry.to_domain(batch=batch) for entry in self.restore_runs)
-
-    def to_domain_restore_provider_evidence(self) -> tuple[ProviderFailureEvidence, ...]:
-        return tuple(entry.to_domain() for entry in self.restore_provider_evidence)
-
 
 class RestoreMinerTaskRunModel(BaseModel):
     model_config = VALIDATOR_STRICT_CONFIG
@@ -365,7 +355,7 @@ class BatchProgressStatusResponse(BaseModel):
     model_config = VALIDATOR_STRICT_CONFIG
 
     batch_id: str = Field(min_length=1)
-    status: Literal["unknown", "queued", "processing", "completed", "failed"]
+    status: Literal["unknown", "restoring", "queued", "processing", "completed", "failed"]
     error_code: str | None = None
     failure_detail: FailureDetailResponse | None = None
     total: int = Field(ge=0)

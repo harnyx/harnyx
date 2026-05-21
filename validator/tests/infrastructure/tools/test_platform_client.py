@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import socket
+from datetime import datetime
 from uuid import uuid4
 
 import bittensor as bt
@@ -106,7 +107,7 @@ def _assert_signed(request: httpx.Request, keypair: bt.Keypair) -> None:
     assert match.group("ss58") == keypair.ss58_address
     path = request.url.raw_path.decode()
     query = request.url.query
-    if query:
+    if query and "?" not in path:
         path = f"{path}?{query}"
     body = request.content or b""
     canonical = build_canonical_request(request.method, path, body)
@@ -339,4 +340,59 @@ def test_fetch_artifact_does_not_retry_http_status_failure() -> None:
 
     assert [request.url.path for request in requests] == [
         f"/v1/miner-task-batches/{batch_id}/artifacts/{artifact_id}",
+    ]
+
+
+def test_get_restore_runs_page_accepts_null_next_cursor() -> None:
+    batch_id = uuid4()
+    task_id = uuid4()
+    artifact_id = uuid4()
+    keypair = _keypair()
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == f"/v1/miner-task-batches/batch/{batch_id}":
+            _assert_signed(request, keypair)
+            return _batch_response(
+                batch_id=batch_id,
+                task_id=task_id,
+                artifact_id=artifact_id,
+                champion_artifact_id=artifact_id,
+                budget_usd=1.0,
+            )
+        if request.url.path == f"/v1/miner-task-batches/{batch_id}/restore/runs":
+            _assert_signed(request, keypair)
+            return httpx.Response(
+                status_code=200,
+                json={
+                    "batch_id": str(batch_id),
+                    "snapshot_received_at": "2026-05-21T06:00:00+00:00",
+                    "cursor": 0,
+                    "limit": 500,
+                    "next_cursor": None,
+                    "items": [],
+                },
+            )
+        return httpx.Response(status_code=404)
+
+    client = HttpPlatformClient(
+        base_url="https://mock.local",
+        hotkey=keypair,
+        transport=httpx.MockTransport(handler),
+    )
+    batch = client.get_miner_task_batch(batch_id)
+
+    page = client.get_restore_runs_page(
+        batch=batch,
+        snapshot_received_at=datetime.fromisoformat("2026-05-21T06:00:00+00:00"),
+        cursor=0,
+        limit=500,
+    )
+
+    assert page.next_cursor is None
+    assert page.items == ()
+    assert [request.url.path for request in requests] == [
+        f"/v1/miner-task-batches/batch/{batch_id}",
+        f"/v1/miner-task-batches/{batch_id}/restore/runs",
     ]

@@ -47,6 +47,7 @@ from harnyx_validator.application.invoke_entrypoint import EntrypointInvoker, Sa
 from harnyx_validator.application.ports.evaluation_record import EvaluationRecordPort
 from harnyx_validator.application.ports.platform import PlatformPort
 from harnyx_validator.application.ports.subtensor import SubtensorClientPort
+from harnyx_validator.application.restore_batch import RestoreEvaluationBatch
 from harnyx_validator.application.status import BatchActivityTracker, StatusProvider
 from harnyx_validator.application.submit_weights import WeightSubmissionService
 from harnyx_validator.infrastructure.auth.sr25519 import BittensorSr25519InboundVerifier
@@ -61,12 +62,14 @@ from harnyx_validator.infrastructure.platform.registration_client import (
 )
 from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
 from harnyx_validator.infrastructure.state.evaluation_record import CompactEvaluationRecordStore
+from harnyx_validator.infrastructure.state.restore_inbox import InMemoryRestoreInbox
 from harnyx_validator.infrastructure.state.run_progress import FileBackedRunProgress
 from harnyx_validator.infrastructure.subtensor.client import RuntimeSubtensorClient
 from harnyx_validator.infrastructure.subtensor.hotkey import create_wallet
 from harnyx_validator.infrastructure.tools.platform_client import HttpPlatformClient
 from harnyx_validator.runtime.registration_metadata import resolve_validator_registration_metadata
 from harnyx_validator.runtime.resource_usage import ValidatorResourceUsageProvider
+from harnyx_validator.runtime.restore_worker import RestoreWorker
 from harnyx_validator.runtime.settings import Settings
 
 logger = logging.getLogger("harnyx_validator.runtime")
@@ -177,6 +180,7 @@ class RuntimeContext:
     build_sandbox_options: Callable[[], SandboxOptions]
     platform_client: PlatformPort | None
     batch_inbox: InMemoryBatchInbox
+    restore_worker: RestoreWorker
     status_provider: StatusProvider
     batch_activity: BatchActivityTracker
     tool_route_deps_provider: Callable[[], ToolRouteDeps]
@@ -199,6 +203,7 @@ class InMemoryState:
     evaluation_records: EvaluationRecordPort
     progress_tracker: FileBackedRunProgress
     batch_inbox: InMemoryBatchInbox
+    restore_inbox: InMemoryRestoreInbox
     batch_activity: BatchActivityTracker
     usage_tracker: UsageTracker
     tool_concurrency_limiter: ToolConcurrencyLimiter
@@ -237,11 +242,18 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         state=state,
         scoring_service=scoring_service,
     )
-    tool_route_provider, control_provider, status_provider, inbound_auth_verifier = _build_http_dependencies(
+    (
+        tool_route_provider,
+        control_provider,
+        status_provider,
+        inbound_auth_verifier,
+        restore_worker,
+    ) = _build_http_dependencies(
         resolved=resolved,
         state=state,
         tool_executor=tool_executor,
         validator_hotkey=platform_hotkey,
+        platform_client=platform_client,
     )
 
     batch_blocking_executor = ThreadPoolExecutor(
@@ -276,6 +288,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         build_sandbox_options=options_factory,
         platform_client=platform_client,
         batch_inbox=state.batch_inbox,
+        restore_worker=restore_worker,
         status_provider=status_provider,
         batch_activity=state.batch_activity,
         tool_route_deps_provider=tool_route_provider,
@@ -300,6 +313,7 @@ def _build_state(
         datetime.now(UTC) - timedelta(seconds=settings.run_progress_retention_seconds)
     )
     batch_inbox = InMemoryBatchInbox()
+    restore_inbox = InMemoryRestoreInbox()
     batch_activity = BatchActivityTracker()
     tool_concurrency_limiter = ToolConcurrencyLimiter(DEFAULT_TOOL_CONCURRENCY_LIMITS)
     usage_tracker = UsageTracker()
@@ -311,6 +325,7 @@ def _build_state(
         evaluation_records=evaluation_records,
         progress_tracker=progress_tracker,
         batch_inbox=batch_inbox,
+        restore_inbox=restore_inbox,
         batch_activity=batch_activity,
         usage_tracker=usage_tracker,
         tool_concurrency_limiter=tool_concurrency_limiter,
@@ -447,11 +462,13 @@ def _build_http_dependencies(
     state: InMemoryState,
     tool_executor: ToolExecutor,
     validator_hotkey: bt.Keypair,
+    platform_client: PlatformPort,
 ) -> tuple[
     Callable[[], ToolRouteDeps],
     Callable[[], ValidatorControlDeps],
     StatusProvider,
     BittensorSr25519InboundVerifier,
+    RestoreWorker,
 ]:
     status_provider = StatusProvider()
     resource_usage_provider = ValidatorResourceUsageProvider()
@@ -461,8 +478,19 @@ def _build_http_dependencies(
         state.tool_concurrency_limiter,
     )
     accept_batch = AcceptEvaluationBatch(state.batch_inbox, status_provider, state.progress_tracker)
+    restore_batch = RestoreEvaluationBatch(
+        accepted_batches=accept_batch,
+        platform=platform_client,
+        batch_activity=state.batch_activity,
+    )
+    restore_worker = RestoreWorker(
+        restore_service=restore_batch,
+        restore_inbox=state.restore_inbox,
+    )
     control_provider = _make_control_provider(
         accept_batch,
+        restore_batch,
+        restore_worker,
         status_provider,
         inbound_auth,
         state.progress_tracker,
@@ -470,7 +498,7 @@ def _build_http_dependencies(
         resource_usage_provider,
         state.batch_activity,
     )
-    return tool_route_provider, control_provider, status_provider, inbound_auth
+    return tool_route_provider, control_provider, status_provider, inbound_auth, restore_worker
 
 
 def _create_platform_client(settings: Settings) -> tuple[PlatformPort, bt.Keypair]:
@@ -588,6 +616,8 @@ def _make_dependency_provider(
 
 def _make_control_provider(
     accept_batch: AcceptEvaluationBatch,
+    restore_batch: RestoreEvaluationBatch,
+    restore_worker: RestoreWorker,
     status_provider: StatusProvider,
     inbound_auth: BittensorSr25519InboundVerifier,
     progress_tracker: FileBackedRunProgress,
@@ -615,6 +645,8 @@ def _make_control_provider(
     def provider() -> ValidatorControlDeps:
         return ValidatorControlDeps(
             accept_batch=accept_batch,
+            restore_batch=restore_batch,
+            restore_worker=restore_worker,
             status_provider=status_provider,
             auth=auth,
             progress_tracker=progress_tracker,

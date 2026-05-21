@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
+from urllib.parse import urlencode
 from uuid import UUID
 
 import bittensor as bt
@@ -10,7 +13,16 @@ import httpx
 
 from harnyx_commons.bittensor import build_canonical_request
 from harnyx_validator.application.dto.evaluation import MinerTaskBatchSpec
-from harnyx_validator.application.ports.platform import ChampionWeights, PlatformPort
+from harnyx_validator.application.ports.platform import (
+    ChampionWeights,
+    PlatformPort,
+    RestoreMetadata,
+    RestoreRunsPage,
+)
+from harnyx_validator.infrastructure.http.schemas import (
+    ProviderEvidenceModel,
+    RestoreMinerTaskRunSubmissionModel,
+)
 from harnyx_validator.infrastructure.parsers import parse_batch
 from harnyx_validator.infrastructure.transient_network import classify_transient_network_failure
 
@@ -107,6 +119,63 @@ class HttpPlatformClient(PlatformPort):
         champion_uid_raw = payload.get("champion_uid")
         champion_uid = int(champion_uid_raw) if champion_uid_raw is not None else None
         return ChampionWeights(champion_uid=champion_uid, weights=weights)
+
+    def get_restore_metadata(self, batch_id: UUID) -> RestoreMetadata:
+        path = f"/v1/miner-task-batches/{batch_id}/restore"
+        response = self._get(path)
+        if response.status_code != httpx.codes.OK:
+            raise PlatformClientError(
+                status_code=response.status_code,
+                message=f"platform returned {response.status_code} for GET {path}",
+            )
+        payload = response.json()
+        provider_evidence = tuple(
+            ProviderEvidenceModel.model_validate(entry).to_domain()
+            for entry in payload.get("provider_model_evidence", ())
+        )
+        return RestoreMetadata(
+            batch_id=UUID(str(payload["batch_id"])),
+            snapshot_received_at=datetime.fromisoformat(str(payload["snapshot_received_at"])),
+            total_restore_runs=int(payload["total_restore_runs"]),
+            page_limit=int(payload["page_limit"]),
+            provider_model_evidence=provider_evidence,
+        )
+
+    def get_restore_runs_page(
+        self,
+        *,
+        batch: MinerTaskBatchSpec,
+        snapshot_received_at: datetime,
+        cursor: int,
+        limit: int,
+    ) -> RestoreRunsPage:
+        query = urlencode(
+            {
+                "snapshot_received_at": snapshot_received_at.isoformat(),
+                "cursor": cursor,
+                "limit": limit,
+            }
+        )
+        path = f"/v1/miner-task-batches/{batch.batch_id}/restore/runs?{query}"
+        response = self._get(path)
+        if response.status_code != httpx.codes.OK:
+            raise PlatformClientError(
+                status_code=response.status_code,
+                message=f"platform returned {response.status_code} for GET {path}",
+            )
+        payload: dict[str, Any] = response.json()
+        items = tuple(
+            RestoreMinerTaskRunSubmissionModel.model_validate(entry).to_domain(batch=batch)
+            for entry in payload.get("items", ())
+        )
+        return RestoreRunsPage(
+            batch_id=UUID(str(payload["batch_id"])),
+            snapshot_received_at=datetime.fromisoformat(str(payload["snapshot_received_at"])),
+            cursor=int(payload["cursor"]),
+            limit=int(payload["limit"]),
+            next_cursor=int(payload["next_cursor"]) if payload.get("next_cursor") is not None else None,
+            items=items,
+        )
 
 
 __all__ = ["HttpPlatformClient", "PlatformClientError"]

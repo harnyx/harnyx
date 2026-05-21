@@ -439,6 +439,8 @@ async def test_control_provider_offloads_auth_verification_to_thread(
 
     deps = bootstrap._make_control_provider(
         AcceptEvaluationBatch(InMemoryBatchInbox(), StatusProvider(), _progress(tmp_path)),
+        object(),
+        object(),
         StatusProvider(),
         inbound_auth,
         _progress(tmp_path),
@@ -500,6 +502,8 @@ async def test_make_control_provider_verifies_request_inline(monkeypatch: pytest
     )
     deps = bootstrap._make_control_provider(
         accept_batch=accept_batch,
+        restore_batch=object(),
+        restore_worker=object(),
         status_provider=status_provider,
         inbound_auth=inbound_auth,
         progress_tracker=progress_tracker,
@@ -541,6 +545,8 @@ def test_make_control_provider_reuses_fallback_resource_usage_provider(
 
     provider = bootstrap._make_control_provider(
         AcceptEvaluationBatch(InMemoryBatchInbox(), StatusProvider(), _progress(tmp_path)),
+        object(),
+        object(),
         StatusProvider(),
         object(),
         _progress(tmp_path),

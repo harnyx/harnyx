@@ -33,6 +33,7 @@ def test_validator_import_configures_sentry_before_tracing(monkeypatch) -> None:
         status_provider=object(),
         tool_route_deps_provider=lambda: object(),
         control_deps_provider=lambda: object(),
+        restore_worker=object(),
         register_with_platform=lambda: None,
     )
     fake_worker = SimpleNamespace(start=lambda: None, stop=lambda *args, **kwargs: None)
@@ -154,6 +155,7 @@ async def test_lifespan_stops_auth_when_later_startup_step_fails(monkeypatch: py
         status_provider=object(),
         tool_route_deps_provider=lambda: object(),
         control_deps_provider=lambda: object(),
+        restore_worker=object(),
         register_with_platform=lambda: None,
     )
 
@@ -170,6 +172,13 @@ async def test_lifespan_stops_auth_when_later_startup_step_fails(monkeypatch: py
 
         def stop(self, *, timeout: float) -> None:
             calls.append(f"weight-stop:{timeout}")
+
+    class _FakeRestoreWorker:
+        def start(self) -> None:
+            calls.append("restore-start")
+
+        async def stop(self, *, timeout: float) -> None:
+            calls.append(f"restore-stop:{timeout}")
 
     class _FailingEvaluationWorker:
         def start(self) -> None:
@@ -208,6 +217,7 @@ async def test_lifespan_stops_auth_when_later_startup_step_fails(monkeypatch: py
 
     monkeypatch.setattr(server, "_runtime", SimpleNamespace(inbound_auth_verifier=_FakeVerifier()))
     monkeypatch.setattr(server, "_weight_worker", _FakeWeightWorker())
+    monkeypatch.setattr(server, "_restore_worker", _FakeRestoreWorker())
     monkeypatch.setattr(server, "_evaluation_worker", _FailingEvaluationWorker())
     monkeypatch.setattr(server, "close_runtime_resources", _fake_close_runtime_resources)
     monkeypatch.setattr(server, "shutdown_logging", lambda: calls.append("shutdown-logging"))
@@ -219,7 +229,9 @@ async def test_lifespan_stops_auth_when_later_startup_step_fails(monkeypatch: py
     assert calls == [
         "auth-start",
         "weight-start",
+        "restore-start",
         "eval-start",
+        f"restore-stop:{server.WORKER_STOP_TIMEOUT_SECONDS}",
         f"weight-stop:{server.WORKER_STOP_TIMEOUT_SECONDS}",
         f"auth-stop:{server.WORKER_STOP_TIMEOUT_SECONDS}",
         "close-runtime",
@@ -247,6 +259,7 @@ async def test_lifespan_closes_runtime_resources_when_auth_stop_raises(
         status_provider=object(),
         tool_route_deps_provider=lambda: object(),
         control_deps_provider=lambda: object(),
+        restore_worker=object(),
         register_with_platform=lambda: None,
     )
 
@@ -264,6 +277,13 @@ async def test_lifespan_closes_runtime_resources_when_auth_stop_raises(
 
         def stop(self, *, timeout: float) -> None:
             calls.append(f"weight-stop:{timeout}")
+
+    class _FakeRestoreWorker:
+        def start(self) -> None:
+            calls.append("restore-start")
+
+        async def stop(self, *, timeout: float) -> None:
+            calls.append(f"restore-stop:{timeout}")
 
     class _FakeEvaluationWorker:
         def start(self) -> None:
@@ -301,6 +321,7 @@ async def test_lifespan_closes_runtime_resources_when_auth_stop_raises(
 
     monkeypatch.setattr(server, "_runtime", SimpleNamespace(inbound_auth_verifier=_FakeVerifier()))
     monkeypatch.setattr(server, "_weight_worker", _FakeWeightWorker())
+    monkeypatch.setattr(server, "_restore_worker", _FakeRestoreWorker())
     monkeypatch.setattr(server, "_evaluation_worker", _FakeEvaluationWorker())
     monkeypatch.setattr(server, "close_runtime_resources", _fake_close_runtime_resources)
     monkeypatch.setattr(server, "shutdown_logging", lambda: calls.append("shutdown-logging"))
@@ -311,8 +332,10 @@ async def test_lifespan_closes_runtime_resources_when_auth_stop_raises(
     assert calls == [
         "auth-start",
         "weight-start",
+        "restore-start",
         "eval-start",
         "yielded",
+        f"restore-stop:{server.WORKER_STOP_TIMEOUT_SECONDS}",
         f"eval-stop:{server.WORKER_STOP_TIMEOUT_SECONDS}",
         f"weight-stop:{server.WORKER_STOP_TIMEOUT_SECONDS}",
         f"auth-stop:{server.WORKER_STOP_TIMEOUT_SECONDS}",

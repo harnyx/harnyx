@@ -35,6 +35,7 @@ from harnyx_validator.application.ports.progress import (
     RunProgressPage,
     RunProgressSummary,
 )
+from harnyx_validator.application.restore_batch import RestoreEvaluationBatch
 from harnyx_validator.application.services.evaluation_runner import ValidatorBatchFailureDetail
 from harnyx_validator.application.status import BatchActivityTracker, StatusProvider
 from harnyx_validator.infrastructure.http.schemas import (
@@ -57,6 +58,7 @@ from harnyx_validator.infrastructure.http.schemas import (
 )
 from harnyx_validator.infrastructure.observability.sentry import capture_exception
 from harnyx_validator.runtime.resource_usage import ValidatorResourceUsageSnapshot
+from harnyx_validator.runtime.restore_worker import RestoreWorker
 
 logger = logging.getLogger("harnyx_validator.http")
 _STATUS_PATH = "/validator/status"
@@ -75,6 +77,8 @@ ControlRouteAuth = Callable[[str, str, bytes, str | None], Awaitable[str]]
 @dataclass(frozen=True)
 class ValidatorControlDeps:
     accept_batch: AcceptEvaluationBatch
+    restore_batch: RestoreEvaluationBatch
+    restore_worker: RestoreWorker
     status_provider: StatusProvider
     auth: ControlRouteAuth
     progress_tracker: ProgressTracker
@@ -240,13 +244,8 @@ def add_control_routes(
     ) -> BatchAcceptResponse | JSONResponse:
         try:
             batch = payload.to_domain()
-            restore_runs = payload.to_domain_restore_runs()
-            restore_provider_evidence = payload.to_domain_restore_provider_evidence()
-            deps.accept_batch.execute(
-                batch,
-                restore_runs=restore_runs,
-                restore_provider_evidence=restore_provider_evidence,
-            )
+            decision = deps.restore_batch.accept(batch)
+            deps.restore_worker.request_restore(decision)
         except (RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
@@ -267,7 +266,7 @@ def add_control_routes(
         _caller: str = Security(require_bittensor_caller),
     ) -> BatchProgressStatusResponse | JSONResponse:
         try:
-            lifecycle = deps.accept_batch.lifecycle_for(batch_id)
+            lifecycle = deps.accept_batch.public_lifecycle_for(batch_id)
             if lifecycle is None:
                 activity = deps.batch_activity.snapshot(batch_id)
                 return BatchProgressStatusResponse(

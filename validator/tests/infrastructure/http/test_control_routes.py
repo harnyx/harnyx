@@ -42,6 +42,7 @@ from harnyx_validator.application.dto.evaluation import (
     ScriptArtifactSpec,
     TokenUsageSummary,
 )
+from harnyx_validator.application.restore_batch import RestoreEvaluationBatch
 from harnyx_validator.application.services.evaluation_runner import ValidatorBatchFailureDetail
 from harnyx_validator.application.status import BatchActivityTracker, StatusProvider
 from harnyx_validator.domain.evaluation import MinerTaskRun
@@ -106,6 +107,12 @@ class StubAcceptBatch:
         _ = batch_id
         return self._lifecycle
 
+    def public_lifecycle_for(self, batch_id: UUID) -> str | None:
+        lifecycle = self.lifecycle_for(batch_id)
+        if lifecycle == "restoring":
+            return "queued"
+        return lifecycle
+
     def error_code_for(self, batch_id: UUID) -> str | None:
         _ = batch_id
         return self._error_code
@@ -132,6 +139,28 @@ class StubResourceUsageProvider:
             disk_total_bytes=8192,
             disk_percent=50.0,
         )
+
+
+class StubRestoreBatch:
+    def __init__(self, accept_batch: StubAcceptBatch) -> None:
+        self._accept_batch = accept_batch
+        self.received_batch: MinerTaskBatchSpec | None = None
+
+    def accept(self, batch: MinerTaskBatchSpec) -> object:
+        self.received_batch = batch
+        self._accept_batch.execute(batch)
+        return type("Decision", (), {"batch_id": batch.batch_id, "should_start_restore": True})()
+
+
+class StubRestoreWorker:
+    def __init__(self) -> None:
+        self.received_decisions: list[object] = []
+
+    def request_restore(self, decision: object) -> bool:
+        if not bool(getattr(decision, "should_start_restore", False)):
+            return False
+        self.received_decisions.append(decision)
+        return True
 
 
 class _ExplodingStatusProvider:
@@ -207,8 +236,12 @@ class DemoControlDependencyProvider:
             error_code=error_code,
             failure_detail=failure_detail,
         )
+        self.restore_batch = StubRestoreBatch(self.accept_batch)
+        self.restore_worker = StubRestoreWorker()
         self._deps = ValidatorControlDeps(
             accept_batch=self.accept_batch,
+            restore_batch=self.restore_batch,
+            restore_worker=self.restore_worker,
             status_provider=StubStatusProvider() if status_provider is None else status_provider,
             auth=_allow_all_auth if auth is None else auth,
             progress_tracker=FakeProgressTracker(snapshot=snapshot),
@@ -234,8 +267,16 @@ class RealAcceptBatchDependencyProvider:
             status=self.status_provider,
             progress=self.progress_tracker,
         )
+        self.restore_batch = RestoreEvaluationBatch(
+            accepted_batches=self.accept_batch,
+            platform=object(),
+            batch_activity=BatchActivityTracker(),
+        )
+        self.restore_worker = StubRestoreWorker()
         self._deps = ValidatorControlDeps(
             accept_batch=self.accept_batch,
+            restore_batch=self.restore_batch,
+            restore_worker=self.restore_worker,
             status_provider=self.status_provider,
             auth=_allow_all_auth,
             progress_tracker=self.progress_tracker,
@@ -1263,7 +1304,7 @@ def test_accept_batch_endpoint_accepts_platform_json_payload() -> None:
     assert provider.accept_batch.received_restore_runs == ()
 
 
-def test_accept_batch_endpoint_forwards_restore_runs() -> None:
+def test_accept_batch_endpoint_rejects_restore_runs() -> None:
     batch_id = uuid4()
     task, submission = _make_task_submission(batch_id=batch_id)
     snapshot: RunProgressFixture = {
@@ -1292,22 +1333,12 @@ def test_accept_batch_endpoint_forwards_restore_runs() -> None:
         },
     )
 
-    assert response.status_code == 200
-    assert len(provider.accept_batch.received_restore_runs) == 1
-    restored = provider.accept_batch.received_restore_runs[0]
-    assert restored.batch_id == submission.batch_id
-    assert restored.validator_uid == submission.validator_uid
-    assert restored.run.artifact_id == submission.run.artifact_id
-    assert restored.run.task_id == submission.run.task_id
-    assert restored.run.response == submission.run.response
-    assert restored.run.completed_at == submission.run.completed_at
-    assert restored.score == submission.score
-    assert restored.execution_log == submission.execution_log
-    assert restored.session.session_id == submission.session.session_id
-    assert restored.session.uid == submission.session.uid
+    assert response.status_code == 422
+    assert provider.accept_batch.received_batch is None
+    assert provider.accept_batch.received_restore_runs == ()
 
 
-def test_accept_batch_endpoint_drops_unknown_restore_execution_log_tools() -> None:
+def test_accept_batch_endpoint_rejects_restore_runs_before_execution_log_parsing() -> None:
     batch_id = uuid4()
     task, submission = _make_task_submission(batch_id=batch_id)
     snapshot: RunProgressFixture = {
@@ -1342,14 +1373,12 @@ def test_accept_batch_endpoint_drops_unknown_restore_execution_log_tools() -> No
         },
     )
 
-    assert response.status_code == 200
-    assert len(provider.accept_batch.received_restore_runs) == 1
-    restored = provider.accept_batch.received_restore_runs[0]
-    assert [entry.tool for entry in restored.execution_log] == ["search_web"]
-    assert restored.execution_log[0] == submission.execution_log[0]
+    assert response.status_code == 422
+    assert provider.accept_batch.received_batch is None
+    assert provider.accept_batch.received_restore_runs == ()
 
 
-def test_accept_batch_endpoint_forwards_terminal_timeout_failed_restore_run_and_provider_evidence() -> None:
+def test_accept_batch_endpoint_rejects_restore_run_and_provider_evidence() -> None:
     batch_id = uuid4()
     task, submission = _make_failed_task_submission(
         batch_id=batch_id,
@@ -1390,24 +1419,10 @@ def test_accept_batch_endpoint_forwards_terminal_timeout_failed_restore_run_and_
         },
     )
 
-    assert response.status_code == 200
-    assert len(provider.accept_batch.received_restore_runs) == 1
-    restored = provider.accept_batch.received_restore_runs[0]
-    assert restored.run.response is None
-    assert restored.run.details.error == EvaluationError(
-        code="timeout_inconclusive",
-        message="terminal timeout",
-    )
-    assert restored.execution_log == submission.execution_log
-    assert provider.accept_batch.received_restore_provider_evidence == (
-        {
-            "provider": "openai",
-            "model": "gpt-4o",
-            "total_calls": 3,
-            "failed_calls": 1,
-            "failure_reason": "rate limited",
-        },
-    )
+    assert response.status_code == 422
+    assert provider.accept_batch.received_batch is None
+    assert provider.accept_batch.received_restore_runs == ()
+    assert provider.accept_batch.received_restore_provider_evidence == ()
 
 
 def test_accept_batch_endpoint_rejects_invalid_restore_session_status() -> None:
@@ -1444,8 +1459,7 @@ def test_accept_batch_endpoint_rejects_invalid_restore_session_status() -> None:
         },
     )
 
-    assert response.status_code == 400
-    assert response.json()["detail"] == "'not_a_real_status' is not a valid SessionStatus"
+    assert response.status_code == 422
     assert provider.accept_batch.received_batch is None
     assert provider.accept_batch.received_restore_runs == ()
 
@@ -1601,8 +1615,10 @@ def test_accept_batch_endpoint_is_idempotent_for_exact_duplicate_replay(tmp_path
     assert first.status_code == 200
     assert second.status_code == 200
     assert first.json() == second.json()
-    assert len(provider.inbox) == 1
-    assert provider.status_provider.state.queued_batches == 1
+    assert len(provider.inbox) == 0
+    assert provider.status_provider.state.queued_batches == 0
+    assert len(provider.restore_worker.received_decisions) == 1
+    assert provider.restore_worker.received_decisions[0].should_start_restore is True
     summary = provider.progress_tracker.summary(batch_id)
     assert summary["total"] == 1
     assert summary["completed"] == 0
@@ -1666,5 +1682,5 @@ def test_accept_batch_endpoint_rejects_conflicting_duplicate_replay(tmp_path: Pa
     assert first.status_code == 200
     assert second.status_code == 400
     assert second.json() == {"detail": "batch_id already exists with different contents"}
-    assert len(provider.inbox) == 1
-    assert provider.status_provider.state.queued_batches == 1
+    assert len(provider.inbox) == 0
+    assert provider.status_provider.state.queued_batches == 0

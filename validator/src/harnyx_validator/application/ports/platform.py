@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
-from harnyx_validator.application.dto.evaluation import MinerTaskBatchSpec
+from harnyx_validator.application.dto.evaluation import MinerTaskBatchSpec, MinerTaskRunSubmission
+from harnyx_validator.application.ports.progress import ProviderFailureEvidence
 
 
 class PlatformPort(Protocol):
@@ -24,6 +26,21 @@ class PlatformPort(Protocol):
         """Return platform-computed champion weights."""
         ...
 
+    def get_restore_metadata(self, batch_id: UUID) -> RestoreMetadata:
+        """Return restore metadata for the validator-owned batch delivery."""
+        ...
+
+    def get_restore_runs_page(
+        self,
+        *,
+        batch: MinerTaskBatchSpec,
+        snapshot_received_at: datetime,
+        cursor: int,
+        limit: int,
+    ) -> RestoreRunsPage:
+        """Return one restore page converted to validator-domain submissions."""
+        ...
+
 
 @dataclass(frozen=True)
 class ChampionWeights:
@@ -31,4 +48,23 @@ class ChampionWeights:
     weights: dict[int, float]
 
 
-__all__ = ["PlatformPort", "ChampionWeights"]
+@dataclass(frozen=True)
+class RestoreMetadata:
+    batch_id: UUID
+    snapshot_received_at: datetime
+    total_restore_runs: int
+    page_limit: int
+    provider_model_evidence: tuple[ProviderFailureEvidence, ...] = ()
+
+
+@dataclass(frozen=True)
+class RestoreRunsPage:
+    batch_id: UUID
+    snapshot_received_at: datetime
+    cursor: int
+    limit: int
+    next_cursor: int | None
+    items: tuple[MinerTaskRunSubmission, ...] = ()
+
+
+__all__ = ["PlatformPort", "ChampionWeights", "RestoreMetadata", "RestoreRunsPage"]
