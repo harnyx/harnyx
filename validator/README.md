@@ -14,7 +14,7 @@ Before starting, ensure you have:
 ### Hardware + networking (quick sizing)
 
 - vCPU: 2 (4 recommended)
-- RAM: 4 GiB (8 GiB recommended)
+- RAM: 32 GiB
 - Disk: 20 GB
 - Network: platform must reach your validator on TCP 8100; set `VALIDATOR_PUBLIC_BASE_URL` accordingly
 - Third-party APIs: Chutes (`CHUTES_API_KEY`) + DeSearch (`DESEARCH_API_KEY`), plus OpenRouter (`OPENROUTER_API_KEY`) if your validator serves Chutes-selected tool models that route through OpenRouter.
