@@ -33,7 +33,7 @@ class EvaluationBatchConfig:
     state_dir: str = DEFAULT_STATE_DIR
     token_secret_bytes: int = 16
     artifact_parallelism: int = 4
-    artifact_task_parallelism: int = 20
+    artifact_task_parallelism: int = 40
 
 
 SandboxOptionsFactory = Callable[[], SandboxOptions]

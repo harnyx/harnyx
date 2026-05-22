@@ -9,10 +9,11 @@ import inspect
 import logging
 import multiprocessing
 import os
+import pickle
+import struct
 import traceback
 from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass, field
-from multiprocessing.connection import Connection
 from typing import Any, Protocol, cast
 
 import pyseccomp as seccomp
@@ -48,8 +49,6 @@ class SandboxPreloadFailure:
 
 
 class MpContext(Protocol):
-    def Pipe(self, duplex: bool = True) -> tuple[Connection, Connection]: ...  # noqa: N802 - mirror multiprocessing
-
     def Process(  # noqa: N802 - mirror multiprocessing
         self,
         *,
@@ -60,12 +59,163 @@ class MpContext(Protocol):
 
 logger = logging.getLogger("harnyx_sandbox.sandbox")
 WORKER_KILL_GRACE_SECONDS = 1.0
+WORKER_RESULT_HEADER_BYTES = 8
+WORKER_RESULT_READ_CHUNK_BYTES = 64 * 1024
+MAX_WORKER_RESULT_BYTES = 64 * 1024 * 1024
+
+
+class WorkerResultProtocolError(RuntimeError):
+    """Raised when the parent observes invalid worker result framing."""
+
+
+@dataclass(frozen=True)
+class WorkerResultPipe:
+    read_fd: int
+    write_fd: int
+
+    @classmethod
+    def open(cls) -> WorkerResultPipe:
+        read_fd, write_fd = os.pipe()
+        try:
+            os.set_blocking(read_fd, False)
+        except BaseException:
+            _close_fd(read_fd)
+            _close_fd(write_fd)
+            raise
+        return cls(read_fd=read_fd, write_fd=write_fd)
+
+    def close_read(self) -> None:
+        _close_fd(self.read_fd)
+
+    def close_write(self) -> None:
+        _close_fd(self.write_fd)
+
+    def close(self) -> None:
+        self.close_read()
+        self.close_write()
+
+
+@dataclass(frozen=True)
+class WorkerResultFrame:
+    payload: bytes | None = None
+    oversized: bool = False
+
+    @property
+    def complete(self) -> bool:
+        return self.payload is not None
 
 def _default_mp_context() -> multiprocessing.context.BaseContext:
     try:
         return multiprocessing.get_context("fork")
     except ValueError:  # pragma: no cover - non-Unix platforms
         return multiprocessing.get_context()
+
+
+class WorkerResultReader:
+    """Reads a worker result pipe without occupying one executor thread per worker."""
+
+    def __init__(self, *, process: multiprocessing.Process, pipe: WorkerResultPipe) -> None:
+        self._process = process
+        self._pipe = pipe
+        self._buffer = bytearray()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._future: asyncio.Future[tuple[str, Any]] | None = None
+        self._decode_task: asyncio.Task[None] | None = None
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    async def wait(self, *, timeout: float) -> tuple[str, Any]:
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[tuple[str, Any]] = loop.create_future()
+        self._loop = loop
+        self._future = future
+        try:
+            self._add_reader(self._pipe.read_fd, self._result_fd_ready)
+            self._add_reader(self._process.sentinel, self._process_exited)
+            return await asyncio.wait_for(future, timeout=timeout)
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._loop is not None:
+            self._remove_reader(self._pipe.read_fd)
+            self._remove_reader(self._process.sentinel)
+        if self._decode_task is not None and not self._decode_task.done():
+            self._decode_task.cancel()
+        self._pipe.close_read()
+
+    def _add_reader(self, fd: int, callback: Callable[[], None]) -> None:
+        if self._loop is None:  # pragma: no cover - defensive guard
+            raise WorkerResultProtocolError("worker result reader was not started")
+        self._loop.add_reader(fd, callback)
+
+    def _remove_reader(self, fd: int) -> None:
+        if self._loop is None:
+            return
+        with contextlib.suppress(Exception):
+            self._loop.remove_reader(fd)
+
+    def _result_fd_ready(self) -> None:
+        self._drain_available_result()
+
+    def _process_exited(self) -> None:
+        self._drain_available_result()
+        if self._decode_task is not None:
+            return
+        self._set_exception(WorkerResultProtocolError("entrypoint worker exited before returning result"))
+
+    def _drain_available_result(self) -> None:
+        while not self._closed and self._decode_task is None:
+            try:
+                chunk = os.read(self._pipe.read_fd, WORKER_RESULT_READ_CHUNK_BYTES)
+            except BlockingIOError:
+                return
+            except OSError as exc:
+                self._set_exception(WorkerResultProtocolError(f"failed to read worker result pipe: {exc}"))
+                return
+            if chunk == b"":
+                self._set_exception(WorkerResultProtocolError("worker closed result pipe before complete result"))
+                return
+            self._buffer.extend(chunk)
+            frame = _try_extract_worker_result_frame(self._buffer)
+            if frame.oversized:
+                self._set_exception(WorkerResultProtocolError("worker result frame exceeded maximum size"))
+                return
+            if frame.complete:
+                self._start_decode(frame.payload)
+                return
+
+    def _start_decode(self, payload: bytes | None) -> None:
+        if payload is None or self._loop is None:
+            return
+        self._remove_reader(self._pipe.read_fd)
+        self._remove_reader(self._process.sentinel)
+        self._decode_task = self._loop.create_task(self._decode_complete_frame(payload))
+
+    async def _decode_complete_frame(self, payload: bytes) -> None:
+        try:
+            envelope = await asyncio.to_thread(pickle.loads, payload)
+        except Exception:
+            self._set_exception(WorkerResultProtocolError("worker returned invalid result frame"))
+            return
+        if not _is_worker_result_envelope(envelope):
+            self._set_exception(WorkerResultProtocolError("worker returned invalid result envelope"))
+            return
+        self._set_result(envelope)
+
+    def _set_result(self, result: tuple[str, Any]) -> None:
+        if self._future is not None and not self._future.done():
+            self._future.set_result(result)
+
+    def _set_exception(self, exc: Exception) -> None:
+        if self._future is not None and not self._future.done():
+            self._future.set_exception(exc)
 
 
 class SandboxHarness:
@@ -157,16 +307,15 @@ class SandboxHarness:
         return {"request": request_payload}
 
     async def _invoke_with_worker(self, payload: Mapping[str, Any]) -> Any:
-        process, parent_conn = self._spawn_worker(payload)
+        process, result_pipe = self._spawn_worker(payload)
         try:
-            result_kind, result_data = await self._await_worker_result(parent_conn, payload, process)
+            result_kind, result_data = await self._await_worker_result(result_pipe, payload, process)
             return self._unwrap_worker_result(result_kind, result_data)
         finally:
-            parent_conn.close()
             self._join_process(process)
 
-    def _spawn_worker(self, payload: Mapping[str, Any]) -> tuple[multiprocessing.Process, Connection]:
-        parent_conn, child_conn = self._mp.Pipe(duplex=False)
+    def _spawn_worker(self, payload: Mapping[str, Any]) -> tuple[multiprocessing.Process, WorkerResultPipe]:
+        result_pipe = WorkerResultPipe.open()
         process = self._mp.Process(
             target=_entrypoint_worker,
             args=(
@@ -177,12 +326,17 @@ class SandboxHarness:
                 payload["headers"],
                 self._tool_factory,
                 payload["preload"],
-                child_conn,
+                result_pipe.read_fd,
+                result_pipe.write_fd,
             ),
         )
-        process.start()
-        child_conn.close()
-        return process, parent_conn
+        try:
+            process.start()
+        except BaseException:
+            result_pipe.close()
+            raise
+        result_pipe.close_write()
+        return process, result_pipe
 
     def _unwrap_worker_result(self, kind: str, data: Any) -> Any:
         if kind == "ok":
@@ -196,14 +350,13 @@ class SandboxHarness:
 
     async def _await_worker_result(
         self,
-        parent_conn: Connection,
+        result_pipe: WorkerResultPipe,
         payload: Mapping[str, Any],
         process: multiprocessing.Process,
     ) -> tuple[str, Any]:
-        loop = asyncio.get_running_loop()
-        recv_future = loop.run_in_executor(None, parent_conn.recv)
+        reader = WorkerResultReader(process=process, pipe=result_pipe)
         try:
-            return await asyncio.wait_for(recv_future, timeout=ENTRYPOINT_TIMEOUT_SECONDS)
+            return await reader.wait(timeout=ENTRYPOINT_TIMEOUT_SECONDS)
         except TimeoutError as exc:  # pragma: no cover - integration timing
             return self._handle_timeout(process, payload, exc)
         except Exception as exc:  # pragma: no cover - unexpected worker failure
@@ -269,11 +422,13 @@ def _entrypoint_worker(
     headers: Mapping[str, str],
     tool_factory: ToolFactory | None,
     preload: Callable[[], SandboxPreloadFailure | None] | None,
-    conn: Connection,
+    read_fd: int,
+    result_fd: int,
 ) -> None:
     tool_proxy = None
     preload_completed = False
     try:
+        _close_fd(read_fd)
         if tool_factory is not None:
             # Build the proxy before seccomp so hostname resolution/client setup
             # cannot trigger blocked task-creation syscalls inside the worker.
@@ -283,17 +438,17 @@ def _entrypoint_worker(
             try:
                 preload_failure = preload()
             except BaseException as exc:
-                _send_worker_error(conn, "PreloadFailed", exc)
+                _send_worker_error(result_fd, "PreloadFailed", exc)
                 return
             if preload_failure is not None:
-                _send_preload_failure(conn, preload_failure)
+                _send_preload_failure(result_fd, preload_failure)
                 return
             preload_completed = True
         try:
             func = get_entrypoint(entrypoint_name)
         except KeyError as exc:
             detail_code = "MissingEntrypoint" if preload_completed else "EntrypointUnavailable"
-            _send_worker_error(conn, detail_code, exc)
+            _send_worker_error(result_fd, detail_code, exc)
             return
         context_snapshot = ContextSnapshot(context_data or {})
         call_kwargs = SandboxHarness._build_call_kwargs(
@@ -307,14 +462,14 @@ def _entrypoint_worker(
                 result = _execute_entrypoint(func, call_kwargs)
         else:
             result = _execute_entrypoint(func, call_kwargs)
-        conn.send(("ok", result))
+        _send_worker_result(result_fd, ("ok", result))
     except BaseException as exc:  # pragma: no cover - propagated to parent
-        _send_worker_error(conn, "UnhandledException", exc)
+        _send_worker_error(result_fd, "UnhandledException", exc)
     finally:
         if tool_proxy is not None:
             with contextlib.suppress(Exception):
                 asyncio.run(tool_proxy.aclose())
-        conn.close()
+        _close_fd(result_fd)
 
 
 def _block_new_tasks_in_this_process() -> None:
@@ -327,8 +482,43 @@ def _block_new_tasks_in_this_process() -> None:
     logger.debug("worker seccomp filter installed", extra={"pid": os.getpid()})
 
 
-def _send_worker_error(conn: Connection, code: str, exc: BaseException) -> None:
-    conn.send(
+def _try_extract_worker_result_frame(buffer: bytearray) -> WorkerResultFrame:
+    if len(buffer) < WORKER_RESULT_HEADER_BYTES:
+        return WorkerResultFrame()
+    payload_size = struct.unpack(">Q", buffer[:WORKER_RESULT_HEADER_BYTES])[0]
+    if payload_size > MAX_WORKER_RESULT_BYTES:
+        return WorkerResultFrame(oversized=True)
+    frame_size = WORKER_RESULT_HEADER_BYTES + payload_size
+    if len(buffer) < frame_size:
+        return WorkerResultFrame()
+    return WorkerResultFrame(payload=bytes(buffer[WORKER_RESULT_HEADER_BYTES:frame_size]))
+
+
+def _is_worker_result_envelope(value: object) -> bool:
+    return isinstance(value, tuple) and len(value) == 2 and isinstance(value[0], str)
+
+
+def _send_worker_result(result_fd: int, result: tuple[str, Any]) -> None:
+    payload = pickle.dumps(result, protocol=pickle.HIGHEST_PROTOCOL)
+    if len(payload) > MAX_WORKER_RESULT_BYTES:
+        payload = pickle.dumps(
+            (
+                "error",
+                {
+                    "code": "ResultTooLarge",
+                    "error": "worker result exceeded maximum size",
+                    "exception": "ResultTooLarge",
+                    "traceback": None,
+                },
+            ),
+            protocol=pickle.HIGHEST_PROTOCOL,
+        )
+    _write_all(result_fd, struct.pack(">Q", len(payload)) + payload)
+
+
+def _send_worker_error(result_fd: int, code: str, exc: BaseException) -> None:
+    _send_worker_result(
+        result_fd,
         (
             "error",
             {
@@ -341,8 +531,9 @@ def _send_worker_error(conn: Connection, code: str, exc: BaseException) -> None:
     )
 
 
-def _send_preload_failure(conn: Connection, failure: SandboxPreloadFailure) -> None:
-    conn.send(
+def _send_preload_failure(result_fd: int, failure: SandboxPreloadFailure) -> None:
+    _send_worker_result(
+        result_fd,
         (
             "error",
             {
@@ -355,6 +546,18 @@ def _send_preload_failure(conn: Connection, failure: SandboxPreloadFailure) -> N
     )
 
 
+def _write_all(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        view = view[written:]
+
+
+def _close_fd(fd: int) -> None:
+    with contextlib.suppress(OSError):
+        os.close(fd)
+
+
 def _execute_entrypoint(func: Callable[..., Any], call_kwargs: Mapping[str, Any]) -> Any:
     if not inspect.iscoroutinefunction(func):
         raise RuntimeError("sandbox entrypoints must be async def")
@@ -364,9 +567,13 @@ def _execute_entrypoint(func: Callable[..., Any], call_kwargs: Mapping[str, Any]
 
 __all__ = [
     "EntrypointRequest",
+    "MAX_WORKER_RESULT_BYTES",
     "SandboxHarness",
     "SandboxPreloadFailure",
     "ToolConfig",
     "ToolFactory",
     "ToolHeaders",
+    "WorkerResultPipe",
+    "WorkerResultProtocolError",
+    "WorkerResultReader",
 ]

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import multiprocessing as mp
+import os
+import pickle
+import struct
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -9,9 +13,15 @@ from pathlib import Path
 import harnyx_sandbox.app as sandbox_app
 import harnyx_sandbox.sandbox.harness as harness_module
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
-from harnyx_sandbox.sandbox.harness import SandboxHarness, SandboxPreloadFailure
+from harnyx_sandbox.sandbox.harness import (
+    SandboxHarness,
+    SandboxPreloadFailure,
+    WorkerResultPipe,
+    WorkerResultReader,
+    _send_worker_result,
+)
 
 from harnyx_miner_sdk.api import test_tool as invoke_test_tool
 from harnyx_miner_sdk.decorators import clear_entrypoints, entrypoint, entrypoint_exists
@@ -19,6 +29,189 @@ from harnyx_miner_sdk.decorators import clear_entrypoints, entrypoint, entrypoin
 
 def _detail_code(response) -> str:
     return response.json()["detail"]["code"]
+
+
+class _FakeWorkerProcess:
+    def __init__(self) -> None:
+        self.sentinel_read_fd, self._sentinel_write_fd = os.pipe()
+        self.sentinel = self.sentinel_read_fd
+        self.terminated = False
+        self.killed = False
+        self.join_calls = 0
+        self._sentinel_closed = False
+
+    def is_alive(self) -> bool:
+        return not self.terminated and not self.killed
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.finish()
+
+    def join(self, timeout: float) -> None:
+        del timeout
+        self.join_calls += 1
+
+    def kill(self) -> None:
+        self.killed = True
+        self.finish()
+
+    def finish(self) -> None:
+        if self._sentinel_closed:
+            return
+        self._sentinel_closed = True
+        os.close(self._sentinel_write_fd)
+
+    def close(self) -> None:
+        self.finish()
+        with contextlib.suppress(OSError):
+            os.close(self.sentinel_read_fd)
+
+
+def _make_worker_payload() -> dict[str, object]:
+    return {
+        "entrypoint_name": "miner_test",
+        "headers": {},
+    }
+
+
+@pytest.mark.anyio("asyncio")
+async def test_worker_result_wait_does_not_use_executor_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    pipe = WorkerResultPipe.open()
+    process = _FakeWorkerProcess()
+
+    def fail_run_in_executor(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("worker result wait must not use run_in_executor")
+
+    async def decode_without_executor(func, *args):
+        return func(*args)
+
+    monkeypatch.setattr(asyncio, "to_thread", decode_without_executor)
+    monkeypatch.setattr(asyncio.get_running_loop(), "run_in_executor", fail_run_in_executor)
+
+    async def send_result() -> None:
+        await asyncio.sleep(0)
+        _send_worker_result(pipe.write_fd, ("ok", {"status": "ready"}))
+        os.close(pipe.write_fd)
+        process.finish()
+
+    send_task = asyncio.create_task(send_result())
+    try:
+        result = await WorkerResultReader(process=process, pipe=pipe).wait(timeout=1.0)
+    finally:
+        await send_task
+        process.close()
+
+    assert result == ("ok", {"status": "ready"})
+
+
+@pytest.mark.anyio("asyncio")
+async def test_worker_result_timeout_cleans_wait_state_and_terminates_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipe = WorkerResultPipe.open()
+    process = _FakeWorkerProcess()
+    harness = SandboxHarness()
+    monkeypatch.setattr(harness_module, "ENTRYPOINT_TIMEOUT_SECONDS", 0.01)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await harness._await_worker_result(pipe, _make_worker_payload(), process)
+
+    os.close(pipe.write_fd)
+    process.close()
+    assert exc_info.value.status_code == 504
+    assert process.terminated is True
+
+
+@pytest.mark.anyio("asyncio")
+async def test_worker_result_partial_frame_does_not_block_event_loop() -> None:
+    pipe = WorkerResultPipe.open()
+    process = _FakeWorkerProcess()
+    os.write(pipe.write_fd, struct.pack(">Q", 100) + b"partial")
+
+    wait_task = asyncio.create_task(WorkerResultReader(process=process, pipe=pipe).wait(timeout=1.0))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert not wait_task.done()
+
+    wait_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await wait_task
+    os.close(pipe.write_fd)
+    process.close()
+
+
+@pytest.mark.anyio("asyncio")
+async def test_worker_exit_after_full_frame_preserves_worker_result() -> None:
+    pipe = WorkerResultPipe.open()
+    process = _FakeWorkerProcess()
+    _send_worker_result(pipe.write_fd, ("ok", {"value": 1}))
+    os.close(pipe.write_fd)
+    process.finish()
+
+    try:
+        result = await WorkerResultReader(process=process, pipe=pipe).wait(timeout=1.0)
+    finally:
+        process.close()
+
+    assert result == ("ok", {"value": 1})
+
+
+@pytest.mark.anyio("asyncio")
+async def test_parent_oversized_frame_is_parent_infrastructure_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipe = WorkerResultPipe.open()
+    process = _FakeWorkerProcess()
+    harness = SandboxHarness()
+    monkeypatch.setattr(harness_module, "MAX_WORKER_RESULT_BYTES", 16)
+    os.write(pipe.write_fd, struct.pack(">Q", 17))
+    os.close(pipe.write_fd)
+    process.finish()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await harness._await_worker_result(pipe, _make_worker_payload(), process)
+
+    process.close()
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail["exception"] == "WorkerResultProtocolError"
+
+
+@pytest.mark.anyio("asyncio")
+async def test_worker_result_too_large_is_structured_worker_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    pipe = WorkerResultPipe.open()
+    process = _FakeWorkerProcess()
+    monkeypatch.setattr(harness_module, "MAX_WORKER_RESULT_BYTES", 1024)
+
+    _send_worker_result(pipe.write_fd, ("ok", b"x" * 2000))
+    os.close(pipe.write_fd)
+    process.finish()
+
+    try:
+        envelope = await WorkerResultReader(process=process, pipe=pipe).wait(timeout=1.0)
+    finally:
+        process.close()
+
+    assert envelope[0] == "error"
+    assert envelope[1]["code"] == "ResultTooLarge"
+
+
+@pytest.mark.anyio("asyncio")
+async def test_parent_reader_accepts_max_size_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    pipe = WorkerResultPipe.open()
+    process = _FakeWorkerProcess()
+    payload = pickle.dumps(("ok", {"value": "at-limit"}), protocol=pickle.HIGHEST_PROTOCOL)
+    monkeypatch.setattr(harness_module, "MAX_WORKER_RESULT_BYTES", len(payload))
+    os.write(pipe.write_fd, struct.pack(">Q", len(payload)) + payload)
+    os.close(pipe.write_fd)
+    process.finish()
+
+    try:
+        result = await WorkerResultReader(process=process, pipe=pipe).wait(timeout=1.0)
+    finally:
+        process.close()
+
+    assert result == ("ok", {"value": "at-limit"})
 
 
 def test_harness_invokes_entrypoint_and_closes_tools() -> None:
