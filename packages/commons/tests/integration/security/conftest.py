@@ -94,6 +94,7 @@ def sandbox(attacker_agent_path: Path):
             "SANDBOX_PORT": "8000",
             "AGENT_PATH": "/sandbox/agent.py",
             "ENTRYPOINT_TIMEOUT_SECONDS": "5",
+            "SANDBOX_PIDS_PROBE_LIMIT": str(CONTAINER_SECURITY.pids_limit + 100),
         },
         volumes=((str(attacker_agent_path), "/sandbox/agent.py", "ro"),),
         wait_for_healthz=True,

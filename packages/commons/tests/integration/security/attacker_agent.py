@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 import sys
 import tempfile
@@ -22,7 +23,7 @@ async def probe(request: Mapping[str, Any]) -> dict[str, Any]:
             "err_root": _try_write(str(ROOT_BLOCKED_TARGET)),
         }
     if mode == "pids":
-        return {"spawned": _spawn_until_failure(400)}
+        return {"spawned": _spawn_until_failure(_pids_probe_limit())}
     if mode == "sleep":
         await asyncio.sleep(int(request.get("secs", 999)))
         return {"done": True}
@@ -65,4 +66,13 @@ def _spawn_until_failure(limit: int) -> int | str:
                 proc.terminate()
             except Exception:  # pragma: no cover - cleanup best effort
                 proc.kill()
+
+
+def _pids_probe_limit() -> int:
+    raw_limit = os.getenv("SANDBOX_PIDS_PROBE_LIMIT")
+    if raw_limit is None:
+        return 800
+    return int(raw_limit)
+
+
 ROOT_BLOCKED_TARGET = Path("/root/blocked")
