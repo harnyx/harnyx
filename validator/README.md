@@ -43,6 +43,8 @@ Completed-run execution logs are stored under the validator state volume while t
 
 Validator scoring keeps `SCORING_LLM_PROVIDER` configurable, but the scoring model contract is fixed in code to `moonshotai/Kimi-K2.5-TEE` with `reasoning_effort="high"`. The pairwise scoring prompt, request shape, and score mapping live in `public/packages/commons/src/harnyx_commons/miner_task_scoring.py`; validator runtime code only wires providers, sandbox execution, and submission flow.
 
+Post-dethrone similarity judging uses the same fixed `moonshotai/Kimi-K2.5-TEE` model contract as scoring and is routed through the `duplication_detection` surface in `LLM_MODEL_PROVIDER_OVERRIDES_JSON`. The platform computes the dethrone order and sends the original incumbent script plus candidate diff to validators; validators own the similarity prompt internally and return a duplicate/not-duplicate verdict with provider reasoning metadata.
+
 When `TOOL_LLM_PROVIDER=chutes`, validator tool routing internally sends configured OpenRouter-routed models to OpenRouter. `OPENROUTER_API_KEY` is checked only when one of those models is invoked; validators that do not serve them can leave the key blank. Explicit `LLM_MODEL_PROVIDER_OVERRIDES_JSON` entries still win, so internal deployments can route Qwen to `custom-openai-compatible:qwen36-cloud-run` without invoking OpenRouter for Qwen. Do not set `TOOL_LLM_PROVIDER=openrouter`; `openrouter` is an internal route target, not an operator-selectable provider.
 
 ### Optional Sentry

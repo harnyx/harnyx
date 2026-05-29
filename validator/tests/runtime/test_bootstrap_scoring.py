@@ -34,6 +34,7 @@ from harnyx_validator.runtime import bootstrap
 from harnyx_validator.runtime.bootstrap import (
     _build_llm_clients,
     _create_scoring_service,
+    _create_similarity_judge,
     close_runtime_resources,
 )
 from harnyx_validator.runtime.settings import Settings
@@ -201,17 +202,31 @@ def test_build_llm_clients_uses_shared_provider_registry(monkeypatch: pytest.Mon
         fake_build_cached_llm_provider_registry,
     )
 
-    _, provider_registry, tool_provider, scoring_provider, scoring_route = _build_llm_clients(settings)
+    (
+        _,
+        provider_registry,
+        tool_provider,
+        scoring_provider,
+        similarity_provider,
+        scoring_route,
+        similarity_route,
+    ) = _build_llm_clients(settings)
 
     assert type(tool_provider).__name__ == "LazyLlmProvider"
     assert scoring_provider == "provider:vertex"
+    assert similarity_provider == "provider:vertex"
     assert type(provider_registry).__name__ == "_FakeRegistry"
     assert scoring_route == ResolvedLlmRoute(
         surface="scoring",
         provider="vertex",
         model=bootstrap._SCORING_LLM_MODEL,
     )
-    assert calls == ["vertex"]
+    assert similarity_route == ResolvedLlmRoute(
+        surface="duplication_detection",
+        provider="vertex",
+        model=bootstrap._DUPLICATION_DETECTION_LLM_MODEL,
+    )
+    assert calls == ["vertex", "vertex"]
 
 
 def test_build_llm_clients_requires_search_provider() -> None:
@@ -242,7 +257,7 @@ async def test_build_llm_clients_routes_gemma_tool_model_to_custom_endpoint(
     registry = _FakeLlmRegistry()
     monkeypatch.setattr(invocation_clients, "build_cached_llm_provider_registry", lambda **_: registry)
 
-    _, _, tool_provider, _, _ = _build_llm_clients(settings)
+    _, _, tool_provider, _, _, _, _ = _build_llm_clients(settings)
 
     assert tool_provider is not None
     await tool_provider.invoke(_gemma_tool_request())
@@ -280,7 +295,7 @@ def test_build_llm_clients_uses_scoring_model_override_for_route_resolution(
 
     monkeypatch.setattr(invocation_clients, "build_cached_llm_provider_registry", lambda **_: _FakeRegistry())
 
-    _, _, _, scoring_provider, scoring_route = _build_llm_clients(settings)
+    _, _, _, scoring_provider, _, scoring_route, _ = _build_llm_clients(settings)
 
     assert scoring_provider == "provider:bedrock"
     assert scoring_route == ResolvedLlmRoute(
@@ -380,9 +395,13 @@ def test_build_runtime_cleans_stale_sandbox_containers_on_startup(
     manager = FakeSandboxManager()
 
     monkeypatch.setattr(bootstrap, "_build_external_clients", lambda _settings: (object(), object(), object()))
-    monkeypatch.setattr(bootstrap, "_build_llm_clients", lambda _settings: (None, None, None, None, object()))
+    monkeypatch.setattr(
+        bootstrap,
+        "_build_llm_clients",
+        lambda _settings: (None, None, None, None, None, object(), object()),
+    )
     monkeypatch.setattr(bootstrap, "_build_tooling", lambda **_kwargs: (object(), object()))
-    monkeypatch.setattr(bootstrap, "_build_services", lambda **_kwargs: (object(), object()))
+    monkeypatch.setattr(bootstrap, "_build_services", lambda **_kwargs: (object(), object(), object()))
     monkeypatch.setattr(
         bootstrap,
         "_build_factories",
@@ -528,6 +547,33 @@ def test_create_scoring_service_uses_effective_route_model_and_provider() -> Non
     assert service._config.model == "custom/internal-model"
 
 
+def test_create_similarity_judge_uses_scoring_llm_config() -> None:
+    settings = Settings.model_construct(
+        llm=LlmSettings.model_construct(
+            scoring_llm_temperature=0.0,
+            scoring_llm_max_output_tokens=4096,
+            scoring_llm_timeout_seconds=300.0,
+        ),
+    )
+
+    judge = _create_similarity_judge(
+        settings,
+        provider=SimpleNamespace(),
+        similarity_route=ResolvedLlmRoute(
+            surface="duplication_detection",
+            provider="bedrock",
+            model="moonshotai/Kimi-K2.5-TEE",
+        ),
+    )
+
+    assert judge._config.provider == "bedrock"
+    assert judge._config.model == "moonshotai/Kimi-K2.5-TEE"
+    assert judge._config.temperature == 0.0
+    assert judge._config.max_output_tokens == 4096
+    assert judge._config.reasoning_effort == "high"
+    assert judge._config.timeout_seconds == 300.0
+
+
 def test_build_llm_clients_allows_bedrock_scoring_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -558,7 +604,7 @@ def test_build_llm_clients_allows_bedrock_scoring_route(
 
     monkeypatch.setattr(invocation_clients, "build_cached_llm_provider_registry", lambda **_: _FakeRegistry())
 
-    _, _, _, scoring_provider, scoring_route = _build_llm_clients(settings)
+    _, _, _, scoring_provider, _, scoring_route, _ = _build_llm_clients(settings)
 
     assert scoring_provider == "provider:bedrock"
     assert scoring_route == ResolvedLlmRoute(

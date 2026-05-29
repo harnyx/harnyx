@@ -111,8 +111,37 @@ def test_validator_runtime_allows_scoring_override_to_bedrock(monkeypatch: pytes
 
     monkeypatch.setattr(invocation_clients, "build_cached_llm_provider_registry", lambda **_: _FakeRegistry())
 
-    _, _, _, scoring_provider, scoring_route = _build_llm_clients(settings)
+    _, _, _, scoring_provider, _, scoring_route, _ = _build_llm_clients(settings)
 
     assert scoring_provider == "provider:bedrock"
     assert scoring_route.provider == "bedrock"
     assert scoring_route.model == bootstrap._SCORING_LLM_MODEL
+
+
+def test_validator_runtime_allows_duplication_detection_override_to_bedrock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings()
+    settings = settings.model_copy(
+        update={
+            "llm": settings.llm.model_copy(
+                update={
+                    "llm_model_provider_overrides_json": json.dumps(
+                        {"duplication_detection": {bootstrap._DUPLICATION_DETECTION_LLM_MODEL: "bedrock"}}
+                    ),
+                }
+            )
+        }
+    )
+
+    class _FakeRegistry:
+        def resolve(self, name: str) -> str:
+            return f"provider:{name}"
+
+    monkeypatch.setattr(invocation_clients, "build_cached_llm_provider_registry", lambda **_: _FakeRegistry())
+
+    _, _, _, _, similarity_provider, _, similarity_route = _build_llm_clients(settings)
+
+    assert similarity_provider == "provider:bedrock"
+    assert similarity_route.provider == "bedrock"
+    assert similarity_route.model == bootstrap._DUPLICATION_DETECTION_LLM_MODEL

@@ -36,6 +36,24 @@ class ArtifactAggregateBundle:
     median_elapsed_ms: dict[UUID, float] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class RankingCascadeStep:
+    incumbent_artifact_id: UUID | None
+    challenger_artifact_id: UUID
+    selected_artifact_id: UUID | None
+    dethroned: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RankingCascadeTrace:
+    initial_artifact_id: UUID | None
+    final_artifact_id: UUID | None
+    steps: tuple[RankingCascadeStep, ...]
+
+    def successful_dethroner_artifact_ids(self) -> tuple[UUID, ...]:
+        return tuple(step.challenger_artifact_id for step in self.steps if step.dethroned)
+
+
 @dataclass(frozen=True)
 class CascadeConfig:
     """Static cascade configuration identical to platform defaults."""
@@ -58,13 +76,39 @@ class RankingCascade:
         challengers_ordered: Iterable[UUID],
         aggregates: ArtifactAggregateBundle,
     ) -> UUID | None:
+        return self.trace(
+            initial=initial,
+            challengers_ordered=challengers_ordered,
+            aggregates=aggregates,
+        ).final_artifact_id
+
+    def trace(
+        self,
+        *,
+        initial: UUID | None,
+        challengers_ordered: Iterable[UUID],
+        aggregates: ArtifactAggregateBundle,
+    ) -> RankingCascadeTrace:
         current = initial if self._has_positive_total(initial, aggregates) else None
+        steps: list[RankingCascadeStep] = []
         for artifact_id in challengers_ordered:
             if artifact_id not in aggregates.vectors:
                 continue
+            incumbent_before = current
+            dethroned = False
             if current is None:
                 if self._has_positive_total(artifact_id, aggregates):
                     current = artifact_id
+                    incumbent_before = initial
+                    dethroned = initial is not None and initial != artifact_id
+                steps.append(
+                    RankingCascadeStep(
+                        incumbent_artifact_id=incumbent_before,
+                        challenger_artifact_id=artifact_id,
+                        selected_artifact_id=current,
+                        dethroned=dethroned,
+                    )
+                )
                 continue
             if self._can_dethrone(
                 challenger_artifact_id=artifact_id,
@@ -72,7 +116,20 @@ class RankingCascade:
                 aggregates=aggregates,
             ):
                 current = artifact_id
-        return current
+                dethroned = True
+            steps.append(
+                RankingCascadeStep(
+                    incumbent_artifact_id=incumbent_before,
+                    challenger_artifact_id=artifact_id,
+                    selected_artifact_id=current,
+                    dethroned=dethroned,
+                )
+            )
+        return RankingCascadeTrace(
+            initial_artifact_id=initial,
+            final_artifact_id=current,
+            steps=tuple(steps),
+        )
 
     def _can_dethrone(
         self,
@@ -310,6 +367,8 @@ __all__ = [
     "COST_REDUCTION_REQUIRED",
     "CascadeConfig",
     "RankingCascade",
+    "RankingCascadeStep",
+    "RankingCascadeTrace",
     "TIME_REDUCTION_MIN_MS",
     "TIME_REDUCTION_REQUIRED",
     "aggregate_ranking_rows",

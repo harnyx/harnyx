@@ -18,6 +18,7 @@ from harnyx_commons.bittensor import VerificationError
 from harnyx_commons.domain.miner_task import MinerTaskErrorCode
 from harnyx_commons.domain.session import Session
 from harnyx_commons.errors import ConcurrencyLimitError, ToolProviderError
+from harnyx_commons.miner_task_similarity import SimilarityJudgeRequest, SimilarityJudgeResult
 from harnyx_commons.protocol_headers import SESSION_ID_HEADER
 from harnyx_commons.tools.dto import ToolInvocationRequest
 from harnyx_commons.tools.executor import ToolExecutor, execute_tool_with_concurrency_permit
@@ -49,6 +50,8 @@ from harnyx_validator.infrastructure.http.schemas import (
     RestoreMinerTaskRunSubmissionModel,
     SequencedCompletedRunSubmissionModel,
     SessionModel,
+    SimilarityJudgeRequestModel,
+    SimilarityJudgeResponseModel,
     UsageModel,
     UsageModelEntry,
     ValidatorInternalErrorResponse,
@@ -85,6 +88,7 @@ class ValidatorControlDeps:
     validator_hotkey: StatusSigner
     resource_usage_provider: ResourceUsageProvider
     batch_activity: BatchActivityTracker
+    similarity_judge: SimilarityJudgePort | None = None
 
 
 class ProgressTracker(Protocol):
@@ -110,6 +114,11 @@ class StatusSigner(Protocol):
 
 class ResourceUsageProvider(Protocol):
     def snapshot(self) -> ValidatorResourceUsageSnapshot:
+        ...
+
+
+class SimilarityJudgePort(Protocol):
+    async def judge(self, request: SimilarityJudgeRequest) -> SimilarityJudgeResult:
         ...
 
 
@@ -252,6 +261,31 @@ def add_control_routes(
             return _control_route_internal_error_response(request, exc)
 
         return BatchAcceptResponse(status="accepted", batch_id=str(batch.batch_id), caller=caller)
+
+    @app.post(
+        "/validator/miner-task-batches/{batch_id}/similarity",
+        response_model=SimilarityJudgeResponseModel,
+        responses={500: {"model": ValidatorInternalErrorResponse}},
+        description="Run a validator-owned similarity judge for a dethroning miner script candidate.",
+    )
+    async def judge_similarity(
+        request: Request,
+        batch_id: UUID,
+        payload: SimilarityJudgeRequestModel,
+        deps: ValidatorControlDeps = Depends(get_control_deps),  # noqa: B008
+        _caller: str = Security(require_bittensor_caller),
+    ) -> SimilarityJudgeResponseModel | JSONResponse:
+        try:
+            if deps.similarity_judge is None:
+                raise HTTPException(status_code=503, detail="similarity judge is not configured")
+            result = await deps.similarity_judge.judge(payload.to_domain(batch_id=batch_id))
+        except HTTPException:
+            raise
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            return _control_route_internal_error_response(request, exc)
+        return SimilarityJudgeResponseModel.from_domain(result)
 
     @app.get(
         "/validator/miner-task-batches/{batch_id}/status",

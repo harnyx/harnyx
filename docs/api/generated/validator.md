@@ -6,6 +6,7 @@ Generated from FastAPI OpenAPI.
 - [miner-task-batches](#miner-task-batches)
   - [POST /validator/miner-task-batches/batch](#endpoint-post-validator-miner-task-batches-batch)
   - [GET /validator/miner-task-batches/{batch_id}/runs](#endpoint-get-validator-miner-task-batches-batch_id-runs)
+  - [POST /validator/miner-task-batches/{batch_id}/similarity](#endpoint-post-validator-miner-task-batches-batch_id-similarity)
   - [GET /validator/miner-task-batches/{batch_id}/status](#endpoint-get-validator-miner-task-batches-batch_id-status)
 - [status](#status)
   - [GET /validator/status](#endpoint-get-validator-status)
@@ -120,6 +121,58 @@ Body: [BatchProgressRunsPageResponse](#model-batchprogressrunspageresponse)
 | `latest_sequence` |  |  | req | `integer` |
 | `limit` |  |  | req | `integer` |
 | `next_after_sequence` |  |  | req | `integer` |
+
+`422` Validation Error
+Content-Type: `application/json`
+Body: [HTTPValidationError](#model-httpvalidationerror)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
+|  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
+|  | `msg` |  | req | `string` |
+|  | `type` |  | req | `string` |
+
+
+#### similarity
+
+<a id="endpoint-post-validator-miner-task-batches-batch_id-similarity"></a>
+##### POST /validator/miner-task-batches/{batch_id}/similarity
+
+Run a validator-owned similarity judge for a dethroning miner script candidate.
+
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
+
+**Parameters**
+| Param | In | Req | Notes |
+| --- | --- | --- | --- |
+| `batch_id` | path | req | `string` (format: uuid) |
+
+**Request**
+Content-Type: `application/json`
+Body: [SimilarityJudgeRequestModel](#model-similarityjudgerequestmodel)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `candidate_artifact_id` |  |  | req | `string` |
+| `candidate_diff` |  |  | req | `string` |
+| `candidate_miner_uid` |  |  | req | `integer` |
+| `incumbent_artifact_id` |  |  | req | `string` |
+| `incumbent_miner_uid` |  |  | req | `integer` |
+| `incumbent_script` |  |  | req | `string` |
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: [SimilarityJudgeResponseModel](#model-similarityjudgeresponsemodel)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `model` |  |  | req | `string` |
+| `provider` |  |  | req | `string` |
+| `reasoning` |  |  | opt | `string` (nullable) |
+| `reasoning_tokens` |  |  | opt | `integer` (nullable) |
+| `verdict` |  |  | req | `string` (enum: [not_duplicate, duplicate]) |
 
 `422` Validation Error
 Content-Type: `application/json`
@@ -2071,6 +2124,143 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     "expires_at"
   ],
   "title": "SessionModel",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-similarityjudgerequestmodel"></a>
+### Model: SimilarityJudgeRequestModel
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `candidate_artifact_id` |  |  | req | `string` |
+| `candidate_diff` |  |  | req | `string` |
+| `candidate_miner_uid` |  |  | req | `integer` |
+| `incumbent_artifact_id` |  |  | req | `string` |
+| `incumbent_miner_uid` |  |  | req | `integer` |
+| `incumbent_script` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "candidate_artifact_id": {
+      "minLength": 1,
+      "title": "Candidate Artifact Id",
+      "type": "string"
+    },
+    "candidate_diff": {
+      "minLength": 1,
+      "title": "Candidate Diff",
+      "type": "string"
+    },
+    "candidate_miner_uid": {
+      "minimum": 0.0,
+      "title": "Candidate Miner Uid",
+      "type": "integer"
+    },
+    "incumbent_artifact_id": {
+      "minLength": 1,
+      "title": "Incumbent Artifact Id",
+      "type": "string"
+    },
+    "incumbent_miner_uid": {
+      "minimum": 0.0,
+      "title": "Incumbent Miner Uid",
+      "type": "integer"
+    },
+    "incumbent_script": {
+      "minLength": 1,
+      "title": "Incumbent Script",
+      "type": "string"
+    }
+  },
+  "required": [
+    "candidate_artifact_id",
+    "incumbent_artifact_id",
+    "candidate_miner_uid",
+    "incumbent_miner_uid",
+    "incumbent_script",
+    "candidate_diff"
+  ],
+  "title": "SimilarityJudgeRequestModel",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-similarityjudgeresponsemodel"></a>
+### Model: SimilarityJudgeResponseModel
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `model` |  |  | req | `string` |
+| `provider` |  |  | req | `string` |
+| `reasoning` |  |  | opt | `string` (nullable) |
+| `reasoning_tokens` |  |  | opt | `integer` (nullable) |
+| `verdict` |  |  | req | `string` (enum: [not_duplicate, duplicate]) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "model": {
+      "minLength": 1,
+      "title": "Model",
+      "type": "string"
+    },
+    "provider": {
+      "minLength": 1,
+      "title": "Provider",
+      "type": "string"
+    },
+    "reasoning": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Reasoning"
+    },
+    "reasoning_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Reasoning Tokens"
+    },
+    "verdict": {
+      "enum": [
+        "not_duplicate",
+        "duplicate"
+      ],
+      "title": "Verdict",
+      "type": "string"
+    }
+  },
+  "required": [
+    "verdict",
+    "model",
+    "provider"
+  ],
+  "title": "SimilarityJudgeResponseModel",
   "type": "object"
 }
 ```

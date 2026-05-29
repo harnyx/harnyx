@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from itertools import product
 from math import isfinite
@@ -15,6 +15,7 @@ from harnyx_commons.miner_task_ranking import (
     ArtifactAggregateBundle,
     ArtifactRankingRow,
     RankingCascade,
+    RankingCascadeTrace,
     aggregate_ranking_rows,
     ordered_challengers,
 )
@@ -64,6 +65,10 @@ class ChampionSelection:
     weights: dict[int, float]
     score: float = 1.0
     champion_artifact_id: UUID | None = None
+    artifact_scores: dict[UUID, float] = field(default_factory=dict, compare=False)
+    incumbent_artifact_id: UUID | None = field(default=None, compare=False)
+    ranking_trace: RankingCascadeTrace | None = field(default=None, compare=False)
+    similarity_fallback_artifact_ids: tuple[UUID, ...] = field(default=(), compare=False)
 
 
 def selection_from_stored_champion_weights(
@@ -157,27 +162,44 @@ def select_champion(
     if not aggregates.vectors or not aggregates.totals:
         return None
 
-    champion_artifact_id = cascade.decide(
+    challengers_ordered = ordered_challengers(
         initial=current_champion_artifact_id,
-        challengers_ordered=ordered_challengers(
-            initial=current_champion_artifact_id,
-            candidate_artifact_ids=candidate_artifact_ids,
-        ),
+        candidate_artifact_ids=candidate_artifact_ids,
+    )
+    ranking_trace = cascade.trace(
+        initial=current_champion_artifact_id,
+        challengers_ordered=challengers_ordered,
         aggregates=aggregates,
     )
+    champion_artifact_id = ranking_trace.final_artifact_id
     if champion_artifact_id is None:
-        return ChampionSelection(champion_uid=None, weights={}, score=0.0, champion_artifact_id=None)
+        return ChampionSelection(
+            champion_uid=None,
+            weights={},
+            score=0.0,
+            champion_artifact_id=None,
+            incumbent_artifact_id=current_champion_artifact_id,
+            ranking_trace=ranking_trace,
+        )
 
     champion_uid = artifact_uid_map[champion_artifact_id]
+    artifact_scores = _artifact_scores(
+        artifact_ids=candidate_artifact_ids,
+        task_count=len(task_ids),
+        aggregates=aggregates,
+    )
     return ChampionSelection(
         champion_uid=champion_uid,
         weights=compose_champion_weights(champion_uid),
-        score=_champion_batch_score(
-            champion_artifact_id=champion_artifact_id,
-            task_count=len(task_ids),
-            aggregates=aggregates,
-        ),
+        score=artifact_scores[champion_artifact_id],
         champion_artifact_id=champion_artifact_id,
+        artifact_scores=artifact_scores,
+        incumbent_artifact_id=current_champion_artifact_id,
+        ranking_trace=ranking_trace,
+        similarity_fallback_artifact_ids=_similarity_fallback_artifact_ids(
+            ranking_trace=ranking_trace,
+            incumbent_artifact_id=current_champion_artifact_id,
+        ),
     )
 
 
@@ -267,6 +289,23 @@ def _champion_batch_score(
     return score
 
 
+def _artifact_scores(
+    *,
+    artifact_ids: Sequence[UUID],
+    task_count: int,
+    aggregates: ArtifactAggregateBundle,
+) -> dict[UUID, float]:
+    return {
+        artifact_id: _champion_batch_score(
+            champion_artifact_id=artifact_id,
+            task_count=task_count,
+            aggregates=aggregates,
+        )
+        for artifact_id in artifact_ids
+        if artifact_id in aggregates.totals
+    }
+
+
 def _stored_champion_score(*, champion_uid: int, weights: Mapping[str, float]) -> float:
     if len(weights) != 1:
         return 1.0
@@ -277,6 +316,21 @@ def _stored_champion_score(*, champion_uid: int, weights: Mapping[str, float]) -
     if not isfinite(score) or score < 0.0 or score > 1.0:
         raise ValueError("stored champion score must be between 0.0 and 1.0")
     return score
+
+
+def _similarity_fallback_artifact_ids(
+    *,
+    ranking_trace: RankingCascadeTrace,
+    incumbent_artifact_id: UUID | None,
+) -> tuple[UUID, ...]:
+    if incumbent_artifact_id is None:
+        return ()
+    dethroners = tuple(
+        artifact_id
+        for artifact_id in ranking_trace.successful_dethroner_artifact_ids()
+        if artifact_id != incumbent_artifact_id
+    )
+    return tuple(reversed(dethroners))
 
 
 __all__ = [

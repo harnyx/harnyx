@@ -19,6 +19,7 @@ from harnyx_commons.domain.miner_task import (
 )
 from harnyx_commons.domain.session import LlmUsageTotals, Session, SessionStatus
 from harnyx_commons.domain.tool_call import ToolCall
+from harnyx_commons.miner_task_similarity import SimilarityJudgeRequest, SimilarityJudgeResult
 from harnyx_commons.tools.http_models import ToolExecuteResponseDTO, ToolResultDTO
 from harnyx_commons.tools.types import TOOL_NAMES
 from harnyx_validator.application.dto.evaluation import (
@@ -185,6 +186,54 @@ class MinerTaskBatchRequestModel(BaseModel):
             tasks=tuple(task.to_domain_task() for task in self.tasks),
             artifacts=tuple(artifact.to_domain() for artifact in self.artifacts),
         )
+
+
+class SimilarityJudgeRequestModel(BaseModel):
+    model_config = _VALIDATOR_TRANSPORT_CONFIG
+
+    candidate_artifact_id: str = Field(min_length=1)
+    incumbent_artifact_id: str = Field(min_length=1)
+    candidate_miner_uid: int = Field(ge=0)
+    incumbent_miner_uid: int = Field(ge=0)
+    incumbent_script: str = Field(min_length=1)
+    candidate_diff: str = Field(min_length=1)
+
+    @field_validator("candidate_artifact_id", "incumbent_artifact_id")
+    @classmethod
+    def _validate_artifact_id(cls, value: str) -> str:
+        return _validate_uuid_string(value)
+
+    def to_domain(self, *, batch_id: UUID) -> SimilarityJudgeRequest:
+        return SimilarityJudgeRequest(
+            batch_id=batch_id,
+            candidate_artifact_id=UUID(self.candidate_artifact_id),
+            incumbent_artifact_id=UUID(self.incumbent_artifact_id),
+            candidate_miner_uid=self.candidate_miner_uid,
+            incumbent_miner_uid=self.incumbent_miner_uid,
+            incumbent_script=self.incumbent_script,
+            candidate_diff=self.candidate_diff,
+        )
+
+
+class SimilarityJudgeResponseModel(BaseModel):
+    model_config = VALIDATOR_STRICT_CONFIG
+
+    verdict: Literal["not_duplicate", "duplicate"]
+    reasoning: str | None = None
+    reasoning_tokens: int | None = Field(default=None, ge=0)
+    model: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+
+    @classmethod
+    def from_domain(cls, result: SimilarityJudgeResult) -> SimilarityJudgeResponseModel:
+        return cls(
+            verdict=result.verdict,
+            reasoning=result.reasoning,
+            reasoning_tokens=result.reasoning_tokens,
+            model=result.model,
+            provider=result.provider,
+        )
+
 
 class RestoreMinerTaskRunModel(BaseModel):
     model_config = VALIDATOR_STRICT_CONFIG
@@ -433,6 +482,8 @@ __all__ = [
     "SessionModel",
     "ScriptArtifactRequestModel",
     "SequencedCompletedRunSubmissionModel",
+    "SimilarityJudgeRequestModel",
+    "SimilarityJudgeResponseModel",
     "ToolExecuteResponseDTO",
     "ToolResultDTO",
     "UsageModel",

@@ -12,6 +12,7 @@ from harnyx_commons.miner_task_ranking import (
     ArtifactRankingRow,
     CascadeConfig,
     RankingCascade,
+    RankingCascadeStep,
     aggregate_ranking_rows,
     ordered_challengers,
     run_ranking_cost_usd,
@@ -118,6 +119,91 @@ def test_ranking_cascade_dethrones_on_non_regressing_score_and_efficiency() -> N
     )
 
     assert champion == challenger
+
+
+def test_ranking_cascade_trace_records_successful_dethrone_sequence() -> None:
+    cascade = RankingCascade(CascadeConfig())
+    incumbent = uuid4()
+    challenger_a = uuid4()
+    challenger_b = uuid4()
+    rejected = uuid4()
+
+    trace = cascade.trace(
+        initial=incumbent,
+        challengers_ordered=[challenger_a, rejected, challenger_b],
+        aggregates=ArtifactAggregateBundle(
+            vectors={
+                incumbent: [0.5, 0.5],
+                challenger_a: [0.7, 0.5],
+                rejected: [0.6, 0.4],
+                challenger_b: [0.7, 0.5],
+            },
+            totals={
+                incumbent: 1.0,
+                challenger_a: 1.2,
+                rejected: 1.0,
+                challenger_b: 1.2,
+            },
+            costs={
+                incumbent: 10.0,
+                challenger_a: 10.0,
+                rejected: 1.0,
+                challenger_b: 7.0,
+            },
+        ),
+    )
+
+    assert trace.initial_artifact_id == incumbent
+    assert trace.final_artifact_id == challenger_b
+    assert trace.successful_dethroner_artifact_ids() == (challenger_a, challenger_b)
+    assert trace.steps == (
+        RankingCascadeStep(
+            incumbent_artifact_id=incumbent,
+            challenger_artifact_id=challenger_a,
+            selected_artifact_id=challenger_a,
+            dethroned=True,
+        ),
+        RankingCascadeStep(
+            incumbent_artifact_id=challenger_a,
+            challenger_artifact_id=rejected,
+            selected_artifact_id=challenger_a,
+            dethroned=False,
+        ),
+        RankingCascadeStep(
+            incumbent_artifact_id=challenger_a,
+            challenger_artifact_id=challenger_b,
+            selected_artifact_id=challenger_b,
+            dethroned=True,
+        ),
+    )
+
+
+def test_ranking_cascade_trace_treats_positive_replacement_of_zero_incumbent_as_dethrone() -> None:
+    cascade = RankingCascade(CascadeConfig())
+    incumbent = uuid4()
+    challenger = uuid4()
+
+    trace = cascade.trace(
+        initial=incumbent,
+        challengers_ordered=[challenger],
+        aggregates=ArtifactAggregateBundle(
+            vectors={incumbent: [0.0], challenger: [0.8]},
+            totals={incumbent: 0.0, challenger: 0.8},
+            costs={incumbent: 1.0, challenger: 1.0},
+        ),
+    )
+
+    assert trace.initial_artifact_id == incumbent
+    assert trace.final_artifact_id == challenger
+    assert trace.successful_dethroner_artifact_ids() == (challenger,)
+    assert trace.steps == (
+        RankingCascadeStep(
+            incumbent_artifact_id=incumbent,
+            challenger_artifact_id=challenger,
+            selected_artifact_id=challenger,
+            dethroned=True,
+        ),
+    )
 
 
 def test_ordered_challengers_excludes_only_the_incumbent() -> None:

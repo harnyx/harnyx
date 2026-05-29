@@ -18,7 +18,15 @@ from harnyx_commons.llm.provider_types import (
 )
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
 
-LlmRouteSurface = Literal["generator", "digest", "reference", "content_review", "tool", "scoring"]
+LlmRouteSurface = Literal[
+    "generator",
+    "digest",
+    "reference",
+    "content_review",
+    "tool",
+    "scoring",
+    "duplication_detection",
+]
 LlmModelProviderOverrides = dict[LlmRouteSurface, dict[str, LlmRouteTarget]]
 OPENROUTER_ROUTED_TOOL_MODELS: tuple[str, ...] = (
     "openai/gpt-oss-20b",
@@ -33,6 +41,7 @@ _ALLOWED_ROUTE_SURFACES: tuple[LlmRouteSurface, ...] = (
     "content_review",
     "tool",
     "scoring",
+    "duplication_detection",
 )
 
 

@@ -134,3 +134,61 @@ def test_select_champion_returns_winner_take_all_selection() -> None:
         score=1.0,
         champion_artifact_id=challenger,
     )
+    assert selection is not None
+    assert selection.incumbent_artifact_id == incumbent
+    assert selection.similarity_fallback_artifact_ids == (challenger,)
+    assert selection.ranking_trace is not None
+    assert selection.ranking_trace.successful_dethroner_artifact_ids() == (challenger,)
+
+
+def test_select_champion_similarity_candidates_walk_backward_through_dethrone_sequence() -> None:
+    validator_id = uuid4()
+    task_id = uuid4()
+    incumbent = uuid4()
+    challenger_a = uuid4()
+    challenger_b = uuid4()
+
+    selection = select_champion(
+        task_ids=(task_id,),
+        artifacts=(
+            ChampionArtifactInput(artifact_id=incumbent, uid=7),
+            ChampionArtifactInput(artifact_id=challenger_a, uid=8),
+            ChampionArtifactInput(artifact_id=challenger_b, uid=9),
+        ),
+        runs=(
+            ChampionRunInput(validator_id, incumbent, task_id, 0.50, 10.0),
+            ChampionRunInput(validator_id, challenger_a, task_id, 0.60, 10.0),
+            ChampionRunInput(validator_id, challenger_b, task_id, 0.60, 7.0),
+        ),
+        current_champion_artifact_id=incumbent,
+        cascade=RankingCascade(CascadeConfig(score_margin_required=0.2)),
+    )
+
+    assert selection is not None
+    assert selection.champion_artifact_id == challenger_b
+    assert selection.similarity_fallback_artifact_ids == (challenger_b, challenger_a)
+
+
+def test_select_champion_similarity_candidates_include_replacement_of_zero_incumbent() -> None:
+    validator_id = uuid4()
+    task_id = uuid4()
+    incumbent = uuid4()
+    challenger = uuid4()
+
+    selection = select_champion(
+        task_ids=(task_id,),
+        artifacts=(
+            ChampionArtifactInput(artifact_id=incumbent, uid=7),
+            ChampionArtifactInput(artifact_id=challenger, uid=8),
+        ),
+        runs=(
+            ChampionRunInput(validator_id, incumbent, task_id, 0.0, 1.0),
+            ChampionRunInput(validator_id, challenger, task_id, 0.8, 1.0),
+        ),
+        current_champion_artifact_id=incumbent,
+        cascade=RankingCascade(CascadeConfig(score_margin_required=0.2)),
+    )
+
+    assert selection is not None
+    assert selection.champion_artifact_id == challenger
+    assert selection.similarity_fallback_artifact_ids == (challenger,)

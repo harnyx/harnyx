@@ -52,6 +52,7 @@ from harnyx_validator.application.services.evaluation_batch_prep import (
     SANDBOX_CONTAINER_NAME_PREFIX,
     SANDBOX_LABELS,
 )
+from harnyx_validator.application.similarity_judge import SimilarityJudge, SimilarityJudgeConfig
 from harnyx_validator.application.status import BatchActivityTracker, StatusProvider
 from harnyx_validator.application.submit_weights import WeightSubmissionService
 from harnyx_validator.infrastructure.auth.sr25519 import BittensorSr25519InboundVerifier
@@ -80,6 +81,7 @@ logger = logging.getLogger("harnyx_validator.runtime")
 
 _SCORING_LLM_MODEL = "moonshotai/Kimi-K2.5-TEE"
 _SCORING_LLM_REASONING_EFFORT = "high"
+_DUPLICATION_DETECTION_LLM_MODEL = "moonshotai/Kimi-K2.5-TEE"
 _SEARCH_PROVIDER_TOOLS = frozenset(("search_web", "search_ai", "fetch_page"))
 _BATCH_BLOCKING_LANE_NAME = "validator-batch-blocking"
 
@@ -173,11 +175,13 @@ class RuntimeContext:
     llm_provider_registry: CachedLlmProviderRegistry
     tool_llm_provider: LlmProviderPort | None
     scoring_llm_provider: LlmProviderPort | None
+    similarity_llm_provider: LlmProviderPort | None
     tool_invoker: RuntimeToolInvoker
     tool_executor: ToolExecutor
     tool_concurrency_limiter: ToolConcurrencyLimiter
     subtensor_client: SubtensorClientPort
     scoring_service: EvaluationScoringService
+    similarity_judge: SimilarityJudge
     weight_submission_service: WeightSubmissionService
     create_entrypoint_invoker: Callable[[SandboxClient], EntrypointInvoker]
     create_evaluation_orchestrator: Callable[[SandboxClient], TaskRunOrchestrator]
@@ -222,9 +226,15 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
     state = _build_state(resolved)
     platform_client, platform_hotkey, subtensor_client = _build_external_clients(resolved)
 
-    search_client, llm_provider_registry, tool_llm_provider, scoring_llm_provider, scoring_route = _build_llm_clients(
-        resolved
-    )
+    (
+        search_client,
+        llm_provider_registry,
+        tool_llm_provider,
+        scoring_llm_provider,
+        similarity_llm_provider,
+        scoring_route,
+        similarity_route,
+    ) = _build_llm_clients(resolved)
     tool_invoker, tool_executor = _build_tooling(
         state=state,
         resolved=resolved,
@@ -232,10 +242,12 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         tool_llm_provider=tool_llm_provider,
     )
 
-    scoring_service, weight_submission_service = _build_services(
+    scoring_service, similarity_judge, weight_submission_service = _build_services(
         resolved=resolved,
         scoring_llm_provider=scoring_llm_provider,
+        similarity_llm_provider=similarity_llm_provider,
         scoring_route=scoring_route,
+        similarity_route=similarity_route,
         subtensor_client=subtensor_client,
         platform_client=platform_client,
     )
@@ -257,6 +269,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         resolved=resolved,
         state=state,
         tool_executor=tool_executor,
+        similarity_judge=similarity_judge,
         validator_hotkey=platform_hotkey,
         platform_client=platform_client,
     )
@@ -282,11 +295,13 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         llm_provider_registry=llm_provider_registry,
         tool_llm_provider=tool_llm_provider,
         scoring_llm_provider=scoring_llm_provider,
+        similarity_llm_provider=similarity_llm_provider,
         tool_invoker=tool_invoker,
         tool_executor=tool_executor,
         tool_concurrency_limiter=state.tool_concurrency_limiter,
         subtensor_client=subtensor_client,
         scoring_service=scoring_service,
+        similarity_judge=similarity_judge,
         weight_submission_service=weight_submission_service,
         create_entrypoint_invoker=entrypoint_factory,
         create_evaluation_orchestrator=orchestrator_factory,
@@ -358,6 +373,8 @@ def _build_llm_clients(
     CachedLlmProviderRegistry,
     LlmProviderPort | None,
     LlmProviderPort | None,
+    LlmProviderPort | None,
+    ResolvedLlmRoute,
     ResolvedLlmRoute,
 ]:
     invocation_clients = build_tool_invocation_clients(
@@ -368,13 +385,17 @@ def _build_llm_clients(
         require_search=True,
     )
     scoring_route = _resolve_scoring_judge_route(settings)
+    similarity_route = _resolve_similarity_judge_route(settings)
     scoring_llm_provider = invocation_clients.llm_provider_registry.resolve(scoring_route.provider)
+    similarity_llm_provider = invocation_clients.llm_provider_registry.resolve(similarity_route.provider)
     return (
         invocation_clients.search_client,
         invocation_clients.llm_provider_registry,
         invocation_clients.tool_llm_provider,
         scoring_llm_provider,
+        similarity_llm_provider,
         scoring_route,
+        similarity_route,
     )
 
 
@@ -395,6 +416,16 @@ def _effective_scoring_llm_model(settings: Settings) -> str:
     if override is not None:
         return override
     return _SCORING_LLM_MODEL
+
+
+def _resolve_similarity_judge_route(settings: Settings) -> ResolvedLlmRoute:
+    return resolve_llm_route(
+        surface="duplication_detection",
+        default_provider=settings.llm.scoring_llm_provider,
+        model=_DUPLICATION_DETECTION_LLM_MODEL,
+        overrides=settings.llm.llm_model_provider_overrides,
+        allowed_providers={"bedrock", "chutes", "vertex"},
+    )
 
 
 def _build_tooling(
@@ -430,21 +461,28 @@ def _build_services(
     *,
     resolved: Settings,
     scoring_llm_provider: LlmProviderPort | None,
+    similarity_llm_provider: LlmProviderPort | None,
     scoring_route: ResolvedLlmRoute,
+    similarity_route: ResolvedLlmRoute,
     subtensor_client: SubtensorClientPort,
     platform_client: PlatformPort,
-) -> tuple[EvaluationScoringService, WeightSubmissionService]:
+) -> tuple[EvaluationScoringService, SimilarityJudge, WeightSubmissionService]:
     scoring_service = _create_scoring_service(
         resolved,
         scoring_llm_provider,
         scoring_route=scoring_route,
+    )
+    similarity_judge = _create_similarity_judge(
+        resolved,
+        similarity_llm_provider,
+        similarity_route=similarity_route,
     )
     weight_submission_service = _build_weight_service(
         resolved,
         subtensor_client=subtensor_client,
         platform_client=platform_client,
     )
-    return scoring_service, weight_submission_service
+    return scoring_service, similarity_judge, weight_submission_service
 
 
 def _build_factories(
@@ -473,6 +511,7 @@ def _build_http_dependencies(
     resolved: Settings,
     state: InMemoryState,
     tool_executor: ToolExecutor,
+    similarity_judge: SimilarityJudge,
     validator_hotkey: bt.Keypair,
     platform_client: PlatformPort,
 ) -> tuple[
@@ -509,6 +548,7 @@ def _build_http_dependencies(
         validator_hotkey,
         resource_usage_provider,
         state.batch_activity,
+        similarity_judge,
     )
     return tool_route_provider, control_provider, status_provider, inbound_auth, restore_worker
 
@@ -636,6 +676,7 @@ def _make_control_provider(
     validator_hotkey: bt.Keypair,
     resource_usage_provider: ValidatorResourceUsageProvider | None = None,
     batch_activity: BatchActivityTracker | None = None,
+    similarity_judge: SimilarityJudge | None = None,
 ) -> Callable[[], ValidatorControlDeps]:
     effective_resource_usage_provider = resource_usage_provider or ValidatorResourceUsageProvider()
 
@@ -665,6 +706,7 @@ def _make_control_provider(
             validator_hotkey=cast(StatusSigner, validator_hotkey),
             resource_usage_provider=effective_resource_usage_provider,
             batch_activity=batch_activity or BatchActivityTracker(),
+            similarity_judge=similarity_judge,
         )
 
     return provider
@@ -777,6 +819,29 @@ def _create_scoring_service(
         timeout_seconds=settings.llm.scoring_llm_timeout_seconds,
     )
     return EvaluationScoringService(
+        llm_provider=provider,
+        config=config,
+    )
+
+
+def _create_similarity_judge(
+    settings: Settings,
+    provider: LlmProviderPort | None,
+    *,
+    similarity_route: ResolvedLlmRoute,
+) -> SimilarityJudge:
+    if provider is None:
+        raise ValueError("similarity_llm_provider must be configured")
+    similarity_provider = parse_builtin_provider_name(similarity_route.provider, component="duplication_detection")
+    config = SimilarityJudgeConfig(
+        provider=similarity_provider,
+        model=similarity_route.model,
+        temperature=settings.llm.scoring_llm_temperature,
+        max_output_tokens=settings.llm.scoring_llm_max_output_tokens,
+        reasoning_effort=_SCORING_LLM_REASONING_EFFORT,
+        timeout_seconds=settings.llm.scoring_llm_timeout_seconds,
+    )
+    return SimilarityJudge(
         llm_provider=provider,
         config=config,
     )
