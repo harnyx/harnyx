@@ -286,7 +286,7 @@ async def test_vertex_grounded_search_live() -> None:
     try:
         request = GroundedLlmRequest(
             provider="vertex",
-            model="gemini-2.0-flash",
+            model="gemini-3.1-flash-lite",
             messages=(
                 LlmMessage(
                     role="system",
