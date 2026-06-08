@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from enum import StrEnum
 from typing import Self
 from uuid import UUID
 
@@ -187,6 +189,67 @@ class MinerTaskRunSubmission(BaseModel):
         return self
 
 
+class MinerTaskAttemptStatus(StrEnum):
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class MinerTaskAttemptRetryDecision(StrEnum):
+    WILL_RETRY = "will_retry"
+    WILL_NOT_RETRY = "will_not_retry"
+
+
+class MinerTaskAttemptTerminalEffect(StrEnum):
+    NONE = "none"
+    TASK_RESULT = "task_result"
+    DELIVERY_FAILURE = "delivery_failure"
+
+
+class MinerTaskAttemptAuditRecord(BaseModel):
+    model_config = VALIDATOR_STRICT_CONFIG
+
+    validator_session_id: UUID
+    batch_id: UUID
+    artifact_id: UUID
+    task_id: UUID
+    attempt_number: int = Field(ge=1)
+    uid: int = Field(ge=0)
+    miner_hotkey_ss58: str = Field(min_length=1)
+    started_at: datetime
+    finished_at: datetime
+    status: MinerTaskAttemptStatus
+    error_code: str | None = Field(default=None, max_length=128)
+    error_summary_code: str | None = Field(default=None, max_length=128)
+    retry_decision: MinerTaskAttemptRetryDecision
+    terminal_effect: MinerTaskAttemptTerminalEffect
+    max_attempts: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def _validate_attempt(self) -> MinerTaskAttemptAuditRecord:
+        if self.finished_at < self.started_at:
+            raise ValueError("finished_at must be >= started_at")
+        if self.max_attempts < self.attempt_number:
+            raise ValueError("max_attempts must be >= attempt_number")
+        if self.status is MinerTaskAttemptStatus.SUCCEEDED:
+            if self.error_code is not None or self.error_summary_code is not None:
+                raise ValueError("succeeded attempts must not include error fields")
+            if self.retry_decision is not MinerTaskAttemptRetryDecision.WILL_NOT_RETRY:
+                raise ValueError("succeeded attempts must not retry")
+            if self.terminal_effect is not MinerTaskAttemptTerminalEffect.TASK_RESULT:
+                raise ValueError("succeeded attempts must have task_result terminal effect")
+        if (
+            self.retry_decision is MinerTaskAttemptRetryDecision.WILL_RETRY
+            and self.terminal_effect is not MinerTaskAttemptTerminalEffect.NONE
+        ):
+            raise ValueError("retrying attempts must not have terminal effect")
+        if (
+            self.terminal_effect is not MinerTaskAttemptTerminalEffect.NONE
+            and self.retry_decision is not MinerTaskAttemptRetryDecision.WILL_NOT_RETRY
+        ):
+            raise ValueError("terminal attempts must not retry")
+        return self
+
+
 class MinerTaskBatchRunResult(BaseModel):
     model_config = VALIDATOR_STRICT_CONFIG
 
@@ -200,6 +263,10 @@ class MinerTaskBatchRunResult(BaseModel):
 __all__ = [
     "EntrypointInvocationRequest",
     "EntrypointInvocationResult",
+    "MinerTaskAttemptAuditRecord",
+    "MinerTaskAttemptRetryDecision",
+    "MinerTaskAttemptStatus",
+    "MinerTaskAttemptTerminalEffect",
     "MinerTaskBatchRunResult",
     "MinerTaskBatchSpec",
     "MinerTaskRunRequest",

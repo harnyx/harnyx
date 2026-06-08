@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Literal, cast
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
 from harnyx_commons.domain.miner_task import (
     DEFAULT_MINER_TASK_BUDGET_USD,
@@ -429,6 +429,45 @@ class SequencedCompletedRunSubmissionModel(BaseModel):
     submission: RestoreMinerTaskRunSubmissionModel
 
 
+class MinerTaskAttemptAuditModel(BaseModel):
+    model_config = VALIDATOR_STRICT_CONFIG
+
+    validator_session_id: str = Field(min_length=1)
+    batch_id: str = Field(min_length=1)
+    artifact_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=1)
+    attempt_number: int = Field(ge=1)
+    uid: int = Field(ge=0)
+    miner_hotkey_ss58: str = Field(min_length=1)
+    started_at: datetime
+    finished_at: datetime
+    status: Literal["succeeded", "failed"]
+    error_code: str | None = Field(default=None, max_length=128)
+    error_summary_code: str | None = Field(default=None, max_length=128)
+    retry_decision: Literal["will_retry", "will_not_retry"]
+    terminal_effect: Literal["none", "task_result", "delivery_failure"]
+    max_attempts: int = Field(ge=1)
+
+
+class SequencedProgressDetailModel(BaseModel):
+    model_config = VALIDATOR_STRICT_CONFIG
+
+    sequence: int = Field(ge=1)
+    kind: Literal["completed_run", "terminated_attempt"]
+    submission: RestoreMinerTaskRunSubmissionModel | None = None
+    attempt: MinerTaskAttemptAuditModel | None = None
+
+    @model_validator(mode="after")
+    def _validate_item(self) -> SequencedProgressDetailModel:
+        if self.kind == "completed_run":
+            if self.submission is None or self.attempt is not None:
+                raise ValueError("completed_run detail requires only submission")
+        if self.kind == "terminated_attempt":
+            if self.attempt is None or self.submission is not None:
+                raise ValueError("terminated_attempt detail requires only attempt")
+        return self
+
+
 class BatchProgressRunsPageResponse(BaseModel):
     model_config = VALIDATOR_STRICT_CONFIG
 
@@ -438,7 +477,7 @@ class BatchProgressRunsPageResponse(BaseModel):
     latest_sequence: int = Field(ge=0)
     next_after_sequence: int = Field(ge=0)
     has_more: bool
-    items: list[SequencedCompletedRunSubmissionModel]
+    items: list[SequencedProgressDetailModel]
     failure_detail: FailureDetailResponse | None = None
 
 

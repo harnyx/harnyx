@@ -28,6 +28,7 @@ from harnyx_commons.tools.token_semaphore import ToolConcurrencyLimiter
 from harnyx_miner_sdk.tools.http_models import ToolExecuteRequestDTO
 from harnyx_validator.application.accept_batch import AcceptEvaluationBatch
 from harnyx_validator.application.dto.evaluation import (
+    MinerTaskAttemptAuditRecord,
     MinerTaskRunSubmission,
     TokenUsageSummary,
 )
@@ -37,6 +38,7 @@ from harnyx_validator.application.ports.progress import (
     ProviderFailureEvidence,
     RunProgressPage,
     RunProgressSummary,
+    SequencedProgressDetail,
 )
 from harnyx_validator.application.restore_batch import RestoreEvaluationBatch
 from harnyx_validator.application.services.evaluation_runner import ValidatorBatchFailureDetail
@@ -46,11 +48,12 @@ from harnyx_validator.infrastructure.http.schemas import (
     BatchProgressRunsPageResponse,
     BatchProgressStatusResponse,
     FailureDetailResponse,
+    MinerTaskAttemptAuditModel,
     MinerTaskBatchRequestModel,
     ProviderEvidenceModel,
     RestoreMinerTaskRunModel,
     RestoreMinerTaskRunSubmissionModel,
-    SequencedCompletedRunSubmissionModel,
+    SequencedProgressDetailModel,
     SessionModel,
     SimilarityJudgeRequestModel,
     SimilarityJudgeResponseModel,
@@ -394,13 +397,7 @@ def add_control_routes(
                     after_sequence=after_sequence,
                     limit=limit,
                 )
-                items = [
-                    SequencedCompletedRunSubmissionModel(
-                        sequence=item["sequence"],
-                        submission=_serialize_restore_run(item["submission"]),
-                    )
-                    for item in page["items"]
-                ]
+                items = [_serialize_progress_detail(item) for item in page["items"]]
             except Exception as exc:
                 summary = deps.progress_tracker.summary(batch_id)
                 return _runs_page_internal_failure(
@@ -554,6 +551,54 @@ def _serialize_provider_evidence(entry: ProviderFailureEvidence) -> ProviderEvid
         total_calls=entry["total_calls"],
         failed_calls=entry["failed_calls"],
         failure_reason=entry.get("failure_reason"),
+    )
+
+
+def _serialize_progress_detail(item: object) -> SequencedProgressDetailModel:
+    if not isinstance(item, dict):
+        raise RuntimeError("progress detail item is invalid")
+    detail = cast(SequencedProgressDetail, item)
+    kind = detail["kind"]
+    if kind == "completed_run":
+        submission = detail["submission"]
+        if submission is None:
+            raise RuntimeError("completed progress detail missing submission")
+        return SequencedProgressDetailModel(
+            sequence=detail["sequence"],
+            kind="completed_run",
+            submission=_serialize_restore_run(submission),
+            attempt=None,
+        )
+    if kind == "terminated_attempt":
+        attempt = detail["attempt"]
+        if not isinstance(attempt, MinerTaskAttemptAuditRecord):
+            raise RuntimeError("terminated attempt progress detail missing attempt")
+        return SequencedProgressDetailModel(
+            sequence=detail["sequence"],
+            kind="terminated_attempt",
+            submission=None,
+            attempt=_serialize_attempt(attempt),
+        )
+    raise RuntimeError("progress detail item has unsupported kind")
+
+
+def _serialize_attempt(attempt: MinerTaskAttemptAuditRecord) -> MinerTaskAttemptAuditModel:
+    return MinerTaskAttemptAuditModel(
+        validator_session_id=str(attempt.validator_session_id),
+        batch_id=str(attempt.batch_id),
+        artifact_id=str(attempt.artifact_id),
+        task_id=str(attempt.task_id),
+        attempt_number=attempt.attempt_number,
+        uid=attempt.uid,
+        miner_hotkey_ss58=attempt.miner_hotkey_ss58,
+        started_at=attempt.started_at,
+        finished_at=attempt.finished_at,
+        status=attempt.status.value,
+        error_code=attempt.error_code,
+        error_summary_code=attempt.error_summary_code,
+        retry_decision=attempt.retry_decision.value,
+        terminal_effect=attempt.terminal_effect.value,
+        max_attempts=attempt.max_attempts,
     )
 
 

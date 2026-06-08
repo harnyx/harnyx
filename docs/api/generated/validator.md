@@ -109,9 +109,26 @@ Body: [BatchProgressRunsPageResponse](#model-batchprogressrunspageresponse)
 |  | `traceback` |  | opt | `string` (nullable) |
 |  | `uid` |  | opt | `integer` (nullable) |
 | `has_more` |  |  | req | `boolean` |
-| `items` |  |  | req | array[[SequencedCompletedRunSubmissionModel](#model-sequencedcompletedrunsubmissionmodel)] |
+| `items` |  |  | req | array[[SequencedProgressDetailModel](#model-sequencedprogressdetailmodel)] |
+|  | `attempt` |  | opt | [MinerTaskAttemptAuditModel](#model-minertaskattemptauditmodel) (nullable) |
+|  |  | `artifact_id` | req | `string` |
+|  |  | `attempt_number` | req | `integer` |
+|  |  | `batch_id` | req | `string` |
+|  |  | `error_code` | opt | `string` (nullable) |
+|  |  | `error_summary_code` | opt | `string` (nullable) |
+|  |  | `finished_at` | req | `string` (format: date-time) |
+|  |  | `max_attempts` | req | `integer` |
+|  |  | `miner_hotkey_ss58` | req | `string` |
+|  |  | `retry_decision` | req | `string` (enum: [will_retry, will_not_retry]) |
+|  |  | `started_at` | req | `string` (format: date-time) |
+|  |  | `status` | req | `string` (enum: [succeeded, failed]) |
+|  |  | `task_id` | req | `string` |
+|  |  | `terminal_effect` | req | `string` (enum: [none, task_result, delivery_failure]) |
+|  |  | `uid` | req | `integer` |
+|  |  | `validator_session_id` | req | `string` |
+|  | `kind` |  | req | `string` (enum: [completed_run, terminated_attempt]) |
 |  | `sequence` |  | req | `integer` |
-|  | `submission` |  | req | [RestoreMinerTaskRunSubmissionModel](#model-restoreminertaskrunsubmissionmodel) |
+|  | `submission` |  | opt | [RestoreMinerTaskRunSubmissionModel](#model-restoreminertaskrunsubmissionmodel) (nullable) |
 |  |  | `batch_id` | req | `string` |
 |  |  | `execution_log` | opt | array[[ToolCall](#model-toolcall)] (default: []) |
 |  |  | `run` | req | [RestoreMinerTaskRunModel](#model-restoreminertaskrunmodel) |
@@ -485,9 +502,26 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `traceback` |  | opt | `string` (nullable) |
 |  | `uid` |  | opt | `integer` (nullable) |
 | `has_more` |  |  | req | `boolean` |
-| `items` |  |  | req | array[[SequencedCompletedRunSubmissionModel](#model-sequencedcompletedrunsubmissionmodel)] |
+| `items` |  |  | req | array[[SequencedProgressDetailModel](#model-sequencedprogressdetailmodel)] |
+|  | `attempt` |  | opt | [MinerTaskAttemptAuditModel](#model-minertaskattemptauditmodel) (nullable) |
+|  |  | `artifact_id` | req | `string` |
+|  |  | `attempt_number` | req | `integer` |
+|  |  | `batch_id` | req | `string` |
+|  |  | `error_code` | opt | `string` (nullable) |
+|  |  | `error_summary_code` | opt | `string` (nullable) |
+|  |  | `finished_at` | req | `string` (format: date-time) |
+|  |  | `max_attempts` | req | `integer` |
+|  |  | `miner_hotkey_ss58` | req | `string` |
+|  |  | `retry_decision` | req | `string` (enum: [will_retry, will_not_retry]) |
+|  |  | `started_at` | req | `string` (format: date-time) |
+|  |  | `status` | req | `string` (enum: [succeeded, failed]) |
+|  |  | `task_id` | req | `string` |
+|  |  | `terminal_effect` | req | `string` (enum: [none, task_result, delivery_failure]) |
+|  |  | `uid` | req | `integer` |
+|  |  | `validator_session_id` | req | `string` |
+|  | `kind` |  | req | `string` (enum: [completed_run, terminated_attempt]) |
 |  | `sequence` |  | req | `integer` |
-|  | `submission` |  | req | [RestoreMinerTaskRunSubmissionModel](#model-restoreminertaskrunsubmissionmodel) |
+|  | `submission` |  | opt | [RestoreMinerTaskRunSubmissionModel](#model-restoreminertaskrunsubmissionmodel) (nullable) |
 |  |  | `batch_id` | req | `string` |
 |  |  | `execution_log` | opt | array[[ToolCall](#model-toolcall)] (default: []) |
 |  |  | `run` | req | [RestoreMinerTaskRunModel](#model-restoreminertaskrunmodel) |
@@ -533,7 +567,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     },
     "items": {
       "items": {
-        "$ref": "#/components/schemas/SequencedCompletedRunSubmissionModel"
+        "$ref": "#/components/schemas/SequencedProgressDetailModel"
       },
       "title": "Items",
       "type": "array"
@@ -1225,6 +1259,156 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     }
   },
   "title": "LlmUsageTotals",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-minertaskattemptauditmodel"></a>
+### Model: MinerTaskAttemptAuditModel
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `artifact_id` |  |  | req | `string` |
+| `attempt_number` |  |  | req | `integer` |
+| `batch_id` |  |  | req | `string` |
+| `error_code` |  |  | opt | `string` (nullable) |
+| `error_summary_code` |  |  | opt | `string` (nullable) |
+| `finished_at` |  |  | req | `string` (format: date-time) |
+| `max_attempts` |  |  | req | `integer` |
+| `miner_hotkey_ss58` |  |  | req | `string` |
+| `retry_decision` |  |  | req | `string` (enum: [will_retry, will_not_retry]) |
+| `started_at` |  |  | req | `string` (format: date-time) |
+| `status` |  |  | req | `string` (enum: [succeeded, failed]) |
+| `task_id` |  |  | req | `string` |
+| `terminal_effect` |  |  | req | `string` (enum: [none, task_result, delivery_failure]) |
+| `uid` |  |  | req | `integer` |
+| `validator_session_id` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "artifact_id": {
+      "minLength": 1,
+      "title": "Artifact Id",
+      "type": "string"
+    },
+    "attempt_number": {
+      "minimum": 1.0,
+      "title": "Attempt Number",
+      "type": "integer"
+    },
+    "batch_id": {
+      "minLength": 1,
+      "title": "Batch Id",
+      "type": "string"
+    },
+    "error_code": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Error Code"
+    },
+    "error_summary_code": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Error Summary Code"
+    },
+    "finished_at": {
+      "format": "date-time",
+      "title": "Finished At",
+      "type": "string"
+    },
+    "max_attempts": {
+      "minimum": 1.0,
+      "title": "Max Attempts",
+      "type": "integer"
+    },
+    "miner_hotkey_ss58": {
+      "minLength": 1,
+      "title": "Miner Hotkey Ss58",
+      "type": "string"
+    },
+    "retry_decision": {
+      "enum": [
+        "will_retry",
+        "will_not_retry"
+      ],
+      "title": "Retry Decision",
+      "type": "string"
+    },
+    "started_at": {
+      "format": "date-time",
+      "title": "Started At",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "succeeded",
+        "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "task_id": {
+      "minLength": 1,
+      "title": "Task Id",
+      "type": "string"
+    },
+    "terminal_effect": {
+      "enum": [
+        "none",
+        "task_result",
+        "delivery_failure"
+      ],
+      "title": "Terminal Effect",
+      "type": "string"
+    },
+    "uid": {
+      "minimum": 0.0,
+      "title": "Uid",
+      "type": "integer"
+    },
+    "validator_session_id": {
+      "minLength": 1,
+      "title": "Validator Session Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "validator_session_id",
+    "batch_id",
+    "artifact_id",
+    "task_id",
+    "attempt_number",
+    "uid",
+    "miner_hotkey_ss58",
+    "started_at",
+    "finished_at",
+    "status",
+    "retry_decision",
+    "terminal_effect",
+    "max_attempts"
+  ],
+  "title": "MinerTaskAttemptAuditModel",
   "type": "object"
 }
 ```
@@ -2022,13 +2206,30 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 </details>
 
-<a id="model-sequencedcompletedrunsubmissionmodel"></a>
-### Model: SequencedCompletedRunSubmissionModel
+<a id="model-sequencedprogressdetailmodel"></a>
+### Model: SequencedProgressDetailModel
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `attempt` |  |  | opt | [MinerTaskAttemptAuditModel](#model-minertaskattemptauditmodel) (nullable) |
+|  | `artifact_id` |  | req | `string` |
+|  | `attempt_number` |  | req | `integer` |
+|  | `batch_id` |  | req | `string` |
+|  | `error_code` |  | opt | `string` (nullable) |
+|  | `error_summary_code` |  | opt | `string` (nullable) |
+|  | `finished_at` |  | req | `string` (format: date-time) |
+|  | `max_attempts` |  | req | `integer` |
+|  | `miner_hotkey_ss58` |  | req | `string` |
+|  | `retry_decision` |  | req | `string` (enum: [will_retry, will_not_retry]) |
+|  | `started_at` |  | req | `string` (format: date-time) |
+|  | `status` |  | req | `string` (enum: [succeeded, failed]) |
+|  | `task_id` |  | req | `string` |
+|  | `terminal_effect` |  | req | `string` (enum: [none, task_result, delivery_failure]) |
+|  | `uid` |  | req | `integer` |
+|  | `validator_session_id` |  | req | `string` |
+| `kind` |  |  | req | `string` (enum: [completed_run, terminated_attempt]) |
 | `sequence` |  |  | req | `integer` |
-| `submission` |  |  | req | [RestoreMinerTaskRunSubmissionModel](#model-restoreminertaskrunsubmissionmodel) |
+| `submission` |  |  | opt | [RestoreMinerTaskRunSubmissionModel](#model-restoreminertaskrunsubmissionmodel) (nullable) |
 |  | `batch_id` |  | req | `string` |
 |  | `execution_log` |  | opt | array[[ToolCall](#model-toolcall)] (default: []) |
 |  |  | `details` | req | [ToolCallDetails](#model-toolcalldetails) |
@@ -2071,20 +2272,45 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 {
   "additionalProperties": false,
   "properties": {
+    "attempt": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/MinerTaskAttemptAuditModel"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "kind": {
+      "enum": [
+        "completed_run",
+        "terminated_attempt"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
     "sequence": {
       "minimum": 1.0,
       "title": "Sequence",
       "type": "integer"
     },
     "submission": {
-      "$ref": "#/components/schemas/RestoreMinerTaskRunSubmissionModel"
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/RestoreMinerTaskRunSubmissionModel"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [
     "sequence",
-    "submission"
+    "kind"
   ],
-  "title": "SequencedCompletedRunSubmissionModel",
+  "title": "SequencedProgressDetailModel",
   "type": "object"
 }
 ```

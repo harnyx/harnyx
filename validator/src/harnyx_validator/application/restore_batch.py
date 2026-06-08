@@ -11,6 +11,7 @@ from uuid import UUID
 from harnyx_validator.application.accept_batch import AcceptEvaluationBatch
 from harnyx_validator.application.dto.evaluation import MinerTaskBatchSpec
 from harnyx_validator.application.ports.platform import PlatformPort, RestoreMetadata, RestoreRunsPage
+from harnyx_validator.application.ports.progress import ConsumedAttemptNumber, TerminatedMinerTaskAttemptOrdinal
 from harnyx_validator.application.services.evaluation_runner import ValidatorBatchFailureDetail
 from harnyx_validator.application.status import BatchActivityTracker
 
@@ -46,6 +47,31 @@ class RestoreEvaluationBatch:
         batch = self.accepted_batches.batch_for(batch_id)
         metadata = self.platform.get_restore_metadata(batch_id)
         self._validate_metadata(batch_id=batch_id, metadata=metadata)
+        self.accepted_batches.restore_progress_floor(
+            batch_id,
+            metadata.last_progress_detail_sequence,
+        )
+        terminated_attempts: list[TerminatedMinerTaskAttemptOrdinal] = [
+            {
+                "artifact_id": entry.artifact_id,
+                "task_id": entry.task_id,
+                "max_attempt_number": entry.max_attempt_number,
+            }
+            for entry in metadata.terminated_miner_task_attempts
+        ]
+        consumed_attempts: list[ConsumedAttemptNumber] = [
+            {
+                "artifact_id": entry.artifact_id,
+                "task_id": entry.task_id,
+                "max_attempt_number": entry.max_attempt_number,
+            }
+            for entry in metadata.consumed_platform_tool_proxy_attempts
+        ]
+        self.accepted_batches.restore_attempt_number_high_waters(
+            batch_id,
+            terminated=tuple(terminated_attempts),
+            consumed=tuple(consumed_attempts),
+        )
         cursor = 0
         provider_evidence_applied = False
         while True:
@@ -107,6 +133,8 @@ class RestoreEvaluationBatch:
             raise RuntimeError("restore metadata total_restore_runs must be non-negative")
         if metadata.page_limit < 1:
             raise RuntimeError("restore metadata page_limit must be positive")
+        if metadata.last_progress_detail_sequence < 0:
+            raise RuntimeError("restore metadata last_progress_detail_sequence must be non-negative")
 
     @staticmethod
     def _validate_page(*, metadata: RestoreMetadata, page: RestoreRunsPage, cursor: int) -> None:

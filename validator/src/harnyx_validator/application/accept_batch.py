@@ -10,7 +10,12 @@ from typing import Literal
 from uuid import UUID
 
 from harnyx_validator.application.dto.evaluation import MinerTaskBatchSpec, MinerTaskRunSubmission
-from harnyx_validator.application.ports.progress import ProgressRecorder, ProviderFailureEvidence
+from harnyx_validator.application.ports.progress import (
+    ConsumedAttemptNumber,
+    ProgressRecorder,
+    ProviderFailureEvidence,
+    TerminatedMinerTaskAttemptOrdinal,
+)
 from harnyx_validator.application.services.evaluation_runner import ValidatorBatchFailureDetail
 from harnyx_validator.application.status import StatusProvider
 from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
@@ -108,6 +113,22 @@ class AcceptEvaluationBatch:
             if state.batch != batch:
                 raise RuntimeError("batch_id already exists with different contents")
             self.progress.restore_completed_runs(batch, runs, provider_evidence)
+
+    def restore_attempt_number_high_waters(
+        self,
+        batch_id: UUID,
+        *,
+        terminated: Sequence[TerminatedMinerTaskAttemptOrdinal],
+        consumed: Sequence[ConsumedAttemptNumber],
+    ) -> None:
+        with self._lock:
+            self._require_state(batch_id)
+            self.progress.restore_attempt_number_high_waters(batch_id, terminated, consumed)
+
+    def restore_progress_floor(self, batch_id: UUID, sequence: int) -> None:
+        with self._lock:
+            self._require_state(batch_id)
+            self.progress.restore_progress_floor(batch_id, sequence)
 
     def queue_after_restore(self, batch_id: UUID) -> None:
         with self._lock:

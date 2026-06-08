@@ -10,6 +10,7 @@ import pytest
 from harnyx_commons.domain.tool_call import ToolExecutionFacts
 from harnyx_commons.tools.executor import ToolInvocationContext
 from harnyx_validator.application.platform_tool_proxy import (
+    PLATFORM_TOOL_PROXY_EXECUTE_TRANSPORT_TIMEOUT_SECONDS,
     PlatformToolProxyProxyToolInvoker,
     PlatformToolProxyScopeRegistry,
 )
@@ -112,6 +113,7 @@ async def test_platform_tool_proxy_proxy_forwards_provider_tool_with_session_sco
         session_id=session_id,
         artifact_id=artifact_id,
         task_id=task_id,
+        attempt_number=2,
     )
     platform = _RecordingPlatformToolProxyPlatform(calls=[], grants=[])
     local = _RecordingLocalInvoker()
@@ -157,7 +159,7 @@ async def test_platform_tool_proxy_proxy_forwards_provider_tool_with_session_sco
             "tool": "search_web",
             "args": (),
             "kwargs": {"provider": "parallel", "search_queries": ["harnyx"]},
-            "transport_timeout_seconds": 70.0,
+            "transport_timeout_seconds": PLATFORM_TOOL_PROXY_EXECUTE_TRANSPORT_TIMEOUT_SECONDS,
         }
     ]
     assert result.public_payload == {"data": [{"url": "https://example.com"}]}
@@ -165,6 +167,43 @@ async def test_platform_tool_proxy_proxy_forwards_provider_tool_with_session_sco
     assert result.actual_cost_provider == "parallel"
     scope = scopes.require_session(session_id)
     assert scope.grants_by_attempt[2].token == f"{_GRANT_VALUE}-2"
+
+
+async def test_platform_tool_proxy_proxy_uses_fixed_execute_transport_timeout() -> None:
+    batch_id = uuid4()
+    session_id = uuid4()
+    artifact_id = uuid4()
+    task_id = uuid4()
+    scopes = PlatformToolProxyScopeRegistry()
+    scopes.register_session(
+        batch_id=batch_id,
+        session_id=session_id,
+        artifact_id=artifact_id,
+        task_id=task_id,
+    )
+    platform = _RecordingPlatformToolProxyPlatform(calls=[], grants=[])
+    invoker = PlatformToolProxyProxyToolInvoker(
+        local_invoker=_RecordingLocalInvoker(),
+        platform_tool_proxy_platform=platform,
+        scopes=scopes,
+    )
+
+    await invoker.invoke(
+        "search_web",
+        args=(),
+        kwargs={"provider": "desearch", "search_queries": ["harnyx"], "timeout": 1.0},
+        context=ToolInvocationContext(
+            receipt_id=str(uuid4()),
+            session_id=session_id,
+            active_attempt=1,
+            uid=7,
+        ),
+    )
+
+    assert platform.calls[0]["transport_timeout_seconds"] == (
+        PLATFORM_TOOL_PROXY_EXECUTE_TRANSPORT_TIMEOUT_SECONDS
+    )
+    assert platform.calls[0]["transport_timeout_seconds"] > 1.0
 
 
 async def test_platform_tool_proxy_proxy_serializes_concurrent_first_grant_creation() -> None:
@@ -252,16 +291,18 @@ async def test_platform_tool_proxy_proxy_rejects_expired_cached_token_without_re
 
 async def test_platform_tool_proxy_proxy_mints_new_grant_for_later_attempt() -> None:
     batch_id = uuid4()
-    session_id = uuid4()
     artifact_id = uuid4()
     task_id = uuid4()
     scopes = PlatformToolProxyScopeRegistry()
-    scopes.register_session(
-        batch_id=batch_id,
-        session_id=session_id,
-        artifact_id=artifact_id,
-        task_id=task_id,
-    )
+    session_ids = (uuid4(), uuid4())
+    for attempt_number, session_id in enumerate(session_ids, start=1):
+        scopes.register_session(
+            batch_id=batch_id,
+            session_id=session_id,
+            artifact_id=artifact_id,
+            task_id=task_id,
+            attempt_number=attempt_number,
+        )
     platform = _RecordingPlatformToolProxyPlatform(calls=[], grants=[])
     invoker = PlatformToolProxyProxyToolInvoker(
         local_invoker=_RecordingLocalInvoker(),
@@ -269,7 +310,7 @@ async def test_platform_tool_proxy_proxy_mints_new_grant_for_later_attempt() -> 
         scopes=scopes,
     )
 
-    for attempt_number in (1, 2):
+    for session_id in session_ids:
         await invoker.invoke(
             "search_web",
             args=(),
@@ -277,7 +318,7 @@ async def test_platform_tool_proxy_proxy_mints_new_grant_for_later_attempt() -> 
             context=ToolInvocationContext(
                 receipt_id=str(uuid4()),
                 session_id=session_id,
-                active_attempt=attempt_number,
+                active_attempt=1,
                 uid=7,
             ),
         )
@@ -288,18 +329,27 @@ async def test_platform_tool_proxy_proxy_mints_new_grant_for_later_attempt() -> 
 
 async def test_platform_tool_proxy_proxy_allows_later_attempt_after_earlier_attempt_token_expires() -> None:
     batch_id = uuid4()
+    expired_session_id = uuid4()
     session_id = uuid4()
     artifact_id = uuid4()
     task_id = uuid4()
     scopes = PlatformToolProxyScopeRegistry()
     scopes.register_session(
         batch_id=batch_id,
+        session_id=expired_session_id,
+        artifact_id=artifact_id,
+        task_id=task_id,
+        attempt_number=1,
+    )
+    scopes.register_session(
+        batch_id=batch_id,
         session_id=session_id,
         artifact_id=artifact_id,
         task_id=task_id,
+        attempt_number=2,
     )
     scopes.store_session_grant(
-        session_id=session_id,
+        session_id=expired_session_id,
         attempt_number=1,
         token="expired-attempt-1",  # noqa: S106 - fixed test-only proxy token
         expires_at=datetime.now(UTC) - timedelta(seconds=1),
@@ -412,7 +462,7 @@ async def test_platform_tool_proxy_proxy_forwards_invalid_provider_selection_to_
     call = platform.calls[0]
     assert call["tool"] == "search_web"
     assert call["kwargs"] == {"provider": "chutes", "search_queries": ["harnyx"], "timeout": 3.5}
-    assert call["transport_timeout_seconds"] == pytest.approx(13.5)
+    assert call["transport_timeout_seconds"] == PLATFORM_TOOL_PROXY_EXECUTE_TRANSPORT_TIMEOUT_SECONDS
 
 
 async def test_platform_tool_proxy_proxy_keeps_local_tools_local() -> None:

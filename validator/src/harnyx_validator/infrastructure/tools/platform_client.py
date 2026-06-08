@@ -25,6 +25,7 @@ from harnyx_validator.application.ports.platform import (
     PlatformToolProxyGrant,
     PlatformToolProxyPlatformPort,
     PlatformToolProxyToolResult,
+    RestoreAttemptNumberHighWater,
     RestoreMetadata,
     RestoreRunsPage,
 )
@@ -189,7 +190,16 @@ class HttpPlatformClient(PlatformPort):
             snapshot_received_at=datetime.fromisoformat(str(payload["snapshot_received_at"])),
             total_restore_runs=int(payload["total_restore_runs"]),
             page_limit=int(payload["page_limit"]),
+            last_progress_detail_sequence=int(payload.get("last_progress_detail_sequence", 0)),
             provider_model_evidence=provider_evidence,
+            terminated_miner_task_attempts=tuple(
+                _restore_attempt_high_water(entry)
+                for entry in payload.get("terminated_miner_task_attempts", ())
+            ),
+            consumed_platform_tool_proxy_attempts=tuple(
+                _restore_attempt_high_water(entry)
+                for entry in payload.get("consumed_platform_tool_proxy_attempts", ())
+            ),
         )
 
     def get_restore_runs_page(
@@ -377,6 +387,11 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
                     headers=headers,
                     timeout=transport_timeout_seconds,
                 )
+        except httpx.ReadTimeout as exc:
+            raise PlatformToolProxyToolTimeoutError(
+                status_code=0,
+                message="platform tool proxy execution timed out while awaiting tool result",
+            ) from exc
         except httpx.HTTPError as exc:
             raise PlatformToolProxyInvocationError(
                 status_code=0,
@@ -486,6 +501,27 @@ def _optional_float(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise PlatformClientError(status_code=None, message="platform tool proxy numeric field is invalid")
     return float(value)
+
+
+def _restore_attempt_high_water(value: object) -> RestoreAttemptNumberHighWater:
+    if not isinstance(value, dict):
+        raise PlatformClientError(status_code=None, message="restore attempt high-water entry is invalid")
+    entry = cast(dict[str, object], value)
+    raw_artifact_id = entry.get("artifact_id")
+    raw_task_id = entry.get("task_id")
+    raw_max_attempt_number = entry.get("max_attempt_number")
+    if not isinstance(raw_artifact_id, str | UUID) or not isinstance(raw_task_id, str | UUID):
+        raise PlatformClientError(status_code=None, message="restore attempt high-water ids are invalid")
+    if not isinstance(raw_max_attempt_number, int):
+        raise PlatformClientError(status_code=None, message="restore attempt high-water attempt number is invalid")
+    max_attempt_number = raw_max_attempt_number
+    if max_attempt_number < 1:
+        raise PlatformClientError(status_code=None, message="restore attempt high-water must be positive")
+    return RestoreAttemptNumberHighWater(
+        artifact_id=UUID(str(raw_artifact_id)),
+        task_id=UUID(str(raw_task_id)),
+        max_attempt_number=max_attempt_number,
+    )
 
 
 _SELECTED_PROVIDER_OR_TOOL_REQUEST_MINER_OWNED_PROXY_ERROR_CODES = frozenset(

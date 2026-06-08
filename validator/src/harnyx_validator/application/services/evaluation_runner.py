@@ -41,9 +41,11 @@ from harnyx_commons.miner_task_failure_policy import (
     TimeoutObservationEvidence,
     ValidatorModelLlmBaseline,
     classify_timeout_attribution,
+    is_platform_tool_proxy_timeout_receipt,
     is_provider_caused_terminal_failure,
     is_script_validation_sandbox_invocation,
     is_timeout_sandbox_invocation,
+    is_uncaught_platform_tool_proxy_timeout_sandbox_invocation,
     provider_batch_failure_evidence,
     provider_batch_failure_message,
     successful_llm_samples,
@@ -51,6 +53,10 @@ from harnyx_commons.miner_task_failure_policy import (
     validator_model_llm_baseline,
 )
 from harnyx_validator.application.dto.evaluation import (
+    MinerTaskAttemptAuditRecord,
+    MinerTaskAttemptRetryDecision,
+    MinerTaskAttemptStatus,
+    MinerTaskAttemptTerminalEffect,
     MinerTaskRunRequest,
     MinerTaskRunSubmission,
     ScriptArtifactSpec,
@@ -525,22 +531,47 @@ class EvaluationRunner:
                     occurred_at=self._clock(),
                 )
             )
-        issued = self._issue_session(
-            batch_id=batch_id,
-            uid=artifact.uid,
-            artifact_id=artifact.artifact_id,
-            task=task,
-        )
         session_started_at = time.monotonic()
         attempt_count = 0
         terminal_outcome = "unexpected"
         error_code: str | None = None
+        issued: SessionIssued | None = None
         try:
             max_attempts = 1 + artifact.task_retry_count
             timeout_observations: list[TimeoutObservationEvidence] = []
-            for attempt_number in range(1, max_attempts + 1):
+            attempt_number = self._progress.next_attempt_number(
+                batch_id,
+                artifact.artifact_id,
+                task.task_id,
+            )
+            if attempt_number > max_attempts:
+                return _validator_batch_failure_decision(
+                    ValidatorBatchFailedError(
+                        error_code=MinerTaskErrorCode.UNEXPECTED_VALIDATOR_FAILURE,
+                        message="restored attempt ordinal exceeds configured retry budget",
+                        failure_detail=ValidatorBatchFailureDetail(
+                            error_code=MinerTaskErrorCode.UNEXPECTED_VALIDATOR_FAILURE,
+                            error_message="restored attempt ordinal exceeds configured retry budget",
+                            occurred_at=self._clock(),
+                            artifact_id=artifact.artifact_id,
+                            task_id=task.task_id,
+                            uid=artifact.uid,
+                            exception_type=None,
+                        ),
+                    )
+                )
+            while attempt_number <= max_attempts:
                 attempt_count = attempt_number
-                issued = self._begin_session_attempt(issued.session.session_id)
+                issued = self._begin_session_attempt(
+                    self._issue_session(
+                        batch_id=batch_id,
+                        uid=artifact.uid,
+                        artifact_id=artifact.artifact_id,
+                        task=task,
+                        attempt_number=attempt_number,
+                    ).session.session_id
+                )
+                attempt_started_at = self._clock()
                 decision = await self._evaluate_task_attempt(
                     batch_id=batch_id,
                     artifact=artifact,
@@ -551,7 +582,20 @@ class EvaluationRunner:
                 )
                 if decision.kind is AttemptControlKind.SUBMISSION:
                     terminal_outcome = AttemptControlKind.SUBMISSION.value
-                    error_code = _submission_error_code_or_none(_require_submission(decision))
+                    submission = _require_submission(decision)
+                    error_code = _submission_error_code_or_none(submission)
+                    self._record_terminated_attempt(
+                        batch_id=batch_id,
+                        artifact=artifact,
+                        task=task,
+                        issued=issued,
+                        attempt_number=attempt_number,
+                        max_attempts=max_attempts,
+                        started_at=attempt_started_at,
+                        decision=decision,
+                        retry_decision=MinerTaskAttemptRetryDecision.WILL_NOT_RETRY,
+                        terminal_effect=MinerTaskAttemptTerminalEffect.TASK_RESULT,
+                    )
                     return decision
 
                 if decision.kind is AttemptControlKind.REVIEW_TIMEOUT:
@@ -577,8 +621,19 @@ class EvaluationRunner:
                         raise
                     if timeout_resolution.kind is AttemptControlKind.SUBMISSION:
                         terminal_outcome = AttemptControlKind.SUBMISSION.value
-                        error_code = _submission_error_code_or_none(
-                            _require_submission(timeout_resolution)
+                        submission = _require_submission(timeout_resolution)
+                        error_code = _submission_error_code_or_none(submission)
+                        self._record_terminated_attempt(
+                            batch_id=batch_id,
+                            artifact=artifact,
+                            task=task,
+                            issued=issued,
+                            attempt_number=attempt_number,
+                            max_attempts=max_attempts,
+                            started_at=attempt_started_at,
+                            decision=timeout_resolution,
+                            retry_decision=MinerTaskAttemptRetryDecision.WILL_NOT_RETRY,
+                            terminal_effect=MinerTaskAttemptTerminalEffect.TASK_RESULT,
                         )
                         return timeout_resolution
                     if timeout_resolution.kind is AttemptControlKind.TIMEOUT_UNRESOLVED:
@@ -590,11 +645,41 @@ class EvaluationRunner:
                             attempt_number=attempt_number,
                             exc=_require_timeout_exc(decision),
                         )
+                        self._record_terminated_attempt(
+                            batch_id=batch_id,
+                            artifact=artifact,
+                            task=task,
+                            issued=issued,
+                            attempt_number=attempt_number,
+                            max_attempts=max_attempts,
+                            started_at=attempt_started_at,
+                            decision=timeout_resolution,
+                            retry_decision=MinerTaskAttemptRetryDecision.WILL_RETRY,
+                            terminal_effect=MinerTaskAttemptTerminalEffect.NONE,
+                        )
+                        self._cleanup_attempt_session(issued.session.session_id)
+                        attempt_number = self._progress.next_attempt_number(
+                            batch_id,
+                            artifact.artifact_id,
+                            task.task_id,
+                        )
                         continue
                     if timeout_resolution.kind is AttemptControlKind.VALIDATOR_BATCH_FAILURE:
                         validator_failure = _require_validator_failure(timeout_resolution)
                         terminal_outcome = AttemptControlKind.VALIDATOR_BATCH_FAILURE.value
                         error_code = str(validator_failure.error_code)
+                        self._record_terminated_attempt(
+                            batch_id=batch_id,
+                            artifact=artifact,
+                            task=task,
+                            issued=issued,
+                            attempt_number=attempt_number,
+                            max_attempts=max_attempts,
+                            started_at=attempt_started_at,
+                            decision=timeout_resolution,
+                            retry_decision=MinerTaskAttemptRetryDecision.WILL_NOT_RETRY,
+                            terminal_effect=MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE,
+                        )
                         raise validator_failure
                     raise RuntimeError("timeout review returned unexpected decision")
 
@@ -606,19 +691,49 @@ class EvaluationRunner:
                         attempt_number=attempt_number,
                         exc=_require_retry_exc(decision),
                     )
+                    self._record_terminated_attempt(
+                        batch_id=batch_id,
+                        artifact=artifact,
+                        task=task,
+                        issued=issued,
+                        attempt_number=attempt_number,
+                        max_attempts=max_attempts,
+                        started_at=attempt_started_at,
+                        decision=decision,
+                        retry_decision=MinerTaskAttemptRetryDecision.WILL_RETRY,
+                        terminal_effect=MinerTaskAttemptTerminalEffect.NONE,
+                    )
+                    self._cleanup_attempt_session(issued.session.session_id)
+                    attempt_number = self._progress.next_attempt_number(
+                        batch_id,
+                        artifact.artifact_id,
+                        task.task_id,
+                    )
                     continue
 
                 if decision.kind is AttemptControlKind.VALIDATOR_BATCH_FAILURE:
                     validator_failure = _require_validator_failure(decision)
                     terminal_outcome = AttemptControlKind.VALIDATOR_BATCH_FAILURE.value
                     error_code = str(validator_failure.error_code)
+                    self._record_terminated_attempt(
+                        batch_id=batch_id,
+                        artifact=artifact,
+                        task=task,
+                        issued=issued,
+                        attempt_number=attempt_number,
+                        max_attempts=max_attempts,
+                        started_at=attempt_started_at,
+                        decision=decision,
+                        retry_decision=MinerTaskAttemptRetryDecision.WILL_NOT_RETRY,
+                        terminal_effect=MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE,
+                    )
                     raise validator_failure
 
                 raise RuntimeError("task retry loop returned unexpected decision")
         finally:
             _log_session_finished(
                 batch_id=batch_id,
-                session_id=issued.session.session_id,
+                session_id=issued.session.session_id if issued is not None else UUID(int=0),
                 artifact_id=artifact.artifact_id,
                 task_id=task.task_id,
                 uid=artifact.uid,
@@ -630,10 +745,8 @@ class EvaluationRunner:
                 terminal_outcome=terminal_outcome,
                 error_code=error_code,
             )
-            self._clear_task_session(issued.session.session_id)
-            self._clear_platform_tool_proxy_session(issued.session.session_id)
-            self._sessions.revoke(issued.session.session_id)
-            self._receipts.clear_session(issued.session.session_id)
+            if issued is not None:
+                self._cleanup_attempt_session(issued.session.session_id)
 
         raise RuntimeError("task retry loop exited without returning")
 
@@ -675,6 +788,16 @@ class EvaluationRunner:
                 )
             )
         except SandboxInvocationError as exc:
+            timeout_decision = self._platform_tool_proxy_timeout_decision(
+                batch_id=batch_id,
+                artifact=artifact,
+                task=task,
+                session_id=issued.session.session_id,
+                exc=exc,
+                final_attempt=final_attempt,
+            )
+            if timeout_decision is not None:
+                return timeout_decision
             control_failure_decision = self._platform_tool_proxy_control_failure_decision(
                 artifact=artifact,
                 task=task,
@@ -1058,6 +1181,56 @@ class EvaluationRunner:
             )
         )
 
+    def _platform_tool_proxy_timeout_decision(
+        self,
+        *,
+        batch_id: UUID,
+        artifact: ScriptArtifactSpec,
+        task: MinerTask,
+        session_id: UUID,
+        exc: SandboxInvocationError,
+        final_attempt: bool,
+    ) -> TaskAttemptDecision | None:
+        latest_receipt = self._latest_current_attempt_platform_tool_proxy_receipt(session_id)
+        if latest_receipt is None:
+            return None
+        if not is_uncaught_platform_tool_proxy_timeout_sandbox_invocation(
+            detail_code=exc.detail_code,
+            detail_exception=exc.detail_exception,
+            detail_error=exc.detail_error,
+            latest_current_attempt_platform_tool_proxy_receipt_is_timeout=(
+                is_platform_tool_proxy_timeout_receipt(latest_receipt)
+            ),
+        ):
+            return None
+        if not final_attempt:
+            return _retry_decision(exc)
+        return _submission_decision(
+            self._record_task_failure(
+                batch_id=batch_id,
+                artifact=artifact,
+                task=task,
+                session_id=session_id,
+                error_code=MinerTaskErrorCode.TIMEOUT_MINER_OWNED,
+                error_message="platform tool proxy execution timed out",
+                log_message="miner-owned platform tool proxy execution timed out",
+                exc=exc,
+            )
+        )
+
+    def _latest_current_attempt_platform_tool_proxy_receipt(self, session_id: UUID) -> ToolCall | None:
+        envelope = self._sessions.inspect(session_id)
+        current_attempt_receipts = self._current_attempt_receipts(
+            session_id=session_id,
+            active_attempt=envelope.session.active_attempt,
+        )
+        for receipt in reversed(current_attempt_receipts):
+            if receipt.details.extra is None:
+                continue
+            if receipt.details.extra.get("platform_tool_proxy_error_code") is not None:
+                return receipt
+        return None
+
     def _non_timeout_failure_decision(
         self,
         *,
@@ -1232,6 +1405,8 @@ class EvaluationRunner:
             extra = receipt.details.extra
             if extra is None:
                 continue
+            if is_platform_tool_proxy_timeout_receipt(receipt):
+                continue
             error_code = extra.get("platform_tool_proxy_error_code")
             if error_code not in VALIDATOR_OWNED_PLATFORM_TOOL_PROXY_ERROR_CODES:
                 continue
@@ -1244,6 +1419,48 @@ class EvaluationRunner:
                 exception_type=extra.get("error_type"),
             )
         return None
+
+    def _record_terminated_attempt(
+        self,
+        *,
+        batch_id: UUID,
+        artifact: ScriptArtifactSpec,
+        task: MinerTask,
+        issued: SessionIssued,
+        attempt_number: int,
+        max_attempts: int,
+        started_at: datetime,
+        decision: TaskAttemptDecision,
+        retry_decision: MinerTaskAttemptRetryDecision,
+        terminal_effect: MinerTaskAttemptTerminalEffect,
+    ) -> None:
+        status = MinerTaskAttemptStatus.FAILED
+        attempt_receipts = tuple(self._receipts.for_session(issued.session.session_id))
+        if not attempt_receipts and decision.submission is not None:
+            attempt_receipts = tuple(decision.submission.execution_log)
+        error_code = _attempt_error_code(decision, execution_log=attempt_receipts)
+        if decision.submission is not None and decision.submission.run.details.error is None:
+            status = MinerTaskAttemptStatus.SUCCEEDED
+            error_code = None
+        self._progress.record_terminated_attempt(
+            MinerTaskAttemptAuditRecord(
+                validator_session_id=issued.session.session_id,
+                batch_id=batch_id,
+                artifact_id=artifact.artifact_id,
+                task_id=task.task_id,
+                attempt_number=attempt_number,
+                uid=artifact.uid,
+                miner_hotkey_ss58=artifact.miner_hotkey_ss58 or "unknown-miner-hotkey",
+                started_at=started_at,
+                finished_at=self._clock(),
+                status=status,
+                error_code=error_code,
+                error_summary_code=error_code,
+                retry_decision=retry_decision,
+                terminal_effect=terminal_effect,
+                max_attempts=max_attempts,
+            )
+        )
 
     def _log_retry_attempt(
         self,
@@ -1311,6 +1528,7 @@ class EvaluationRunner:
         uid: int,
         artifact_id: UUID | None = None,
         task: MinerTask,
+        attempt_number: int = 1,
     ) -> SessionIssued:
         issued_at = self._clock()
         expires_at = issued_at + self._config.session_ttl
@@ -1335,8 +1553,15 @@ class EvaluationRunner:
                 session_id=issued.session.session_id,
                 artifact_id=artifact_id,
                 task_id=task.task_id,
+                attempt_number=attempt_number,
             )
         return issued
+
+    def _cleanup_attempt_session(self, session_id: UUID) -> None:
+        self._clear_task_session(session_id)
+        self._clear_platform_tool_proxy_session(session_id)
+        self._sessions.revoke(session_id)
+        self._receipts.clear_session(session_id)
 
     def _clear_platform_tool_proxy_session(self, session_id: UUID) -> None:
         if self._platform_tool_proxy_scopes is not None:
@@ -1623,6 +1848,43 @@ def _submission_error_code_or_none(submission: MinerTaskRunSubmission) -> MinerT
     if error is None:
         return None
     return error.code
+
+
+def _attempt_error_code(
+    decision: TaskAttemptDecision,
+    *,
+    execution_log: Sequence[ToolCall] = (),
+) -> str | None:
+    proxy_error_code = _platform_tool_proxy_error_code_or_none(execution_log)
+    if proxy_error_code is not None:
+        return proxy_error_code
+    if decision.submission is not None:
+        error_code = _submission_error_code_or_none(decision.submission)
+        return None if error_code is None else str(error_code)
+    if decision.validator_failure is not None:
+        return str(decision.validator_failure.error_code)
+    if decision.kind is AttemptControlKind.TIMEOUT_UNRESOLVED:
+        return str(MinerTaskErrorCode.TIMEOUT_INCONCLUSIVE)
+    if decision.retry_exc is not None:
+        if isinstance(decision.retry_exc, SandboxInvocationError):
+            return decision.retry_exc.detail_code or str(MinerTaskErrorCode.SANDBOX_INVOCATION_FAILED)
+        if isinstance(decision.retry_exc, httpx.TimeoutException):
+            return str(MinerTaskErrorCode.VALIDATOR_INTERNAL_TIMEOUT)
+        return type(decision.retry_exc).__name__[:128]
+    if decision.timeout_exc is not None:
+        return decision.timeout_exc.detail_code or str(MinerTaskErrorCode.TIMEOUT_INCONCLUSIVE)
+    return None
+
+
+def _platform_tool_proxy_error_code_or_none(execution_log: Sequence[ToolCall]) -> str | None:
+    for receipt in reversed(tuple(execution_log)):
+        extra = receipt.details.extra
+        if extra is None:
+            continue
+        error_code = extra.get("platform_tool_proxy_error_code")
+        if error_code is not None:
+            return str(error_code)
+    return None
 
 
 def _validator_batch_failed_from_existing_submission(

@@ -78,7 +78,7 @@ harnyx-miner-config --wallet-name <wallet> --hotkey-name <hotkey> --delete-provi
 
 Supported providers are `chutes`, `openrouter`, `desearch`, and `parallel`.
 Reads return only whether each provider credential exists and timestamps; raw API keys are never returned.
-Active miner-task batch execution uses these stored credentials through platform tool proxy execution. Validators receive only short-lived platform-tool-proxy tokens for one batch artifact/task/validator execution authority; each token remains bound to the validator execution session while budget and concurrency are not multiplied by changing session IDs. Raw provider API keys stay inside the platform boundary.
+Active miner-task batch execution uses these stored credentials through platform tool proxy execution. Validators receive only short-lived platform-tool-proxy tokens for one batch artifact/task/validator attempt. Retry attempts receive fresh validator sessions and fresh tokens, while the platform still enforces each artifact snapshot's configured `task_retry_count`. Raw provider API keys stay inside the platform boundary.
 
 ---
 
@@ -467,6 +467,8 @@ If your script fails during preload because of your own code, or violates the `q
 Tool calls can fail transiently (timeouts / upstream errors). Treat them like external APIs: catch tool errors and still return a valid `Response` so you don’t crash the whole evaluation run.
 
 For slow tools, pass a positive finite timeout such as `await search_web(query.text, provider="parallel", num=5, timeout=10.0)`, `await fetch_page(url, provider="parallel", timeout=10.0)`, or `await llm_chat(provider="chutes", ..., timeout=20.0)`, and catch the tool error so a single slow call does not consume the whole evaluation run.
+
+During batch evaluation, failed attempts can retry only when your stored miner config has remaining `task_retry_count`. Each retry is a fresh validator session and fresh platform-tool-proxy token; a terminated attempt is kept as internal audit evidence, while public batch results still show one final task result per validator/artifact/task pair.
 
 Validator-side provider attribution is now aggregate and batch-scoped. One failed
 `search_web` / `search_ai` / `fetch_page` / `llm_chat` call does not by itself

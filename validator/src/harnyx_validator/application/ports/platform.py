@@ -111,12 +111,22 @@ class PlatformToolProxyToolResult:
 
 
 @dataclass(frozen=True)
+class RestoreAttemptNumberHighWater:
+    artifact_id: UUID
+    task_id: UUID
+    max_attempt_number: int
+
+
+@dataclass(frozen=True)
 class RestoreMetadata:
     batch_id: UUID
     snapshot_received_at: datetime
     total_restore_runs: int
     page_limit: int
+    last_progress_detail_sequence: int = 0
     provider_model_evidence: tuple[ProviderFailureEvidence, ...] = ()
+    terminated_miner_task_attempts: tuple[RestoreAttemptNumberHighWater, ...] = ()
+    consumed_platform_tool_proxy_attempts: tuple[RestoreAttemptNumberHighWater, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -138,5 +148,6 @@ __all__ = [
     "PlatformToolProxyTokenExpiredError",
     "PlatformToolProxyToolResult",
     "RestoreMetadata",
+    "RestoreAttemptNumberHighWater",
     "RestoreRunsPage",
 ]

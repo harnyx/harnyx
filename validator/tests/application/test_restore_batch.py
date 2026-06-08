@@ -12,6 +12,8 @@ from harnyx_validator.application.restore_batch import RestoreEvaluationBatch
 class _AcceptedBatches:
     batch_id: UUID
     restore_calls: list[tuple[object, tuple[object, ...], tuple[object, ...]]] = field(default_factory=list)
+    restored_attempts: list[tuple[UUID, tuple[object, ...], tuple[object, ...]]] = field(default_factory=list)
+    restored_floors: list[tuple[UUID, int]] = field(default_factory=list)
     queued: list[UUID] = field(default_factory=list)
 
     def batch_for(self, batch_id: UUID) -> object:
@@ -25,6 +27,18 @@ class _AcceptedBatches:
         provider_evidence: tuple[object, ...],
     ) -> None:
         self.restore_calls.append((batch, items, provider_evidence))
+
+    def restore_attempt_number_high_waters(
+        self,
+        batch_id: UUID,
+        *,
+        terminated: tuple[object, ...],
+        consumed: tuple[object, ...],
+    ) -> None:
+        self.restored_attempts.append((batch_id, terminated, consumed))
+
+    def restore_progress_floor(self, batch_id: UUID, sequence: int) -> None:
+        self.restored_floors.append((batch_id, sequence))
 
     def queue_after_restore(self, batch_id: UUID) -> None:
         self.queued.append(batch_id)
@@ -72,6 +86,7 @@ def test_restore_uses_null_next_cursor_not_advisory_total() -> None:
             snapshot_received_at=snapshot,
             total_restore_runs=99,
             page_limit=50,
+            last_progress_detail_sequence=7,
         ),
         pages=[
             RestoreRunsPage(
@@ -94,6 +109,8 @@ def test_restore_uses_null_next_cursor_not_advisory_total() -> None:
     ).restore(batch_id)
 
     assert platform.cursors == [0]
+    assert accepted_batches.restored_floors == [(batch_id, 7)]
+    assert accepted_batches.restored_attempts == [(batch_id, (), ())]
     assert accepted_batches.restore_calls == []
     assert accepted_batches.queued == [batch_id]
     assert batch_activity.stages == [(batch_id, "queued")]

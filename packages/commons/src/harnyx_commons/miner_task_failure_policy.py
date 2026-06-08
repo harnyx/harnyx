@@ -13,7 +13,7 @@ from harnyx_commons.domain.miner_task import (
     EvaluationError,
     is_delivery_disqualifying_validator_pair_error,
 )
-from harnyx_commons.domain.tool_call import IN_FLIGHT_LLM_UNKNOWN_EVIDENCE, ToolCall
+from harnyx_commons.domain.tool_call import IN_FLIGHT_LLM_UNKNOWN_EVIDENCE, ToolCall, ToolCallOutcome
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
 from harnyx_commons.json_types import JsonValue
 
@@ -22,6 +22,7 @@ PROVIDER_BATCH_MIN_FAILURE_RATE = 0.95
 TIMEOUT_REVIEW_MAX_OBSERVATIONS = 3
 TIMEOUT_TPS_SLOWDOWN_FACTOR = 2.0
 TERMINAL_TIMEOUT_ERROR_MESSAGE = "terminal timeout"
+PLATFORM_TOOL_PROXY_TIMEOUT_ERROR_CODE = "tool_timeout"
 
 SANDBOX_TIMEOUT_EXCEPTIONS = frozenset({"TimeoutError", "TimeoutException"})
 SANDBOX_DETAIL_CODE_UNHANDLED_EXCEPTION = "UnhandledException"
@@ -234,6 +235,29 @@ def is_provider_caused_terminal_failure(
     if detail_exception != "ToolInvocationError":
         return False
     return detail_error == "tool invocation failed with 400: tool execution failed"
+
+
+def is_platform_tool_proxy_timeout_receipt(receipt: ToolCall) -> bool:
+    if receipt.outcome is not ToolCallOutcome.TIMEOUT:
+        return False
+    extra = receipt.details.extra or {}
+    return extra.get("platform_tool_proxy_error_code") == PLATFORM_TOOL_PROXY_TIMEOUT_ERROR_CODE
+
+
+def is_uncaught_platform_tool_proxy_timeout_sandbox_invocation(
+    *,
+    detail_code: str | None,
+    detail_exception: str | None,
+    detail_error: str | None,
+    latest_current_attempt_platform_tool_proxy_receipt_is_timeout: bool,
+) -> bool:
+    if not latest_current_attempt_platform_tool_proxy_receipt_is_timeout:
+        return False
+    return is_provider_caused_terminal_failure(
+        detail_code=detail_code,
+        detail_exception=detail_exception,
+        detail_error=detail_error,
+    )
 
 
 def is_timeout_sandbox_invocation(
@@ -556,9 +580,11 @@ __all__ = [
     "ValidatorDeliveryExclusion",
     "classify_timeout_attribution",
     "delivery_exclusion_from_completed_pair_results",
+    "is_platform_tool_proxy_timeout_receipt",
     "is_provider_caused_terminal_failure",
     "is_script_validation_sandbox_invocation",
     "is_timeout_sandbox_invocation",
+    "is_uncaught_platform_tool_proxy_timeout_sandbox_invocation",
     "provider_batch_failure_evidence",
     "provider_batch_failure_message",
     "successful_llm_samples",

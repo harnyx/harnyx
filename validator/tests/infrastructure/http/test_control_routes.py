@@ -53,7 +53,10 @@ from harnyx_validator.infrastructure.http.routes import (
     add_control_routes,
 )
 from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
-from harnyx_validator.infrastructure.state.run_progress import FileBackedRunProgress
+from harnyx_validator.infrastructure.state.run_progress import (
+    FileBackedRunProgress,
+    ProgressCursorBeforeRestoreFloorError,
+)
 from harnyx_validator.runtime.resource_usage import ValidatorResourceUsageSnapshot
 
 
@@ -203,7 +206,12 @@ class FakeProgressTracker:
             raise page_error
         runs = tuple(self._snapshot["run_page_submissions"])
         selected = tuple(
-            {"sequence": sequence, "submission": submission}
+            {
+                "sequence": sequence,
+                "kind": "completed_run",
+                "submission": submission,
+                "attempt": None,
+            }
             for sequence, submission in enumerate(runs, start=1)
             if sequence > after_sequence
         )[:limit]
@@ -1139,6 +1147,35 @@ def test_runs_endpoint_converts_page_failure_to_valid_failed_payload() -> None:
     assert body["failure_detail"]["exception_type"] == "RuntimeError"
     assert "page exploded" in body["failure_detail"]["error_message"]
     assert "RuntimeError: page exploded" in body["failure_detail"]["traceback"]
+    assert body["items"] == []
+
+
+def test_runs_endpoint_converts_restore_floor_stale_cursor_to_failed_payload() -> None:
+    batch_id = uuid4()
+    snapshot: RunProgressFixture = {
+        "batch_id": batch_id,
+        "total": 2,
+        "completed": 1,
+        "remaining": 1,
+        "tasks": (),
+        "run_page_submissions": (),
+        "provider_evidence": (),
+        "page_error": ProgressCursorBeforeRestoreFloorError(
+            "progress cursor is older than restored platform detail floor"
+        ),
+    }
+    provider = DemoControlDependencyProvider(snapshot=snapshot, lifecycle="processing")
+    app = _create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.get(f"/validator/miner-task-batches/{batch_id}/runs?after_sequence=0&limit=10")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["batch_id"] == str(batch_id)
+    assert body["failure_detail"]["error_code"] == "progress_snapshot_failed"
+    assert body["failure_detail"]["exception_type"] == "ProgressCursorBeforeRestoreFloorError"
+    assert "restored platform detail floor" in body["failure_detail"]["error_message"]
     assert body["items"] == []
 
 

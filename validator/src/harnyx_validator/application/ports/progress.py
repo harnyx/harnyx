@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Protocol, TypedDict
+from typing import Literal, Protocol, TypedDict
 from uuid import UUID
 
 from harnyx_commons.miner_task_failure_policy import ProviderFailureEvidence
-from harnyx_validator.application.dto.evaluation import MinerTaskBatchSpec, MinerTaskRunSubmission
+from harnyx_validator.application.dto.evaluation import (
+    MinerTaskAttemptAuditRecord,
+    MinerTaskBatchSpec,
+    MinerTaskRunSubmission,
+)
 
 
 class RunProgressSummary(TypedDict):
@@ -24,6 +28,25 @@ class SequencedRun(TypedDict):
     submission: MinerTaskRunSubmission
 
 
+class TerminatedMinerTaskAttemptOrdinal(TypedDict):
+    artifact_id: UUID
+    task_id: UUID
+    max_attempt_number: int
+
+
+class ConsumedAttemptNumber(TypedDict):
+    artifact_id: UUID
+    task_id: UUID
+    max_attempt_number: int
+
+
+class SequencedProgressDetail(TypedDict):
+    sequence: int
+    kind: Literal["completed_run", "terminated_attempt"]
+    submission: MinerTaskRunSubmission | None
+    attempt: MinerTaskAttemptAuditRecord | None
+
+
 class RunProgressPage(TypedDict):
     batch_id: UUID
     after_sequence: int
@@ -31,7 +54,7 @@ class RunProgressPage(TypedDict):
     latest_sequence: int
     next_after_sequence: int
     has_more: bool
-    items: tuple[SequencedRun, ...]
+    items: tuple[SequencedProgressDetail, ...]
 
 
 class ProgressRecorder(Protocol):
@@ -39,6 +62,23 @@ class ProgressRecorder(Protocol):
         ...
 
     def record(self, result: MinerTaskRunSubmission) -> None:
+        ...
+
+    def record_terminated_attempt(self, attempt: MinerTaskAttemptAuditRecord) -> None:
+        ...
+
+    def restore_attempt_number_high_waters(
+        self,
+        batch_id: UUID,
+        terminated: Sequence[TerminatedMinerTaskAttemptOrdinal],
+        consumed: Sequence[ConsumedAttemptNumber],
+    ) -> None:
+        ...
+
+    def restore_progress_floor(self, batch_id: UUID, sequence: int) -> None:
+        ...
+
+    def next_attempt_number(self, batch_id: UUID, artifact_id: UUID, task_id: UUID) -> int:
         ...
 
     def restore_completed_runs(
@@ -101,7 +141,10 @@ class ProgressRecorder(Protocol):
 __all__ = [
     "ProgressRecorder",
     "ProviderFailureEvidence",
+    "ConsumedAttemptNumber",
     "RunProgressPage",
     "RunProgressSummary",
+    "SequencedProgressDetail",
     "SequencedRun",
+    "TerminatedMinerTaskAttemptOrdinal",
 ]

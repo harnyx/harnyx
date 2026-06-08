@@ -1196,7 +1196,11 @@ class EvaluationScheduler:
                 limit=_BATCH_FAILURE_PROGRESS_PAGE_SIZE,
             )
             for item in page["items"]:
+                if item["kind"] != "completed_run":
+                    continue
                 submission = item["submission"]
+                if submission is None:
+                    raise RuntimeError("completed run progress page missing submission")
                 pair = _submission_pair(submission)
                 if pair not in recorded_pairs:
                     completed_by_pair[pair] = submission

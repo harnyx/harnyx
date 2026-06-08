@@ -35,13 +35,14 @@ from harnyx_commons.miner_task_failure_policy import (
 )
 from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager
 from harnyx_validator.application.dto.evaluation import (
+    MinerTaskAttemptAuditRecord,
     MinerTaskRunSubmission,
     ScriptArtifactSpec,
     TaskRunOutcome,
     TokenUsageSummary,
 )
 from harnyx_validator.application.invoke_entrypoint import SandboxInvocationError
-from harnyx_validator.application.ports.progress import RunProgressPage, RunProgressSummary, SequencedRun
+from harnyx_validator.application.ports.progress import RunProgressPage, RunProgressSummary
 from harnyx_validator.application.ports.subtensor import ValidatorNodeInfo
 from harnyx_validator.application.scheduler import EvaluationScheduler, SchedulerConfig
 from harnyx_validator.application.services.evaluation_runner import (
@@ -127,6 +128,8 @@ class DummyProgressRecorder:
         self._submissions_by_pair: dict[tuple[UUID, UUID], MinerTaskRunSubmission] = {}
         self._sequence_by_pair: dict[tuple[UUID, UUID], int] = {}
         self._pair_by_sequence: dict[int, tuple[UUID, UUID]] = {}
+        self._attempt_high_water_by_pair: dict[tuple[UUID, UUID], int] = {}
+        self._progress_floor = 0
         self._next_sequence = 1
 
     def register(self, _batch) -> None:
@@ -141,6 +144,38 @@ class DummyProgressRecorder:
             self._sequence_by_pair[pair] = sequence
             self._pair_by_sequence[sequence] = pair
         self._submissions_by_pair[pair] = result
+        self._attempt_high_water_by_pair[pair] = max(
+            self._attempt_high_water_by_pair.get(pair, 0),
+            1,
+        )
+
+    def record_terminated_attempt(self, attempt: MinerTaskAttemptAuditRecord) -> None:
+        pair = (attempt.artifact_id, attempt.task_id)
+        self._attempt_high_water_by_pair[pair] = max(
+            self._attempt_high_water_by_pair.get(pair, 0),
+            attempt.attempt_number,
+        )
+
+    def restore_attempt_number_high_waters(
+        self,
+        _batch_id: UUID,
+        *,
+        terminated: tuple[dict[str, object], ...],
+        consumed: tuple[dict[str, object], ...],
+    ) -> None:
+        for entry in (*terminated, *consumed):
+            pair = (entry["artifact_id"], entry["task_id"])
+            self._attempt_high_water_by_pair[pair] = max(
+                self._attempt_high_water_by_pair.get(pair, 0),
+                int(entry["max_attempt_number"]),
+            )
+
+    def restore_progress_floor(self, _batch_id: UUID, sequence: int) -> None:
+        self._progress_floor = max(self._progress_floor, sequence)
+        self._next_sequence = max(self._next_sequence, self._progress_floor + 1)
+
+    def next_attempt_number(self, _batch_id: UUID, artifact_id: UUID, task_id: UUID) -> int:
+        return self._attempt_high_water_by_pair.get((artifact_id, task_id), 0) + 1
 
     def recorded_pairs(self, _batch_id: UUID) -> frozenset[tuple[UUID, UUID]]:
         return frozenset(self._recorded)
@@ -152,7 +187,7 @@ class DummyProgressRecorder:
             "total": completed,
             "completed": completed,
             "remaining": 0,
-            "latest_sequence": self._next_sequence - 1,
+            "latest_sequence": max(self._progress_floor, self._next_sequence - 1),
             "provider_evidence": (),
         }
 
@@ -163,9 +198,9 @@ class DummyProgressRecorder:
         after_sequence: int,
         limit: int,
     ) -> RunProgressPage:
-        latest_sequence = self._next_sequence - 1
+        latest_sequence = max(self._progress_floor, self._next_sequence - 1)
         sequences = tuple(range(after_sequence + 1, min(latest_sequence, after_sequence + limit) + 1))
-        items: list[SequencedRun] = []
+        items = []
         for sequence in sequences:
             pair = self._pair_by_sequence.get(sequence)
             if pair is None:
@@ -173,7 +208,9 @@ class DummyProgressRecorder:
             items.append(
                 {
                     "sequence": sequence,
+                    "kind": "completed_run",
                     "submission": self._submissions_by_pair[pair],
+                    "attempt": None,
                 }
             )
         next_after_sequence = items[-1]["sequence"] if items else after_sequence
@@ -2345,7 +2382,7 @@ async def test_scheduler_records_retry_exhausted_internal_timeout_as_task_failur
 
     assert exc_info.value.error_code == "validator_internal_timeout"
     assert orchestrator.calls == 2
-    assert len(set(orchestrator.session_ids)) == 1
+    assert len(set(orchestrator.session_ids)) == 2
     assert evaluation_records.records_by_batch == []
 
 

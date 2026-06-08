@@ -27,7 +27,10 @@ from harnyx_validator.application.dto.evaluation import (
     TokenUsageSummary,
 )
 from harnyx_validator.domain.evaluation import MinerTaskRun
-from harnyx_validator.infrastructure.state.run_progress import FileBackedRunProgress
+from harnyx_validator.infrastructure.state.run_progress import (
+    FileBackedRunProgress,
+    ProgressCursorBeforeRestoreFloorError,
+)
 
 
 def _progress(tmp_path: Path) -> FileBackedRunProgress:
@@ -276,7 +279,7 @@ def test_run_progress_record_is_idempotent_for_duplicate_pair(tmp_path: Path) ->
     assert summary["completed"] == 1
     assert summary["remaining"] == 0
     assert summary["latest_sequence"] == 1
-    assert page["items"] == ({"sequence": 1, "submission": submission},)
+    assert page["items"] == ({"sequence": 1, "kind": "completed_run", "submission": submission, "attempt": None},)
 
 
 def test_run_progress_restore_completed_runs_records_terminal_timeout_failed_submission(tmp_path: Path) -> None:
@@ -292,10 +295,56 @@ def test_run_progress_restore_completed_runs_records_terminal_timeout_failed_sub
     assert summary["completed"] == 1
     assert summary["remaining"] == 0
     assert summary["latest_sequence"] == 1
-    assert page["items"] == ({"sequence": 1, "submission": failed_submission},)
+    assert page["items"] == (
+        {"sequence": 1, "kind": "completed_run", "submission": failed_submission, "attempt": None},
+    )
     assert progress.recorded_pairs(batch.batch_id) == {
         (failed_submission.run.artifact_id, failed_submission.run.task_id),
     }
+
+
+def test_run_progress_restore_floor_continues_without_replaying_restored_runs(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
+    batch = _make_batch()
+    submission = _make_submission(batch)
+
+    progress.register(batch)
+    progress.restore_progress_floor(batch.batch_id, 7)
+    progress.restore_completed_runs(batch, submissions=(submission,))
+
+    summary = progress.summary(batch.batch_id)
+    page = progress.completed_run_page(batch.batch_id, after_sequence=7, limit=10)
+    assert summary["completed"] == 1
+    assert summary["latest_sequence"] == 7
+    assert page["items"] == ()
+    assert progress.recorded_pairs(batch.batch_id) == {
+        (submission.run.artifact_id, submission.run.task_id),
+    }
+
+
+def test_run_progress_first_new_detail_after_restore_floor_is_dense(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
+    batch = _make_multi_batch()
+    restored, new_submission = _make_distinct_multi_submissions(batch)[:2]
+
+    progress.register(batch)
+    progress.restore_progress_floor(batch.batch_id, 7)
+    progress.restore_completed_runs(batch, submissions=(restored,))
+    progress.record(new_submission)
+
+    page = progress.completed_run_page(batch.batch_id, after_sequence=7, limit=10)
+    assert [item["sequence"] for item in page["items"]] == [8]
+
+
+def test_run_progress_page_below_restore_floor_fails_explicitly(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
+    batch = _make_batch()
+
+    progress.register(batch)
+    progress.restore_progress_floor(batch.batch_id, 7)
+
+    with pytest.raises(ProgressCursorBeforeRestoreFloorError, match="restored platform detail floor"):
+        progress.completed_run_page(batch.batch_id, after_sequence=0, limit=10)
 
 
 def test_run_progress_record_rejects_conflicting_duplicate_pair(tmp_path: Path) -> None:
@@ -480,7 +529,7 @@ def test_run_progress_rejected_restore_does_not_advance_sequence_cursor(tmp_path
     page = progress.completed_run_page(batch.batch_id, after_sequence=0, limit=10)
     assert summary["completed"] == 1
     assert summary["latest_sequence"] == 1
-    assert page["items"] == ({"sequence": 1, "submission": submission},)
+    assert page["items"] == ({"sequence": 1, "kind": "completed_run", "submission": submission, "attempt": None},)
 
 
 def test_run_progress_page_preserves_record_sequence_without_global_task_order(tmp_path: Path) -> None:
@@ -519,7 +568,9 @@ def test_run_progress_page_returns_cursor_window_without_rescanning_prefix(tmp_p
     assert page["latest_sequence"] == 4
     assert page["next_after_sequence"] == 3
     assert page["has_more"] is True
-    assert page["items"] == ({"sequence": 3, "submission": submissions[2]},)
+    assert page["items"] == (
+        {"sequence": 3, "kind": "completed_run", "submission": submissions[2], "attempt": None},
+    )
 
 
 def test_run_progress_page_rejects_missing_dense_sequence(tmp_path: Path) -> None:
@@ -531,9 +582,10 @@ def test_run_progress_page_rejects_missing_dense_sequence(tmp_path: Path) -> Non
     for submission in submissions:
         progress.record(submission)
 
+    del progress.detail_by_sequence_by_batch[batch.batch_id][2]
     del progress.pair_by_sequence_by_batch[batch.batch_id][2]
 
-    with pytest.raises(RuntimeError, match="progress sequence points at missing pair"):
+    with pytest.raises(RuntimeError, match="progress sequence points at missing detail"):
         progress.completed_run_page(batch.batch_id, after_sequence=0, limit=10)
 
 
@@ -655,5 +707,7 @@ def test_run_progress_completed_page_and_discard_are_lock_coordinated(
 
     assert not page_thread.is_alive()
     assert not discard_thread.is_alive()
-    assert page_result["items"] == ({"sequence": 1, "submission": submission},)
+    assert page_result["items"] == (
+        {"sequence": 1, "kind": "completed_run", "submission": submission, "attempt": None},
+    )
     assert not (progress.storage_root / str(batch.batch_id)).exists()

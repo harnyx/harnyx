@@ -10,12 +10,18 @@ from threading import RLock
 from typing import TypeAlias
 from uuid import UUID
 
-from harnyx_validator.application.dto.evaluation import MinerTaskBatchSpec, MinerTaskRunSubmission
+from harnyx_validator.application.dto.evaluation import (
+    MinerTaskAttemptAuditRecord,
+    MinerTaskBatchSpec,
+    MinerTaskRunSubmission,
+)
 from harnyx_validator.application.ports.progress import (
+    ConsumedAttemptNumber,
     ProviderFailureEvidence,
     RunProgressPage,
     RunProgressSummary,
-    SequencedRun,
+    SequencedProgressDetail,
+    TerminatedMinerTaskAttemptOrdinal,
 )
 from harnyx_validator.infrastructure.state.run_progress_blob_store import (
     RunSubmissionBlobRef,
@@ -23,6 +29,10 @@ from harnyx_validator.infrastructure.state.run_progress_blob_store import (
 )
 
 ProviderEvidenceSnapshot: TypeAlias = ProviderFailureEvidence
+
+
+class ProgressCursorBeforeRestoreFloorError(RuntimeError):
+    """Raised when a caller asks for progress history already persisted by Platform."""
 
 
 @dataclass(slots=True)
@@ -49,6 +59,14 @@ class FileBackedRunProgress:
     ] = field(default_factory=dict)
     sequence_by_pair_by_batch: dict[UUID, dict[tuple[UUID, UUID], int]] = field(default_factory=dict)
     pair_by_sequence_by_batch: dict[UUID, dict[int, tuple[UUID, UUID]]] = field(default_factory=dict)
+    detail_by_sequence_by_batch: dict[UUID, dict[int, tuple[str, UUID | tuple[UUID, UUID]]]] = field(
+        default_factory=dict
+    )
+    attempts_by_session_by_batch: dict[UUID, dict[UUID, MinerTaskAttemptAuditRecord]] = field(
+        default_factory=dict
+    )
+    attempt_high_water_by_batch: dict[UUID, dict[tuple[UUID, UUID], int]] = field(default_factory=dict)
+    progress_floor_by_batch: dict[UUID, int] = field(default_factory=dict)
     next_sequence_by_batch: dict[UUID, int] = field(default_factory=dict)
     session_context_by_id: dict[UUID, _SessionRunContext] = field(default_factory=dict)
     provider_counters_by_batch: dict[
@@ -79,6 +97,9 @@ class FileBackedRunProgress:
             self.submission_refs_by_batch.setdefault(batch.batch_id, {})
             self.sequence_by_pair_by_batch.setdefault(batch.batch_id, {})
             self.pair_by_sequence_by_batch.setdefault(batch.batch_id, {})
+            self.detail_by_sequence_by_batch.setdefault(batch.batch_id, {})
+            self.attempts_by_session_by_batch.setdefault(batch.batch_id, {})
+            self.attempt_high_water_by_batch.setdefault(batch.batch_id, {})
             self.next_sequence_by_batch.setdefault(batch.batch_id, 1)
 
     def record(self, result: MinerTaskRunSubmission) -> None:
@@ -90,6 +111,59 @@ class FileBackedRunProgress:
                 result=result,
             )
 
+    def record_terminated_attempt(self, attempt: MinerTaskAttemptAuditRecord) -> None:
+        with self._lock:
+            attempts = self.attempts_by_session_by_batch.setdefault(attempt.batch_id, {})
+            existing = attempts.get(attempt.validator_session_id)
+            if existing is not None:
+                if existing != attempt:
+                    raise RuntimeError("batch already recorded a different attempt for session")
+                return
+
+            sequence = int(self.next_sequence_by_batch.get(attempt.batch_id, 1))
+            attempts[attempt.validator_session_id] = attempt
+            self.detail_by_sequence_by_batch.setdefault(attempt.batch_id, {})[sequence] = (
+                "terminated_attempt",
+                attempt.validator_session_id,
+            )
+            self._record_attempt_high_water(attempt)
+            self.next_sequence_by_batch[attempt.batch_id] = sequence + 1
+
+    def restore_attempt_number_high_waters(
+        self,
+        batch_id: UUID,
+        terminated: Sequence[TerminatedMinerTaskAttemptOrdinal],
+        consumed: Sequence[ConsumedAttemptNumber],
+    ) -> None:
+        with self._lock:
+            if batch_id not in self.batches_by_id:
+                raise RuntimeError("attempt high-water restore requires a registered batch")
+            for entry in (*terminated, *consumed):
+                self._merge_attempt_high_water(
+                    batch_id=batch_id,
+                    artifact_id=entry["artifact_id"],
+                    task_id=entry["task_id"],
+                    attempt_number=entry["max_attempt_number"],
+                )
+
+    def restore_progress_floor(self, batch_id: UUID, sequence: int) -> None:
+        if sequence < 0:
+            raise RuntimeError("progress floor must be non-negative")
+        with self._lock:
+            if batch_id not in self.batches_by_id:
+                raise RuntimeError("progress floor restore requires a registered batch")
+            floor = max(self.progress_floor_by_batch.get(batch_id, 0), sequence)
+            self.progress_floor_by_batch[batch_id] = floor
+            self.next_sequence_by_batch[batch_id] = max(
+                int(self.next_sequence_by_batch.get(batch_id, 1)),
+                floor + 1,
+            )
+
+    def next_attempt_number(self, batch_id: UUID, artifact_id: UUID, task_id: UUID) -> int:
+        with self._lock:
+            high_water = self.attempt_high_water_by_batch.get(batch_id, {}).get((artifact_id, task_id), 0)
+            return high_water + 1
+
     def restore_completed_runs(
         self,
         batch: MinerTaskBatchSpec,
@@ -99,25 +173,39 @@ class FileBackedRunProgress:
         with self._lock:
             self.register(batch)
             staged_refs = dict(self.submission_refs_by_batch.get(batch.batch_id, {}))
-            staged_sequence_by_pair = dict(self.sequence_by_pair_by_batch.get(batch.batch_id, {}))
-            staged_pair_by_sequence = dict(self.pair_by_sequence_by_batch.get(batch.batch_id, {}))
-            next_sequence = int(self.next_sequence_by_batch.get(batch.batch_id, 1))
-            for submission in submissions:
-                if submission.batch_id != batch.batch_id:
-                    raise RuntimeError("restored submission batch_id mismatch")
-                next_sequence = self._record_submission(
-                    batch_id=batch.batch_id,
-                    refs=staged_refs,
-                    result=submission,
-                    sequence_by_pair=staged_sequence_by_pair,
-                    pair_by_sequence=staged_pair_by_sequence,
-                    next_sequence=next_sequence,
-                    commit_next_sequence=False,
-                )
+            restore_floor = self.progress_floor_by_batch.get(batch.batch_id, 0)
+            if restore_floor > 0:
+                for submission in submissions:
+                    if submission.batch_id != batch.batch_id:
+                        raise RuntimeError("restored submission batch_id mismatch")
+                    self._restore_submission_ref(
+                        batch_id=batch.batch_id,
+                        refs=staged_refs,
+                        result=submission,
+                    )
+            else:
+                staged_sequence_by_pair = dict(self.sequence_by_pair_by_batch.get(batch.batch_id, {}))
+                staged_pair_by_sequence = dict(self.pair_by_sequence_by_batch.get(batch.batch_id, {}))
+                staged_detail_by_sequence = dict(self.detail_by_sequence_by_batch.get(batch.batch_id, {}))
+                next_sequence = int(self.next_sequence_by_batch.get(batch.batch_id, 1))
+                for submission in submissions:
+                    if submission.batch_id != batch.batch_id:
+                        raise RuntimeError("restored submission batch_id mismatch")
+                    next_sequence = self._record_submission(
+                        batch_id=batch.batch_id,
+                        refs=staged_refs,
+                        result=submission,
+                        sequence_by_pair=staged_sequence_by_pair,
+                        pair_by_sequence=staged_pair_by_sequence,
+                        detail_by_sequence=staged_detail_by_sequence,
+                        next_sequence=next_sequence,
+                        commit_next_sequence=False,
+                    )
+                self.sequence_by_pair_by_batch[batch.batch_id] = staged_sequence_by_pair
+                self.pair_by_sequence_by_batch[batch.batch_id] = staged_pair_by_sequence
+                self.detail_by_sequence_by_batch[batch.batch_id] = staged_detail_by_sequence
+                self.next_sequence_by_batch[batch.batch_id] = next_sequence
             self.submission_refs_by_batch[batch.batch_id] = staged_refs
-            self.sequence_by_pair_by_batch[batch.batch_id] = staged_sequence_by_pair
-            self.pair_by_sequence_by_batch[batch.batch_id] = staged_pair_by_sequence
-            self.next_sequence_by_batch[batch.batch_id] = next_sequence
             self.provider_counters_by_batch[batch.batch_id] = self._merged_provider_counters(
                 batch.batch_id,
                 provider_evidence,
@@ -263,25 +351,72 @@ class FileBackedRunProgress:
             raise RuntimeError("limit must be positive")
 
         with self._lock:
+            floor = self.progress_floor_by_batch.get(batch_id, 0)
+            if after_sequence < floor:
+                raise ProgressCursorBeforeRestoreFloorError(
+                    "progress cursor is older than restored platform detail floor"
+                )
             refs = self.submission_refs_by_batch.get(batch_id, {})
             pair_by_sequence = self.pair_by_sequence_by_batch.get(batch_id, {})
+            detail_by_sequence = self.detail_by_sequence_by_batch.get(batch_id, {})
+            attempts = self.attempts_by_session_by_batch.get(batch_id, {})
             latest_sequence = self._latest_sequence(batch_id)
             requested_sequences = tuple(range(after_sequence + 1, min(latest_sequence, after_sequence + limit) + 1))
-            requested_refs: list[RunSubmissionBlobRef] = []
+            requested_refs: list[RunSubmissionBlobRef | None] = []
+            requested_attempts: list[MinerTaskAttemptAuditRecord | None] = []
             for sequence in requested_sequences:
-                pair = pair_by_sequence.get(sequence)
-                if pair is None:
-                    raise RuntimeError("progress sequence points at missing pair")
-                ref = refs.get(pair)
-                if ref is None:
-                    raise RuntimeError("progress sequence points at missing result")
-                requested_refs.append(ref)
-            submissions = self.blob_store.read_many(requested_refs)
+                detail = detail_by_sequence.get(sequence)
+                if detail is None:
+                    pair = pair_by_sequence.get(sequence)
+                    if pair is None:
+                        raise RuntimeError("progress sequence points at missing detail")
+                    detail = ("completed_run", pair)
+                kind, key = detail
+                if kind == "completed_run":
+                    if not isinstance(key, tuple):
+                        raise RuntimeError("completed progress sequence points at invalid key")
+                    ref = refs.get(key)
+                    if ref is None:
+                        raise RuntimeError("progress sequence points at missing result")
+                    requested_refs.append(ref)
+                    requested_attempts.append(None)
+                    continue
+                if kind == "terminated_attempt":
+                    if not isinstance(key, UUID):
+                        raise RuntimeError("attempt progress sequence points at invalid key")
+                    attempt = attempts.get(key)
+                    if attempt is None:
+                        raise RuntimeError("progress sequence points at missing attempt")
+                    requested_refs.append(None)
+                    requested_attempts.append(attempt)
+                    continue
+                raise RuntimeError("progress sequence has unsupported detail kind")
 
-        items: list[SequencedRun] = [
-            {"sequence": sequence, "submission": submission}
-            for sequence, submission in zip(requested_sequences, submissions, strict=True)
-        ]
+            blob_indexes = [index for index, ref in enumerate(requested_refs) if ref is not None]
+            hydrated = self.blob_store.read_many(tuple(ref for ref in requested_refs if ref is not None))
+            submissions_by_index = dict(zip(blob_indexes, hydrated, strict=True))
+
+        items: list[SequencedProgressDetail] = []
+        for index, sequence in enumerate(requested_sequences):
+            attempt = requested_attempts[index]
+            if attempt is not None:
+                items.append(
+                    {
+                        "sequence": sequence,
+                        "kind": "terminated_attempt",
+                        "submission": None,
+                        "attempt": attempt,
+                    }
+                )
+                continue
+            items.append(
+                {
+                    "sequence": sequence,
+                    "kind": "completed_run",
+                    "submission": submissions_by_index[index],
+                    "attempt": None,
+                }
+            )
         next_after_sequence = items[-1]["sequence"] if items else after_sequence
         return {
             "batch_id": batch_id,
@@ -300,6 +435,10 @@ class FileBackedRunProgress:
             removed = self.submission_refs_by_batch.pop(batch_id, None) is not None or removed
             removed = self.sequence_by_pair_by_batch.pop(batch_id, None) is not None or removed
             removed = self.pair_by_sequence_by_batch.pop(batch_id, None) is not None or removed
+            removed = self.detail_by_sequence_by_batch.pop(batch_id, None) is not None or removed
+            removed = self.attempts_by_session_by_batch.pop(batch_id, None) is not None or removed
+            removed = self.attempt_high_water_by_batch.pop(batch_id, None) is not None or removed
+            removed = self.progress_floor_by_batch.pop(batch_id, None) is not None or removed
             removed = self.next_sequence_by_batch.pop(batch_id, None) is not None or removed
             removed = self.provider_counters_by_batch.pop(batch_id, None) is not None or removed
 
@@ -322,7 +461,10 @@ class FileBackedRunProgress:
             )
 
     def _latest_sequence(self, batch_id: UUID) -> int:
-        return max(0, int(self.next_sequence_by_batch.get(batch_id, 1)) - 1)
+        return max(
+            self.progress_floor_by_batch.get(batch_id, 0),
+            int(self.next_sequence_by_batch.get(batch_id, 1)) - 1,
+        )
 
     def _provider_evidence_snapshot(
         self,
@@ -353,6 +495,7 @@ class FileBackedRunProgress:
         result: MinerTaskRunSubmission,
         sequence_by_pair: dict[tuple[UUID, UUID], int] | None = None,
         pair_by_sequence: dict[int, tuple[UUID, UUID]] | None = None,
+        detail_by_sequence: dict[int, tuple[str, UUID | tuple[UUID, UUID]]] | None = None,
         next_sequence: int | None = None,
         commit_next_sequence: bool = True,
     ) -> int:
@@ -360,6 +503,8 @@ class FileBackedRunProgress:
             sequence_by_pair = self.sequence_by_pair_by_batch.setdefault(batch_id, {})
         if pair_by_sequence is None:
             pair_by_sequence = self.pair_by_sequence_by_batch.setdefault(batch_id, {})
+        if detail_by_sequence is None:
+            detail_by_sequence = self.detail_by_sequence_by_batch.setdefault(batch_id, {})
         if next_sequence is None:
             next_sequence = int(self.next_sequence_by_batch.get(batch_id, 1))
 
@@ -374,6 +519,7 @@ class FileBackedRunProgress:
             if pair not in sequence_by_pair:
                 sequence_by_pair[pair] = next_sequence
                 pair_by_sequence[next_sequence] = pair
+                detail_by_sequence[next_sequence] = ("completed_run", pair)
                 next_sequence += 1
             if commit_next_sequence:
                 self.next_sequence_by_batch[batch_id] = max(
@@ -391,10 +537,53 @@ class FileBackedRunProgress:
         refs[pair] = ref
         sequence_by_pair[pair] = assigned_sequence
         pair_by_sequence[assigned_sequence] = pair
+        detail_by_sequence[assigned_sequence] = ("completed_run", pair)
         next_sequence = assigned_sequence + 1
         if commit_next_sequence:
             self.next_sequence_by_batch[batch_id] = next_sequence
         return next_sequence
+
+    def _restore_submission_ref(
+        self,
+        *,
+        batch_id: UUID,
+        refs: dict[tuple[UUID, UUID], RunSubmissionBlobRef],
+        result: MinerTaskRunSubmission,
+    ) -> None:
+        pair = _submission_pair(result)
+        existing_ref = refs.get(pair)
+        if existing_ref is not None:
+            existing = self.blob_store.read(existing_ref)
+            if existing != result:
+                raise RuntimeError("batch already recorded a different result for artifact/task pair")
+            return
+        refs[pair] = self.blob_store.append(
+            batch_id=batch_id,
+            sequence=0,
+            submission=result,
+        )
+
+    def _record_attempt_high_water(self, attempt: MinerTaskAttemptAuditRecord) -> None:
+        self._merge_attempt_high_water(
+            batch_id=attempt.batch_id,
+            artifact_id=attempt.artifact_id,
+            task_id=attempt.task_id,
+            attempt_number=attempt.attempt_number,
+        )
+
+    def _merge_attempt_high_water(
+        self,
+        *,
+        batch_id: UUID,
+        artifact_id: UUID,
+        task_id: UUID,
+        attempt_number: int,
+    ) -> None:
+        if attempt_number < 1:
+            raise RuntimeError("attempt_number must be >= 1")
+        high_waters = self.attempt_high_water_by_batch.setdefault(batch_id, {})
+        key = (artifact_id, task_id)
+        high_waters[key] = max(high_waters.get(key, 0), attempt_number)
 
     def _provider_evidence_unlocked(self, batch_id: UUID) -> tuple[ProviderEvidenceSnapshot, ...]:
         provider_counters = self.provider_counters_by_batch.get(batch_id, {})
@@ -423,8 +612,9 @@ def _provider_model_key(*, provider: str, model: str) -> tuple[str, str]:
 
 __all__ = [
     "FileBackedRunProgress",
+    "ProgressCursorBeforeRestoreFloorError",
     "ProviderEvidenceSnapshot",
     "RunProgressPage",
     "RunProgressSummary",
-    "SequencedRun",
+    "SequencedProgressDetail",
 ]

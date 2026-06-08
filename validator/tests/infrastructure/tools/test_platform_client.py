@@ -469,6 +469,71 @@ async def test_platform_tool_proxy_execute_maps_tool_timeout_error_code_to_timeo
 
 
 @pytest.mark.anyio("asyncio")
+async def test_platform_tool_proxy_execute_maps_read_timeout_to_tool_timeout() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/platform-tool-proxy/tools/execute":
+            raise httpx.ReadTimeout("platform execution timed out", request=request)
+        return httpx.Response(status_code=404)
+
+    client = AsyncPlatformToolProxyPlatformClient(
+        base_url="https://mock.local",
+        hotkey=_keypair(),
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(PlatformToolProxyToolTimeoutError, match="awaiting tool result") as exc_info:
+        await client.execute_platform_tool_proxy_tool(
+            token="proxy-token",  # noqa: S106 - fixed test-only proxy token
+            uid=7,
+            artifact_id=uuid4(),
+            task_id=uuid4(),
+            validator_session_id=uuid4(),
+            attempt_number=1,
+            receipt_id=str(uuid4()),
+            tool="search_web",
+            args=(),
+            kwargs={"provider": "parallel", "search_queries": ["harnyx"]},
+            transport_timeout_seconds=11.0,
+        )
+
+    assert isinstance(exc_info.value, ToolInvocationTimeoutError)
+    assert exc_info.value.status_code == 0
+    assert exc_info.value.error_code == "tool_timeout"
+
+
+@pytest.mark.anyio("asyncio")
+async def test_platform_tool_proxy_execute_keeps_connect_timeout_validator_owned() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/platform-tool-proxy/tools/execute":
+            raise httpx.ConnectTimeout("platform endpoint unavailable", request=request)
+        return httpx.Response(status_code=404)
+
+    client = AsyncPlatformToolProxyPlatformClient(
+        base_url="https://mock.local",
+        hotkey=_keypair(),
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(PlatformToolProxyInvocationError) as exc_info:
+        await client.execute_platform_tool_proxy_tool(
+            token="proxy-token",  # noqa: S106 - fixed test-only proxy token
+            uid=7,
+            artifact_id=uuid4(),
+            task_id=uuid4(),
+            validator_session_id=uuid4(),
+            attempt_number=1,
+            receipt_id=str(uuid4()),
+            tool="search_web",
+            args=(),
+            kwargs={"provider": "parallel", "search_queries": ["harnyx"]},
+            transport_timeout_seconds=11.0,
+        )
+
+    assert exc_info.value.status_code == 0
+    assert exc_info.value.error_code == "platform_tool_proxy_execution_failed"
+
+
+@pytest.mark.anyio("asyncio")
 async def test_platform_tool_proxy_execute_maps_provider_failed_to_tool_provider_error() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "POST" and request.url.path == "/v1/platform-tool-proxy/tools/execute":
@@ -918,6 +983,7 @@ def test_get_restore_metadata_uses_long_restore_timeout() -> None:
                     "snapshot_received_at": "2026-05-21T06:00:00+00:00",
                     "total_restore_runs": 0,
                     "page_limit": 50,
+                    "last_progress_detail_sequence": 9,
                     "provider_model_evidence": [],
                 },
             )
@@ -932,4 +998,5 @@ def test_get_restore_metadata_uses_long_restore_timeout() -> None:
     metadata = client.get_restore_metadata(batch_id)
 
     assert metadata.page_limit == 50
+    assert metadata.last_progress_detail_sequence == 9
     assert requests[0].extensions["timeout"]["read"] == pytest.approx(300.0)

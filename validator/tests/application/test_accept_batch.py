@@ -38,6 +38,7 @@ class ProgressSpy:
         self.restore_provider_evidence_attempts: list[
             tuple[MinerTaskBatchSpec, tuple[ProviderFailureEvidence, ...]]
         ] = []
+        self.restore_floors: list[tuple[UUID, int]] = []
         self._batches_by_id: dict[UUID, MinerTaskBatchSpec] = {}
         self._recorded_by_batch: dict[UUID, set[tuple[UUID, UUID]]] = {}
 
@@ -78,6 +79,9 @@ class ProgressSpy:
         bucket = self._recorded_by_batch.setdefault(batch.batch_id, set())
         for submission in restored:
             bucket.add((submission.run.artifact_id, submission.run.task_id))
+
+    def restore_progress_floor(self, batch_id: UUID, sequence: int) -> None:
+        self.restore_floors.append((batch_id, sequence))
 
 
 def _make_batch(*, batch_id: UUID | None = None, query_text: str = "example") -> MinerTaskBatchSpec:

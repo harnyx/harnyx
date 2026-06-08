@@ -11,7 +11,6 @@ from uuid import UUID
 
 from harnyx_commons.json_types import JsonValue
 from harnyx_commons.tools.executor import ToolInvocationContext, ToolInvocationOutput, ToolInvoker
-from harnyx_commons.tools.runtime_invoker import effective_tool_timeout_seconds
 from harnyx_commons.tools.types import ToolName, is_search_tool
 from harnyx_validator.application.ports.platform import (
     PlatformToolProxyControlError,
@@ -19,7 +18,7 @@ from harnyx_validator.application.ports.platform import (
     PlatformToolProxyTokenExpiredError,
 )
 
-PLATFORM_TOOL_PROXY_TRANSPORT_GRACE_SECONDS = 10.0
+PLATFORM_TOOL_PROXY_EXECUTE_TRANSPORT_TIMEOUT_SECONDS = 350.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +32,7 @@ class PlatformToolProxySessionScope:
     batch_id: UUID
     artifact_id: UUID
     task_id: UUID
+    attempt_number: int
     grants_by_attempt: Mapping[int, PlatformToolProxyAttemptGrant]
 
 
@@ -64,12 +64,14 @@ class PlatformToolProxyScopeRegistry:
         session_id: UUID,
         artifact_id: UUID,
         task_id: UUID,
+        attempt_number: int = 1,
     ) -> None:
         with self._lock:
             self._session_scopes[session_id] = PlatformToolProxySessionScope(
                 batch_id=batch_id,
                 artifact_id=artifact_id,
                 task_id=task_id,
+                attempt_number=attempt_number,
                 grants_by_attempt={},
             )
 
@@ -103,6 +105,7 @@ class PlatformToolProxyScopeRegistry:
                 batch_id=scope.batch_id,
                 artifact_id=scope.artifact_id,
                 task_id=scope.task_id,
+                attempt_number=scope.attempt_number,
                 grants_by_attempt={
                     **scope.grants_by_attempt,
                     attempt_number: attempt_grant,
@@ -147,8 +150,8 @@ class PlatformToolProxyProxyToolInvoker(ToolInvoker):
             raise PlatformToolProxyControlError(
                 "platform tool proxy execution requires tool invocation context"
             )
-        attempt_number = context.active_attempt
         scope = self._scopes.require_session(context.session_id)
+        attempt_number = scope.attempt_number
         attempt_grant = scope.grants_by_attempt.get(attempt_number)
         if attempt_grant is None:
             async with self._scopes.grant_lock(context.session_id, attempt_number):
@@ -172,7 +175,6 @@ class PlatformToolProxyProxyToolInvoker(ToolInvoker):
             raise PlatformToolProxyControlError("platform tool proxy token is not registered for session")
         if _grant_expired(attempt_grant.expires_at):
             raise PlatformToolProxyTokenExpiredError("platform tool proxy token expired for session")
-        tool_timeout_seconds = effective_tool_timeout_seconds(tool_name, args=args, kwargs=kwargs)
         result = await self._platform.execute_platform_tool_proxy_tool(
             token=attempt_grant.token,
             uid=context.uid,
@@ -184,7 +186,7 @@ class PlatformToolProxyProxyToolInvoker(ToolInvoker):
             tool=tool_name,
             args=tuple(args),
             kwargs=dict(kwargs),
-            transport_timeout_seconds=tool_timeout_seconds + PLATFORM_TOOL_PROXY_TRANSPORT_GRACE_SECONDS,
+            transport_timeout_seconds=PLATFORM_TOOL_PROXY_EXECUTE_TRANSPORT_TIMEOUT_SECONDS,
         )
         return ToolInvocationOutput(
             public_payload=result.response,
@@ -205,6 +207,7 @@ def _grant_expired(expires_at: datetime) -> bool:
 
 
 __all__ = [
+    "PLATFORM_TOOL_PROXY_EXECUTE_TRANSPORT_TIMEOUT_SECONDS",
     "PlatformToolProxyAttemptGrant",
     "PlatformToolProxyProxyToolInvoker",
     "PlatformToolProxyScopeRegistry",

@@ -404,6 +404,11 @@ Body: [MinerTaskBatchRestoreMetadataResponse](#model-minertaskbatchrestoremetada
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `batch_id` |  |  | req | `string` (format: uuid) |
+| `consumed_platform_tool_proxy_attempts` |  |  | opt | array[[MinerTaskAttemptOrdinalPayload](#model-minertaskattemptordinalpayload)] (default: []) |
+|  | `artifact_id` |  | req | `string` (format: uuid) |
+|  | `max_attempt_number` |  | req | `integer` |
+|  | `task_id` |  | req | `string` (format: uuid) |
+| `last_progress_detail_sequence` |  |  | req | `integer` |
 | `page_limit` |  |  | req | `integer` |
 | `provider_model_evidence` |  |  | opt | array[[ProviderModelEvidence](#model-providermodelevidence)] (default: []) |
 |  | `failed_calls` |  | req | `integer` |
@@ -412,6 +417,10 @@ Body: [MinerTaskBatchRestoreMetadataResponse](#model-minertaskbatchrestoremetada
 |  | `provider` |  | req | `string` |
 |  | `total_calls` |  | req | `integer` |
 | `snapshot_received_at` |  |  | req | `string` (format: date-time) |
+| `terminated_miner_task_attempts` |  |  | opt | array[[MinerTaskAttemptOrdinalPayload](#model-minertaskattemptordinalpayload)] (default: []) |
+|  | `artifact_id` |  | req | `string` (format: uuid) |
+|  | `max_attempt_number` |  | req | `integer` |
+|  | `task_id` |  | req | `string` (format: uuid) |
 | `total_restore_runs` |  |  | req | `integer` |
 
 `422` Validation Error
@@ -2475,6 +2484,50 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
+<a id="model-minertaskattemptordinalpayload"></a>
+### Model: MinerTaskAttemptOrdinalPayload
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `artifact_id` |  |  | req | `string` (format: uuid) |
+| `max_attempt_number` |  |  | req | `integer` |
+| `task_id` |  |  | req | `string` (format: uuid) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "artifact_id": {
+      "format": "uuid",
+      "title": "Artifact Id",
+      "type": "string"
+    },
+    "max_attempt_number": {
+      "minimum": 1.0,
+      "title": "Max Attempt Number",
+      "type": "integer"
+    },
+    "task_id": {
+      "format": "uuid",
+      "title": "Task Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "artifact_id",
+    "task_id",
+    "max_attempt_number"
+  ],
+  "title": "MinerTaskAttemptOrdinalPayload",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-minertaskbatchartifactmodel"></a>
 ### Model: MinerTaskBatchArtifactModel
 
@@ -2662,6 +2715,11 @@ Body: [WeightsResponse](#model-weightsresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `batch_id` |  |  | req | `string` (format: uuid) |
+| `consumed_platform_tool_proxy_attempts` |  |  | opt | array[[MinerTaskAttemptOrdinalPayload](#model-minertaskattemptordinalpayload)] (default: []) |
+|  | `artifact_id` |  | req | `string` (format: uuid) |
+|  | `max_attempt_number` |  | req | `integer` |
+|  | `task_id` |  | req | `string` (format: uuid) |
+| `last_progress_detail_sequence` |  |  | req | `integer` |
 | `page_limit` |  |  | req | `integer` |
 | `provider_model_evidence` |  |  | opt | array[[ProviderModelEvidence](#model-providermodelevidence)] (default: []) |
 |  | `failed_calls` |  | req | `integer` |
@@ -2670,6 +2728,10 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  | `provider` |  | req | `string` |
 |  | `total_calls` |  | req | `integer` |
 | `snapshot_received_at` |  |  | req | `string` (format: date-time) |
+| `terminated_miner_task_attempts` |  |  | opt | array[[MinerTaskAttemptOrdinalPayload](#model-minertaskattemptordinalpayload)] (default: []) |
+|  | `artifact_id` |  | req | `string` (format: uuid) |
+|  | `max_attempt_number` |  | req | `integer` |
+|  | `task_id` |  | req | `string` (format: uuid) |
 | `total_restore_runs` |  |  | req | `integer` |
 
 <details>
@@ -2683,6 +2745,19 @@ Body: [WeightsResponse](#model-weightsresponse)
       "format": "uuid",
       "title": "Batch Id",
       "type": "string"
+    },
+    "consumed_platform_tool_proxy_attempts": {
+      "default": [],
+      "items": {
+        "$ref": "#/components/schemas/MinerTaskAttemptOrdinalPayload"
+      },
+      "title": "Consumed Platform Tool Proxy Attempts",
+      "type": "array"
+    },
+    "last_progress_detail_sequence": {
+      "minimum": 0.0,
+      "title": "Last Progress Detail Sequence",
+      "type": "integer"
     },
     "page_limit": {
       "minimum": 1.0,
@@ -2702,6 +2777,14 @@ Body: [WeightsResponse](#model-weightsresponse)
       "title": "Snapshot Received At",
       "type": "string"
     },
+    "terminated_miner_task_attempts": {
+      "default": [],
+      "items": {
+        "$ref": "#/components/schemas/MinerTaskAttemptOrdinalPayload"
+      },
+      "title": "Terminated Miner Task Attempts",
+      "type": "array"
+    },
     "total_restore_runs": {
       "minimum": 0.0,
       "title": "Total Restore Runs",
@@ -2712,7 +2795,8 @@ Body: [WeightsResponse](#model-weightsresponse)
     "batch_id",
     "snapshot_received_at",
     "total_restore_runs",
-    "page_limit"
+    "page_limit",
+    "last_progress_detail_sequence"
   ],
   "title": "MinerTaskBatchRestoreMetadataResponse",
   "type": "object"
