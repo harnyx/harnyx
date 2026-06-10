@@ -22,6 +22,7 @@ class ToolInvocationError(RuntimeError):
 
 DEFAULT_TOKEN_HEADER = PLATFORM_TOKEN_HEADER
 DEFAULT_TOOL_PROXY_TIMEOUT_SECONDS = 120.0
+PLATFORM_TOOL_PROXY_SANDBOX_REQUEST_TIMEOUT_SECONDS = 300.0
 
 
 class ToolProxy:
@@ -183,6 +184,7 @@ def _is_ip_literal(host: str) -> bool:
 __all__ = [
     "DEFAULT_TOOL_PROXY_TIMEOUT_SECONDS",
     "DEFAULT_TOKEN_HEADER",
+    "PLATFORM_TOOL_PROXY_SANDBOX_REQUEST_TIMEOUT_SECONDS",
     "ToolInvocationError",
     "ToolProxy",
 ]

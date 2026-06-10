@@ -3,7 +3,7 @@ from __future__ import annotations
 import harnyx_sandbox.sandbox.timeout as timeout_module
 import pytest
 
-from harnyx_commons.platform_tool_proxy import PLATFORM_TOOL_PROXY_SANDBOX_REQUEST_TIMEOUT_SECONDS
+from harnyx_miner_sdk.tools.proxy import PLATFORM_TOOL_PROXY_SANDBOX_REQUEST_TIMEOUT_SECONDS
 
 
 def test_default_entrypoint_timeout_is_five_minutes(monkeypatch: pytest.MonkeyPatch) -> None:
