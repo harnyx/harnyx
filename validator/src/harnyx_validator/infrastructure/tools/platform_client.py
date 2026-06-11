@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, cast
 from urllib.parse import urlencode
@@ -38,6 +39,7 @@ from harnyx_validator.infrastructure.transient_network import classify_transient
 
 _GET_ATTEMPTS = 2
 _RESTORE_GET_TIMEOUT_SECONDS = 300.0
+_PLATFORM_TOOL_PROXY_GRANT_RETRY_DELAYS_SECONDS = (0.25, 1.0)
 
 
 class PlatformClientError(RuntimeError):
@@ -254,17 +256,20 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
     hotkey: bt.Keypair
     timeout_seconds: float = 10.0
     transport: httpx.AsyncBaseTransport | None = None
+    grant_retry_delays_seconds: tuple[float, ...] = _PLATFORM_TOOL_PROXY_GRANT_RETRY_DELAYS_SECONDS
+    _client: httpx.AsyncClient = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if not self.base_url:
             raise ValueError("platform base_url must not be empty")
-
-    def _client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(
+        self._client = httpx.AsyncClient(
             base_url=self.base_url,
             timeout=self.timeout_seconds,
             transport=self.transport,
         )
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
 
     def _signed_header(self, method: str, path_qs: str, body: bytes) -> str:
         canonical = build_canonical_request(method, path_qs, body)
@@ -295,15 +300,7 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
-        try:
-            async with self._client() as client:
-                response = await client.post(path, content=body, headers=headers)
-        except httpx.HTTPError as exc:
-            raise PlatformToolProxyInvocationError(
-                status_code=0,
-                error_code="platform_tool_proxy_grant_failed",
-                message="platform tool proxy grant request failed",
-            ) from exc
+        response = await self._post_grant_with_transient_retry(path, body, headers)
         if response.status_code != httpx.codes.OK:
             error_code = _platform_error_code(response)
             if error_code == "platform_tool_proxy_denied":
@@ -352,6 +349,28 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
             expires_at=parsed_expires_at,
         )
 
+    async def _post_grant_with_transient_retry(
+        self,
+        path: str,
+        body: bytes,
+        headers: dict[str, str],
+    ) -> httpx.Response:
+        attempts = len(self.grant_retry_delays_seconds) + 1
+        for attempt_index in range(attempts):
+            try:
+                return await self._client.post(path, content=body, headers=headers)
+            except httpx.HTTPError as exc:
+                retry_remaining = attempt_index < attempts - 1
+                transient = classify_transient_network_failure(exc)
+                if transient is None or not retry_remaining:
+                    raise PlatformToolProxyInvocationError(
+                        status_code=0,
+                        error_code="platform_tool_proxy_grant_failed",
+                        message="platform tool proxy grant request failed",
+                    ) from exc
+                await asyncio.sleep(self.grant_retry_delays_seconds[attempt_index])
+        raise RuntimeError("platform tool proxy grant retry loop exhausted without response")
+
     async def execute_platform_tool_proxy_tool(
         self,
         *,
@@ -387,13 +406,12 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
             "Accept": "application/json",
         }
         try:
-            async with self._client() as client:
-                response = await client.post(
-                    path,
-                    content=body,
-                    headers=headers,
-                    timeout=transport_timeout_seconds,
-                )
+            response = await self._client.post(
+                path,
+                content=body,
+                headers=headers,
+                timeout=transport_timeout_seconds,
+            )
         except httpx.ReadTimeout as exc:
             raise PlatformToolProxyToolTimeoutError(
                 status_code=0,

@@ -9,7 +9,7 @@ from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Protocol, cast, get_args
+from typing import Protocol, cast, get_args, runtime_checkable
 
 import bittensor as bt
 
@@ -993,6 +993,7 @@ async def close_runtime_resources(runtime: RuntimeContext) -> None:
     for owned in _unique_aclose_targets(
         runtime.search_client,
         runtime.llm_provider_registry,
+        _aclose_target(runtime.platform_tool_proxy_platform_client),
     ):
         await _aclose(owned)
 
@@ -1009,6 +1010,12 @@ def _unique_aclose_targets(*objects: _SupportsAclose | None) -> tuple[_SupportsA
         seen.add(obj_id)
         unique.append(obj)
     return tuple(unique)
+
+
+def _aclose_target(obj: object | None) -> _SupportsAclose | None:
+    if isinstance(obj, _SupportsAclose):
+        return obj
+    return None
 
 
 def _verify_request(
@@ -1034,5 +1041,6 @@ def _clock() -> datetime:
 __all__ = ["RuntimeContext", "RuntimeToolInvoker", "build_runtime", "close_runtime_resources"]
 
 
+@runtime_checkable
 class _SupportsAclose(Protocol):
     async def aclose(self) -> None: ...

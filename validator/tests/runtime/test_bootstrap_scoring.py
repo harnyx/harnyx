@@ -833,6 +833,7 @@ async def test_close_runtime_resources_closes_llm_provider_registry() -> None:
         batch_blocking_executor=blocking_executor,
         search_client=None,
         llm_provider_registry=llm_provider_registry,
+        platform_tool_proxy_platform_client=None,
         tool_llm_provider=None,
         scoring_llm_provider=None,
     )
@@ -851,6 +852,7 @@ async def test_close_runtime_resources_closes_registry_once() -> None:
         batch_blocking_executor=blocking_executor,
         search_client=None,
         llm_provider_registry=llm_provider_registry,
+        platform_tool_proxy_platform_client=None,
         tool_llm_provider=None,
         scoring_llm_provider=None,
     )
@@ -859,3 +861,22 @@ async def test_close_runtime_resources_closes_registry_once() -> None:
 
     assert blocking_executor.calls == [(False, True)]
     assert llm_provider_registry.close_calls == 1
+
+
+@pytest.mark.anyio
+async def test_close_runtime_resources_closes_platform_tool_proxy_client_once() -> None:
+    closable = _CountingClosable()
+    blocking_executor = _ShutdownSpyExecutor()
+    runtime = SimpleNamespace(
+        batch_blocking_executor=blocking_executor,
+        search_client=None,
+        llm_provider_registry=closable,
+        platform_tool_proxy_platform_client=closable,
+        tool_llm_provider=None,
+        scoring_llm_provider=None,
+    )
+
+    await close_runtime_resources(runtime)
+
+    assert blocking_executor.calls == [(False, True)]
+    assert closable.close_calls == 1
