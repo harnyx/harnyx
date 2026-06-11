@@ -70,7 +70,7 @@ Notes:
 **Validator flow + gating**
 - The platform sends miner-task batches to validators; validators run script x task combinations and report scored runs.
 - Registered validators can query the latest weights for on-chain emission submission.
-- Miner emission keeps champion emission active and adds `0.004` weight per distinct miner hotkey whose artifact participated in the latest terminal source batch with artifacts; owner `uid=0` receives the final remainder and unregistered participant shares.
+- Miner emission keeps champion emission active and adds the configured participant-emission weight, default `0.004`, per distinct miner hotkey whose artifact participated in the latest terminal source batch with artifacts; owner `uid=0` receives the final remainder and unregistered participant shares.
 - The [live benchmark page](https://dashboard.harnyx.ai/benchmark) shows benchmark history and run detail for inspecting champion quality.
 
 **Roles**
@@ -111,7 +111,7 @@ Because of that:
 
 ### How participant miner emission works
 
-`GET /v1/weights` still uses latest champion weights for champion emission. It also uses the latest terminal source batch with artifacts for participant emission. Each distinct participating miner hotkey gets `0.004` intended weight, projected to its current metagraph UID when registered; owner `uid=0` receives the final remainder.
+`GET /v1/weights` still uses latest champion weights for champion emission. It also uses the latest terminal source batch with artifacts for participant emission. Each distinct participating miner hotkey gets the configured participant-emission amount, default `0.004`, projected to its current metagraph UID when registered; owner `uid=0` receives the final remainder.
 
 Failed terminal batches with artifacts count for participant emission. Initializing/running batches and terminal batches without artifacts do not update the emitted participant source. If no terminal source batch with artifacts exists, only the champion component remains active.
 

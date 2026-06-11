@@ -111,7 +111,7 @@ Miner-task restart safety no longer depends on the validator staying alive until
 
 `GET /v1/weights` returns `champion_uid` and `weights`.
 
-Champion emission remains active. The current participant-emission policy adds `0.004` intended weight for each distinct miner hotkey whose artifact participated in the latest terminal source batch with artifacts. Registered participant hotkeys receive weight at their current metagraph UID, in addition to any champion emission for the same UID. Owner `uid=0` receives the final remainder, including shares for participant hotkeys that are not currently registered. `champion_uid` reports the active champion emission component's current UID when champion emission is active.
+Champion emission remains active. The current participant-emission policy adds the configured participant-emission amount, default `0.004`, for each distinct miner hotkey whose artifact participated in the latest terminal source batch with artifacts. Registered participant hotkeys receive weight at their current metagraph UID, in addition to any champion emission for the same UID. Owner `uid=0` receives the final remainder, including shares for participant hotkeys that are not currently registered. `champion_uid` reports the active champion emission component's current UID when champion emission is active.
 
 Failed terminal batches with artifacts count for participant emission. Initializing/running batches and terminal batches without artifacts do not update the emitted participant source. If no terminal source batch with artifacts exists, only the champion component remains active; if neither champion nor participant components project to registered miners, miner emission is burned for that round: `champion_uid=null`, `weights={0: 1.0}`.
 

@@ -5,7 +5,11 @@ from __future__ import annotations
 from math import isfinite
 
 OWNER_UID = 0
-PARTICIPANT_MINER_EMISSION_WEIGHT = 0.004
+DEFAULT_MINER_PARTICIPATION_EMISSION = 0.004
+
+
+class ParticipantEmissionTotalWeightError(ValueError):
+    """Raised when participant emission would exceed total weight."""
 
 
 def compose_champion_weights(champion_uid: int | None) -> dict[int, float]:
@@ -44,12 +48,36 @@ def apply_miner_emission_cap(
     return scaled
 
 
-def compose_participant_emission_weights(registered_participant_uids: tuple[int, ...]) -> dict[int, float]:
-    distinct_uids = tuple(dict.fromkeys(uid for uid in registered_participant_uids if uid != OWNER_UID))
-    miner_fraction = len(distinct_uids) * PARTICIPANT_MINER_EMISSION_WEIGHT
+def participant_emission_fraction(
+    participant_count: int,
+    *,
+    miner_participation_emission: float,
+) -> float:
+    if participant_count < 0:
+        raise ValueError("participant count must be non-negative")
+    if (
+        not isfinite(miner_participation_emission)
+        or miner_participation_emission < 0.0
+        or miner_participation_emission > 1.0
+    ):
+        raise ValueError("miner participation emission must be between 0.0 and 1.0")
+    miner_fraction = participant_count * miner_participation_emission
     if miner_fraction > 1.0:
-        raise ValueError("participant emission exceeds total weight")
-    return {uid: PARTICIPANT_MINER_EMISSION_WEIGHT for uid in distinct_uids}
+        raise ParticipantEmissionTotalWeightError("participant emission exceeds total weight")
+    return miner_fraction
+
+
+def compose_participant_emission_weights(
+    registered_participant_uids: tuple[int, ...],
+    *,
+    miner_participation_emission: float = DEFAULT_MINER_PARTICIPATION_EMISSION,
+) -> dict[int, float]:
+    distinct_uids = tuple(dict.fromkeys(uid for uid in registered_participant_uids if uid != OWNER_UID))
+    participant_emission_fraction(
+        len(distinct_uids),
+        miner_participation_emission=miner_participation_emission,
+    )
+    return {uid: miner_participation_emission for uid in distinct_uids}
 
 
 def compose_emission_weights(*components: dict[int, float]) -> dict[int, float]:
@@ -72,11 +100,13 @@ def owner_fallback_weights() -> dict[int, float]:
 
 
 __all__ = [
+    "DEFAULT_MINER_PARTICIPATION_EMISSION",
     "OWNER_UID",
-    "PARTICIPANT_MINER_EMISSION_WEIGHT",
+    "ParticipantEmissionTotalWeightError",
     "apply_miner_emission_cap",
     "compose_champion_weights",
     "compose_emission_weights",
     "compose_participant_emission_weights",
     "owner_fallback_weights",
+    "participant_emission_fraction",
 ]
