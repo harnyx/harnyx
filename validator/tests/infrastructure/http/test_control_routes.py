@@ -37,6 +37,10 @@ from harnyx_commons.domain.tool_usage import (
 )
 from harnyx_validator.application.accept_batch import AcceptEvaluationBatch
 from harnyx_validator.application.dto.evaluation import (
+    MinerTaskAttemptAuditRecord,
+    MinerTaskAttemptRetryDecision,
+    MinerTaskAttemptStatus,
+    MinerTaskAttemptTerminalEffect,
     MinerTaskBatchSpec,
     MinerTaskRunSubmission,
     ScriptArtifactSpec,
@@ -552,6 +556,34 @@ def _make_submission_for_batch_pair(
     )
 
 
+def _make_attempt_for_batch_pair(
+    *,
+    batch_id: UUID,
+    task: MinerTask,
+    artifact: ScriptArtifactSpec,
+) -> MinerTaskAttemptAuditRecord:
+    session_id = uuid4()
+    started_at = datetime(2026, 3, 8, 0, 0, 1, tzinfo=UTC)
+    return MinerTaskAttemptAuditRecord(
+        validator_session_id=session_id,
+        batch_id=batch_id,
+        artifact_id=artifact.artifact_id,
+        task_id=task.task_id,
+        attempt_number=1,
+        uid=artifact.uid,
+        miner_hotkey_ss58="miner-hotkey",
+        started_at=started_at,
+        finished_at=started_at + timedelta(seconds=3),
+        status=MinerTaskAttemptStatus.FAILED,
+        error_code="tool_execution_timeout",
+        error_summary_code="timeout_miner_owned",
+        retry_decision=MinerTaskAttemptRetryDecision.WILL_RETRY,
+        terminal_effect=MinerTaskAttemptTerminalEffect.NONE,
+        max_attempts=2,
+        execution_log=_sample_execution_log(session_id, artifact.uid),
+    )
+
+
 def _make_failed_task_submission(*, batch_id: UUID, error_code: str) -> tuple[MinerTask, MinerTaskRunSubmission]:
     task = MinerTask(
         task_id=uuid4(),
@@ -950,6 +982,58 @@ def test_runs_endpoint_preserves_real_record_sequence_without_artifact_sorting(t
         str(second_artifact.artifact_id),
         str(first_artifact.artifact_id),
     ]
+
+
+def test_runs_endpoint_hydrates_file_backed_terminated_attempt_execution_log(
+    tmp_path: Path,
+) -> None:
+    provider = RealAcceptBatchDependencyProvider(storage_root=tmp_path / "run-progress")
+    app = _create_test_app(provider)
+    client = TestClient(app)
+    batch_id = uuid4()
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="What happened?"),
+        reference_answer=ReferenceAnswer(text="The reference answer."),
+    )
+    artifact = ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="hash-a", size_bytes=42)
+    batch = MinerTaskBatchSpec(
+        batch_id=batch_id,
+        cutoff_at="2026-03-08T00:00:00+00:00",
+        created_at="2026-03-08T00:00:00+00:00",
+        tasks=(task,),
+        artifacts=(artifact,),
+    )
+    attempt = _make_attempt_for_batch_pair(batch_id=batch_id, task=task, artifact=artifact)
+    submission = _make_submission_for_batch_pair(
+        batch_id=batch_id,
+        task=task,
+        artifact=artifact,
+    )
+
+    provider.accept_batch.execute(batch)
+    provider.progress_tracker.record_terminated_attempt(attempt)
+    provider.progress_tracker.record(submission)
+
+    response = client.get(f"/validator/miner-task-batches/{batch_id}/runs?after_sequence=0&limit=10")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["latest_sequence"] == 2
+    first, second = body["items"]
+    assert first["sequence"] == 1
+    assert first["kind"] == "terminated_attempt"
+    assert first["submission"] is None
+    assert first["attempt"]["attempt_number"] == 1
+    assert first["attempt"]["error_summary_code"] == "timeout_miner_owned"
+    assert first["attempt"]["execution_log"][0]["receipt_id"] == "receipt-1"
+    assert first["attempt"]["execution_log"][0]["details"]["response_payload"] == {
+        "results": [{"title": "Example"}]
+    }
+    assert second["sequence"] == 2
+    assert second["kind"] == "completed_run"
+    assert second["attempt"] is None
+    assert second["submission"]["run"]["artifact_id"] == str(artifact.artifact_id)
 
 
 def test_runs_endpoint_returns_empty_page_after_terminal_progress_cleanup(tmp_path: Path) -> None:

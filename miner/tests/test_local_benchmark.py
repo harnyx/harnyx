@@ -232,8 +232,6 @@ def test_local_benchmark_uses_invocation_only_runtime(
                     )
                     for task in tasks
                 ),
-                unresolved_tasks=(),
-                timeout_observations_by_pair={},
             )
 
         async def aclose(self) -> None:

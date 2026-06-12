@@ -495,8 +495,6 @@ class _FakeRuntime:
                         )
                         for index, (task, score) in enumerate(zip(tasks, scores, strict=True))
                     ),
-                    unresolved_tasks=(),
-                    timeout_observations_by_pair={},
                 )
             else:
                 outcome = override
@@ -1587,8 +1585,6 @@ async def test_local_runtime_executes_target_and_champion_via_sandbox_and_reuses
                         answer_text="target",
                     ),
                 ),
-                unresolved_tasks=(),
-                timeout_observations_by_pair={},
             ),
             ArtifactEvaluationOutcome(
                 submissions=(
@@ -1600,8 +1596,6 @@ async def test_local_runtime_executes_target_and_champion_via_sandbox_and_reuses
                         answer_text="champion",
                     ),
                 ),
-                unresolved_tasks=(),
-                timeout_observations_by_pair={},
             ),
         ]
     )
@@ -1762,8 +1756,6 @@ async def test_local_eval_writes_failure_bundle_when_artifact_outcome_has_failur
             results=[
                 ArtifactEvaluationOutcome(
                     submissions=(),
-                    unresolved_tasks=(),
-                    timeout_observations_by_pair={},
                     artifact_failure=failure,
                 )
             ]
@@ -1920,13 +1912,9 @@ def test_local_eval_does_not_write_reports_when_champion_outcome_has_artifact_fa
                     answer_text="target",
                 ),
             ),
-            unresolved_tasks=(),
-            timeout_observations_by_pair={},
         ),
         champion_outcome=ArtifactEvaluationOutcome(
             submissions=(),
-            unresolved_tasks=(tasks[0],),
-            timeout_observations_by_pair={},
             artifact_failure=champion_failure,
         ),
     )

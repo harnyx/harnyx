@@ -348,7 +348,7 @@ class ToolExecutor:
             ),
         )
         if completion is None:
-            raise RuntimeError("tool completion arrived after timeout evidence materialized")
+            raise RuntimeError("tool completion arrived after pending receipt was abandoned")
         updated_session, should_raise_budget_exhausted = completion
         budget_snapshot = _build_budget_snapshot(updated_session)
         result = _ExecutionResult(

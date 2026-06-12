@@ -19,8 +19,18 @@ from harnyx_commons.domain.miner_task import (
     ScoreBreakdown,
 )
 from harnyx_commons.domain.session import Session, SessionUsage
+from harnyx_commons.domain.tool_call import (
+    ToolCall,
+    ToolCallDetails,
+    ToolCallOutcome,
+    ToolExecutionFacts,
+)
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
 from harnyx_validator.application.dto.evaluation import (
+    MinerTaskAttemptAuditRecord,
+    MinerTaskAttemptRetryDecision,
+    MinerTaskAttemptStatus,
+    MinerTaskAttemptTerminalEffect,
     MinerTaskBatchSpec,
     MinerTaskRunSubmission,
     ScriptArtifactSpec,
@@ -153,6 +163,58 @@ def _make_failed_submission(
             expires_at=issued_at + timedelta(minutes=5),
             budget_usd=task.budget_usd,
             usage=SessionUsage(total_cost_usd=0.0),
+        ),
+    )
+
+
+def _make_attempt(
+    batch: MinerTaskBatchSpec,
+    *,
+    session_id: UUID | None = None,
+    attempt_number: int = 1,
+    max_attempts: int = 2,
+    payload: str = "attempt payload",
+) -> MinerTaskAttemptAuditRecord:
+    task = batch.tasks[0]
+    artifact = batch.artifacts[0]
+    started_at = datetime.now(UTC)
+    attempt_session_id = session_id or uuid4()
+    return MinerTaskAttemptAuditRecord(
+        validator_session_id=attempt_session_id,
+        batch_id=batch.batch_id,
+        artifact_id=artifact.artifact_id,
+        task_id=task.task_id,
+        attempt_number=attempt_number,
+        uid=artifact.uid,
+        miner_hotkey_ss58="seed-miner-hotkey",
+        started_at=started_at,
+        finished_at=started_at + timedelta(seconds=2),
+        status=MinerTaskAttemptStatus.FAILED,
+        error_code="tool_execution_timeout",
+        error_summary_code="timeout_miner_owned",
+        retry_decision=MinerTaskAttemptRetryDecision.WILL_RETRY,
+        terminal_effect=MinerTaskAttemptTerminalEffect.NONE,
+        max_attempts=max_attempts,
+        execution_log=(
+            ToolCall(
+                receipt_id=f"attempt-{attempt_number}",
+                session_id=attempt_session_id,
+                uid=artifact.uid,
+                tool="search_web",
+                issued_at=started_at,
+                outcome=ToolCallOutcome.TIMEOUT,
+                details=ToolCallDetails(
+                    request_hash=f"request-{attempt_number}",
+                    request_payload={"args": [], "kwargs": {"query": task.query.text}},
+                    response_hash=f"response-{attempt_number}",
+                    response_payload={"content": payload},
+                    execution=ToolExecutionFacts(
+                        elapsed_ms=2000.0,
+                        started_at=started_at,
+                        finished_at=started_at + timedelta(seconds=2),
+                    ),
+                ),
+            ),
         ),
     )
 
@@ -301,6 +363,26 @@ def test_run_progress_restore_completed_runs_records_terminal_timeout_failed_sub
     assert progress.recorded_pairs(batch.batch_id) == {
         (failed_submission.run.artifact_id, failed_submission.run.task_id),
     }
+
+
+def test_run_progress_terminated_attempts_round_trip_from_blob_store(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
+    batch = _make_batch()
+    attempt = _make_attempt(batch)
+
+    progress.register(batch)
+    progress.record_terminated_attempt(attempt)
+    progress.record_terminated_attempt(attempt)
+
+    page = progress.completed_run_page(batch.batch_id, after_sequence=0, limit=10)
+
+    assert page["items"] == (
+        {"sequence": 1, "kind": "terminated_attempt", "submission": None, "attempt": attempt},
+    )
+    attempt_refs = progress.attempt_refs_by_session_by_batch[batch.batch_id]
+    assert set(attempt_refs) == {attempt.validator_session_id}
+    assert attempt_refs[attempt.validator_session_id].segment_name.startswith("attempts-")
+    assert progress.next_attempt_number(batch.batch_id, attempt.artifact_id, attempt.task_id) == 2
 
 
 def test_run_progress_restore_floor_continues_without_replaying_restored_runs(tmp_path: Path) -> None:
@@ -605,10 +687,15 @@ def test_run_progress_discard_batch_removes_indexes_and_blob_dir(tmp_path: Path)
         reason="rate limited",
     )
     progress.record(submission)
+    progress.record_terminated_attempt(_make_attempt(batch))
 
     batch_dir = progress.storage_root / str(batch.batch_id)
     assert batch_dir.exists()
-    assert progress.completed_run_page(batch.batch_id, after_sequence=0, limit=10)["items"]
+    page = progress.completed_run_page(batch.batch_id, after_sequence=0, limit=10)
+    assert [item["kind"] for item in page["items"]] == [
+        "completed_run",
+        "terminated_attempt",
+    ]
 
     assert progress.discard_batch(batch.batch_id) is True
 
@@ -624,6 +711,42 @@ def test_run_progress_discard_batch_removes_indexes_and_blob_dir(tmp_path: Path)
         "latest_sequence": 0,
         "provider_evidence": (),
     }
+
+
+def test_run_progress_prunes_stale_attempt_blob_dirs_and_writer_state(tmp_path: Path) -> None:
+    progress = _progress(tmp_path)
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(hours=1)
+    stale = now - timedelta(hours=2)
+    stale_batch = _make_batch()
+    protected_batch = _make_batch()
+
+    stale_ref = progress.attempt_blob_store.append(
+        batch_id=stale_batch.batch_id,
+        sequence=1,
+        attempt=_make_attempt(stale_batch),
+    )
+    stale_dir = progress.storage_root / str(stale_batch.batch_id)
+    _set_tree_mtime(stale_dir, stale)
+
+    progress.register(protected_batch)
+    progress.record_terminated_attempt(_make_attempt(protected_batch))
+    protected_dir = progress.storage_root / str(protected_batch.batch_id)
+    _set_tree_mtime(protected_dir, stale)
+
+    removed = progress.prune_stale_batch_dirs_older_than(cutoff)
+
+    assert removed == (stale_batch.batch_id,)
+    assert not stale_dir.exists()
+    assert protected_dir.exists()
+
+    next_ref = progress.attempt_blob_store.append(
+        batch_id=stale_batch.batch_id,
+        sequence=2,
+        attempt=_make_attempt(stale_batch, session_id=uuid4()),
+    )
+    assert stale_ref.frame_offset == 0
+    assert next_ref.frame_offset == 0
 
 
 def test_run_progress_prunes_only_stale_unindexed_uuid_dirs(tmp_path: Path) -> None:

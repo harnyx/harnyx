@@ -24,6 +24,8 @@ from harnyx_validator.application.ports.progress import (
     TerminatedMinerTaskAttemptOrdinal,
 )
 from harnyx_validator.infrastructure.state.run_progress_blob_store import (
+    AttemptAuditBlobRef,
+    AttemptAuditBlobStore,
     RunSubmissionBlobRef,
     RunSubmissionBlobStore,
 )
@@ -62,7 +64,7 @@ class FileBackedRunProgress:
     detail_by_sequence_by_batch: dict[UUID, dict[int, tuple[str, UUID | tuple[UUID, UUID]]]] = field(
         default_factory=dict
     )
-    attempts_by_session_by_batch: dict[UUID, dict[UUID, MinerTaskAttemptAuditRecord]] = field(
+    attempt_refs_by_session_by_batch: dict[UUID, dict[UUID, AttemptAuditBlobRef]] = field(
         default_factory=dict
     )
     attempt_high_water_by_batch: dict[UUID, dict[tuple[UUID, UUID], int]] = field(default_factory=dict)
@@ -75,11 +77,16 @@ class FileBackedRunProgress:
     ] = field(default_factory=dict)
     failed_provider_keys_by_session: dict[UUID, set[tuple[str, str]]] = field(default_factory=dict)
     blob_store: RunSubmissionBlobStore = field(init=False)
+    attempt_blob_store: AttemptAuditBlobStore = field(init=False)
     _lock: RLock = field(default_factory=RLock, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.storage_root = self.storage_root.expanduser()
         self.blob_store = RunSubmissionBlobStore(
+            self.storage_root,
+            segment_size_bytes=self.segment_size_bytes,
+        )
+        self.attempt_blob_store = AttemptAuditBlobStore(
             self.storage_root,
             segment_size_bytes=self.segment_size_bytes,
         )
@@ -98,7 +105,7 @@ class FileBackedRunProgress:
             self.sequence_by_pair_by_batch.setdefault(batch.batch_id, {})
             self.pair_by_sequence_by_batch.setdefault(batch.batch_id, {})
             self.detail_by_sequence_by_batch.setdefault(batch.batch_id, {})
-            self.attempts_by_session_by_batch.setdefault(batch.batch_id, {})
+            self.attempt_refs_by_session_by_batch.setdefault(batch.batch_id, {})
             self.attempt_high_water_by_batch.setdefault(batch.batch_id, {})
             self.next_sequence_by_batch.setdefault(batch.batch_id, 1)
 
@@ -113,15 +120,20 @@ class FileBackedRunProgress:
 
     def record_terminated_attempt(self, attempt: MinerTaskAttemptAuditRecord) -> None:
         with self._lock:
-            attempts = self.attempts_by_session_by_batch.setdefault(attempt.batch_id, {})
-            existing = attempts.get(attempt.validator_session_id)
-            if existing is not None:
+            attempt_refs = self.attempt_refs_by_session_by_batch.setdefault(attempt.batch_id, {})
+            existing_ref = attempt_refs.get(attempt.validator_session_id)
+            if existing_ref is not None:
+                existing = self.attempt_blob_store.read(existing_ref)
                 if existing != attempt:
                     raise RuntimeError("batch already recorded a different attempt for session")
                 return
 
             sequence = int(self.next_sequence_by_batch.get(attempt.batch_id, 1))
-            attempts[attempt.validator_session_id] = attempt
+            attempt_refs[attempt.validator_session_id] = self.attempt_blob_store.append(
+                batch_id=attempt.batch_id,
+                sequence=sequence,
+                attempt=attempt,
+            )
             self.detail_by_sequence_by_batch.setdefault(attempt.batch_id, {})[sequence] = (
                 "terminated_attempt",
                 attempt.validator_session_id,
@@ -359,11 +371,11 @@ class FileBackedRunProgress:
             refs = self.submission_refs_by_batch.get(batch_id, {})
             pair_by_sequence = self.pair_by_sequence_by_batch.get(batch_id, {})
             detail_by_sequence = self.detail_by_sequence_by_batch.get(batch_id, {})
-            attempts = self.attempts_by_session_by_batch.get(batch_id, {})
+            attempt_refs = self.attempt_refs_by_session_by_batch.get(batch_id, {})
             latest_sequence = self._latest_sequence(batch_id)
             requested_sequences = tuple(range(after_sequence + 1, min(latest_sequence, after_sequence + limit) + 1))
             requested_refs: list[RunSubmissionBlobRef | None] = []
-            requested_attempts: list[MinerTaskAttemptAuditRecord | None] = []
+            requested_attempt_refs: list[AttemptAuditBlobRef | None] = []
             for sequence in requested_sequences:
                 detail = detail_by_sequence.get(sequence)
                 if detail is None:
@@ -379,26 +391,33 @@ class FileBackedRunProgress:
                     if ref is None:
                         raise RuntimeError("progress sequence points at missing result")
                     requested_refs.append(ref)
-                    requested_attempts.append(None)
+                    requested_attempt_refs.append(None)
                     continue
                 if kind == "terminated_attempt":
                     if not isinstance(key, UUID):
                         raise RuntimeError("attempt progress sequence points at invalid key")
-                    attempt = attempts.get(key)
-                    if attempt is None:
+                    ref = attempt_refs.get(key)
+                    if ref is None:
                         raise RuntimeError("progress sequence points at missing attempt")
                     requested_refs.append(None)
-                    requested_attempts.append(attempt)
+                    requested_attempt_refs.append(ref)
                     continue
                 raise RuntimeError("progress sequence has unsupported detail kind")
 
             blob_indexes = [index for index, ref in enumerate(requested_refs) if ref is not None]
             hydrated = self.blob_store.read_many(tuple(ref for ref in requested_refs if ref is not None))
             submissions_by_index = dict(zip(blob_indexes, hydrated, strict=True))
+            attempt_blob_indexes = [
+                index for index, ref in enumerate(requested_attempt_refs) if ref is not None
+            ]
+            hydrated_attempts = self.attempt_blob_store.read_many(
+                tuple(ref for ref in requested_attempt_refs if ref is not None)
+            )
+            attempts_by_index = dict(zip(attempt_blob_indexes, hydrated_attempts, strict=True))
 
         items: list[SequencedProgressDetail] = []
         for index, sequence in enumerate(requested_sequences):
-            attempt = requested_attempts[index]
+            attempt = attempts_by_index.get(index)
             if attempt is not None:
                 items.append(
                     {
@@ -436,7 +455,7 @@ class FileBackedRunProgress:
             removed = self.sequence_by_pair_by_batch.pop(batch_id, None) is not None or removed
             removed = self.pair_by_sequence_by_batch.pop(batch_id, None) is not None or removed
             removed = self.detail_by_sequence_by_batch.pop(batch_id, None) is not None or removed
-            removed = self.attempts_by_session_by_batch.pop(batch_id, None) is not None or removed
+            removed = self.attempt_refs_by_session_by_batch.pop(batch_id, None) is not None or removed
             removed = self.attempt_high_water_by_batch.pop(batch_id, None) is not None or removed
             removed = self.progress_floor_by_batch.pop(batch_id, None) is not None or removed
             removed = self.next_sequence_by_batch.pop(batch_id, None) is not None or removed
@@ -451,14 +470,18 @@ class FileBackedRunProgress:
                 removed = self.session_context_by_id.pop(session_id, None) is not None or removed
                 removed = self.failed_provider_keys_by_session.pop(session_id, None) is not None or removed
 
-            return self.blob_store.delete_batch(batch_id) or removed
+            blobs_removed = self.blob_store.delete_batch(batch_id)
+            attempt_blobs_removed = self.attempt_blob_store.delete_batch(batch_id)
+            return blobs_removed or attempt_blobs_removed or removed
 
     def prune_stale_batch_dirs_older_than(self, cutoff: datetime) -> tuple[UUID, ...]:
         with self._lock:
-            return self.blob_store.prune_stale_batch_dirs(
+            removed = self.blob_store.prune_stale_batch_dirs(
                 cutoff=cutoff,
                 protected_batch_ids=frozenset(self.batches_by_id),
             )
+            self.attempt_blob_store.forget_batches(removed)
+            return removed
 
     def _latest_sequence(self, batch_id: UUID) -> int:
         return max(

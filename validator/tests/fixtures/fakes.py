@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from datetime import datetime
 from uuid import UUID
 
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
@@ -9,7 +8,6 @@ from harnyx_commons.application.ports.session_registry import SessionRegistryPor
 from harnyx_commons.domain.session import Session
 from harnyx_commons.domain.tool_call import StartedToolCall, ToolCall
 from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
-from harnyx_commons.tools.types import ToolName
 from harnyx_validator.application.ports.agent_registry import AgentRegistryPort
 from harnyx_validator.domain.agent import AgentRegistry, AgentStatus
 
@@ -87,23 +85,6 @@ class FakeReceiptLog(ReceiptLogPort):
 
     def abandon_pending_receipt(self, receipt_id: str) -> None:
         self._delegate.abandon_pending_receipt(receipt_id)
-
-    def wait_and_materialize_unknown_receipts(
-        self,
-        session_id: UUID,
-        *,
-        session_active_attempt: int,
-        tool: ToolName,
-        timeout_seconds: float,
-        clock: Callable[[], datetime],
-    ) -> tuple[ToolCall, ...]:
-        return self._delegate.wait_and_materialize_unknown_receipts(
-            session_id,
-            session_active_attempt=session_active_attempt,
-            tool=tool,
-            timeout_seconds=timeout_seconds,
-            clock=clock,
-        )
 
     def lookup(self, receipt_id: str) -> ToolCall | None:
         return self._delegate.lookup(receipt_id)

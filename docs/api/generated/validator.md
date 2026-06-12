@@ -116,6 +116,7 @@ Body: [BatchProgressRunsPageResponse](#model-batchprogressrunspageresponse)
 |  |  | `batch_id` | req | `string` |
 |  |  | `error_code` | opt | `string` (nullable) |
 |  |  | `error_summary_code` | opt | `string` (nullable) |
+|  |  | `execution_log` | opt | array[[ToolCall](#model-toolcall)] (default: []) |
 |  |  | `finished_at` | req | `string` (format: date-time) |
 |  |  | `max_attempts` | req | `integer` |
 |  |  | `miner_hotkey_ss58` | req | `string` |
@@ -509,6 +510,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  |  | `batch_id` | req | `string` |
 |  |  | `error_code` | opt | `string` (nullable) |
 |  |  | `error_summary_code` | opt | `string` (nullable) |
+|  |  | `execution_log` | opt | array[[ToolCall](#model-toolcall)] (default: []) |
 |  |  | `finished_at` | req | `string` (format: date-time) |
 |  |  | `max_attempts` | req | `integer` |
 |  |  | `miner_hotkey_ss58` | req | `string` |
@@ -1275,6 +1277,26 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | `batch_id` |  |  | req | `string` |
 | `error_code` |  |  | opt | `string` (nullable) |
 | `error_summary_code` |  |  | opt | `string` (nullable) |
+| `execution_log` |  |  | opt | array[[ToolCall](#model-toolcall)] (default: []) |
+|  | `details` |  | req | [ToolCallDetails](#model-toolcalldetails) |
+|  |  | `actual_cost_provider` | opt | `string` (nullable) |
+|  |  | `actual_cost_usd` | opt | `number` (nullable) |
+|  |  | `cost_usd` | opt | `number` (nullable) |
+|  |  | `execution` | opt | [ToolExecutionFacts](#model-toolexecutionfacts) (nullable) |
+|  |  | `extra` | opt | `object` (nullable) |
+|  |  | `reference_cost_usd` | opt | `number` (nullable) |
+|  |  | `request_hash` | req | `string` |
+|  |  | `request_payload` | opt | [harnyx_miner_sdk__json_types__JsonValue](#model-harnyx_miner_sdk__json_types__jsonvalue) (nullable) |
+|  |  | `response_hash` | opt | `string` (nullable) |
+|  |  | `response_payload` | opt | [harnyx_miner_sdk__json_types__JsonValue](#model-harnyx_miner_sdk__json_types__jsonvalue) (nullable) |
+|  |  | `result_policy` | opt | [ToolResultPolicy](#model-toolresultpolicy) (default: log_only) |
+|  |  | `results` | opt | array[[ToolResult](#model-toolresult)] (default: []) |
+|  | `issued_at` |  | req | `string` (format: date-time) |
+|  | `outcome` |  | req | [ToolCallOutcome](#model-toolcalloutcome) |
+|  | `receipt_id` |  | req | `string` |
+|  | `session_id` |  | req | `string` (format: uuid) |
+|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, llm_chat, test_tool, tooling_info]) |
+|  | `uid` |  | req | `integer` |
 | `finished_at` |  |  | req | `string` (format: date-time) |
 | `max_attempts` |  |  | req | `integer` |
 | `miner_hotkey_ss58` |  |  | req | `string` |
@@ -1331,6 +1353,14 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
         }
       ],
       "title": "Error Summary Code"
+    },
+    "execution_log": {
+      "default": [],
+      "items": {
+        "$ref": "#/components/schemas/ToolCall"
+      },
+      "title": "Execution Log",
+      "type": "array"
     },
     "finished_at": {
       "format": "date-time",
@@ -2217,6 +2247,14 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `batch_id` |  | req | `string` |
 |  | `error_code` |  | opt | `string` (nullable) |
 |  | `error_summary_code` |  | opt | `string` (nullable) |
+|  | `execution_log` |  | opt | array[[ToolCall](#model-toolcall)] (default: []) |
+|  |  | `details` | req | [ToolCallDetails](#model-toolcalldetails) |
+|  |  | `issued_at` | req | `string` (format: date-time) |
+|  |  | `outcome` | req | [ToolCallOutcome](#model-toolcalloutcome) |
+|  |  | `receipt_id` | req | `string` |
+|  |  | `session_id` | req | `string` (format: uuid) |
+|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, llm_chat, test_tool, tooling_info]) |
+|  |  | `uid` | req | `integer` |
 |  | `finished_at` |  | req | `string` (format: date-time) |
 |  | `max_attempts` |  | req | `integer` |
 |  | `miner_hotkey_ss58` |  | req | `string` |

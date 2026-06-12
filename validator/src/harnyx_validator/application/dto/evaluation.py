@@ -223,6 +223,7 @@ class MinerTaskAttemptAuditRecord(BaseModel):
     retry_decision: MinerTaskAttemptRetryDecision
     terminal_effect: MinerTaskAttemptTerminalEffect
     max_attempts: int = Field(ge=1)
+    execution_log: tuple[ToolCall, ...] = ()
 
     @model_validator(mode="after")
     def _validate_attempt(self) -> MinerTaskAttemptAuditRecord:

@@ -13,8 +13,6 @@ from uuid import UUID
 from harnyx_commons.json_types import JsonValue
 from harnyx_commons.tools.types import TOOL_NAMES, ToolName
 
-IN_FLIGHT_LLM_UNKNOWN_EVIDENCE = "in_flight_llm_unknown"
-
 
 class ToolCallOutcome(StrEnum):
     """High-level outcome for a tool invocation."""
@@ -224,7 +222,6 @@ def _hash_json_payload(payload: JsonValue | None) -> str:
 
 
 __all__ = [
-    "IN_FLIGHT_LLM_UNKNOWN_EVIDENCE",
     "StartedToolCall",
     "ToolCallDetails",
     "ToolExecutionFacts",

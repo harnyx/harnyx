@@ -79,10 +79,7 @@ class UsageModel(BaseModel):
     def to_domain(self) -> TokenUsageSummary:
         return TokenUsageSummary.from_totals(
             {
-                provider: {
-                    model: entry.to_domain()
-                    for model, entry in models.items()
-                }
+                provider: {model: entry.to_domain() for model, entry in models.items()}
                 for provider, models in self.by_provider.items()
             }
         )
@@ -447,6 +444,7 @@ class MinerTaskAttemptAuditModel(BaseModel):
     retry_decision: Literal["will_retry", "will_not_retry"]
     terminal_effect: Literal["none", "task_result", "delivery_failure"]
     max_attempts: int = Field(ge=1)
+    execution_log: tuple[ToolCall, ...] = ()
 
 
 class SequencedProgressDetailModel(BaseModel):

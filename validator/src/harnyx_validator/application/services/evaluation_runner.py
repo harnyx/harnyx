@@ -8,7 +8,7 @@ import secrets
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -34,12 +34,7 @@ from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_commons.miner_task_failure_policy import (
     SANDBOX_DETAIL_CODE_UNHANDLED_EXCEPTION,
     TERMINAL_TIMEOUT_ERROR_MESSAGE,
-    TIMEOUT_REVIEW_MAX_OBSERVATIONS,
-    TIMEOUT_TPS_SLOWDOWN_FACTOR,
     ProviderFailureEvidence,
-    TimeoutObservationEvidence,
-    ValidatorModelLlmBaseline,
-    classify_timeout_attribution,
     is_platform_tool_proxy_timeout_receipt,
     is_provider_caused_terminal_failure,
     is_script_validation_sandbox_invocation,
@@ -47,9 +42,6 @@ from harnyx_commons.miner_task_failure_policy import (
     is_uncaught_platform_tool_proxy_timeout_sandbox_invocation,
     provider_batch_failure_evidence,
     provider_batch_failure_message,
-    successful_llm_samples,
-    unknown_inflight_llm_count,
-    validator_model_llm_baseline,
 )
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptAuditRecord,
@@ -78,13 +70,11 @@ if TYPE_CHECKING:
 
 Clock = Callable[[], datetime]
 SubmissionFactory = Callable[[MinerTask, SessionIssued], Awaitable[MinerTaskRunSubmission]]
-CompletedArtifactBaseline = Callable[[], ValidatorModelLlmBaseline]
 TaskSessionLimiter = AbstractAsyncContextManager[None]
 
 logger = logging.getLogger("harnyx_validator.scheduler")
 measurement_logger = logging.getLogger("harnyx_validator.measurement")
 LOCAL_RETRY_ATTEMPTS = 2
-IN_FLIGHT_LLM_TIMEOUT_REVIEW_WAIT_SECONDS = 300.0
 VALIDATOR_OWNED_PLATFORM_TOOL_PROXY_ERROR_CODES = frozenset(
     {
         "platform_tool_proxy_denied",
@@ -147,7 +137,6 @@ class AttemptControlKind(StrEnum):
     SUBMISSION = "submission"
     RETRY = "retry"
     REVIEW_TIMEOUT = "review_timeout"
-    TIMEOUT_UNRESOLVED = "timeout_unresolved"
     VALIDATOR_BATCH_FAILURE = "validator_batch_failure"
 
 
@@ -155,12 +144,10 @@ class AttemptControlKind(StrEnum):
 class TaskAttemptDecision:
     kind: AttemptControlKind
     submission: MinerTaskRunSubmission | None = None
+    attempt_execution_log: tuple[ToolCall, ...] = ()
+    attempt_error_code: MinerTaskErrorCode | str | None = None
     retry_exc: Exception | None = None
     timeout_exc: SandboxInvocationError | None = None
-    timeout_observation: TimeoutObservationEvidence | None = None
-    validator_model_llm_baseline: ValidatorModelLlmBaseline = field(
-        default_factory=ValidatorModelLlmBaseline.empty
-    )
     validator_failure: ValidatorBatchFailedError | None = None
 
 
@@ -237,13 +224,6 @@ class UnexpectedArtifactExecutionError(RuntimeError):
 @dataclass(slots=True)
 class _ArtifactDispatchState:
     submissions_by_index: list[MinerTaskRunSubmission | None]
-    unresolved_tasks_by_index: dict[int, MinerTask] = field(default_factory=dict)
-    timeout_observations_by_pair: dict[tuple[UUID, UUID], tuple[TimeoutObservationEvidence, ...]] = field(
-        default_factory=dict
-    )
-    validator_model_llm_baseline: ValidatorModelLlmBaseline = field(
-        default_factory=ValidatorModelLlmBaseline.empty
-    )
     validator_failure: ValidatorBatchFailedError | None = None
     unexpected_failure: Exception | None = None
 
@@ -259,11 +239,6 @@ class ArtifactFailure:
 @dataclass(frozen=True, slots=True)
 class ArtifactEvaluationOutcome:
     submissions: tuple[MinerTaskRunSubmission, ...]
-    unresolved_tasks: tuple[MinerTask, ...]
-    timeout_observations_by_pair: dict[tuple[UUID, UUID], tuple[TimeoutObservationEvidence, ...]]
-    validator_model_llm_baseline: ValidatorModelLlmBaseline = field(
-        default_factory=ValidatorModelLlmBaseline.empty
-    )
     artifact_failure: ArtifactFailure | None = None
 
 
@@ -302,23 +277,12 @@ class EvaluationRunner:
         tasks: Sequence[MinerTask],
         orchestrator: TaskRunOrchestrator,
     ) -> ArtifactEvaluationOutcome:
-        outcome = ArtifactEvaluationOutcome(
-            submissions=(),
-            unresolved_tasks=tuple(tasks),
-            timeout_observations_by_pair={},
-            validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
+        return await self.evaluate_artifact_with_state(
+            batch_id=batch_id,
+            artifact=artifact,
+            tasks=tasks,
+            orchestrator=orchestrator,
         )
-        while outcome.unresolved_tasks:
-            outcome = await self.evaluate_artifact_with_state(
-                batch_id=batch_id,
-                artifact=artifact,
-                tasks=outcome.unresolved_tasks,
-                orchestrator=orchestrator,
-                validator_model_llm_baseline=outcome.validator_model_llm_baseline,
-                timeout_observations_by_pair=outcome.timeout_observations_by_pair,
-                earlier_submissions=outcome.submissions,
-            )
-        return outcome
 
     async def evaluate_artifact_with_state(
         self,
@@ -327,9 +291,6 @@ class EvaluationRunner:
         artifact: ScriptArtifactSpec,
         tasks: Sequence[MinerTask],
         orchestrator: TaskRunOrchestrator,
-        validator_model_llm_baseline: ValidatorModelLlmBaseline,
-        completed_artifact_baseline: CompletedArtifactBaseline | None = None,
-        timeout_observations_by_pair: dict[tuple[UUID, UUID], tuple[TimeoutObservationEvidence, ...]],
         earlier_submissions: tuple[MinerTaskRunSubmission, ...] = (),
         task_session_limiter: TaskSessionLimiter | None = None,
     ) -> ArtifactEvaluationOutcome:
@@ -337,15 +298,10 @@ class EvaluationRunner:
         if not indexed_tasks:
             return ArtifactEvaluationOutcome(
                 submissions=earlier_submissions,
-                unresolved_tasks=(),
-                timeout_observations_by_pair=dict(timeout_observations_by_pair),
-                validator_model_llm_baseline=validator_model_llm_baseline,
             )
 
         dispatch = _ArtifactDispatchState(
             submissions_by_index=[None] * len(indexed_tasks),
-            timeout_observations_by_pair=dict(timeout_observations_by_pair),
-            validator_model_llm_baseline=validator_model_llm_baseline,
         )
         pending_tasks: asyncio.Queue[tuple[int, MinerTask]] = asyncio.Queue()
         for indexed_task in indexed_tasks:
@@ -359,7 +315,6 @@ class EvaluationRunner:
                     orchestrator=orchestrator,
                     pending_tasks=pending_tasks,
                     dispatch=dispatch,
-                    completed_artifact_baseline=completed_artifact_baseline,
                     task_session_limiter=task_session_limiter,
                 )
             )
@@ -396,14 +351,8 @@ class EvaluationRunner:
                 remaining_tasks=remaining_tasks,
             ) from dispatch.unexpected_failure
 
-        unresolved_tasks = tuple(
-            task for _, task in sorted(dispatch.unresolved_tasks_by_index.items())
-        )
         return ArtifactEvaluationOutcome(
             submissions=all_completed_submissions,
-            unresolved_tasks=unresolved_tasks,
-            timeout_observations_by_pair=dispatch.timeout_observations_by_pair,
-            validator_model_llm_baseline=dispatch.validator_model_llm_baseline,
         )
 
     async def _run_artifact_worker(
@@ -414,7 +363,6 @@ class EvaluationRunner:
         orchestrator: TaskRunOrchestrator,
         pending_tasks: asyncio.Queue[tuple[int, MinerTask]],
         dispatch: _ArtifactDispatchState,
-        completed_artifact_baseline: CompletedArtifactBaseline | None = None,
         task_session_limiter: TaskSessionLimiter | None = None,
     ) -> None:
         while True:
@@ -426,24 +374,16 @@ class EvaluationRunner:
                 return
 
             try:
-                pair_key = (artifact.artifact_id, task.task_id)
                 async with _limited_task_session(task_session_limiter):
                     decision = await self._evaluate_task_with_retry(
                         batch_id=batch_id,
                         artifact=artifact,
                         task=task,
                         orchestrator=orchestrator,
-                        validator_model_llm_baseline=dispatch.validator_model_llm_baseline,
-                        completed_artifact_baseline=completed_artifact_baseline,
-                        prior_timeout_observations=dispatch.timeout_observations_by_pair.get(pair_key, ()),
                     )
                 if decision.kind is AttemptControlKind.SUBMISSION:
                     submission = _require_submission(decision)
                     dispatch.submissions_by_index[task_index] = submission
-                    dispatch.validator_model_llm_baseline = dispatch.validator_model_llm_baseline.merge(
-                        decision.validator_model_llm_baseline,
-                    )
-                    dispatch.timeout_observations_by_pair.pop(pair_key, None)
                     error_code = _submission_error_code_or_none(submission)
                     if (
                         error_code is not None
@@ -455,14 +395,7 @@ class EvaluationRunner:
                             artifact=artifact,
                             task=task,
                             occurred_at=self._clock(),
-                        )
-                    continue
-
-                if decision.kind is AttemptControlKind.TIMEOUT_UNRESOLVED:
-                    observation = _require_timeout_observation(decision)
-                    prior_observations = dispatch.timeout_observations_by_pair.get(pair_key, ())
-                    dispatch.timeout_observations_by_pair[pair_key] = (*prior_observations, observation)
-                    dispatch.unresolved_tasks_by_index[task_index] = task
+                    )
                     continue
 
                 if decision.kind is AttemptControlKind.VALIDATOR_BATCH_FAILURE:
@@ -518,18 +451,7 @@ class EvaluationRunner:
         artifact: ScriptArtifactSpec,
         task: MinerTask,
         orchestrator: TaskRunOrchestrator,
-        validator_model_llm_baseline: ValidatorModelLlmBaseline,
-        completed_artifact_baseline: CompletedArtifactBaseline | None = None,
-        prior_timeout_observations: tuple[TimeoutObservationEvidence, ...],
     ) -> TaskAttemptDecision:
-        if prior_timeout_observations:
-            return _validator_batch_failure_decision(
-                _unexpected_prior_timeout_observations_failure(
-                    artifact=artifact,
-                    task=task,
-                    occurred_at=self._clock(),
-                )
-            )
         session_started_at = time.monotonic()
         attempt_count = 0
         terminal_outcome = "unexpected"
@@ -537,7 +459,6 @@ class EvaluationRunner:
         issued: SessionIssued | None = None
         try:
             max_attempts = 1 + artifact.task_retry_count
-            timeout_observations: list[TimeoutObservationEvidence] = []
             attempt_number = self._progress.next_attempt_number(
                 batch_id,
                 artifact.artifact_id,
@@ -598,30 +519,49 @@ class EvaluationRunner:
                     return decision
 
                 if decision.kind is AttemptControlKind.REVIEW_TIMEOUT:
-                    current_validator_model_llm_baseline = validator_model_llm_baseline.merge(
-                        ValidatorModelLlmBaseline.empty()
-                        if completed_artifact_baseline is None
-                        else completed_artifact_baseline()
-                    )
-                    try:
-                        timeout_resolution = await self._resolve_timeout_attempt(
-                            batch_id=batch_id,
-                            artifact=artifact,
-                            task=task,
+                    timeout_exc = _require_timeout_exc(decision)
+                    if attempt_number >= max_attempts:
+                        current_attempt_receipts = self._current_attempt_receipts(
                             session_id=issued.session.session_id,
-                            exc=_require_timeout_exc(decision),
-                            validator_model_llm_baseline=current_validator_model_llm_baseline,
-                            prior_timeout_observations=tuple(timeout_observations),
-                            attempt_budget_exhausted=attempt_number >= max_attempts,
+                            active_attempt=issued.session.active_attempt,
                         )
-                    except ValidatorBatchFailedError as exc:
-                        terminal_outcome = AttemptControlKind.VALIDATOR_BATCH_FAILURE.value
-                        error_code = str(exc.error_code)
-                        raise
-                    if timeout_resolution.kind is AttemptControlKind.SUBMISSION:
+                        envelope = self._sessions.inspect(issued.session.session_id)
+                        usage, total_tool_usage = self._summarize_receipts(
+                            envelope=envelope,
+                            receipts=current_attempt_receipts,
+                        )
+                        submission = self._record_failed_submission(
+                            batch_id=batch_id,
+                            session_id=issued.session.session_id,
+                            uid=artifact.uid,
+                            artifact_id=artifact.artifact_id,
+                            task=task,
+                            error_code=MinerTaskErrorCode.TIMEOUT_MINER_OWNED,
+                            error_message=TERMINAL_TIMEOUT_ERROR_MESSAGE,
+                            total_tool_usage=total_tool_usage,
+                            usage=usage,
+                            execution_log=current_attempt_receipts,
+                            elapsed_ms=_elapsed_ms(
+                                issued_at=envelope.session.issued_at,
+                                completed_at=self._clock(),
+                            ),
+                        )
+                        timeout_resolution = _submission_decision(
+                            submission,
+                            attempt_execution_log=current_attempt_receipts,
+                        )
                         terminal_outcome = AttemptControlKind.SUBMISSION.value
-                        submission = _require_submission(timeout_resolution)
                         error_code = _submission_error_code_or_none(submission)
+                        logger.error(
+                            "miner task timed out after retry budget exhaustion",
+                            extra={
+                                "batch_id": str(batch_id),
+                                "uid": artifact.uid,
+                                "artifact_id": str(artifact.artifact_id),
+                                "task_id": str(task.task_id),
+                            },
+                            exc_info=timeout_exc,
+                        )
                         self._record_terminated_attempt(
                             batch_id=batch_id,
                             artifact=artifact,
@@ -635,52 +575,36 @@ class EvaluationRunner:
                             terminal_effect=MinerTaskAttemptTerminalEffect.TASK_RESULT,
                         )
                         return timeout_resolution
-                    if timeout_resolution.kind is AttemptControlKind.TIMEOUT_UNRESOLVED:
-                        timeout_observations.append(_require_timeout_observation(timeout_resolution))
-                        self._log_retry_attempt(
-                            batch_id=batch_id,
-                            artifact=artifact,
-                            task=task,
-                            attempt_number=attempt_number,
-                            exc=_require_timeout_exc(decision),
-                        )
-                        self._record_terminated_attempt(
-                            batch_id=batch_id,
-                            artifact=artifact,
-                            task=task,
-                            issued=issued,
-                            attempt_number=attempt_number,
-                            max_attempts=max_attempts,
-                            started_at=attempt_started_at,
-                            decision=timeout_resolution,
-                            retry_decision=MinerTaskAttemptRetryDecision.WILL_RETRY,
-                            terminal_effect=MinerTaskAttemptTerminalEffect.NONE,
-                        )
-                        self._cleanup_attempt_session(issued.session.session_id)
-                        attempt_number = self._progress.next_attempt_number(
-                            batch_id,
-                            artifact.artifact_id,
-                            task.task_id,
-                        )
-                        continue
-                    if timeout_resolution.kind is AttemptControlKind.VALIDATOR_BATCH_FAILURE:
-                        validator_failure = _require_validator_failure(timeout_resolution)
-                        terminal_outcome = AttemptControlKind.VALIDATOR_BATCH_FAILURE.value
-                        error_code = str(validator_failure.error_code)
-                        self._record_terminated_attempt(
-                            batch_id=batch_id,
-                            artifact=artifact,
-                            task=task,
-                            issued=issued,
-                            attempt_number=attempt_number,
-                            max_attempts=max_attempts,
-                            started_at=attempt_started_at,
-                            decision=timeout_resolution,
-                            retry_decision=MinerTaskAttemptRetryDecision.WILL_NOT_RETRY,
-                            terminal_effect=MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE,
-                        )
-                        raise validator_failure
-                    raise RuntimeError("timeout review returned unexpected decision")
+                    retry_decision = _review_timeout_decision(
+                        timeout_exc,
+                        attempt_error_code=MinerTaskErrorCode.TIMEOUT_MINER_OWNED,
+                    )
+                    self._log_retry_attempt(
+                        batch_id=batch_id,
+                        artifact=artifact,
+                        task=task,
+                        attempt_number=attempt_number,
+                        exc=timeout_exc,
+                    )
+                    self._record_terminated_attempt(
+                        batch_id=batch_id,
+                        artifact=artifact,
+                        task=task,
+                        issued=issued,
+                        attempt_number=attempt_number,
+                        max_attempts=max_attempts,
+                        started_at=attempt_started_at,
+                        decision=retry_decision,
+                        retry_decision=MinerTaskAttemptRetryDecision.WILL_RETRY,
+                        terminal_effect=MinerTaskAttemptTerminalEffect.NONE,
+                    )
+                    self._cleanup_attempt_session(issued.session.session_id)
+                    attempt_number = self._progress.next_attempt_number(
+                        batch_id,
+                        artifact.artifact_id,
+                        task.task_id,
+                    )
+                    continue
 
                 if decision.kind is AttemptControlKind.RETRY:
                     self._log_retry_attempt(
@@ -878,7 +802,6 @@ class EvaluationRunner:
                 session_id=issued.session.session_id,
                 outcome=outcome,
             ),
-            validator_model_llm_baseline=validator_model_llm_baseline(outcome.tool_receipts),
         )
 
     async def record_failure_for_artifact(
@@ -1081,81 +1004,6 @@ class EvaluationRunner:
             error_code=error_code,
             error_message=error_message,
         )
-
-    async def _resolve_timeout_attempt(
-        self,
-        *,
-        batch_id: UUID,
-        artifact: ScriptArtifactSpec,
-        task: MinerTask,
-        session_id: UUID,
-        exc: SandboxInvocationError,
-        validator_model_llm_baseline: ValidatorModelLlmBaseline,
-        prior_timeout_observations: tuple[TimeoutObservationEvidence, ...],
-        attempt_budget_exhausted: bool,
-    ) -> TaskAttemptDecision:
-        envelope = self._sessions.inspect(session_id)
-        active_attempt = envelope.session.active_attempt
-        await asyncio.to_thread(
-            self._receipts.wait_and_materialize_unknown_receipts,
-            session_id,
-            session_active_attempt=active_attempt,
-            tool="llm_chat",
-            timeout_seconds=IN_FLIGHT_LLM_TIMEOUT_REVIEW_WAIT_SECONDS,
-            clock=self._clock,
-        )
-        envelope = self._sessions.inspect(session_id)
-        current_attempt_receipts = self._current_attempt_receipts(
-            session_id=session_id,
-            active_attempt=active_attempt,
-        )
-        _, attempt_tool_usage = self._summarize_receipts(
-            envelope=envelope,
-            receipts=current_attempt_receipts,
-        )
-        observation = self._extract_timeout_observation_evidence(
-            envelope=envelope,
-            receipts=current_attempt_receipts,
-            session_summary=attempt_tool_usage,
-        )
-        timeout_attribution = classify_timeout_attribution(
-            observation=observation,
-            validator_model_llm_baseline=validator_model_llm_baseline,
-            prior_timeout_observations=prior_timeout_observations,
-            attempt_budget_exhausted=attempt_budget_exhausted,
-        )
-        if timeout_attribution is None:
-            return _timeout_unresolved_decision(observation)
-
-        terminal_receipts = _timeout_observation_execution_log((*prior_timeout_observations, observation))
-        terminal_usage, terminal_tool_usage = self._summarize_receipts(
-            envelope=envelope,
-            receipts=terminal_receipts,
-        )
-        submission = self._record_failed_submission(
-            batch_id=batch_id,
-            session_id=session_id,
-            uid=artifact.uid,
-            artifact_id=artifact.artifact_id,
-            task=task,
-            error_code=MinerTaskErrorCode.TIMEOUT_MINER_OWNED,
-            error_message=TERMINAL_TIMEOUT_ERROR_MESSAGE,
-            total_tool_usage=terminal_tool_usage,
-            usage=terminal_usage,
-            execution_log=terminal_receipts,
-            elapsed_ms=observation.session_elapsed_ms,
-        )
-        logger.error(
-            "miner task timed out with miner-owned attribution",
-            extra={
-                "batch_id": str(batch_id),
-                "uid": artifact.uid,
-                "artifact_id": str(artifact.artifact_id),
-                "task_id": str(task.task_id),
-            },
-            exc_info=exc,
-        )
-        return _submission_decision(submission)
 
     def _platform_tool_proxy_timeout_decision(
         self,
@@ -1411,9 +1259,9 @@ class EvaluationRunner:
         terminal_effect: MinerTaskAttemptTerminalEffect,
     ) -> None:
         status = MinerTaskAttemptStatus.FAILED
-        attempt_receipts = tuple(self._receipts.for_session(issued.session.session_id))
-        if not attempt_receipts and decision.submission is not None:
-            attempt_receipts = tuple(decision.submission.execution_log)
+        attempt_receipts = decision.attempt_execution_log or tuple(
+            self._receipts.for_session(issued.session.session_id)
+        )
         error_code = _attempt_error_code(decision, execution_log=attempt_receipts)
         if decision.submission is not None and decision.submission.run.details.error is None:
             status = MinerTaskAttemptStatus.SUCCEEDED
@@ -1435,6 +1283,7 @@ class EvaluationRunner:
                 retry_decision=retry_decision,
                 terminal_effect=terminal_effect,
                 max_attempts=max_attempts,
+                execution_log=attempt_receipts,
             )
         )
 
@@ -1462,24 +1311,6 @@ class EvaluationRunner:
     def _summarize_session(self, envelope: SessionEnvelope) -> tuple[TokenUsageSummary, ToolUsageSummary]:
         receipts = tuple(self._receipts.for_session(envelope.session.session_id))
         return self._usage.summarize(envelope.session, receipts)
-
-    def _extract_timeout_observation_evidence(
-        self,
-        *,
-        envelope: SessionEnvelope,
-        receipts: tuple[ToolCall, ...],
-        session_summary: ToolUsageSummary,
-    ) -> TimeoutObservationEvidence:
-        return TimeoutObservationEvidence(
-            successful_llm_samples=successful_llm_samples(receipts),
-            session_summary=session_summary,
-            session_elapsed_ms=_elapsed_ms(
-                issued_at=envelope.session.issued_at,
-                completed_at=self._clock(),
-            ),
-            execution_log=receipts,
-            unknown_inflight_llm_count=unknown_inflight_llm_count(receipts),
-        )
 
     def _record_submission(self, submission: MinerTaskRunSubmission) -> None:
         self._progress.record(submission)
@@ -1606,21 +1437,6 @@ def _usage_from_receipts(receipts: tuple[ToolCall, ...]) -> SessionUsage:
     )
 
 
-def _timeout_observation_execution_log(
-    observations: tuple[TimeoutObservationEvidence, ...],
-) -> tuple[ToolCall, ...]:
-    receipts: list[ToolCall] = []
-    seen: set[tuple[UUID, str]] = set()
-    for observation in observations:
-        for receipt in observation.execution_log:
-            key = (receipt.session_id, receipt.receipt_id)
-            if key in seen:
-                continue
-            seen.add(key)
-            receipts.append(receipt)
-    return tuple(receipts)
-
-
 @dataclass(frozen=True, slots=True)
 class _ReceiptLlmUsage:
     prompt_tokens: int
@@ -1717,16 +1533,12 @@ def _is_provider_caused_terminal_failure(exc: Exception) -> bool:
 def _submission_decision(
     submission: MinerTaskRunSubmission,
     *,
-    validator_model_llm_baseline: ValidatorModelLlmBaseline | None = None,
+    attempt_execution_log: tuple[ToolCall, ...] | None = None,
 ) -> TaskAttemptDecision:
     return TaskAttemptDecision(
         kind=AttemptControlKind.SUBMISSION,
         submission=submission,
-        validator_model_llm_baseline=(
-            ValidatorModelLlmBaseline.empty()
-            if validator_model_llm_baseline is None
-            else validator_model_llm_baseline
-        ),
+        attempt_execution_log=submission.execution_log if attempt_execution_log is None else attempt_execution_log,
     )
 
 
@@ -1737,17 +1549,15 @@ def _retry_decision(exc: Exception) -> TaskAttemptDecision:
     )
 
 
-def _review_timeout_decision(exc: SandboxInvocationError) -> TaskAttemptDecision:
+def _review_timeout_decision(
+    exc: SandboxInvocationError,
+    *,
+    attempt_error_code: MinerTaskErrorCode | str | None = None,
+) -> TaskAttemptDecision:
     return TaskAttemptDecision(
         kind=AttemptControlKind.REVIEW_TIMEOUT,
         timeout_exc=exc,
-    )
-
-
-def _timeout_unresolved_decision(observation: TimeoutObservationEvidence) -> TaskAttemptDecision:
-    return TaskAttemptDecision(
-        kind=AttemptControlKind.TIMEOUT_UNRESOLVED,
-        timeout_observation=observation,
+        attempt_error_code=attempt_error_code,
     )
 
 
@@ -1764,12 +1574,6 @@ def _require_submission(decision: TaskAttemptDecision) -> MinerTaskRunSubmission
     if decision.submission is None:
         raise RuntimeError("attempt decision requires submission")
     return decision.submission
-
-
-def _require_timeout_observation(decision: TaskAttemptDecision) -> TimeoutObservationEvidence:
-    if decision.timeout_observation is None:
-        raise RuntimeError("attempt decision requires timeout observation")
-    return decision.timeout_observation
 
 
 def _require_timeout_exc(decision: TaskAttemptDecision) -> SandboxInvocationError:
@@ -1839,8 +1643,8 @@ def _attempt_error_code(
         return None if error_code is None else str(error_code)
     if decision.validator_failure is not None:
         return str(decision.validator_failure.error_code)
-    if decision.kind is AttemptControlKind.TIMEOUT_UNRESOLVED:
-        return str(MinerTaskErrorCode.TIMEOUT_INCONCLUSIVE)
+    if decision.attempt_error_code is not None:
+        return str(decision.attempt_error_code)
     if decision.retry_exc is not None:
         if isinstance(decision.retry_exc, SandboxInvocationError):
             return decision.retry_exc.detail_code or str(MinerTaskErrorCode.SANDBOX_INVOCATION_FAILED)
@@ -1848,7 +1652,7 @@ def _attempt_error_code(
             return str(MinerTaskErrorCode.VALIDATOR_INTERNAL_TIMEOUT)
         return type(decision.retry_exc).__name__[:128]
     if decision.timeout_exc is not None:
-        return decision.timeout_exc.detail_code or str(MinerTaskErrorCode.TIMEOUT_INCONCLUSIVE)
+        return decision.timeout_exc.detail_code or str(MinerTaskErrorCode.TIMEOUT_MINER_OWNED)
     return None
 
 
@@ -1882,34 +1686,11 @@ def _validator_batch_failed_from_existing_submission(
             task_id=task.task_id,
             uid=artifact.uid,
             exception_type=(
-                "SandboxInvocationError"
-                if error_code == MinerTaskErrorCode.SANDBOX_INVOCATION_FAILED
-                else None
+                "SandboxInvocationError" if error_code == MinerTaskErrorCode.SANDBOX_INVOCATION_FAILED else None
             ),
         ),
         completed_submissions=(submission,),
         remaining_tasks=(),
-    )
-
-
-def _unexpected_prior_timeout_observations_failure(
-    *,
-    artifact: ScriptArtifactSpec,
-    task: MinerTask,
-    occurred_at: datetime,
-) -> ValidatorBatchFailedError:
-    message = "unexpected prior timeout observations for miner-paid task execution"
-    return ValidatorBatchFailedError(
-        error_code=MinerTaskErrorCode.UNEXPECTED_VALIDATOR_FAILURE,
-        message=message,
-        failure_detail=ValidatorBatchFailureDetail(
-            error_code=MinerTaskErrorCode.UNEXPECTED_VALIDATOR_FAILURE,
-            error_message=message,
-            occurred_at=occurred_at,
-            artifact_id=artifact.artifact_id,
-            task_id=task.task_id,
-            uid=artifact.uid,
-        ),
     )
 
 
@@ -1918,13 +1699,9 @@ __all__ = [
     "ArtifactEvaluationOutcome",
     "ArtifactFailure",
     "EvaluationRunner",
-    "IN_FLIGHT_LLM_TIMEOUT_REVIEW_WAIT_SECONDS",
     "LOCAL_RETRY_ATTEMPTS",
     "TERMINAL_TIMEOUT_ERROR_MESSAGE",
     "TaskAttemptDecision",
-    "TIMEOUT_REVIEW_MAX_OBSERVATIONS",
-    "TIMEOUT_TPS_SLOWDOWN_FACTOR",
-    "TimeoutObservationEvidence",
     "ValidatorBatchFailureDetail",
     "ValidatorBatchFailedError",
 ]

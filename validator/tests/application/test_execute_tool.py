@@ -11,7 +11,6 @@ import pytest
 import harnyx_commons.tools.executor as tool_executor_module
 from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
 from harnyx_commons.domain.tool_call import (
-    IN_FLIGHT_LLM_UNKNOWN_EVIDENCE,
     ToolCall,
     ToolCallOutcome,
     ToolExecutionFacts,
@@ -245,7 +244,7 @@ async def test_execute_tool_records_receipt_and_updates_budget() -> None:
     assert result.response_payload["data"] == []
 
 
-async def test_execute_tool_does_not_settle_late_completion_after_unknown_materialization() -> None:
+async def test_execute_tool_does_not_settle_late_completion_after_pending_receipt_is_abandoned() -> None:
     session = make_session(budget_usd=1.0)
     token = generate_token()
     invoker = BlockingLlmInvoker()
@@ -267,34 +266,21 @@ async def test_execute_tool_does_not_settle_late_completion_after_unknown_materi
 
     task = asyncio.create_task(executor.execute(request))
     await invoker.started.wait()
-    unknown_receipts = receipt_log.wait_and_materialize_unknown_receipts(
-        session.session_id,
-        session_active_attempt=session.active_attempt,
-        tool="llm_chat",
-        timeout_seconds=0.0,
-        clock=lambda: datetime(2025, 10, 17, 12, 10, tzinfo=UTC),
-    )
+    receipt_log.clear_session(session.session_id)
     invoker.release()
 
-    with pytest.raises(RuntimeError, match="after timeout evidence materialized"):
+    with pytest.raises(RuntimeError, match="pending receipt was abandoned"):
         await task
 
-    assert len(unknown_receipts) == 1
-    assert unknown_receipts[0].outcome is ToolCallOutcome.TIMEOUT
-    assert unknown_receipts[0].details.extra is not None
-    assert (
-        unknown_receipts[0].details.extra["timeout_attribution_evidence"]
-        == IN_FLIGHT_LLM_UNKNOWN_EVIDENCE
-    )
     receipts = tuple(receipt_log.for_session(session.session_id))
-    assert receipts == unknown_receipts
+    assert receipts == ()
     stored_session = session_registry.get(session.session_id)
     assert stored_session is not None
     assert stored_session.usage.total_cost_usd == pytest.approx(0.0)
     assert stored_session.usage.llm_usage_totals == {}
 
 
-async def test_execute_tool_does_not_record_late_provider_failure_after_unknown_materialization() -> None:
+async def test_execute_tool_does_not_record_late_provider_failure_after_pending_receipt_is_abandoned() -> None:
     session = make_session(budget_usd=1.0)
     token = generate_token()
     invoker = BlockingProviderErrorInvoker()
@@ -316,20 +302,13 @@ async def test_execute_tool_does_not_record_late_provider_failure_after_unknown_
 
     task = asyncio.create_task(executor.execute(request))
     await invoker.started.wait()
-    unknown_receipts = receipt_log.wait_and_materialize_unknown_receipts(
-        session.session_id,
-        session_active_attempt=session.active_attempt,
-        tool="llm_chat",
-        timeout_seconds=0.0,
-        clock=lambda: datetime(2025, 10, 17, 12, 10, tzinfo=UTC),
-    )
+    receipt_log.clear_session(session.session_id)
     invoker.release()
 
     with pytest.raises(ToolProviderError, match="tool provider failed"):
         await task
 
-    assert len(unknown_receipts) == 1
-    assert tuple(receipt_log.for_session(session.session_id)) == unknown_receipts
+    assert tuple(receipt_log.for_session(session.session_id)) == ()
     stored_session = session_registry.get(session.session_id)
     assert stored_session is not None
     assert stored_session.usage.total_cost_usd == pytest.approx(0.0)
@@ -368,13 +347,6 @@ async def test_execute_tool_records_timeout_receipt_when_cancelled() -> None:
     assert receipts[0].outcome is ToolCallOutcome.TIMEOUT
     assert receipts[0].details.extra is not None
     assert receipts[0].details.extra["error_type"] == "CancelledError"
-    assert receipt_log.wait_and_materialize_unknown_receipts(
-        session.session_id,
-        session_active_attempt=session.active_attempt,
-        tool="llm_chat",
-        timeout_seconds=0.0,
-        clock=lambda: datetime(2025, 10, 17, 12, 10, tzinfo=UTC),
-    ) == ()
 
 
 async def test_execute_tool_supports_tooling_info_without_consuming_budget() -> None:

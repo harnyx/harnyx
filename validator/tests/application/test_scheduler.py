@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from threading import Event
+from typing import Any
 from uuid import UUID, uuid4
 
 import httpx
@@ -27,12 +29,6 @@ from harnyx_commons.domain.tool_call import ToolCall, ToolCallDetails, ToolCallO
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
 from harnyx_commons.infrastructure.state.session_registry import InMemorySessionRegistry
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
-from harnyx_commons.llm.tool_models import parse_tool_model
-from harnyx_commons.miner_task_failure_policy import (
-    TimeoutObservationEvidence,
-    ValidatorLlmSpeedBaseline,
-    ValidatorModelLlmBaseline,
-)
 from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptAuditRecord,
@@ -58,6 +54,14 @@ from validator.tests.fixtures.fakes import FakeReceiptLog
 from validator.tests.fixtures.subtensor import FakeSubtensorClient
 
 pytestmark = pytest.mark.anyio("asyncio")
+
+
+def _runner_for(func: Callable[..., Awaitable[ArtifactEvaluationOutcome]]) -> object:
+    class _Runner:
+        async def evaluate_artifact_with_state(self, **kwargs: Any) -> ArtifactEvaluationOutcome:
+            return await func(**kwargs)
+
+    return _Runner()
 
 
 @pytest.fixture
@@ -105,9 +109,6 @@ class DummyReceiptLog(ReceiptLogPort):
 
     def abandon_pending_receipt(self, receipt_id: str) -> None:
         return None
-
-    def wait_and_materialize_unknown_receipts(self, session_id, **kwargs):
-        return ()
 
     def lookup(self, receipt_id: str) -> object | None:
         return self._records.get(receipt_id)
@@ -274,33 +275,6 @@ def _sandbox_invocation_error(
         detail_code=None,
         detail_exception=detail_exception,
         detail_error=detail_error or message,
-    )
-
-
-def _llm_baseline(
-    tps: float | None = None,
-    *,
-    model: str = "google/gemma-4-31B-turbo-TEE",
-    ingestion_tps: float | None = None,
-    generation_tps: float | None = None,
-    legacy_total_tps: float | None = None,
-) -> ValidatorModelLlmBaseline:
-    return ValidatorModelLlmBaseline(
-        slowest_speed_by_model={
-            parse_tool_model(model): ValidatorLlmSpeedBaseline(
-                ingestion_tps=ingestion_tps,
-                generation_tps=generation_tps,
-                legacy_total_tps=legacy_total_tps if legacy_total_tps is not None else tps,
-            )
-        }
-    )
-
-
-def _timeout_observation() -> TimeoutObservationEvidence:
-    return TimeoutObservationEvidence(
-        successful_llm_samples=(),
-        session_summary=ToolUsageSummary.zero(),
-        session_elapsed_ms=1000.0,
     )
 
 
@@ -471,7 +445,6 @@ async def test_scheduler_runs_all_tasks_for_each_artifact(
     )
     batch_id = uuid4()
     result = await scheduler.run(batch_id=batch_id, requested_artifacts=artifacts)
-
     assert len(sandbox_manager.starts) == 2
     assert len(sandbox_manager.stops) == 2
     assert len(recorded_requests) == len(tasks) * 2
@@ -561,11 +534,7 @@ async def test_scheduler_caps_task_sessions_across_whole_batch(
                         task=task,
                     )
                     for task in tasks
-                ),
-                unresolved_tasks=(),
-                timeout_observations_by_pair={},
-                validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
-            )
+                ),            )
 
     scheduler = EvaluationScheduler(
         tasks=tasks,
@@ -589,7 +558,6 @@ async def test_scheduler_caps_task_sessions_across_whole_batch(
     scheduler._runner = _TrackedRunner()
 
     result = await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
-
     assert result.completed_run_count == len(tasks) * len(artifacts)
     assert max_active_task_sessions == 2
 
@@ -643,15 +611,11 @@ async def test_scheduler_flattens_runs_in_requested_artifact_order_when_completi
             return scheduler_module._CompletedArtifactResult(
                 artifact_id=artifact.artifact_id,
                 submissions=(first_submission,),
-                validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
-                timeout_retry_state_by_pair={},
             )
         second_finished.set()
         return scheduler_module._CompletedArtifactResult(
             artifact_id=artifact.artifact_id,
             submissions=(second_submission,),
-            validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
-            timeout_retry_state_by_pair={},
         )
 
     scheduler._run_single_artifact = run_single_artifact  # type: ignore[method-assign]
@@ -660,7 +624,6 @@ async def test_scheduler_flattens_runs_in_requested_artifact_order_when_completi
         batch_id=batch_id,
         requested_artifacts=(first_artifact, second_artifact),
     )
-
     assert result.completed_run_count == 2
 
 
@@ -721,23 +684,17 @@ async def test_scheduler_refills_artifact_slots_without_waiting_for_all_started_
             return scheduler_module._CompletedArtifactResult(
                 artifact_id=artifact.artifact_id,
                 submissions=(first_submission,),
-                validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
-                timeout_retry_state_by_pair={},
             )
         if artifact.artifact_id == second_artifact.artifact_id:
             second_artifact_finished.set()
             return scheduler_module._CompletedArtifactResult(
                 artifact_id=artifact.artifact_id,
                 submissions=(second_submission,),
-                validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
-                timeout_retry_state_by_pair={},
             )
         third_artifact_started.set()
         return scheduler_module._CompletedArtifactResult(
             artifact_id=artifact.artifact_id,
             submissions=(third_submission,),
-            validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
-            timeout_retry_state_by_pair={},
         )
 
     scheduler._run_single_artifact = run_single_artifact  # type: ignore[method-assign]
@@ -756,242 +713,6 @@ async def test_scheduler_refills_artifact_slots_without_waiting_for_all_started_
     result = await run_task
 
     assert result.completed_run_count == 3
-
-
-async def test_scheduler_fails_unexpected_timeout_unresolved_without_requeue(
-    blocking_executor: ThreadPoolExecutor,
-) -> None:
-    task = _task("deferred retry")
-    subtensor = FakeSubtensorClient()
-    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
-    scheduler = EvaluationScheduler(
-        tasks=(task,),
-        subtensor_client=subtensor,
-        sandbox_manager=DummySandboxManager(),
-        session_manager=SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry()),
-        evaluation_records=DummyEvaluationRecordStore(),
-        receipt_log=DummyReceiptLog(),
-        blocking_executor=blocking_executor,
-        orchestrator_factory=lambda _client: object(),
-        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
-        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
-        config=SchedulerConfig(
-            token_secret_bytes=8,
-            session_ttl=timedelta(minutes=5),
-            artifact_parallelism=1,
-        ),
-        progress=DummyProgressRecorder(),
-    )
-    batch_id = uuid4()
-    first_artifact = ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0)
-    second_artifact = ScriptArtifactSpec(uid=8, artifact_id=uuid4(), content_hash="b", size_bytes=0)
-    pair_key = (first_artifact.artifact_id, task.task_id)
-    call_order: list[tuple[UUID, int]] = []
-
-    async def run_single_artifact(**kwargs):
-        artifact = kwargs["artifact"]
-        retry_round = kwargs["retry_round"]
-        call_order.append((artifact.artifact_id, retry_round))
-        if artifact.artifact_id == first_artifact.artifact_id and retry_round == 0:
-            return scheduler_module._CompletedArtifactResult(
-                artifact_id=artifact.artifact_id,
-                submissions=(),
-                unresolved_tasks=(task,),
-                validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
-                timeout_retry_state_by_pair={pair_key: scheduler_module.TimeoutRetryState((_timeout_observation(),))},
-                retry_round=retry_round,
-            )
-        raise AssertionError("scheduler must not run retry work or later artifacts after unresolved timeout")
-
-    scheduler._run_single_artifact = run_single_artifact  # type: ignore[method-assign]
-
-    with pytest.raises(ValidatorBatchFailedError, match="unexpected unresolved timeout escaped runner"):
-        await scheduler.run(
-            batch_id=batch_id,
-            requested_artifacts=(first_artifact, second_artifact),
-        )
-
-    assert call_order == [(first_artifact.artifact_id, 0)]
-
-
-async def test_scheduler_does_not_start_retry_rounds_for_unresolved_concurrent_artifacts(
-    blocking_executor: ThreadPoolExecutor,
-) -> None:
-    task = _task("round gate")
-    subtensor = FakeSubtensorClient()
-    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
-    scheduler = EvaluationScheduler(
-        tasks=(task,),
-        subtensor_client=subtensor,
-        sandbox_manager=DummySandboxManager(),
-        session_manager=SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry()),
-        evaluation_records=DummyEvaluationRecordStore(),
-        receipt_log=DummyReceiptLog(),
-        blocking_executor=blocking_executor,
-        orchestrator_factory=lambda _client: object(),
-        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
-        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
-        config=SchedulerConfig(
-            token_secret_bytes=8,
-            session_ttl=timedelta(minutes=5),
-            artifact_parallelism=2,
-        ),
-        progress=DummyProgressRecorder(),
-    )
-    batch_id = uuid4()
-    first_artifact = ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0)
-    second_artifact = ScriptArtifactSpec(uid=8, artifact_id=uuid4(), content_hash="b", size_bytes=0)
-    second_submission = _submission_for_task(
-        batch_id=batch_id,
-        validator_uid=41,
-        artifact=second_artifact,
-        task=task,
-    )
-    first_round0_done = asyncio.Event()
-    release_second_round0 = asyncio.Event()
-    call_order: list[tuple[UUID, int]] = []
-
-    def retry_state_for(
-        artifact: ScriptArtifactSpec,
-        count: int,
-    ) -> dict[tuple[UUID, UUID], scheduler_module.TimeoutRetryState]:
-        return {
-            (artifact.artifact_id, task.task_id): scheduler_module.TimeoutRetryState(
-                tuple(_timeout_observation() for _ in range(count))
-            )
-        }
-
-    async def run_single_artifact(**kwargs):
-        artifact = kwargs["artifact"]
-        retry_round = kwargs["retry_round"]
-        call_order.append((artifact.artifact_id, retry_round))
-        if retry_round != 0:
-            raise AssertionError("scheduler must not start timeout retry rounds")
-        if artifact.artifact_id == first_artifact.artifact_id and retry_round == 0:
-            first_round0_done.set()
-            return scheduler_module._CompletedArtifactResult(
-                artifact_id=artifact.artifact_id,
-                submissions=(),
-                unresolved_tasks=(task,),
-                validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
-                timeout_retry_state_by_pair=retry_state_for(first_artifact, 1),
-                retry_round=retry_round,
-            )
-        if artifact.artifact_id == second_artifact.artifact_id and retry_round == 0:
-            await release_second_round0.wait()
-            return scheduler_module._CompletedArtifactResult(
-                artifact_id=artifact.artifact_id,
-                submissions=(second_submission,),
-                validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
-                timeout_retry_state_by_pair={},
-                retry_round=retry_round,
-            )
-        raise AssertionError("unexpected artifact")
-
-    scheduler._run_single_artifact = run_single_artifact  # type: ignore[method-assign]
-
-    run_task = asyncio.create_task(
-        scheduler.run(
-            batch_id=batch_id,
-            requested_artifacts=(first_artifact, second_artifact),
-        )
-    )
-
-    await asyncio.wait_for(first_round0_done.wait(), timeout=1.0)
-    await asyncio.sleep(0)
-    assert (first_artifact.artifact_id, 1) not in call_order
-    release_second_round0.set()
-
-    with pytest.raises(ValidatorBatchFailedError, match="unexpected unresolved timeout escaped runner"):
-        await asyncio.wait_for(run_task, timeout=1.0)
-
-    assert all(retry_round == 0 for _, retry_round in call_order)
-
-
-async def test_scheduler_preserves_partial_submissions_when_unresolved_timeout_fails(
-    blocking_executor: ThreadPoolExecutor,
-) -> None:
-    completed_task = _task("partial complete")
-    unresolved_task = _task("partial unresolved")
-    subtensor = FakeSubtensorClient()
-    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
-    scheduler = EvaluationScheduler(
-        tasks=(completed_task, unresolved_task),
-        subtensor_client=subtensor,
-        sandbox_manager=DummySandboxManager(),
-        session_manager=SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry()),
-        evaluation_records=DummyEvaluationRecordStore(),
-        receipt_log=DummyReceiptLog(),
-        blocking_executor=blocking_executor,
-        orchestrator_factory=lambda _client: object(),
-        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
-        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
-        config=SchedulerConfig(
-            token_secret_bytes=8,
-            session_ttl=timedelta(minutes=5),
-            artifact_parallelism=1,
-        ),
-        progress=DummyProgressRecorder(),
-    )
-    batch_id = uuid4()
-    artifact = ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0)
-    blocking_artifact = ScriptArtifactSpec(uid=8, artifact_id=uuid4(), content_hash="b", size_bytes=0)
-    partial_submission = _submission_for_task(
-        batch_id=batch_id,
-        validator_uid=41,
-        artifact=artifact,
-        task=completed_task,
-    )
-    pair_key = (artifact.artifact_id, unresolved_task.task_id)
-
-    async def run_single_artifact(**kwargs):
-        run_artifact = kwargs["artifact"]
-        retry_round = kwargs["retry_round"]
-        if run_artifact.artifact_id == artifact.artifact_id and retry_round == 0:
-            return scheduler_module._CompletedArtifactResult(
-                artifact_id=run_artifact.artifact_id,
-                submissions=(partial_submission,),
-                unresolved_tasks=(unresolved_task,),
-                validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
-                timeout_retry_state_by_pair={pair_key: scheduler_module.TimeoutRetryState((_timeout_observation(),))},
-                retry_round=retry_round,
-                )
-            if run_artifact.artifact_id == artifact.artifact_id:
-                raise AssertionError("scheduler must not retry unresolved timeout work")
-            raise AssertionError("scheduler must not continue to later artifacts after unresolved timeout")
-
-    scheduler._run_single_artifact = run_single_artifact  # type: ignore[method-assign]
-
-    with pytest.raises(ValidatorBatchFailedError, match="unexpected unresolved timeout escaped runner") as exc_info:
-        await scheduler.run(
-            batch_id=batch_id,
-            requested_artifacts=(artifact, blocking_artifact),
-        )
-
-    assert exc_info.value.completed_submissions == (partial_submission,)
-    assert exc_info.value.remaining_tasks == (unresolved_task,)
-
-
-async def test_scheduler_timeout_state_merge_is_owned_pair_monotonic() -> None:
-    first_artifact_id = uuid4()
-    second_artifact_id = uuid4()
-    task_id = uuid4()
-    first_pair = (first_artifact_id, task_id)
-    second_pair = (second_artifact_id, task_id)
-    target = {second_pair: scheduler_module.TimeoutRetryState((_timeout_observation(), _timeout_observation()))}
-    updates = {
-        first_pair: scheduler_module.TimeoutRetryState((_timeout_observation(),)),
-        second_pair: scheduler_module.TimeoutRetryState((_timeout_observation(),)),
-    }
-
-    scheduler_module._merge_owned_timeout_states(
-        target=target,
-        updates=updates,
-        owned_pair_keys=frozenset({first_pair}),
-    )
-
-    assert len(target[first_pair].prior_observations) == 1
-    assert len(target[second_pair].prior_observations) == 2
 
 
 async def test_scheduler_stops_dequeuing_queued_artifacts_when_validator_failure_is_discovered() -> None:
@@ -1075,9 +796,6 @@ async def test_scheduler_stops_dequeuing_queued_artifacts_when_validator_failure
                 progress.record(successful_submission)
                 return ArtifactEvaluationOutcome(
                     submissions=(successful_submission,),
-                    unresolved_tasks=(),
-                    timeout_observations_by_pair={},
-                    validator_model_llm_baseline=_llm_baseline(40.0),
                 )
 
         scheduler._runner = _FailureRaceRunner()  # type: ignore[assignment]
@@ -1088,7 +806,6 @@ async def test_scheduler_stops_dequeuing_queued_artifacts_when_validator_failure
                 requested_artifacts=(first_artifact, second_artifact, third_artifact),
             )
         )
-
         assert await asyncio.to_thread(second_artifact_stopped.wait, 1.0)
         await asyncio.sleep(0.05)
         failure_teardown_release.set()
@@ -1099,88 +816,10 @@ async def test_scheduler_stops_dequeuing_queued_artifacts_when_validator_failure
     finally:
         failure_teardown_release.set()
         blocking_executor.shutdown(wait=True, cancel_futures=True)
-
     assert [start["artifact_id"] for start in sandbox_manager.starts] == [
         first_artifact.artifact_id,
         second_artifact.artifact_id,
     ]
-
-
-async def test_scheduler_shares_live_completed_artifact_baseline_with_concurrent_artifacts(
-    blocking_executor: ThreadPoolExecutor,
-) -> None:
-    task = _task("live baseline")
-    subtensor = FakeSubtensorClient()
-    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
-    scheduler = EvaluationScheduler(
-        tasks=(task,),
-        subtensor_client=subtensor,
-        sandbox_manager=DummySandboxManager(),
-        session_manager=SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry()),
-        evaluation_records=DummyEvaluationRecordStore(),
-        receipt_log=DummyReceiptLog(),
-        blocking_executor=blocking_executor,
-        orchestrator_factory=lambda _client: object(),
-        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
-        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
-        config=SchedulerConfig(
-            token_secret_bytes=8,
-            session_ttl=timedelta(minutes=5),
-            artifact_parallelism=2,
-        ),
-        progress=DummyProgressRecorder(),
-    )
-    batch_id = uuid4()
-    first_artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
-    second_artifact = ScriptArtifactSpec(uid=5, artifact_id=uuid4(), content_hash="b", size_bytes=0)
-    first_submission = _submission_for_task(
-        batch_id=batch_id,
-        validator_uid=41,
-        artifact=first_artifact,
-        task=task,
-    )
-    second_submission = _submission_for_task(
-        batch_id=batch_id,
-        validator_uid=41,
-        artifact=second_artifact,
-        task=task,
-    )
-    seen_completed_baselines: list[ValidatorModelLlmBaseline] = []
-
-    class _LiveBaselineRunner:
-        async def evaluate_artifact_with_state(
-            self,
-            *,
-            artifact: ScriptArtifactSpec,
-            completed_artifact_baseline,
-            **_kwargs,
-        ) -> ArtifactEvaluationOutcome:
-            if artifact.artifact_id == first_artifact.artifact_id:
-                return ArtifactEvaluationOutcome(
-                    submissions=(first_submission,),
-                    unresolved_tasks=(),
-                    timeout_observations_by_pair={},
-                    validator_model_llm_baseline=_llm_baseline(40.0),
-                )
-            while not completed_artifact_baseline().slowest_speed_by_model:
-                await asyncio.sleep(0)
-            seen_completed_baselines.append(completed_artifact_baseline())
-            return ArtifactEvaluationOutcome(
-                submissions=(second_submission,),
-                unresolved_tasks=(),
-                timeout_observations_by_pair={},
-                validator_model_llm_baseline=_llm_baseline(40.0),
-            )
-
-    scheduler._runner = _LiveBaselineRunner()  # type: ignore[assignment]
-
-    result = await scheduler.run(
-        batch_id=batch_id,
-        requested_artifacts=(first_artifact, second_artifact),
-    )
-
-    assert seen_completed_baselines == [_llm_baseline(40.0)]
-    assert result.completed_run_count == 2
 
 
 async def test_scheduler_logs_setup_failure_timing_summary(
@@ -1233,7 +872,6 @@ async def test_scheduler_logs_setup_failure_timing_summary(
     batch_id = uuid4()
     with pytest.raises(ValidatorBatchFailedError, match="sandbox boot failed"):
         await scheduler.run(batch_id=batch_id, requested_artifacts=(artifact,))
-
     assert len(sandbox_manager.starts) == 2
 
     artifact_logs = [extra for message, extra in captured_logs if message == "miner-task artifact execution finished"]
@@ -1311,13 +949,9 @@ async def test_scheduler_logs_teardown_failure_timing_summary(
     async def evaluate_successfully(**kwargs):
         _ = kwargs
         return ArtifactEvaluationOutcome(
-            submissions=(successful_submission,),
-            unresolved_tasks=(),
-            timeout_observations_by_pair={},
-            validator_model_llm_baseline=_llm_baseline(40.0),
-        )
+            submissions=(successful_submission,),        )
 
-    monkeypatch.setattr(scheduler, "_evaluate_artifact_with_timeout_state", evaluate_successfully)
+    scheduler._runner = _runner_for(evaluate_successfully)  # type: ignore[assignment]
 
     with pytest.raises(RuntimeError, match="sandbox stop failed"):
         await scheduler.run(batch_id=batch_id, requested_artifacts=(artifact,))
@@ -1394,7 +1028,7 @@ async def test_scheduler_preserves_validator_batch_failure_when_teardown_also_fa
             ),
         )
 
-    monkeypatch.setattr(scheduler, "_evaluate_artifact_with_timeout_state", fail_evaluation)
+    scheduler._runner = _runner_for(fail_evaluation)  # type: ignore[assignment]
 
     artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
     batch_id = uuid4()
@@ -1471,7 +1105,7 @@ async def test_scheduler_logs_evaluation_timing_summary_for_validator_batch_fail
             ),
         )
 
-    monkeypatch.setattr(scheduler, "_evaluate_artifact_with_timeout_state", fail_evaluation)
+    scheduler._runner = _runner_for(fail_evaluation)  # type: ignore[assignment]
 
     artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
     batch_id = uuid4()
@@ -1552,7 +1186,7 @@ async def test_scheduler_logs_partial_progress_for_unexpected_failure(
             remaining_tasks=(pending_task,),
         )
 
-    monkeypatch.setattr(scheduler, "_evaluate_artifact_with_timeout_state", fail_unexpectedly)
+    scheduler._runner = _runner_for(fail_unexpectedly)  # type: ignore[assignment]
 
     with pytest.raises(RuntimeError, match="progress store failed"):
         await scheduler.run(batch_id=batch_id, requested_artifacts=(artifact,))
@@ -1706,7 +1340,7 @@ async def test_scheduler_logs_accounted_summary_for_validator_batch_failure_afte
             remaining_tasks=(),
         )
 
-    monkeypatch.setattr(scheduler, "_evaluate_artifact_with_timeout_state", fail_artifact)
+    scheduler._runner = _runner_for(fail_artifact)  # type: ignore[assignment]
 
     with pytest.raises(ValidatorBatchFailedError, match="sandbox failed"):
         await scheduler.run(batch_id=batch_id, requested_artifacts=(artifact,))
@@ -1804,7 +1438,7 @@ async def test_scheduler_preserves_validator_batch_failure_after_partial_progres
             remaining_tasks=(),
         )
 
-    monkeypatch.setattr(scheduler, "_evaluate_artifact_with_timeout_state", fail_artifact)
+    scheduler._runner = _runner_for(fail_artifact)  # type: ignore[assignment]
 
     with pytest.raises(ValidatorBatchFailedError, match="sandbox failed"):
         await scheduler.run(batch_id=batch_id, requested_artifacts=(artifact,))
@@ -1898,7 +1532,6 @@ async def test_scheduler_logs_partial_progress_when_setup_failure_backfill_raise
 
     with pytest.raises(ValidatorBatchFailedError, match="artifact setup failed") as exc_info:
         await scheduler.run(batch_id=batch_id, requested_artifacts=(artifact,))
-
     assert exc_info.value.error_code == MinerTaskErrorCode.SANDBOX_START_FAILED
     assert exc_info.value.completed_submissions == ()
     assert exc_info.value.remaining_tasks == tasks
@@ -1977,7 +1610,7 @@ async def test_scheduler_logs_partial_progress_for_validator_batch_failure(
             remaining_tasks=(pending_task,),
         )
 
-    monkeypatch.setattr(scheduler, "_evaluate_artifact_with_timeout_state", fail_evaluation)
+    scheduler._runner = _runner_for(fail_evaluation)  # type: ignore[assignment]
 
     with pytest.raises(ValidatorBatchFailedError, match="validator timeout"):
         await scheduler.run(batch_id=batch_id, requested_artifacts=(artifact,))
@@ -2054,7 +1687,6 @@ async def test_scheduler_avoids_asyncio_to_thread_for_blocking_work(
 
     artifacts = (ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0),)
     result = await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
-
     assert result.completed_run_count == 1
     assert len(sandbox_manager.starts) == 1
     assert len(sandbox_manager.stops) == 1
@@ -2141,7 +1773,7 @@ async def test_scheduler_cancellation_does_not_wait_for_blocking_lane_shutdown(
         assert release_stop.is_set() is False
     finally:
         release_stop.set()
-        assert await asyncio.to_thread(stop_finished.wait, 1.0) is True
+    assert await asyncio.to_thread(stop_finished.wait, 1.0) is True
 
 
 async def test_scheduler_records_zero_score_when_sandbox_invocation_errors(
@@ -2183,7 +1815,6 @@ async def test_scheduler_records_zero_score_when_sandbox_invocation_errors(
     artifacts = (ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0, task_retry_count=1),)
     with pytest.raises(ValidatorBatchFailedError, match="upstream tool failure") as exc_info:
         await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
-
     assert exc_info.value.error_code == MinerTaskErrorCode.SANDBOX_INVOCATION_FAILED
     assert exc_info.value.completed_submissions is not None
     assert len(exc_info.value.completed_submissions) == 1
@@ -2255,7 +1886,6 @@ async def test_scheduler_retries_only_transient_sandbox_invocation_errors(
 
     artifacts = (ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0, task_retry_count=1),)
     result = await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
-
     assert result.completed_run_count == 2
     assert len(evaluation_records.records_by_batch) == 2
     assert orchestrator.calls == 3
@@ -2326,7 +1956,6 @@ async def test_scheduler_fails_batch_for_generic_post_invoke_error(
     artifacts = (ScriptArtifactSpec(uid=7, artifact_id=uuid4(), task_retry_count=1, content_hash="a", size_bytes=0),)
     with pytest.raises(ValidatorBatchFailedError, match="embedding client unavailable") as exc_info:
         await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
-
     assert exc_info.value.error_code == "unexpected_validator_failure"
     assert orchestrator.calls == 1
     assert evaluation_records.records_by_batch == []
@@ -2379,7 +2008,6 @@ async def test_scheduler_records_retry_exhausted_internal_timeout_as_task_failur
     artifacts = (ScriptArtifactSpec(uid=7, artifact_id=uuid4(), task_retry_count=1, content_hash="a", size_bytes=0),)
     with pytest.raises(ValidatorBatchFailedError, match="embedding timed out") as exc_info:
         await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
-
     assert exc_info.value.error_code == "validator_internal_timeout"
     assert orchestrator.calls == 2
     assert len(set(orchestrator.session_ids)) == 2
@@ -2478,7 +2106,6 @@ async def test_scheduler_uses_successful_baseline_across_execution_for_timeout_m
     )
 
     result = await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
-
     assert result.completed_run_count == 2
     assert orchestrator.timeout_calls == 3
     assert evaluation_records.records_by_batch[0].score == pytest.approx(0.75)
@@ -2486,160 +2113,6 @@ async def test_scheduler_uses_successful_baseline_across_execution_for_timeout_m
         code="timeout_miner_owned",
         message="terminal timeout",
     )
-
-
-async def test_unresolved_timeout_failure_preserves_earlier_completed_runs(
-    blocking_executor: ThreadPoolExecutor,
-) -> None:
-    earlier_task = _task("earlier success")
-    later_task = _task("later unresolved")
-    subtensor = FakeSubtensorClient()
-    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
-    sandbox_manager = DummySandboxManager()
-    evaluation_records = DummyEvaluationRecordStore()
-    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
-    receipt_log = DummyReceiptLog()
-    scheduler = EvaluationScheduler(
-        tasks=(earlier_task, later_task),
-        subtensor_client=subtensor,
-        sandbox_manager=sandbox_manager,
-        session_manager=session_manager,
-        evaluation_records=evaluation_records,
-        receipt_log=receipt_log,
-        blocking_executor=blocking_executor,
-        orchestrator_factory=lambda _client: object(),
-        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
-        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
-        config=SchedulerConfig(
-            token_secret_bytes=8,
-            session_ttl=timedelta(minutes=5),
-            artifact_parallelism=1,
-        ),
-        progress=DummyProgressRecorder(),
-    )
-    batch_id = uuid4()
-    artifact = ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0)
-    first_submission = _submission_for_task(
-        batch_id=batch_id,
-        validator_uid=41,
-        artifact=artifact,
-        task=earlier_task,
-    )
-    calls = 0
-
-    class _RetryWaveRunner:
-        async def evaluate_artifact_with_state(self, **_kwargs):
-            nonlocal calls
-            calls += 1
-            if calls == 1:
-                return ArtifactEvaluationOutcome(
-                    submissions=(first_submission,),
-                    unresolved_tasks=(later_task,),
-                    timeout_observations_by_pair={},
-                    validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
-                )
-            raise ValidatorBatchFailedError(
-                error_code=MinerTaskErrorCode.SANDBOX_INVOCATION_FAILED,
-                message="later round failed",
-                failure_detail=ValidatorBatchFailureDetail(
-                    error_code="sandbox_invocation_failed",
-                    error_message="later round failed",
-                    occurred_at=datetime(2025, 10, 27, tzinfo=UTC),
-                    artifact_id=artifact.artifact_id,
-                    uid=artifact.uid,
-                    exception_type="SandboxInvocationError",
-                ),
-                completed_submissions=(first_submission,),
-                remaining_tasks=(later_task,),
-            )
-
-    scheduler._runner = _RetryWaveRunner()  # type: ignore[assignment]
-
-    with pytest.raises(ValidatorBatchFailedError, match="unexpected unresolved timeout escaped runner") as exc_info:
-        await scheduler.run(
-            batch_id=batch_id,
-            requested_artifacts=(artifact,),
-        )
-
-    exc = exc_info.value
-    assert exc.completed_submissions == (first_submission,)
-    assert exc.remaining_tasks == (later_task,)
-    assert calls == 1
-
-
-async def test_unresolved_timeout_failure_preserves_earlier_failed_runs(
-    blocking_executor: ThreadPoolExecutor,
-) -> None:
-    earlier_task = _task("earlier breaker failure")
-    later_task = _task("later unresolved")
-    subtensor = FakeSubtensorClient()
-    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
-    sandbox_manager = DummySandboxManager()
-    evaluation_records = DummyEvaluationRecordStore()
-    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
-    receipt_log = DummyReceiptLog()
-    scheduler = EvaluationScheduler(
-        tasks=(earlier_task, later_task),
-        subtensor_client=subtensor,
-        sandbox_manager=sandbox_manager,
-        session_manager=session_manager,
-        evaluation_records=evaluation_records,
-        receipt_log=receipt_log,
-        blocking_executor=blocking_executor,
-        orchestrator_factory=lambda _client: object(),
-        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
-        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
-        config=SchedulerConfig(
-            token_secret_bytes=8,
-            session_ttl=timedelta(minutes=5),
-            artifact_parallelism=1,
-        ),
-        progress=DummyProgressRecorder(),
-    )
-    batch_id = uuid4()
-    artifact = ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0)
-    earlier_failure = _submission_for_task(
-        batch_id=batch_id,
-        validator_uid=41,
-        artifact=artifact,
-        task=earlier_task,
-        error=EvaluationError(code="sandbox_invocation_failed", message="earlier round failed"),
-    )
-    seen_earlier_submissions: list[tuple[MinerTaskRunSubmission, ...]] = []
-    calls = 0
-
-    class _RetryWaveRunner:
-        async def evaluate_artifact_with_state(self, **kwargs):
-            nonlocal calls
-            calls += 1
-            seen_earlier_submissions.append(kwargs["earlier_submissions"])
-            if calls == 1:
-                return ArtifactEvaluationOutcome(
-                    submissions=(earlier_failure,),
-                    unresolved_tasks=(later_task,),
-                    timeout_observations_by_pair={},
-                    validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
-                )
-            return ArtifactEvaluationOutcome(
-                submissions=(earlier_failure,),
-                unresolved_tasks=(),
-                timeout_observations_by_pair={},
-                validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
-            )
-
-    scheduler._runner = _RetryWaveRunner()  # type: ignore[assignment]
-
-    with pytest.raises(ValidatorBatchFailedError, match="unexpected unresolved timeout escaped runner") as exc_info:
-        await scheduler.run(
-            batch_id=batch_id,
-            requested_artifacts=(artifact,),
-        )
-
-    assert seen_earlier_submissions[0] == ()
-    assert len(seen_earlier_submissions) == 1
-    assert exc_info.value.completed_submissions == (earlier_failure,)
-    assert exc_info.value.remaining_tasks == (later_task,)
-    assert calls == 1
 
 
 async def test_scheduler_stops_after_conclusive_failure_outcome_without_running_later_artifacts(
@@ -2696,17 +2169,14 @@ async def test_scheduler_stops_after_conclusive_failure_outcome_without_running_
 
     class _FailureOutcomeRunner:
         def __init__(self) -> None:
-            self.seen_baselines: list[ValidatorModelLlmBaseline] = []
             self.seen_artifacts: list[UUID] = []
 
         async def evaluate_artifact_with_state(
             self,
             *,
             artifact: ScriptArtifactSpec,
-            validator_model_llm_baseline: ValidatorModelLlmBaseline,
             **_kwargs,
         ) -> ArtifactEvaluationOutcome:
-            self.seen_baselines.append(validator_model_llm_baseline)
             self.seen_artifacts.append(artifact.artifact_id)
             if artifact.artifact_id == first_artifact.artifact_id:
                 raise ValidatorBatchFailedError(
@@ -2725,9 +2195,6 @@ async def test_scheduler_stops_after_conclusive_failure_outcome_without_running_
                 )
             return ArtifactEvaluationOutcome(
                 submissions=(later_submission,),
-                unresolved_tasks=(),
-                timeout_observations_by_pair={},
-                validator_model_llm_baseline=_llm_baseline(40.0),
             )
 
     runner = _FailureOutcomeRunner()
@@ -2737,90 +2204,12 @@ async def test_scheduler_stops_after_conclusive_failure_outcome_without_running_
         await scheduler.run(
             batch_id=batch_id,
             requested_artifacts=(first_artifact, second_artifact),
-        )
+    )
 
     exc = exc_info.value
-    assert runner.seen_baselines == [ValidatorModelLlmBaseline.empty()]
     assert runner.seen_artifacts == [first_artifact.artifact_id]
     assert exc.completed_submissions == (successful_submission, failed_submission)
     assert exc.remaining_tasks == ()
-
-
-async def test_scheduler_validator_batch_failure_keeps_single_owner_for_completed_runs(
-    blocking_executor: ThreadPoolExecutor,
-) -> None:
-    earlier_task = _task("single owner earlier")
-    later_task = _task("single owner later")
-    subtensor = FakeSubtensorClient()
-    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
-    sandbox_manager = DummySandboxManager()
-    evaluation_records = DummyEvaluationRecordStore()
-    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
-    receipt_log = DummyReceiptLog()
-    scheduler = EvaluationScheduler(
-        tasks=(earlier_task, later_task),
-        subtensor_client=subtensor,
-        sandbox_manager=sandbox_manager,
-        session_manager=session_manager,
-        evaluation_records=evaluation_records,
-        receipt_log=receipt_log,
-        blocking_executor=blocking_executor,
-        orchestrator_factory=lambda _client: object(),
-        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
-        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
-        progress=DummyProgressRecorder(),
-    )
-    batch_id = uuid4()
-    artifact = ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0)
-    earlier_submission = _submission_for_task(
-        batch_id=batch_id,
-        validator_uid=41,
-        artifact=artifact,
-        task=earlier_task,
-    )
-    seen_earlier_submissions: list[tuple[MinerTaskRunSubmission, ...]] = []
-    calls = 0
-
-    class _SingleOwnerRunner:
-        async def evaluate_artifact_with_state(self, **kwargs) -> ArtifactEvaluationOutcome:
-            nonlocal calls
-            calls += 1
-            seen_earlier_submissions.append(kwargs["earlier_submissions"])
-            if calls == 1:
-                return ArtifactEvaluationOutcome(
-                    submissions=(earlier_submission,),
-                    unresolved_tasks=(later_task,),
-                    timeout_observations_by_pair={},
-                    validator_model_llm_baseline=_llm_baseline(40.0),
-                )
-            raise ValidatorBatchFailedError(
-                error_code=MinerTaskErrorCode.SANDBOX_INVOCATION_FAILED,
-                message="shared sandbox failure",
-                failure_detail=ValidatorBatchFailureDetail(
-                    error_code="sandbox_invocation_failed",
-                    error_message="shared sandbox failure",
-                    occurred_at=datetime(2025, 10, 27, tzinfo=UTC),
-                    artifact_id=artifact.artifact_id,
-                    uid=artifact.uid,
-                    exception_type="SandboxInvocationError",
-                ),
-                completed_submissions=(earlier_submission,),
-                remaining_tasks=(later_task,),
-            )
-
-    scheduler._runner = _SingleOwnerRunner()  # type: ignore[assignment]
-
-    with pytest.raises(ValidatorBatchFailedError, match="unexpected unresolved timeout escaped runner") as exc_info:
-        await scheduler.run(
-            batch_id=batch_id,
-            requested_artifacts=(artifact,),
-        )
-
-    assert seen_earlier_submissions == [()]
-    assert exc_info.value.completed_submissions == (earlier_submission,)
-    assert exc_info.value.remaining_tasks == (later_task,)
-    assert calls == 1
 
 
 async def test_scheduler_retries_sandbox_start_once_before_running_tasks(
@@ -2897,7 +2286,6 @@ async def test_scheduler_retries_sandbox_start_once_before_running_tasks(
 
     artifacts = (ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0),)
     result = await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
-
     assert len(sandbox_manager.starts) == 2
     assert sandbox_manager.starts[0] == {
         "call": 0,
@@ -2951,7 +2339,6 @@ async def test_scheduler_does_not_synthesize_zero_score_rows_for_conclusive_setu
     artifacts = (ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0),)
     with pytest.raises(ValidatorBatchFailedError, match="sandbox cold start failed") as exc_info:
         await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
-
     assert exc_info.value.error_code == MinerTaskErrorCode.SANDBOX_START_FAILED
     assert exc_info.value.completed_submissions == ()
     assert exc_info.value.remaining_tasks == (task,)
@@ -3000,7 +2387,6 @@ async def test_scheduler_fails_batch_immediately_on_conclusive_sandbox_start_fai
     )
     with pytest.raises(ValidatorBatchFailedError, match="sandbox cold start failed") as exc_info:
         await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
-
     assert exc_info.value.error_code == MinerTaskErrorCode.SANDBOX_START_FAILED
     assert exc_info.value.failure_detail.error_code == "sandbox_start_failed"
     assert exc_info.value.remaining_tasks == (task,)
@@ -3052,7 +2438,6 @@ async def test_scheduler_fails_batch_immediately_on_conclusive_artifact_fetch_fa
         match="platform artifact fetch exhausted retries",
     ) as exc_info:
         await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
-
     assert exc_info.value.error_code == MinerTaskErrorCode.ARTIFACT_FETCH_FAILED
     assert exc_info.value.failure_detail.error_code == "artifact_fetch_failed"
     assert exc_info.value.remaining_tasks == (task,)
@@ -3100,7 +2485,6 @@ async def test_scheduler_fails_batch_immediately_on_conclusive_artifact_hash_mis
 
     with pytest.raises(ValidatorBatchFailedError, match="platform agent sha256 mismatch") as exc_info:
         await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
-
     assert exc_info.value.error_code == MinerTaskErrorCode.ARTIFACT_HASH_MISMATCH
     assert exc_info.value.failure_detail.error_code == "artifact_hash_mismatch"
     assert exc_info.value.remaining_tasks == (task,)
@@ -3144,7 +2528,6 @@ async def test_scheduler_records_script_validation_failures_for_all_tasks_withou
 
     artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="hash-3", size_bytes=0)
     result = await scheduler.run(batch_id=uuid4(), requested_artifacts=(artifact,))
-
     assert len(sandbox_manager.starts) == 0
     assert result.completed_run_count == len(tasks)
     assert len(evaluation_records.records_by_batch) == len(tasks)
@@ -3216,7 +2599,6 @@ async def test_scheduler_fails_batch_on_first_conclusive_evaluation_failure(
 
     with pytest.raises(ValidatorBatchFailedError, match="shared sandbox failure") as exc_info:
         await scheduler.run(batch_id=batch_id, requested_artifacts=artifacts)
-
     assert exc_info.value.error_code == MinerTaskErrorCode.SANDBOX_INVOCATION_FAILED
     assert exc_info.value.failure_detail.error_code == "sandbox_invocation_failed"
     assert len(sandbox_manager.starts) == 1
@@ -3256,7 +2638,6 @@ async def test_evaluation_runner_issues_session_with_task_budget(
         uid=3,
         task=task,
     )
-
     assert issued.session.task_id == task.task_id
     assert issued.session.budget_usd == pytest.approx(0.123)
 
@@ -3319,7 +2700,6 @@ async def test_scheduler_runs_only_remaining_pairs(
     )
 
     result = await scheduler.run(batch_id=uuid4(), requested_artifacts=(artifact,))
-
     assert len(sandbox_manager.starts) == 1
     assert [(uid, task.task_id) for uid, task in recorded_requests] == [(artifact.uid, tasks[1].task_id)]
     assert result.completed_run_count == 1
@@ -3385,7 +2765,6 @@ async def test_scheduler_skips_artifact_when_all_pairs_are_already_recorded(
     )
 
     result = await scheduler.run(batch_id=uuid4(), requested_artifacts=(first_artifact, second_artifact))
-
     assert len(sandbox_manager.starts) == 1
     assert all(uid == second_artifact.uid for uid, _artifact_id in recorded_requests)
     assert result.completed_run_count == len(tasks)

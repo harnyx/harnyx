@@ -99,8 +99,7 @@ class ValidatorControlDeps:
 
 
 class ProgressTracker(Protocol):
-    def summary(self, batch_id: UUID) -> RunProgressSummary:
-        ...
+    def summary(self, batch_id: UUID) -> RunProgressSummary: ...
 
     def completed_run_page(
         self,
@@ -108,25 +107,21 @@ class ProgressTracker(Protocol):
         *,
         after_sequence: int,
         limit: int,
-    ) -> RunProgressPage:
-        ...
+    ) -> RunProgressPage: ...
 
 
 class StatusSigner(Protocol):
     ss58_address: str
 
-    def sign(self, payload: bytes) -> bytes:
-        ...
+    def sign(self, payload: bytes) -> bytes: ...
 
 
 class ResourceUsageProvider(Protocol):
-    def snapshot(self) -> ValidatorResourceUsageSnapshot:
-        ...
+    def snapshot(self) -> ValidatorResourceUsageSnapshot: ...
 
 
 class SimilarityJudgePort(Protocol):
-    async def judge(self, request: SimilarityJudgeRequest) -> SimilarityJudgeResult:
-        ...
+    async def judge(self, request: SimilarityJudgeRequest) -> SimilarityJudgeResult: ...
 
 
 def _path_with_query(request: Request) -> str:
@@ -327,9 +322,7 @@ def add_control_routes(
                 )
             summary = deps.progress_tracker.summary(batch_id)
             activity = deps.batch_activity.snapshot(batch_id)
-            provider_model_evidence = [
-                _serialize_provider_evidence(entry) for entry in summary["provider_evidence"]
-            ]
+            provider_model_evidence = [_serialize_provider_evidence(entry) for entry in summary["provider_evidence"]]
             if lifecycle == "failed":
                 return BatchProgressStatusResponse(
                     batch_id=str(batch_id),
@@ -449,9 +442,7 @@ def add_control_routes(
                 status=response.status,
                 running=response.running,
             )
-            return response.model_copy(
-                update={"signature_hex": deps.validator_hotkey.sign(proof_payload).hex()}
-            )
+            return response.model_copy(update={"signature_hex": deps.validator_hotkey.sign(proof_payload).hex()})
         except Exception as exc:
             return _control_route_internal_error_response(request, exc)
 
@@ -599,6 +590,7 @@ def _serialize_attempt(attempt: MinerTaskAttemptAuditRecord) -> MinerTaskAttempt
         retry_decision=attempt.retry_decision.value,
         terminal_effect=attempt.terminal_effect.value,
         max_attempts=attempt.max_attempts,
+        execution_log=attempt.execution_log,
     )
 
 
