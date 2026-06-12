@@ -349,11 +349,12 @@ async def test_chutes_provider_attaches_actual_cost_from_cached_pricing_without_
     assert response.metadata is not None
     assert response.metadata["actual_cost_provider"] == "chutes"
     assert response.metadata["actual_cost_usd"] == pytest.approx(0.0005)
-    assert response.metadata["actual_cost_evidence"]["source"] == "live_cache"
+    assert response.metadata["actual_cost_evidence"]["settlement_source"] == "cached_provider_pricing"
+    assert response.metadata["actual_cost_evidence"]["pricing_origin"] == "chutes_live_snapshot"
 
 
 @pytest.mark.anyio("asyncio")
-async def test_chutes_provider_attaches_actual_cost_from_hard_coded_fallback() -> None:
+async def test_chutes_provider_attaches_actual_cost_from_static_pricing() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/chat/completions"
         payload = {
@@ -377,7 +378,8 @@ async def test_chutes_provider_attaches_actual_cost_from_hard_coded_fallback() -
     assert response.metadata is not None
     assert response.metadata["actual_cost_provider"] == "chutes"
     assert response.metadata["actual_cost_usd"] == pytest.approx(0.0043)
-    assert response.metadata["actual_cost_evidence"]["source"] == "hard_coded_fallback"
+    assert response.metadata["actual_cost_evidence"]["settlement_source"] == "static_pricing"
+    assert response.metadata["actual_cost_evidence"]["pricing_origin"] == "chutes_repo_rates"
 
 
 @pytest.mark.anyio("asyncio")

@@ -19,9 +19,11 @@ async def test_chutes_pricing_cache_uses_cached_model_rate() -> None:
     second = await cache.price(model="deepseek-ai/DeepSeek-V3.2-TEE", usage=usage)
 
     assert first.cost_usd == pytest.approx(0.0005)
-    assert first.evidence["source"] == "live_cache"
+    assert first.evidence["settlement_source"] == "cached_provider_pricing"
+    assert first.evidence["pricing_origin"] == "chutes_live_snapshot"
     assert second.cost_usd == pytest.approx(0.0005)
-    assert second.evidence["source"] == "live_cache"
+    assert second.evidence["settlement_source"] == "cached_provider_pricing"
+    assert second.evidence["pricing_origin"] == "chutes_live_snapshot"
 
 
 async def test_chutes_pricing_cache_falls_back_to_hard_coded_rates_when_cache_unavailable() -> None:
@@ -32,7 +34,8 @@ async def test_chutes_pricing_cache_falls_back_to_hard_coded_rates_when_cache_un
 
     assert actual_cost.cost_usd == pytest.approx(0.0043)
     assert actual_cost.provider == "chutes"
-    assert actual_cost.evidence["source"] == "hard_coded_fallback"
+    assert actual_cost.evidence["settlement_source"] == "static_pricing"
+    assert actual_cost.evidence["pricing_origin"] == "chutes_repo_rates"
 
 
 async def test_chutes_pricing_cache_falls_back_to_hard_coded_rates_when_model_missing() -> None:
@@ -42,7 +45,8 @@ async def test_chutes_pricing_cache_falls_back_to_hard_coded_rates_when_model_mi
     actual_cost = await cache.price(model="google/gemma-4-31B-turbo-TEE", usage=usage)
 
     assert actual_cost.cost_usd == pytest.approx(0.00099)
-    assert actual_cost.evidence["source"] == "hard_coded_fallback"
+    assert actual_cost.evidence["settlement_source"] == "static_pricing"
+    assert actual_cost.evidence["pricing_origin"] == "chutes_repo_rates"
 
 
 async def test_chutes_pricing_cache_updated_empty_snapshot_uses_fallback_without_live_fetch() -> None:
@@ -53,4 +57,5 @@ async def test_chutes_pricing_cache_updated_empty_snapshot_uses_fallback_without
     actual_cost = await cache.price(model="google/gemma-4-31B-turbo-TEE", usage=usage)
 
     assert actual_cost.cost_usd == pytest.approx(0.00099)
-    assert actual_cost.evidence["source"] == "hard_coded_fallback"
+    assert actual_cost.evidence["settlement_source"] == "static_pricing"
+    assert actual_cost.evidence["pricing_origin"] == "chutes_repo_rates"

@@ -18,7 +18,7 @@ from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.protocol_headers import SESSION_ID_HEADER
 from harnyx_commons.tools.dto import ToolBudgetSnapshot, ToolInvocationRequest, ToolInvocationResult
-from harnyx_commons.tools.executor import ToolExecutor, ToolInvocationContext
+from harnyx_commons.tools.executor import ToolExecutor, ToolInvocationContext, ToolInvocationOutput
 from harnyx_commons.tools.runtime_invoker import build_miner_sandbox_tool_invoker
 from harnyx_commons.tools.token_semaphore import (
     DEFAULT_TOOL_CONCURRENCY_LIMITS,
@@ -68,18 +68,22 @@ class RecordingToolInvoker:
         args: tuple[object, ...],
         kwargs: dict[str, object],
         context: ToolInvocationContext | None = None,
-    ) -> dict[str, object]:
+    ) -> ToolInvocationOutput:
         self.calls.append((tool_name, args, kwargs))
         query = kwargs.get("query", "demo")
-        return {
-            "data": [
-                {
-                    "link": f"https://example.com/{query}",
-                    "title": "Demo",
-                    "snippet": "demo",
-                },
-            ],
-        }
+        return ToolInvocationOutput(
+            public_payload={
+                "data": [
+                    {
+                        "link": f"https://example.com/{query}",
+                        "title": "Demo",
+                        "snippet": "demo",
+                    },
+                ],
+            },
+            actual_cost_usd=0.005,
+            actual_cost_provider="parallel",
+        )
 
 
 class RecordingToolConcurrencyLimiter(ToolConcurrencyLimiter):
@@ -208,7 +212,7 @@ def test_execute_tool_endpoint_records_receipt() -> None:
     assert receipt.details.request_hash
     session_snapshot = provider.session_registry.get(provider.session.session_id)
     assert session_snapshot is not None
-    assert session_snapshot.usage.total_cost_usd == pytest.approx(0.0001)
+    assert session_snapshot.usage.total_cost_usd == pytest.approx(0.005)
     invocation = _invocation("search_web")
     assert provider.tool_concurrency_limiter.acquire_calls == [(DEMO_SESSION_TOKEN, "search_web")]
     assert provider.tool_concurrency_limiter.release_calls == [(DEMO_SESSION_TOKEN, "search_web")]

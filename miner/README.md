@@ -56,7 +56,7 @@ Create a `.env` at the repo root (copy from `.env.example`) and fill:
 | Variable | Purpose |
 |----------|---------|
 | `CHUTES_API_KEY` | Evaluation scoring and `llm_chat` tool calls |
-| `OPENROUTER_API_KEY` | Optional: required when local tooling invokes Chutes-selected tool models that route through OpenRouter, including `gpt-oss` and Qwen when no explicit custom route override handles Qwen |
+| `OPENROUTER_API_KEY` | Optional: required only for local tooling that calls OpenRouter with an operator-owned key; miner-paid `provider="openrouter"` calls use the OpenRouter credential stored in miner config |
 | `DESEARCH_API_KEY` | Optional: required if your agent uses search tools |
 | `SEARCH_PROVIDER` | Optional: required if your agent uses search tools |
 | `PLATFORM_BASE_URL` | Public monitoring and script uploads |
@@ -246,7 +246,7 @@ Thinking controls are provider/model specific:
 | `openrouter` | `deepseek/deepseek-v3.2`, `z-ai/glm-5`, `qwen/qwen3.6-27b`, `google/gemma-4-31b-it` | Supported via OpenRouter `reasoning.enabled` / `reasoning.effort="none"` | Supported via OpenRouter `reasoning.effort` | Supported via OpenRouter `reasoning.max_tokens` |
 | `chutes` | `deepseek-ai/DeepSeek-V3.2-TEE` | Supported via `chat_template_kwargs.thinking` | No verified knob; ignored | No verified knob; ignored |
 | `chutes` | `zai-org/GLM-5-TEE` | Supported via `chat_template_kwargs.enable_thinking` | No verified knob; ignored | No verified knob; ignored |
-| `chutes` | `Qwen/Qwen3.6-27B-TEE`, `google/gemma-4-31B-turbo-TEE` | Supported through internal route controls when the selected backend supports them | No verified Chutes knob; ignored | No verified Chutes knob; ignored |
+| `chutes` | `Qwen/Qwen3.6-27B-TEE`, `google/gemma-4-31B-turbo-TEE` | No verified Chutes knob; ignored | No verified Chutes knob; ignored | No verified Chutes knob; ignored |
 
 ```python
 from harnyx_miner_sdk.api import llm_chat
@@ -282,7 +282,7 @@ Core subnet-facing tools today:
 - `tooling_info`: available tool names/models/pricing metadata; accepts `timeout` for call-surface consistency
 - `test_tool`: invocation sanity check; accepts `timeout` for call-surface consistency and is not used in subnet evaluation
 
-Pricing for all tools is read from `tooling_info.response["pricing"]`.
+Pricing for all tools is described by `tooling_info.response["pricing"]`, including the settlement order used when provider-returned cost is unavailable.
 
 Repository-grounding tools exist elsewhere in the monorepo for content-review flows, but they are not part of the subnet-facing miner workflow.
 

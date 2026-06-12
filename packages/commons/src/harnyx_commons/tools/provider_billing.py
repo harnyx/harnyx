@@ -11,10 +11,7 @@ ProviderBillingSource = Literal[
     "response_body",
     "response_headers",
     "response_results",
-    "reference_fallback",
-    "live_cache",
-    "live_fetch",
-    "hard_coded_fallback",
+    "missing_provider_metadata",
 ]
 
 TSearchResponse = TypeVar("TSearchResponse", covariant=True)
@@ -23,19 +20,19 @@ TSearchResponse = TypeVar("TSearchResponse", covariant=True)
 @dataclass(frozen=True, slots=True)
 class ProviderBillingMetadata:
     actual_cost_provider: str
+    source: ProviderBillingSource
     actual_cost_usd: float | None = None
     billable_units: int | None = None
     provider_request_id: str | None = None
     usage_count: int | None = None
     service: str | None = None
     currency: str | None = None
-    source: ProviderBillingSource = "reference_fallback"
 
 
 @dataclass(frozen=True, slots=True)
-class BillingAwareSearchResponse(Generic[TSearchResponse]):
+class SearchProviderResult(Generic[TSearchResponse]):
     response: TSearchResponse
-    billing: ProviderBillingMetadata | None
+    billing: ProviderBillingMetadata
 
 
 def billing_evidence_payload(billing: ProviderBillingMetadata | None) -> JsonObject | None:
@@ -53,8 +50,8 @@ def _is_json_value(value: object) -> bool:
 
 
 __all__ = [
-    "BillingAwareSearchResponse",
     "ProviderBillingMetadata",
     "ProviderBillingSource",
+    "SearchProviderResult",
     "billing_evidence_payload",
 ]

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
-from harnyx_commons.tools.provider_billing import BillingAwareSearchResponse
+from harnyx_commons.tools.provider_billing import SearchProviderResult
 from harnyx_commons.tools.search_models import (
     FetchPageRequest,
     FetchPageResponse,
@@ -21,33 +21,22 @@ from harnyx_commons.tools.search_models import (
 class WebSearchProviderPort(Protocol):
     """Shared provider seam for miner-facing web tools."""
 
-    async def search_web(self, request: SearchWebSearchRequest) -> SearchWebSearchResponse: ...
-
-    async def search_ai(self, request: SearchAiSearchRequest) -> SearchAiSearchResponse: ...
-
-    async def fetch_page(self, request: FetchPageRequest) -> FetchPageResponse: ...
-
-    async def aclose(self) -> None: ...
-
-
-@runtime_checkable
-class BillingAwareWebSearchProviderPort(WebSearchProviderPort, Protocol):
-    """Optional search provider seam that preserves internal billing evidence."""
-
-    async def search_web_with_billing(
+    async def search_web(
         self,
         request: SearchWebSearchRequest,
-    ) -> BillingAwareSearchResponse[SearchWebSearchResponse]: ...
+    ) -> SearchProviderResult[SearchWebSearchResponse]: ...
 
-    async def search_ai_with_billing(
+    async def search_ai(
         self,
         request: SearchAiSearchRequest,
-    ) -> BillingAwareSearchResponse[SearchAiSearchResponse]: ...
+    ) -> SearchProviderResult[SearchAiSearchResponse]: ...
 
-    async def fetch_page_with_billing(
+    async def fetch_page(
         self,
         request: FetchPageRequest,
-    ) -> BillingAwareSearchResponse[FetchPageResponse]: ...
+    ) -> SearchProviderResult[FetchPageResponse]: ...
+
+    async def aclose(self) -> None: ...
 
 
 class DeSearchPort(Protocol):
@@ -60,4 +49,4 @@ class DeSearchPort(Protocol):
 
     async def fetch_twitter_post(self, *, post_id: str) -> SearchXResult | None: ...
 
-__all__ = ["BillingAwareWebSearchProviderPort", "DeSearchPort", "WebSearchProviderPort"]
+__all__ = ["DeSearchPort", "WebSearchProviderPort"]

@@ -92,10 +92,14 @@ class ToolCallDetails:
             raise ValueError("request_hash must not be empty")
         if self.response_hash == "":
             raise ValueError("response_hash must not be empty when supplied")
-        if self.reference_cost_usd is None and self.cost_usd is not None:
-            object.__setattr__(self, "reference_cost_usd", self.cost_usd)
-        if self.cost_usd is None and self.reference_cost_usd is not None:
-            object.__setattr__(self, "cost_usd", self.reference_cost_usd)
+        if self.actual_cost_usd is not None:
+            object.__setattr__(self, "cost_usd", self.actual_cost_usd)
+            object.__setattr__(self, "reference_cost_usd", self.actual_cost_usd)
+        else:
+            if self.reference_cost_usd is None and self.cost_usd is not None:
+                object.__setattr__(self, "reference_cost_usd", self.cost_usd)
+            if self.cost_usd is None and self.reference_cost_usd is not None:
+                object.__setattr__(self, "cost_usd", self.reference_cost_usd)
         if self.cost_usd is not None and self.cost_usd < 0.0:
             raise ValueError("cost_usd must be non-negative when supplied")
         if self.reference_cost_usd is not None and self.reference_cost_usd < 0.0:
@@ -170,23 +174,30 @@ class StartedToolCall:
         execution: ToolExecutionFacts | None = None,
     ) -> ToolCall:
         """Build the final receipt for this started invocation."""
-        effective_reference_cost_usd = (
-            cost_usd if reference_cost_usd is None else reference_cost_usd
-        )
+        if actual_cost_usd is not None:
+            cost_usd = actual_cost_usd
+            reference_cost_usd = actual_cost_usd
+        if reference_cost_usd is None and cost_usd is not None:
+            reference_cost_usd = cost_usd
         merged_extra = {
             "issued_at": self.issued_at.isoformat(),
             "session_active_attempt": str(self.session_active_attempt),
         }
         if cost_usd is not None:
             merged_extra["cost_usd"] = f"{cost_usd:.6f}"
-        if effective_reference_cost_usd is not None:
-            merged_extra["reference_cost_usd"] = f"{effective_reference_cost_usd:.6f}"
+        if reference_cost_usd is not None:
+            merged_extra["reference_cost_usd"] = f"{reference_cost_usd:.6f}"
         if actual_cost_usd is not None:
             merged_extra["actual_cost_usd"] = f"{actual_cost_usd:.6f}"
         if actual_cost_provider is not None:
             merged_extra["actual_cost_provider"] = actual_cost_provider
         if extra is not None:
             merged_extra.update(extra)
+        if actual_cost_usd is not None:
+            formatted_cost = f"{actual_cost_usd:.6f}"
+            merged_extra["cost_usd"] = formatted_cost
+            merged_extra["reference_cost_usd"] = formatted_cost
+            merged_extra["actual_cost_usd"] = formatted_cost
 
         return ToolCall(
             receipt_id=self.receipt_id,
@@ -207,7 +218,7 @@ class StartedToolCall:
                     self.result_policy if result_policy is None else result_policy
                 ),
                 cost_usd=cost_usd,
-                reference_cost_usd=effective_reference_cost_usd,
+                reference_cost_usd=reference_cost_usd,
                 actual_cost_usd=actual_cost_usd,
                 actual_cost_provider=actual_cost_provider,
                 extra=merged_extra,

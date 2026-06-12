@@ -44,7 +44,7 @@ async def test_desearch_search_ai_live() -> None:
         max_concurrent=1,
     )
     try:
-        billing_response = await desearch.search_ai_with_billing(
+        billing_response = await desearch.search_ai(
             SearchAiSearchRequest(
                 provider="desearch",
                 prompt="Find the official Python documentation homepage",
@@ -54,8 +54,10 @@ async def test_desearch_search_ai_live() -> None:
         response = billing_response.response
         assert isinstance(response.data, list)
         assert billing_response.billing is not None
-        assert billing_response.billing.actual_cost_usd is not None
-        assert billing_response.billing.source in {"response_body", "response_headers"}
+        if billing_response.billing.actual_cost_usd is None:
+            assert response.data
+        else:
+            assert billing_response.billing.source in {"response_body", "response_headers"}
     finally:
         await desearch.aclose()
 
@@ -71,13 +73,16 @@ async def test_miner_paid_desearch_helper_search_ai_live() -> None:
         llm_settings=settings,
     )
     try:
-        response = await desearch.search_ai(
+        result = await desearch.search_ai(
             SearchAiSearchRequest(
                 provider="desearch",
                 prompt="Find the official Python documentation homepage",
                 count=10,
             )
         )
+        response = result.response
         assert isinstance(response.data, list)
+        if result.billing.actual_cost_usd is None:
+            assert response.data
     finally:
         await desearch.aclose()

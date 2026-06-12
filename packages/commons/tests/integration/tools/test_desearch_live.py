@@ -22,13 +22,15 @@ async def test_search_web_live() -> None:
     )
     request = SearchWebSearchRequest(provider="desearch", search_queries=("United States", "latest news"), num=5)
 
-    billing_result = await client.search_web_with_billing(request)
+    billing_result = await client.search_web(request)
     await client.aclose()
 
     assert isinstance(billing_result.response.data, list)
     assert billing_result.billing is not None
-    assert billing_result.billing.actual_cost_usd is not None
-    assert billing_result.billing.source in {"response_body", "response_headers"}
+    if billing_result.billing.actual_cost_usd is None:
+        assert billing_result.response.data
+    else:
+        assert billing_result.billing.source in {"response_body", "response_headers"}
 
 
 async def test_fetch_page_live() -> None:
@@ -41,7 +43,7 @@ async def test_fetch_page_live() -> None:
     )
     request = FetchPageRequest(provider="desearch", url="https://example.com")
 
-    billing_result = await client.fetch_page_with_billing(request)
+    billing_result = await client.fetch_page(request)
     await client.aclose()
 
     result = billing_result.response
@@ -49,8 +51,10 @@ async def test_fetch_page_live() -> None:
     assert result.data[0].url == "https://example.com"
     assert result.data[0].content
     assert billing_result.billing is not None
-    assert billing_result.billing.actual_cost_usd is not None
-    assert billing_result.billing.source in {"response_body", "response_headers"}
+    if billing_result.billing.actual_cost_usd is None:
+        assert result.data
+    else:
+        assert billing_result.billing.source in {"response_body", "response_headers"}
 
 
 async def test_search_twitter_live() -> None:

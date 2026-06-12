@@ -11,6 +11,7 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+from math import isclose
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
@@ -43,6 +44,7 @@ from harnyx_commons.miner_task_failure_policy import (
     provider_batch_failure_evidence,
     provider_batch_failure_message,
 )
+from harnyx_commons.tools.types import is_search_tool
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptAuditRecord,
     MinerTaskAttemptRetryDecision,
@@ -1404,17 +1406,40 @@ class EvaluationRunner:
 def _usage_from_receipts(receipts: tuple[ToolCall, ...]) -> SessionUsage:
     llm_usage_totals: dict[str, dict[str, LlmUsageTotals]] = {}
     cost_by_provider: dict[str, float] = {}
+    actual_cost_by_provider: dict[str, float] = {}
     total_cost_usd = 0.0
+    actual_total_cost_usd: float | None = 0.0
     llm_tokens_last_call = 0
 
     for receipt in receipts:
-        if receipt.details.cost_usd is not None:
-            total_cost_usd += receipt.details.cost_usd
+        session_cost = _receipt_session_cost(receipt)
+        if session_cost is not None:
+            provider = _receipt_session_cost_provider(receipt)
+            total_cost_usd += session_cost
+            cost_by_provider[provider] = cost_by_provider.get(provider, 0.0) + session_cost
+        actual_total_cost_usd = _accumulate_receipt_actual_cost(
+            actual_total_cost_usd,
+            cost_usd=session_cost,
+        )
+        if session_cost is not None:
+            actual_provider = _receipt_session_cost_provider(receipt)
+            actual_cost_by_provider[actual_provider] = (
+                actual_cost_by_provider.get(actual_provider, 0.0) + session_cost
+            )
         if not receipt.is_successful() or receipt.tool != "llm_chat":
             continue
         model = _receipt_llm_model(receipt)
         usage = _receipt_llm_usage(receipt)
-        if model is None or usage is None:
+        if model is None:
+            continue
+        if usage is None and session_cost is not None:
+            usage = _ReceiptLlmUsage(
+                prompt_tokens=0,
+                completion_tokens=0,
+                total_tokens=0,
+                reasoning_tokens=0,
+            )
+        if usage is None:
             continue
         provider = _receipt_llm_provider(receipt)
         provider_totals = llm_usage_totals.setdefault(provider, {})
@@ -1426,12 +1451,14 @@ def _usage_from_receipts(receipts: tuple[ToolCall, ...]) -> SessionUsage:
             reasoning_tokens=usage.reasoning_tokens,
         )
         llm_tokens_last_call = usage.total_tokens
-        if receipt.details.cost_usd is not None:
-            cost_by_provider[provider] = cost_by_provider.get(provider, 0.0) + receipt.details.cost_usd
 
     return SessionUsage(
         total_cost_usd=total_cost_usd,
         cost_by_provider=cost_by_provider,
+        reference_total_cost_usd=total_cost_usd,
+        reference_cost_by_provider=cost_by_provider,
+        actual_total_cost_usd=actual_total_cost_usd,
+        actual_cost_by_provider=actual_cost_by_provider,
         llm_tokens_last_call=llm_tokens_last_call,
         llm_usage_totals=llm_usage_totals,
     )
@@ -1492,8 +1519,58 @@ def _receipt_llm_model(receipt: ToolCall) -> str | None:
 
 
 def _receipt_llm_provider(receipt: ToolCall) -> str:
+    provider = _receipt_request_provider(receipt)
+    if provider is None or not provider.strip():
+        raise ValueError("llm_chat receipt requires request provider")
+    return provider.strip()
+
+
+def _receipt_actual_cost(receipt: ToolCall) -> float | None:
+    return None if receipt.details.actual_cost_usd is None else float(receipt.details.actual_cost_usd)
+
+
+def _receipt_session_cost(receipt: ToolCall) -> float | None:
+    cost_usd = None if receipt.details.cost_usd is None else float(receipt.details.cost_usd)
+    actual_cost_usd = _receipt_actual_cost(receipt)
+    if cost_usd is None:
+        if actual_cost_usd is not None:
+            raise ValueError("receipt actual_cost_usd requires matching cost_usd")
+        return None
+    if actual_cost_usd is not None and not isclose(actual_cost_usd, cost_usd, rel_tol=0.0, abs_tol=1e-12):
+        raise ValueError("receipt cost_usd and actual_cost_usd must match")
+    return cost_usd
+
+
+def _accumulate_receipt_actual_cost(
+    current: float | None,
+    *,
+    cost_usd: float | None,
+) -> float | None:
+    if cost_usd is None:
+        return current
+    if current is None:
+        return None
+    return current + cost_usd
+
+
+def _receipt_session_cost_provider(receipt: ToolCall) -> str:
+    if receipt.tool == "llm_chat":
+        _receipt_llm_provider(receipt)
     if receipt.details.actual_cost_provider is not None:
         return receipt.details.actual_cost_provider
+    return _receipt_request_cost_provider(receipt)
+
+
+def _receipt_request_cost_provider(receipt: ToolCall) -> str:
+    provider = _receipt_request_provider(receipt)
+    if provider is not None and provider.strip():
+        return provider.strip()
+    if receipt.tool == "llm_chat":
+        raise ValueError("llm_chat receipt requires request provider")
+    return "desearch" if is_search_tool(receipt.tool) else "chutes"
+
+
+def _receipt_request_provider(receipt: ToolCall) -> str | None:
     request_payload = receipt.details.request_payload
     if isinstance(request_payload, dict):
         direct_provider = request_payload.get("provider")
@@ -1511,7 +1588,7 @@ def _receipt_llm_provider(receipt: ToolCall) -> str:
                 arg_provider = first_arg.get("provider")
                 if isinstance(arg_provider, str):
                     return arg_provider
-    return "chutes"
+    return None
 
 
 def _non_negative_int(value: object) -> int | None:

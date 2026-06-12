@@ -6,6 +6,7 @@ from typing import Any
 import httpx
 import pytest
 
+from harnyx_commons.errors import ToolProviderError
 from harnyx_commons.tools.desearch import DeSearchAiDateFilter, DeSearchClient
 from harnyx_commons.tools.search_models import (
     FetchPageRequest,
@@ -69,7 +70,7 @@ async def test_desearch_client_captures_json_object_cost_usd_body_metadata() -> 
     )
     adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="test-key", client=client)
 
-    result = await adapter.search_web_with_billing(
+    result = await adapter.search_web(
         SearchWebSearchRequest(provider="desearch", search_queries=("harnyx",), num=5)
     )
 
@@ -101,7 +102,7 @@ async def test_desearch_client_captures_array_cost_from_headers() -> None:
     )
     adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="test-key", client=client)
 
-    result = await adapter.search_web_with_billing(
+    result = await adapter.search_web(
         SearchWebSearchRequest(provider="desearch", search_queries=("harnyx",), num=5)
     )
 
@@ -242,7 +243,8 @@ async def test_desearch_client_search_ai_clamps_count_and_preserves_retry_metada
                         "title": "Example",
                         "snippet": "Snippet",
                     }
-                ]
+                ],
+                "cost_usd": 0.00031,
             },
         )
 
@@ -252,9 +254,10 @@ async def test_desearch_client_search_ai_clamps_count_and_preserves_retry_metada
     )
     adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
 
-    response = await adapter.search_ai(
+    result = await adapter.search_ai(
         SearchAiSearchRequest(provider="desearch", prompt="harnyx subnet", count=10)
     )
+    response = result.response
 
     assert [item.model_dump(exclude_none=True) for item in response.data] == [
         {
@@ -265,6 +268,7 @@ async def test_desearch_client_search_ai_clamps_count_and_preserves_retry_metada
     ]
     assert response.attempts == 1
     assert response.retry_reasons == ()
+    assert result.billing.actual_cost_usd == pytest.approx(0.00031)
 
 
 async def test_desearch_client_search_ai_accepts_summary_and_results_shape() -> None:
@@ -282,6 +286,7 @@ async def test_desearch_client_search_ai_accepts_summary_and_results_shape() -> 
                         "snippet": "Plot summary",
                     }
                 ],
+                "cost_usd": 0.00032,
             },
         )
 
@@ -291,7 +296,8 @@ async def test_desearch_client_search_ai_accepts_summary_and_results_shape() -> 
     )
     adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
 
-    response = await adapter.search_ai(SearchAiSearchRequest(provider="desearch", prompt="hamlet", count=10))
+    result = await adapter.search_ai(SearchAiSearchRequest(provider="desearch", prompt="hamlet", count=10))
+    response = result.response
 
     assert [item.model_dump(exclude_none=True) for item in response.data] == [
         {
@@ -317,7 +323,8 @@ async def test_desearch_client_search_ai_accepts_sdk_search_results_shape() -> N
                             "summary_description": "Video summary",
                         }
                     ]
-                }
+                },
+                "cost_usd": 0.00033,
             },
         )
 
@@ -327,7 +334,8 @@ async def test_desearch_client_search_ai_accepts_sdk_search_results_shape() -> N
     )
     adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
 
-    response = await adapter.search_ai(SearchAiSearchRequest(provider="desearch", prompt="hamlet", count=10))
+    result = await adapter.search_ai(SearchAiSearchRequest(provider="desearch", prompt="hamlet", count=10))
+    response = result.response
 
     assert [item.model_dump(exclude_none=True) for item in response.data] == [
         {
@@ -344,7 +352,7 @@ async def test_desearch_client_search_ai_summary_only_shape_returns_empty_result
             raise AssertionError(f"unexpected request: {request.method} {request.url}")
         return httpx.Response(
             200,
-            json={"summary": "Hamlet is a tragedy by Shakespeare."},
+            json={"summary": "Hamlet is a tragedy by Shakespeare.", "cost_usd": 0.00034},
         )
 
     client = httpx.AsyncClient(
@@ -353,7 +361,8 @@ async def test_desearch_client_search_ai_summary_only_shape_returns_empty_result
     )
     adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
 
-    response = await adapter.search_ai(SearchAiSearchRequest(provider="desearch", prompt="hamlet", count=10))
+    result = await adapter.search_ai(SearchAiSearchRequest(provider="desearch", prompt="hamlet", count=10))
+    response = result.response
 
     assert response.data == []
     assert response.attempts == 1
@@ -366,7 +375,7 @@ async def test_desearch_client_fetch_page_text() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         captured["method"] = request.method
         captured["url"] = str(request.url)
-        return httpx.Response(200, text="example page content")
+        return httpx.Response(200, text="example page content", headers={"X-Desearch-Cost-Usd": "0.00021"})
 
     client = httpx.AsyncClient(
         base_url="https://api.desearch.ai",
@@ -374,7 +383,8 @@ async def test_desearch_client_fetch_page_text() -> None:
     )
     adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
 
-    response = await adapter.fetch_page(FetchPageRequest(provider="desearch", url="https://example.com"))
+    result = await adapter.fetch_page(FetchPageRequest(provider="desearch", url="https://example.com"))
+    response = result.response
 
     assert response.data[0].url == "https://example.com"
     assert response.data[0].content == "example page content"
@@ -401,7 +411,7 @@ async def test_desearch_client_fetch_page_captures_text_cost_from_headers() -> N
     )
     adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
 
-    result = await adapter.fetch_page_with_billing(FetchPageRequest(provider="desearch", url="https://example.com"))
+    result = await adapter.fetch_page(FetchPageRequest(provider="desearch", url="https://example.com"))
 
     assert result.response.data[0].content == "example page content"
     assert result.billing is not None
@@ -410,7 +420,7 @@ async def test_desearch_client_fetch_page_captures_text_cost_from_headers() -> N
     assert result.billing.source == "response_headers"
 
 
-async def test_desearch_client_malformed_billing_metadata_records_reference_fallback_evidence() -> None:
+async def test_desearch_client_malformed_billing_metadata_returns_response_for_static_pricing() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -424,17 +434,70 @@ async def test_desearch_client_malformed_billing_metadata_records_reference_fall
     )
     adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
 
-    result = await adapter.search_web_with_billing(
+    result = await adapter.search_web(
         SearchWebSearchRequest(provider="desearch", search_queries=("harnyx",), num=5)
     )
 
-    assert result.billing is not None
+    assert result.response.data
+    assert result.billing.actual_cost_provider == "desearch"
     assert result.billing.actual_cost_usd is None
     assert result.billing.billable_units == 1
-    assert result.billing.source == "reference_fallback"
+    assert result.billing.source == "missing_provider_metadata"
 
 
-async def test_desearch_client_partial_billing_metadata_keeps_result_count_for_runtime_fallback() -> None:
+async def test_desearch_client_rejects_nonfinite_billing_metadata() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"data": [{"link": "https://example.com"}]},
+            headers={"X-Desearch-Cost-Usd": "nan"},
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://api.desearch.ai",
+        transport=httpx.MockTransport(handler),
+    )
+    adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
+
+    with pytest.raises(ToolProviderError) as exc_info:
+        await adapter.search_web(
+            SearchWebSearchRequest(provider="desearch", search_queries=("harnyx",), num=5)
+        )
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert "cost metadata must be finite" in str(exc_info.value.__cause__)
+
+
+@pytest.mark.parametrize(
+    ("json_body", "headers"),
+    [
+        ({"data": [{"link": "https://example.com"}], "cost_usd": -1}, {}),
+        ({"data": [{"link": "https://example.com"}]}, {"X-Desearch-Cost-Usd": "-1"}),
+    ],
+)
+async def test_desearch_client_rejects_negative_billing_metadata(
+    json_body: dict[str, object],
+    headers: dict[str, str],
+) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=json_body, headers=headers)
+
+    client = httpx.AsyncClient(
+        base_url="https://api.desearch.ai",
+        transport=httpx.MockTransport(handler),
+    )
+    adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
+
+    with pytest.raises(ToolProviderError) as exc_info:
+        await adapter.search_web(
+            SearchWebSearchRequest(provider="desearch", search_queries=("harnyx",), num=5)
+        )
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert "cost metadata must be non-negative" in str(exc_info.value.__cause__)
+
+
+async def test_desearch_client_partial_billing_metadata_returns_response_for_static_pricing() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -447,13 +510,13 @@ async def test_desearch_client_partial_billing_metadata_keeps_result_count_for_r
     )
     adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
 
-    result = await adapter.search_web_with_billing(
+    result = await adapter.search_web(
         SearchWebSearchRequest(provider="desearch", search_queries=("harnyx",), num=5)
     )
 
-    assert result.billing is not None
+    assert result.response.data
+    assert result.billing.actual_cost_provider == "desearch"
     assert result.billing.actual_cost_usd is None
-    assert result.billing.usage_count == 1
     assert result.billing.billable_units == 1
     assert result.billing.source == "response_body"
 

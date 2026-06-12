@@ -11,6 +11,7 @@ from harnyx_commons.llm.pricing import (
     price_miner_llm,
     price_parallel_search,
 )
+from harnyx_commons.llm.providers.chutes_pricing import CHUTES_STATIC_PRICING
 from harnyx_commons.llm.schema import LlmUsage
 from harnyx_commons.llm.tool_models import ALLOWED_TOOL_MODELS, MINER_SELECTED_LLM_PROVIDER_MODELS, parse_tool_model
 from harnyx_commons.tools.runtime_invoker import RuntimeToolInvoker, build_miner_sandbox_tool_invoker
@@ -35,6 +36,18 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
     assert payload["pricing"]["search_web"]["kind"] == "per_referenceable_result"
     assert payload["pricing"]["fetch_page"]["kind"] == "per_referenceable_result"
     assert payload["pricing"]["search_ai"]["kind"] == "per_referenceable_result"
+    assert payload["pricing"]["search_web"]["settlement_order"] == [
+        "provider_returned",
+        "static_pricing",
+    ]
+    assert payload["pricing"]["fetch_page"]["settlement_order"] == [
+        "provider_returned",
+        "static_pricing",
+    ]
+    assert payload["pricing"]["search_ai"]["settlement_order"] == [
+        "provider_returned",
+        "static_pricing",
+    ]
     assert payload["pricing"]["search_web"]["usd_per_referenceable_result"] == pytest.approx(
         SEARCH_PRICING_PER_REFERENCEABLE_RESULT["search_web"]
     )
@@ -51,6 +64,11 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
 
     assert "allowed_tool_models" not in payload
     assert "models" not in payload["pricing"]["llm_chat"]
+    assert payload["pricing"]["llm_chat"]["settlement_order"] == [
+        "provider_returned",
+        "cached_provider_pricing",
+        "static_pricing",
+    ]
     model_prices = payload["pricing"]["llm_chat"]["provider_models"]
     provider_models = payload["allowed_llm_provider_models"]
     assert provider_models == {
@@ -80,7 +98,7 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
     assert "Qwen/Qwen3-Next-80B-A3B-Instruct" not in provider_models["chutes"]
     assert "Qwen/Qwen3-Next-80B-A3B-Instruct" not in model_prices["chutes"]
     assert "Qwen/Qwen3.6-27B-TEE" in provider_models["chutes"]
-    assert model_prices["chutes"]["Qwen/Qwen3.6-27B-TEE"]["input_per_million"] == pytest.approx(0.50)
+    assert model_prices["chutes"]["Qwen/Qwen3.6-27B-TEE"]["input_per_million"] == pytest.approx(0.30)
     assert model_prices["chutes"]["Qwen/Qwen3.6-27B-TEE"]["output_per_million"] == pytest.approx(2.00)
     assert model_prices["chutes"]["Qwen/Qwen3.6-27B-TEE"]["reasoning_per_million"] == pytest.approx(2.00)
     assert "deepseek-ai/DeepSeek-V3.1-TEE" not in provider_models["chutes"]
@@ -88,16 +106,20 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
     assert "google/gemma-4-31B-it" not in provider_models["chutes"]
     assert "google/gemma-4-31B-it" not in model_prices["chutes"]
     assert "google/gemma-4-31B-turbo-TEE" in provider_models["chutes"]
-    assert model_prices["chutes"]["google/gemma-4-31B-turbo-TEE"]["input_per_million"] == pytest.approx(0.13)
-    assert model_prices["chutes"]["google/gemma-4-31B-turbo-TEE"]["output_per_million"] == pytest.approx(0.38)
-    assert model_prices["chutes"]["google/gemma-4-31B-turbo-TEE"]["reasoning_per_million"] == pytest.approx(0.38)
+    assert model_prices["chutes"]["google/gemma-4-31B-turbo-TEE"]["input_per_million"] == pytest.approx(0.15)
+    assert model_prices["chutes"]["google/gemma-4-31B-turbo-TEE"]["output_per_million"] == pytest.approx(0.42)
+    assert model_prices["chutes"]["google/gemma-4-31B-turbo-TEE"]["reasoning_per_million"] == pytest.approx(0.42)
     model = "deepseek-ai/DeepSeek-V3.2-TEE"
     assert model in provider_models["chutes"]
-    assert MODEL_PRICING[model].reasoning_per_million == pytest.approx(0.0)
-    assert model_prices["chutes"][model]["input_per_million"] == pytest.approx(MODEL_PRICING[model].input_per_million)
-    assert model_prices["chutes"][model]["output_per_million"] == pytest.approx(MODEL_PRICING[model].output_per_million)
+    assert CHUTES_STATIC_PRICING[model].reasoning_per_million == pytest.approx(0.0)
+    assert model_prices["chutes"][model]["input_per_million"] == pytest.approx(
+        CHUTES_STATIC_PRICING[model].input_per_million
+    )
+    assert model_prices["chutes"][model]["output_per_million"] == pytest.approx(
+        CHUTES_STATIC_PRICING[model].output_per_million
+    )
     assert model_prices["chutes"][model]["reasoning_per_million"] == pytest.approx(
-        MODEL_PRICING[model].billable_reasoning_per_million
+        CHUTES_STATIC_PRICING[model].billable_reasoning_per_million
     )
     assert "deepseek/deepseek-v3.2" in provider_models["openrouter"]
     assert model_prices["openrouter"]["deepseek/deepseek-v3.2"]["input_per_million"] == pytest.approx(

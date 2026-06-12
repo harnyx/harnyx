@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from typing import cast
 from uuid import uuid4
 
 import pytest
@@ -17,9 +18,7 @@ from harnyx_commons.domain.tool_call import (
 )
 from harnyx_commons.errors import ToolInvocationTimeoutError, ToolProviderError
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
-from harnyx_commons.llm.pricing import price_llm, price_miner_llm
 from harnyx_commons.llm.schema import LlmChoice, LlmChoiceMessage, LlmMessageContentPart, LlmResponse, LlmUsage
-from harnyx_commons.llm.tool_models import parse_tool_model
 from harnyx_commons.tools.dto import ToolInvocationRequest
 from harnyx_commons.tools.executor import ToolExecutor, ToolInvocationContext, ToolInvocationOutput, ToolInvoker
 from harnyx_commons.tools.usage_tracker import UsageTracker
@@ -36,9 +35,34 @@ from validator.tests.fixtures.fakes import FakeReceiptLog, FakeSessionRegistry
 
 pytestmark = pytest.mark.anyio("asyncio")
 
+TEST_SEARCH_COST_USD = 0.005
+TEST_LLM_COST_USD = 0.0042
+
 
 def generate_token() -> str:
     return uuid4().hex
+
+
+def search_output(payload: dict[str, object], *, cost_usd: float = TEST_SEARCH_COST_USD) -> ToolInvocationOutput:
+    return ToolInvocationOutput(
+        public_payload=payload,
+        actual_cost_usd=cost_usd,
+        actual_cost_provider="parallel",
+    )
+
+
+def llm_output(
+    response: LlmResponse,
+    *,
+    cost_usd: float = TEST_LLM_COST_USD,
+    execution: ToolExecutionFacts | None = None,
+) -> ToolInvocationOutput:
+    return ToolInvocationOutput(
+        public_payload=response.to_payload(),
+        actual_cost_usd=cost_usd,
+        actual_cost_provider="openrouter",
+        execution=execution,
+    )
 
 
 class RecordingToolInvoker(ToolInvoker):
@@ -52,9 +76,9 @@ class RecordingToolInvoker(ToolInvoker):
         args: tuple[object, ...],
         kwargs: dict[str, object],
         context: ToolInvocationContext | None = None,
-    ) -> dict[str, object]:
+    ) -> ToolInvocationOutput:
         self.calls.append((tool_name, args, kwargs))
-        return {"data": [], "search_queries": kwargs.get("search_queries", [])}
+        return search_output({"data": [], "search_queries": kwargs.get("search_queries", [])})
 
 
 class RaisingReceiptLog(FakeReceiptLog):
@@ -84,7 +108,7 @@ class BlockingLlmInvoker(ToolInvoker):
         args: tuple[object, ...],
         kwargs: dict[str, object],
         context: ToolInvocationContext | None = None,
-    ) -> dict[str, object]:
+    ) -> ToolInvocationOutput:
         assert tool_name == "llm_chat"
         self.started.set()
         await self._release.wait()
@@ -105,7 +129,7 @@ class BlockingLlmInvoker(ToolInvoker):
                 total_tokens=15,
             ),
         )
-        return response.to_payload()
+        return llm_output(response)
 
     def release(self) -> None:
         self._release.set()
@@ -232,7 +256,9 @@ async def test_execute_tool_records_receipt_and_updates_budget() -> None:
     ]
     stored_session = session_registry.get(session.session_id)
     assert stored_session is not None
-    assert stored_session.usage.total_cost_usd == pytest.approx(0.0)
+    assert stored_session.usage.total_cost_usd == pytest.approx(TEST_SEARCH_COST_USD)
+    assert stored_session.usage.reference_total_cost_usd == pytest.approx(TEST_SEARCH_COST_USD)
+    assert stored_session.usage.actual_total_cost_usd == pytest.approx(TEST_SEARCH_COST_USD)
 
     receipt = receipt_log.lookup(result.receipt.receipt_id)
     assert receipt is not None
@@ -242,6 +268,76 @@ async def test_execute_tool_records_receipt_and_updates_budget() -> None:
 
     assert token_registry.verify(session.session_id, token)
     assert result.response_payload["data"] == []
+
+
+async def test_execute_tool_rejects_nonfinite_provider_cost_before_settling_usage() -> None:
+    session = make_session()
+    token = generate_token()
+
+    class NonFiniteCostInvoker(ToolInvoker):
+        async def invoke(
+            self,
+            tool_name: str,
+            *,
+            args: tuple[object, ...],
+            kwargs: dict[str, object],
+            context: ToolInvocationContext | None = None,
+        ) -> ToolInvocationOutput:
+            _ = tool_name, args, kwargs, context
+            return search_output({"data": []}, cost_usd=float("nan"))
+
+    executor, receipt_log, session_registry = build_executor_with_invoker(
+        session,
+        token=token,
+        invoker=NonFiniteCostInvoker(),
+    )
+
+    with pytest.raises(ValueError, match="actual_cost_usd must be finite"):
+        await executor.execute(make_request(session, token=token))
+
+    stored_session = session_registry.get(session.session_id)
+    assert stored_session is not None
+    assert stored_session.usage.total_cost_usd == pytest.approx(0.0)
+    receipts = tuple(receipt_log.for_session(session.session_id))
+    assert len(receipts) == 1
+    assert receipts[0].outcome is ToolCallOutcome.INTERNAL_ERROR
+
+
+async def test_execute_tool_rejects_boolean_provider_cost_before_settling_usage() -> None:
+    session = make_session()
+    token = generate_token()
+
+    class BooleanCostInvoker(ToolInvoker):
+        async def invoke(
+            self,
+            tool_name: str,
+            *,
+            args: tuple[object, ...],
+            kwargs: dict[str, object],
+            context: ToolInvocationContext | None = None,
+        ) -> ToolInvocationOutput:
+            _ = tool_name, args, kwargs, context
+            return ToolInvocationOutput(
+                public_payload={"data": []},
+                actual_cost_usd=cast(float, True),
+                actual_cost_provider="parallel",
+            )
+
+    executor, receipt_log, session_registry = build_executor_with_invoker(
+        session,
+        token=token,
+        invoker=BooleanCostInvoker(),
+    )
+
+    with pytest.raises(ValueError, match="actual_cost_usd must be numeric"):
+        await executor.execute(make_request(session, token=token))
+
+    stored_session = session_registry.get(session.session_id)
+    assert stored_session is not None
+    assert stored_session.usage.total_cost_usd == pytest.approx(0.0)
+    receipts = tuple(receipt_log.for_session(session.session_id))
+    assert len(receipts) == 1
+    assert receipts[0].outcome is ToolCallOutcome.INTERNAL_ERROR
 
 
 async def test_execute_tool_does_not_settle_late_completion_after_pending_receipt_is_abandoned() -> None:
@@ -259,6 +355,7 @@ async def test_execute_tool_does_not_settle_late_completion_after_pending_receip
         tool="llm_chat",
         args=(),
         kwargs={
+            "provider": "chutes",
             "model": "zai-org/GLM-5-TEE",
             "messages": [{"role": "user", "content": "ping"}],
         },
@@ -295,6 +392,7 @@ async def test_execute_tool_does_not_record_late_provider_failure_after_pending_
         tool="llm_chat",
         args=(),
         kwargs={
+            "provider": "chutes",
             "model": "zai-org/GLM-5-TEE",
             "messages": [{"role": "user", "content": "ping"}],
         },
@@ -330,6 +428,7 @@ async def test_execute_tool_records_timeout_receipt_when_cancelled() -> None:
         tool="llm_chat",
         args=(),
         kwargs={
+            "provider": "chutes",
             "model": "zai-org/GLM-5-TEE",
             "messages": [{"role": "user", "content": "ping"}],
         },
@@ -419,14 +518,17 @@ async def test_execute_tool_budget_snapshot_clamps_remaining_after_soft_budget_i
             args: tuple[object, ...],
             kwargs: dict[str, object],
             context: ToolInvocationContext | None = None,
-        ) -> dict[str, object]:
+        ) -> ToolInvocationOutput:
             assert tool_name == "search_web"
-            return {
-                "data": [
-                    {"link": "https://a.example", "snippet": "A"},
-                    {"link": "https://b.example", "snippet": "B"},
-                ]
-            }
+            return search_output(
+                {
+                    "data": [
+                        {"link": "https://a.example", "snippet": "A"},
+                        {"link": "https://b.example", "snippet": "B"},
+                    ]
+                },
+                cost_usd=0.0002,
+            )
 
     session_registry = FakeSessionRegistry()
     session_registry.create(session)
@@ -501,16 +603,20 @@ async def test_execute_tool_prices_search_web_by_referenceable_results() -> None
 
     stored_session = session_registry.get(session.session_id)
     assert stored_session is not None
-    assert stored_session.usage.total_cost_usd == pytest.approx(0.0002)
-    assert stored_session.usage.reference_total_cost_usd == pytest.approx(0.0002)
+    assert stored_session.usage.total_cost_usd == pytest.approx(0.005)
+    assert stored_session.usage.reference_total_cost_usd == pytest.approx(0.005)
     assert stored_session.usage.actual_total_cost_usd == pytest.approx(0.005)
+    assert stored_session.usage.cost_by_provider == {"parallel": pytest.approx(0.005)}
+    assert stored_session.usage.reference_cost_by_provider == {"parallel": pytest.approx(0.005)}
     assert stored_session.usage.actual_cost_by_provider == {"parallel": pytest.approx(0.005)}
+    assert result.budget.session_used_budget_usd == pytest.approx(0.005)
+    assert result.budget.session_remaining_budget_usd == pytest.approx(0.995)
     assert "actual_cost_usd" not in result.response_payload
 
     receipt = receipt_log.lookup(result.receipt.receipt_id)
     assert receipt is not None
-    assert receipt.details.cost_usd == pytest.approx(0.0002)
-    assert receipt.details.reference_cost_usd == pytest.approx(0.0002)
+    assert receipt.details.cost_usd == pytest.approx(0.005)
+    assert receipt.details.reference_cost_usd == pytest.approx(0.005)
     assert receipt.details.actual_cost_usd == pytest.approx(0.005)
     assert receipt.details.actual_cost_provider == "parallel"
     assert len(receipt.details.results) == 2
@@ -528,15 +634,18 @@ async def test_execute_tool_prices_search_ai_by_referenceable_results() -> None:
             args: tuple[object, ...],
             kwargs: dict[str, object],
             context: ToolInvocationContext | None = None,
-        ) -> dict[str, object]:
+        ) -> ToolInvocationOutput:
             assert tool_name == "search_ai"
-            return {
-                "data": [
-                    {"url": "https://a.example", "note": "A"},
-                    {"url": None, "note": "missing"},
-                    {"url": "https://b.example", "note": "B"},
-                ]
-            }
+            return search_output(
+                {
+                    "data": [
+                        {"url": "https://a.example", "note": "A"},
+                        {"url": None, "note": "missing"},
+                        {"url": "https://b.example", "note": "B"},
+                    ]
+                },
+                cost_usd=0.0008,
+            )
 
     session_registry = FakeSessionRegistry()
     session_registry.create(session)
@@ -1007,9 +1116,9 @@ async def test_execute_tool_debug_logs_completion_before_budget_exhausted_failur
             args: tuple[object, ...],
             kwargs: dict[str, object],
             context: ToolInvocationContext | None = None,
-        ) -> dict[str, object]:
+        ) -> ToolInvocationOutput:
             assert tool_name == "search_web"
-            return {"data": [{"link": "https://a.example", "snippet": "A"}]}
+            return search_output({"data": [{"link": "https://a.example", "snippet": "A"}]}, cost_usd=0.0001)
 
     executor, _, _ = build_executor_with_invoker(
         session,
@@ -1072,13 +1181,16 @@ async def test_execute_tool_enforces_budget() -> None:
             args: tuple[object, ...],
             kwargs: dict[str, object],
             context: ToolInvocationContext | None = None,
-        ) -> dict[str, object]:
+        ) -> ToolInvocationOutput:
             assert tool_name == "search_web"
-            return {
-                "data": [
-                    {"link": "https://a.example", "snippet": "A"},
-                ]
-            }
+            return search_output(
+                {
+                    "data": [
+                        {"link": "https://a.example", "snippet": "A"},
+                    ]
+                },
+                cost_usd=0.0001,
+            )
 
     session_registry = FakeSessionRegistry()
     session_registry.create(session)
@@ -1101,6 +1213,43 @@ async def test_execute_tool_enforces_budget() -> None:
 
     with pytest.raises(BudgetExceededError):
         await executor.execute(make_request(session, token=token))
+
+
+async def test_execute_tool_exhausts_budget_from_provider_actual_cost() -> None:
+    session = make_session(budget_usd=0.001, hard_limit_usd=0.001)
+    token = generate_token()
+
+    class SearchWebInvoker(ToolInvoker):
+        async def invoke(
+            self,
+            tool_name: str,
+            *,
+            args: tuple[object, ...],
+            kwargs: dict[str, object],
+            context: ToolInvocationContext | None = None,
+        ) -> ToolInvocationOutput:
+            assert tool_name == "search_web"
+            return ToolInvocationOutput(
+                public_payload={"data": [{"link": "https://a.example", "snippet": "A"}]},
+                actual_cost_usd=0.005,
+                actual_cost_provider="parallel",
+            )
+
+    executor, _, session_registry = build_executor_with_invoker(
+        session,
+        token=token,
+        invoker=SearchWebInvoker(),
+    )
+
+    with pytest.raises(BudgetExceededError):
+        await executor.execute(make_request(session, token=token))
+
+    stored = session_registry.get(session.session_id)
+    assert stored is not None
+    assert stored.status is SessionStatus.EXHAUSTED
+    assert stored.usage.total_cost_usd == pytest.approx(0.005)
+    assert stored.usage.reference_total_cost_usd == pytest.approx(0.005)
+    assert stored.usage.actual_total_cost_usd == pytest.approx(0.005)
 
 
 async def test_execute_tool_rejects_expired_session() -> None:
@@ -1182,6 +1331,7 @@ async def test_execute_tool_records_llm_tokens_for_llm_chat(model: str) -> None:
         tool="llm_chat",
         args=(),
         kwargs={
+            "provider": "chutes",
             "model": model,
             "messages": [{"role": "user", "content": "ping"}],
             "thinking": {"enabled": True, "effort": "medium"},
@@ -1201,17 +1351,143 @@ async def test_execute_tool_records_llm_tokens_for_llm_chat(model: str) -> None:
     assert result.response_payload["usage"]["total_tokens"] == 15
     assert result.response_payload["usage"]["reasoning_tokens"] == 7
     assert "actual_cost_usd" not in result.response_payload
-    assert stored_session.usage.total_cost_usd == pytest.approx(
-        price_llm(parse_tool_model(model), usage)
-    )
-    assert stored_session.usage.reference_total_cost_usd == pytest.approx(
-        price_llm(parse_tool_model(model), usage)
-    )
+    assert stored_session.usage.total_cost_usd == pytest.approx(0.003)
+    assert stored_session.usage.reference_total_cost_usd == pytest.approx(0.003)
     assert stored_session.usage.actual_total_cost_usd == pytest.approx(0.003)
-    assert stored_session.usage.cost_by_provider["chutes"] == pytest.approx(
-        price_llm(parse_tool_model(model), usage)
-    )
+    assert stored_session.usage.cost_by_provider["openrouter"] == pytest.approx(0.003)
+    assert stored_session.usage.reference_cost_by_provider["openrouter"] == pytest.approx(0.003)
     assert stored_session.usage.actual_cost_by_provider["openrouter"] == pytest.approx(0.003)
+    assert result.budget.session_used_budget_usd == pytest.approx(0.003)
+
+
+async def test_execute_tool_rejects_llm_chat_usage_when_provider_is_missing() -> None:
+    session = make_session(budget_usd=1.0)
+    token = generate_token()
+    model = "zai-org/GLM-5-TEE"
+
+    class UsageToolInvoker(ToolInvoker):
+        async def invoke(
+            self,
+            tool_name: str,
+            *,
+            args: tuple[object, ...],
+            kwargs: dict[str, object],
+            context: ToolInvocationContext | None = None,
+        ) -> ToolInvocationOutput:
+            response = LlmResponse(
+                id="offline-chutes",
+                choices=(
+                    LlmChoice(
+                        index=0,
+                        message=LlmChoiceMessage(
+                            role="assistant",
+                            content=(LlmMessageContentPart(type="text", text="ok"),),
+                        ),
+                    ),
+                ),
+                usage=LlmUsage(total_tokens=15),
+            )
+            return llm_output(response)
+
+    executor, receipt_log, session_registry = build_executor_with_invoker(
+        session,
+        token=token,
+        invoker=UsageToolInvoker(),
+    )
+    request = ToolInvocationRequest(
+        session_id=session.session_id,
+        token=token,
+        tool="llm_chat",
+        args=(),
+        kwargs={
+            "model": model,
+            "messages": [{"role": "user", "content": "ping"}],
+        },
+    )
+
+    with pytest.raises(ValueError, match="llm tool request must include a 'provider' payload value"):
+        await executor.execute(request)
+
+    stored_session = session_registry.get(session.session_id)
+    assert stored_session is not None
+    assert stored_session.usage.total_cost_usd == pytest.approx(0.0)
+    assert stored_session.usage.llm_usage_totals == {}
+    receipts = tuple(receipt_log.for_session(session.session_id))
+    assert len(receipts) == 1
+    assert receipts[0].outcome is ToolCallOutcome.INTERNAL_ERROR
+
+
+async def test_execute_tool_records_zero_token_llm_usage_when_counters_are_missing() -> None:
+    session = make_session(budget_usd=1.0)
+    token = generate_token()
+    model = "deepseek/deepseek-v3.2"
+
+    class UsageToolInvoker(ToolInvoker):
+        async def invoke(
+            self,
+            tool_name: str,
+            *,
+            args: tuple[object, ...],
+            kwargs: dict[str, object],
+            context: ToolInvocationContext | None = None,
+        ) -> ToolInvocationOutput:
+            response = LlmResponse(
+                id="offline-openrouter",
+                choices=(
+                    LlmChoice(
+                        index=0,
+                        message=LlmChoiceMessage(
+                            role="assistant",
+                            content=(LlmMessageContentPart(type="text", text="ok"),),
+                        ),
+                    ),
+                ),
+                usage=LlmUsage(),
+            )
+            return llm_output(response, cost_usd=0.003)
+
+    session_registry = FakeSessionRegistry()
+    session_registry.create(session)
+    receipt_log = FakeReceiptLog()
+    usage_tracker = UsageTracker()
+    token_registry = InMemoryTokenRegistry()
+    token_registry.register(session.session_id, token)
+
+    executor = ToolExecutor(
+        session_registry=session_registry,
+        receipt_log=receipt_log,
+        usage_tracker=usage_tracker,
+        tool_invoker=UsageToolInvoker(),
+        token_registry=token_registry,
+        clock=lambda: datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
+    )
+
+    result = await executor.execute(
+        ToolInvocationRequest(
+            session_id=session.session_id,
+            token=token,
+            tool="llm_chat",
+            args=(),
+            kwargs={
+                "provider": "openrouter",
+                "model": model,
+                "messages": [{"role": "user", "content": "ping"}],
+            },
+        )
+    )
+
+    stored_session = session_registry.get(session.session_id)
+    assert stored_session is not None
+    assert stored_session.usage.llm_tokens_last_call == 0
+    usage_totals = stored_session.usage.llm_usage_totals["openrouter"][model]
+    assert usage_totals.call_count == 1
+    assert usage_totals.prompt_tokens == 0
+    assert usage_totals.completion_tokens == 0
+    assert usage_totals.total_tokens == 0
+    assert usage_totals.reasoning_tokens == 0
+    assert result.usage is not None
+    assert result.usage.total_tokens == 0
+    assert stored_session.usage.total_cost_usd == pytest.approx(0.003)
 
 
 async def test_execute_tool_records_llm_tokens_for_first_positional_llm_chat_payload() -> None:
@@ -1233,7 +1509,7 @@ async def test_execute_tool_records_llm_tokens_for_first_positional_llm_chat_pay
             args: tuple[object, ...],
             kwargs: dict[str, object],
             context: ToolInvocationContext | None = None,
-        ) -> dict[str, object]:
+        ) -> ToolInvocationOutput:
             response = LlmResponse(
                 id="offline-chutes",
                 choices=(
@@ -1247,7 +1523,7 @@ async def test_execute_tool_records_llm_tokens_for_first_positional_llm_chat_pay
                 ),
                 usage=usage,
             )
-            return response.to_payload()
+            return llm_output(response)
 
     session_registry = FakeSessionRegistry()
     session_registry.create(session)
@@ -1269,7 +1545,7 @@ async def test_execute_tool_records_llm_tokens_for_first_positional_llm_chat_pay
         session_id=session.session_id,
         token=token,
         tool="llm_chat",
-        args=({"model": model, "messages": [{"role": "user", "content": "ping"}]},),
+        args=({"provider": "chutes", "model": model, "messages": [{"role": "user", "content": "ping"}]},),
         kwargs={},
     )
 
@@ -1282,9 +1558,7 @@ async def test_execute_tool_records_llm_tokens_for_first_positional_llm_chat_pay
     assert usage_totals.total_tokens == 15
     assert usage_totals.call_count == 1
     assert result.response_payload["usage"]["total_tokens"] == 15
-    assert stored_session.usage.total_cost_usd == pytest.approx(
-        price_llm(parse_tool_model(model), usage)
-    )
+    assert stored_session.usage.total_cost_usd == pytest.approx(TEST_LLM_COST_USD)
 
 
 async def test_execute_tool_records_selected_llm_provider_for_llm_chat_usage() -> None:
@@ -1305,7 +1579,7 @@ async def test_execute_tool_records_selected_llm_provider_for_llm_chat_usage() -
             args: tuple[object, ...],
             kwargs: dict[str, object],
             context: ToolInvocationContext | None = None,
-        ) -> dict[str, object]:
+        ) -> ToolInvocationOutput:
             assert tool_name == "llm_chat"
             assert kwargs["provider"] == "openrouter"
             response = LlmResponse(
@@ -1321,7 +1595,7 @@ async def test_execute_tool_records_selected_llm_provider_for_llm_chat_usage() -
                 ),
                 usage=usage,
             )
-            return response.to_payload()
+            return llm_output(response)
 
     session_registry = FakeSessionRegistry()
     session_registry.create(session)
@@ -1362,11 +1636,11 @@ async def test_execute_tool_records_selected_llm_provider_for_llm_chat_usage() -
     assert usage_totals.total_tokens == 15
     assert usage_totals.call_count == 1
     assert stored_session.usage.cost_by_provider == {
-        "openrouter": pytest.approx(price_miner_llm("openrouter", model, usage)),
+        "openrouter": pytest.approx(TEST_LLM_COST_USD),
     }
 
 
-async def test_execute_tool_counts_reasoning_tokens_in_missing_total_fallback() -> None:
+async def test_execute_tool_counts_reasoning_tokens_when_total_is_missing() -> None:
     session = make_session(budget_usd=1.0)
     token = generate_token()
     usage = LlmUsage(
@@ -1384,7 +1658,7 @@ async def test_execute_tool_counts_reasoning_tokens_in_missing_total_fallback() 
             args: tuple[object, ...],
             kwargs: dict[str, object],
             context: ToolInvocationContext | None = None,
-        ) -> dict[str, object]:
+        ) -> ToolInvocationOutput:
             response = LlmResponse(
                 id="offline-chutes",
                 choices=(
@@ -1398,7 +1672,7 @@ async def test_execute_tool_counts_reasoning_tokens_in_missing_total_fallback() 
                 ),
                 usage=usage,
             )
-            return response.to_payload()
+            return llm_output(response)
 
     session_registry = FakeSessionRegistry()
     session_registry.create(session)
@@ -1422,6 +1696,7 @@ async def test_execute_tool_counts_reasoning_tokens_in_missing_total_fallback() 
         tool="llm_chat",
         args=(),
         kwargs={
+            "provider": "chutes",
             "model": "deepseek-ai/DeepSeek-V3.2-TEE",
             "messages": [{"role": "user", "content": "ping"}],
         },
@@ -1442,7 +1717,7 @@ async def test_execute_tool_counts_reasoning_tokens_in_missing_total_fallback() 
     assert result.response_payload["usage"]["total_tokens"] is None
 
 
-async def test_execute_tool_counts_reasoning_only_usage_in_missing_total_fallback() -> None:
+async def test_execute_tool_counts_reasoning_only_usage_when_total_is_missing() -> None:
     session = make_session(budget_usd=1.0)
     token = generate_token()
     usage = LlmUsage(reasoning_tokens=7)
@@ -1455,7 +1730,7 @@ async def test_execute_tool_counts_reasoning_only_usage_in_missing_total_fallbac
             args: tuple[object, ...],
             kwargs: dict[str, object],
             context: ToolInvocationContext | None = None,
-        ) -> dict[str, object]:
+        ) -> ToolInvocationOutput:
             response = LlmResponse(
                 id="offline-chutes",
                 choices=(
@@ -1469,7 +1744,7 @@ async def test_execute_tool_counts_reasoning_only_usage_in_missing_total_fallbac
                 ),
                 usage=usage,
             )
-            return response.to_payload()
+            return llm_output(response)
 
     session_registry = FakeSessionRegistry()
     session_registry.create(session)
@@ -1493,6 +1768,7 @@ async def test_execute_tool_counts_reasoning_only_usage_in_missing_total_fallbac
         tool="llm_chat",
         args=(),
         kwargs={
+            "provider": "chutes",
             "model": "deepseek-ai/DeepSeek-V3.2-TEE",
             "messages": [{"role": "user", "content": "ping"}],
         },
@@ -1534,7 +1810,7 @@ async def test_execute_tool_ignores_stale_response_model_metadata_for_llm_chat()
             args: tuple[object, ...],
             kwargs: dict[str, object],
             context: ToolInvocationContext | None = None,
-        ) -> dict[str, object]:
+        ) -> ToolInvocationOutput:
             response = LlmResponse(
                 id="offline-chutes",
                 choices=(
@@ -1550,7 +1826,11 @@ async def test_execute_tool_ignores_stale_response_model_metadata_for_llm_chat()
             )
             payload = response.to_payload()
             payload["harnyx_model"] = stale_payload_model
-            return payload
+            return ToolInvocationOutput(
+                public_payload=payload,
+                actual_cost_usd=TEST_LLM_COST_USD,
+                actual_cost_provider="openrouter",
+            )
 
     session_registry = FakeSessionRegistry()
     session_registry.create(session)
@@ -1574,6 +1854,7 @@ async def test_execute_tool_ignores_stale_response_model_metadata_for_llm_chat()
         tool="llm_chat",
         args=(),
         kwargs={
+            "provider": "chutes",
             "model": request_model,
             "messages": [{"role": "user", "content": "ping"}],
         },
@@ -1589,12 +1870,8 @@ async def test_execute_tool_ignores_stale_response_model_metadata_for_llm_chat()
     assert usage_totals.completion_tokens == 5
     assert usage_totals.total_tokens == 15
     assert usage_totals.call_count == 1
-    assert stored_session.usage.total_cost_usd == pytest.approx(
-        price_llm(parse_tool_model(request_model), usage)
-    )
-    assert stored_session.usage.cost_by_provider["chutes"] == pytest.approx(
-        price_llm(parse_tool_model(request_model), usage)
-    )
+    assert stored_session.usage.total_cost_usd == pytest.approx(TEST_LLM_COST_USD)
+    assert stored_session.usage.cost_by_provider["openrouter"] == pytest.approx(TEST_LLM_COST_USD)
 
 
 async def test_execute_tool_records_llm_elapsed_ms_only_in_receipt_details() -> None:
@@ -1631,10 +1908,7 @@ async def test_execute_tool_records_llm_elapsed_ms_only_in_receipt_details() -> 
                     total_tokens=15,
                 ),
             )
-            return ToolInvocationOutput(
-                public_payload=response.to_payload(),
-                execution=ToolExecutionFacts(elapsed_ms=1250.0),
-            )
+            return llm_output(response, execution=ToolExecutionFacts(elapsed_ms=1250.0))
 
     session_registry = FakeSessionRegistry()
     session_registry.create(session)
@@ -1657,6 +1931,7 @@ async def test_execute_tool_records_llm_elapsed_ms_only_in_receipt_details() -> 
         tool="llm_chat",
         args=(),
         kwargs={
+            "provider": "chutes",
             "model": "zai-org/GLM-5-TEE",
             "messages": [{"role": "user", "content": "ping"}],
         },
@@ -1670,6 +1945,7 @@ async def test_execute_tool_records_llm_elapsed_ms_only_in_receipt_details() -> 
     assert receipt.details.request_payload == {
         "args": [],
         "kwargs": {
+            "provider": "chutes",
             "model": "zai-org/GLM-5-TEE",
             "messages": [{"role": "user", "content": "ping"}],
         },
@@ -1696,15 +1972,18 @@ async def test_execute_tool_allows_settlement_after_sibling_exhausts_session() -
             args: tuple[object, ...],
             kwargs: dict[str, object],
             context: ToolInvocationContext | None = None,
-        ) -> dict[str, object]:
+        ) -> ToolInvocationOutput:
             stored = self._sessions.get(session.session_id)
             assert stored is not None
             self._sessions.update(stored.mark_exhausted())
-            return {
-                "data": [
-                    {"link": "https://a.example", "snippet": "A"},
-                ]
-            }
+            return search_output(
+                {
+                    "data": [
+                        {"link": "https://a.example", "snippet": "A"},
+                    ]
+                },
+                cost_usd=0.0001,
+            )
 
     session_registry = FakeSessionRegistry()
     session_registry.create(session)
@@ -1743,12 +2022,15 @@ async def test_execute_tool_records_receipt_for_search_call_that_exhausts_budget
             args: tuple[object, ...],
             kwargs: dict[str, object],
             context: ToolInvocationContext | None = None,
-        ) -> dict[str, object]:
-            return {
-                "data": [
-                    {"link": "https://a.example", "snippet": "A"},
-                ]
-            }
+        ) -> ToolInvocationOutput:
+            return search_output(
+                {
+                    "data": [
+                        {"link": "https://a.example", "snippet": "A"},
+                    ]
+                },
+                cost_usd=0.0001,
+            )
 
     session_registry = FakeSessionRegistry()
     session_registry.create(session)
@@ -1795,8 +2077,8 @@ async def test_execute_tool_budget_exhaustion_records_one_successful_receipt_onl
             args: tuple[object, ...],
             kwargs: dict[str, object],
             context: ToolInvocationContext | None = None,
-        ) -> dict[str, object]:
-            return {"data": [{"link": "https://a.example", "snippet": "A"}]}
+        ) -> ToolInvocationOutput:
+            return search_output({"data": [{"link": "https://a.example", "snippet": "A"}]}, cost_usd=0.0001)
 
     executor, receipt_log, _ = build_executor_with_invoker(
         session,
@@ -1830,8 +2112,8 @@ async def test_execute_tool_attempts_failed_receipt_for_receipt_persistence_fail
             args: tuple[object, ...],
             kwargs: dict[str, object],
             context: ToolInvocationContext | None = None,
-        ) -> dict[str, object]:
-            return {"data": []}
+        ) -> ToolInvocationOutput:
+            return search_output({"data": []})
 
     session_registry = FakeSessionRegistry()
     session_registry.create(session)
@@ -1873,11 +2155,11 @@ async def test_execute_tool_preserves_successful_receipt_for_usage_settlement_fa
             args: tuple[object, ...],
             kwargs: dict[str, object],
             context: ToolInvocationContext | None = None,
-        ) -> dict[str, object]:
+        ) -> ToolInvocationOutput:
             stored = self._sessions.get(session.session_id)
             assert stored is not None
             self._sessions.update(stored.mark_error())
-            return {"data": []}
+            return search_output({"data": []})
 
     session_registry = FakeSessionRegistry()
     session_registry.create(session)

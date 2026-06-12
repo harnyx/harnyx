@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from harnyx_commons.errors import ToolProviderError
+from harnyx_commons.llm.pricing import price_parallel_extract, price_parallel_search
 from harnyx_commons.tools.parallel import ParallelClient
 from harnyx_commons.tools.search_models import FetchPageRequest, SearchAiSearchRequest, SearchWebSearchRequest
 
@@ -42,14 +43,18 @@ async def test_parallel_client_search_web_posts_keyword_list() -> None:
     )
     adapter = ParallelClient(base_url="https://api.parallel.ai", api_key="parallel-key", client=client)
 
-    response = await adapter.search_web(
+    result = await adapter.search_web(
         SearchWebSearchRequest(provider="parallel", search_queries=("alpha", "beta"), num=3)
     )
+    response = result.response
 
     assert response.data[0].link == "https://example.com/a"
     assert response.data[0].snippet == "alpha snippet"
     assert response.attempts == 1
     assert response.retry_reasons == ()
+    assert result.billing.actual_cost_usd == pytest.approx(price_parallel_search(billable_results=1))
+    assert result.billing.actual_cost_provider == "parallel"
+    assert result.billing.billable_units == 1
     assert captured["method"] == "POST"
     assert captured["url"] == "https://api.parallel.ai/v1beta/search"
     assert captured["headers"]["x-api-key"] == "parallel-key"
@@ -84,10 +89,13 @@ async def test_parallel_client_search_ai_uses_objective() -> None:
     )
     adapter = ParallelClient(base_url="https://api.parallel.ai", api_key="parallel-key", client=client)
 
-    response = await adapter.search_ai(SearchAiSearchRequest(provider="parallel", prompt="find beta", count=10))
+    result = await adapter.search_ai(SearchAiSearchRequest(provider="parallel", prompt="find beta", count=10))
+    response = result.response
 
     assert response.data[0].url == "https://example.com/b"
     assert response.data[0].note == "beta summary"
+    assert result.billing.actual_cost_usd == pytest.approx(price_parallel_search(billable_results=1))
+    assert result.billing.actual_cost_provider == "parallel"
     assert captured["json"] == {
         "objective": "find beta",
         "max_results": 10,
@@ -119,12 +127,15 @@ async def test_parallel_client_fetch_page_uses_extract() -> None:
     )
     adapter = ParallelClient(base_url="https://api.parallel.ai", api_key="parallel-key", client=client)
 
-    response = await adapter.fetch_page(FetchPageRequest(provider="parallel", url="https://example.com"))
+    result = await adapter.fetch_page(FetchPageRequest(provider="parallel", url="https://example.com"))
+    response = result.response
 
     assert response.data[0].url == "https://example.com"
     assert response.data[0].content == "full page text"
     assert response.attempts == 1
     assert response.retry_reasons == ()
+    assert result.billing.actual_cost_usd == pytest.approx(price_parallel_extract(url_count=1))
+    assert result.billing.actual_cost_provider == "parallel"
     assert captured["json"] == {
         "urls": ["https://example.com"],
         "full_content": True,

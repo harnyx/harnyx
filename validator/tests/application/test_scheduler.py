@@ -284,6 +284,7 @@ def _llm_receipt(
     uid: int,
     total_tokens: int,
     elapsed_ms: float,
+    cost_usd: float = 0.0042,
     active_attempt: int = 1,
 ) -> ToolCall:
     return ToolCall(
@@ -297,10 +298,16 @@ def _llm_receipt(
             request_hash="req",
             request_payload={
                 "args": [],
-                "kwargs": {"model": "google/gemma-4-31B-turbo-TEE"},
+                "kwargs": {
+                    "provider": "chutes",
+                    "model": "google/gemma-4-31B-turbo-TEE",
+                },
             },
             response_hash="res",
             response_payload={"usage": {"total_tokens": total_tokens}},
+            cost_usd=cost_usd,
+            actual_cost_usd=cost_usd,
+            actual_cost_provider="openrouter",
             execution=ToolExecutionFacts(elapsed_ms=elapsed_ms),
             extra={"session_active_attempt": str(active_attempt)},
         ),

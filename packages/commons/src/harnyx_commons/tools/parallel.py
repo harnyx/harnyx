@@ -13,8 +13,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from harnyx_commons.config.external_client import ExternalClientRetrySettings
 from harnyx_commons.errors import ToolProviderError
+from harnyx_commons.llm.pricing import price_parallel_extract, price_parallel_search
 from harnyx_commons.llm.retry_utils import RetryPolicy, backoff_ms
-from harnyx_commons.tools.provider_billing import BillingAwareSearchResponse, ProviderBillingMetadata
+from harnyx_commons.tools.provider_billing import ProviderBillingMetadata, SearchProviderResult
 from harnyx_commons.tools.search_models import (
     FetchPageRequest,
     FetchPageResponse,
@@ -136,13 +137,10 @@ class ParallelClient:
             asyncio.Semaphore(max_concurrent) if max_concurrent and max_concurrent > 0 else None
         )
 
-    async def search_web(self, request: SearchWebSearchRequest) -> SearchWebSearchResponse:
-        return (await self.search_web_with_billing(request)).response
-
-    async def search_web_with_billing(
+    async def search_web(
         self,
         request: SearchWebSearchRequest,
-    ) -> BillingAwareSearchResponse[SearchWebSearchResponse]:
+    ) -> SearchProviderResult[SearchWebSearchResponse]:
         payload: dict[str, object] = {
             "search_queries": list(request.search_queries),
         }
@@ -161,21 +159,18 @@ class ParallelClient:
             attempts=data.attempts,
             retry_reasons=data.retry_reasons,
         )
-        return BillingAwareSearchResponse(
+        return SearchProviderResult(
             response=response,
-            billing=_parallel_billing(
+            billing=_parallel_search_billing(
                 billable_units=len(data.results),
                 provider_request_id=data.search_id,
             ),
         )
 
-    async def search_ai(self, request: SearchAiSearchRequest) -> SearchAiSearchResponse:
-        return (await self.search_ai_with_billing(request)).response
-
-    async def search_ai_with_billing(
+    async def search_ai(
         self,
         request: SearchAiSearchRequest,
-    ) -> BillingAwareSearchResponse[SearchAiSearchResponse]:
+    ) -> SearchProviderResult[SearchAiSearchResponse]:
         payload: dict[str, object] = {
             "objective": request.prompt,
             "max_results": request.count,
@@ -193,21 +188,18 @@ class ParallelClient:
             attempts=data.attempts,
             retry_reasons=data.retry_reasons,
         )
-        return BillingAwareSearchResponse(
+        return SearchProviderResult(
             response=response,
-            billing=_parallel_billing(
+            billing=_parallel_search_billing(
                 billable_units=len(data.results),
                 provider_request_id=data.search_id,
             ),
         )
 
-    async def fetch_page(self, request: FetchPageRequest) -> FetchPageResponse:
-        return (await self.fetch_page_with_billing(request)).response
-
-    async def fetch_page_with_billing(
+    async def fetch_page(
         self,
         request: FetchPageRequest,
-    ) -> BillingAwareSearchResponse[FetchPageResponse]:
+    ) -> SearchProviderResult[FetchPageResponse]:
         payload = {
             "urls": [request.url],
             "full_content": True,
@@ -228,9 +220,9 @@ class ParallelClient:
             attempts=data.attempts,
             retry_reasons=data.retry_reasons,
         )
-        return BillingAwareSearchResponse(
+        return SearchProviderResult(
             response=response,
-            billing=_parallel_billing(
+            billing=_parallel_fetch_billing(
                 billable_units=len(data.results),
                 provider_request_id=data.extract_id,
             ),
@@ -319,9 +311,39 @@ def _should_retry_status(status: int | None) -> bool:
     return status == 429 or (status is not None and status >= 500)
 
 
-def _parallel_billing(*, billable_units: int, provider_request_id: str | None) -> ProviderBillingMetadata:
+def _parallel_search_billing(
+    *,
+    billable_units: int,
+    provider_request_id: str | None,
+) -> ProviderBillingMetadata:
+    return _parallel_billing(
+        billable_units=billable_units,
+        actual_cost_usd=price_parallel_search(billable_results=billable_units),
+        provider_request_id=provider_request_id,
+    )
+
+
+def _parallel_fetch_billing(
+    *,
+    billable_units: int,
+    provider_request_id: str | None,
+) -> ProviderBillingMetadata:
+    return _parallel_billing(
+        billable_units=billable_units,
+        actual_cost_usd=price_parallel_extract(url_count=billable_units),
+        provider_request_id=provider_request_id,
+    )
+
+
+def _parallel_billing(
+    *,
+    billable_units: int,
+    actual_cost_usd: float,
+    provider_request_id: str | None,
+) -> ProviderBillingMetadata:
     return ProviderBillingMetadata(
         actual_cost_provider="parallel",
+        actual_cost_usd=actual_cost_usd,
         billable_units=billable_units,
         provider_request_id=provider_request_id,
         source="response_results",

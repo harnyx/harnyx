@@ -13,12 +13,14 @@ from harnyx_commons.llm.schema import LlmUsage
 
 _DEFAULT_TTL_SECONDS = 3600.0
 
-CHUTES_ACTUAL_COST_FALLBACK_PRICING: Mapping[str, ModelPricing] = {
+CHUTES_STATIC_PRICING: Mapping[str, ModelPricing] = {
     "deepseek-ai/DeepSeek-V3.2-TEE": ModelPricing(0.28, 0.42, 0.0),
     "zai-org/GLM-5-TEE": ModelPricing(0.95, 2.55, 0.0),
     "Qwen/Qwen3.6-27B-TEE": ModelPricing(0.30, 2.00, 0.0),
     "google/gemma-4-31B-turbo-TEE": ModelPricing(0.15, 0.42, 0.0),
 }
+
+CHUTES_ACTUAL_COST_FALLBACK_PRICING = CHUTES_STATIC_PRICING
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,17 +31,18 @@ class ChutesActualCost:
 
 
 class ChutesModelPricingCache:
-    """Caches Chutes model pricing and provides hard-coded actual-cost fallback rates."""
+    """Caches Chutes model pricing and provides repo-owned static rates."""
 
     def __init__(
         self,
         *,
         cached_pricing: Mapping[str, ModelPricing] | None = None,
         ttl_seconds: float = _DEFAULT_TTL_SECONDS,
-        fallback_pricing: Mapping[str, ModelPricing] = CHUTES_ACTUAL_COST_FALLBACK_PRICING,
+        static_pricing: Mapping[str, ModelPricing] = CHUTES_STATIC_PRICING,
+        fallback_pricing: Mapping[str, ModelPricing] | None = None,
     ) -> None:
         self._ttl_seconds = ttl_seconds
-        self._fallback_pricing = dict(fallback_pricing)
+        self._static_pricing = dict(static_pricing if fallback_pricing is None else fallback_pricing)
         self._snapshot: dict[str, ModelPricing] = dict(cached_pricing or {})
         self._snapshot_loaded_at: float | None = time.monotonic() if cached_pricing is not None else None
 
@@ -50,10 +53,22 @@ class ChutesModelPricingCache:
     async def price(self, *, model: str, usage: LlmUsage) -> ChutesActualCost:
         cached = self._cached_pricing(model)
         if cached is not None:
-            return _token_price(model=model, usage=usage, pricing=cached, source="live_cache")
+            return _token_price(
+                model=model,
+                usage=usage,
+                pricing=cached,
+                settlement_source="cached_provider_pricing",
+                pricing_origin="chutes_live_snapshot",
+            )
 
-        fallback = self._fallback_pricing[model]
-        return _token_price(model=model, usage=usage, pricing=fallback, source="hard_coded_fallback")
+        static_pricing = self._static_pricing[model]
+        return _token_price(
+            model=model,
+            usage=usage,
+            pricing=static_pricing,
+            settlement_source="static_pricing",
+            pricing_origin="chutes_repo_rates",
+        )
 
     def _cached_pricing(self, model: str) -> ModelPricing | None:
         if self._snapshot_loaded_at is None:
@@ -130,7 +145,8 @@ def _token_price(
     model: str,
     usage: LlmUsage,
     pricing: ModelPricing,
-    source: Literal["live_cache", "hard_coded_fallback"],
+    settlement_source: Literal["cached_provider_pricing", "static_pricing"],
+    pricing_origin: Literal["chutes_live_snapshot", "chutes_repo_rates"],
 ) -> ChutesActualCost:
     prompt_tokens = float(usage.prompt_tokens or 0)
     completion_tokens = float(usage.completion_tokens or 0)
@@ -141,7 +157,8 @@ def _token_price(
         + (reasoning_tokens / 1_000_000) * pricing.billable_reasoning_per_million
     )
     evidence: JsonObject = {
-        "source": source,
+        "settlement_source": settlement_source,
+        "pricing_origin": pricing_origin,
         "model": model,
         "input_per_million": pricing.input_per_million,
         "output_per_million": pricing.output_per_million,
@@ -173,6 +190,7 @@ def _optional_text(value: object) -> str | None:
 
 __all__ = [
     "CHUTES_ACTUAL_COST_FALLBACK_PRICING",
+    "CHUTES_STATIC_PRICING",
     "ChutesActualCost",
     "ChutesModelPricingCache",
     "_parse_models_payload",

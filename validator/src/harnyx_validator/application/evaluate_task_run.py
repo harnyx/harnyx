@@ -11,7 +11,7 @@ from uuid import UUID
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.application.ports.session_registry import SessionRegistryPort
 from harnyx_commons.domain.miner_task import EvaluationDetails, MinerTaskErrorCode
-from harnyx_commons.domain.session import LlmUsageTotals, Session, SessionUsage
+from harnyx_commons.domain.session import Session, SessionUsage
 from harnyx_commons.domain.tool_call import ToolCall
 from harnyx_commons.domain.tool_usage import (
     LlmModelUsageCost,
@@ -19,9 +19,8 @@ from harnyx_commons.domain.tool_usage import (
     SearchToolUsageSummary,
     ToolUsageSummary,
 )
-from harnyx_commons.llm.pricing import price_miner_llm, price_search
+from harnyx_commons.llm.pricing import price_search
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
-from harnyx_commons.llm.schema import LlmUsage
 from harnyx_commons.miner_task_scoring import EvaluationScoringService
 from harnyx_commons.tools.types import SearchToolName, is_search_tool
 from harnyx_validator.application.dto.evaluation import (
@@ -134,12 +133,11 @@ class UsageSummarizer:
                 continue
             if not receipt.is_successful():
                 continue
-            total_cost += self._search_cost(receipt.tool, receipt)
-            actual_cost = _actual_receipt_cost(receipt)
+            cost = self._search_cost(receipt.tool, receipt)
+            total_cost += cost
             actual_cost_total = _accumulate_actual_summary_cost(
                 actual_cost_total,
-                reference_cost_usd=_reference_receipt_cost(receipt),
-                actual_cost_usd=actual_cost,
+                cost_usd=cost,
             )
             call_count += 1
 
@@ -165,24 +163,17 @@ class UsageSummarizer:
         reasoning_tokens = 0
         total_cost = 0.0
         providers: dict[str, dict[str, LlmModelUsageCost]] = {}
-        actual_cost_by_model = _actual_llm_cost_by_model(receipts)
+        settled_cost_by_provider_model = _settled_llm_cost_by_provider_model(receipts)
 
         for provider, models in budget.llm_usage_totals.items():
             for model, totals in models.items():
-                try:
-                    cost = price_miner_llm(
-                        provider,
-                        model,
-                        self._llm_usage_totals_to_usage(totals),
-                    )
-                except KeyError:
-                    continue
+                cost = settled_cost_by_provider_model.get((provider, model), 0.0)
                 provider_models = providers.setdefault(provider, {})
                 provider_models[model] = LlmModelUsageCost(
                     usage=totals,
                     cost=cost,
                     reference_cost=cost,
-                    actual_cost=actual_cost_by_model.get(model),
+                    actual_cost=cost,
                 )
                 call_count += totals.call_count
                 prompt_tokens += totals.prompt_tokens
@@ -208,47 +199,39 @@ class UsageSummarizer:
 
     @staticmethod
     def _search_cost(tool: SearchToolName, receipt: ToolCall) -> float:
-        if receipt.details.cost_usd is not None:
-            return float(receipt.details.cost_usd)
-        return float(price_search(tool, referenceable_results=len(receipt.details.results)))
-
-    @staticmethod
-    def _llm_usage_totals_to_usage(totals: LlmUsageTotals) -> LlmUsage:
-        return LlmUsage(
-            prompt_tokens=totals.prompt_tokens or 0,
-            completion_tokens=totals.completion_tokens or 0,
-            total_tokens=totals.total_tokens or 0,
-            reasoning_tokens=totals.reasoning_tokens or 0,
+        cost = (
+            float(receipt.details.cost_usd)
+            if receipt.details.cost_usd is not None
+            else float(price_search(tool, referenceable_results=len(receipt.details.results)))
         )
-
-
-def _reference_receipt_cost(receipt: ToolCall) -> float | None:
-    if receipt.details.reference_cost_usd is not None:
-        return float(receipt.details.reference_cost_usd)
-    if receipt.details.cost_usd is not None:
-        return float(receipt.details.cost_usd)
-    return None
+        actual_cost = _actual_receipt_cost(receipt)
+        if actual_cost is not None and actual_cost != cost:
+            raise ValueError(f"{receipt.tool} receipt cost_usd and actual_cost_usd must match")
+        return cost
 
 
 def _actual_receipt_cost(receipt: ToolCall) -> float | None:
     return None if receipt.details.actual_cost_usd is None else float(receipt.details.actual_cost_usd)
 
 
+def _receipt_cost(receipt: ToolCall) -> float:
+    if receipt.details.cost_usd is None:
+        raise ValueError(f"{receipt.tool} receipt missing cost_usd")
+    cost = float(receipt.details.cost_usd)
+    actual_cost = _actual_receipt_cost(receipt)
+    if actual_cost is not None and actual_cost != cost:
+        raise ValueError(f"{receipt.tool} receipt cost_usd and actual_cost_usd must match")
+    return cost
+
+
 def _accumulate_actual_summary_cost(
     current: float | None,
     *,
-    reference_cost_usd: float | None,
-    actual_cost_usd: float | None,
+    cost_usd: float,
 ) -> float | None:
-    if reference_cost_usd is None:
-        return current
-    if reference_cost_usd == 0.0 and actual_cost_usd is None:
-        return current
-    if actual_cost_usd is None:
-        return None
     if current is None:
         return None
-    return current + actual_cost_usd
+    return current + cost_usd
 
 
 def _actual_llm_total_cost(receipts: Sequence[ToolCall]) -> float | None:
@@ -256,27 +239,28 @@ def _actual_llm_total_cost(receipts: Sequence[ToolCall]) -> float | None:
     for receipt in receipts:
         if receipt.tool != "llm_chat":
             continue
+        if not receipt.is_successful():
+            continue
         total = _accumulate_actual_summary_cost(
             total,
-            reference_cost_usd=_reference_receipt_cost(receipt),
-            actual_cost_usd=_actual_receipt_cost(receipt),
+            cost_usd=_receipt_cost(receipt),
         )
     return total
 
 
-def _actual_llm_cost_by_model(receipts: Sequence[ToolCall]) -> dict[str, float | None]:
-    totals: dict[str, float | None] = {}
+def _settled_llm_cost_by_provider_model(receipts: Sequence[ToolCall]) -> dict[tuple[str, str], float]:
+    totals: dict[tuple[str, str], float] = {}
     for receipt in receipts:
         if receipt.tool != "llm_chat":
+            continue
+        if not receipt.is_successful():
             continue
         model = _receipt_model(receipt)
         if model is None:
             continue
-        totals[model] = _accumulate_actual_summary_cost(
-            totals.get(model, 0.0),
-            reference_cost_usd=_reference_receipt_cost(receipt),
-            actual_cost_usd=_actual_receipt_cost(receipt),
-        )
+        provider = _receipt_provider(receipt)
+        key = (provider, model)
+        totals[key] = totals.get(key, 0.0) + _receipt_cost(receipt)
     return totals
 
 
@@ -293,6 +277,22 @@ def _receipt_model(receipt: ToolCall) -> str | None:
         model = args[0].get("model")
         return model if isinstance(model, str) else None
     return None
+
+
+def _receipt_provider(receipt: ToolCall) -> str:
+    payload = receipt.details.request_payload
+    if isinstance(payload, dict):
+        kwargs = payload.get("kwargs")
+        if isinstance(kwargs, dict):
+            provider = kwargs.get("provider")
+            if isinstance(provider, str) and provider.strip():
+                return provider.strip()
+        args = payload.get("args")
+        if isinstance(args, list) and args and isinstance(args[0], dict):
+            provider = args[0].get("provider")
+            if isinstance(provider, str) and provider.strip():
+                return provider.strip()
+    raise ValueError("llm_chat receipt requires request provider")
 
 
 class TaskRunOrchestrator:

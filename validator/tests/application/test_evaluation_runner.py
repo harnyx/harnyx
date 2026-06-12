@@ -32,10 +32,7 @@ from harnyx_commons.domain.tool_call import (
 from harnyx_commons.domain.tool_usage import SearchToolUsageSummary, ToolUsageSummary
 from harnyx_commons.errors import SessionBudgetExhaustedError
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
-from harnyx_commons.llm.pricing import price_llm, price_miner_llm
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
-from harnyx_commons.llm.schema import LlmUsage
-from harnyx_commons.llm.tool_models import parse_tool_model
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskRunRequest,
     MinerTaskRunSubmission,
@@ -263,7 +260,7 @@ def test_usage_summarizer_falls_back_to_referenceable_result_count_when_search_c
         usage=SessionUsage(),
     )
     receipt = ToolCall(
-        receipt_id="receipt-fallback",
+        receipt_id="receipt-missing-cost",
         session_id=session.session_id,
         uid=session.uid,
         tool="search_web",
@@ -358,21 +355,75 @@ def test_usage_summarizer_preserves_reasoning_tokens_in_llm_summary() -> None:
         ),
     )
 
-    _, total_tool_usage = UsageSummarizer().summarize(session, ())
-
-    expected_cost = price_llm(
-        parse_tool_model(model),
-        LlmUsage(
-            prompt_tokens=10,
-            completion_tokens=5,
-            total_tokens=22,
-            reasoning_tokens=7,
+    receipt = ToolCall(
+        receipt_id="llm-chutes-summary",
+        session_id=session.session_id,
+        uid=session.uid,
+        tool="llm_chat",
+        issued_at=datetime(2025, 10, 17, 12, 1, tzinfo=UTC),
+        outcome=ToolCallOutcome.OK,
+        details=ToolCallDetails(
+            request_hash="llm-chutes-summary-req",
+            request_payload={"kwargs": {"provider": "chutes", "model": model}},
+            response_hash="llm-chutes-summary-res",
+            response_payload={"message": {"role": "assistant", "content": "ok"}},
+            cost_usd=0.0123,
+            actual_cost_usd=0.0123,
+            actual_cost_provider="chutes",
         ),
     )
+
+    _, total_tool_usage = UsageSummarizer().summarize(session, (receipt,))
+
     model_usage = total_tool_usage.llm.providers["chutes"][model]
     assert total_tool_usage.llm.reasoning_tokens == 7
     assert model_usage.usage.reasoning_tokens == 7
-    assert model_usage.cost == pytest.approx(expected_cost)
+    assert model_usage.cost == pytest.approx(0.0123)
+
+
+def test_usage_summarizer_rejects_successful_llm_receipt_without_provider() -> None:
+    model = "deepseek-ai/DeepSeek-V3.2-TEE"
+    totals = LlmUsageTotals(
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        call_count=1,
+    )
+    session = Session(
+        session_id=uuid4(),
+        uid=7,
+        task_id=uuid4(),
+        issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
+        expires_at=datetime(2025, 10, 17, 13, tzinfo=UTC),
+        budget_usd=1.0,
+        usage=SessionUsage(
+            llm_usage_totals={
+                "chutes": {
+                    model: totals,
+                },
+            },
+        ),
+    )
+    receipt = ToolCall(
+        receipt_id="llm-missing-provider-summary",
+        session_id=session.session_id,
+        uid=session.uid,
+        tool="llm_chat",
+        issued_at=datetime(2025, 10, 17, 12, 1, tzinfo=UTC),
+        outcome=ToolCallOutcome.OK,
+        details=ToolCallDetails(
+            request_hash="llm-missing-provider-summary-req",
+            request_payload={"kwargs": {"model": model}},
+            response_hash="llm-missing-provider-summary-res",
+            response_payload={"message": {"role": "assistant", "content": "ok"}},
+            cost_usd=0.0123,
+            actual_cost_usd=0.0123,
+            actual_cost_provider="chutes",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="llm_chat receipt requires request provider"):
+        UsageSummarizer().summarize(session, (receipt,))
 
 
 def test_usage_summarizer_prices_openrouter_native_llm_summary() -> None:
@@ -399,17 +450,30 @@ def test_usage_summarizer_prices_openrouter_native_llm_summary() -> None:
         ),
     )
 
-    _, total_tool_usage = UsageSummarizer().summarize(session, ())
-
-    expected_cost = price_miner_llm(
-        "openrouter",
-        model,
-        LlmUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+    receipt = ToolCall(
+        receipt_id="llm-openrouter-summary",
+        session_id=session.session_id,
+        uid=session.uid,
+        tool="llm_chat",
+        issued_at=datetime(2025, 10, 17, 12, 1, tzinfo=UTC),
+        outcome=ToolCallOutcome.OK,
+        details=ToolCallDetails(
+            request_hash="llm-openrouter-summary-req",
+            request_payload={"kwargs": {"provider": "openrouter", "model": model}},
+            response_hash="llm-openrouter-summary-res",
+            response_payload={"message": {"role": "assistant", "content": "ok"}},
+            cost_usd=0.0042,
+            actual_cost_usd=0.0042,
+            actual_cost_provider="openrouter",
+        ),
     )
+
+    _, total_tool_usage = UsageSummarizer().summarize(session, (receipt,))
+
     model_usage = total_tool_usage.llm.providers["openrouter"][model]
     assert total_tool_usage.llm.call_count == 1
-    assert total_tool_usage.llm_cost == pytest.approx(expected_cost)
-    assert model_usage.cost == pytest.approx(expected_cost)
+    assert total_tool_usage.llm_cost == pytest.approx(0.0042)
+    assert model_usage.cost == pytest.approx(0.0042)
 
 
 def test_receipt_usage_uses_actual_llm_provider_from_platform_tool_proxy_receipt() -> None:
@@ -429,7 +493,7 @@ def test_receipt_usage_uses_actual_llm_provider_from_platform_tool_proxy_receipt
                 "message": {"role": "assistant", "content": "ok"},
                 "usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
             },
-            cost_usd=0.01,
+            cost_usd=0.02,
             actual_cost_usd=0.02,
             actual_cost_provider="openrouter",
         ),
@@ -438,7 +502,122 @@ def test_receipt_usage_uses_actual_llm_provider_from_platform_tool_proxy_receipt
     usage = evaluation_runner_module._usage_from_receipts((receipt,))
     assert set(usage.llm_usage_totals) == {"openrouter"}
     assert usage.llm_usage_totals["openrouter"][model].total_tokens == 5
-    assert usage.cost_by_provider == {"openrouter": pytest.approx(0.01)}
+    assert usage.total_cost_usd == pytest.approx(0.02)
+    assert usage.cost_by_provider == {"openrouter": pytest.approx(0.02)}
+    assert usage.reference_total_cost_usd == pytest.approx(0.02)
+    assert usage.reference_cost_by_provider == {"openrouter": pytest.approx(0.02)}
+    assert usage.actual_total_cost_usd == pytest.approx(0.02)
+    assert usage.actual_cost_by_provider == {"openrouter": pytest.approx(0.02)}
+
+
+def test_receipt_usage_rejects_successful_llm_receipt_without_provider() -> None:
+    model = "openai/gpt-oss-120b"
+    receipt = ToolCall(
+        receipt_id="llm-missing-provider",
+        session_id=uuid4(),
+        uid=7,
+        tool="llm_chat",
+        issued_at=datetime(2026, 5, 30, 12, tzinfo=UTC),
+        outcome=ToolCallOutcome.OK,
+        details=ToolCallDetails(
+            request_hash="llm-missing-provider-req",
+            request_payload={"kwargs": {"model": model}},
+            response_hash="llm-missing-provider-res",
+            response_payload={
+                "message": {"role": "assistant", "content": "ok"},
+                "usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+            },
+            cost_usd=0.02,
+            actual_cost_usd=0.02,
+            actual_cost_provider="chutes",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="llm_chat receipt requires request provider"):
+        evaluation_runner_module._usage_from_receipts((receipt,))
+
+
+def test_receipt_usage_rejects_divergent_search_receipt_costs() -> None:
+    receipt = ToolCall(
+        receipt_id="search-parallel",
+        session_id=uuid4(),
+        uid=7,
+        tool="search_web",
+        issued_at=datetime(2026, 5, 30, 12, tzinfo=UTC),
+        outcome=ToolCallOutcome.OK,
+        details=ToolCallDetails(
+            request_hash="search-parallel-req",
+            request_payload={"kwargs": {"provider": "parallel", "search_queries": ["harnyx"]}},
+            response_hash="search-parallel-res",
+            response_payload={"data": []},
+            cost_usd=0.0,
+            actual_cost_usd=0.005,
+            actual_cost_provider="parallel",
+        ),
+    )
+    object.__setattr__(receipt.details, "cost_usd", 0.0)
+
+    with pytest.raises(ValueError, match="must match"):
+        evaluation_runner_module._usage_from_receipts((receipt,))
+
+
+def test_receipt_usage_uses_cost_usd_when_actual_cost_is_missing() -> None:
+    receipt = ToolCall(
+        receipt_id="cost-only",
+        session_id=uuid4(),
+        uid=7,
+        tool="llm_chat",
+        issued_at=datetime(2026, 5, 30, 12, tzinfo=UTC),
+        outcome=ToolCallOutcome.OK,
+        details=ToolCallDetails(
+            request_hash="cost-only-req",
+            request_payload={"kwargs": {"provider": "chutes"}},
+            response_hash="cost-only-res",
+            response_payload={"message": {"role": "assistant", "content": "ok"}},
+            cost_usd=0.02,
+            reference_cost_usd=0.01,
+            actual_cost_usd=None,
+        ),
+    )
+
+    usage = evaluation_runner_module._usage_from_receipts((receipt,))
+
+    assert usage.total_cost_usd == pytest.approx(0.02)
+    assert usage.reference_total_cost_usd == pytest.approx(0.02)
+    assert usage.cost_by_provider == {"chutes": pytest.approx(0.02)}
+    assert usage.reference_cost_by_provider == {"chutes": pytest.approx(0.02)}
+
+
+def test_receipt_replay_records_zero_token_llm_usage_for_priced_receipt() -> None:
+    model = "deepseek/deepseek-v3.2"
+    receipt = ToolCall(
+        receipt_id="priced-zero-token-llm",
+        session_id=uuid4(),
+        uid=7,
+        tool="llm_chat",
+        issued_at=datetime(2026, 5, 30, 12, tzinfo=UTC),
+        outcome=ToolCallOutcome.OK,
+        details=ToolCallDetails(
+            request_hash="priced-zero-token-llm-req",
+            request_payload={"kwargs": {"provider": "openrouter", "model": model}},
+            response_hash="priced-zero-token-llm-res",
+            response_payload={"message": {"role": "assistant", "content": "ok"}},
+            cost_usd=0.003,
+            reference_cost_usd=0.003,
+            actual_cost_usd=0.003,
+            actual_cost_provider="openrouter",
+        ),
+    )
+
+    usage = evaluation_runner_module._usage_from_receipts((receipt,))
+
+    totals = usage.llm_usage_totals["openrouter"][model]
+    assert totals.call_count == 1
+    assert totals.prompt_tokens == 0
+    assert totals.completion_tokens == 0
+    assert totals.total_tokens == 0
+    assert totals.reasoning_tokens == 0
+    assert usage.total_cost_usd == pytest.approx(0.003)
 
 
 def _sandbox_invocation_error(
@@ -673,7 +852,13 @@ class _AlwaysMinerTimeoutOrchestrator:
                 issued_at=datetime(2025, 10, 17, 12, self.calls, tzinfo=UTC),
                 cost_usd=0.0,
                 tool="llm_chat",
-                request_payload={"args": [], "kwargs": {"model": "google/gemma-4-31B-turbo-TEE"}},
+                request_payload={
+                    "args": [],
+                    "kwargs": {
+                        "provider": "chutes",
+                        "model": "google/gemma-4-31B-turbo-TEE",
+                    },
+                },
                 response_payload={"usage": {"total_tokens": self._total_tokens}},
                 execution=ToolExecutionFacts(elapsed_ms=self._elapsed_ms),
             )
@@ -741,7 +926,13 @@ class _MinerTimeoutWithNonQualifyingReceiptsOrchestrator:
             cost_usd=0.0,
             tool="llm_chat",
             outcome=ToolCallOutcome.PROVIDER_ERROR,
-            request_payload={"args": [], "kwargs": {"model": "google/gemma-4-31B-turbo-TEE"}},
+            request_payload={
+                "args": [],
+                "kwargs": {
+                    "provider": "chutes",
+                    "model": "google/gemma-4-31B-turbo-TEE",
+                },
+            },
             response_payload={"usage": {"total_tokens": 500}},
             execution=ToolExecutionFacts(elapsed_ms=500.0),
         )

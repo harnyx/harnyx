@@ -89,14 +89,8 @@ class SessionUsage:
     llm_usage_totals: dict[str, dict[str, LlmUsageTotals]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.reference_total_cost_usd == 0.0 and self.total_cost_usd != 0.0:
-            object.__setattr__(self, "reference_total_cost_usd", self.total_cost_usd)
-        if self.total_cost_usd == 0.0 and self.reference_total_cost_usd != 0.0:
-            object.__setattr__(self, "total_cost_usd", self.reference_total_cost_usd)
-        if not self.reference_cost_by_provider and self.cost_by_provider:
-            object.__setattr__(self, "reference_cost_by_provider", dict(self.cost_by_provider))
-        if not self.cost_by_provider and self.reference_cost_by_provider:
-            object.__setattr__(self, "cost_by_provider", dict(self.reference_cost_by_provider))
+        object.__setattr__(self, "reference_total_cost_usd", self.total_cost_usd)
+        object.__setattr__(self, "reference_cost_by_provider", dict(self.cost_by_provider))
         if self.total_cost_usd < 0.0:
             raise ValueError("total_cost_usd must be non-negative")
         if self.reference_total_cost_usd < 0.0:
@@ -119,30 +113,20 @@ class SessionUsage:
         actual_cost_by_provider: dict[str, float] | None = None,
     ) -> SessionUsage:
         """Return a new usage record with updated counters."""
-        updated_reference_total = (
-            self.reference_total_cost_usd
-            if reference_total_cost_usd is None
-            else reference_total_cost_usd
-        )
-        updated_reference_by_provider = (
-            self.reference_cost_by_provider
-            if reference_cost_by_provider is None
-            else reference_cost_by_provider
-        )
+        # Keep compatibility parameters accepted while normalizing them to the session cost fields.
+        _ = reference_total_cost_usd, reference_cost_by_provider
+        updated_total = self.total_cost_usd if total_cost_usd is None else total_cost_usd
+        updated_provider_costs = self.cost_by_provider if cost_by_provider is None else cost_by_provider
         return replace(
             self,
             llm_tokens_last_call=(
                 self.llm_tokens_last_call if llm_tokens_last_call is None else llm_tokens_last_call
             ),
             llm_usage_totals=self.llm_usage_totals if llm_usage_totals is None else llm_usage_totals,
-            total_cost_usd=(
-                updated_reference_total if total_cost_usd is None else total_cost_usd
-            ),
-            cost_by_provider=(
-                updated_reference_by_provider if cost_by_provider is None else cost_by_provider
-            ),
-            reference_total_cost_usd=updated_reference_total,
-            reference_cost_by_provider=updated_reference_by_provider,
+            total_cost_usd=updated_total,
+            cost_by_provider=updated_provider_costs,
+            reference_total_cost_usd=updated_total,
+            reference_cost_by_provider=updated_provider_costs,
             actual_total_cost_usd=(
                 self.actual_total_cost_usd
                 if actual_total_cost_usd is _UNSET

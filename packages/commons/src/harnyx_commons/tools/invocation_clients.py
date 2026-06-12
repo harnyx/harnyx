@@ -24,6 +24,7 @@ from harnyx_commons.platform_tool_proxy import platform_tool_proxy_provider_time
 from harnyx_commons.tools.desearch import DeSearchClient
 from harnyx_commons.tools.parallel import ParallelClient
 from harnyx_commons.tools.ports import WebSearchProviderPort
+from harnyx_commons.tools.provider_billing import SearchProviderResult
 from harnyx_commons.tools.search_models import (
     FetchPageRequest,
     FetchPageResponse,
@@ -208,15 +209,24 @@ class LazySearchProvider(WebSearchProviderPort):
         self._provider: WebSearchProviderPort | None = None
         self._lock = asyncio.Lock()
 
-    async def search_web(self, request: SearchWebSearchRequest) -> SearchWebSearchResponse:
+    async def search_web(
+        self,
+        request: SearchWebSearchRequest,
+    ) -> SearchProviderResult[SearchWebSearchResponse]:
         provider = await self._get_provider()
         return await provider.search_web(request)
 
-    async def search_ai(self, request: SearchAiSearchRequest) -> SearchAiSearchResponse:
+    async def search_ai(
+        self,
+        request: SearchAiSearchRequest,
+    ) -> SearchProviderResult[SearchAiSearchResponse]:
         provider = await self._get_provider()
         return await provider.search_ai(request)
 
-    async def fetch_page(self, request: FetchPageRequest) -> FetchPageResponse:
+    async def fetch_page(
+        self,
+        request: FetchPageRequest,
+    ) -> SearchProviderResult[FetchPageResponse]:
         provider = await self._get_provider()
         return await provider.fetch_page(request)
 

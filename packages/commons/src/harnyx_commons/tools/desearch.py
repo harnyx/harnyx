@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, replace
@@ -23,7 +24,7 @@ from harnyx_commons.tools.desearch_ai_protocol import (
     DeSearchAiDocsResponse,
     parse_desearch_ai_response,
 )
-from harnyx_commons.tools.provider_billing import BillingAwareSearchResponse, ProviderBillingMetadata
+from harnyx_commons.tools.provider_billing import ProviderBillingMetadata, SearchProviderResult
 from harnyx_commons.tools.search_models import (
     FetchPageRequest,
     FetchPageResponse,
@@ -240,33 +241,27 @@ class DeSearchClient:
 
     # Convenience wrappers ------------------------------------------------------------------------
 
-    async def search_web(self, request: SearchWebSearchRequest) -> SearchWebSearchResponse:
-        return (await self.search_web_with_billing(request)).response
-
-    async def search_web_with_billing(
+    async def search_web(
         self,
         request: SearchWebSearchRequest,
-    ) -> BillingAwareSearchResponse[SearchWebSearchResponse]:
+    ) -> SearchProviderResult[SearchWebSearchResponse]:
         data = await self._search_links_web_page_with_billing(request, start=None)
         if data is None:
             raise ToolProviderError("tool provider failed")
         response = SearchWebSearchResponse.model_validate(data.data)
-        return BillingAwareSearchResponse(
+        return SearchProviderResult(
             response=response,
-            billing=_billing_with_billable_units(
+            billing=_require_provider_billing(
                 data.billing,
                 provider="desearch",
                 billable_units=len(response.data),
             ),
         )
 
-    async def search_ai(self, request: SearchAiSearchRequest) -> SearchAiSearchResponse:
-        return (await self.search_ai_with_billing(request)).response
-
-    async def search_ai_with_billing(
+    async def search_ai(
         self,
         request: SearchAiSearchRequest,
-    ) -> BillingAwareSearchResponse[SearchAiSearchResponse]:
+    ) -> SearchProviderResult[SearchAiSearchResponse]:
         raw = await self.ai_search_with_billing(
             prompt=request.prompt,
             tools=_MINER_AI_TOOLS,
@@ -282,22 +277,19 @@ class DeSearchClient:
             attempts=metadata.attempts,
             retry_reasons=metadata.retry_reasons,
         )
-        return BillingAwareSearchResponse(
+        return SearchProviderResult(
             response=response,
-            billing=_billing_with_billable_units(
+            billing=_require_provider_billing(
                 raw.billing,
                 provider="desearch",
                 billable_units=len(response.data),
             ),
         )
 
-    async def fetch_page(self, request: FetchPageRequest) -> FetchPageResponse:
-        return (await self.fetch_page_with_billing(request)).response
-
-    async def fetch_page_with_billing(
+    async def fetch_page(
         self,
         request: FetchPageRequest,
-    ) -> BillingAwareSearchResponse[FetchPageResponse]:
+    ) -> SearchProviderResult[FetchPageResponse]:
         data = await self._get_with_billing(
             "web/crawl",
             {"url": request.url, "format": "text"},
@@ -312,9 +304,9 @@ class DeSearchClient:
             attempts=payload.attempts,
             retry_reasons=payload.retry_reasons,
         )
-        return BillingAwareSearchResponse(
+        return SearchProviderResult(
             response=response,
-            billing=_billing_with_billable_units(
+            billing=_require_provider_billing(
                 data.billing,
                 provider="desearch",
                 billable_units=len(response.data),
@@ -758,6 +750,9 @@ class DeSearchClient:
                             span.set_attributes({"desearch.error": exc.__class__.__name__})
                             raise ToolProviderError("tool provider failed") from exc
                         await self._sleep(attempt)
+                    except ValueError as exc:
+                        span.set_attributes({"desearch.error": exc.__class__.__name__})
+                        raise ToolProviderError("tool provider failed") from exc
             finally:
                 final_attributes: dict[str, AttributeValue] = {
                     "desearch.attempts": attempts_made,
@@ -856,23 +851,20 @@ def _billing_metadata_from_json(raw: object) -> ProviderBillingMetadata | None:
     )
 
 
-def _reference_fallback_billing(*, provider: str, billable_units: int) -> ProviderBillingMetadata:
-    return ProviderBillingMetadata(
-        actual_cost_provider=provider,
-        billable_units=billable_units,
-        source="reference_fallback",
-    )
-
-
-def _billing_with_billable_units(
+def _require_provider_billing(
     billing: ProviderBillingMetadata | None,
     *,
     provider: str,
     billable_units: int,
 ) -> ProviderBillingMetadata:
     if billing is None:
-        return _reference_fallback_billing(provider=provider, billable_units=billable_units)
-    if billing.actual_cost_usd is not None or billing.billable_units is not None:
+        return ProviderBillingMetadata(
+            actual_cost_provider=provider,
+            actual_cost_usd=None,
+            billable_units=billable_units,
+            source="missing_provider_metadata",
+        )
+    if billing.billable_units is not None:
         return billing
     return replace(billing, billable_units=billable_units)
 
@@ -886,8 +878,10 @@ def _optional_float(value: object) -> float | None:
         numeric = float(value)
     except (TypeError, ValueError):
         return None
+    if not math.isfinite(numeric):
+        raise ValueError("cost metadata must be finite")
     if numeric < 0:
-        return None
+        raise ValueError("cost metadata must be non-negative")
     return numeric
 
 

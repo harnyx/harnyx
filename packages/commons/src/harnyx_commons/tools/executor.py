@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime
@@ -25,7 +26,6 @@ from harnyx_commons.domain.tool_call import (
 )
 from harnyx_commons.errors import BudgetExceededError, ToolInvocationTimeoutError, ToolProviderError
 from harnyx_commons.json_types import JsonObject, JsonValue
-from harnyx_commons.llm.pricing import price_miner_llm, price_search
 from harnyx_commons.llm.schema import LlmResponse
 from harnyx_commons.tools.dto import (
     ToolBudgetSnapshot,
@@ -34,7 +34,14 @@ from harnyx_commons.tools.dto import (
     tool_payload_for_invocation,
 )
 from harnyx_commons.tools.token_semaphore import ToolConcurrencyLimiter
-from harnyx_commons.tools.types import LLM_TOOLS, SearchToolName, ToolName, is_citation_source, is_search_tool
+from harnyx_commons.tools.types import (
+    LLM_TOOLS,
+    SEARCH_TOOLS,
+    SearchToolName,
+    ToolName,
+    is_citation_source,
+    is_search_tool,
+)
 from harnyx_commons.tools.usage_tracker import ToolCallUsage, UsageTracker
 
 
@@ -63,6 +70,8 @@ _TOOLS_WITHOUT_USAGE: set[ToolName] = {
     "test_tool",
     "tooling_info",
 }
+
+_PROVIDER_BACKED_TOOL_NAMES: frozenset[ToolName] = frozenset({*LLM_TOOLS, *SEARCH_TOOLS})
 
 _SEARCH_RESULT_FIELDS: dict[SearchToolName, tuple[str, str, str]] = {
     "search_web": ("link", "snippet", "title"),
@@ -210,16 +219,16 @@ class ToolExecutor:
         request: ToolInvocationRequest,
         response_payload: object,
         results: tuple[ToolResult, ...],
-    ) -> tuple[int, ToolCallUsage | None, float | None]:
+    ) -> tuple[int, ToolCallUsage | None]:
         name = request.tool
         if name in LLM_TOOLS:
             return _extract_llm_usage(request, response_payload)
         if is_search_tool(name):
             if not isinstance(response_payload, Mapping):
                 raise ValueError("search tool response must be a mapping")
-            return 0, None, price_search(name, referenceable_results=len(results))
+            return 0, None
         if name in _TOOLS_WITHOUT_USAGE:
-            return 0, None, None
+            return 0, None
         raise LookupError(f"unsupported tool {request.tool!r}")
 
     def _record_usage(
@@ -228,7 +237,7 @@ class ToolExecutor:
         request: ToolInvocationRequest,
         llm_tokens: int,
         usage_details: ToolCallUsage | None,
-        call_cost: float | None,
+        settled_cost_usd: float | None,
         actual_cost_usd: float | None,
         actual_cost_provider: str | None,
     ) -> Session:
@@ -237,7 +246,7 @@ class ToolExecutor:
             tool_name=request.tool,
             llm_tokens=llm_tokens,
             usage=usage_details if usage_details is not None else None,
-            cost_usd=call_cost,
+            cost_usd=settled_cost_usd,
             actual_cost_usd=actual_cost_usd,
             actual_cost_provider=actual_cost_provider,
         )
@@ -316,18 +325,22 @@ class ToolExecutor:
         invocation_output = await self._invoke_tool_output_async(request, context=invocation_context)
         finished_at = self._clock()
         results, result_policy = self._build_results(request, invocation_output.public_payload)
-        llm_tokens, usage_details, call_cost = self._extract_usage(
+        llm_tokens, usage_details = self._extract_usage(
             request,
             invocation_output.public_payload,
             results,
+        )
+        settled_cost_usd = _settled_success_cost(
+            request.tool,
+            actual_cost_usd=invocation_output.actual_cost_usd,
         )
         receipt = started_call.materialize(
             outcome=ToolCallOutcome.OK,
             response_payload=invocation_output.public_payload,
             results=results,
             result_policy=result_policy,
-            cost_usd=call_cost,
-            actual_cost_usd=invocation_output.actual_cost_usd,
+            cost_usd=settled_cost_usd,
+            actual_cost_usd=settled_cost_usd,
             actual_cost_provider=invocation_output.actual_cost_provider,
             execution=_merge_execution_facts(
                 invocation_output.execution,
@@ -342,8 +355,8 @@ class ToolExecutor:
                 request=request,
                 llm_tokens=llm_tokens,
                 usage_details=usage_details,
-                call_cost=call_cost,
-                actual_cost_usd=invocation_output.actual_cost_usd,
+                settled_cost_usd=settled_cost_usd,
+                actual_cost_usd=settled_cost_usd,
                 actual_cost_provider=invocation_output.actual_cost_provider,
             ),
         )
@@ -417,7 +430,7 @@ class ToolExecutor:
         request: ToolInvocationRequest,
         llm_tokens: int,
         usage_details: ToolCallUsage | None,
-        call_cost: float | None,
+        settled_cost_usd: float | None,
         actual_cost_usd: float | None,
         actual_cost_provider: str | None,
     ) -> tuple[Session, bool]:
@@ -438,7 +451,7 @@ class ToolExecutor:
                 request,
                 llm_tokens,
                 usage_details,
-                call_cost,
+                settled_cost_usd,
                 actual_cost_usd,
                 actual_cost_provider,
             )
@@ -518,6 +531,20 @@ def _normalize_invocation_output(value: object) -> ToolInvocationOutput:
     if not isinstance(public_payload, dict):
         raise ValueError("tool invoker JSON object normalized to a non-object payload")
     return ToolInvocationOutput(public_payload=public_payload)
+
+
+def _settled_success_cost(tool_name: ToolName, *, actual_cost_usd: float | None) -> float | None:
+    if tool_name not in _PROVIDER_BACKED_TOOL_NAMES:
+        return None
+    if actual_cost_usd is None:
+        raise ValueError(f"{tool_name} succeeded without actual_cost_usd")
+    if isinstance(actual_cost_usd, bool) or not isinstance(actual_cost_usd, int | float):
+        raise ValueError("actual_cost_usd must be numeric")
+    if not math.isfinite(actual_cost_usd):
+        raise ValueError("actual_cost_usd must be finite")
+    if actual_cost_usd < 0.0:
+        raise ValueError("actual_cost_usd must be non-negative")
+    return actual_cost_usd
 
 
 def _merge_execution_facts(
@@ -734,7 +761,7 @@ def _require_string_key_mapping(value: object, *, label: str) -> dict[str, objec
 def _extract_llm_usage(
     request: ToolInvocationRequest,
     payload: Mapping[str, object | None] | Sequence[object] | object,
-) -> tuple[int, ToolCallUsage | None, float | None]:
+) -> tuple[int, ToolCallUsage | None]:
     if request.tool not in LLM_TOOLS:
         raise ValueError(f"expected llm tool request, got {request.tool!r}")
 
@@ -757,7 +784,14 @@ def _extract_llm_usage(
     reasoning = usage_obj.reasoning_tokens
 
     if prompt is None and completion is None and total is None and reasoning is None:
-        return 0, None, None
+        return 0, ToolCallUsage(
+            provider=provider,
+            model=model,
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            reasoning_tokens=0,
+        )
 
     resolved_total = _resolve_llm_total_tokens(
         prompt_tokens=prompt,
@@ -773,15 +807,14 @@ def _extract_llm_usage(
         total_tokens=resolved_total,
         reasoning_tokens=reasoning,
     )
-    call_cost = price_miner_llm(provider, model, usage_obj)
-    return resolved_total, usage_details, call_cost
+    return resolved_total, usage_details
 
 
 def _extract_llm_provider(payload: Mapping[str, JsonValue]) -> str:
     provider = payload.get("provider")
     if isinstance(provider, str) and provider.strip():
         return provider.strip()
-    return "chutes"
+    raise ValueError("llm tool request must include a 'provider' payload value")
 
 
 def _resolve_llm_total_tokens(

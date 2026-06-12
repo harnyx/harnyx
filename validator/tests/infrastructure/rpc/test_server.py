@@ -30,7 +30,7 @@ from harnyx_commons.llm.schema import (
 )
 from harnyx_commons.protocol_headers import SESSION_ID_HEADER
 from harnyx_commons.tools.dto import ToolInvocationRequest
-from harnyx_commons.tools.executor import ToolExecutor, ToolInvocationContext
+from harnyx_commons.tools.executor import ToolExecutor, ToolInvocationContext, ToolInvocationOutput
 from harnyx_commons.tools.runtime_invoker import RuntimeToolInvoker
 from harnyx_commons.tools.search_models import (
     FetchPageRequest,
@@ -88,18 +88,22 @@ class RecordingToolInvoker:
         args: tuple[object, ...],
         kwargs: dict[str, object],
         context: ToolInvocationContext | None = None,
-    ) -> dict[str, object]:
+    ) -> ToolInvocationOutput:
         self.calls.append((tool_name, args, kwargs))
         query = kwargs.get("query", "demo")
-        return {
-            "data": [
-                {
-                    "link": f"https://example.com/{query}",
-                    "title": "Demo",
-                    "snippet": "demo",
-                },
-            ],
-        }
+        return ToolInvocationOutput(
+            public_payload={
+                "data": [
+                    {
+                        "link": f"https://example.com/{query}",
+                        "title": "Demo",
+                        "snippet": "demo",
+                    },
+                ],
+            },
+            actual_cost_usd=0.005,
+            actual_cost_provider="parallel",
+        )
 
 
 class RecordingToolConcurrencyLimiter(ToolConcurrencyLimiter):
@@ -183,6 +187,10 @@ class _SuccessfulLlmProvider:
                 ),
             ),
             usage=LlmUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+            metadata={
+                "effective_provider": "openrouter",
+                "raw_response": {"usage": {"cost": 0.0042}},
+            },
         )
 
 
@@ -321,7 +329,7 @@ def test_execute_tool_endpoint_records_receipt() -> None:
     assert receipt.details.request_hash
     session_snapshot = provider.session_registry.get(provider.session.session_id)
     assert session_snapshot is not None
-    assert session_snapshot.usage.total_cost_usd == 0.0001
+    assert session_snapshot.usage.total_cost_usd == pytest.approx(0.005)
     assert provider.tool_concurrency_limiter.acquire_calls == [(DEMO_SESSION_TOKEN, "search_web")]
     assert provider.tool_concurrency_limiter.release_calls == [(DEMO_SESSION_TOKEN, "search_web")]
     assert provider.tool_concurrency_limiter.in_flight(_invocation("search_web")) == 0
