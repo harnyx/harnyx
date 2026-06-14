@@ -244,28 +244,25 @@ def test_chutes_glm_thinking_disabled_uses_enable_thinking_template_kwarg() -> N
     assert "reasoning_effort" not in payload
 
 
-def test_chutes_unsupported_thinking_capability_serializes_nothing() -> None:
+@pytest.mark.parametrize("model", ("Qwen/Qwen3.6-27B-TEE", "google/gemma-4-31B-turbo-TEE"))
+@pytest.mark.parametrize(
+    "thinking",
+    (
+        LlmThinkingConfig(enabled=True, effort="high"),
+        LlmThinkingConfig(enabled=False, budget=1024),
+    ),
+)
+def test_chutes_qwen_and_gemma_thinking_use_only_enable_thinking_template_kwarg(
+    model: str,
+    thinking: LlmThinkingConfig,
+) -> None:
     payload = _ChutesChatRequest.from_request(
-        _basic_chutes_request(
-            model="google/gemma-4-31B-turbo-TEE",
-            thinking=LlmThinkingConfig(enabled=True, effort="high"),
-        )
+        _basic_chutes_request(model=model, thinking=thinking)
     ).model_dump(mode="python", exclude_none=True)
 
-    assert "chat_template_kwargs" not in payload
+    assert payload["chat_template_kwargs"] == {"enable_thinking": thinking.enabled}
     assert "reasoning_effort" not in payload
-
-
-def test_chutes_gemma_thinking_serializes_nothing_without_custom_route() -> None:
-    payload = _ChutesChatRequest.from_request(
-        _basic_chutes_request(
-            model="google/gemma-4-31B-turbo-TEE",
-            thinking=LlmThinkingConfig(enabled=False),
-        )
-    ).model_dump(mode="python", exclude_none=True)
-
-    assert "chat_template_kwargs" not in payload
-    assert "reasoning_effort" not in payload
+    assert "budget" not in payload
 
 
 def test_parse_payload_preserves_reasoning_usage_without_double_counting_completion_tokens() -> None:

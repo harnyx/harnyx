@@ -139,9 +139,11 @@ TOOL_MODEL_THINKING_CAPABILITIES: Mapping[
         "vertex": ToolModelThinkingCapability("chat_template_kwargs.enable_thinking"),
     },
     "google/gemma-4-31B-turbo-TEE": {
+        "chutes": ToolModelThinkingCapability("chat_template_kwargs.enable_thinking"),
         "custom-openai-compatible": ToolModelThinkingCapability("chat_template_kwargs.enable_thinking"),
     },
     "Qwen/Qwen3.6-27B-TEE": {
+        "chutes": ToolModelThinkingCapability("chat_template_kwargs.enable_thinking"),
         "custom-openai-compatible": ToolModelThinkingCapability("chat_template_kwargs.enable_thinking"),
     },
 }

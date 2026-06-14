@@ -6,13 +6,18 @@ from harnyx_commons.clients import CHUTES
 from harnyx_commons.config.llm import LlmSettings
 from harnyx_commons.llm.provider_factory import build_miner_paid_llm_provider
 from harnyx_commons.llm.providers.chutes import ChutesLlmProvider
-from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest
+from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest, LlmThinkingConfig
 
 pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
 
 CHUTES_TOOL_MODELS = (
     "deepseek-ai/DeepSeek-V3.2-TEE",
     "zai-org/GLM-5-TEE",
+    "Qwen/Qwen3.6-27B-TEE",
+    "google/gemma-4-31B-turbo-TEE",
+)
+
+THINKING_ENABLE_MODELS = (
     "Qwen/Qwen3.6-27B-TEE",
     "google/gemma-4-31B-turbo-TEE",
 )
@@ -39,6 +44,23 @@ def _completion_request(*, model: str) -> LlmRequest:
         temperature=0.0,
         max_output_tokens=32,
         timeout_seconds=180.0,
+    )
+
+
+def _thinking_request(*, model: str, enabled: bool) -> LlmRequest:
+    return LlmRequest(
+        provider="chutes",
+        model=model,
+        messages=(
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text('Think briefly, then reply with only "ok".'),),
+            ),
+        ),
+        temperature=0.0,
+        max_output_tokens=96,
+        timeout_seconds=180.0,
+        thinking=LlmThinkingConfig(enabled=enabled),
     )
 
 
@@ -69,6 +91,32 @@ async def test_chutes_tool_model_completion_live(model: str) -> None:
         "chutes_live_snapshot",
         "chutes_repo_rates",
     }
+
+
+@pytest.mark.parametrize("model", THINKING_ENABLE_MODELS)
+@pytest.mark.parametrize("enabled", (False, True))
+async def test_chutes_qwen_gemma_enable_thinking_live(model: str, enabled: bool) -> None:
+    api_key, timeout = _provider_settings()
+    provider = ChutesLlmProvider(
+        base_url=CHUTES.base_url,
+        api_key=api_key,
+        timeout=timeout,
+    )
+    request = _thinking_request(model=model, enabled=enabled)
+    payload = provider._build_request(request).model_dump(mode="python", exclude_none=True)
+    assert payload["chat_template_kwargs"] == {"enable_thinking": enabled}
+
+    try:
+        response = await provider.invoke(request)
+    finally:
+        await provider.aclose()
+
+    assert response.raw_text
+    if enabled:
+        assert response.choices[0].message.reasoning or response.usage.reasoning_tokens > 0
+    else:
+        assert not response.choices[0].message.reasoning
+        assert response.usage.reasoning_tokens in (None, 0)
 
 
 async def test_miner_paid_chutes_helper_completion_live() -> None:

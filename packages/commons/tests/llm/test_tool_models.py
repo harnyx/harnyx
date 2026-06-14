@@ -13,6 +13,10 @@ from harnyx_commons.llm.tool_models import (
 def test_tool_model_thinking_capabilities_share_the_canonical_model_owner() -> None:
     deepseek = tool_model_thinking_capability("deepseek-ai/deepseek-v3.2-tee", provider_name="chutes")
     glm = tool_model_thinking_capability("zai-org/GLM-5-TEE", provider_name="vertex")
+    qwen36_chutes = tool_model_thinking_capability(
+        "Qwen/Qwen3.6-27B-TEE",
+        provider_name="chutes",
+    )
     qwen36 = tool_model_thinking_capability(
         "Qwen/Qwen3.6-27B-TEE",
         provider_name="custom-openai-compatible:qwen36-cloud-run",
@@ -35,9 +39,14 @@ def test_tool_model_thinking_capabilities_share_the_canonical_model_owner() -> N
     assert glm.chat_template_kwargs(enabled=False) == {"enable_thinking": False}
     assert qwen36 is not None
     assert qwen36.chat_template_kwargs(enabled=False) == {"enable_thinking": False}
-    assert gemma_chutes is None
+    assert qwen36_chutes is not None
+    assert qwen36_chutes.chat_template_kwargs(enabled=True) == {"enable_thinking": True}
+    assert gemma_chutes is not None
+    assert gemma_chutes.chat_template_kwargs(enabled=False) == {"enable_thinking": False}
     assert gemma_custom is not None
     assert gemma_custom.chat_template_kwargs(enabled=True) == {"enable_thinking": True}
+    assert tool_model_thinking_capability("openai/gpt-oss-20b", provider_name="chutes") is None
+    assert tool_model_thinking_capability("openai/gpt-oss-120b", provider_name="chutes") is None
     assert tool_model_thinking_capability("openai/gpt-oss-20b", provider_name="openrouter") is None
     assert tool_model_thinking_capability("openai/gpt-oss-120b", provider_name="openrouter") is None
 
