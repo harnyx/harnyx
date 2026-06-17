@@ -357,10 +357,10 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
     ) -> httpx.Response:
         attempts = len(self.grant_retry_delays_seconds) + 1
         for attempt_index in range(attempts):
+            retry_remaining = attempt_index < attempts - 1
             try:
-                return await self._client.post(path, content=body, headers=headers)
+                response = await self._client.post(path, content=body, headers=headers)
             except httpx.HTTPError as exc:
-                retry_remaining = attempt_index < attempts - 1
                 transient = classify_transient_network_failure(exc)
                 if transient is None or not retry_remaining:
                     raise PlatformToolProxyInvocationError(
@@ -369,6 +369,11 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
                         message="platform tool proxy grant request failed",
                     ) from exc
                 await asyncio.sleep(self.grant_retry_delays_seconds[attempt_index])
+                continue
+            if _is_transient_platform_tool_proxy_grant_response(response) and retry_remaining:
+                await asyncio.sleep(self.grant_retry_delays_seconds[attempt_index])
+                continue
+            return response
         raise RuntimeError("platform tool proxy grant retry loop exhausted without response")
 
     async def execute_platform_tool_proxy_tool(
@@ -457,7 +462,7 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
                         or "platform tool proxy selected-provider/tool request failed"
                     ),
                 )
-            if error_code in _VALIDATOR_OWNED_PLATFORM_TOOL_PROXY_ERROR_CODES:
+            if error_code in _NON_PROVIDER_PLATFORM_TOOL_PROXY_ERROR_CODES:
                 raise PlatformToolProxyInvocationError(
                     status_code=response.status_code,
                     error_code=error_code,
@@ -568,7 +573,7 @@ _SELECTED_PROVIDER_OR_TOOL_REQUEST_MINER_OWNED_PROXY_ERROR_CODES = frozenset(
     }
 )
 
-_VALIDATOR_OWNED_PLATFORM_TOOL_PROXY_ERROR_CODES = frozenset(
+_NON_PROVIDER_PLATFORM_TOOL_PROXY_ERROR_CODES = frozenset(
     {
         "platform_tool_proxy_denied",
         "platform_error",
@@ -576,6 +581,12 @@ _VALIDATOR_OWNED_PLATFORM_TOOL_PROXY_ERROR_CODES = frozenset(
         "platform_tool_proxy_execution_failed",
     }
 )
+
+
+def _is_transient_platform_tool_proxy_grant_response(response: httpx.Response) -> bool:
+    if _platform_error_code(response) == "platform_tool_proxy_denied":
+        return False
+    return response.status_code == 429 or 500 <= response.status_code <= 599
 
 
 def _platform_error_code(response: httpx.Response) -> str | None:

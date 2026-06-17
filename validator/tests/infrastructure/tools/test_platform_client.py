@@ -355,6 +355,42 @@ async def test_platform_tool_proxy_grant_retries_transient_connect_timeout_then_
 
 
 @pytest.mark.anyio("asyncio")
+@pytest.mark.parametrize("status_code", [429, 500, 502, 503, 504])
+async def test_platform_tool_proxy_grant_retries_transient_status_then_succeeds(status_code: int) -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(status_code=status_code, json={"error_code": "temporary_platform_error"})
+        return httpx.Response(
+            status_code=200,
+            json={"token": "platform-tool-proxy-token", "expires_at": "2026-05-30T12:15:00+00:00"},
+        )
+
+    client = AsyncPlatformToolProxyPlatformClient(
+        base_url="https://mock.local",
+        hotkey=_keypair(),
+        transport=httpx.MockTransport(handler),
+        grant_retry_delays_seconds=(0.0,),
+    )
+
+    grant = await client.create_platform_tool_proxy_grant(
+        batch_id=uuid4(),
+        artifact_id=uuid4(),
+        task_id=uuid4(),
+        validator_session_id=uuid4(),
+        attempt_number=1,
+    )
+
+    assert grant.token == "platform-tool-proxy-token"  # noqa: S105 - fixed test-only proxy token
+    assert [request.url.path for request in requests] == [
+        "/v1/platform-tool-proxy/grants",
+        "/v1/platform-tool-proxy/grants",
+    ]
+
+
+@pytest.mark.anyio("asyncio")
 async def test_platform_tool_proxy_grant_retry_exhaustion_maps_to_grant_failed() -> None:
     requests: list[httpx.Request] = []
 
@@ -379,6 +415,39 @@ async def test_platform_tool_proxy_grant_retry_exhaustion_maps_to_grant_failed()
         )
 
     assert exc_info.value.status_code == 0
+    assert exc_info.value.error_code == "platform_tool_proxy_grant_failed"
+    assert [request.url.path for request in requests] == [
+        "/v1/platform-tool-proxy/grants",
+        "/v1/platform-tool-proxy/grants",
+        "/v1/platform-tool-proxy/grants",
+    ]
+
+
+@pytest.mark.anyio("asyncio")
+async def test_platform_tool_proxy_grant_transient_status_retry_exhaustion_maps_to_grant_failed() -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(status_code=503, json={"error_code": "temporary_platform_error"})
+
+    client = AsyncPlatformToolProxyPlatformClient(
+        base_url="https://mock.local",
+        hotkey=_keypair(),
+        transport=httpx.MockTransport(handler),
+        grant_retry_delays_seconds=(0.0, 0.0),
+    )
+
+    with pytest.raises(PlatformToolProxyInvocationError) as exc_info:
+        await client.create_platform_tool_proxy_grant(
+            batch_id=uuid4(),
+            artifact_id=uuid4(),
+            task_id=uuid4(),
+            validator_session_id=uuid4(),
+            attempt_number=1,
+        )
+
+    assert exc_info.value.status_code == 503
     assert exc_info.value.error_code == "platform_tool_proxy_grant_failed"
     assert [request.url.path for request in requests] == [
         "/v1/platform-tool-proxy/grants",
@@ -442,6 +511,7 @@ async def test_platform_tool_proxy_grant_preserves_proxy_error_code(
         base_url="https://mock.local",
         hotkey=_keypair(),
         transport=httpx.MockTransport(handler),
+        grant_retry_delays_seconds=(),
     )
 
     with pytest.raises(PlatformToolProxyInvocationError) as exc_info:
@@ -478,6 +548,7 @@ async def test_platform_tool_proxy_grant_unknown_error_response_preserves_grant_
         base_url="https://mock.local",
         hotkey=_keypair(),
         transport=httpx.MockTransport(handler),
+        grant_retry_delays_seconds=(),
     )
 
     with pytest.raises(PlatformToolProxyInvocationError) as exc_info:

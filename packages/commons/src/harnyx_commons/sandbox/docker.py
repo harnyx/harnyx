@@ -40,6 +40,10 @@ _MOUNTINFO_CONTAINER_ID_PATTERN = re.compile(
 )
 _NON_SENSITIVE_DIAGNOSTIC_ENV_KEYS = frozenset({"SANDBOX_HOST", "SANDBOX_PORT"})
 _STALE_LEGACY_CONTAINER_STATUSES = ("created", "exited", "dead")
+_SANDBOX_ENTRYPOINT_CONNECT_ATTEMPTS = 2
+_RETRYABLE_SANDBOX_ENTRYPOINT_CONNECTION_NOT_ESTABLISHED_ERRORS = (
+    httpx.ConnectError,
+)
 
 
 class HttpSandboxClient(SandboxClient):
@@ -52,13 +56,18 @@ class HttpSandboxClient(SandboxClient):
         host_container_url: str | None = None,
         timeout: float = 310.0,
         client: httpx.AsyncClient | None = None,
+        connect_attempts: int = _SANDBOX_ENTRYPOINT_CONNECT_ATTEMPTS,
     ) -> None:
+        if connect_attempts < 1:
+            raise ValueError("sandbox connect_attempts must be at least 1")
         self._token_header = DEFAULT_TOKEN_HEADER
         self._host_container_url = host_container_url
+        self._connect_attempts = connect_attempts
         self._owns_client = client is None
         self._client: httpx.AsyncClient = client or httpx.AsyncClient(
             base_url=base_url,
             timeout=timeout,
+            limits=httpx.Limits(max_keepalive_connections=0),
         )
 
     def configure(
@@ -82,15 +91,15 @@ class HttpSandboxClient(SandboxClient):
             self._token_header: token,
             SESSION_ID_HEADER: str(session_id),
             HOST_CONTAINER_URL_HEADER: self._host_container_url or "",
+            "Connection": "close",
         }
         try:
-            response = await self._client.post(
-                f"/entry/{entrypoint}",
-                json={
-                    "payload": dict(payload),
-                    "context": dict(context),
-                },
+            response = await self._post_entrypoint_with_connect_retry(
+                entrypoint=entrypoint,
+                payload=payload,
+                context=context,
                 headers=headers,
+                session_id=session_id,
             )
             response.raise_for_status()
         except httpx.TimeoutException as exc:
@@ -162,6 +171,40 @@ class HttpSandboxClient(SandboxClient):
             ) from exc
         body = response.json()
         return _parse_sandbox_invoke_result(body)
+
+    async def _post_entrypoint_with_connect_retry(
+        self,
+        *,
+        entrypoint: str,
+        payload: Mapping[str, JsonValue],
+        context: Mapping[str, JsonValue],
+        headers: Mapping[str, str],
+        session_id: UUID,
+    ) -> httpx.Response:
+        for attempt_number in range(1, self._connect_attempts + 1):
+            try:
+                return await self._client.post(
+                    f"/entry/{entrypoint}",
+                    json={
+                        "payload": dict(payload),
+                        "context": dict(context),
+                    },
+                    headers=headers,
+                )
+            except _RETRYABLE_SANDBOX_ENTRYPOINT_CONNECTION_NOT_ESTABLISHED_ERRORS as exc:
+                if attempt_number == self._connect_attempts:
+                    raise
+                logger.warning(
+                    "retrying sandbox entrypoint connect failure",
+                    extra={
+                        "entrypoint": entrypoint,
+                        "session_id": str(session_id),
+                        "attempt": attempt_number,
+                        "max_attempts": self._connect_attempts,
+                        "error_type": exc.__class__.__name__,
+                    },
+                )
+        raise RuntimeError("sandbox entrypoint connect retry loop exhausted without response")
 
     async def aclose(self) -> None:
         if self._owns_client:

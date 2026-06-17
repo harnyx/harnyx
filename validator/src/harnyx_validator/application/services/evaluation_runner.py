@@ -77,12 +77,10 @@ TaskSessionLimiter = AbstractAsyncContextManager[None]
 logger = logging.getLogger("harnyx_validator.scheduler")
 measurement_logger = logging.getLogger("harnyx_validator.measurement")
 LOCAL_RETRY_ATTEMPTS = 2
-VALIDATOR_OWNED_PLATFORM_TOOL_PROXY_ERROR_CODES = frozenset(
+VALIDATOR_OWNED_PLATFORM_TOOL_PROXY_CONTROL_ERROR_CODES = frozenset(
     {
         "platform_tool_proxy_denied",
         "platform_tool_proxy_grant_failed",
-        "platform_tool_proxy_execution_failed",
-        "platform_error",
     }
 )
 
@@ -1234,7 +1232,7 @@ class EvaluationRunner:
             if is_platform_tool_proxy_timeout_receipt(receipt):
                 continue
             error_code = extra.get("platform_tool_proxy_error_code")
-            if error_code not in VALIDATOR_OWNED_PLATFORM_TOOL_PROXY_ERROR_CODES:
+            if error_code not in VALIDATOR_OWNED_PLATFORM_TOOL_PROXY_CONTROL_ERROR_CODES:
                 continue
             error_message = extra.get("error_message") or f"platform tool proxy error: {error_code}"
             occurred_at = receipt.details.execution.finished_at if receipt.details.execution is not None else None

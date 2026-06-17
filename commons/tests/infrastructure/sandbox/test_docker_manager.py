@@ -5,6 +5,7 @@ import subprocess
 from dataclasses import dataclass
 from subprocess import CompletedProcess
 
+import httpx
 import pytest
 
 import harnyx_commons.sandbox.docker as docker_module
@@ -56,9 +57,10 @@ def test_http_sandbox_client_default_timeout_exceeds_entrypoint_budget(
     captured: dict[str, object] = {}
 
     class FakeAsyncClient:
-        def __init__(self, *, base_url: str, timeout: float) -> None:
+        def __init__(self, *, base_url: str, timeout: float, limits: httpx.Limits) -> None:
             captured["base_url"] = base_url
             captured["timeout"] = timeout
+            captured["limits"] = limits
 
         async def aclose(self) -> None:
             return None
@@ -70,6 +72,7 @@ def test_http_sandbox_client_default_timeout_exceeds_entrypoint_budget(
         assert captured == {
             "base_url": "http://sandbox",
             "timeout": 310.0,
+            "limits": httpx.Limits(max_keepalive_connections=0),
         }
     finally:
         client.close()

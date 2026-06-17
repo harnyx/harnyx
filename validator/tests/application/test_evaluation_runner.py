@@ -2509,8 +2509,6 @@ async def test_evaluation_runner_keeps_valid_response_when_provider_failure_stay
     [
         "platform_tool_proxy_denied",
         "platform_tool_proxy_grant_failed",
-        "platform_tool_proxy_execution_failed",
-        "platform_error",
     ],
 )
 async def test_evaluation_runner_platform_proxy_control_categories_fail_validator(
@@ -2556,6 +2554,99 @@ async def test_evaluation_runner_platform_proxy_control_categories_fail_validato
     assert exc_info.value.failure_detail.exception_type == "PlatformToolProxyInvocationError"
     assert orchestrator.calls == 1
     assert evaluation_store.records == []
+
+
+@pytest.mark.parametrize("error_code", ["platform_tool_proxy_execution_failed", "platform_error"])
+async def test_evaluation_runner_platform_proxy_execution_categories_do_not_fail_validator_when_caught(
+    tmp_path: Path,
+    error_code: str,
+) -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    evaluation_store = _RecordingEvaluationStore()
+    receipt_log = FakeReceiptLog()
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_store,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
+    )
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text=f"{error_code} caught"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    artifact = ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="artifact-hash", size_bytes=128)
+    orchestrator = _PlatformToolProxyReceiptOrchestrator(
+        sessions=session_registry,
+        receipt_log=receipt_log,
+        error_code=error_code,
+        caught_by_miner=True,
+    )
+
+    result = await runner.evaluate_artifact_with_state(
+        batch_id=uuid4(),
+        artifact=artifact,
+        tasks=(task,),
+        orchestrator=cast(TaskRunOrchestrator, orchestrator),
+    )
+
+    assert orchestrator.calls == 1
+    assert len(result.submissions) == 1
+    assert result.submissions[0].run.details.error is None
+    assert evaluation_store.records == list(result.submissions)
+
+
+@pytest.mark.parametrize("error_code", ["platform_tool_proxy_execution_failed", "platform_error"])
+async def test_evaluation_runner_platform_proxy_execution_categories_are_pair_scoped_when_uncaught(
+    tmp_path: Path,
+    error_code: str,
+) -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    evaluation_store = _RecordingEvaluationStore()
+    receipt_log = FakeReceiptLog()
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_store,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
+    )
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text=f"{error_code} uncaught"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    artifact = ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="artifact-hash", size_bytes=128)
+    orchestrator = _PlatformToolProxyReceiptOrchestrator(
+        sessions=session_registry,
+        receipt_log=receipt_log,
+        error_code=error_code,
+        caught_by_miner=False,
+    )
+
+    result = await runner.evaluate_artifact_with_state(
+        batch_id=uuid4(),
+        artifact=artifact,
+        tasks=(task,),
+        orchestrator=cast(TaskRunOrchestrator, orchestrator),
+    )
+
+    assert orchestrator.calls == 1
+    assert len(result.submissions) == 1
+    assert result.submissions[0].run.details.error is not None
+    assert result.submissions[0].run.details.error.code is MinerTaskErrorCode.MINER_UNHANDLED_EXCEPTION
+    assert evaluation_store.records == list(result.submissions)
 
 
 @pytest.mark.parametrize(
