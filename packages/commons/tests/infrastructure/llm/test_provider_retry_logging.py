@@ -48,10 +48,11 @@ class _RetryOnceExceptionProvider(BaseLlmProvider):
             call_coro=_call,
             verifier=lambda _: (True, False, None),
             classify_exception=_classify,
+            policy=request.retry_policy,
         )
 
 
-def _request() -> LlmRequest:
+def _request(*, use_case: str | None = None) -> LlmRequest:
     return LlmRequest(
         provider="openai",
         model="gpt-5-mini",
@@ -65,6 +66,7 @@ def _request() -> LlmRequest:
         max_output_tokens=64,
         reasoning_effort=None,
         output_mode="text",
+        use_case=use_case,
     )
 
 
@@ -105,3 +107,33 @@ async def test_retry_exception_log_includes_exception_details(caplog: pytest.Log
     assert retry_record.__dict__["data"]["exception_message"] == "provider transport failed"
     assert retry_record.__dict__["data"]["exception_repr"] == "RuntimeError('provider transport failed')"
     assert retry_record.__dict__["data"]["cause_chain"] == ("ValueError: dns lookup failed",)
+
+
+async def test_retry_exception_log_includes_request_use_case(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING, logger="harnyx_commons.llm.calls")
+    provider = _RetryOnceExceptionProvider()
+
+    await provider.invoke_with_retry(_request(use_case="miner_task_pairwise_judge"))
+
+    retry_records = [record for record in caplog.records if record.name == "harnyx_commons.llm.calls"]
+    assert retry_records[0].__dict__["data"]["use_case"] == "miner_task_pairwise_judge"
+
+
+async def test_request_retry_policy_overrides_provider_default() -> None:
+    provider = _RetryOnceExceptionProvider()
+    provider._retry_policy = RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0.0)
+    request = _request()
+    request = LlmRequest(
+        provider=request.provider,
+        model=request.model,
+        messages=request.messages,
+        temperature=request.temperature,
+        max_output_tokens=request.max_output_tokens,
+        reasoning_effort=request.reasoning_effort,
+        output_mode=request.output_mode,
+        retry_policy=RetryPolicy(attempts=2, initial_ms=0, max_ms=0, jitter=0.0),
+    )
+
+    result = await provider.invoke_with_retry(request)
+
+    assert result.choices[0].message.content[0].text == "ok"

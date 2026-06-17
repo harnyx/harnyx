@@ -454,7 +454,7 @@ async def test_vertex_provider_retries_empty_gemini_stream(
         project="demo-project",
         location="us-central1",
     )
-    provider._retry_policy = RetryPolicy(attempts=2, initial_ms=0, max_ms=0, jitter=0.0)
+    provider._retry_policy = RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0.0)
 
     request = LlmRequest(
         provider="vertex",
@@ -468,6 +468,7 @@ async def test_vertex_provider_retries_empty_gemini_stream(
         temperature=None,
         max_output_tokens=64,
         output_mode="text",
+        retry_policy=RetryPolicy(attempts=2, initial_ms=0, max_ms=0, jitter=0.0),
     )
 
     with pytest.raises(

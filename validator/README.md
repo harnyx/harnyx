@@ -35,6 +35,10 @@ Edit `.env` and set at least:
 | `VALIDATOR_PUBLIC_BASE_URL` | How the platform can reach your validator |
 | `CHUTES_API_KEY` | API key for the default validator scoring/similarity provider |
 | `SCORING_LLM_PROVIDER` | Optional scoring/similarity provider selector; defaults to `chutes` |
+| `SCORING_LLM_RETRY_ATTEMPTS` | Optional pairwise scoring LLM request retry attempts; defaults to `6` |
+| `SCORING_LLM_RETRY_INITIAL_MS` | Optional pairwise scoring LLM request retry initial backoff; defaults to `30000` |
+| `SCORING_LLM_RETRY_MAX_MS` | Optional pairwise scoring LLM request retry maximum backoff; defaults to `300000` |
+| `SCORING_LLM_RETRY_JITTER` | Optional pairwise scoring LLM request retry jitter ratio; defaults to `0.2` |
 
 The defaults in `.env.example` already target mainnet (`finney`) and netuid `67`. Validator sandbox execution defaults to `harnyx/harnyx-subnet-sandbox:finney`; set `SANDBOX_IMAGE=harnyx/harnyx-subnet-sandbox:testnet` for staging/testnet, or use another explicit value only when you intentionally want to test or pin a different sandbox image. `VALIDATOR_ARTIFACT_PARALLELISM` controls concurrent artifact sandboxes and defaults to `4`; `VALIDATOR_TASK_PARALLELISM` controls batch-wide task sessions across those artifacts and defaults to `20`.
 
@@ -42,7 +46,7 @@ Provider-backed miner script tools execute through platform tool proxy with mine
 
 Completed-run execution logs are stored under the validator state volume while the platform drains `/runs` pages. `VALIDATOR_RUN_PROGRESS_RETENTION_SECONDS` controls how long terminal batch blobs are retained before cleanup; it defaults to 24 hours. `VALIDATOR_RUN_PROGRESS_CLEANUP_INTERVAL_SECONDS` controls the idle cleanup cadence and defaults to 10 minutes. Operators with intentionally delayed platform sync can increase the retention window.
 
-Validator scoring keeps `SCORING_LLM_PROVIDER` configurable, but the scoring model contract is fixed in code to `moonshotai/Kimi-K2.5-TEE` with `reasoning_effort="high"`. The pairwise scoring prompt, request shape, and score mapping live in `public/packages/commons/src/harnyx_commons/miner_task_scoring.py`; validator runtime code only wires providers, sandbox execution, and submission flow.
+Validator scoring keeps `SCORING_LLM_PROVIDER` configurable, but the scoring model contract is fixed in code to `moonshotai/Kimi-K2.5-TEE` with `reasoning_effort="high"`. Pairwise scoring uses `SCORING_LLM_RETRY_*` for the scoring LLM request retry loop, including retryable provider errors, response verification failures, and structured-output repair retries; exhausting that policy records `scoring_llm_retry_exhausted` and does not schedule a new miner task attempt. The pairwise scoring prompt, request shape, and score mapping live in `public/packages/commons/src/harnyx_commons/miner_task_scoring.py`; validator runtime code only wires providers, sandbox execution, and submission flow.
 
 Post-dethrone similarity judging uses the same fixed `moonshotai/Kimi-K2.5-TEE` model contract as scoring and is routed through the `duplication_detection` surface in `LLM_MODEL_PROVIDER_OVERRIDES_JSON`. The platform computes the dethrone order and sends the original incumbent script plus candidate diff to validators; validators own the similarity prompt internally and return a duplicate/not-duplicate verdict with provider reasoning metadata.
 

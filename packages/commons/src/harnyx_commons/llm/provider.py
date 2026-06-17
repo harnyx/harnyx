@@ -590,6 +590,8 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             "reason": failure.reason,
             "backoff_ms": backoff_ms(attempt, policy),
         }
+        if request.use_case is not None:
+            data["use_case"] = request.use_case
         if failure.exception_type is not None:
             data["exception_type"] = failure.exception_type
         if failure.exception_message:

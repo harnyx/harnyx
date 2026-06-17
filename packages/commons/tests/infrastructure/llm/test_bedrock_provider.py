@@ -735,6 +735,36 @@ async def test_bedrock_provider_retries_expired_signature_with_fresh_request(
     assert len(client_calls) == 2
 
 
+async def test_bedrock_provider_uses_request_retry_policy_over_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    throttled = ClientError(
+        error_response={
+            "Error": {"Code": "ThrottlingException", "Message": "slow down"},
+            "ResponseMetadata": {"HTTPStatusCode": 429},
+        },
+        operation_name="ConverseStream",
+    )
+    _, client_calls = _patch_session(
+        monkeypatch,
+        events=(
+            {"messageStart": {"role": "assistant"}},
+            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "ok"}}},
+            {"messageStop": {"stopReason": "end_turn"}},
+            {"metadata": {"usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2}}},
+        ),
+        failures=(throttled,),
+    )
+    provider = _provider()
+    provider._retry_policy = RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0.0)
+    request = replace(_base_request(), retry_policy=RetryPolicy(attempts=2, initial_ms=0, max_ms=0, jitter=0.0))
+
+    response = await provider.invoke(request)
+
+    assert response.raw_text == "ok"
+    assert len(client_calls) == 2
+
+
 def test_bedrock_provider_classifies_client_errors() -> None:
     exc = ClientError(
         error_response={

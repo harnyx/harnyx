@@ -11,10 +11,15 @@ from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, SecretStr, TypeAd
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from harnyx_commons.llm.provider_types import LlmProviderName
+from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.routing import LlmModelProviderOverrides, parse_llm_model_provider_overrides
 
 DEFAULT_MAX_OUTPUT_TOKENS = 1024
 DEFAULT_SCORING_MAX_OUTPUT_TOKENS = 20480
+DEFAULT_SCORING_LLM_RETRY_ATTEMPTS = 6
+DEFAULT_SCORING_LLM_RETRY_INITIAL_MS = 30_000
+DEFAULT_SCORING_LLM_RETRY_MAX_MS = 300_000
+DEFAULT_SCORING_LLM_RETRY_JITTER = 0.2
 _ENDPOINT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
@@ -237,6 +242,27 @@ class LlmSettings(BaseSettings):
         default=DEFAULT_SCORING_MAX_OUTPUT_TOKENS, alias="SCORING_LLM_MAX_OUTPUT_TOKENS"
     )
     scoring_llm_model_override: str | None = Field(default=None, alias="SCORING_LLM_MODEL_OVERRIDE")
+    scoring_llm_retry_attempts: int = Field(
+        default=DEFAULT_SCORING_LLM_RETRY_ATTEMPTS,
+        alias="SCORING_LLM_RETRY_ATTEMPTS",
+        ge=1,
+    )
+    scoring_llm_retry_initial_ms: int = Field(
+        default=DEFAULT_SCORING_LLM_RETRY_INITIAL_MS,
+        alias="SCORING_LLM_RETRY_INITIAL_MS",
+        ge=0,
+    )
+    scoring_llm_retry_max_ms: int = Field(
+        default=DEFAULT_SCORING_LLM_RETRY_MAX_MS,
+        alias="SCORING_LLM_RETRY_MAX_MS",
+        ge=0,
+    )
+    scoring_llm_retry_jitter: float = Field(
+        default=DEFAULT_SCORING_LLM_RETRY_JITTER,
+        alias="SCORING_LLM_RETRY_JITTER",
+        ge=0.0,
+        le=1.0,
+    )
 
     # --- Content review (platform-only) ---
     content_review_llm_provider: LlmProviderName | None = Field(default=None, alias="CONTENT_REVIEW_LLM_PROVIDER")
@@ -296,6 +322,15 @@ class LlmSettings(BaseSettings):
             return None
         normalized = self.scoring_llm_model_override.strip()
         return normalized or None
+
+    @property
+    def scoring_llm_retry_policy(self) -> RetryPolicy:
+        return RetryPolicy(
+            attempts=self.scoring_llm_retry_attempts,
+            initial_ms=self.scoring_llm_retry_initial_ms,
+            max_ms=self.scoring_llm_retry_max_ms,
+            jitter=self.scoring_llm_retry_jitter,
+        )
 
     @property
     def llm_model_provider_overrides(self) -> LlmModelProviderOverrides:

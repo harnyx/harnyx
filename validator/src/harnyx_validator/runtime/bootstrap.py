@@ -941,6 +941,7 @@ def _create_scoring_service(
         max_output_tokens=settings.llm.scoring_llm_max_output_tokens,
         reasoning_effort=_SCORING_LLM_REASONING_EFFORT,
         timeout_seconds=settings.llm.scoring_llm_timeout_seconds,
+        retry_policy=settings.llm.scoring_llm_retry_policy,
     )
     return EvaluationScoringService(
         llm_provider=provider,

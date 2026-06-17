@@ -134,6 +134,7 @@ class VertexLlmProvider(BaseLlmProvider):
                 call_coro=lambda current_request: self._call_claude_anthropic(current_request),
                 verifier=self._verify_response,
                 classify_exception=self._classify_anthropic_exception,
+                policy=request.retry_policy,
             )
 
         return await self._call_with_retry(
@@ -141,6 +142,7 @@ class VertexLlmProvider(BaseLlmProvider):
             call_coro=lambda current_request: self._call_vertex_with_request(current_request),
             verifier=self._verify_response,
             classify_exception=self._classify_exception,
+            policy=request.retry_policy,
         )
 
     async def aclose(self) -> None:

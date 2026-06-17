@@ -10,6 +10,7 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 from harnyx_commons.llm.provider_types import OPENROUTER_PROVIDER, parse_custom_openai_compatible_target
+from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_miner_sdk.llm import (
     LlmChoice,
     LlmChoiceMessage,
@@ -49,6 +50,7 @@ class AbstractLlmRequest(ToolLlmRequest, ABC):
     reasoning_effort: str | None = None
     include: Sequence[str] | None = None
     timeout_seconds: float | None = None
+    retry_policy: RetryPolicy | None = None
     allow_postprocess_recovery: bool = True
 
     def __post_init__(self) -> None:

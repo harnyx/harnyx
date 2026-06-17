@@ -72,6 +72,7 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
             ),
             verifier=self._verify_response,
             classify_exception=self._classify_exception,
+            policy=request.retry_policy,
         )
 
     def _build_request(self, request: AbstractLlmRequest) -> _OpenAiCompatibleChatRequest:

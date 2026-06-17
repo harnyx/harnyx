@@ -21,6 +21,7 @@ from harnyx_commons.llm.providers.openrouter import (
     OpenRouterLlmProvider,
     build_openrouter_chat_provider,
 )
+from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import (
     LlmChoice,
     LlmChoiceMessage,
@@ -180,6 +181,26 @@ async def test_openrouter_provider_omits_provider_options_when_model_has_no_conf
     await provider.invoke(_request(model=model))
 
     assert fake_provider.requests[0].extra is None
+
+
+async def test_openrouter_provider_preserves_request_retry_policy_for_delegate() -> None:
+    fake_provider = _FakeOpenAiProvider()
+    fake_client = _FakeClient()
+    retry_policy = RetryPolicy(attempts=2, initial_ms=0, max_ms=0, jitter=0.0)
+    provider = OpenRouterLlmProvider(
+        openrouter_api_key=SecretStr("test-openrouter-key"),
+        model_provider_options={},
+        openrouter_chat_provider_factory=lambda api_key: _fake_provider_factory(
+            api_key,
+            [],
+            fake_provider,
+            fake_client,
+        ),
+    )
+
+    await provider.invoke(_request(model=OPENROUTER_NATIVE_SUPPORTED_MODELS[0], retry_policy=retry_policy))
+
+    assert fake_provider.requests[0].retry_policy == retry_policy
 
 
 def test_openrouter_provider_rejects_options_for_models_it_does_not_own() -> None:
@@ -391,6 +412,7 @@ def _request(
     model: str,
     extra: dict[str, Any] | None = None,
     thinking: LlmThinkingConfig | None = None,
+    retry_policy: RetryPolicy | None = None,
 ) -> LlmRequest:
     return LlmRequest(
         provider="openrouter",
@@ -405,4 +427,5 @@ def _request(
         max_output_tokens=32,
         extra=extra,
         thinking=thinking,
+        retry_policy=retry_policy,
     )

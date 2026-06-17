@@ -77,6 +77,7 @@ class ChutesLlmProvider(BaseLlmProvider):
             ),
             verifier=self._verify_response,
             classify_exception=self._classify_exception,
+            policy=request.retry_policy,
         )
         return await self._with_actual_cost(model=request.model, response=response)
 

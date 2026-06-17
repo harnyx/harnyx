@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import httpx
@@ -11,6 +12,7 @@ from harnyx_commons.config.llm import LlmSettings, parse_openai_compatible_endpo
 from harnyx_commons.llm.adapter import LlmProviderAdapter
 from harnyx_commons.llm.providers import openai_compatible
 from harnyx_commons.llm.providers.openai_compatible import OpenAiCompatibleLlmProvider
+from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest, LlmThinkingConfig
 
 pytestmark = pytest.mark.anyio("asyncio")
@@ -358,6 +360,32 @@ async def test_openai_compatible_provider_translates_streamed_reasoning_details(
     assert response.choices[0].message.reasoning == "first thoughtsummary thought"
     assert response.metadata is not None
     assert response.metadata["raw_response"]["choices"][0]["reasoning"] == "first thoughtsummary thought"
+
+
+async def test_openai_compatible_provider_uses_request_retry_policy_over_default() -> None:
+    calls = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(429, json={"error": "capacity"})
+        return _streaming_response()
+
+    provider = OpenAiCompatibleLlmProvider(
+        endpoint=_endpoint(auth={"type": "none"}),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    provider._retry_policy = RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0.0)
+    request = replace(_request(), retry_policy=RetryPolicy(attempts=2, initial_ms=0, max_ms=0, jitter=0.0))
+
+    try:
+        response = await provider.invoke(request)
+    finally:
+        await provider.aclose()
+
+    assert calls == 2
+    assert response.raw_text == "ok"
 
 
 def _endpoint(

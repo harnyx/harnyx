@@ -13,6 +13,7 @@ from harnyx_commons.domain.miner_task import (
     Response,
     ScorerReasoning,
 )
+from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import LlmChoice, LlmChoiceMessage, LlmResponse, LlmUsage
 from harnyx_commons.miner_task_scoring import (
     _MAX_RENDERED_CITATIONS,
@@ -121,6 +122,24 @@ async def test_scoring_service_returns_pairwise_score_directly() -> None:
 
     assert score.comparison_score == pytest.approx(1.0)
     assert score.total_score == pytest.approx(1.0)
+
+
+async def test_scoring_service_includes_retry_policy_on_pairwise_requests() -> None:
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="What is the answer?"),
+        reference_answer=ReferenceAnswer(text="The answer is 42."),
+    )
+    retry_policy = RetryPolicy(attempts=6, initial_ms=30_000, max_ms=300_000, jitter=0.2)
+    llm = StubLlmProvider([("first", None, None), ("second", None, None)])
+    service = EvaluationScoringService(
+        llm_provider=llm,
+        config=EvaluationScoringConfig(provider="chutes", model="judge-model", retry_policy=retry_policy),
+    )
+
+    await service.score(task=task, response=Response(text="Miner says 42."))
+
+    assert tuple(request.retry_policy for request in llm.requests) == (retry_policy, retry_policy)
 
 
 async def test_scoring_service_records_split_pairwise_decision() -> None:

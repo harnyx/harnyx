@@ -66,6 +66,7 @@ class BedrockLlmProvider(BaseLlmProvider):
             call_coro=lambda current_request: self._call_bedrock(_validate_request(current_request)),
             verifier=self._verify_response,
             classify_exception=self._classify_exception,
+            policy=validated_request.retry_policy,
         )
 
     async def _call_bedrock(self, request: LlmRequest) -> LlmResponse:

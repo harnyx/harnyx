@@ -9,6 +9,7 @@ from harnyx_commons.config.bedrock import BedrockSettings
 from harnyx_commons.config.llm import LlmSettings, OpenAiCompatibleEndpointConfig
 from harnyx_commons.config.vertex import VertexSettings
 from harnyx_commons.llm import provider_factory
+from harnyx_commons.llm.retry_utils import RetryPolicy
 
 
 def test_llm_settings_default_provider_concurrency_targets_match_activation_slice() -> None:
@@ -31,6 +32,17 @@ def test_default_llm_timeout_surfaces_are_300_seconds() -> None:
 
 def test_default_scoring_llm_max_output_tokens_is_20480() -> None:
     assert LlmSettings(_env_file=None).scoring_llm_max_output_tokens == 20480
+
+
+def test_default_scoring_llm_retry_policy_uses_capacity_backoff_window() -> None:
+    settings = LlmSettings(_env_file=None)
+
+    assert settings.scoring_llm_retry_policy == RetryPolicy(
+        attempts=6,
+        initial_ms=30_000,
+        max_ms=300_000,
+        jitter=0.2,
+    )
 
 
 def test_build_cached_llm_provider_resolver_caches_by_provider_name(

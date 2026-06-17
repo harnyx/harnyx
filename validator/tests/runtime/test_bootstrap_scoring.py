@@ -676,6 +676,7 @@ def test_create_scoring_service_does_not_require_vertex_config_at_bootstrap() ->
     assert service._config.provider == "chutes"
     assert service._config.model == bootstrap._SCORING_LLM_MODEL
     assert service._config.reasoning_effort == bootstrap._SCORING_LLM_REASONING_EFFORT
+    assert service._config.retry_policy == settings.llm.scoring_llm_retry_policy
 
 
 def test_create_scoring_service_uses_effective_route_model_and_provider() -> None:
@@ -734,6 +735,7 @@ def test_create_scoring_service_uses_effective_route_model_and_provider() -> Non
 
     assert service._config.provider == "bedrock"
     assert service._config.model == "custom/internal-model"
+    assert service._config.retry_policy == settings.llm.scoring_llm_retry_policy
 
 
 def test_create_similarity_judge_uses_scoring_llm_config() -> None:

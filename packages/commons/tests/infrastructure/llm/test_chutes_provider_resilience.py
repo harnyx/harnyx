@@ -429,6 +429,46 @@ async def test_chutes_provider_prices_final_accumulated_usage_after_provider_ret
 
 
 @pytest.mark.anyio("asyncio")
+async def test_chutes_provider_uses_request_retry_policy_over_default() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.url.path == "/v1/chat/completions"
+        if calls == 1:
+            return httpx.Response(429, json={"error": "capacity"})
+        payload = {
+            "id": "resp-retry-success",
+            "choices": [{"delta": {"content": "ok"}, "finish_reason": "stop", "index": 0}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+        return httpx.Response(200, text=f"data: {json.dumps(payload)}\n\ndata: [DONE]\n\n")
+
+    provider = ChutesLlmProvider(
+        base_url="https://example.com",
+        api_key="test-key",
+        client=httpx.AsyncClient(base_url="https://example.com", transport=httpx.MockTransport(handler)),
+        pricing_cache=ChutesModelPricingCache(
+            cached_pricing={"deepseek-ai/DeepSeek-V3.2-TEE": ModelPricing(0.10, 0.20, 0.0)}
+        ),
+    )
+    provider._retry_policy = RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0.0)
+    request = replace(
+        _basic_chutes_request(),
+        retry_policy=RetryPolicy(attempts=2, initial_ms=0, max_ms=0, jitter=0.0),
+    )
+
+    try:
+        response = await provider.invoke(request)
+    finally:
+        await provider.aclose()
+
+    assert calls == 2
+    assert response.raw_text == "ok"
+
+
+@pytest.mark.anyio("asyncio")
 async def test_chutes_provider_records_ttft_on_reasoning_only_first_stream_event(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

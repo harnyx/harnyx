@@ -19,6 +19,7 @@ from harnyx_commons.domain.miner_task import (
 from harnyx_commons.llm.json_utils import pydantic_postprocessor
 from harnyx_commons.llm.provider import LlmProviderPort
 from harnyx_commons.llm.provider_types import LlmProviderName
+from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest, LlmResponse
 
 _MAX_RENDERED_CITATIONS = 200
@@ -126,6 +127,7 @@ class EvaluationScoringConfig:
     reasoning_effort: str | None = None
     timeout_seconds: float = 300.0
     scoring_version: str = "v1"
+    retry_policy: RetryPolicy | None = None
 
 
 class EvaluationScoringService:
@@ -221,6 +223,7 @@ class EvaluationScoringService:
             max_output_tokens=self._config.max_output_tokens,
             reasoning_effort=self._config.reasoning_effort,
             timeout_seconds=self._config.timeout_seconds,
+            retry_policy=self._config.retry_policy,
             use_case="miner_task_pairwise_judge",
         )
         response = await self._llm.invoke(request)
