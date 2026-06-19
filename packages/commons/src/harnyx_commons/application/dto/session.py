@@ -21,10 +21,13 @@ class SessionTokenRequest:
     budget_usd: float
     token: str
     hard_limit_usd: float | None = None
+    miner_hotkey_ss58: str | None = None
 
     def __post_init__(self) -> None:
         if self.budget_usd < 0.0:
             raise ValueError("budget_usd must be non-negative")
+        if self.miner_hotkey_ss58 is not None and not self.miner_hotkey_ss58.strip():
+            raise ValueError("miner_hotkey_ss58 must be non-empty when provided")
         if self.hard_limit_usd is not None and self.hard_limit_usd < 0.0:
             raise ValueError("hard_limit_usd must be non-negative")
         effective_hard_limit_usd = (

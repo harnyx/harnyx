@@ -158,6 +158,7 @@ class Session:
     expires_at: datetime
     budget_usd: float
     hard_limit_usd: float | None = None
+    miner_hotkey_ss58: str | None = None
     usage: SessionUsage = field(default_factory=SessionUsage)
     status: SessionStatus = SessionStatus.ACTIVE
     active_attempt: int = 0
@@ -171,6 +172,8 @@ class Session:
             raise ValueError("expires_at must be later than issued_at")
         if self.budget_usd < 0.0:
             raise ValueError("budget_usd must be non-negative")
+        if self.miner_hotkey_ss58 is not None and not self.miner_hotkey_ss58.strip():
+            raise ValueError("miner_hotkey_ss58 must be non-empty when provided")
         if self.hard_limit_usd is not None and self.hard_limit_usd < 0.0:
             raise ValueError("hard_limit_usd must be non-negative")
         if self.effective_hard_limit_usd < self.budget_usd:

@@ -1130,6 +1130,7 @@ def test_invocation_only_runtime_factory_skips_default_scoring_provider(
         model="benchmark-invocation-only",
         scoring_version="benchmark-invocation-only",
     )
+    captured_tooling_kwargs: list[dict[str, Any]] = []
 
     monkeypatch.setattr(local_eval.Settings, "load", staticmethod(lambda: settings))
     monkeypatch.setattr(local_eval, "_build_state", lambda *_args, **_kwargs: state)
@@ -1143,7 +1144,11 @@ def test_invocation_only_runtime_factory_skips_default_scoring_provider(
             tool_llm_provider=None,
         ),
     )
-    monkeypatch.setattr(local_eval, "_build_local_provider_tooling", lambda **_kwargs: (object(), object()))
+    def build_local_provider_tooling(**kwargs: Any) -> tuple[object, object]:
+        captured_tooling_kwargs.append(kwargs)
+        return object(), object()
+
+    monkeypatch.setattr(local_eval, "_build_local_provider_tooling", build_local_provider_tooling)
     monkeypatch.setattr(local_eval, "create_sandbox_manager", lambda **_kwargs: object())
 
     runtime = local_eval.LocalEvaluationRuntime.create_invocation_only(
@@ -1156,6 +1161,9 @@ def test_invocation_only_runtime_factory_skips_default_scoring_provider(
     assert runtime.scoring_service is scoring_service
     assert runtime.scoring_config is scoring_config
     assert runtime._scoring_llm_provider is None
+    assert captured_tooling_kwargs
+    assert captured_tooling_kwargs[0]["search_provider_resolver"]("parallel", object()) is not None
+    assert captured_tooling_kwargs[0]["llm_provider_resolver"]("openrouter", object()) is not None
 
 
 def test_local_eval_target_only_skips_champion_fetch_and_keeps_recorded_context(

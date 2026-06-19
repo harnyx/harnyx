@@ -109,6 +109,7 @@ class ToolInvocationContext:
     session_id: UUID
     active_attempt: int
     uid: int
+    miner_hotkey_ss58: str | None = None
 
 
 class ToolExecutor:
@@ -282,6 +283,7 @@ class ToolExecutor:
             session_id=session.session_id,
             active_attempt=session.active_attempt,
             uid=session.uid,
+            miner_hotkey_ss58=session.miner_hotkey_ss58,
         )
         try:
             result = await self._execute_pending_receipt_async(

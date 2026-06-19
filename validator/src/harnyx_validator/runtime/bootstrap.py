@@ -39,7 +39,9 @@ from harnyx_commons.tools.dto import ToolInvocationRequest, tool_payload_for_inv
 from harnyx_commons.tools.executor import ToolExecutor, ToolInvocationContext, ToolInvocationOutput, ToolInvoker
 from harnyx_commons.tools.ports import WebSearchProviderPort
 from harnyx_commons.tools.runtime_invoker import (
+    LlmProviderResolver,
     RuntimeToolInvoker,
+    SearchProviderResolver,
     build_miner_sandbox_tool_invoker,
 )
 from harnyx_commons.tools.search_models import SearchProviderName
@@ -537,8 +539,8 @@ def _build_local_provider_tooling(
     resolved: Settings,
     search_client: WebSearchProviderPort | None,
     tool_llm_provider: LlmProviderPort | None,
-    search_provider_resolver: Callable[[SearchProviderName], WebSearchProviderPort] | None = None,
-    llm_provider_resolver: Callable[[str], LlmProviderPort] | None = None,
+    search_provider_resolver: SearchProviderResolver | None = None,
+    llm_provider_resolver: LlmProviderResolver | None = None,
 ) -> tuple[ToolInvoker, ToolExecutor]:
     local_invoker = build_miner_sandbox_tool_invoker(
         state.receipt_log,

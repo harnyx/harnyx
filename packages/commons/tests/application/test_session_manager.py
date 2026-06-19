@@ -130,6 +130,24 @@ def test_issue_preserves_explicit_hard_limit() -> None:
     assert issued.session.effective_hard_limit_usd == pytest.approx(1.0)
 
 
+def test_issue_preserves_miner_hotkey_metadata() -> None:
+    sessions = FakeSessionRegistry()
+    tokens = InMemoryTokenRegistry()
+    manager = SessionManager(sessions, tokens)
+    request = make_request()
+    request = replace(request, miner_hotkey_ss58="selected-hotkey")
+
+    issued = manager.issue(request)
+
+    assert issued.session.miner_hotkey_ss58 == "selected-hotkey"
+    assert sessions.get(request.session_id) == issued.session
+
+
+def test_session_token_request_rejects_blank_miner_hotkey() -> None:
+    with pytest.raises(ValueError, match="miner_hotkey_ss58 must be non-empty"):
+        replace(make_request(), miner_hotkey_ss58=" ")
+
+
 def test_begin_attempt_advances_counter_and_clears_failure_marker() -> None:
     sessions = FakeSessionRegistry()
     tokens = InMemoryTokenRegistry()

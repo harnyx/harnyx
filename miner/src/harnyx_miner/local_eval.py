@@ -468,8 +468,12 @@ class LocalEvaluationRuntime:
             resolved=settings,
             search_client=search_client,
             tool_llm_provider=tool_llm_provider,
-            search_provider_resolver=search_provider_registry.resolve,
-            llm_provider_resolver=llm_provider_registry.resolve,
+            search_provider_resolver=lambda requested_provider, _context: search_provider_registry.resolve(
+                requested_provider
+            ),
+            llm_provider_resolver=lambda requested_provider, _context: llm_provider_registry.resolve(
+                requested_provider
+            ),
         )
         progress = _LocalProgressRecorder(
             _display=progress_reporter,

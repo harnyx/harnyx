@@ -36,6 +36,7 @@ class SessionManager:
             expires_at=request.expires_at,
             budget_usd=request.budget_usd,
             hard_limit_usd=request.hard_limit_usd,
+            miner_hotkey_ss58=request.miner_hotkey_ss58,
         )
         self._sessions.create(session)
         token_hash = self._tokens.register(session.session_id, request.token)

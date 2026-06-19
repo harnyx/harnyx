@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping, Sequence
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
@@ -20,7 +21,7 @@ from harnyx_commons.llm.schema import (
     LlmUsage,
 )
 from harnyx_commons.platform_tool_proxy import platform_tool_proxy_provider_timeout_seconds
-from harnyx_commons.tools.executor import ToolInvocationOutput
+from harnyx_commons.tools.executor import ToolInvocationContext, ToolInvocationOutput
 from harnyx_commons.tools.provider_billing import ProviderBillingMetadata, SearchProviderResult
 from harnyx_commons.tools.runtime_invoker import (
     DEFAULT_SEARCH_TOOL_TIMEOUT_SECONDS,
@@ -417,11 +418,23 @@ async def _invoke(
     tool: str,
     args: Sequence[object] | None = None,
     kwargs: Mapping[str, object] | None = None,
+    context: ToolInvocationContext | None = None,
 ) -> Any:
     return await invoker.invoke(
         tool,
         args=tuple(args or ()),
         kwargs=dict(kwargs or {}),
+        context=context,
+    )
+
+
+def _tool_invocation_context() -> ToolInvocationContext:
+    return ToolInvocationContext(
+        receipt_id="receipt-1",
+        session_id=uuid4(),
+        active_attempt=0,
+        uid=7,
+        miner_hotkey_ss58="selected-hotkey",
     )
 
 
@@ -451,9 +464,15 @@ async def test_runtime_invoker_uses_search_provider_resolver_for_requested_provi
     configured_client = StubDeSearchClient()
     parallel_client = StubDeSearchClient()
     resolved_providers: list[str] = []
+    resolved_contexts: list[ToolInvocationContext | None] = []
+    context = _tool_invocation_context()
 
-    def resolve_search_provider(provider: str) -> StubDeSearchClient:
+    def resolve_search_provider(
+        provider: str,
+        invocation_context: ToolInvocationContext | None,
+    ) -> StubDeSearchClient:
         resolved_providers.append(provider)
+        resolved_contexts.append(invocation_context)
         return parallel_client
 
     invoker = RuntimeToolInvoker(
@@ -468,11 +487,42 @@ async def test_runtime_invoker_uses_search_provider_resolver_for_requested_provi
         invoker,
         "search_web",
         kwargs={"provider": "parallel", "search_queries": ["harnyx"]},
+        context=context,
     )
 
     assert isinstance(result, ToolInvocationOutput)
     assert resolved_providers == ["parallel"]
+    assert resolved_contexts == [context]
     assert parallel_client.calls == [("web", {"search_queries": ("harnyx",)})]
+    assert configured_client.calls == []
+
+
+async def test_runtime_invoker_search_provider_resolver_failure_does_not_fall_back_to_configured_provider() -> None:
+    configured_client = StubDeSearchClient()
+
+    def resolve_search_provider(
+        provider: str,
+        invocation_context: ToolInvocationContext | None,
+    ) -> StubDeSearchClient:
+        _ = (provider, invocation_context)
+        raise ToolProviderError("selected miner search credential missing")
+
+    invoker = RuntimeToolInvoker(
+        FakeReceiptLog(),
+        web_search_client=configured_client,
+        web_search_provider_name="parallel",
+        web_search_provider_resolver=resolve_search_provider,
+        allowed_models=ALLOWED_TOOL_MODELS,
+    )
+
+    with pytest.raises(ToolProviderError, match="selected miner search credential missing"):
+        await _invoke(
+            invoker,
+            "search_web",
+            kwargs={"provider": "parallel", "search_queries": ["harnyx"]},
+            context=_tool_invocation_context(),
+        )
+
     assert configured_client.calls == []
 
 
@@ -935,9 +985,15 @@ async def test_runtime_invoker_uses_llm_provider_resolver_for_requested_provider
     configured_chutes = StubChutesProvider()
     openrouter = StubOpenRouterProvider()
     resolved_providers: list[str] = []
+    resolved_contexts: list[ToolInvocationContext | None] = []
+    context = _tool_invocation_context()
 
-    def resolve_llm_provider(provider: str) -> StubOpenRouterProvider:
+    async def resolve_llm_provider(
+        provider: str,
+        invocation_context: ToolInvocationContext | None,
+    ) -> StubOpenRouterProvider:
         resolved_providers.append(provider)
+        resolved_contexts.append(invocation_context)
         return openrouter
 
     invoker = RuntimeToolInvoker(
@@ -956,12 +1012,90 @@ async def test_runtime_invoker_uses_llm_provider_resolver_for_requested_provider
             "messages": [{"role": "user", "content": "hi"}],
             "model": OPENROUTER_NATIVE_TOOL_MODEL,
         },
+        context=context,
     )
 
     assert isinstance(result, ToolInvocationOutput)
     assert resolved_providers == ["openrouter"]
+    assert resolved_contexts == [context]
     assert openrouter.calls[0].provider == "openrouter"
     assert configured_chutes.calls == []
+
+
+async def test_runtime_invoker_llm_provider_resolver_failure_does_not_fall_back_to_configured_provider() -> None:
+    configured_chutes = StubChutesProvider()
+
+    async def resolve_llm_provider(
+        provider: str,
+        invocation_context: ToolInvocationContext | None,
+    ) -> StubOpenRouterProvider:
+        _ = (provider, invocation_context)
+        raise ToolProviderError("selected miner llm credential missing")
+
+    invoker = RuntimeToolInvoker(
+        FakeReceiptLog(),
+        llm_provider=configured_chutes,
+        llm_provider_name="openrouter",
+        llm_provider_resolver=resolve_llm_provider,
+        allowed_models=ALLOWED_TOOL_MODELS,
+    )
+
+    with pytest.raises(ToolProviderError, match="selected miner llm credential missing"):
+        await _invoke(
+            invoker,
+            "llm_chat",
+            kwargs={
+                "provider": "openrouter",
+                "messages": [{"role": "user", "content": "hi"}],
+                "model": OPENROUTER_NATIVE_TOOL_MODEL,
+            },
+            context=_tool_invocation_context(),
+        )
+
+    assert configured_chutes.calls == []
+
+
+@pytest.mark.parametrize(
+    ("tool_spec", "expected_message"),
+    [
+        ({"type": "function", "function": "not-object"}, "tool spec function"),
+        ({"type": "web_search", "config": "not-object"}, "tool spec config"),
+    ],
+)
+async def test_runtime_invoker_validates_llm_tools_before_resolving_provider(
+    tool_spec: Mapping[str, object],
+    expected_message: str,
+) -> None:
+    resolved_providers: list[str] = []
+
+    async def resolve_llm_provider(
+        provider: str,
+        invocation_context: ToolInvocationContext | None,
+    ) -> StubOpenRouterProvider:
+        _ = invocation_context
+        resolved_providers.append(provider)
+        return StubOpenRouterProvider()
+
+    invoker = RuntimeToolInvoker(
+        FakeReceiptLog(),
+        llm_provider_resolver=resolve_llm_provider,
+        allowed_models=ALLOWED_TOOL_MODELS,
+    )
+
+    with pytest.raises(TypeError, match=expected_message):
+        await _invoke(
+            invoker,
+            "llm_chat",
+            kwargs={
+                "provider": "openrouter",
+                "messages": [{"role": "user", "content": "hi"}],
+                "model": OPENROUTER_NATIVE_TOOL_MODEL,
+                "tools": [tool_spec],
+            },
+            context=_tool_invocation_context(),
+        )
+
+    assert resolved_providers == []
 
 
 async def test_runtime_invoker_routes_llm_chat_from_first_positional_payload() -> None:
