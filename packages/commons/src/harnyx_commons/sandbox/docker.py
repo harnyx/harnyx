@@ -43,6 +43,8 @@ _STALE_LEGACY_CONTAINER_STATUSES = ("created", "exited", "dead")
 _SANDBOX_ENTRYPOINT_CONNECT_ATTEMPTS = 2
 _CONTAINER_IP_READY_TIMEOUT_SECONDS = 5.0
 _CONTAINER_IP_READY_POLL_INTERVAL_SECONDS = 0.1
+_IMAGE_PULL_ATTEMPTS = 3
+_IMAGE_PULL_INITIAL_BACKOFF_SECONDS = 1.0
 _RETRYABLE_SANDBOX_ENTRYPOINT_CONNECTION_NOT_ESTABLISHED_ERRORS = (
     httpx.ConnectError,
 )
@@ -390,7 +392,7 @@ class DockerSandboxManager(SandboxManager):
         base_url: str | None = None
         client: SandboxClient | None = None
         try:
-            base_url, client = self._ready_client(options)
+            base_url, client = self._ready_client(options, container_id=container_id)
             self._post_launch_steps(options, base_url, container_id)
         except Exception as exc:
             self._write_failure_diagnostics(
@@ -401,7 +403,7 @@ class DockerSandboxManager(SandboxManager):
             if client is not None:
                 client.close()
             self._stop_log_stream(container_id)
-            self._best_effort_stop(container_id, stop_timeout_seconds=options.stop_timeout_seconds)
+            self._best_effort_stop_and_remove(container_id, stop_timeout_seconds=options.stop_timeout_seconds)
             raise
         assert base_url is not None
         assert client is not None
@@ -436,9 +438,8 @@ class DockerSandboxManager(SandboxManager):
             self._docker,
             "run",
             "--pull",
-            options.pull_policy,
+            self._docker_run_pull_policy(options),
             "-d",
-            "--rm",
             "--name",
             options.container_name,
         ]
@@ -447,6 +448,12 @@ class DockerSandboxManager(SandboxManager):
         if options.user:
             args.extend(["--user", options.user])
         return args
+
+    @staticmethod
+    def _docker_run_pull_policy(options: SandboxOptions) -> str:
+        if options.pull_policy == "always":
+            return "never"
+        return options.pull_policy
 
     def _add_ports_and_network(self, args: list[str], options: SandboxOptions) -> None:
         if options.host_port is not None:
@@ -492,8 +499,8 @@ class DockerSandboxManager(SandboxManager):
         args = self._build_run_args(options)
         return self._run_container(args, options)
 
-    def _ready_client(self, options: SandboxOptions) -> tuple[str, SandboxClient]:
-        base_url, client = self._build_client(options)
+    def _ready_client(self, options: SandboxOptions, *, container_id: str) -> tuple[str, SandboxClient]:
+        base_url, client = self._build_client(options, container_id=container_id)
         try:
             self._maybe_wait_for_health(base_url, options)
         except Exception:
@@ -507,6 +514,7 @@ class DockerSandboxManager(SandboxManager):
             time.sleep(options.startup_delay_seconds)
 
     def _run_container(self, args: list[str], options: SandboxOptions) -> str:
+        self._pull_image_if_required(options)
         logger.info(
             "launching sandbox container",
             extra={
@@ -545,6 +553,41 @@ class DockerSandboxManager(SandboxManager):
         if not container_id:
             raise RuntimeError("docker run did not return a container identifier")
         return container_id
+
+    def _pull_image_if_required(self, options: SandboxOptions) -> None:
+        if options.pull_policy != "always":
+            return
+
+        args = [self._docker, "pull", options.image]
+        last_error: subprocess.CalledProcessError | subprocess.TimeoutExpired | None = None
+        for attempt_number in range(1, _IMAGE_PULL_ATTEMPTS + 1):
+            try:
+                self._run_command(args, capture_output=True, text=True, check=True)
+                return
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+                last_error = exc
+                if attempt_number == _IMAGE_PULL_ATTEMPTS:
+                    break
+                logger.warning(
+                    "retrying sandbox image pull failure",
+                    extra={
+                        "image": options.image,
+                        "attempt": attempt_number,
+                        "max_attempts": _IMAGE_PULL_ATTEMPTS,
+                        "error_type": exc.__class__.__name__,
+                    },
+                )
+                time.sleep(_IMAGE_PULL_INITIAL_BACKOFF_SECONDS * (2 ** (attempt_number - 1)))
+
+        assert last_error is not None
+        error = RuntimeError(f"docker pull failed after {_IMAGE_PULL_ATTEMPTS} attempts: image={options.image}")
+        self._write_pull_failure_diagnostics(
+            options=options,
+            error=error,
+            docker_pull_args=args,
+            docker_pull_result=last_error if isinstance(last_error, subprocess.CalledProcessError) else None,
+        )
+        raise error from last_error
 
     def _raise_run_error(
         self,
@@ -627,6 +670,42 @@ class DockerSandboxManager(SandboxManager):
                 exc_info=exc,
             )
 
+    def _write_pull_failure_diagnostics(
+        self,
+        *,
+        options: SandboxOptions,
+        error: BaseException,
+        docker_pull_args: list[str],
+        docker_pull_result: subprocess.CalledProcessError | None,
+    ) -> None:
+        if options.failure_diagnostics_dir is None:
+            return
+        diagnostics_dir = Path(options.failure_diagnostics_dir)
+        try:
+            ensure_private_diagnostic_dir(diagnostics_dir)
+            write_private_json(
+                diagnostics_dir / "sandbox-options.json",
+                _diagnostic_options_snapshot(options),
+            )
+            write_private_text(diagnostics_dir / "docker-pull.txt", _shell_join(docker_pull_args))
+            write_private_text(diagnostics_dir / "error.txt", _diagnostic_error_text(error, options))
+            if docker_pull_result is not None:
+                write_private_json(
+                    diagnostics_dir / "docker-pull-result.json",
+                    {
+                        "returncode": docker_pull_result.returncode,
+                        "stdout": _redact_sensitive_text(docker_pull_result.stdout or "", options),
+                        "stderr": _redact_sensitive_text(docker_pull_result.stderr or "", options),
+                    },
+                )
+        except Exception as exc:  # pragma: no cover - diagnostic path must not mask failures
+            logger.warning(
+                "sandbox pull failure diagnostics could not be written: diagnostics_dir=%s error=%s",
+                diagnostics_dir,
+                exc,
+                exc_info=exc,
+            )
+
     def _write_docker_command_output(
         self,
         path: Path,
@@ -660,26 +739,26 @@ class DockerSandboxManager(SandboxManager):
             return
         write_private_text(path, _redact_sensitive_text(result.stdout or "", options))
 
-    def _build_client(self, options: SandboxOptions) -> tuple[str, SandboxClient]:
+    def _build_client(self, options: SandboxOptions, *, container_id: str) -> tuple[str, SandboxClient]:
         if options.host_port is not None:
             base_host = self._host
             if options.host_port == 0:
-                published_port = self._resolve_published_port(options)
+                published_port = self._resolve_published_port(options, container_id=container_id)
             else:
                 published_port = options.host_port
         else:
-            base_host = self._resolve_container_ip(options)
+            base_host = self._resolve_container_ip(options, container_id=container_id)
             published_port = options.container_port
 
         base_url = f"http://{base_host}:{published_port}"
         client = self._client_factory(base_url, options.host_container_url)
         return base_url, client
 
-    def _resolve_published_port(self, options: SandboxOptions) -> int:
+    def _resolve_published_port(self, options: SandboxOptions, *, container_id: str) -> int:
         args = [
             self._docker,
             "port",
-            options.container_name,
+            container_id,
             str(options.container_port),
         ]
         try:
@@ -709,12 +788,12 @@ class DockerSandboxManager(SandboxManager):
 
         raise RuntimeError(f"docker port returned an unexpected mapping: {output}")
 
-    def _resolve_container_ip(self, options: SandboxOptions) -> str:
+    def _resolve_container_ip(self, options: SandboxOptions, *, container_id: str) -> str:
         network = options.network
         if not network:
             raise ValueError("sandbox network must be provided when host_port is not published")
 
-        deadline = time.monotonic() + _CONTAINER_IP_READY_TIMEOUT_SECONDS
+        deadline = time.monotonic() + self._container_ip_ready_timeout(options)
         last_error: _ContainerIpNotReadyError | None = None
         while True:
             remaining_seconds = deadline - time.monotonic()
@@ -725,6 +804,7 @@ class DockerSandboxManager(SandboxManager):
             try:
                 return self._resolve_container_ip_once(
                     options,
+                    container_id=container_id,
                     network=network,
                     command_timeout_seconds=min(remaining_seconds, self._command_timeout_seconds),
                 )
@@ -741,6 +821,7 @@ class DockerSandboxManager(SandboxManager):
         self,
         options: SandboxOptions,
         *,
+        container_id: str,
         network: str,
         command_timeout_seconds: float,
     ) -> str:
@@ -748,8 +829,8 @@ class DockerSandboxManager(SandboxManager):
             self._docker,
             "inspect",
             "--format",
-            "{{json .NetworkSettings.Networks}}",
-            options.container_name,
+            "{{json .}}",
+            container_id,
         ]
         try:
             result = self._run_command(
@@ -763,11 +844,37 @@ class DockerSandboxManager(SandboxManager):
             raise _ContainerIpNotReadyError(
                 f"docker inspect timed out while waiting for network: {network}"
             ) from exc
+        except subprocess.CalledProcessError as exc:
+            stdout = _redact_sensitive_text((exc.stdout or "").strip(), options)
+            stderr = _redact_sensitive_text((exc.stderr or "").strip(), options)
+            details = f"stdout={stdout} stderr={stderr}".strip()
+            raise RuntimeError(
+                f"docker inspect failed while resolving sandbox network: container={container_id} {details}"
+            ) from exc
         output = (result.stdout or "").strip()
         if not output:
-            raise _ContainerIpNotReadyError("docker inspect returned empty network settings")
+            raise _ContainerIpNotReadyError("docker inspect returned empty container details")
 
-        networks = json.loads(output)
+        container = json.loads(output)
+        if not isinstance(container, dict):
+            raise RuntimeError("docker inspect container details must be a JSON object")
+
+        state = container.get("State")
+        if not isinstance(state, dict):
+            raise RuntimeError("docker inspect did not include container state")
+        status = state.get("Status")
+        if status in {"dead", "exited", "removing"}:
+            exit_code = state.get("ExitCode")
+            error = state.get("Error")
+            raise RuntimeError(
+                "sandbox container exited before readiness: "
+                f"container={container_id} status={status} exit_code={exit_code} error={error}"
+            )
+
+        network_settings = container.get("NetworkSettings")
+        if not isinstance(network_settings, dict):
+            raise _ContainerIpNotReadyError("docker inspect did not include network settings")
+        networks = network_settings.get("Networks")
         if not isinstance(networks, dict):
             raise _ContainerIpNotReadyError("docker inspect network settings must be a JSON object")
 
@@ -780,6 +887,12 @@ class DockerSandboxManager(SandboxManager):
             raise _ContainerIpNotReadyError(f"docker inspect returned invalid IP address for network: {network}")
 
         return ip_address
+
+    @staticmethod
+    def _container_ip_ready_timeout(options: SandboxOptions) -> float:
+        if options.wait_for_healthz:
+            return max(_CONTAINER_IP_READY_TIMEOUT_SECONDS, options.healthz_timeout)
+        return _CONTAINER_IP_READY_TIMEOUT_SECONDS
 
     def _maybe_wait_for_health(self, base_url: str, options: SandboxOptions) -> None:
         if not options.wait_for_healthz:
@@ -818,6 +931,7 @@ class DockerSandboxManager(SandboxManager):
                 exc.timeout,
                 extra={"container": identifier, "timeout": exc.timeout},
             )
+        self._best_effort_remove(identifier)
         deployment.client.close()
         self._stop_log_stream(identifier)
 
@@ -886,7 +1000,7 @@ class DockerSandboxManager(SandboxManager):
         result = self._run_command(args, capture_output=True, text=True, check=True)
         return tuple(line.strip() for line in (result.stdout or "").splitlines() if line.strip())
 
-    def _best_effort_stop(self, container_id: str, *, stop_timeout_seconds: int | None) -> None:
+    def _best_effort_stop_and_remove(self, container_id: str, *, stop_timeout_seconds: int | None) -> None:
         args = [self._docker, "stop"]
         if stop_timeout_seconds is not None:
             args.extend(["-t", str(stop_timeout_seconds)])
@@ -903,6 +1017,25 @@ class DockerSandboxManager(SandboxManager):
         except subprocess.TimeoutExpired as exc:  # pragma: no cover - integration only
             logger.warning(
                 "docker stop timed out (ignored): timeout=%s",
+                exc.timeout,
+                extra={"container": container_id, "timeout": exc.timeout},
+            )
+        self._best_effort_remove(container_id)
+
+    def _best_effort_remove(self, container_id: str) -> None:
+        args = [self._docker, "rm", "-f", container_id]
+        try:
+            self._run_command(args, capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as exc:  # pragma: no cover - integration only
+            logger.warning(
+                "docker rm failed (ignored): returncode=%s stderr=%s",
+                exc.returncode,
+                exc.stderr,
+                extra={"container": container_id, "stderr": exc.stderr},
+            )
+        except subprocess.TimeoutExpired as exc:  # pragma: no cover - integration only
+            logger.warning(
+                "docker rm timed out (ignored): timeout=%s",
                 exc.timeout,
                 extra={"container": container_id, "timeout": exc.timeout},
             )

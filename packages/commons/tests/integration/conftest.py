@@ -74,7 +74,7 @@ def _create_runner_visible_state_dir() -> Path:
 
 
 @pytest.fixture
-def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
+def sandbox_launcher() -> Callable[..., SandboxDeployment]:
     """Start a sandbox container for the provided agent module and clean it up afterward."""
 
     docker_bin = _docker_binary()
@@ -93,7 +93,7 @@ def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
     deployments = []
     state_dir = _create_runner_visible_state_dir()
 
-    def _start(agent_module: str):
+    def _start(agent_module: str, *, host_port: int | None = None):
         module_rel_path = Path(*agent_module.split(".")).with_suffix(".py")
         module_path = _PUBLIC_PACKAGES_ROOT / module_rel_path
         if not module_path.exists():
@@ -105,7 +105,7 @@ def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
             key=agent_module.replace(".", "_"),
             data=module_path.read_bytes(),
         )
-        port = _find_free_port()
+        port = _find_free_port() if host_port is None else host_port
         options = SandboxOptions(
             image=image,
             container_name=f"commons-int-{uuid.uuid4().hex[:8]}",

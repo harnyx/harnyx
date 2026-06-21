@@ -111,6 +111,50 @@ def test_docker_sandbox_manager_times_out_docker_run(tmp_path: Path) -> None:
     assert error_text.startswith("TimeoutExpired:")
 
 
+def test_docker_sandbox_manager_writes_diagnostics_when_docker_pull_retries_exhaust(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("harnyx_commons.sandbox.docker.time.sleep", lambda _seconds: None)
+    commands: list[list[str]] = []
+
+    def command_runner(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        commands.append(list(args))
+        if args[:2] == ["docker", "pull"]:
+            raise subprocess.CalledProcessError(
+                returncode=1,
+                cmd=args,
+                output="pull stdout mentions super-secret",
+                stderr="pull stderr mentions /state/agent.py",
+            )
+        raise AssertionError(f"unexpected command: {args}")
+
+    options = replace(_sandbox_options(tmp_path), pull_policy="always")
+    _precreate_public_file(tmp_path / "docker-pull-result.json")
+    manager = DockerSandboxManager(command_runner=command_runner)
+
+    with pytest.raises(RuntimeError, match="docker pull failed after 3 attempts"):
+        manager.start(options)
+
+    assert commands == [["docker", "pull", options.image]] * 3
+    pull_result = json.loads((tmp_path / "docker-pull-result.json").read_text(encoding="utf-8"))
+    assert pull_result == {
+        "returncode": 1,
+        "stdout": "pull stdout mentions <redacted>",
+        "stderr": "pull stderr mentions <redacted>",
+    }
+    error_text = (tmp_path / "error.txt").read_text(encoding="utf-8")
+    assert "docker pull failed after 3 attempts" in error_text
+    assert "super-secret" not in error_text
+    assert "/state/agent.py" not in error_text
+    assert (tmp_path / "docker-pull.txt").read_text(encoding="utf-8") == f"docker pull {options.image}"
+    assert not (tmp_path / "docker-inspect.json").exists()
+    assert not (tmp_path / "docker-logs.txt").exists()
+    assert not (tmp_path / "docker-run-result.json").exists()
+    _assert_private_mode(tmp_path / "docker-pull-result.json", 0o600)
+
+
 def test_docker_sandbox_manager_writes_inspect_and_logs_before_cleanup(tmp_path: Path) -> None:
     commands: list[list[str]] = []
     container_id = "sandbox-container-1"
@@ -136,6 +180,8 @@ def test_docker_sandbox_manager_writes_inspect_and_logs_before_cleanup(tmp_path:
             )
         if args[:2] == ["docker", "stop"]:
             return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+        if args[:2] == ["docker", "rm"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
         raise AssertionError(f"unexpected command: {args}")
 
     options = _sandbox_options(tmp_path, wait_for_healthz=True, healthz_timeout=0.0)
@@ -152,6 +198,12 @@ def test_docker_sandbox_manager_writes_inspect_and_logs_before_cleanup(tmp_path:
     assert ["docker", "inspect", container_id] in commands
     assert ["docker", "logs", container_id] in commands
     assert any(command[:2] == ["docker", "stop"] for command in commands)
+    assert any(command == ["docker", "rm", "-f", container_id] for command in commands)
+    inspect_index = commands.index(["docker", "inspect", container_id])
+    logs_index = commands.index(["docker", "logs", container_id])
+    remove_index = commands.index(["docker", "rm", "-f", container_id])
+    assert inspect_index < remove_index
+    assert logs_index < remove_index
     inspect_output = (tmp_path / "docker-inspect.json").read_text(encoding="utf-8")
     assert "SECRET_TOKEN=<redacted>" in inspect_output
     assert "super-secret" not in inspect_output
@@ -186,6 +238,8 @@ def test_docker_sandbox_manager_writes_private_diagnostic_command_error_files(
             return subprocess.CompletedProcess(args=args, returncode=0, stdout="sandbox log line\n", stderr="")
         if args[:2] == ["docker", "stop"]:
             return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+        if args[:2] == ["docker", "rm"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
         raise AssertionError(f"unexpected command: {args}")
 
     options = _sandbox_options(tmp_path, wait_for_healthz=True, healthz_timeout=0.0)
@@ -202,6 +256,37 @@ def test_docker_sandbox_manager_writes_private_diagnostic_command_error_files(
     _assert_private_mode(error_path, 0o600)
 
 
+def test_docker_sandbox_manager_removes_container_when_stop_fails(tmp_path: Path) -> None:
+    commands: list[list[str]] = []
+    container_id = "sandbox-container-1"
+
+    def command_runner(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        commands.append(args)
+        if args[:2] == ["docker", "run"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout=f"{container_id}\n", stderr="")
+        if args == ["docker", "inspect", container_id]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="[]\n", stderr="")
+        if args == ["docker", "logs", container_id]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="sandbox log line\n", stderr="")
+        if args[:2] == ["docker", "stop"]:
+            raise subprocess.CalledProcessError(returncode=1, cmd=args, stderr="stop failed")
+        if args == ["docker", "rm", "-f", container_id]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected command: {args}")
+
+    options = _sandbox_options(tmp_path, wait_for_healthz=True, healthz_timeout=0.0)
+    manager = DockerSandboxManager(
+        command_runner=command_runner,
+        client_factory=lambda base_url, host_container_url: _FakeSandboxClient(),
+    )
+
+    with pytest.raises(RuntimeError, match="sandbox healthz did not succeed"):
+        manager.start(options)
+
+    assert ["docker", "rm", "-f", container_id] in commands
+
+
 def test_docker_sandbox_manager_publishes_allocated_port_on_client_host(tmp_path: Path) -> None:
     commands: list[list[str]] = []
     container_id = "sandbox-container-1"
@@ -211,7 +296,7 @@ def test_docker_sandbox_manager_publishes_allocated_port_on_client_host(tmp_path
         commands.append(args)
         if args[:2] == ["docker", "run"]:
             return subprocess.CompletedProcess(args=args, returncode=0, stdout=f"{container_id}\n", stderr="")
-        if args == ["docker", "port", "test-sandbox", "8000"]:
+        if args == ["docker", "port", container_id, "8000"]:
             return subprocess.CompletedProcess(
                 args=args,
                 returncode=0,
@@ -241,7 +326,7 @@ def test_docker_sandbox_manager_binds_allocated_port_when_configured(tmp_path: P
         commands.append(args)
         if args[:2] == ["docker", "run"]:
             return subprocess.CompletedProcess(args=args, returncode=0, stdout=f"{container_id}\n", stderr="")
-        if args == ["docker", "port", "test-sandbox", "8000"]:
+        if args == ["docker", "port", container_id, "8000"]:
             return subprocess.CompletedProcess(
                 args=args,
                 returncode=0,
@@ -260,7 +345,8 @@ def test_docker_sandbox_manager_binds_allocated_port_when_configured(tmp_path: P
     deployment = manager.start(options)
 
     assert deployment.base_url == "http://127.0.0.1:45678"
-    assert commands[0][8:10] == ["-p", "127.0.0.1::8000"]
+    port_index = commands[0].index("-p")
+    assert commands[0][port_index : port_index + 2] == ["-p", "127.0.0.1::8000"]
 
 
 def _sandbox_options(
@@ -295,7 +381,6 @@ def _expected_docker_run(options: SandboxOptions) -> list[str]:
         "--pull",
         options.pull_policy,
         "-d",
-        "--rm",
         "--name",
         options.container_name,
     ]
