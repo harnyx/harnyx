@@ -8,8 +8,6 @@ from harnyx_validator.application.ports.subtensor import (
     MetagraphSnapshot,
     SubtensorClientPort,
     ValidatorNodeInfo,
-    WeightSubmissionCadence,
-    WeightSubmissionCadenceStatus,
 )
 
 
@@ -35,6 +33,7 @@ class FakeSubtensorClient(SubtensorClientPort):
     commit_reveal_enabled_by_netuid: dict[int, bool] = field(default_factory=dict)
     tempo_by_netuid: dict[int, int] = field(default_factory=dict)
     next_epoch_start_by_netuid: dict[int, int] = field(default_factory=dict)
+    submit_weights_exception: Exception | None = None
 
     def connect(self) -> None:
         self.connected = True
@@ -65,68 +64,12 @@ class FakeSubtensorClient(SubtensorClientPort):
     def last_update_block(self, uid: int) -> int | None:
         return self.last_update_by_uid.get(uid)
 
-    def weight_submission_cadence(self, netuid: int) -> WeightSubmissionCadence:
-        uid = self.validator_metadata.uid
-        commit_reveal_enabled = self.commit_reveal_enabled_by_netuid.get(netuid, False)
-        if uid < 0:
-            return WeightSubmissionCadence(
-                status=WeightSubmissionCadenceStatus.UNREGISTERED,
-                validator_uid=None,
-                commit_reveal_enabled=commit_reveal_enabled,
-                current_block=self.current_block_height,
-                last_update_block=None,
-                blocks_since_last_update=None,
-                weights_rate_limit=None,
-            )
-
-        weights_rate_limit = self.weights_rate_limit_by_netuid.get(netuid, 100)
-        if not self.last_update_metadata_available or weights_rate_limit is None:
-            return WeightSubmissionCadence(
-                status=WeightSubmissionCadenceStatus.METADATA_UNAVAILABLE,
-                validator_uid=uid,
-                commit_reveal_enabled=commit_reveal_enabled,
-                current_block=self.current_block_height,
-                last_update_block=None,
-                blocks_since_last_update=None,
-                weights_rate_limit=weights_rate_limit,
-            )
-
-        last_update_block = self.last_update_by_uid.get(uid)
-        if last_update_block is None:
-            return WeightSubmissionCadence(
-                status=WeightSubmissionCadenceStatus.OPEN,
-                validator_uid=uid,
-                commit_reveal_enabled=commit_reveal_enabled,
-                current_block=self.current_block_height,
-                last_update_block=None,
-                blocks_since_last_update=None,
-                weights_rate_limit=weights_rate_limit,
-            )
-
-        blocks_since_last_update = self.current_block_height - last_update_block
-        if commit_reveal_enabled:
-            threshold_open = blocks_since_last_update > weights_rate_limit
-        else:
-            threshold_open = blocks_since_last_update >= weights_rate_limit
-        status = (
-            WeightSubmissionCadenceStatus.OPEN
-            if threshold_open
-            else WeightSubmissionCadenceStatus.RATE_LIMITED
-        )
-        return WeightSubmissionCadence(
-            status=status,
-            validator_uid=uid,
-            commit_reveal_enabled=commit_reveal_enabled,
-            current_block=self.current_block_height,
-            last_update_block=last_update_block,
-            blocks_since_last_update=blocks_since_last_update,
-            weights_rate_limit=weights_rate_limit,
-        )
-
     def validator_info(self) -> ValidatorNodeInfo:
         return self.validator_metadata
 
     def submit_weights(self, weights: Mapping[int, float]) -> str:
+        if self.submit_weights_exception is not None:
+            raise self.submit_weights_exception
         self.weight_updates.append(dict(weights))
         self.weights.update({int(uid): float(value) for uid, value in weights.items()})
         tx_hash = f"0x{len(self.weight_updates):08x}"

@@ -1,4 +1,4 @@
-"""Background worker for tempo-aware weight submission."""
+"""Background worker for periodic weight submission."""
 
 from __future__ import annotations
 
@@ -13,17 +13,17 @@ from harnyx_validator.infrastructure.transient_network import (
     classify_transient_network_failure,
 )
 
-# Default polling interval in seconds
-DEFAULT_POLL_INTERVAL = 30.0
+# Default polling interval in seconds.
+DEFAULT_POLL_INTERVAL = 300.0
 _TRANSIENT_NETWORK_CAPTURE_ATTEMPTS = 3
 _TRANSIENT_NETWORK_STATUS = "weight submission retrying after transient network failure"
 
 
 class WeightWorker(BaseWorker):
-    """Background worker that submits weights on a tempo-aware schedule.
+    """Background worker that periodically attempts weight submission.
 
-    This worker polls periodically and submits weights to Subtensor when
-    the subtensor client's chain-owned cadence status is open.
+    The subtensor adapter classifies chain-level cadence refusals so the worker
+    can retry on the next scheduled tick.
     """
 
     worker_name = "validator-weight-worker"
@@ -44,7 +44,7 @@ class WeightWorker(BaseWorker):
         self._transient_network_captured = False
 
     def _tick(self) -> None:
-        """Attempt to submit weights if the window is open."""
+        """Attempt to submit weights once."""
         try:
             result = self._submission_service.try_submit()
         except Exception as exc:

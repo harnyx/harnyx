@@ -69,8 +69,6 @@ from harnyx_validator.application.ports.subtensor import (
     MetagraphSnapshot,
     SubtensorClientPort,
     ValidatorNodeInfo,
-    WeightSubmissionCadence,
-    WeightSubmissionCadenceStatus,
 )
 from harnyx_validator.application.scheduler import SchedulerConfig
 from harnyx_validator.application.services.evaluation_runner import (
@@ -817,18 +815,6 @@ class _LocalSubtensorClient(SubtensorClientPort):
     def last_update_block(self, uid: int) -> int | None:
         del uid
         return None
-
-    def weight_submission_cadence(self, netuid: int) -> WeightSubmissionCadence:
-        del netuid
-        return WeightSubmissionCadence(
-            status=WeightSubmissionCadenceStatus.OPEN,
-            validator_uid=_LOCAL_VALIDATOR_UID,
-            commit_reveal_enabled=False,
-            current_block=0,
-            last_update_block=None,
-            blocks_since_last_update=None,
-            weights_rate_limit=None,
-        )
 
     def validator_info(self) -> ValidatorNodeInfo:
         return ValidatorNodeInfo(uid=_LOCAL_VALIDATOR_UID, version_key=None)

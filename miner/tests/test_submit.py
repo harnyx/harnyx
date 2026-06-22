@@ -26,7 +26,7 @@ def test_upload_agent_rejects_missing_query_before_wallet_or_http(
     )
     monkeypatch.setattr(
         submit_module.bt,
-        "wallet",
+        "Wallet",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("wallet should not be reached")),
     )
     monkeypatch.setattr(
@@ -53,7 +53,7 @@ def test_upload_agent_rejects_invalid_query_signature_before_wallet_or_http(
     )
     monkeypatch.setattr(
         submit_module.bt,
-        "wallet",
+        "Wallet",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("wallet should not be reached")),
     )
     monkeypatch.setattr(
@@ -74,7 +74,7 @@ def test_upload_agent_rejects_oversized_agent_before_wallet_or_http(
     agent_path.write_bytes(b"#" * MAX_AGENT_BYTES + b"\n")
     monkeypatch.setattr(
         submit_module.bt,
-        "wallet",
+        "Wallet",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("wallet should not be reached")),
     )
     monkeypatch.setattr(

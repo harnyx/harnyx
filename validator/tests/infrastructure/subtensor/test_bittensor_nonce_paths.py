@@ -7,20 +7,21 @@ from typing import Any, cast
 import httpx
 import pytest
 
+import harnyx_validator.infrastructure.subtensor.bittensor as bittensor_mod
 from harnyx_commons.config.subtensor import SubtensorSettings
-from harnyx_validator.application.ports.subtensor import WeightSubmissionCadenceStatus
+from harnyx_validator.application.ports.subtensor import WeightSubmissionTooEarlyError
 from harnyx_validator.infrastructure.subtensor.bittensor import BittensorSubtensorClient
 
 
-def _make_settings() -> SubtensorSettings:
+def _make_settings(*, wait_for_inclusion: bool = True, wait_for_finalization: bool = False) -> SubtensorSettings:
     return SubtensorSettings.model_construct(
         network="local",
         endpoint="ws://127.0.0.1:9945",
         netuid=1,
         wallet_name="validator",
         hotkey_name="default",
-        wait_for_inclusion=True,
-        wait_for_finalization=False,
+        wait_for_inclusion=wait_for_inclusion,
+        wait_for_finalization=wait_for_finalization,
         transaction_mode="immortal",
         transaction_period=None,
     )
@@ -52,9 +53,11 @@ class _SubtensorStub:
         self._commit_reveal_enabled = commit_reveal_enabled
         self.substrate = _SubstrateStub()
         self.sign_calls: list[dict[str, object]] = []
-        self.sign_side_effects: list[Exception | tuple[bool, str]] = []
+        self.sign_side_effects: list[Exception | object] = []
         self.set_reveal_commitment_calls: list[dict[str, object]] = []
         self.set_weights_calls: list[dict[str, object]] = []
+        self.set_weights_extrinsic_calls: list[dict[str, object]] = []
+        self.set_weights_extrinsic_side_effects: list[Exception | object] = []
         self.validator_uid: int | None = 11
         self.blocks_since_last_update_value = 101
         self.weights_rate_limit_value: int | None = 100
@@ -105,7 +108,20 @@ class _SubtensorStub:
         )
         return True, "delegated-set-weights"
 
-    def sign_and_send_extrinsic(self, **kwargs: object) -> tuple[bool, str]:
+    def compose_call(
+        self,
+        *,
+        call_module: str,
+        call_function: str,
+        call_params: dict[str, object],
+    ) -> dict[str, object]:
+        return self.substrate.compose_call(
+            call_module=call_module,
+            call_function=call_function,
+            call_params=call_params,
+        )
+
+    def sign_and_send_extrinsic(self, **kwargs: object) -> object:
         self.sign_calls.append(dict(kwargs))
         if self.sign_side_effects:
             outcome = self.sign_side_effects.pop(0)
@@ -161,12 +177,51 @@ def _make_wallet() -> object:
     return SimpleNamespace(hotkey=hotkey)
 
 
-def _make_client(monkeypatch: pytest.MonkeyPatch, *, subtensor: _SubtensorStub) -> BittensorSubtensorClient:
-    client = BittensorSubtensorClient(_make_settings())
+def _make_client(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    subtensor: _SubtensorStub,
+    settings: SubtensorSettings | None = None,
+) -> BittensorSubtensorClient:
+    client = BittensorSubtensorClient(settings or _make_settings())
     monkeypatch.setattr(client, "_ensure_ready", lambda: None)
     client._subtensor = cast(Any, subtensor)
     client._wallet = cast(Any, _make_wallet())
     return client
+
+
+def _patch_set_weights_extrinsic(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_set_weights_extrinsic(**kwargs: object) -> object:
+        subtensor = cast(_SubtensorStub, kwargs["subtensor"])
+        subtensor.set_weights_extrinsic_calls.append(dict(kwargs))
+        if subtensor.set_weights_extrinsic_side_effects:
+            outcome = subtensor.set_weights_extrinsic_side_effects.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        call = subtensor.compose_call(
+            call_module="SubtensorModule",
+            call_function="set_mechanism_weights",
+            call_params={
+                "netuid": kwargs["netuid"],
+                "mecid": kwargs["mechid"],
+                "dests": kwargs["uids"],
+                "weights": kwargs["weights"],
+                "version_key": kwargs["version_key"],
+            },
+        )
+        return subtensor.sign_and_send_extrinsic(
+            call=call,
+            wallet=kwargs["wallet"],
+            wait_for_inclusion=kwargs["wait_for_inclusion"],
+            wait_for_finalization=kwargs["wait_for_finalization"],
+            use_nonce=True,
+            period=kwargs["period"],
+            sign_with="hotkey",
+            nonce_key="hotkey",
+        )
+
+    monkeypatch.setattr(bittensor_mod, "set_weights_extrinsic", fake_set_weights_extrinsic)
 
 
 def test_publish_commitment_uses_pool_aware_hotkey_nonce(
@@ -207,7 +262,29 @@ def test_submit_weights_uses_pool_aware_hotkey_nonce_when_commit_reveal_enabled(
     assert subtensor.sign_calls[0]["use_nonce"] is True
     assert subtensor.sign_calls[0]["nonce_key"] == "hotkey"
     assert subtensor.sign_calls[0]["sign_with"] == "hotkey"
+    call = cast(dict[str, object], subtensor.sign_calls[0]["call"])
+    assert call["call_module"] == "SubtensorModule"
+    assert call["call_function"] == "commit_timelocked_mechanism_weights"
+    params = cast(dict[str, object], call["call_params"])
+    assert params["netuid"] == 1
+    assert params["mecid"] == 0
     assert subtensor.set_weights_calls == []
+
+
+def test_submit_weights_commit_reveal_waits_for_inclusion_when_settings_disable_all_waits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subtensor = _SubtensorStub(commit_reveal_enabled=True)
+    client = _make_client(
+        monkeypatch,
+        subtensor=subtensor,
+        settings=_make_settings(wait_for_inclusion=False, wait_for_finalization=False),
+    )
+
+    client.submit_weights({7: 1.0})
+
+    assert subtensor.sign_calls[0]["wait_for_inclusion"] is True
+    assert subtensor.sign_calls[0]["wait_for_finalization"] is False
 
 
 def test_submit_weights_retries_commit_reveal_when_attempt_raises(
@@ -223,17 +300,17 @@ def test_submit_weights_retries_commit_reveal_when_attempt_raises(
     assert len(subtensor.sign_calls) == 2
 
 
-def test_submit_weights_treats_negative_validator_uid_as_unregistered(
+def test_submit_weights_does_not_precheck_validator_uid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     subtensor = _SubtensorStub(commit_reveal_enabled=True)
     subtensor.validator_uid = -1
     client = _make_client(monkeypatch, subtensor=subtensor)
 
-    with pytest.raises(RuntimeError, match="not registered"):
-        client.submit_weights({7: 1.0})
+    tx_hash = client.submit_weights({7: 1.0})
 
-    assert subtensor.sign_calls == []
+    assert tx_hash.startswith("reveal_round:")
+    assert len(subtensor.sign_calls) == 1
     assert subtensor.set_reveal_commitment_calls == []
     assert subtensor.set_weights_calls == []
 
@@ -298,80 +375,40 @@ def test_commit_reveal_raises_wrapper_from_final_transient_after_retry_budget(
     assert exc_info.value.__cause__ is final_exception
 
 
-@pytest.mark.parametrize("validator_uid", [None, -1])
-def test_weight_submission_cadence_reports_unregistered_validator(
-    monkeypatch: pytest.MonkeyPatch,
-    validator_uid: int | None,
-) -> None:
-    subtensor = _SubtensorStub(commit_reveal_enabled=False)
-    subtensor.validator_uid = validator_uid
-    client = _make_client(monkeypatch, subtensor=subtensor)
-
-    cadence = client.weight_submission_cadence(1)
-
-    assert cadence.status is WeightSubmissionCadenceStatus.UNREGISTERED
-    assert cadence.validator_uid is None
-
-
-def test_weight_submission_cadence_reports_missing_last_update_metadata(
+def test_last_update_block_returns_none_when_metadata_is_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     subtensor = _SubtensorStub(commit_reveal_enabled=False)
     subtensor.last_update_values = None
     client = _make_client(monkeypatch, subtensor=subtensor)
 
-    cadence = client.weight_submission_cadence(1)
-
-    assert cadence.status is WeightSubmissionCadenceStatus.METADATA_UNAVAILABLE
-    assert cadence.validator_uid == 11
+    assert client.last_update_block(11) is None
 
 
-def test_weight_submission_cadence_reports_missing_rate_limit_metadata(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    subtensor = _SubtensorStub(commit_reveal_enabled=False)
-    subtensor.weights_rate_limit_value = None
-    client = _make_client(monkeypatch, subtensor=subtensor)
-
-    cadence = client.weight_submission_cadence(1)
-
-    assert cadence.status is WeightSubmissionCadenceStatus.METADATA_UNAVAILABLE
-    assert cadence.validator_uid == 11
-
-
-def test_weight_submission_cadence_allows_first_submission_without_last_update_entry(
+def test_last_update_block_allows_missing_uid_entry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     subtensor = _SubtensorStub(commit_reveal_enabled=False)
     subtensor.last_update_values = []
     client = _make_client(monkeypatch, subtensor=subtensor)
 
-    cadence = client.weight_submission_cadence(1)
-
-    assert cadence.status is WeightSubmissionCadenceStatus.OPEN
-    assert cadence.last_update_block is None
-    assert cadence.blocks_since_last_update is None
+    assert client.last_update_block(11) is None
 
 
-def test_weight_submission_cadence_does_not_treat_zero_last_update_as_missing(
+def test_last_update_block_does_not_treat_zero_as_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     subtensor = _SubtensorStub(commit_reveal_enabled=False)
-    subtensor.current_block_value = 50
     subtensor.last_update_values[11] = 0
-    subtensor.weights_rate_limit_value = 100
     client = _make_client(monkeypatch, subtensor=subtensor)
 
-    cadence = client.weight_submission_cadence(1)
-
-    assert cadence.status is WeightSubmissionCadenceStatus.RATE_LIMITED
-    assert cadence.last_update_block == 0
-    assert cadence.blocks_since_last_update == 50
+    assert client.last_update_block(11) == 0
 
 
 def test_submit_weights_plain_allows_exact_rate_limit_boundary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _patch_set_weights_extrinsic(monkeypatch)
     subtensor = _SubtensorStub(commit_reveal_enabled=False)
     subtensor.current_block_value = 200
     subtensor.last_update_values[11] = 100
@@ -387,44 +424,137 @@ def test_submit_weights_plain_allows_exact_rate_limit_boundary(
     assert subtensor.sign_calls[0]["sign_with"] == "hotkey"
     call = cast(dict[str, object], subtensor.sign_calls[0]["call"])
     assert call["call_module"] == "SubtensorModule"
-    assert call["call_function"] == "set_weights"
+    assert call["call_function"] == "set_mechanism_weights"
+    assert subtensor.set_weights_extrinsic_calls[0]["mechid"] == 0
+    assert subtensor.set_weights_extrinsic_calls[0]["mev_protection"] is False
     assert subtensor.set_weights_calls == []
+
+
+def test_submit_weights_plain_waits_for_inclusion_when_settings_disable_all_waits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_set_weights_extrinsic(monkeypatch)
+    subtensor = _SubtensorStub(commit_reveal_enabled=False)
+    client = _make_client(
+        monkeypatch,
+        subtensor=subtensor,
+        settings=_make_settings(wait_for_inclusion=False, wait_for_finalization=False),
+    )
+
+    client.submit_weights({7: 1.0})
+
+    assert subtensor.set_weights_extrinsic_calls[0]["wait_for_inclusion"] is True
+    assert subtensor.set_weights_extrinsic_calls[0]["wait_for_finalization"] is False
 
 
 def test_submit_weights_retries_plain_set_weights_when_attempt_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _patch_set_weights_extrinsic(monkeypatch)
     subtensor = _SubtensorStub(commit_reveal_enabled=False)
     subtensor.sign_side_effects = [(False, "temporary rpc failure"), (True, "signed-hotkey-extrinsic")]
     client = _make_client(monkeypatch, subtensor=subtensor)
 
     tx_hash = client.submit_weights({7: 1.0})
 
-    assert tx_hash == "Successfully set weights and Finalized."
+    assert tx_hash == "signed-hotkey-extrinsic"
     assert len(subtensor.sign_calls) == 2
     assert subtensor.set_weights_calls == []
 
 
-def test_submit_weights_commit_reveal_refuses_exact_rate_limit_boundary(
+def test_submit_weights_plain_raises_too_early_for_chain_cadence_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_set_weights_extrinsic(monkeypatch)
+    subtensor = _SubtensorStub(commit_reveal_enabled=False)
+    subtensor.set_weights_extrinsic_side_effects = [
+        SimpleNamespace(
+            success=False,
+            message="SubtensorModule.SettingWeightsTooFast",
+            error={"name": "SettingWeightsTooFast"},
+        )
+    ]
+    client = _make_client(monkeypatch, subtensor=subtensor)
+
+    with pytest.raises(WeightSubmissionTooEarlyError):
+        client.submit_weights({7: 1.0})
+
+    assert len(subtensor.set_weights_extrinsic_calls) == 1
+
+
+def test_submit_weights_plain_keeps_other_chain_errors_hard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_set_weights_extrinsic(monkeypatch)
+    subtensor = _SubtensorStub(commit_reveal_enabled=False)
+    subtensor.set_weights_extrinsic_side_effects = [
+        SimpleNamespace(
+            success=False,
+            message="SubtensorModule.TxRateLimitExceeded",
+            error={"name": "TxRateLimitExceeded"},
+        )
+    ] * 5
+    client = _make_client(monkeypatch, subtensor=subtensor)
+
+    with pytest.raises(RuntimeError, match="set_weights failed: SubtensorModule.TxRateLimitExceeded"):
+        client.submit_weights({7: 1.0})
+
+    assert len(subtensor.set_weights_extrinsic_calls) == 5
+
+
+def test_submit_weights_commit_reveal_raises_too_early_for_chain_cadence_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     subtensor = _SubtensorStub(commit_reveal_enabled=True)
-    subtensor.current_block_value = 200
-    subtensor.last_update_values[11] = 100
-    subtensor.weights_rate_limit_value = 100
+    subtensor.sign_side_effects = [
+        SimpleNamespace(
+            success=False,
+            message="SubtensorModule.CommittingWeightsTooFast",
+            error={"name": "CommittingWeightsTooFast"},
+        )
+    ]
     client = _make_client(monkeypatch, subtensor=subtensor)
 
-    with pytest.raises(RuntimeError, match="too soon"):
+    with pytest.raises(WeightSubmissionTooEarlyError):
         client.submit_weights({7: 1.0})
 
-    assert subtensor.sign_calls == []
+    assert len(subtensor.sign_calls) == 1
     assert subtensor.set_reveal_commitment_calls == []
     assert subtensor.set_weights_calls == []
+
+
+def test_submit_weights_commit_reveal_keeps_non_chain_too_early_text_hard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subtensor = _SubtensorStub(commit_reveal_enabled=True)
+    subtensor.sign_side_effects = [
+        RuntimeError("diagnostic text mentioned SettingWeightsTooFast but was not a chain error")
+    ] * 5
+    client = _make_client(monkeypatch, subtensor=subtensor)
+
+    with pytest.raises(RuntimeError, match="set_weights failed:"):
+        client.submit_weights({7: 1.0})
+
+    assert len(subtensor.sign_calls) == 5
+
+
+def test_submit_weights_commit_reveal_raises_too_early_for_chain_error_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subtensor = _SubtensorStub(commit_reveal_enabled=True)
+    subtensor.sign_side_effects = [RuntimeError({"name": "CommittingWeightsTooFast", "docs": []})]
+    client = _make_client(monkeypatch, subtensor=subtensor)
+
+    with pytest.raises(WeightSubmissionTooEarlyError):
+        client.submit_weights({7: 1.0})
+
+    assert len(subtensor.sign_calls) == 1
 
 
 def test_submit_weights_uses_direct_plain_set_weights_extrinsic_when_commit_reveal_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _patch_set_weights_extrinsic(monkeypatch)
     subtensor = _SubtensorStub(commit_reveal_enabled=False)
     client = _make_client(monkeypatch, subtensor=subtensor)
 
@@ -432,4 +562,5 @@ def test_submit_weights_uses_direct_plain_set_weights_extrinsic_when_commit_reve
 
     assert tx_hash
     assert len(subtensor.sign_calls) == 1
+    assert subtensor.set_weights_extrinsic_calls[0]["mechid"] == 0
     assert subtensor.set_weights_calls == []

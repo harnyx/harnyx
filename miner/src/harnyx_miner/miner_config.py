@@ -86,7 +86,7 @@ def _request_json(
     hotkey_name: str,
 ) -> dict[str, object]:
     body = b"" if payload is None else json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    wallet = bt.wallet(name=wallet_name, hotkey=hotkey_name)
+    wallet = bt.Wallet(name=wallet_name, hotkey=hotkey_name)
     headers = {
         "Authorization": _authorization_header(wallet, method, _CONFIG_PATH, body),
     }

@@ -36,7 +36,7 @@ def _platform_base_url() -> str:
     return base_url.rstrip("/")
 
 
-def _authorization_header(wallet: bt.wallet, method: str, path_qs: str, body: bytes) -> str:
+def _authorization_header(wallet: bt.Wallet, method: str, path_qs: str, body: bytes) -> str:
     canonical = _build_canonical_request(method, path_qs, body)
     signature = wallet.hotkey.sign(canonical)
     return f'Bittensor ss58="{wallet.hotkey.ss58_address}",sig="{signature.hex()}"'
@@ -59,7 +59,7 @@ def _upload_agent(*, agent_path: Path, wallet_name: str, hotkey_name: str) -> di
     body = json.dumps(payload).encode()
 
     path = _UPLOAD_PATH
-    wallet = bt.wallet(name=wallet_name, hotkey=hotkey_name)
+    wallet = bt.Wallet(name=wallet_name, hotkey=hotkey_name)
     authorization = _authorization_header(wallet, "POST", path, body)
     headers = {
         "Authorization": authorization,

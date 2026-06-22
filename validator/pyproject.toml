@@ -13,7 +13,7 @@ dependencies = [
   "fastapi>=0.110.1",
   "httpx>=0.27",
   "uvicorn>=0.30",
-  "bittensor==9.9.0",
+  "bittensor==10.4.1",
   "pydantic-settings>=2.4",
 ]
 

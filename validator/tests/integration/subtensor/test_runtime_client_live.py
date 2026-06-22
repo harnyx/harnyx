@@ -4,6 +4,7 @@ import time
 
 import pytest
 
+from harnyx_validator.application.ports.subtensor import WeightSubmissionTooEarlyError
 from harnyx_validator.application.scheduling.gate import chain_epoch_index, commitment_marker
 from harnyx_validator.infrastructure.subtensor.client import RuntimeSubtensorClient
 from harnyx_validator.runtime.settings import Settings
@@ -76,10 +77,7 @@ def test_runtime_client_live_commitment_and_weights() -> None:
         try:
             client.submit_weights({target_uid: 1.0})
             break
-        except RuntimeError as exc:
-            message = str(exc).lower()
-            if "too soon" not in message:
-                raise
+        except WeightSubmissionTooEarlyError:
             time.sleep(10)
     else:
         pytest.fail(

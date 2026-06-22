@@ -39,4 +39,4 @@ def test_runtime_subtensor_client_delegates_calls() -> None:
     assert fake.weight_updates == [{1: 0.6, 2: 0.4}]
     assert fake.fetch_weight(1) == 0.6
     assert tx_hash == fake.tx_hashes[-1]
-    assert client.weight_submission_cadence(1) == fake.weight_submission_cadence(1)
+    assert client.validator_info() == fake.validator_info()

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from harnyx_validator.application.ports.platform import PlatformPort
-from harnyx_validator.application.ports.subtensor import SubtensorClientPort
+from harnyx_validator.application.ports.subtensor import SubtensorClientPort, WeightSubmissionTooEarlyError
 
 weights_logger = logging.getLogger("harnyx_validator.weights.ranking")
 
@@ -39,30 +39,23 @@ class WeightSubmissionService:
         self._platform = platform
 
     def try_submit(self) -> WeightSubmissionResult | None:
-        """Submit weights if the subtensor-owned cadence status is open.
+        """Try to submit weights.
 
-        Returns the submission result if weights were submitted, or None if
-        the validator should not attempt submission yet.
+        Returns the submission result if weights were submitted, or None if the
+        chain says the validator must wait before submitting again.
         """
-        cadence = self._subtensor.weight_submission_cadence(self._netuid)
-        if not cadence.can_submit:
+        try:
+            return self.submit()
+        except WeightSubmissionTooEarlyError as exc:
+            # A chain-level too-early refusal is harmless; the next scheduled attempt will retry.
             weights_logger.debug(
-                "weight submission window closed",
-                extra={
-                    "uid": cadence.validator_uid,
-                    "status": cadence.status.value,
-                    "commit_reveal_enabled": cadence.commit_reveal_enabled,
-                    "current_block": cadence.current_block,
-                    "last_update_block": cadence.last_update_block,
-                    "blocks_since_last_update": cadence.blocks_since_last_update,
-                    "weights_rate_limit": cadence.weights_rate_limit,
-                },
+                "weight submission skipped because chain reported the attempt is too early",
+                exc_info=exc,
             )
             return None
-        return self.submit()
 
     def submit(self) -> WeightSubmissionResult:
-        """Submit weights unconditionally (caller must ensure window is open)."""
+        """Submit weights using the platform-provided champion scores."""
         selection = self._platform.get_champion_weights()
         weights = selection.weights
         champion_uid = selection.champion_uid

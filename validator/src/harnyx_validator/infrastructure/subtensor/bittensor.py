@@ -10,8 +10,11 @@ from typing import Any, TypeAlias, cast
 
 import bittensor as bt
 from bittensor.core.errors import MetadataError
-from bittensor.core.extrinsics.set_weights import set_weights_extrinsic
+from bittensor.core.extrinsics.pallets import SubtensorModule
+from bittensor.core.extrinsics.weights import set_weights_extrinsic
 from bittensor.core.settings import version_as_int
+from bittensor.core.types import ExtrinsicResponse
+from bittensor.utils import get_mechid_storage_index
 from bittensor.utils.weight_utils import convert_and_normalize_weights_and_uids
 from bittensor_drand import get_encrypted_commit, get_encrypted_commitment
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
@@ -22,8 +25,7 @@ from harnyx_validator.application.ports.subtensor import (
     MetagraphSnapshot,
     SubtensorClientPort,
     ValidatorNodeInfo,
-    WeightSubmissionCadence,
-    WeightSubmissionCadenceStatus,
+    WeightSubmissionTooEarlyError,
 )
 from harnyx_validator.infrastructure.transient_network import classify_transient_network_failure
 
@@ -34,8 +36,15 @@ logger = logging.getLogger("harnyx_validator.subtensor")
 _COMMIT_REVEAL_MAX_RETRIES = 5
 _PLAIN_SET_WEIGHTS_MAX_RETRIES = 5
 _COMMIT_REVEAL_VERSION = 4
+_PRIMARY_MECHANISM_ID = 0
 _DEFAULT_BLOCK_TIME_SECONDS = 12.0
 _NO_WEIGHT_ATTEMPT_MESSAGE = "No attempt made. Perhaps it is too soon to commit weights!"
+_CHAIN_TOO_EARLY_REFUSAL_ERROR_NAMES = frozenset(
+    {
+        "SettingWeightsTooFast",
+        "CommittingWeightsTooFast",
+    }
+)
 _LastUpdateValue: TypeAlias = int | None
 _LastUpdateValues: TypeAlias = dict[int, _LastUpdateValue] | list[_LastUpdateValue]
 
@@ -74,6 +83,13 @@ class _SubtensorWeightsPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     rows: list[_SubtensorWeightRow]
+
+
+@dataclass(frozen=True, slots=True)
+class _WeightExtrinsicResult:
+    success: bool
+    message: str
+    error_name: str | None = None
 
 
 @dataclass(slots=True)
@@ -183,16 +199,6 @@ class BittensorSubtensorClient(SubtensorClientPort):
             return None
         return self._last_update_for_uid(last_update, uid)
 
-    def weight_submission_cadence(self, netuid: int) -> WeightSubmissionCadence:
-        self._ensure_ready()
-        subtensor = self._require_subtensor()
-        wallet = self._require_wallet()
-        return self._read_weight_submission_cadence(
-            subtensor=subtensor,
-            wallet=wallet,
-            netuid=netuid,
-        )
-
     def validator_info(self) -> ValidatorNodeInfo:
         snapshot = self.fetch_metagraph()
         wallet = self._require_wallet()
@@ -213,22 +219,22 @@ class BittensorSubtensorClient(SubtensorClientPort):
         subtensor = self._require_subtensor()
         wallet = self._require_wallet()
         uids, normalized = self._normalize_weights(weights)
-        cadence = self._read_weight_submission_cadence(
+        commit_reveal_enabled = self._query_commit_reveal_enabled(
             subtensor=subtensor,
-            wallet=wallet,
             netuid=self.settings.netuid,
         )
+        if commit_reveal_enabled is None:
+            raise RuntimeError("commit-reveal metadata unavailable")
         logger.debug(
             "submitting weights to subtensor",
             extra={"uids": uids, "wait_for_inclusion": self.settings.wait_for_inclusion},
         )
-        if cadence.commit_reveal_enabled:
+        if commit_reveal_enabled:
             success, message = self._submit_commit_reveal_weights(
                 subtensor=subtensor,
                 wallet=wallet,
                 uids=uids,
                 normalized=normalized,
-                cadence=cadence,
             )
         else:
             success, message = self._submit_plain_weights(
@@ -236,7 +242,6 @@ class BittensorSubtensorClient(SubtensorClientPort):
                 wallet=wallet,
                 uids=uids,
                 normalized=normalized,
-                cadence=cadence,
             )
         logger.debug(
             "subtensor.set_weights returned",
@@ -313,9 +318,9 @@ class BittensorSubtensorClient(SubtensorClientPort):
         call: Any,
         wait_for_inclusion: bool,
         wait_for_finalization: bool,
-    ) -> tuple[bool, str]:
+    ) -> _WeightExtrinsicResult:
         wallet = self._require_wallet()
-        return subtensor.sign_and_send_extrinsic(
+        response = subtensor.sign_and_send_extrinsic(
             call=call,
             wallet=wallet,
             wait_for_inclusion=wait_for_inclusion,
@@ -325,6 +330,10 @@ class BittensorSubtensorClient(SubtensorClientPort):
             nonce_key="hotkey",
             period=self.settings.transaction_period,
         )
+        return self._extrinsic_response_result(response)
+
+    def _weight_submission_wait_for_inclusion(self) -> bool:
+        return self.settings.wait_for_inclusion or not self.settings.wait_for_finalization
 
     def _publish_commitment_extrinsic(
         self,
@@ -348,12 +357,13 @@ class BittensorSubtensorClient(SubtensorClientPort):
                 },
             },
         )
-        return self._submit_hotkey_extrinsic(
+        result = self._submit_hotkey_extrinsic(
             subtensor=subtensor,
             call=call,
             wait_for_inclusion=False,
             wait_for_finalization=True,
         )
+        return result.success, result.message
 
     def _submit_commit_reveal_weights(
         self,
@@ -362,17 +372,11 @@ class BittensorSubtensorClient(SubtensorClientPort):
         wallet: bt.Wallet,
         uids: list[int],
         normalized: list[float],
-        cadence: WeightSubmissionCadence,
     ) -> tuple[bool, str]:
-        if not cadence.can_submit:
-            return False, self._cadence_refusal_message(cadence, wallet)
-
-        success = False
         message = _NO_WEIGHT_ATTEMPT_MESSAGE
         transient_failure: Exception | None = None
         all_failures_transient = True
         for _ in range(_COMMIT_REVEAL_MAX_RETRIES):
-            attempt_failed_transient = False
             try:
                 call, reveal_round = self._build_commit_reveal_call(
                     subtensor=subtensor,
@@ -380,28 +384,35 @@ class BittensorSubtensorClient(SubtensorClientPort):
                     uids=uids,
                     normalized=normalized,
                 )
-                success, message = self._submit_hotkey_extrinsic(
+                result = self._submit_hotkey_extrinsic(
                     subtensor=subtensor,
                     call=call,
-                    wait_for_inclusion=self.settings.wait_for_inclusion,
+                    wait_for_inclusion=self._weight_submission_wait_for_inclusion(),
                     wait_for_finalization=self.settings.wait_for_finalization,
                 )
             except Exception as exc:
+                if self._error_name_from_object(exc) in _CHAIN_TOO_EARLY_REFUSAL_ERROR_NAMES:
+                    raise WeightSubmissionTooEarlyError(str(exc)) from exc
                 cause = classify_transient_network_failure(exc)
                 if cause is None:
                     all_failures_transient = False
                     transient_failure = None
                 else:
                     transient_failure = exc
-                    attempt_failed_transient = True
                 logger.warning("commit-reveal weight submission attempt failed", exc_info=exc)
-                success = False
                 message = str(exc)
-            if success:
+                continue
+            message = result.message
+            if self._is_chain_too_early_refusal(result):
+                raise WeightSubmissionTooEarlyError(result.message)
+            if result.success:
                 return True, f"reveal_round:{reveal_round}"
-            if not attempt_failed_transient:
-                all_failures_transient = False
-                transient_failure = None
+            all_failures_transient = False
+            transient_failure = None
+            logger.warning(
+                "commit-reveal weight submission attempt failed",
+                extra={"set_weights_message": message, "set_weights_error": result.error_name},
+            )
         if all_failures_transient and transient_failure is not None:
             raise RuntimeError("commit-reveal weight submission attempts failed") from transient_failure
         return False, message
@@ -413,30 +424,31 @@ class BittensorSubtensorClient(SubtensorClientPort):
         wallet: bt.Wallet,
         uids: list[int],
         normalized: list[float],
-        cadence: WeightSubmissionCadence,
     ) -> tuple[bool, str]:
-        if not cadence.can_submit:
-            return False, self._cadence_refusal_message(cadence, wallet)
-
-        success = False
         message = _NO_WEIGHT_ATTEMPT_MESSAGE
         for _ in range(_PLAIN_SET_WEIGHTS_MAX_RETRIES):
-            success, message = set_weights_extrinsic(
+            response = set_weights_extrinsic(
                 subtensor=subtensor,
                 wallet=wallet,
                 netuid=self.settings.netuid,
+                mechid=_PRIMARY_MECHANISM_ID,
                 uids=uids,
                 weights=normalized,
                 version_key=version_as_int,
-                wait_for_inclusion=self.settings.wait_for_inclusion,
+                mev_protection=False,
+                wait_for_inclusion=self._weight_submission_wait_for_inclusion(),
                 wait_for_finalization=self.settings.wait_for_finalization,
                 period=self.settings.transaction_period,
             )
-            if success:
+            result = self._extrinsic_response_result(response)
+            message = result.message
+            if self._is_chain_too_early_refusal(result):
+                raise WeightSubmissionTooEarlyError(result.message)
+            if result.success:
                 return True, message
             logger.warning(
                 "plain weight submission attempt failed",
-                extra={"set_weights_message": message},
+                extra={"set_weights_message": message, "set_weights_error": result.error_name},
             )
         return False, message
 
@@ -468,20 +480,20 @@ class BittensorSubtensorClient(SubtensorClientPort):
             version_key=version_as_int,
             tempo=int(tempo),
             current_block=current_block,
-            netuid=self.settings.netuid,
+            netuid=get_mechid_storage_index(
+                netuid=self.settings.netuid,
+                mechid=_PRIMARY_MECHANISM_ID,
+            ),
             subnet_reveal_period_epochs=int(commit_reveal_period),
             block_time=_DEFAULT_BLOCK_TIME_SECONDS,
             hotkey=hotkey_public_key,
         )
-        call = subtensor.substrate.compose_call(
-            call_module="SubtensorModule",
-            call_function="commit_timelocked_weights",
-            call_params={
-                "netuid": self.settings.netuid,
-                "commit": commit,
-                "reveal_round": reveal_round,
-                "commit_reveal_version": _COMMIT_REVEAL_VERSION,
-            },
+        call = SubtensorModule(subtensor).commit_timelocked_mechanism_weights(
+            netuid=self.settings.netuid,
+            mecid=_PRIMARY_MECHANISM_ID,
+            commit=commit,
+            reveal_round=reveal_round,
+            commit_reveal_version=_COMMIT_REVEAL_VERSION,
         )
         return call, reveal_round
 
@@ -492,116 +504,68 @@ class BittensorSubtensorClient(SubtensorClientPort):
         except Exception:  # pragma: no cover - informational fallback
             return -1
 
-    def _read_weight_submission_cadence(
-        self,
-        *,
-        subtensor: bt.Subtensor,
-        wallet: bt.Wallet,
-        netuid: int,
-    ) -> WeightSubmissionCadence:
-        hotkey = wallet.hotkey
-        hotkey_addr = hotkey.ss58_address if hotkey is not None else ""
-        validator_uid_raw = subtensor.get_uid_for_hotkey_on_subnet(hotkey_addr, netuid)
-        validator_uid = self._normalize_validator_uid(validator_uid_raw)
-        if validator_uid is None:
-            return self._cadence(
-                status=WeightSubmissionCadenceStatus.UNREGISTERED,
-                validator_uid=None,
-                commit_reveal_enabled=False,
-                current_block=None,
-                last_update_block=None,
-                blocks_since_last_update=None,
-                weights_rate_limit=None,
-            )
+    @classmethod
+    def _extrinsic_response_result(
+        cls,
+        response: ExtrinsicResponse | Sequence[object],
+    ) -> _WeightExtrinsicResult:
+        if isinstance(response, Sequence) and not isinstance(response, (str, bytes, bytearray)):
+            success = bool(response[0]) if len(response) > 0 else False
+            message = "" if len(response) < 2 or response[1] is None else str(response[1])
+            return _WeightExtrinsicResult(success=success, message=message)
 
-        commit_reveal_enabled = self._query_commit_reveal_enabled(
-            subtensor=subtensor,
-            netuid=netuid,
-        )
-        current_block = self._query_current_block(subtensor=subtensor)
-        weights_rate_limit = self._query_weights_rate_limit(subtensor=subtensor, netuid=netuid)
-        last_update_values = self._query_last_update_values(subtensor=subtensor, netuid=netuid)
-        if (
-            commit_reveal_enabled is None
-            or current_block is None
-            or weights_rate_limit is None
-            or last_update_values is None
-        ):
-            return self._cadence(
-                status=WeightSubmissionCadenceStatus.METADATA_UNAVAILABLE,
-                validator_uid=validator_uid,
-                commit_reveal_enabled=False if commit_reveal_enabled is None else commit_reveal_enabled,
-                current_block=current_block,
-                last_update_block=None,
-                blocks_since_last_update=None,
-                weights_rate_limit=weights_rate_limit,
-            )
-
-        last_update_block = self._last_update_for_uid(last_update_values, validator_uid)
-        if last_update_block is None:
-            return self._cadence(
-                status=WeightSubmissionCadenceStatus.OPEN,
-                validator_uid=validator_uid,
-                commit_reveal_enabled=commit_reveal_enabled,
-                current_block=current_block,
-                last_update_block=None,
-                blocks_since_last_update=None,
-                weights_rate_limit=weights_rate_limit,
-            )
-
-        blocks_since_last_update = current_block - last_update_block
-        if commit_reveal_enabled:
-            threshold_open = blocks_since_last_update > weights_rate_limit
-        else:
-            threshold_open = blocks_since_last_update >= weights_rate_limit
-        status = (
-            WeightSubmissionCadenceStatus.OPEN
-            if threshold_open
-            else WeightSubmissionCadenceStatus.RATE_LIMITED
-        )
-        return self._cadence(
-            status=status,
-            validator_uid=validator_uid,
-            commit_reveal_enabled=commit_reveal_enabled,
-            current_block=current_block,
-            last_update_block=last_update_block,
-            blocks_since_last_update=blocks_since_last_update,
-            weights_rate_limit=weights_rate_limit,
+        success = bool(getattr(response, "success", False))
+        raw_message = getattr(response, "message", None)
+        message = "" if raw_message is None else str(raw_message)
+        return _WeightExtrinsicResult(
+            success=success,
+            message=message,
+            error_name=cls._extrinsic_error_name(response),
         )
 
     @staticmethod
-    def _normalize_validator_uid(value: int | None) -> int | None:
-        if value is None or value < 0:
+    def _is_chain_too_early_refusal(result: _WeightExtrinsicResult) -> bool:
+        return result.error_name in _CHAIN_TOO_EARLY_REFUSAL_ERROR_NAMES
+
+    @classmethod
+    def _extrinsic_error_name(cls, response: ExtrinsicResponse | object) -> str | None:
+        error_name = cls._error_name_from_object(getattr(response, "error", None))
+        if error_name is not None:
+            return error_name
+        return cls._error_name_from_object(getattr(response, "message", None))
+
+    @classmethod
+    def _error_name_from_object(cls, value: object) -> str | None:
+        if value is None:
             return None
-        return value
-
-    @staticmethod
-    def _cadence(
-        *,
-        status: WeightSubmissionCadenceStatus,
-        validator_uid: int | None,
-        commit_reveal_enabled: bool,
-        current_block: int | None,
-        last_update_block: int | None,
-        blocks_since_last_update: int | None,
-        weights_rate_limit: int | None,
-    ) -> WeightSubmissionCadence:
-        return WeightSubmissionCadence(
-            status=status,
-            validator_uid=validator_uid,
-            commit_reveal_enabled=commit_reveal_enabled,
-            current_block=current_block,
-            last_update_block=last_update_block,
-            blocks_since_last_update=blocks_since_last_update,
-            weights_rate_limit=weights_rate_limit,
-        )
-
-    def _cadence_refusal_message(self, cadence: WeightSubmissionCadence, wallet: bt.Wallet) -> str:
-        if cadence.status is WeightSubmissionCadenceStatus.UNREGISTERED:
-            hotkey = wallet.hotkey
-            hotkey_addr = hotkey.ss58_address if hotkey is not None else ""
-            return f"Hotkey {hotkey_addr} not registered in subnet {self.settings.netuid}"
-        return _NO_WEIGHT_ATTEMPT_MESSAGE
+        if isinstance(value, Mapping):
+            mapping_value = cast(Mapping[object, object], value)
+            for key in ("name", "error", "error_name"):
+                nested = mapping_value.get(key)
+                if isinstance(nested, str) and nested in _CHAIN_TOO_EARLY_REFUSAL_ERROR_NAMES:
+                    return nested
+            for nested in mapping_value.values():
+                error_name = cls._error_name_from_object(nested)
+                if error_name is not None:
+                    return error_name
+            return None
+        if isinstance(value, BaseException):
+            for nested in value.args:
+                if isinstance(nested, Mapping):
+                    error_name = cls._error_name_from_object(nested)
+                    if error_name is not None:
+                        return error_name
+            for attr in ("error", "error_name"):
+                nested = getattr(value, attr, None)
+                error_name = cls._error_name_from_object(nested)
+                if error_name is not None:
+                    return error_name
+            return None
+        for attr in ("name", "error", "error_name"):
+            nested = getattr(value, attr, None)
+            if isinstance(nested, str) and nested in _CHAIN_TOO_EARLY_REFUSAL_ERROR_NAMES:
+                return nested
+        return None
 
     @staticmethod
     def _query_commit_reveal_enabled(*, subtensor: bt.Subtensor, netuid: int) -> bool | None:
@@ -610,23 +574,6 @@ class BittensorSubtensorClient(SubtensorClientPort):
         except Exception as exc:
             logger.debug("unable to read commit-reveal flag", exc_info=exc)
             return None
-
-    @staticmethod
-    def _query_current_block(*, subtensor: bt.Subtensor) -> int | None:
-        try:
-            return int(subtensor.get_current_block())
-        except Exception as exc:
-            logger.debug("unable to read current block for weight cadence", exc_info=exc)
-            return None
-
-    @staticmethod
-    def _query_weights_rate_limit(*, subtensor: bt.Subtensor, netuid: int) -> int | None:
-        try:
-            value = subtensor.weights_rate_limit(netuid)
-        except Exception as exc:
-            logger.debug("unable to read weight rate limit", exc_info=exc)
-            return None
-        return None if value is None else int(value)
 
     @staticmethod
     def _query_last_update_values(*, subtensor: bt.Subtensor, netuid: int) -> _LastUpdateValues | None:

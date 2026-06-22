@@ -6,8 +6,8 @@ import pytest
 from harnyx_validator.infrastructure.subtensor.hotkey import ensure_wallet_hotkey_from_seed
 
 
-def _make_wallet(tmp_path) -> bt.wallet.Wallet:
-    return bt.wallet(name="validator", hotkey="default", path=str(tmp_path))
+def _make_wallet(tmp_path) -> bt.Wallet:
+    return bt.Wallet(name="validator", hotkey="default", path=str(tmp_path))
 
 
 def test_ensure_wallet_hotkey_from_seed_creates_hotkey_when_missing(tmp_path) -> None:
@@ -58,12 +58,12 @@ def test_create_wallet_raises_when_missing_mnemonic_and_keyfile(tmp_path, monkey
     from harnyx_commons.config.subtensor import SubtensorSettings
     from harnyx_validator.infrastructure.subtensor.hotkey import create_wallet
 
-    original_wallet = bt.wallet
+    original_wallet = bt.Wallet
 
-    def wallet_factory(*, name: str, hotkey: str) -> bt.wallet.Wallet:
+    def wallet_factory(*, name: str, hotkey: str) -> bt.Wallet:
         return original_wallet(name=name, hotkey=hotkey, path=str(tmp_path))
 
-    monkeypatch.setattr("harnyx_validator.infrastructure.subtensor.hotkey.bt.wallet", wallet_factory)
+    monkeypatch.setattr("harnyx_validator.infrastructure.subtensor.hotkey.bt.Wallet", wallet_factory)
 
     settings = SubtensorSettings.model_validate(
         {
@@ -83,14 +83,14 @@ def test_create_wallet_uses_existing_hotkey_when_mnemonic_env_is_blank(
     from harnyx_validator.infrastructure.subtensor.hotkey import create_wallet
     from harnyx_validator.runtime.settings import Settings
 
-    original_wallet = bt.wallet
+    original_wallet = bt.Wallet
     expected_hotkey = _make_wallet(tmp_path)
     ensure_wallet_hotkey_from_seed(expected_hotkey, "//Alice")
 
-    def wallet_factory(*, name: str, hotkey: str) -> bt.wallet.Wallet:
+    def wallet_factory(*, name: str, hotkey: str) -> bt.Wallet:
         return original_wallet(name=name, hotkey=hotkey, path=str(tmp_path))
 
-    monkeypatch.setattr("harnyx_validator.infrastructure.subtensor.hotkey.bt.wallet", wallet_factory)
+    monkeypatch.setattr("harnyx_validator.infrastructure.subtensor.hotkey.bt.Wallet", wallet_factory)
     monkeypatch.setenv("SUBTENSOR_WALLET_NAME", "validator")
     monkeypatch.setenv("SUBTENSOR_HOTKEY_NAME", "default")
     monkeypatch.setenv("SUBTENSOR_HOTKEY_MNEMONIC", mnemonic_value)

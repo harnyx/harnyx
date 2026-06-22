@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import pytest
 
 from harnyx_validator.application.ports.platform import ChampionWeights
-from harnyx_validator.application.ports.subtensor import ValidatorNodeInfo
+from harnyx_validator.application.ports.subtensor import ValidatorNodeInfo, WeightSubmissionTooEarlyError
 from harnyx_validator.application.submit_weights import WeightSubmissionService
 from validator.tests.fixtures.subtensor import FakeSubtensorClient
 
@@ -64,7 +64,7 @@ def test_submission_service_raises_on_empty_weights() -> None:
         service.submit()
 
 
-def test_try_submit_skips_unregistered_validator_without_querying_platform() -> None:
+def test_try_submit_attempts_submission_without_prechecking_cadence() -> None:
     fake = FakeSubtensorClient()
     fake.validator_metadata = ValidatorNodeInfo(uid=-1, version_key=None)
     platform = StubPlatform(weights={5: 1.0}, champion_uid=5)
@@ -77,15 +77,16 @@ def test_try_submit_skips_unregistered_validator_without_querying_platform() -> 
 
     result = service.try_submit()
 
-    assert result is None
-    assert platform.calls == 0
-    assert fake.weight_updates == []
+    assert result is not None
+    assert platform.calls == 1
+    assert fake.weight_updates == [{5: 1.0}]
+    assert fake.weight_updates == [{5: 1.0}]
 
 
-def test_try_submit_skips_missing_cadence_metadata_without_querying_platform() -> None:
+def test_try_submit_returns_none_when_chain_reports_too_early() -> None:
     fake = FakeSubtensorClient()
     fake.validator_metadata = ValidatorNodeInfo(uid=7, version_key=None)
-    fake.last_update_metadata_available = False
+    fake.submit_weights_exception = WeightSubmissionTooEarlyError("SettingWeightsTooFast")
     platform = StubPlatform(weights={5: 1.0}, champion_uid=5)
     service = WeightSubmissionService(
         subtensor=fake,
@@ -97,31 +98,30 @@ def test_try_submit_skips_missing_cadence_metadata_without_querying_platform() -
     result = service.try_submit()
 
     assert result is None
-    assert platform.calls == 0
+    assert platform.calls == 1
     assert fake.weight_updates == []
 
 
-def test_try_submit_allows_first_submission_without_last_update() -> None:
+def test_try_submit_propagates_non_too_early_submission_errors() -> None:
     fake = FakeSubtensorClient()
     fake.validator_metadata = ValidatorNodeInfo(uid=7, version_key=None)
-    netuid = 1
-    fake.weights_rate_limit_by_netuid[netuid] = 100
+    fake.submit_weights_exception = RuntimeError("metadata unavailable")
     platform = StubPlatform(weights={5: 1.0}, champion_uid=5)
     service = WeightSubmissionService(
         subtensor=fake,
-        netuid=netuid,
+        netuid=1,
         clock=fixed_clock,
         platform=platform,
     )
 
-    result = service.try_submit()
+    with pytest.raises(RuntimeError, match="metadata unavailable"):
+        service.try_submit()
 
-    assert result is not None
     assert platform.calls == 1
-    assert fake.weight_updates == [{5: 1.0}]
+    assert fake.weight_updates == []
 
 
-def test_try_submit_allows_plain_boundary() -> None:
+def test_try_submit_submits_platform_weights() -> None:
     fake = FakeSubtensorClient()
     fake.validator_metadata = ValidatorNodeInfo(uid=7, version_key=None)
     netuid = 1
@@ -141,26 +141,3 @@ def test_try_submit_allows_plain_boundary() -> None:
 
     assert result is not None
     assert platform.calls == 1
-
-
-def test_try_submit_closes_commit_reveal_boundary() -> None:
-    fake = FakeSubtensorClient()
-    fake.validator_metadata = ValidatorNodeInfo(uid=7, version_key=None)
-    netuid = 1
-    fake.current_block_height = 200
-    fake.last_update_by_uid[7] = 100
-    fake.weights_rate_limit_by_netuid[netuid] = 100
-    fake.commit_reveal_enabled_by_netuid[netuid] = True
-    platform = StubPlatform(weights={5: 1.0}, champion_uid=5)
-    service = WeightSubmissionService(
-        subtensor=fake,
-        netuid=netuid,
-        clock=fixed_clock,
-        platform=platform,
-    )
-
-    result = service.try_submit()
-
-    assert result is None
-    assert platform.calls == 0
-    assert fake.weight_updates == []

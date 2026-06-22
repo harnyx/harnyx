@@ -52,14 +52,14 @@ def _install_fakes(
     hotkey = _FakeHotkey()
     requests: list[dict[str, Any]] = []
     monkeypatch.setenv("PLATFORM_BASE_URL", "https://platform.example.com")
-    monkeypatch.setattr(config_module.bt, "wallet", lambda name, hotkey: SimpleNamespace(hotkey=_FakeHotkey()))
+    monkeypatch.setattr(config_module.bt, "Wallet", lambda name, hotkey: SimpleNamespace(hotkey=_FakeHotkey()))
 
     def _wallet(name: str, hotkey: str) -> SimpleNamespace:
         _ = (name, hotkey)
         return SimpleNamespace(hotkey=hotkey_obj)
 
     hotkey_obj = hotkey
-    monkeypatch.setattr(config_module.bt, "wallet", _wallet)
+    monkeypatch.setattr(config_module.bt, "Wallet", _wallet)
     monkeypatch.setattr(
         config_module.httpx,
         "Client",

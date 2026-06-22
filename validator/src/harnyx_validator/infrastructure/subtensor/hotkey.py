@@ -8,7 +8,7 @@ from harnyx_commons.config.subtensor import SubtensorSettings
 
 
 def create_wallet(settings: SubtensorSettings) -> bt.Wallet:
-    wallet = bt.wallet(
+    wallet = bt.Wallet(
         name=settings.wallet_name,
         hotkey=settings.hotkey_name,
     )
