@@ -137,8 +137,8 @@ def compose_tiered_participant_emission_allocations(
     if not ordered:
         return {}
 
-    top_floor = _score_floor(ordered, fraction=0.30)
-    middle_floor = _score_floor(ordered, fraction=1.00)
+    top_floor = _score_floor(ordered, fraction=0.10)
+    middle_floor = _score_floor(ordered, fraction=0.50)
     ordered_allocations: list[tuple[str, float]] = []
     for participant_key, score in ordered:
         if score <= 0.0:

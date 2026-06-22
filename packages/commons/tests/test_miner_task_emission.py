@@ -160,7 +160,7 @@ def test_flat_participant_emission_allocations_stop_in_input_order_before_overfl
     assert fsum(weights.values()) == pytest.approx(0.9)
 
 
-def test_tiered_participant_emission_uses_ceil_30_and_all_eligible_thresholds() -> None:
+def test_tiered_participant_emission_uses_ceil_10_and_50_thresholds() -> None:
     weights = compose_tiered_participant_emission_allocations(
         (
             ParticipantEmissionScore("hotkey-a", 1.0),
@@ -168,13 +168,18 @@ def test_tiered_participant_emission_uses_ceil_30_and_all_eligible_thresholds() 
             ParticipantEmissionScore("hotkey-c", 0.8),
             ParticipantEmissionScore("hotkey-d", 0.7),
             ParticipantEmissionScore("hotkey-e", 0.6),
+            ParticipantEmissionScore("hotkey-f", 0.5),
+            ParticipantEmissionScore("hotkey-g", 0.4),
+            ParticipantEmissionScore("hotkey-h", 0.3),
+            ParticipantEmissionScore("hotkey-i", 0.2),
+            ParticipantEmissionScore("hotkey-j", 0.1),
         ),
         miner_participation_emission=0.01,
     )
 
     assert weights == {
         "hotkey-a": pytest.approx(0.02),
-        "hotkey-b": pytest.approx(0.02),
+        "hotkey-b": pytest.approx(0.01),
         "hotkey-c": pytest.approx(0.01),
         "hotkey-d": pytest.approx(0.01),
         "hotkey-e": pytest.approx(0.01),
@@ -185,10 +190,15 @@ def test_tiered_participant_emission_expands_ties_at_boundaries() -> None:
     weights = compose_tiered_participant_emission_allocations(
         (
             ParticipantEmissionScore("hotkey-a", 1.0),
-            ParticipantEmissionScore("hotkey-b", 0.9),
+            ParticipantEmissionScore("hotkey-b", 1.0),
             ParticipantEmissionScore("hotkey-c", 0.9),
             ParticipantEmissionScore("hotkey-d", 0.8),
             ParticipantEmissionScore("hotkey-e", 0.7),
+            ParticipantEmissionScore("hotkey-f", 0.7),
+            ParticipantEmissionScore("hotkey-g", 0.6),
+            ParticipantEmissionScore("hotkey-h", 0.5),
+            ParticipantEmissionScore("hotkey-i", 0.4),
+            ParticipantEmissionScore("hotkey-j", 0.3),
         ),
         miner_participation_emission=0.01,
     )
@@ -196,9 +206,10 @@ def test_tiered_participant_emission_expands_ties_at_boundaries() -> None:
     assert weights == {
         "hotkey-a": pytest.approx(0.02),
         "hotkey-b": pytest.approx(0.02),
-        "hotkey-c": pytest.approx(0.02),
+        "hotkey-c": pytest.approx(0.01),
         "hotkey-d": pytest.approx(0.01),
         "hotkey-e": pytest.approx(0.01),
+        "hotkey-f": pytest.approx(0.01),
     }
 
 
@@ -237,8 +248,21 @@ def test_tiered_participant_emission_counts_zero_scores_in_cutoff_population() -
 
     assert weights == {
         "hotkey-a": pytest.approx(0.02),
-        "hotkey-b": pytest.approx(0.02),
+        "hotkey-b": pytest.approx(0.01),
     }
+
+
+def test_tiered_participant_emission_uses_hotkey_tie_breaker_before_capping() -> None:
+    weights = compose_tiered_participant_emission_allocations(
+        (
+            ParticipantEmissionScore("hotkey-c", 1.0),
+            ParticipantEmissionScore("hotkey-b", 1.0),
+            ParticipantEmissionScore("hotkey-a", 1.0),
+        ),
+        miner_participation_emission=0.34,
+    )
+
+    assert weights == {"hotkey-a": pytest.approx(0.68)}
 
 
 def test_tiered_participant_emission_all_zero_scores_return_empty_allocations() -> None:
