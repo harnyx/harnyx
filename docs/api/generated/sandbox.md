@@ -46,6 +46,8 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
+|  | `ctx` |  | opt | `object` |
+|  | `input` |  | opt | `object` |
 |  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
 |  | `msg` |  | req | `string` |
 |  | `type` |  | req | `string` |
@@ -125,6 +127,8 @@ Body: `object`
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
+|  | `ctx` |  | opt | `object` |
+|  | `input` |  | opt | `object` |
 |  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
 |  | `msg` |  | req | `string` |
 |  | `type` |  | req | `string` |
@@ -155,6 +159,8 @@ Body: `object`
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `ctx` |  |  | opt | `object` |
+| `input` |  |  | opt | `object` |
 | `loc` |  |  | req | array[anyOf: `string` OR `integer`] |
 | `msg` |  |  | req | `string` |
 | `type` |  |  | req | `string` |
@@ -165,6 +171,13 @@ Body: `object`
 ```json
 {
   "properties": {
+    "ctx": {
+      "title": "Context",
+      "type": "object"
+    },
+    "input": {
+      "title": "Input"
+    },
     "loc": {
       "items": {
         "anyOf": [

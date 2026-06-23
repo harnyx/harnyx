@@ -67,6 +67,8 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
+|  | `ctx` |  | opt | `object` |
+|  | `input` |  | opt | `object` |
 |  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
 |  | `msg` |  | req | `string` |
 |  | `type` |  | req | `string` |
@@ -166,6 +168,8 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
+|  | `ctx` |  | opt | `object` |
+|  | `input` |  | opt | `object` |
 |  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
 |  | `msg` |  | req | `string` |
 |  | `type` |  | req | `string` |
@@ -218,6 +222,8 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
+|  | `ctx` |  | opt | `object` |
+|  | `input` |  | opt | `object` |
 |  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
 |  | `msg` |  | req | `string` |
 |  | `type` |  | req | `string` |
@@ -295,6 +301,8 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
+|  | `ctx` |  | opt | `object` |
+|  | `input` |  | opt | `object` |
 |  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
 |  | `msg` |  | req | `string` |
 |  | `type` |  | req | `string` |
@@ -414,6 +422,8 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
+|  | `ctx` |  | opt | `object` |
+|  | `input` |  | opt | `object` |
 |  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
 |  | `msg` |  | req | `string` |
 |  | `type` |  | req | `string` |
@@ -1135,6 +1145,8 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
+|  | `ctx` |  | opt | `object` |
+|  | `input` |  | opt | `object` |
 |  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
 |  | `msg` |  | req | `string` |
 |  | `type` |  | req | `string` |
@@ -1328,6 +1340,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 ```json
 {
+  "description": "Accumulated token usage for a single provider/model pair.",
   "properties": {
     "call_count": {
       "default": 0,
@@ -2957,6 +2970,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 ```json
 {
+  "description": "Immutable audit trail for a tool invocation.",
   "properties": {
     "details": {
       "$ref": "#/components/schemas/ToolCallDetails"
@@ -3041,6 +3055,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 ```json
 {
+  "description": "Supplemental details stored alongside a tool call receipt.",
   "properties": {
     "actual_cost_provider": {
       "anyOf": [
@@ -3352,6 +3367,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 ```json
 {
+  "description": "Execution facts captured at the private tool runtime boundary.",
   "properties": {
     "elapsed_ms": {
       "anyOf": [
@@ -3421,6 +3437,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 ```json
 {
+  "description": "Structured representation of a tool result for auditing.",
   "properties": {
     "index": {
       "title": "Index",
@@ -3819,6 +3836,8 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `ctx` |  |  | opt | `object` |
+| `input` |  |  | opt | `object` |
 | `loc` |  |  | req | array[anyOf: `string` OR `integer`] |
 | `msg` |  |  | req | `string` |
 | `type` |  |  | req | `string` |
@@ -3829,6 +3848,13 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 ```json
 {
   "properties": {
+    "ctx": {
+      "title": "Context",
+      "type": "object"
+    },
+    "input": {
+      "title": "Input"
+    },
     "loc": {
       "items": {
         "anyOf": [
