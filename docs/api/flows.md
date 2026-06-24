@@ -103,27 +103,28 @@ sequenceDiagram
 
 | Overview | |
 |---|---|
-| **What’s happening** | Platform distributes a batch of `tasks` + `artifacts`; validator fetches artifacts; validator runs `query`; platform polls status and drains run pages. |
-| **Actors** | Platform ↔ Validator API ↔ Sandbox |
-| **Auth** | Platform↔Validator is Bittensor-signed; Validator↔Sandbox uses `x-platform-token` + `x-session-id` + `x-host-container-url`. |
-| **Happy path** | forward batch → fetch artifacts → run `query` → poll status → drain run pages |
-| **Dispatch gate** | Platform forwards only to registered, healthy, metagraph-authorized validators that have a `validator_allowlist_entry` row for `miner_task_batch_delivery`. |
+| **What’s happening** | Platform owns the batch work ledger; validator polls for assigned task attempts, fetches artifacts, runs `query`, and submits results back to platform. |
+| **Actors** | Platform ↔ Validator worker ↔ Sandbox |
+| **Auth** | Validator↔Platform is Bittensor-signed; Validator↔Sandbox uses `x-platform-token` + `x-session-id` + `x-host-container-url`. |
+| **Happy path** | materialize expected work → poll task assignment → fetch artifact → run `query` → submit result |
+| **Assignment gate** | Platform assigns work only to registered, healthy, metagraph-authorized validators that have a `validator_allowlist_entry` row for `miner_task_batch_delivery`. |
 
-#### 1) Platform forwards a batch to validators
+#### 1) Platform creates a batch and materializes expected work
 
 ```mermaid
 sequenceDiagram
   participant P as Platform
-  participant V as Validator API
+  participant DB as Platform DB
 
-  Note over P,V: Authorization: Bittensor ss58="...",sig="..."
-  P->>V: POST /validator/miner-task-batches/batch<br/>{ batch_id, cutoff_at, created_at, tasks, artifacts }
-  V-->>P: 200 { status:"accepted", batch_id, caller }
+  Note over P: Manual or scheduled creation
+  P->>P: POST /v1/miner-task-batches/batch<br/>{ tasks, artifacts, cutoff_at }
+  P->>DB: Store batch, artifact refs, and expected validator task rows
+  P->>DB: Initialize delivery projection from platform-owned rows
 
-  Note over P,V: On error, validator returns 4xx/5xx.
+  Note over P,DB: No batch payload is pushed to validators.
 ```
 
-#### 2) Validator fetches batch + artifacts from the platform
+#### 2) Validator polls platform for work
 
 ```mermaid
 sequenceDiagram
@@ -131,22 +132,24 @@ sequenceDiagram
   participant P as Platform
 
   Note over V,P: Authorization: Bittensor ss58="...",sig="..."
-  V->>P: GET /v1/miner-task-batches/batch/{batch_id}
-  P-->>V: 200 { ...batch... }
+  V->>P: POST /v2/miner-task-work/tasks<br/>{ target_concurrency, max_active_artifacts, active_attempts }
+  P-->>V: 200 { tasks:[{ batch_id, artifact_id, task_id, attempt_number, ... }] }
 
-  V->>P: GET /v1/miner-task-batches/{batch_id}/artifacts/{artifact_id}
-  P-->>V: 200 <application/octet-stream>
-
-  Note over V,P: Artifact fetch repeats once per candidate artifact.
+  Note over V,P: Validator polls again whenever local execution slots are free.
 ```
 
-#### 3) Validator invokes sandbox query entrypoint
+#### 3) Validator fetches artifacts and invokes sandbox query
 
 ```mermaid
 sequenceDiagram
   participant V as Validator
+  participant P as Platform
   participant S as Sandbox
   participant VA as Validator API (tools)
+
+  Note over V,P: Authorization: Bittensor ss58="...",sig="..."
+  V->>P: GET /v1/miner-task-batches/{batch_id}/artifacts/{artifact_id}
+  P-->>V: 200 <application/octet-stream>
 
   Note over V,S: Headers: x-session-id + x-platform-token + x-host-container-url
   V->>S: POST /entry/query<br/>{ text: "..." }
@@ -158,35 +161,32 @@ sequenceDiagram
   S-->>V: 200 { ok:true, result:{ text: "..." } }
 ```
 
-#### 4) Platform polls validator for health + progress
+#### 4) Validator submits task results to platform
 
 ```mermaid
 sequenceDiagram
+  participant V as Validator
   participant P as Platform
-  participant V as Validator API
+  participant DB as Platform DB
 
   Note over P,V: Authorization: Bittensor ss58="...",sig="..."
-  P->>V: GET /validator/miner-task-batches/{batch_id}/status
-  V-->>P: 200 { status, total, completed, remaining, latest_sequence }
-  P->>V: GET /validator/miner-task-batches/{batch_id}/runs?after_sequence=N&limit=M
-  V-->>P: 200 { items:[{ sequence, kind, submission?, attempt? }], next_after_sequence, has_more }
+  V->>P: POST /v2/miner-task-work/results<br/>{ results:[{ batch_id, artifact_id, task_id, attempt_number, ... }] }
+  P->>DB: Accept result idempotently and update run/delivery state
+  P-->>V: 200 { results:[{ outcome:"accepted"|"retry_later"|"rejected", canonical:true|false, reason_code:null|"already_accepted"|... }] }
+  Note over V: Act only on outcome; reason_code is diagnostic.
 
-  P->>V: GET /validator/status
-  V-->>P: 200 { status, running, ... }
-
-  Note over P,V: These calls are polled periodically.
+  Note over V,P: Validator retries only pending result submissions whose outcome is unknown or transient.
 ```
 
 **Endpoints involved**
 - Platform:
   - [POST /v1/miner-task-batches/batch](generated/platform.md#endpoint-post-v1-miner-task-batches-batch)
-  - [GET /v1/miner-task-batches/batch/{batch_id}](generated/platform.md#endpoint-get-v1-miner-task-batches-batch-batch_id)
   - [GET /v1/miner-task-batches/{batch_id}/artifacts/{artifact_id}](generated/platform.md#endpoint-get-v1-miner-task-batches-batch_id-artifacts-artifact_id)
+  - `POST /v2/miner-task-work/tasks`
+  - `POST /v2/miner-task-work/results`
 - Validator:
-  - [POST /validator/miner-task-batches/batch](generated/validator.md#endpoint-post-validator-miner-task-batches-batch)
-  - [GET /validator/miner-task-batches/{batch_id}/status](generated/validator.md#endpoint-get-validator-miner-task-batches-batch_id-status)
-  - [GET /validator/miner-task-batches/{batch_id}/runs](generated/validator.md#endpoint-get-validator-miner-task-batches-batch_id-runs)
   - [GET /validator/status](generated/validator.md#endpoint-get-validator-status)
+  - [POST /validator/miner-task-batches/{batch_id}/similarity](generated/validator.md#endpoint-post-validator-miner-task-batches-batch_id-similarity)
   - [POST /v1/tools/execute](generated/validator.md#endpoint-post-v1-tools-execute)
 - Sandbox:
   - [POST /entry/{entrypoint_name}](generated/sandbox.md#endpoint-post-entry-entrypoint_name)

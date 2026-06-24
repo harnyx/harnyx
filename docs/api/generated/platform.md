@@ -14,8 +14,9 @@ Generated from FastAPI OpenAPI.
   - [POST /v1/miner-task-batches/batch](#endpoint-post-v1-miner-task-batches-batch)
   - [GET /v1/miner-task-batches/batch/{batch_id}](#endpoint-get-v1-miner-task-batches-batch-batch_id)
   - [GET /v1/miner-task-batches/{batch_id}/artifacts/{artifact_id}](#endpoint-get-v1-miner-task-batches-batch_id-artifacts-artifact_id)
-  - [GET /v1/miner-task-batches/{batch_id}/restore](#endpoint-get-v1-miner-task-batches-batch_id-restore)
-  - [GET /v1/miner-task-batches/{batch_id}/restore/runs](#endpoint-get-v1-miner-task-batches-batch_id-restore-runs)
+- [miner-task-work](#miner-task-work)
+  - [POST /v2/miner-task-work/results](#endpoint-post-v2-miner-task-work-results)
+  - [POST /v2/miner-task-work/tasks](#endpoint-post-v2-miner-task-work-tasks)
 - [miners](#miners)
   - [POST /v1/miners/scripts](#endpoint-post-v1-miners-scripts)
 - [platform-tool-proxy](#platform-tool-proxy)
@@ -394,46 +395,73 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `type` |  | req | `string` |
 
 
-#### restore
 
-<a id="endpoint-get-v1-miner-task-batches-batch_id-restore"></a>
-##### GET /v1/miner-task-batches/{batch_id}/restore
+## miner-task-work
 
-Return restore metadata for the caller validator and batch.
+### results
+
+<a id="endpoint-post-v2-miner-task-work-results"></a>
+#### POST /v2/miner-task-work/results
+
+Submit completed platform-owned miner-task attempts for the caller validator.
 
 **Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
 
-**Parameters**
-| Param | In | Req | Notes |
-| --- | --- | --- | --- |
-| `batch_id` | path | req | `string` (format: uuid) |
+**Request**
+Content-Type: `application/json`
+Body: [MinerTaskWorkResultsRequest](#model-minertaskworkresultsrequest)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `results` |  |  | opt | array[[MinerTaskWorkResultEnvelope](#model-minertaskworkresultenvelope)] (default: []) |
+|  | `artifact_id` |  | req | `string` (format: uuid) |
+|  | `attempt_number` |  | req | `integer` |
+|  | `batch_id` |  | req | `string` (format: uuid) |
+|  | `result` |  | opt | [MinerTaskRunRequest](#model-minertaskrunrequest) (nullable) |
+|  |  | `batch_id` | req | `string` (format: uuid) |
+|  |  | `execution_log` | opt | array[[ToolCall](#model-toolcall)] (default: []) |
+|  |  | `run` | req | [MinerTaskRunSection](#model-minertaskrunsection) |
+|  |  | `score` | opt | `number` (nullable) |
+|  |  | `session` | req | [SessionModel](#model-sessionmodel) |
+|  |  | `specifics` | req | [EvaluationDetails](#model-evaluationdetails) |
+|  |  | `usage` | req | [UsageModel](#model-usagemodel) |
+|  |  | `validator` | req | [ValidatorSection](#model-validatorsection) |
+|  | `task_id` |  | req | `string` (format: uuid) |
+|  | `terminal_attempt` |  | req | [MinerTaskAttemptAuditPayload](#model-minertaskattemptauditpayload) |
+|  |  | `artifact_id` | req | `string` (format: uuid) |
+|  |  | `attempt_number` | req | `integer` |
+|  |  | `batch_id` | req | `string` (format: uuid) |
+|  |  | `error_code` | opt | `string` (nullable) |
+|  |  | `error_summary_code` | opt | `string` (nullable) |
+|  |  | `execution_log` | opt | array[[ToolCall](#model-toolcall)] (default: []) |
+|  |  | `finished_at` | req | `string` (format: date-time) |
+|  |  | `max_attempts` | req | `integer` |
+|  |  | `miner_hotkey_ss58` | req | `string` |
+|  |  | `retry_decision` | req | [MinerTaskAttemptRetryDecision](#model-minertaskattemptretrydecision) |
+|  |  | `started_at` | req | `string` (format: date-time) |
+|  |  | `status` | req | [MinerTaskAttemptStatus](#model-minertaskattemptstatus) |
+|  |  | `task_id` | req | `string` (format: uuid) |
+|  |  | `terminal_effect` | req | [MinerTaskAttemptTerminalEffect](#model-minertaskattemptterminaleffect) (nullable) |
+|  |  | `uid` | req | `integer` |
+|  |  | `validator_session_id` | req | `string` (format: uuid) |
 
 **Responses**
 `200` Successful Response
 Content-Type: `application/json`
-Body: [MinerTaskBatchRestoreMetadataResponse](#model-minertaskbatchrestoremetadataresponse)
+Body: [MinerTaskWorkResultsResponse](#model-minertaskworkresultsresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `batch_id` |  |  | req | `string` (format: uuid) |
-| `consumed_platform_tool_proxy_attempts` |  |  | opt | array[[MinerTaskAttemptOrdinalPayload](#model-minertaskattemptordinalpayload)] (default: []) |
+| `results` |  |  | opt | array[[MinerTaskWorkResultItemResponse](#model-minertaskworkresultitemresponse)] (default: []) |
 |  | `artifact_id` |  | req | `string` (format: uuid) |
-|  | `max_attempt_number` |  | req | `integer` |
+|  | `attempt_number` |  | req | `integer` |
+|  | `batch_id` |  | req | `string` (format: uuid) |
+|  | `canonical` |  | req | `boolean` |
+|  | `outcome` |  | req | [MinerTaskResultOutcome](#model-minertaskresultoutcome) |
+|  | `reason` |  | opt | `string` (nullable) |
+|  | `reason_code` |  | opt | [MinerTaskResultReasonCode](#model-minertaskresultreasoncode) (nullable) |
 |  | `task_id` |  | req | `string` (format: uuid) |
-| `last_progress_detail_sequence` |  |  | req | `integer` |
-| `page_limit` |  |  | req | `integer` |
-| `provider_model_evidence` |  |  | opt | array[[ProviderModelEvidence](#model-providermodelevidence)] (default: []) |
-|  | `failed_calls` |  | req | `integer` |
-|  | `failure_reason` |  | opt | `string` (nullable) |
-|  | `model` |  | req | `string` |
-|  | `provider` |  | req | `string` |
-|  | `total_calls` |  | req | `integer` |
-| `snapshot_received_at` |  |  | req | `string` (format: date-time) |
-| `terminated_miner_task_attempts` |  |  | opt | array[[MinerTaskAttemptOrdinalPayload](#model-minertaskattemptordinalpayload)] (default: []) |
-|  | `artifact_id` |  | req | `string` (format: uuid) |
-|  | `max_attempt_number` |  | req | `integer` |
-|  | `task_id` |  | req | `string` (format: uuid) |
-| `total_restore_runs` |  |  | req | `integer` |
+| `server_time` |  |  | req | `string` (format: date-time) |
 
 `422` Validation Error
 Content-Type: `application/json`
@@ -449,70 +477,54 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `type` |  | req | `string` |
 
 
-##### runs
+### tasks
 
-<a id="endpoint-get-v1-miner-task-batches-batch_id-restore-runs"></a>
-###### GET /v1/miner-task-batches/{batch_id}/restore/runs
+<a id="endpoint-post-v2-miner-task-work-tasks"></a>
+#### POST /v2/miner-task-work/tasks
 
-Return one bounded restore page for the caller validator and batch.
+Return the next platform-owned miner-task attempts for the caller validator.
 
 **Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
 
-**Parameters**
-| Param | In | Req | Notes |
-| --- | --- | --- | --- |
-| `batch_id` | path | req | `string` (format: uuid) |
-| `snapshot_received_at` | query | req | `string` (format: date-time) |
-| `cursor` | query | opt | `integer` (default: 0) |
-| `limit` | query | opt | `integer` (default: 50) |
+**Request**
+Content-Type: `application/json`
+Body: [MinerTaskWorkTasksRequest](#model-minertaskworktasksrequest)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `active_attempts` |  |  | opt | array[[MinerTaskAttemptIdentityPayload](#model-minertaskattemptidentitypayload)] (default: []) |
+|  | `artifact_id` |  | req | `string` (format: uuid) |
+|  | `attempt_number` |  | req | `integer` |
+|  | `batch_id` |  | req | `string` (format: uuid) |
+|  | `task_id` |  | req | `string` (format: uuid) |
+|  | `validator_session_id` |  | opt | `string` (format: uuid; nullable) |
+| `max_active_artifacts` |  |  | req | `integer` |
+| `target_concurrency` |  |  | req | `integer` |
 
 **Responses**
 `200` Successful Response
 Content-Type: `application/json`
-Body: [MinerTaskBatchRestoreRunsPageResponse](#model-minertaskbatchrestorerunspageresponse)
+Body: [MinerTaskWorkTasksResponse](#model-minertaskworktasksresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `batch_id` |  |  | req | `string` (format: uuid) |
-| `cursor` |  |  | req | `integer` |
-| `items` |  |  | opt | array[[MinerTaskRunRequest](#model-minertaskrunrequest)] (default: []) |
-|  | `batch_id` |  | req | `string` (format: uuid) |
-|  | `execution_log` |  | opt | array[[ToolCall](#model-toolcall)] (default: []) |
-|  |  | `details` | req | [ToolCallDetails](#model-toolcalldetails) |
-|  |  | `issued_at` | req | `string` (format: date-time) |
-|  |  | `outcome` | req | [ToolCallOutcome](#model-toolcalloutcome) |
-|  |  | `receipt_id` | req | `string` |
-|  |  | `session_id` | req | `string` (format: uuid) |
-|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, llm_chat, test_tool, tooling_info]) |
-|  |  | `uid` | req | `integer` |
-|  | `run` |  | req | [MinerTaskRunSection](#model-minertaskrunsection) |
+| `server_time` |  |  | req | `string` (format: date-time) |
+| `tasks` |  |  | opt | array[[MinerTaskWorkAssignmentPayload](#model-minertaskworkassignmentpayload)] (default: []) |
+|  | `artifact` |  | req | [MinerTaskWorkArtifactPayload](#model-minertaskworkartifactpayload) |
 |  |  | `artifact_id` | req | `string` (format: uuid) |
-|  |  | `completed_at` | opt | `string` (format: date-time; nullable) |
-|  |  | `response` | opt | [Response](#model-response) (nullable) |
+|  |  | `content_hash` | req | `string` |
+|  |  | `miner_hotkey_ss58` | opt | `string` (nullable) |
+|  |  | `size_bytes` | req | `integer` |
+|  |  | `uid` | req | `integer` |
+|  | `assignment_token` |  | req | `string` |
+|  | `attempt_number` |  | req | `integer` |
+|  | `batch_id` |  | req | `string` (format: uuid) |
+|  | `max_attempts` |  | req | `integer` |
+|  | `task` |  | req | [MinerTask](#model-minertask) |
+|  |  | `budget_usd` | opt | `number` (default: 0.5) |
+|  |  | `query` | req | [Query](#model-query) |
+|  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `task_id` | req | `string` (format: uuid) |
-|  | `score` |  | opt | `number` (nullable) |
-|  | `session` |  | req | [SessionModel](#model-sessionmodel) |
-|  |  | `expires_at` | req | `string` |
-|  |  | `issued_at` | req | `string` |
-|  |  | `session_id` | req | `string` (format: uuid) |
-|  |  | `status` | req | `string` |
-|  |  | `uid` | req | `integer` |
-|  | `specifics` |  | req | [EvaluationDetails](#model-evaluationdetails) |
-|  |  | `elapsed_ms` | opt | `number` (nullable) |
-|  |  | `error` | opt | [EvaluationError](#model-evaluationerror) (nullable) |
-|  |  | `score_breakdown` | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
-|  |  | `total_tool_usage` | opt | [ToolUsageSummary](#model-toolusagesummary) |
-|  | `usage` |  | req | [UsageModel](#model-usagemodel) |
-|  |  | `by_provider` | opt | `object` |
-|  |  | `call_count` | req | `integer` |
-|  |  | `total_completion_tokens` | req | `integer` |
-|  |  | `total_prompt_tokens` | req | `integer` |
-|  |  | `total_tokens` | req | `integer` |
-|  | `validator` |  | req | [ValidatorSection](#model-validatorsection) |
-|  |  | `uid` | req | `integer` |
-| `limit` |  |  | req | `integer` |
-| `next_cursor` |  |  | opt | `integer` (nullable) |
-| `snapshot_received_at` |  |  | req | `string` (format: date-time) |
 
 `422` Validation Error
 Content-Type: `application/json`
@@ -595,6 +607,7 @@ Body: [PlatformToolProxyGrantRequest](#model-platformtoolproxygrantrequest)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `artifact_id` |  |  | req | `string` (format: uuid) |
+| `assignment_token` |  |  | req | `string` |
 | `attempt_number` |  |  | req | `integer` |
 | `batch_id` |  |  | req | `string` (format: uuid) |
 | `task_id` |  |  | req | `string` (format: uuid) |
@@ -2016,8 +2029,8 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
-<a id="model-harnyx_miner_sdk__json_types__jsonvalue-output"></a>
-### Model: harnyx_miner_sdk__json_types__JsonValue-Output
+<a id="model-harnyx_miner_sdk__json_types__jsonvalue-input"></a>
+### Model: harnyx_miner_sdk__json_types__JsonValue-Input
 
 (no documented fields)
 
@@ -2041,13 +2054,13 @@ Body: [WeightsResponse](#model-weightsresponse)
     },
     {
       "items": {
-        "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Output"
+        "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Input"
       },
       "type": "array"
     },
     {
       "additionalProperties": {
-        "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Output"
+        "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Input"
       },
       "type": "object"
     },
@@ -2519,14 +2532,46 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
-<a id="model-minertaskattemptordinalpayload"></a>
-### Model: MinerTaskAttemptOrdinalPayload
+<a id="model-minertaskattemptauditpayload"></a>
+### Model: MinerTaskAttemptAuditPayload
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `artifact_id` |  |  | req | `string` (format: uuid) |
-| `max_attempt_number` |  |  | req | `integer` |
+| `attempt_number` |  |  | req | `integer` |
+| `batch_id` |  |  | req | `string` (format: uuid) |
+| `error_code` |  |  | opt | `string` (nullable) |
+| `error_summary_code` |  |  | opt | `string` (nullable) |
+| `execution_log` |  |  | opt | array[[ToolCall](#model-toolcall)] (default: []) |
+|  | `details` |  | req | [ToolCallDetails](#model-toolcalldetails) |
+|  |  | `actual_cost_provider` | opt | `string` (nullable) |
+|  |  | `actual_cost_usd` | opt | `number` (nullable) |
+|  |  | `cost_usd` | opt | `number` (nullable) |
+|  |  | `execution` | opt | [ToolExecutionFacts](#model-toolexecutionfacts) (nullable) |
+|  |  | `extra` | opt | `object` (nullable) |
+|  |  | `reference_cost_usd` | opt | `number` (nullable) |
+|  |  | `request_hash` | req | `string` |
+|  |  | `request_payload` | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+|  |  | `response_hash` | opt | `string` (nullable) |
+|  |  | `response_payload` | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+|  |  | `result_policy` | opt | [ToolResultPolicy](#model-toolresultpolicy) (default: log_only) |
+|  |  | `results` | opt | array[[ToolResult](#model-toolresult)] (default: []) |
+|  | `issued_at` |  | req | `string` (format: date-time) |
+|  | `outcome` |  | req | [ToolCallOutcome](#model-toolcalloutcome) |
+|  | `receipt_id` |  | req | `string` |
+|  | `session_id` |  | req | `string` (format: uuid) |
+|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, llm_chat, test_tool, tooling_info]) |
+|  | `uid` |  | req | `integer` |
+| `finished_at` |  |  | req | `string` (format: date-time) |
+| `max_attempts` |  |  | req | `integer` |
+| `miner_hotkey_ss58` |  |  | req | `string` |
+| `retry_decision` |  |  | req | [MinerTaskAttemptRetryDecision](#model-minertaskattemptretrydecision) |
+| `started_at` |  |  | req | `string` (format: date-time) |
+| `status` |  |  | req | [MinerTaskAttemptStatus](#model-minertaskattemptstatus) |
 | `task_id` |  |  | req | `string` (format: uuid) |
+| `terminal_effect` |  |  | req | [MinerTaskAttemptTerminalEffect](#model-minertaskattemptterminaleffect) (nullable) |
+| `uid` |  |  | req | `integer` |
+| `validator_session_id` |  |  | req | `string` (format: uuid) |
 
 <details>
 <summary>JSON schema</summary>
@@ -2540,24 +2585,244 @@ Body: [WeightsResponse](#model-weightsresponse)
       "title": "Artifact Id",
       "type": "string"
     },
-    "max_attempt_number": {
+    "attempt_number": {
       "minimum": 1.0,
-      "title": "Max Attempt Number",
+      "title": "Attempt Number",
       "type": "integer"
+    },
+    "batch_id": {
+      "format": "uuid",
+      "title": "Batch Id",
+      "type": "string"
+    },
+    "error_code": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Error Code"
+    },
+    "error_summary_code": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Error Summary Code"
+    },
+    "execution_log": {
+      "default": [],
+      "items": {
+        "$ref": "#/components/schemas/ToolCall"
+      },
+      "title": "Execution Log",
+      "type": "array"
+    },
+    "finished_at": {
+      "format": "date-time",
+      "title": "Finished At",
+      "type": "string"
+    },
+    "max_attempts": {
+      "minimum": 1.0,
+      "title": "Max Attempts",
+      "type": "integer"
+    },
+    "miner_hotkey_ss58": {
+      "minLength": 1,
+      "title": "Miner Hotkey Ss58",
+      "type": "string"
+    },
+    "retry_decision": {
+      "$ref": "#/components/schemas/MinerTaskAttemptRetryDecision"
+    },
+    "started_at": {
+      "format": "date-time",
+      "title": "Started At",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/components/schemas/MinerTaskAttemptStatus"
     },
     "task_id": {
       "format": "uuid",
       "title": "Task Id",
       "type": "string"
+    },
+    "terminal_effect": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/MinerTaskAttemptTerminalEffect"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "uid": {
+      "minimum": 0.0,
+      "title": "Uid",
+      "type": "integer"
+    },
+    "validator_session_id": {
+      "format": "uuid",
+      "title": "Validator Session Id",
+      "type": "string"
     }
   },
   "required": [
+    "validator_session_id",
+    "batch_id",
     "artifact_id",
     "task_id",
-    "max_attempt_number"
+    "attempt_number",
+    "uid",
+    "miner_hotkey_ss58",
+    "started_at",
+    "finished_at",
+    "status",
+    "retry_decision",
+    "terminal_effect",
+    "max_attempts"
   ],
-  "title": "MinerTaskAttemptOrdinalPayload",
+  "title": "MinerTaskAttemptAuditPayload",
   "type": "object"
+}
+```
+
+</details>
+
+<a id="model-minertaskattemptidentitypayload"></a>
+### Model: MinerTaskAttemptIdentityPayload
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `artifact_id` |  |  | req | `string` (format: uuid) |
+| `attempt_number` |  |  | req | `integer` |
+| `batch_id` |  |  | req | `string` (format: uuid) |
+| `task_id` |  |  | req | `string` (format: uuid) |
+| `validator_session_id` |  |  | opt | `string` (format: uuid; nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "artifact_id": {
+      "format": "uuid",
+      "title": "Artifact Id",
+      "type": "string"
+    },
+    "attempt_number": {
+      "minimum": 1.0,
+      "title": "Attempt Number",
+      "type": "integer"
+    },
+    "batch_id": {
+      "format": "uuid",
+      "title": "Batch Id",
+      "type": "string"
+    },
+    "task_id": {
+      "format": "uuid",
+      "title": "Task Id",
+      "type": "string"
+    },
+    "validator_session_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Validator Session Id"
+    }
+  },
+  "required": [
+    "batch_id",
+    "artifact_id",
+    "task_id",
+    "attempt_number"
+  ],
+  "title": "MinerTaskAttemptIdentityPayload",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-minertaskattemptretrydecision"></a>
+### Model: MinerTaskAttemptRetryDecision
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "enum": [
+    "will_retry",
+    "will_not_retry"
+  ],
+  "title": "MinerTaskAttemptRetryDecision",
+  "type": "string"
+}
+```
+
+</details>
+
+<a id="model-minertaskattemptstatus"></a>
+### Model: MinerTaskAttemptStatus
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "enum": [
+    "succeeded",
+    "failed"
+  ],
+  "title": "MinerTaskAttemptStatus",
+  "type": "string"
+}
+```
+
+</details>
+
+<a id="model-minertaskattemptterminaleffect"></a>
+### Model: MinerTaskAttemptTerminalEffect
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "enum": [
+    "task_result",
+    "delivery_failure"
+  ],
+  "title": "MinerTaskAttemptTerminalEffect",
+  "type": "string"
 }
 ```
 
@@ -2744,209 +3009,6 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
-<a id="model-minertaskbatchrestoremetadataresponse"></a>
-### Model: MinerTaskBatchRestoreMetadataResponse
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `batch_id` |  |  | req | `string` (format: uuid) |
-| `consumed_platform_tool_proxy_attempts` |  |  | opt | array[[MinerTaskAttemptOrdinalPayload](#model-minertaskattemptordinalpayload)] (default: []) |
-|  | `artifact_id` |  | req | `string` (format: uuid) |
-|  | `max_attempt_number` |  | req | `integer` |
-|  | `task_id` |  | req | `string` (format: uuid) |
-| `last_progress_detail_sequence` |  |  | req | `integer` |
-| `page_limit` |  |  | req | `integer` |
-| `provider_model_evidence` |  |  | opt | array[[ProviderModelEvidence](#model-providermodelevidence)] (default: []) |
-|  | `failed_calls` |  | req | `integer` |
-|  | `failure_reason` |  | opt | `string` (nullable) |
-|  | `model` |  | req | `string` |
-|  | `provider` |  | req | `string` |
-|  | `total_calls` |  | req | `integer` |
-| `snapshot_received_at` |  |  | req | `string` (format: date-time) |
-| `terminated_miner_task_attempts` |  |  | opt | array[[MinerTaskAttemptOrdinalPayload](#model-minertaskattemptordinalpayload)] (default: []) |
-|  | `artifact_id` |  | req | `string` (format: uuid) |
-|  | `max_attempt_number` |  | req | `integer` |
-|  | `task_id` |  | req | `string` (format: uuid) |
-| `total_restore_runs` |  |  | req | `integer` |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "additionalProperties": false,
-  "properties": {
-    "batch_id": {
-      "format": "uuid",
-      "title": "Batch Id",
-      "type": "string"
-    },
-    "consumed_platform_tool_proxy_attempts": {
-      "default": [],
-      "items": {
-        "$ref": "#/components/schemas/MinerTaskAttemptOrdinalPayload"
-      },
-      "title": "Consumed Platform Tool Proxy Attempts",
-      "type": "array"
-    },
-    "last_progress_detail_sequence": {
-      "minimum": 0.0,
-      "title": "Last Progress Detail Sequence",
-      "type": "integer"
-    },
-    "page_limit": {
-      "minimum": 1.0,
-      "title": "Page Limit",
-      "type": "integer"
-    },
-    "provider_model_evidence": {
-      "default": [],
-      "items": {
-        "$ref": "#/components/schemas/ProviderModelEvidence"
-      },
-      "title": "Provider Model Evidence",
-      "type": "array"
-    },
-    "snapshot_received_at": {
-      "format": "date-time",
-      "title": "Snapshot Received At",
-      "type": "string"
-    },
-    "terminated_miner_task_attempts": {
-      "default": [],
-      "items": {
-        "$ref": "#/components/schemas/MinerTaskAttemptOrdinalPayload"
-      },
-      "title": "Terminated Miner Task Attempts",
-      "type": "array"
-    },
-    "total_restore_runs": {
-      "minimum": 0.0,
-      "title": "Total Restore Runs",
-      "type": "integer"
-    }
-  },
-  "required": [
-    "batch_id",
-    "snapshot_received_at",
-    "total_restore_runs",
-    "page_limit",
-    "last_progress_detail_sequence"
-  ],
-  "title": "MinerTaskBatchRestoreMetadataResponse",
-  "type": "object"
-}
-```
-
-</details>
-
-<a id="model-minertaskbatchrestorerunspageresponse"></a>
-### Model: MinerTaskBatchRestoreRunsPageResponse
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `batch_id` |  |  | req | `string` (format: uuid) |
-| `cursor` |  |  | req | `integer` |
-| `items` |  |  | opt | array[[MinerTaskRunRequest](#model-minertaskrunrequest)] (default: []) |
-|  | `batch_id` |  | req | `string` (format: uuid) |
-|  | `execution_log` |  | opt | array[[ToolCall](#model-toolcall)] (default: []) |
-|  |  | `details` | req | [ToolCallDetails](#model-toolcalldetails) |
-|  |  | `issued_at` | req | `string` (format: date-time) |
-|  |  | `outcome` | req | [ToolCallOutcome](#model-toolcalloutcome) |
-|  |  | `receipt_id` | req | `string` |
-|  |  | `session_id` | req | `string` (format: uuid) |
-|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, llm_chat, test_tool, tooling_info]) |
-|  |  | `uid` | req | `integer` |
-|  | `run` |  | req | [MinerTaskRunSection](#model-minertaskrunsection) |
-|  |  | `artifact_id` | req | `string` (format: uuid) |
-|  |  | `completed_at` | opt | `string` (format: date-time; nullable) |
-|  |  | `response` | opt | [Response](#model-response) (nullable) |
-|  |  | `task_id` | req | `string` (format: uuid) |
-|  | `score` |  | opt | `number` (nullable) |
-|  | `session` |  | req | [SessionModel](#model-sessionmodel) |
-|  |  | `expires_at` | req | `string` |
-|  |  | `issued_at` | req | `string` |
-|  |  | `session_id` | req | `string` (format: uuid) |
-|  |  | `status` | req | `string` |
-|  |  | `uid` | req | `integer` |
-|  | `specifics` |  | req | [EvaluationDetails](#model-evaluationdetails) |
-|  |  | `elapsed_ms` | opt | `number` (nullable) |
-|  |  | `error` | opt | [EvaluationError](#model-evaluationerror) (nullable) |
-|  |  | `score_breakdown` | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
-|  |  | `total_tool_usage` | opt | [ToolUsageSummary](#model-toolusagesummary) |
-|  | `usage` |  | req | [UsageModel](#model-usagemodel) |
-|  |  | `by_provider` | opt | `object` |
-|  |  | `call_count` | req | `integer` |
-|  |  | `total_completion_tokens` | req | `integer` |
-|  |  | `total_prompt_tokens` | req | `integer` |
-|  |  | `total_tokens` | req | `integer` |
-|  | `validator` |  | req | [ValidatorSection](#model-validatorsection) |
-|  |  | `uid` | req | `integer` |
-| `limit` |  |  | req | `integer` |
-| `next_cursor` |  |  | opt | `integer` (nullable) |
-| `snapshot_received_at` |  |  | req | `string` (format: date-time) |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "additionalProperties": false,
-  "properties": {
-    "batch_id": {
-      "format": "uuid",
-      "title": "Batch Id",
-      "type": "string"
-    },
-    "cursor": {
-      "minimum": 0.0,
-      "title": "Cursor",
-      "type": "integer"
-    },
-    "items": {
-      "default": [],
-      "items": {
-        "$ref": "#/components/schemas/MinerTaskRunRequest"
-      },
-      "title": "Items",
-      "type": "array"
-    },
-    "limit": {
-      "minimum": 1.0,
-      "title": "Limit",
-      "type": "integer"
-    },
-    "next_cursor": {
-      "anyOf": [
-        {
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Next Cursor"
-    },
-    "snapshot_received_at": {
-      "format": "date-time",
-      "title": "Snapshot Received At",
-      "type": "string"
-    }
-  },
-  "required": [
-    "batch_id",
-    "snapshot_received_at",
-    "cursor",
-    "limit"
-  ],
-  "title": "MinerTaskBatchRestoreRunsPageResponse",
-  "type": "object"
-}
-```
-
-</details>
-
 <a id="model-minertaskerrorcode"></a>
 ### Model: MinerTaskErrorCode
 
@@ -3044,6 +3106,52 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
+<a id="model-minertaskresultoutcome"></a>
+### Model: MinerTaskResultOutcome
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "enum": [
+    "accepted",
+    "retry_later",
+    "rejected"
+  ],
+  "title": "MinerTaskResultOutcome",
+  "type": "string"
+}
+```
+
+</details>
+
+<a id="model-minertaskresultreasoncode"></a>
+### Model: MinerTaskResultReasonCode
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "enum": [
+    "already_accepted",
+    "stale_attempt",
+    "conflicting_replay",
+    "invalid_attempt",
+    "platform_temporarily_unavailable"
+  ],
+  "title": "MinerTaskResultReasonCode",
+  "type": "string"
+}
+```
+
+</details>
+
 <a id="model-minertaskrunrequest"></a>
 ### Model: MinerTaskRunRequest
 
@@ -3059,9 +3167,9 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  |  | `extra` | opt | `object` (nullable) |
 |  |  | `reference_cost_usd` | opt | `number` (nullable) |
 |  |  | `request_hash` | req | `string` |
-|  |  | `request_payload` | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+|  |  | `request_payload` | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
 |  |  | `response_hash` | opt | `string` (nullable) |
-|  |  | `response_payload` | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+|  |  | `response_payload` | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
 |  |  | `result_policy` | opt | [ToolResultPolicy](#model-toolresultpolicy) (default: log_only) |
 |  |  | `results` | opt | array[[ToolResult](#model-toolresult)] (default: []) |
 |  | `issued_at` |  | req | `string` (format: date-time) |
@@ -3241,6 +3349,565 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
+<a id="model-minertaskworkartifactpayload"></a>
+### Model: MinerTaskWorkArtifactPayload
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `artifact_id` |  |  | req | `string` (format: uuid) |
+| `content_hash` |  |  | req | `string` |
+| `miner_hotkey_ss58` |  |  | opt | `string` (nullable) |
+| `size_bytes` |  |  | req | `integer` |
+| `uid` |  |  | req | `integer` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "artifact_id": {
+      "format": "uuid",
+      "title": "Artifact Id",
+      "type": "string"
+    },
+    "content_hash": {
+      "minLength": 1,
+      "title": "Content Hash",
+      "type": "string"
+    },
+    "miner_hotkey_ss58": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Miner Hotkey Ss58"
+    },
+    "size_bytes": {
+      "minimum": 0.0,
+      "title": "Size Bytes",
+      "type": "integer"
+    },
+    "uid": {
+      "minimum": 0.0,
+      "title": "Uid",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "artifact_id",
+    "uid",
+    "content_hash",
+    "size_bytes"
+  ],
+  "title": "MinerTaskWorkArtifactPayload",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-minertaskworkassignmentpayload"></a>
+### Model: MinerTaskWorkAssignmentPayload
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `artifact` |  |  | req | [MinerTaskWorkArtifactPayload](#model-minertaskworkartifactpayload) |
+|  | `artifact_id` |  | req | `string` (format: uuid) |
+|  | `content_hash` |  | req | `string` |
+|  | `miner_hotkey_ss58` |  | opt | `string` (nullable) |
+|  | `size_bytes` |  | req | `integer` |
+|  | `uid` |  | req | `integer` |
+| `assignment_token` |  |  | req | `string` |
+| `attempt_number` |  |  | req | `integer` |
+| `batch_id` |  |  | req | `string` (format: uuid) |
+| `max_attempts` |  |  | req | `integer` |
+| `task` |  |  | req | [MinerTask](#model-minertask) |
+|  | `budget_usd` |  | opt | `number` (default: 0.5) |
+|  | `query` |  | req | [Query](#model-query) |
+|  |  | `text` | req | `string` |
+|  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
+|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  |  | `text` | req | `string` |
+|  | `task_id` |  | req | `string` (format: uuid) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "artifact": {
+      "$ref": "#/components/schemas/MinerTaskWorkArtifactPayload"
+    },
+    "assignment_token": {
+      "minLength": 1,
+      "title": "Assignment Token",
+      "type": "string"
+    },
+    "attempt_number": {
+      "minimum": 1.0,
+      "title": "Attempt Number",
+      "type": "integer"
+    },
+    "batch_id": {
+      "format": "uuid",
+      "title": "Batch Id",
+      "type": "string"
+    },
+    "max_attempts": {
+      "minimum": 1.0,
+      "title": "Max Attempts",
+      "type": "integer"
+    },
+    "task": {
+      "$ref": "#/components/schemas/MinerTask"
+    }
+  },
+  "required": [
+    "batch_id",
+    "artifact",
+    "task",
+    "attempt_number",
+    "max_attempts",
+    "assignment_token"
+  ],
+  "title": "MinerTaskWorkAssignmentPayload",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-minertaskworkresultenvelope"></a>
+### Model: MinerTaskWorkResultEnvelope
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `artifact_id` |  |  | req | `string` (format: uuid) |
+| `attempt_number` |  |  | req | `integer` |
+| `batch_id` |  |  | req | `string` (format: uuid) |
+| `result` |  |  | opt | [MinerTaskRunRequest](#model-minertaskrunrequest) (nullable) |
+|  | `batch_id` |  | req | `string` (format: uuid) |
+|  | `execution_log` |  | opt | array[[ToolCall](#model-toolcall)] (default: []) |
+|  |  | `details` | req | [ToolCallDetails](#model-toolcalldetails) |
+|  |  | `issued_at` | req | `string` (format: date-time) |
+|  |  | `outcome` | req | [ToolCallOutcome](#model-toolcalloutcome) |
+|  |  | `receipt_id` | req | `string` |
+|  |  | `session_id` | req | `string` (format: uuid) |
+|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, llm_chat, test_tool, tooling_info]) |
+|  |  | `uid` | req | `integer` |
+|  | `run` |  | req | [MinerTaskRunSection](#model-minertaskrunsection) |
+|  |  | `artifact_id` | req | `string` (format: uuid) |
+|  |  | `completed_at` | opt | `string` (format: date-time; nullable) |
+|  |  | `response` | opt | [Response](#model-response) (nullable) |
+|  |  | `task_id` | req | `string` (format: uuid) |
+|  | `score` |  | opt | `number` (nullable) |
+|  | `session` |  | req | [SessionModel](#model-sessionmodel) |
+|  |  | `expires_at` | req | `string` |
+|  |  | `issued_at` | req | `string` |
+|  |  | `session_id` | req | `string` (format: uuid) |
+|  |  | `status` | req | `string` |
+|  |  | `uid` | req | `integer` |
+|  | `specifics` |  | req | [EvaluationDetails](#model-evaluationdetails) |
+|  |  | `elapsed_ms` | opt | `number` (nullable) |
+|  |  | `error` | opt | [EvaluationError](#model-evaluationerror) (nullable) |
+|  |  | `score_breakdown` | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
+|  |  | `total_tool_usage` | opt | [ToolUsageSummary](#model-toolusagesummary) |
+|  | `usage` |  | req | [UsageModel](#model-usagemodel) |
+|  |  | `by_provider` | opt | `object` |
+|  |  | `call_count` | req | `integer` |
+|  |  | `total_completion_tokens` | req | `integer` |
+|  |  | `total_prompt_tokens` | req | `integer` |
+|  |  | `total_tokens` | req | `integer` |
+|  | `validator` |  | req | [ValidatorSection](#model-validatorsection) |
+|  |  | `uid` | req | `integer` |
+| `task_id` |  |  | req | `string` (format: uuid) |
+| `terminal_attempt` |  |  | req | [MinerTaskAttemptAuditPayload](#model-minertaskattemptauditpayload) |
+|  | `artifact_id` |  | req | `string` (format: uuid) |
+|  | `attempt_number` |  | req | `integer` |
+|  | `batch_id` |  | req | `string` (format: uuid) |
+|  | `error_code` |  | opt | `string` (nullable) |
+|  | `error_summary_code` |  | opt | `string` (nullable) |
+|  | `execution_log` |  | opt | array[[ToolCall](#model-toolcall)] (default: []) |
+|  |  | `details` | req | [ToolCallDetails](#model-toolcalldetails) |
+|  |  | `issued_at` | req | `string` (format: date-time) |
+|  |  | `outcome` | req | [ToolCallOutcome](#model-toolcalloutcome) |
+|  |  | `receipt_id` | req | `string` |
+|  |  | `session_id` | req | `string` (format: uuid) |
+|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, llm_chat, test_tool, tooling_info]) |
+|  |  | `uid` | req | `integer` |
+|  | `finished_at` |  | req | `string` (format: date-time) |
+|  | `max_attempts` |  | req | `integer` |
+|  | `miner_hotkey_ss58` |  | req | `string` |
+|  | `retry_decision` |  | req | [MinerTaskAttemptRetryDecision](#model-minertaskattemptretrydecision) |
+|  | `started_at` |  | req | `string` (format: date-time) |
+|  | `status` |  | req | [MinerTaskAttemptStatus](#model-minertaskattemptstatus) |
+|  | `task_id` |  | req | `string` (format: uuid) |
+|  | `terminal_effect` |  | req | [MinerTaskAttemptTerminalEffect](#model-minertaskattemptterminaleffect) (nullable) |
+|  | `uid` |  | req | `integer` |
+|  | `validator_session_id` |  | req | `string` (format: uuid) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "artifact_id": {
+      "format": "uuid",
+      "title": "Artifact Id",
+      "type": "string"
+    },
+    "attempt_number": {
+      "minimum": 1.0,
+      "title": "Attempt Number",
+      "type": "integer"
+    },
+    "batch_id": {
+      "format": "uuid",
+      "title": "Batch Id",
+      "type": "string"
+    },
+    "result": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/MinerTaskRunRequest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "task_id": {
+      "format": "uuid",
+      "title": "Task Id",
+      "type": "string"
+    },
+    "terminal_attempt": {
+      "$ref": "#/components/schemas/MinerTaskAttemptAuditPayload"
+    }
+  },
+  "required": [
+    "batch_id",
+    "artifact_id",
+    "task_id",
+    "attempt_number",
+    "terminal_attempt"
+  ],
+  "title": "MinerTaskWorkResultEnvelope",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-minertaskworkresultitemresponse"></a>
+### Model: MinerTaskWorkResultItemResponse
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `artifact_id` |  |  | req | `string` (format: uuid) |
+| `attempt_number` |  |  | req | `integer` |
+| `batch_id` |  |  | req | `string` (format: uuid) |
+| `canonical` |  |  | req | `boolean` |
+| `outcome` |  |  | req | [MinerTaskResultOutcome](#model-minertaskresultoutcome) |
+| `reason` |  |  | opt | `string` (nullable) |
+| `reason_code` |  |  | opt | [MinerTaskResultReasonCode](#model-minertaskresultreasoncode) (nullable) |
+| `task_id` |  |  | req | `string` (format: uuid) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "artifact_id": {
+      "format": "uuid",
+      "title": "Artifact Id",
+      "type": "string"
+    },
+    "attempt_number": {
+      "minimum": 1.0,
+      "title": "Attempt Number",
+      "type": "integer"
+    },
+    "batch_id": {
+      "format": "uuid",
+      "title": "Batch Id",
+      "type": "string"
+    },
+    "canonical": {
+      "title": "Canonical",
+      "type": "boolean"
+    },
+    "outcome": {
+      "$ref": "#/components/schemas/MinerTaskResultOutcome"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Reason"
+    },
+    "reason_code": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/MinerTaskResultReasonCode"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "task_id": {
+      "format": "uuid",
+      "title": "Task Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "batch_id",
+    "artifact_id",
+    "task_id",
+    "attempt_number",
+    "outcome",
+    "canonical"
+  ],
+  "title": "MinerTaskWorkResultItemResponse",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-minertaskworkresultsrequest"></a>
+### Model: MinerTaskWorkResultsRequest
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `results` |  |  | opt | array[[MinerTaskWorkResultEnvelope](#model-minertaskworkresultenvelope)] (default: []) |
+|  | `artifact_id` |  | req | `string` (format: uuid) |
+|  | `attempt_number` |  | req | `integer` |
+|  | `batch_id` |  | req | `string` (format: uuid) |
+|  | `result` |  | opt | [MinerTaskRunRequest](#model-minertaskrunrequest) (nullable) |
+|  |  | `batch_id` | req | `string` (format: uuid) |
+|  |  | `execution_log` | opt | array[[ToolCall](#model-toolcall)] (default: []) |
+|  |  | `run` | req | [MinerTaskRunSection](#model-minertaskrunsection) |
+|  |  | `score` | opt | `number` (nullable) |
+|  |  | `session` | req | [SessionModel](#model-sessionmodel) |
+|  |  | `specifics` | req | [EvaluationDetails](#model-evaluationdetails) |
+|  |  | `usage` | req | [UsageModel](#model-usagemodel) |
+|  |  | `validator` | req | [ValidatorSection](#model-validatorsection) |
+|  | `task_id` |  | req | `string` (format: uuid) |
+|  | `terminal_attempt` |  | req | [MinerTaskAttemptAuditPayload](#model-minertaskattemptauditpayload) |
+|  |  | `artifact_id` | req | `string` (format: uuid) |
+|  |  | `attempt_number` | req | `integer` |
+|  |  | `batch_id` | req | `string` (format: uuid) |
+|  |  | `error_code` | opt | `string` (nullable) |
+|  |  | `error_summary_code` | opt | `string` (nullable) |
+|  |  | `execution_log` | opt | array[[ToolCall](#model-toolcall)] (default: []) |
+|  |  | `finished_at` | req | `string` (format: date-time) |
+|  |  | `max_attempts` | req | `integer` |
+|  |  | `miner_hotkey_ss58` | req | `string` |
+|  |  | `retry_decision` | req | [MinerTaskAttemptRetryDecision](#model-minertaskattemptretrydecision) |
+|  |  | `started_at` | req | `string` (format: date-time) |
+|  |  | `status` | req | [MinerTaskAttemptStatus](#model-minertaskattemptstatus) |
+|  |  | `task_id` | req | `string` (format: uuid) |
+|  |  | `terminal_effect` | req | [MinerTaskAttemptTerminalEffect](#model-minertaskattemptterminaleffect) (nullable) |
+|  |  | `uid` | req | `integer` |
+|  |  | `validator_session_id` | req | `string` (format: uuid) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "results": {
+      "default": [],
+      "items": {
+        "$ref": "#/components/schemas/MinerTaskWorkResultEnvelope"
+      },
+      "title": "Results",
+      "type": "array"
+    }
+  },
+  "title": "MinerTaskWorkResultsRequest",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-minertaskworkresultsresponse"></a>
+### Model: MinerTaskWorkResultsResponse
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `results` |  |  | opt | array[[MinerTaskWorkResultItemResponse](#model-minertaskworkresultitemresponse)] (default: []) |
+|  | `artifact_id` |  | req | `string` (format: uuid) |
+|  | `attempt_number` |  | req | `integer` |
+|  | `batch_id` |  | req | `string` (format: uuid) |
+|  | `canonical` |  | req | `boolean` |
+|  | `outcome` |  | req | [MinerTaskResultOutcome](#model-minertaskresultoutcome) |
+|  | `reason` |  | opt | `string` (nullable) |
+|  | `reason_code` |  | opt | [MinerTaskResultReasonCode](#model-minertaskresultreasoncode) (nullable) |
+|  | `task_id` |  | req | `string` (format: uuid) |
+| `server_time` |  |  | req | `string` (format: date-time) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "results": {
+      "default": [],
+      "items": {
+        "$ref": "#/components/schemas/MinerTaskWorkResultItemResponse"
+      },
+      "title": "Results",
+      "type": "array"
+    },
+    "server_time": {
+      "format": "date-time",
+      "title": "Server Time",
+      "type": "string"
+    }
+  },
+  "required": [
+    "server_time"
+  ],
+  "title": "MinerTaskWorkResultsResponse",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-minertaskworktasksrequest"></a>
+### Model: MinerTaskWorkTasksRequest
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `active_attempts` |  |  | opt | array[[MinerTaskAttemptIdentityPayload](#model-minertaskattemptidentitypayload)] (default: []) |
+|  | `artifact_id` |  | req | `string` (format: uuid) |
+|  | `attempt_number` |  | req | `integer` |
+|  | `batch_id` |  | req | `string` (format: uuid) |
+|  | `task_id` |  | req | `string` (format: uuid) |
+|  | `validator_session_id` |  | opt | `string` (format: uuid; nullable) |
+| `max_active_artifacts` |  |  | req | `integer` |
+| `target_concurrency` |  |  | req | `integer` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "active_attempts": {
+      "default": [],
+      "items": {
+        "$ref": "#/components/schemas/MinerTaskAttemptIdentityPayload"
+      },
+      "title": "Active Attempts",
+      "type": "array"
+    },
+    "max_active_artifacts": {
+      "maximum": 256.0,
+      "minimum": 1.0,
+      "title": "Max Active Artifacts",
+      "type": "integer"
+    },
+    "target_concurrency": {
+      "maximum": 256.0,
+      "minimum": 1.0,
+      "title": "Target Concurrency",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "target_concurrency",
+    "max_active_artifacts"
+  ],
+  "title": "MinerTaskWorkTasksRequest",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-minertaskworktasksresponse"></a>
+### Model: MinerTaskWorkTasksResponse
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `server_time` |  |  | req | `string` (format: date-time) |
+| `tasks` |  |  | opt | array[[MinerTaskWorkAssignmentPayload](#model-minertaskworkassignmentpayload)] (default: []) |
+|  | `artifact` |  | req | [MinerTaskWorkArtifactPayload](#model-minertaskworkartifactpayload) |
+|  |  | `artifact_id` | req | `string` (format: uuid) |
+|  |  | `content_hash` | req | `string` |
+|  |  | `miner_hotkey_ss58` | opt | `string` (nullable) |
+|  |  | `size_bytes` | req | `integer` |
+|  |  | `uid` | req | `integer` |
+|  | `assignment_token` |  | req | `string` |
+|  | `attempt_number` |  | req | `integer` |
+|  | `batch_id` |  | req | `string` (format: uuid) |
+|  | `max_attempts` |  | req | `integer` |
+|  | `task` |  | req | [MinerTask](#model-minertask) |
+|  |  | `budget_usd` | opt | `number` (default: 0.5) |
+|  |  | `query` | req | [Query](#model-query) |
+|  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
+|  |  | `task_id` | req | `string` (format: uuid) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "server_time": {
+      "format": "date-time",
+      "title": "Server Time",
+      "type": "string"
+    },
+    "tasks": {
+      "default": [],
+      "items": {
+        "$ref": "#/components/schemas/MinerTaskWorkAssignmentPayload"
+      },
+      "title": "Tasks",
+      "type": "array"
+    }
+  },
+  "required": [
+    "server_time"
+  ],
+  "title": "MinerTaskWorkTasksResponse",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-overrideminertaskdatasetmodel"></a>
 ### Model: OverrideMinerTaskDatasetModel
 
@@ -3287,6 +3954,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `artifact_id` |  |  | req | `string` (format: uuid) |
+| `assignment_token` |  |  | req | `string` |
 | `attempt_number` |  |  | req | `integer` |
 | `batch_id` |  |  | req | `string` (format: uuid) |
 | `task_id` |  |  | req | `string` (format: uuid) |
@@ -3302,6 +3970,11 @@ Body: [WeightsResponse](#model-weightsresponse)
     "artifact_id": {
       "format": "uuid",
       "title": "Artifact Id",
+      "type": "string"
+    },
+    "assignment_token": {
+      "minLength": 1,
+      "title": "Assignment Token",
       "type": "string"
     },
     "attempt_number": {
@@ -3330,7 +4003,8 @@ Body: [WeightsResponse](#model-weightsresponse)
     "artifact_id",
     "task_id",
     "validator_session_id",
-    "attempt_number"
+    "attempt_number",
+    "assignment_token"
   ],
   "title": "PlatformToolProxyGrantRequest",
   "type": "object"
@@ -3369,65 +4043,6 @@ Body: [WeightsResponse](#model-weightsresponse)
     "expires_at"
   ],
   "title": "PlatformToolProxyGrantResponse",
-  "type": "object"
-}
-```
-
-</details>
-
-<a id="model-providermodelevidence"></a>
-### Model: ProviderModelEvidence
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `failed_calls` |  |  | req | `integer` |
-| `failure_reason` |  |  | opt | `string` (nullable) |
-| `model` |  |  | req | `string` |
-| `provider` |  |  | req | `string` |
-| `total_calls` |  |  | req | `integer` |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "additionalProperties": false,
-  "properties": {
-    "failed_calls": {
-      "title": "Failed Calls",
-      "type": "integer"
-    },
-    "failure_reason": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Failure Reason"
-    },
-    "model": {
-      "title": "Model",
-      "type": "string"
-    },
-    "provider": {
-      "title": "Provider",
-      "type": "string"
-    },
-    "total_calls": {
-      "title": "Total Calls",
-      "type": "integer"
-    }
-  },
-  "required": [
-    "provider",
-    "model",
-    "total_calls",
-    "failed_calls"
-  ],
-  "title": "ProviderModelEvidence",
   "type": "object"
 }
 ```
@@ -4198,13 +4813,13 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  | `extra` |  | opt | `object` (nullable) |
 |  | `reference_cost_usd` |  | opt | `number` (nullable) |
 |  | `request_hash` |  | req | `string` |
-|  | `request_payload` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+|  | `request_payload` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
 |  | `response_hash` |  | opt | `string` (nullable) |
-|  | `response_payload` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+|  | `response_payload` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
 |  | `result_policy` |  | opt | [ToolResultPolicy](#model-toolresultpolicy) (default: log_only) |
 |  | `results` |  | opt | array[[ToolResult](#model-toolresult)] (default: []) |
 |  |  | `index` | req | `integer` |
-|  |  | `raw` | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+|  |  | `raw` | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
 |  |  | `result_id` | req | `string` |
 | `issued_at` |  |  | req | `string` (format: date-time) |
 | `outcome` |  |  | req | [ToolCallOutcome](#model-toolcalloutcome) |
@@ -4289,13 +4904,13 @@ Body: [WeightsResponse](#model-weightsresponse)
 | `extra` |  |  | opt | `object` (nullable) |
 | `reference_cost_usd` |  |  | opt | `number` (nullable) |
 | `request_hash` |  |  | req | `string` |
-| `request_payload` |  |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+| `request_payload` |  |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
 | `response_hash` |  |  | opt | `string` (nullable) |
-| `response_payload` |  |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+| `response_payload` |  |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
 | `result_policy` |  |  | opt | [ToolResultPolicy](#model-toolresultpolicy) (default: log_only) |
 | `results` |  |  | opt | array[[ToolResult](#model-toolresult)] (default: []) |
 |  | `index` |  | req | `integer` |
-|  | `raw` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+|  | `raw` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
 |  | `result_id` |  | req | `string` |
 
 <details>
@@ -4380,7 +4995,7 @@ Body: [WeightsResponse](#model-weightsresponse)
     "request_payload": {
       "anyOf": [
         {
-          "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Output"
+          "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Input"
         },
         {
           "type": "null"
@@ -4401,7 +5016,7 @@ Body: [WeightsResponse](#model-weightsresponse)
     "response_payload": {
       "anyOf": [
         {
-          "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Output"
+          "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Input"
         },
         {
           "type": "null"
@@ -4533,7 +5148,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `index` |  |  | req | `integer` |
-| `raw` |  |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+| `raw` |  |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
 | `result_id` |  |  | req | `string` |
 
 <details>
@@ -4550,7 +5165,7 @@ Body: [WeightsResponse](#model-weightsresponse)
     "raw": {
       "anyOf": [
         {
-          "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Output"
+          "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Input"
         },
         {
           "type": "null"

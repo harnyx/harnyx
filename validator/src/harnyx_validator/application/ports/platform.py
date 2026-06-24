@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
@@ -10,8 +11,11 @@ from uuid import UUID
 from harnyx_commons.domain.tool_call import ToolExecutionFacts
 from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.tools.types import ToolName
-from harnyx_validator.application.dto.evaluation import MinerTaskBatchSpec, MinerTaskRunSubmission
-from harnyx_validator.application.ports.progress import ProviderFailureEvidence
+from harnyx_validator.application.dto.evaluation import (
+    MinerTaskBatchSpec,
+    MinerTaskWorkAssignment,
+    PlatformOwnedTaskResult,
+)
 
 
 class PlatformPort(Protocol):
@@ -29,19 +33,21 @@ class PlatformPort(Protocol):
         """Return platform-computed champion weights."""
         ...
 
-    def get_restore_metadata(self, batch_id: UUID) -> RestoreMetadata:
-        """Return restore metadata for the validator-owned batch delivery."""
-        ...
-
-    def get_restore_runs_page(
+    def request_miner_task_work(
         self,
         *,
-        batch: MinerTaskBatchSpec,
-        snapshot_received_at: datetime,
-        cursor: int,
-        limit: int,
-    ) -> RestoreRunsPage:
-        """Return one restore page converted to validator-domain submissions."""
+        target_concurrency: int,
+        max_active_artifacts: int,
+        active_attempts: Sequence[PlatformTaskAttemptIdentity],
+    ) -> tuple[MinerTaskWorkAssignment, ...]:
+        """Return platform-assigned attempts for current task and artifact capacity."""
+        ...
+
+    def submit_miner_task_work_results(
+        self,
+        results: Sequence[PlatformOwnedTaskResult],
+    ) -> tuple[PlatformTaskResultAcknowledgement, ...]:
+        """Submit completed platform-assigned attempts."""
         ...
 
 
@@ -56,6 +62,7 @@ class PlatformToolProxyPlatformPort(Protocol):
         task_id: UUID,
         validator_session_id: UUID,
         attempt_number: int,
+        assignment_token: str,
     ) -> PlatformToolProxyGrant:
         """Create a platform-tool-proxy grant for a validator-owned batch delivery."""
         ...
@@ -111,32 +118,24 @@ class PlatformToolProxyToolResult:
 
 
 @dataclass(frozen=True)
-class RestoreAttemptNumberHighWater:
+class PlatformTaskAttemptIdentity:
+    batch_id: UUID
     artifact_id: UUID
     task_id: UUID
-    max_attempt_number: int
+    attempt_number: int
+    validator_session_id: UUID | None = None
 
 
 @dataclass(frozen=True)
-class RestoreMetadata:
+class PlatformTaskResultAcknowledgement:
     batch_id: UUID
-    snapshot_received_at: datetime
-    total_restore_runs: int
-    page_limit: int
-    last_progress_detail_sequence: int = 0
-    provider_model_evidence: tuple[ProviderFailureEvidence, ...] = ()
-    terminated_miner_task_attempts: tuple[RestoreAttemptNumberHighWater, ...] = ()
-    consumed_platform_tool_proxy_attempts: tuple[RestoreAttemptNumberHighWater, ...] = ()
-
-
-@dataclass(frozen=True)
-class RestoreRunsPage:
-    batch_id: UUID
-    snapshot_received_at: datetime
-    cursor: int
-    limit: int
-    next_cursor: int | None
-    items: tuple[MinerTaskRunSubmission, ...] = ()
+    artifact_id: UUID
+    task_id: UUID
+    attempt_number: int
+    outcome: str
+    canonical: bool
+    reason_code: str | None = None
+    reason: str | None = None
 
 
 __all__ = [
@@ -147,7 +146,6 @@ __all__ = [
     "PlatformToolProxyGrant",
     "PlatformToolProxyTokenExpiredError",
     "PlatformToolProxyToolResult",
-    "RestoreMetadata",
-    "RestoreAttemptNumberHighWater",
-    "RestoreRunsPage",
+    "PlatformTaskAttemptIdentity",
+    "PlatformTaskResultAcknowledgement",
 ]

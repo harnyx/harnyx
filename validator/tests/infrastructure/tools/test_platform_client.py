@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 import socket
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import bittensor as bt
@@ -12,6 +12,13 @@ import pytest
 
 from harnyx_commons.bittensor import build_canonical_request
 from harnyx_commons.errors import BudgetExceededError, ToolInvocationTimeoutError, ToolProviderError
+from harnyx_validator.application.dto.evaluation import (
+    MinerTaskAttemptAuditRecord,
+    MinerTaskAttemptRetryDecision,
+    MinerTaskAttemptStatus,
+    PlatformOwnedTaskResult,
+)
+from harnyx_validator.application.ports.platform import PlatformTaskAttemptIdentity
 from harnyx_validator.infrastructure.tools.platform_client import (
     AsyncPlatformToolProxyPlatformClient,
     HttpPlatformClient,
@@ -24,6 +31,7 @@ from harnyx_validator.infrastructure.tools.platform_client import (
 )
 
 _HEADER_PATTERN = re.compile(r'^Bittensor\s+ss58="(?P<ss58>[^"]+)",\s*sig="(?P<sig>[0-9a-f]+)"$')
+_ASSIGNMENT_TOKEN = "assignment-token"  # noqa: S105 - fixed test-only assignment token
 
 
 def _keypair() -> bt.Keypair:
@@ -141,6 +149,170 @@ def test_get_champion_weights_returns_weights() -> None:
 
     assert weights.weights == {42: 0.7, 7: 0.3}
     assert weights.champion_uid == 42
+
+
+def test_request_miner_task_work_posts_active_attempts_and_parses_assignments() -> None:
+    keypair = _keypair()
+    batch_id = uuid4()
+    artifact_id = uuid4()
+    task_id = uuid4()
+    session_id = uuid4()
+    seen_body: dict[str, object] | None = None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal seen_body
+        _assert_signed(request, keypair)
+        if request.method == "POST" and request.url.path == "/v2/miner-task-work/tasks":
+            seen_body = json.loads(request.content)
+            return httpx.Response(
+                status_code=200,
+                json={
+                    "server_time": "2026-06-22T00:00:00+00:00",
+                    "tasks": [
+                        {
+                            "batch_id": str(batch_id),
+                            "artifact": {
+                                "uid": 7,
+                                "artifact_id": str(artifact_id),
+                                "content_hash": "abc",
+                                "size_bytes": 1,
+                                "miner_hotkey_ss58": "miner-hotkey",
+                            },
+                            "task": {
+                                "task_id": str(task_id),
+                                "query": {"text": "smoke"},
+                                "reference_answer": {"text": "ok"},
+                                "budget_usd": 0.05,
+                            },
+                            "attempt_number": 2,
+                            "max_attempts": 3,
+                            "assignment_token": _ASSIGNMENT_TOKEN,
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(status_code=404)
+
+    client = HttpPlatformClient(
+        base_url="https://mock.local",
+        hotkey=keypair,
+        transport=httpx.MockTransport(handler),
+    )
+
+    assignments = client.request_miner_task_work(
+        target_concurrency=4,
+        max_active_artifacts=2,
+        active_attempts=(
+            PlatformTaskAttemptIdentity(
+                batch_id=batch_id,
+                artifact_id=artifact_id,
+                task_id=task_id,
+                attempt_number=1,
+                validator_session_id=session_id,
+            ),
+        ),
+    )
+
+    assert seen_body == {
+        "target_concurrency": 4,
+        "max_active_artifacts": 2,
+        "active_attempts": [
+            {
+                "batch_id": str(batch_id),
+                "artifact_id": str(artifact_id),
+                "task_id": str(task_id),
+                "attempt_number": 1,
+                "validator_session_id": str(session_id),
+            }
+        ],
+    }
+    assert len(assignments) == 1
+    assert assignments[0].artifact.artifact_id == artifact_id
+    assert assignments[0].task.task_id == task_id
+    assert assignments[0].attempt_number == 2
+    assert assignments[0].max_attempts == 3
+    assert assignments[0].assignment_token == _ASSIGNMENT_TOKEN
+
+
+def test_submit_miner_task_work_results_posts_audit_only_retry_attempt() -> None:
+    keypair = _keypair()
+    batch_id = uuid4()
+    artifact_id = uuid4()
+    task_id = uuid4()
+    session_id = uuid4()
+    started_at = datetime(2026, 6, 22, 0, 0, tzinfo=UTC)
+    seen_body: dict[str, object] | None = None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal seen_body
+        _assert_signed(request, keypair)
+        if request.method == "POST" and request.url.path == "/v2/miner-task-work/results":
+            seen_body = json.loads(request.content)
+            return httpx.Response(
+                status_code=200,
+                json={
+                    "server_time": "2026-06-22T00:00:02+00:00",
+                    "results": [
+                        {
+                            "batch_id": str(batch_id),
+                            "artifact_id": str(artifact_id),
+                            "task_id": str(task_id),
+                            "attempt_number": 1,
+                            "outcome": "accepted",
+                            "canonical": False,
+                            "reason_code": None,
+                            "reason": None,
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(status_code=404)
+
+    client = HttpPlatformClient(
+        base_url="https://mock.local",
+        hotkey=keypair,
+        transport=httpx.MockTransport(handler),
+    )
+
+    acknowledgements = client.submit_miner_task_work_results(
+        (
+            PlatformOwnedTaskResult(
+                batch_id=batch_id,
+                artifact_id=artifact_id,
+                task_id=task_id,
+                attempt_number=1,
+                result=None,
+                terminal_attempt=MinerTaskAttemptAuditRecord(
+                    validator_session_id=session_id,
+                    batch_id=batch_id,
+                    artifact_id=artifact_id,
+                    task_id=task_id,
+                    attempt_number=1,
+                    uid=7,
+                    miner_hotkey_ss58="miner-hotkey",
+                    started_at=started_at,
+                    finished_at=started_at + timedelta(seconds=1),
+                    status=MinerTaskAttemptStatus.FAILED,
+                    error_code="timeout_miner_owned",
+                    error_summary_code="timeout_miner_owned",
+                    retry_decision=MinerTaskAttemptRetryDecision.WILL_RETRY,
+                    terminal_effect=None,
+                    max_attempts=2,
+                    execution_log=(),
+                ),
+            ),
+        )
+    )
+
+    assert seen_body is not None
+    item = seen_body["results"][0]  # type: ignore[index]
+    assert item["result"] is None
+    assert item["terminal_attempt"]["validator_session_id"] == str(session_id)
+    assert item["terminal_attempt"]["retry_decision"] == "will_retry"
+    assert item["terminal_attempt"]["terminal_effect"] is None
+    assert acknowledgements[0].outcome == "accepted"
+    assert acknowledgements[0].canonical is False
+    assert acknowledgements[0].reason_code is None
 
 
 def test_get_miner_task_batch_parses_tasks_and_artifacts() -> None:
@@ -295,6 +467,7 @@ async def test_platform_tool_proxy_grant_posts_attempt_number() -> None:
             "task_id": str(task_id),
             "validator_session_id": str(validator_session_id),
             "attempt_number": 2,
+            "assignment_token": _ASSIGNMENT_TOKEN,
         }
         return httpx.Response(
             status_code=200,
@@ -314,6 +487,7 @@ async def test_platform_tool_proxy_grant_posts_attempt_number() -> None:
         task_id=task_id,
         validator_session_id=validator_session_id,
         attempt_number=2,
+        assignment_token=_ASSIGNMENT_TOKEN,
     )
 
     assert grant.token == "platform-tool-proxy-token"  # noqa: S105 - fixed test-only proxy token
@@ -345,6 +519,7 @@ async def test_platform_tool_proxy_grant_retries_transient_connect_timeout_then_
         task_id=uuid4(),
         validator_session_id=uuid4(),
         attempt_number=1,
+        assignment_token=_ASSIGNMENT_TOKEN,
     )
 
     assert grant.token == "platform-tool-proxy-token"  # noqa: S105 - fixed test-only proxy token
@@ -381,6 +556,7 @@ async def test_platform_tool_proxy_grant_retries_transient_status_then_succeeds(
         task_id=uuid4(),
         validator_session_id=uuid4(),
         attempt_number=1,
+        assignment_token=_ASSIGNMENT_TOKEN,
     )
 
     assert grant.token == "platform-tool-proxy-token"  # noqa: S105 - fixed test-only proxy token
@@ -412,6 +588,7 @@ async def test_platform_tool_proxy_grant_retry_exhaustion_maps_to_grant_failed()
             task_id=uuid4(),
             validator_session_id=uuid4(),
             attempt_number=1,
+            assignment_token=_ASSIGNMENT_TOKEN,
         )
 
     assert exc_info.value.status_code == 0
@@ -445,6 +622,7 @@ async def test_platform_tool_proxy_grant_transient_status_retry_exhaustion_maps_
             task_id=uuid4(),
             validator_session_id=uuid4(),
             attempt_number=1,
+            assignment_token=_ASSIGNMENT_TOKEN,
         )
 
     assert exc_info.value.status_code == 503
@@ -481,6 +659,7 @@ async def test_platform_tool_proxy_grant_does_not_retry_deterministic_response()
             task_id=uuid4(),
             validator_session_id=uuid4(),
             attempt_number=1,
+            assignment_token=_ASSIGNMENT_TOKEN,
         )
 
     assert exc_info.value.error_code == "platform_tool_proxy_denied"
@@ -521,6 +700,7 @@ async def test_platform_tool_proxy_grant_preserves_proxy_error_code(
             task_id=uuid4(),
             validator_session_id=uuid4(),
             attempt_number=1,
+            assignment_token=_ASSIGNMENT_TOKEN,
         )
 
     assert exc_info.value.status_code == status_code
@@ -558,6 +738,7 @@ async def test_platform_tool_proxy_grant_unknown_error_response_preserves_grant_
             task_id=uuid4(),
             validator_session_id=uuid4(),
             attempt_number=1,
+            assignment_token=_ASSIGNMENT_TOKEN,
         )
 
     assert exc_info.value.status_code == 500
@@ -593,6 +774,7 @@ async def test_platform_tool_proxy_grant_invalid_success_response_preserves_gran
             task_id=uuid4(),
             validator_session_id=uuid4(),
             attempt_number=1,
+            assignment_token=_ASSIGNMENT_TOKEN,
         )
 
     assert exc_info.value.status_code == 200
@@ -1173,95 +1355,3 @@ def test_fetch_artifact_does_not_retry_http_status_failure() -> None:
     assert [request.url.path for request in requests] == [
         f"/v1/miner-task-batches/{batch_id}/artifacts/{artifact_id}",
     ]
-
-
-def test_get_restore_runs_page_accepts_null_next_cursor() -> None:
-    batch_id = uuid4()
-    task_id = uuid4()
-    artifact_id = uuid4()
-    keypair = _keypair()
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        if request.url.path == f"/v1/miner-task-batches/batch/{batch_id}":
-            _assert_signed(request, keypair)
-            return _batch_response(
-                batch_id=batch_id,
-                task_id=task_id,
-                artifact_id=artifact_id,
-                champion_artifact_id=artifact_id,
-                budget_usd=1.0,
-            )
-        if request.url.path == f"/v1/miner-task-batches/{batch_id}/restore/runs":
-            _assert_signed(request, keypair)
-            return httpx.Response(
-                status_code=200,
-                json={
-                    "batch_id": str(batch_id),
-                    "snapshot_received_at": "2026-05-21T06:00:00+00:00",
-                    "cursor": 0,
-                    "limit": 50,
-                    "next_cursor": None,
-                    "items": [],
-                },
-            )
-        return httpx.Response(status_code=404)
-
-    client = HttpPlatformClient(
-        base_url="https://mock.local",
-        hotkey=keypair,
-        transport=httpx.MockTransport(handler),
-    )
-    batch = client.get_miner_task_batch(batch_id)
-
-    page = client.get_restore_runs_page(
-        batch=batch,
-        snapshot_received_at=datetime.fromisoformat("2026-05-21T06:00:00+00:00"),
-        cursor=0,
-        limit=50,
-    )
-
-    assert page.next_cursor is None
-    assert page.items == ()
-    restore_request = requests[-1]
-    assert restore_request.extensions["timeout"]["read"] == pytest.approx(300.0)
-    assert [request.url.path for request in requests] == [
-        f"/v1/miner-task-batches/batch/{batch_id}",
-        f"/v1/miner-task-batches/{batch_id}/restore/runs",
-    ]
-
-
-def test_get_restore_metadata_uses_long_restore_timeout() -> None:
-    batch_id = uuid4()
-    keypair = _keypair()
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        if request.url.path == f"/v1/miner-task-batches/{batch_id}/restore":
-            _assert_signed(request, keypair)
-            return httpx.Response(
-                status_code=200,
-                json={
-                    "batch_id": str(batch_id),
-                    "snapshot_received_at": "2026-05-21T06:00:00+00:00",
-                    "total_restore_runs": 0,
-                    "page_limit": 50,
-                    "last_progress_detail_sequence": 9,
-                    "provider_model_evidence": [],
-                },
-            )
-        return httpx.Response(status_code=404)
-
-    client = HttpPlatformClient(
-        base_url="https://mock.local",
-        hotkey=keypair,
-        transport=httpx.MockTransport(handler),
-    )
-
-    metadata = client.get_restore_metadata(batch_id)
-
-    assert metadata.page_limit == 50
-    assert metadata.last_progress_detail_sequence == 9
-    assert requests[0].extensions["timeout"]["read"] == pytest.approx(300.0)

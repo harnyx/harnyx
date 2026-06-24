@@ -41,6 +41,7 @@ from harnyx_validator.runtime.settings import Settings
 
 DEFAULT_LIMIT_LLM_MODEL = "openai/gpt-oss-20b"
 TEST_SESSION_TOKEN = "validator-session-token"  # noqa: S105
+_ASSIGNMENT_TOKEN = "assignment-token"  # noqa: S105 - fixed test-only assignment token
 
 
 def _routed_surface(provider: object) -> str:
@@ -61,8 +62,9 @@ class _ProviderFailingPlatformToolProxyClient:
         task_id,
         validator_session_id,
         attempt_number,
+        assignment_token,
     ):  # type: ignore[no-untyped-def]
-        _ = batch_id, artifact_id, task_id, validator_session_id, attempt_number
+        _ = batch_id, artifact_id, task_id, validator_session_id, attempt_number, assignment_token
         self.grants += 1
         return PlatformToolProxyGrant(
             token="platform-tool-proxy-token",  # noqa: S106 - fixed test-only proxy token
@@ -128,6 +130,7 @@ def _register_proxy_session(state: bootstrap.InMemoryState, *, batch_id, session
         session_id=session_id,
         artifact_id=artifact_id,
         task_id=task_id,
+        assignment_token=_ASSIGNMENT_TOKEN,
     )
 
 
@@ -604,7 +607,7 @@ def test_build_runtime_cleans_stale_sandbox_containers_on_startup(
     monkeypatch.setattr(
         bootstrap,
         "_build_http_dependencies",
-        lambda **_kwargs: (lambda: object(), lambda: object(), object(), object(), object()),
+        lambda **_kwargs: (lambda: object(), lambda: object(), object(), object()),
     )
     monkeypatch.setattr(bootstrap, "create_sandbox_manager", lambda **_kwargs: manager)
     settings = Settings.model_construct(

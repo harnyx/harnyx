@@ -6,7 +6,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from harnyx_commons.miner_task_similarity import SimilarityJudgeRequest, SimilarityJudgeResult
+from harnyx_validator.application.status import BatchActivityTracker, StatusProvider
 from harnyx_validator.infrastructure.http.routes import ValidatorControlDeps, add_control_routes
+from harnyx_validator.runtime.resource_usage import ValidatorResourceUsageSnapshot
 
 
 class StubSimilarityJudge:
@@ -28,17 +30,25 @@ async def _allow_all_auth(_: str, __: str, ___: bytes, ____: str | None) -> str:
     return "caller"
 
 
+class _StubHotkey:
+    ss58_address = "5validator"
+
+    def sign(self, payload: bytes) -> bytes:
+        return b"sig:" + payload
+
+
+class _StubResourceUsageProvider:
+    def snapshot(self) -> ValidatorResourceUsageSnapshot:
+        raise AssertionError("similarity route should not sample validator resource usage")
+
+
 def _client(judge: StubSimilarityJudge) -> TestClient:
     deps = ValidatorControlDeps(
-        accept_batch=object(),
-        restore_batch=object(),
-        restore_worker=object(),
-        status_provider=object(),
+        status_provider=StatusProvider(),
         auth=_allow_all_auth,
-        progress_tracker=object(),
-        validator_hotkey=object(),
-        resource_usage_provider=object(),
-        batch_activity=object(),
+        validator_hotkey=_StubHotkey(),
+        resource_usage_provider=_StubResourceUsageProvider(),
+        batch_activity=BatchActivityTracker(),
         similarity_judge=judge,
     )
     app = FastAPI()

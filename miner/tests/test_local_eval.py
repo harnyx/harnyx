@@ -52,7 +52,6 @@ from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptAuditRecord,
     MinerTaskAttemptRetryDecision,
     MinerTaskAttemptStatus,
-    MinerTaskAttemptTerminalEffect,
     MinerTaskBatchSpec,
     MinerTaskRunSubmission,
     ScriptArtifactSpec,
@@ -233,7 +232,7 @@ def _attempt_for_local_progress(
         error_code="tool_execution_timeout",
         error_summary_code="timeout_miner_owned",
         retry_decision=MinerTaskAttemptRetryDecision.WILL_RETRY,
-        terminal_effect=MinerTaskAttemptTerminalEffect.NONE,
+        terminal_effect=None,
         max_attempts=2,
     )
 

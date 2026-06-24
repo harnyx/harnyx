@@ -24,6 +24,7 @@ from harnyx_validator.application.ports.platform import (
 pytestmark = pytest.mark.anyio("asyncio")
 
 _GRANT_VALUE = "platform-tool-proxy-grant"
+_ASSIGNMENT_TOKEN = "assignment-token"  # noqa: S105 - fixed test-only assignment token
 
 
 class _RecordingLocalInvoker:
@@ -49,6 +50,7 @@ class _RecordingPlatformToolProxyPlatform:
         task_id,
         validator_session_id,
         attempt_number,
+        assignment_token,
     ):  # type: ignore[no-untyped-def]
         if self.grant_delay_seconds:
             await asyncio.sleep(self.grant_delay_seconds)
@@ -60,6 +62,7 @@ class _RecordingPlatformToolProxyPlatform:
                 "task_id": task_id,
                 "validator_session_id": validator_session_id,
                 "attempt_number": attempt_number,
+                "assignment_token": assignment_token,
             }
         )
         return PlatformToolProxyGrant(token=token, expires_at=datetime.now(UTC) + timedelta(minutes=5))
@@ -113,6 +116,7 @@ async def test_platform_tool_proxy_proxy_forwards_provider_tool_with_session_sco
         session_id=session_id,
         artifact_id=artifact_id,
         task_id=task_id,
+        assignment_token=_ASSIGNMENT_TOKEN,
         attempt_number=2,
     )
     platform = _RecordingPlatformToolProxyPlatform(calls=[], grants=[])
@@ -141,10 +145,11 @@ async def test_platform_tool_proxy_proxy_forwards_provider_tool_with_session_sco
             "batch_id": batch_id,
             "artifact_id": artifact_id,
             "task_id": task_id,
-            "validator_session_id": session_id,
-            "attempt_number": 2,
-        }
-    ]
+                "validator_session_id": session_id,
+                "attempt_number": 2,
+                "assignment_token": _ASSIGNMENT_TOKEN,
+            }
+        ]
     call = platform.calls[0]
     receipt_id = call["receipt_id"]
     assert platform.calls == [
@@ -180,6 +185,7 @@ async def test_platform_tool_proxy_proxy_uses_fixed_execute_transport_timeout() 
         session_id=session_id,
         artifact_id=artifact_id,
         task_id=task_id,
+        assignment_token=_ASSIGNMENT_TOKEN,
     )
     platform = _RecordingPlatformToolProxyPlatform(calls=[], grants=[])
     invoker = PlatformToolProxyProxyToolInvoker(
@@ -217,6 +223,7 @@ async def test_platform_tool_proxy_proxy_serializes_concurrent_first_grant_creat
         session_id=session_id,
         artifact_id=artifact_id,
         task_id=task_id,
+        assignment_token=_ASSIGNMENT_TOKEN,
     )
     platform = _RecordingPlatformToolProxyPlatform(calls=[], grants=[], grant_delay_seconds=0.01)
     invoker = PlatformToolProxyProxyToolInvoker(
@@ -256,6 +263,7 @@ async def test_platform_tool_proxy_proxy_rejects_expired_cached_token_without_re
         session_id=session_id,
         artifact_id=artifact_id,
         task_id=task_id,
+        assignment_token=_ASSIGNMENT_TOKEN,
     )
     scopes.store_session_grant(
         session_id=session_id,
@@ -301,6 +309,7 @@ async def test_platform_tool_proxy_proxy_mints_new_grant_for_later_attempt() -> 
             session_id=session_id,
             artifact_id=artifact_id,
             task_id=task_id,
+            assignment_token=_ASSIGNMENT_TOKEN,
             attempt_number=attempt_number,
         )
     platform = _RecordingPlatformToolProxyPlatform(calls=[], grants=[])
@@ -339,6 +348,7 @@ async def test_platform_tool_proxy_proxy_allows_later_attempt_after_earlier_atte
         session_id=expired_session_id,
         artifact_id=artifact_id,
         task_id=task_id,
+        assignment_token=_ASSIGNMENT_TOKEN,
         attempt_number=1,
     )
     scopes.register_session(
@@ -346,6 +356,7 @@ async def test_platform_tool_proxy_proxy_allows_later_attempt_after_earlier_atte
         session_id=session_id,
         artifact_id=artifact_id,
         task_id=task_id,
+        assignment_token=_ASSIGNMENT_TOKEN,
         attempt_number=2,
     )
     scopes.store_session_grant(
@@ -438,6 +449,7 @@ async def test_platform_tool_proxy_proxy_forwards_invalid_provider_selection_to_
         session_id=session_id,
         artifact_id=artifact_id,
         task_id=task_id,
+        assignment_token=_ASSIGNMENT_TOKEN,
     )
     platform = _RecordingPlatformToolProxyPlatform(calls=[], grants=[])
     invoker = PlatformToolProxyProxyToolInvoker(

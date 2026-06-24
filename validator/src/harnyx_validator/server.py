@@ -20,7 +20,6 @@ from harnyx_validator.infrastructure.observability.logging import (
 )
 from harnyx_validator.infrastructure.observability.sentry import configure_sentry_from_env
 from harnyx_validator.runtime.bootstrap import build_runtime, close_runtime_resources
-from harnyx_validator.runtime.evaluation_worker import create_evaluation_worker_from_context
 from harnyx_validator.runtime.registration_worker import create_registration_refresh_worker
 from harnyx_validator.runtime.settings import Settings
 from harnyx_validator.runtime.weight_worker import create_weight_worker
@@ -49,6 +48,7 @@ def _smoke_weight_worker_poll_interval_seconds() -> float | None:
         raise RuntimeError("smoke weight-worker poll interval must be positive")
     return value
 
+
 if _settings.observability.enable_cloud_logging:
     gcp_project = _settings.observability.gcp_project_id
     if gcp_project is None:
@@ -65,8 +65,7 @@ else:
     )
 
 _runtime = build_runtime(_settings)
-_evaluation_worker = create_evaluation_worker_from_context(_runtime)
-_restore_worker = _runtime.restore_worker
+_platform_work_worker = _runtime.platform_work_worker
 _weight_worker_poll_interval_seconds = _smoke_weight_worker_poll_interval_seconds()
 if _weight_worker_poll_interval_seconds is None:
     _weight_worker = create_weight_worker(
@@ -90,22 +89,16 @@ logger = logging.getLogger("harnyx_validator.server")
 
 async def _stop_runtime_components(
     *,
-    restore_started: bool,
-    evaluation_started: bool,
+    platform_work_started: bool,
     weight_started: bool,
     registration_refresh_started: bool,
     auth_started: bool,
 ) -> None:
-    if restore_started:
+    if platform_work_started and _platform_work_worker is not None:
         try:
-            await _restore_worker.stop(timeout=WORKER_STOP_TIMEOUT_SECONDS)
+            await _platform_work_worker.stop(timeout=WORKER_STOP_TIMEOUT_SECONDS)
         except Exception:
-            logger.exception("failed stopping restore worker during shutdown")
-    if evaluation_started:
-        try:
-            await _evaluation_worker.stop(timeout=WORKER_STOP_TIMEOUT_SECONDS)
-        except Exception:
-            logger.exception("failed stopping evaluation worker during shutdown")
+            logger.exception("failed stopping platform work worker during shutdown")
     if registration_refresh_started:
         try:
             _registration_refresh_worker.stop(timeout=WORKER_STOP_TIMEOUT_SECONDS)
@@ -128,8 +121,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     auth_started = False
     weight_started = False
     registration_refresh_started = False
-    restore_started = False
-    evaluation_started = False
+    platform_work_started = False
     try:
         _runtime.inbound_auth_verifier.start()
         auth_started = True
@@ -137,16 +129,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         weight_started = True
         _registration_refresh_worker.start()
         registration_refresh_started = True
-        _restore_worker.start()
-        restore_started = True
-        _evaluation_worker.start()
-        evaluation_started = True
+        if _platform_work_worker is not None:
+            _platform_work_worker.start()
+            platform_work_started = True
         yield
     finally:
         try:
             await _stop_runtime_components(
-                restore_started=restore_started,
-                evaluation_started=evaluation_started,
+                platform_work_started=platform_work_started,
                 weight_started=weight_started,
                 registration_refresh_started=registration_refresh_started,
                 auth_started=auth_started,

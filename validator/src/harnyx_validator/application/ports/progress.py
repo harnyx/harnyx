@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from typing import Literal, Protocol, TypedDict
 from uuid import UUID
 
@@ -26,18 +25,6 @@ class RunProgressSummary(TypedDict):
 class SequencedRun(TypedDict):
     sequence: int
     submission: MinerTaskRunSubmission
-
-
-class TerminatedMinerTaskAttemptOrdinal(TypedDict):
-    artifact_id: UUID
-    task_id: UUID
-    max_attempt_number: int
-
-
-class ConsumedAttemptNumber(TypedDict):
-    artifact_id: UUID
-    task_id: UUID
-    max_attempt_number: int
 
 
 class SequencedProgressDetail(TypedDict):
@@ -67,26 +54,7 @@ class ProgressRecorder(Protocol):
     def record_terminated_attempt(self, attempt: MinerTaskAttemptAuditRecord) -> None:
         ...
 
-    def restore_attempt_number_high_waters(
-        self,
-        batch_id: UUID,
-        terminated: Sequence[TerminatedMinerTaskAttemptOrdinal],
-        consumed: Sequence[ConsumedAttemptNumber],
-    ) -> None:
-        ...
-
-    def restore_progress_floor(self, batch_id: UUID, sequence: int) -> None:
-        ...
-
     def next_attempt_number(self, batch_id: UUID, artifact_id: UUID, task_id: UUID) -> int:
-        ...
-
-    def restore_completed_runs(
-        self,
-        batch: MinerTaskBatchSpec,
-        submissions: Sequence[MinerTaskRunSubmission],
-        provider_evidence: Sequence[ProviderFailureEvidence] = (),
-    ) -> None:
         ...
 
     def recorded_pairs(self, batch_id: UUID) -> frozenset[tuple[UUID, UUID]]:
@@ -141,10 +109,8 @@ class ProgressRecorder(Protocol):
 __all__ = [
     "ProgressRecorder",
     "ProviderFailureEvidence",
-    "ConsumedAttemptNumber",
     "RunProgressPage",
     "RunProgressSummary",
     "SequencedProgressDetail",
     "SequencedRun",
-    "TerminatedMinerTaskAttemptOrdinal",
 ]

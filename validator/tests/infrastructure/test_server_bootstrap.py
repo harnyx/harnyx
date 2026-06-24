@@ -12,7 +12,6 @@ import harnyx_validator.infrastructure.http.routes as routes_mod
 import harnyx_validator.infrastructure.observability.logging as logging_mod
 import harnyx_validator.infrastructure.observability.sentry as sentry_mod
 import harnyx_validator.runtime.bootstrap as bootstrap_mod
-import harnyx_validator.runtime.evaluation_worker as evaluation_worker_mod
 import harnyx_validator.runtime.registration_worker as registration_worker_mod
 import harnyx_validator.runtime.settings as settings_mod
 import harnyx_validator.runtime.weight_worker as weight_worker_mod
@@ -36,7 +35,7 @@ def test_validator_import_configures_sentry_before_tracing(monkeypatch) -> None:
         status_provider=object(),
         tool_route_deps_provider=lambda: object(),
         control_deps_provider=lambda: object(),
-        restore_worker=object(),
+        platform_work_worker=None,
         register_with_platform=lambda: None,
         refresh_platform_registration=lambda: None,
     )
@@ -72,11 +71,6 @@ def test_validator_import_configures_sentry_before_tracing(monkeypatch) -> None:
         calls.append("build_runtime")
         return fake_runtime
 
-    def _fake_create_evaluation_worker_from_context(context: object) -> object:
-        assert context is fake_runtime
-        calls.append("evaluation_worker")
-        return fake_worker
-
     def _fake_create_weight_worker(*, submission_service: object, status_provider: object) -> object:
         assert submission_service is fake_runtime.weight_submission_service
         assert status_provider is fake_runtime.status_provider
@@ -103,11 +97,6 @@ def test_validator_import_configures_sentry_before_tracing(monkeypatch) -> None:
     monkeypatch.setattr(logging_mod, "init_logging", _fake_init_logging)
     monkeypatch.setattr(logging_mod, "configure_logging", _fake_configure_logging)
     monkeypatch.setattr(bootstrap_mod, "build_runtime", _fake_build_runtime)
-    monkeypatch.setattr(
-        evaluation_worker_mod,
-        "create_evaluation_worker_from_context",
-        _fake_create_evaluation_worker_from_context,
-    )
     monkeypatch.setattr(weight_worker_mod, "create_weight_worker", _fake_create_weight_worker)
     monkeypatch.setattr(
         registration_worker_mod,
@@ -156,7 +145,7 @@ def _import_server_with_captured_weight_worker_kwargs(
         status_provider=object(),
         tool_route_deps_provider=lambda: object(),
         control_deps_provider=lambda: object(),
-        restore_worker=object(),
+        platform_work_worker=None,
         register_with_platform=lambda: None,
         refresh_platform_registration=lambda: None,
     )
@@ -173,11 +162,6 @@ def _import_server_with_captured_weight_worker_kwargs(
     monkeypatch.setattr(logging_mod, "init_logging", lambda: None)
     monkeypatch.setattr(logging_mod, "configure_logging", lambda **kwargs: None)
     monkeypatch.setattr(bootstrap_mod, "build_runtime", lambda settings: fake_runtime)
-    monkeypatch.setattr(
-        evaluation_worker_mod,
-        "create_evaluation_worker_from_context",
-        lambda context: fake_worker,
-    )
     monkeypatch.setattr(weight_worker_mod, "create_weight_worker", _fake_create_weight_worker)
     monkeypatch.setattr(
         registration_worker_mod,
@@ -312,6 +296,31 @@ def test_validator_runtime_separates_startup_registration_from_refresh(
     ]
 
 
+def test_platform_work_worker_uses_task_capacity_and_artifact_cap() -> None:
+    worker = bootstrap_mod._build_platform_work_worker(
+        resolved=SimpleNamespace(),
+        platform_client=object(),  # type: ignore[arg-type]
+        subtensor_client=object(),  # type: ignore[arg-type]
+        sandbox_manager=object(),  # type: ignore[arg-type]
+        state=SimpleNamespace(
+            session_manager=object(),
+            evaluation_records=object(),
+            receipt_log=object(),
+            progress_tracker=object(),
+            batch_activity=object(),
+            platform_tool_proxy_scopes=object(),
+        ),
+        batch_blocking_executor=object(),  # type: ignore[arg-type]
+        orchestrator_factory=lambda _client: object(),  # type: ignore[arg-type]
+        options_factory=lambda: object(),  # type: ignore[arg-type]
+    )
+
+    assert worker is not None
+    assert worker._target_concurrency == 20
+    assert worker._max_active_artifacts == 4
+    assert worker._target_concurrency > worker._max_active_artifacts
+
+
 @pytest.mark.anyio
 async def test_lifespan_stops_auth_when_later_startup_step_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
@@ -331,7 +340,7 @@ async def test_lifespan_stops_auth_when_later_startup_step_fails(monkeypatch: py
         status_provider=object(),
         tool_route_deps_provider=lambda: object(),
         control_deps_provider=lambda: object(),
-        restore_worker=object(),
+        platform_work_worker=None,
         register_with_platform=lambda: None,
         refresh_platform_registration=lambda: None,
     )
@@ -357,31 +366,19 @@ async def test_lifespan_stops_auth_when_later_startup_step_fails(monkeypatch: py
         def stop(self, *, timeout: float) -> None:
             calls.append(f"registration-stop:{timeout}")
 
-    class _FakeRestoreWorker:
+    class _FailingPlatformWorkWorker:
         def start(self) -> None:
-            calls.append("restore-start")
+            calls.append("platform-work-start")
+            raise RuntimeError("platform work startup failed")
 
         async def stop(self, *, timeout: float) -> None:
-            calls.append(f"restore-stop:{timeout}")
-
-    class _FailingEvaluationWorker:
-        def start(self) -> None:
-            calls.append("eval-start")
-            raise RuntimeError("evaluation startup failed")
-
-        async def stop(self, *, timeout: float) -> None:
-            calls.append(f"eval-stop:{timeout}")
+            calls.append(f"platform-work-stop:{timeout}")
 
     async def _fake_close_runtime_resources(runtime: object) -> None:
         calls.append("close-runtime")
 
     monkeypatch.setattr(settings_mod.Settings, "load", classmethod(lambda cls: fake_settings))
     monkeypatch.setattr(bootstrap_mod, "build_runtime", lambda settings: fake_runtime)
-    monkeypatch.setattr(
-        evaluation_worker_mod,
-        "create_evaluation_worker_from_context",
-        lambda context: SimpleNamespace(start=lambda: None, stop=lambda *args, **kwargs: None),
-    )
     monkeypatch.setattr(
         weight_worker_mod,
         "create_weight_worker",
@@ -407,12 +404,11 @@ async def test_lifespan_stops_auth_when_later_startup_step_fails(monkeypatch: py
     monkeypatch.setattr(server, "_runtime", SimpleNamespace(inbound_auth_verifier=_FakeVerifier()))
     monkeypatch.setattr(server, "_weight_worker", _FakeWeightWorker())
     monkeypatch.setattr(server, "_registration_refresh_worker", _FakeRegistrationRefreshWorker())
-    monkeypatch.setattr(server, "_restore_worker", _FakeRestoreWorker())
-    monkeypatch.setattr(server, "_evaluation_worker", _FailingEvaluationWorker())
+    monkeypatch.setattr(server, "_platform_work_worker", _FailingPlatformWorkWorker())
     monkeypatch.setattr(server, "close_runtime_resources", _fake_close_runtime_resources)
     monkeypatch.setattr(server, "shutdown_logging", lambda: calls.append("shutdown-logging"))
 
-    with pytest.raises(RuntimeError, match="evaluation startup failed"):
+    with pytest.raises(RuntimeError, match="platform work startup failed"):
         async with server.lifespan(FastAPI()):
             raise AssertionError("lifespan should not yield after startup failure")
 
@@ -420,9 +416,7 @@ async def test_lifespan_stops_auth_when_later_startup_step_fails(monkeypatch: py
         "auth-start",
         "weight-start",
         "registration-start",
-        "restore-start",
-        "eval-start",
-        f"restore-stop:{server.WORKER_STOP_TIMEOUT_SECONDS}",
+        "platform-work-start",
         f"registration-stop:{server.WORKER_STOP_TIMEOUT_SECONDS}",
         f"weight-stop:{server.WORKER_STOP_TIMEOUT_SECONDS}",
         f"auth-stop:{server.WORKER_STOP_TIMEOUT_SECONDS}",
@@ -452,7 +446,7 @@ async def test_lifespan_closes_runtime_resources_when_auth_stop_raises(
         status_provider=object(),
         tool_route_deps_provider=lambda: object(),
         control_deps_provider=lambda: object(),
-        restore_worker=object(),
+        platform_work_worker=None,
         register_with_platform=lambda: None,
         refresh_platform_registration=lambda: None,
     )
@@ -479,30 +473,18 @@ async def test_lifespan_closes_runtime_resources_when_auth_stop_raises(
         def stop(self, *, timeout: float) -> None:
             calls.append(f"registration-stop:{timeout}")
 
-    class _FakeRestoreWorker:
+    class _FakePlatformWorkWorker:
         def start(self) -> None:
-            calls.append("restore-start")
+            calls.append("platform-work-start")
 
         async def stop(self, *, timeout: float) -> None:
-            calls.append(f"restore-stop:{timeout}")
-
-    class _FakeEvaluationWorker:
-        def start(self) -> None:
-            calls.append("eval-start")
-
-        async def stop(self, *, timeout: float) -> None:
-            calls.append(f"eval-stop:{timeout}")
+            calls.append(f"platform-work-stop:{timeout}")
 
     async def _fake_close_runtime_resources(runtime: object) -> None:
         calls.append("close-runtime")
 
     monkeypatch.setattr(settings_mod.Settings, "load", classmethod(lambda cls: fake_settings))
     monkeypatch.setattr(bootstrap_mod, "build_runtime", lambda settings: fake_runtime)
-    monkeypatch.setattr(
-        evaluation_worker_mod,
-        "create_evaluation_worker_from_context",
-        lambda context: SimpleNamespace(start=lambda: None, stop=lambda *args, **kwargs: None),
-    )
     monkeypatch.setattr(
         weight_worker_mod,
         "create_weight_worker",
@@ -528,8 +510,7 @@ async def test_lifespan_closes_runtime_resources_when_auth_stop_raises(
     monkeypatch.setattr(server, "_runtime", SimpleNamespace(inbound_auth_verifier=_FakeVerifier()))
     monkeypatch.setattr(server, "_weight_worker", _FakeWeightWorker())
     monkeypatch.setattr(server, "_registration_refresh_worker", _FakeRegistrationRefreshWorker())
-    monkeypatch.setattr(server, "_restore_worker", _FakeRestoreWorker())
-    monkeypatch.setattr(server, "_evaluation_worker", _FakeEvaluationWorker())
+    monkeypatch.setattr(server, "_platform_work_worker", _FakePlatformWorkWorker())
     monkeypatch.setattr(server, "close_runtime_resources", _fake_close_runtime_resources)
     monkeypatch.setattr(server, "shutdown_logging", lambda: calls.append("shutdown-logging"))
 
@@ -540,11 +521,9 @@ async def test_lifespan_closes_runtime_resources_when_auth_stop_raises(
         "auth-start",
         "weight-start",
         "registration-start",
-        "restore-start",
-        "eval-start",
+        "platform-work-start",
         "yielded",
-        f"restore-stop:{server.WORKER_STOP_TIMEOUT_SECONDS}",
-        f"eval-stop:{server.WORKER_STOP_TIMEOUT_SECONDS}",
+        f"platform-work-stop:{server.WORKER_STOP_TIMEOUT_SECONDS}",
         f"registration-stop:{server.WORKER_STOP_TIMEOUT_SECONDS}",
         f"weight-stop:{server.WORKER_STOP_TIMEOUT_SECONDS}",
         f"auth-stop:{server.WORKER_STOP_TIMEOUT_SECONDS}",

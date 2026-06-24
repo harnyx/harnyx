@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol, cast, get_args, runtime_checkable
+from uuid import UUID
 
 import bittensor as bt
 
@@ -47,7 +48,11 @@ from harnyx_commons.tools.runtime_invoker import (
 from harnyx_commons.tools.search_models import SearchProviderName
 from harnyx_commons.tools.token_semaphore import DEFAULT_TOOL_CONCURRENCY_LIMITS, ToolConcurrencyLimiter
 from harnyx_commons.tools.usage_tracker import UsageTracker
-from harnyx_validator.application.accept_batch import AcceptEvaluationBatch
+from harnyx_validator.application.dto.evaluation import (
+    MinerTaskBatchSpec,
+    MinerTaskWorkAssignment,
+    PlatformOwnedTaskResult,
+)
 from harnyx_validator.application.dto.registration import ValidatorRegistrationMetadata
 from harnyx_validator.application.evaluate_task_run import TaskRunOrchestrator
 from harnyx_validator.application.invoke_entrypoint import EntrypointInvoker, SandboxClient
@@ -58,10 +63,11 @@ from harnyx_validator.application.platform_tool_proxy import (
 from harnyx_validator.application.ports.evaluation_record import EvaluationRecordPort
 from harnyx_validator.application.ports.platform import PlatformPort, PlatformToolProxyPlatformPort
 from harnyx_validator.application.ports.subtensor import SubtensorClientPort
-from harnyx_validator.application.restore_batch import RestoreEvaluationBatch
 from harnyx_validator.application.services.evaluation_batch_prep import (
     SANDBOX_CONTAINER_NAME_PREFIX,
     SANDBOX_LABELS,
+    BatchExecutionPlanner,
+    EvaluationBatchConfig,
 )
 from harnyx_validator.application.similarity_judge import SimilarityJudge, SimilarityJudgeConfig
 from harnyx_validator.application.status import BatchActivityTracker, StatusProvider
@@ -76,9 +82,7 @@ from harnyx_validator.infrastructure.platform.registration_client import (
     PlatformRegistrationClient,
     register_with_retry,
 )
-from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
 from harnyx_validator.infrastructure.state.evaluation_record import CompactEvaluationRecordStore
-from harnyx_validator.infrastructure.state.restore_inbox import InMemoryRestoreInbox
 from harnyx_validator.infrastructure.state.run_progress import FileBackedRunProgress
 from harnyx_validator.infrastructure.subtensor.client import RuntimeSubtensorClient
 from harnyx_validator.infrastructure.subtensor.hotkey import create_wallet
@@ -86,9 +90,10 @@ from harnyx_validator.infrastructure.tools.platform_client import (
     AsyncPlatformToolProxyPlatformClient,
     HttpPlatformClient,
 )
+from harnyx_validator.runtime.agent_artifact import create_platform_agent_resolver
+from harnyx_validator.runtime.platform_work_worker import PlatformWorkWorker
 from harnyx_validator.runtime.registration_metadata import resolve_validator_registration_metadata
 from harnyx_validator.runtime.resource_usage import ValidatorResourceUsageProvider
-from harnyx_validator.runtime.restore_worker import RestoreWorker
 from harnyx_validator.runtime.settings import Settings
 
 logger = logging.getLogger("harnyx_validator.runtime")
@@ -217,8 +222,7 @@ class RuntimeContext:
     platform_client: PlatformPort | None
     platform_tool_proxy_platform_client: PlatformToolProxyPlatformPort | None
     platform_tool_proxy_scopes: PlatformToolProxyScopeRegistry
-    batch_inbox: InMemoryBatchInbox
-    restore_worker: RestoreWorker
+    platform_work_worker: PlatformWorkWorker | None
     status_provider: StatusProvider
     registration_metadata: ValidatorRegistrationMetadata
     batch_activity: BatchActivityTracker
@@ -265,8 +269,6 @@ class InMemoryState:
     receipt_log: InMemoryReceiptLog
     evaluation_records: EvaluationRecordPort
     progress_tracker: FileBackedRunProgress
-    batch_inbox: InMemoryBatchInbox
-    restore_inbox: InMemoryRestoreInbox
     batch_activity: BatchActivityTracker
     usage_tracker: UsageTracker
     tool_concurrency_limiter: ToolConcurrencyLimiter
@@ -315,7 +317,6 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         control_provider,
         status_provider,
         inbound_auth_verifier,
-        restore_worker,
     ) = _build_http_dependencies(
         resolved=resolved,
         state=state,
@@ -330,6 +331,16 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
     batch_blocking_executor = ThreadPoolExecutor(
         max_workers=1,
         thread_name_prefix=_BATCH_BLOCKING_LANE_NAME,
+    )
+    platform_work_worker = _build_platform_work_worker(
+        resolved=resolved,
+        state=state,
+        sandbox_manager=sandbox_manager,
+        batch_blocking_executor=batch_blocking_executor,
+        subtensor_client=subtensor_client,
+        platform_client=platform_client,
+        orchestrator_factory=orchestrator_factory,
+        options_factory=options_factory,
     )
 
     return RuntimeContext(
@@ -362,14 +373,88 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         platform_client=platform_client,
         platform_tool_proxy_platform_client=platform_tool_proxy_platform_client,
         platform_tool_proxy_scopes=state.platform_tool_proxy_scopes,
-        batch_inbox=state.batch_inbox,
-        restore_worker=restore_worker,
+        platform_work_worker=platform_work_worker,
         status_provider=status_provider,
         registration_metadata=registration_metadata,
         batch_activity=state.batch_activity,
         tool_route_deps_provider=tool_route_provider,
         control_deps_provider=control_provider,
         inbound_auth_verifier=inbound_auth_verifier,
+    )
+
+
+def _build_platform_work_worker(
+    *,
+    resolved: Settings,
+    state: InMemoryState,
+    sandbox_manager: DockerSandboxManager,
+    batch_blocking_executor: Executor,
+    subtensor_client: SubtensorClientPort,
+    platform_client: PlatformPort | None,
+    orchestrator_factory: Callable[[SandboxClient], TaskRunOrchestrator],
+    options_factory: Callable[[], SandboxOptions],
+) -> PlatformWorkWorker | None:
+    if platform_client is None:
+        return None
+    agent_resolver = create_platform_agent_resolver(platform_client)
+    config = EvaluationBatchConfig()
+    planner = BatchExecutionPlanner(
+        subtensor_client=subtensor_client,
+        sandbox_manager=sandbox_manager,
+        session_manager=state.session_manager,
+        evaluation_records=state.evaluation_records,
+        receipt_log=state.receipt_log,
+        blocking_executor=batch_blocking_executor,
+        orchestrator_factory=orchestrator_factory,
+        sandbox_options_factory=options_factory,
+        agent_resolver=agent_resolver,
+        progress=state.progress_tracker,
+        activity=state.batch_activity,
+        config=config,
+        platform_tool_proxy_scopes=state.platform_tool_proxy_scopes,
+    )
+
+    async def execute_artifact_assignments(
+        artifact_id: UUID,
+        assignment_queue: asyncio.Queue[MinerTaskWorkAssignment],
+        close_requested: asyncio.Event,
+        result_queue: asyncio.Queue[PlatformOwnedTaskResult],
+    ) -> None:
+        first_assignment = await assignment_queue.get()
+        if first_assignment.artifact.artifact_id != artifact_id:
+            raise ValueError("platform work artifact queue received mismatched first assignment")
+        initial_assignments = [first_assignment]
+        while True:
+            try:
+                assignment = assignment_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if assignment.artifact.artifact_id != artifact_id:
+                raise ValueError("platform work artifact queue received mismatched assignment")
+            initial_assignments.append(assignment)
+        batch = MinerTaskBatchSpec(
+            batch_id=first_assignment.batch_id,
+            cutoff_at="platform-owned",
+            created_at="platform-owned",
+            tasks=tuple(assignment.task for assignment in initial_assignments),
+            artifacts=(first_assignment.artifact,),
+        )
+        run_ctx = planner.build_run_context(batch)
+        _, scheduler = planner.prepare_execution(run_ctx, batch)
+        await scheduler.run_assigned_artifact_queue(
+            batch_id=first_assignment.batch_id,
+            artifact=first_assignment.artifact,
+            initial_assignments=tuple(initial_assignments),
+            assignment_queue=assignment_queue,
+            close_requested=close_requested,
+            result_queue=result_queue,
+        )
+
+    return PlatformWorkWorker(
+        platform=platform_client,
+        execute_artifact_assignments=execute_artifact_assignments,
+        target_concurrency=config.artifact_task_parallelism,
+        max_active_artifacts=config.artifact_parallelism,
     )
 
 
@@ -395,8 +480,6 @@ def _build_state(
     progress_tracker.prune_stale_batch_dirs_older_than(
         datetime.now(UTC) - timedelta(seconds=settings.run_progress_retention_seconds)
     )
-    batch_inbox = InMemoryBatchInbox()
-    restore_inbox = InMemoryRestoreInbox()
     batch_activity = BatchActivityTracker()
     tool_concurrency_limiter = ToolConcurrencyLimiter(DEFAULT_TOOL_CONCURRENCY_LIMITS)
     usage_tracker = UsageTracker()
@@ -408,8 +491,6 @@ def _build_state(
         receipt_log=receipt_log,
         evaluation_records=evaluation_records,
         progress_tracker=progress_tracker,
-        batch_inbox=batch_inbox,
-        restore_inbox=restore_inbox,
         batch_activity=batch_activity,
         usage_tracker=usage_tracker,
         tool_concurrency_limiter=tool_concurrency_limiter,
@@ -640,7 +721,6 @@ def _build_http_dependencies(
     Callable[[], ValidatorControlDeps],
     StatusProvider,
     BittensorSr25519InboundVerifier,
-    RestoreWorker,
 ]:
     status_provider = StatusProvider()
     resource_usage_provider = ValidatorResourceUsageProvider()
@@ -649,23 +729,9 @@ def _build_http_dependencies(
         tool_executor,
         state.tool_concurrency_limiter,
     )
-    accept_batch = AcceptEvaluationBatch(state.batch_inbox, status_provider, state.progress_tracker)
-    restore_batch = RestoreEvaluationBatch(
-        accepted_batches=accept_batch,
-        platform=platform_client,
-        batch_activity=state.batch_activity,
-    )
-    restore_worker = RestoreWorker(
-        restore_service=restore_batch,
-        restore_inbox=state.restore_inbox,
-    )
     control_provider = _make_control_provider(
-        accept_batch,
-        restore_batch,
-        restore_worker,
         status_provider,
         inbound_auth,
-        state.progress_tracker,
         validator_hotkey,
         resource_usage_provider,
         state.batch_activity,
@@ -673,7 +739,7 @@ def _build_http_dependencies(
         platform_tool_proxy_platform_client,
         state.platform_tool_proxy_scopes,
     )
-    return tool_route_provider, control_provider, status_provider, inbound_auth, restore_worker
+    return tool_route_provider, control_provider, status_provider, inbound_auth
 
 
 def _create_platform_client(settings: Settings) -> tuple[PlatformPort, PlatformToolProxyPlatformPort, bt.Keypair]:
@@ -844,12 +910,8 @@ def _make_dependency_provider(
 
 
 def _make_control_provider(
-    accept_batch: AcceptEvaluationBatch,
-    restore_batch: RestoreEvaluationBatch,
-    restore_worker: RestoreWorker,
     status_provider: StatusProvider,
     inbound_auth: BittensorSr25519InboundVerifier,
-    progress_tracker: FileBackedRunProgress,
     validator_hotkey: bt.Keypair,
     resource_usage_provider: ValidatorResourceUsageProvider | None = None,
     batch_activity: BatchActivityTracker | None = None,
@@ -876,12 +938,8 @@ def _make_control_provider(
 
     def provider() -> ValidatorControlDeps:
         return ValidatorControlDeps(
-            accept_batch=accept_batch,
-            restore_batch=restore_batch,
-            restore_worker=restore_worker,
             status_provider=status_provider,
             auth=auth,
-            progress_tracker=progress_tracker,
             validator_hotkey=cast(StatusSigner, validator_hotkey),
             resource_usage_provider=effective_resource_usage_provider,
             batch_activity=batch_activity or BatchActivityTracker(),

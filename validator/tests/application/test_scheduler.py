@@ -34,7 +34,12 @@ from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager
 from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptAuditRecord,
+    MinerTaskAttemptRetryDecision,
+    MinerTaskAttemptStatus,
+    MinerTaskAttemptTerminalEffect,
     MinerTaskRunSubmission,
+    MinerTaskWorkAssignment,
+    PlatformOwnedTaskResult,
     ScriptArtifactSpec,
     TaskRunOutcome,
     TokenUsageSummary,
@@ -56,6 +61,9 @@ from validator.tests.fixtures.fakes import FakeReceiptLog
 from validator.tests.fixtures.subtensor import FakeSubtensorClient
 
 pytestmark = pytest.mark.anyio("asyncio")
+_ASSIGNMENT_TOKEN = "assignment-token"  # noqa: S105 - fixed test-only assignment token
+_ASSIGNMENT_TOKEN_1 = "assignment-token-1"  # noqa: S105 - fixed test-only assignment token
+_ASSIGNMENT_TOKEN_2 = "assignment-token-2"  # noqa: S105 - fixed test-only assignment token
 
 
 def _runner_for(func: Callable[..., Awaitable[ArtifactEvaluationOutcome]]) -> object:
@@ -131,8 +139,7 @@ class DummyProgressRecorder:
         self._submissions_by_pair: dict[tuple[UUID, UUID], MinerTaskRunSubmission] = {}
         self._sequence_by_pair: dict[tuple[UUID, UUID], int] = {}
         self._pair_by_sequence: dict[int, tuple[UUID, UUID]] = {}
-        self._attempt_high_water_by_pair: dict[tuple[UUID, UUID], int] = {}
-        self._progress_floor = 0
+        self._latest_attempt_number_by_pair: dict[tuple[UUID, UUID], int] = {}
         self._next_sequence = 1
 
     def register(self, _batch) -> None:
@@ -147,38 +154,20 @@ class DummyProgressRecorder:
             self._sequence_by_pair[pair] = sequence
             self._pair_by_sequence[sequence] = pair
         self._submissions_by_pair[pair] = result
-        self._attempt_high_water_by_pair[pair] = max(
-            self._attempt_high_water_by_pair.get(pair, 0),
+        self._latest_attempt_number_by_pair[pair] = max(
+            self._latest_attempt_number_by_pair.get(pair, 0),
             1,
         )
 
     def record_terminated_attempt(self, attempt: MinerTaskAttemptAuditRecord) -> None:
         pair = (attempt.artifact_id, attempt.task_id)
-        self._attempt_high_water_by_pair[pair] = max(
-            self._attempt_high_water_by_pair.get(pair, 0),
+        self._latest_attempt_number_by_pair[pair] = max(
+            self._latest_attempt_number_by_pair.get(pair, 0),
             attempt.attempt_number,
         )
 
-    def restore_attempt_number_high_waters(
-        self,
-        _batch_id: UUID,
-        *,
-        terminated: tuple[dict[str, object], ...],
-        consumed: tuple[dict[str, object], ...],
-    ) -> None:
-        for entry in (*terminated, *consumed):
-            pair = (entry["artifact_id"], entry["task_id"])
-            self._attempt_high_water_by_pair[pair] = max(
-                self._attempt_high_water_by_pair.get(pair, 0),
-                int(entry["max_attempt_number"]),
-            )
-
-    def restore_progress_floor(self, _batch_id: UUID, sequence: int) -> None:
-        self._progress_floor = max(self._progress_floor, sequence)
-        self._next_sequence = max(self._next_sequence, self._progress_floor + 1)
-
     def next_attempt_number(self, _batch_id: UUID, artifact_id: UUID, task_id: UUID) -> int:
-        return self._attempt_high_water_by_pair.get((artifact_id, task_id), 0) + 1
+        return self._latest_attempt_number_by_pair.get((artifact_id, task_id), 0) + 1
 
     def recorded_pairs(self, _batch_id: UUID) -> frozenset[tuple[UUID, UUID]]:
         return frozenset(self._recorded)
@@ -190,7 +179,7 @@ class DummyProgressRecorder:
             "total": completed,
             "completed": completed,
             "remaining": 0,
-            "latest_sequence": max(self._progress_floor, self._next_sequence - 1),
+            "latest_sequence": self._next_sequence - 1,
             "provider_evidence": (),
         }
 
@@ -201,7 +190,7 @@ class DummyProgressRecorder:
         after_sequence: int,
         limit: int,
     ) -> RunProgressPage:
-        latest_sequence = max(self._progress_floor, self._next_sequence - 1)
+        latest_sequence = self._next_sequence - 1
         sequences = tuple(range(after_sequence + 1, min(latest_sequence, after_sequence + limit) + 1))
         items = []
         for sequence in sequences:
@@ -1553,6 +1542,273 @@ async def test_scheduler_logs_partial_progress_when_setup_failure_backfill_raise
     assert payload["unresolved_count"] == 2
     assert payload["outcome"] == "validator_batch_failure"
     assert payload["error_code"] == "sandbox_start_failed"
+
+
+async def test_scheduler_returns_platform_result_for_assigned_task_setup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
+    task = _task("assigned")
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    sandbox_manager = DummySandboxManager()
+    evaluation_records = DummyEvaluationRecordStore()
+    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    receipt_log = DummyReceiptLog()
+    progress = DummyProgressRecorder()
+    now = datetime(2025, 10, 27, tzinfo=UTC)
+
+    scheduler = EvaluationScheduler(
+        tasks=(task,),
+        subtensor_client=subtensor,
+        sandbox_manager=sandbox_manager,
+        session_manager=session_manager,
+        evaluation_records=evaluation_records,
+        receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
+        orchestrator_factory=lambda _client: object(),
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: now,
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+        ),
+        progress=progress,
+    )
+
+    artifact = ScriptArtifactSpec(
+        uid=3,
+        artifact_id=uuid4(),
+        content_hash="a",
+        size_bytes=0,
+        miner_hotkey_ss58="miner-hotkey",
+    )
+    batch_id = uuid4()
+
+    async def fail_setup(**kwargs):
+        _ = kwargs
+        raise ArtifactExecutionFailedError(
+            error_code=MinerTaskErrorCode.SANDBOX_START_FAILED,
+            message="artifact setup failed",
+            failure_detail=ValidatorBatchFailureDetail(
+                error_code="sandbox_start_failed",
+                error_message="artifact setup failed",
+                occurred_at=now,
+                artifact_id=artifact.artifact_id,
+                uid=artifact.uid,
+            ),
+            completed_submissions=(),
+            remaining_tasks=(task,),
+        )
+
+    monkeypatch.setattr(scheduler, "_start_artifact_with_retry", fail_setup)
+
+    result = await scheduler.run_assigned_task(
+        batch_id=batch_id,
+        artifact=artifact,
+        task=task,
+        attempt_number=1,
+        max_attempts=2,
+        assignment_token=_ASSIGNMENT_TOKEN,
+    )
+
+    assert result.batch_id == batch_id
+    assert result.artifact_id == artifact.artifact_id
+    assert result.task_id == task.task_id
+    assert result.result is None
+    assert result.terminal_attempt.status is MinerTaskAttemptStatus.FAILED
+    assert result.terminal_attempt.error_code == "sandbox_start_failed"
+    assert result.terminal_attempt.retry_decision is MinerTaskAttemptRetryDecision.WILL_NOT_RETRY
+    assert result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE
+    assert result.terminal_attempt.validator_session_id != UUID(int=0)
+    assert progress.next_attempt_number(batch_id, artifact.artifact_id, task.task_id) == 2
+
+
+async def test_scheduler_runs_multiple_platform_assignments_in_one_artifact_sandbox(
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
+    tasks = (_task("first"), _task("second"))
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    sandbox_manager = DummySandboxManager()
+    evaluation_records = DummyEvaluationRecordStore()
+    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    receipt_log = DummyReceiptLog()
+    now = datetime(2025, 10, 27, tzinfo=UTC)
+
+    def orchestrator_factory(_client: object):
+        class StubOrchestrator:
+            async def evaluate(self, request):
+                return TaskRunOutcome(
+                    run=MinerTaskRun(
+                        session_id=request.session_id,
+                        uid=request.uid,
+                        artifact_id=request.artifact_id,
+                        task_id=request.task.task_id,
+                        response=Response(text=f"answer {request.task.query.text}"),
+                        details=EvaluationDetails(
+                            score_breakdown=ScoreBreakdown(
+                                comparison_score=1.0,
+                                total_score=1.0,
+                                scoring_version="v1",
+                            ),
+                            total_tool_usage=ToolUsageSummary.zero(),
+                        ),
+                        completed_at=now,
+                    ),
+                    usage=TokenUsageSummary.empty(),
+                )
+
+        return StubOrchestrator()
+
+    scheduler = EvaluationScheduler(
+        tasks=tasks,
+        subtensor_client=subtensor,
+        sandbox_manager=sandbox_manager,
+        session_manager=session_manager,
+        evaluation_records=evaluation_records,
+        receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
+        orchestrator_factory=orchestrator_factory,
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: now,
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        progress=DummyProgressRecorder(),
+    )
+
+    artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
+    batch_id = uuid4()
+    assignments = tuple(
+        MinerTaskWorkAssignment(
+            batch_id=batch_id,
+            artifact=artifact,
+            task=task,
+            attempt_number=index,
+            max_attempts=3,
+            assignment_token=f"{_ASSIGNMENT_TOKEN}-{index}",
+        )
+        for index, task in enumerate(tasks, start=1)
+    )
+    result_queue: asyncio.Queue[PlatformOwnedTaskResult] = asyncio.Queue()
+    close_requested = asyncio.Event()
+    close_requested.set()
+
+    await scheduler.run_assigned_artifact_queue(
+        batch_id=batch_id,
+        artifact=artifact,
+        initial_assignments=assignments,
+        assignment_queue=asyncio.Queue(),
+        close_requested=close_requested,
+        result_queue=result_queue,
+    )
+
+    assert len(sandbox_manager.starts) == 1
+    assert len(sandbox_manager.stops) == 1
+    results = (result_queue.get_nowait(), result_queue.get_nowait())
+    assert {result.task_id for result in results} == {task.task_id for task in tasks}
+    assert {result.attempt_number for result in results} == {1, 2}
+    assert all(
+        result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.TASK_RESULT
+        for result in results
+    )
+
+
+async def test_scheduler_returns_pair_results_for_assigned_artifact_script_validation_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
+    tasks = (_task("first"), _task("second"))
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    sandbox_manager = DummySandboxManager()
+    progress = DummyProgressRecorder()
+    now = datetime(2025, 10, 27, tzinfo=UTC)
+    scheduler = EvaluationScheduler(
+        tasks=tasks,
+        subtensor_client=subtensor,
+        sandbox_manager=sandbox_manager,
+        session_manager=SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry()),
+        evaluation_records=DummyEvaluationRecordStore(),
+        receipt_log=DummyReceiptLog(),
+        blocking_executor=blocking_executor,
+        orchestrator_factory=lambda _client: object(),
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: now,
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        progress=progress,
+    )
+    artifact = ScriptArtifactSpec(
+        uid=3,
+        artifact_id=uuid4(),
+        content_hash="a",
+        size_bytes=0,
+        miner_hotkey_ss58="miner-hotkey",
+    )
+    batch_id = uuid4()
+    first_assignment = MinerTaskWorkAssignment(
+        batch_id=batch_id,
+        artifact=artifact,
+        task=tasks[0],
+        attempt_number=1,
+        max_attempts=2,
+        assignment_token=_ASSIGNMENT_TOKEN_1,
+    )
+    second_assignment = MinerTaskWorkAssignment(
+        batch_id=batch_id,
+        artifact=artifact,
+        task=tasks[1],
+        attempt_number=1,
+        max_attempts=2,
+        assignment_token=_ASSIGNMENT_TOKEN_2,
+    )
+    assignment_queue: asyncio.Queue[MinerTaskWorkAssignment] = asyncio.Queue()
+    assignment_queue.put_nowait(second_assignment)
+    result_queue: asyncio.Queue[PlatformOwnedTaskResult] = asyncio.Queue()
+
+    async def fail_setup(**kwargs):
+        _ = kwargs
+        raise ArtifactExecutionFailedError(
+            error_code=MinerTaskErrorCode.SCRIPT_VALIDATION_FAILED,
+            message="script validation failed",
+            failure_detail=ValidatorBatchFailureDetail(
+                error_code="script_validation_failed",
+                error_message="script validation failed",
+                occurred_at=now,
+                artifact_id=artifact.artifact_id,
+                uid=artifact.uid,
+            ),
+            completed_submissions=(),
+            remaining_tasks=tasks,
+        )
+
+    monkeypatch.setattr(scheduler, "_start_artifact_with_retry", fail_setup)
+
+    await scheduler.run_assigned_artifact_queue(
+        batch_id=batch_id,
+        artifact=artifact,
+        initial_assignments=(first_assignment,),
+        assignment_queue=assignment_queue,
+        close_requested=asyncio.Event(),
+        result_queue=result_queue,
+    )
+
+    results = (result_queue.get_nowait(), result_queue.get_nowait())
+    assert {result.task_id for result in results} == {task.task_id for task in tasks}
+    assert all(result.result is not None for result in results)
+    assert all(
+        result.result is not None
+        and result.result.run.details.error is not None
+        and result.result.run.details.error.code == MinerTaskErrorCode.SCRIPT_VALIDATION_FAILED
+        for result in results
+    )
+    assert all(
+        result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.TASK_RESULT
+        for result in results
+    )
+    assert all(
+        result.terminal_attempt.retry_decision is MinerTaskAttemptRetryDecision.WILL_NOT_RETRY
+        for result in results
+    )
 
 
 async def test_scheduler_logs_partial_progress_for_validator_batch_failure(

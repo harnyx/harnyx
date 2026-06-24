@@ -32,6 +32,7 @@ class PlatformToolProxySessionScope:
     artifact_id: UUID
     task_id: UUID
     attempt_number: int
+    assignment_token: str
     grants_by_attempt: Mapping[int, PlatformToolProxyAttemptGrant]
 
 
@@ -63,6 +64,7 @@ class PlatformToolProxyScopeRegistry:
         session_id: UUID,
         artifact_id: UUID,
         task_id: UUID,
+        assignment_token: str,
         attempt_number: int = 1,
     ) -> None:
         with self._lock:
@@ -71,6 +73,7 @@ class PlatformToolProxyScopeRegistry:
                 artifact_id=artifact_id,
                 task_id=task_id,
                 attempt_number=attempt_number,
+                assignment_token=assignment_token,
                 grants_by_attempt={},
             )
 
@@ -105,6 +108,7 @@ class PlatformToolProxyScopeRegistry:
                 artifact_id=scope.artifact_id,
                 task_id=scope.task_id,
                 attempt_number=scope.attempt_number,
+                assignment_token=scope.assignment_token,
                 grants_by_attempt={
                     **scope.grants_by_attempt,
                     attempt_number: attempt_grant,
@@ -163,6 +167,7 @@ class PlatformToolProxyProxyToolInvoker(ToolInvoker):
                         task_id=scope.task_id,
                         validator_session_id=context.session_id,
                         attempt_number=attempt_number,
+                        assignment_token=scope.assignment_token,
                     )
                     attempt_grant = self._scopes.store_session_grant(
                         session_id=context.session_id,

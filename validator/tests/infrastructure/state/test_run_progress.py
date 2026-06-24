@@ -30,17 +30,13 @@ from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptAuditRecord,
     MinerTaskAttemptRetryDecision,
     MinerTaskAttemptStatus,
-    MinerTaskAttemptTerminalEffect,
     MinerTaskBatchSpec,
     MinerTaskRunSubmission,
     ScriptArtifactSpec,
     TokenUsageSummary,
 )
 from harnyx_validator.domain.evaluation import MinerTaskRun
-from harnyx_validator.infrastructure.state.run_progress import (
-    FileBackedRunProgress,
-    ProgressCursorBeforeRestoreFloorError,
-)
+from harnyx_validator.infrastructure.state.run_progress import FileBackedRunProgress
 
 
 def _progress(tmp_path: Path) -> FileBackedRunProgress:
@@ -193,7 +189,7 @@ def _make_attempt(
         error_code="tool_execution_timeout",
         error_summary_code="timeout_miner_owned",
         retry_decision=MinerTaskAttemptRetryDecision.WILL_RETRY,
-        terminal_effect=MinerTaskAttemptTerminalEffect.NONE,
+        terminal_effect=None,
         max_attempts=max_attempts,
         execution_log=(
             ToolCall(
@@ -344,27 +340,6 @@ def test_run_progress_record_is_idempotent_for_duplicate_pair(tmp_path: Path) ->
     assert page["items"] == ({"sequence": 1, "kind": "completed_run", "submission": submission, "attempt": None},)
 
 
-def test_run_progress_restore_completed_runs_records_terminal_timeout_failed_submission(tmp_path: Path) -> None:
-    progress = _progress(tmp_path)
-    batch = _make_batch()
-    failed_submission = _make_failed_submission(batch, error_code="timeout_miner_owned")
-
-    progress.restore_completed_runs(batch, submissions=(failed_submission,))
-
-    summary = progress.summary(batch.batch_id)
-    page = progress.completed_run_page(batch.batch_id, after_sequence=0, limit=10)
-    assert summary["total"] == 1
-    assert summary["completed"] == 1
-    assert summary["remaining"] == 0
-    assert summary["latest_sequence"] == 1
-    assert page["items"] == (
-        {"sequence": 1, "kind": "completed_run", "submission": failed_submission, "attempt": None},
-    )
-    assert progress.recorded_pairs(batch.batch_id) == {
-        (failed_submission.run.artifact_id, failed_submission.run.task_id),
-    }
-
-
 def test_run_progress_terminated_attempts_round_trip_from_blob_store(tmp_path: Path) -> None:
     progress = _progress(tmp_path)
     batch = _make_batch()
@@ -383,50 +358,6 @@ def test_run_progress_terminated_attempts_round_trip_from_blob_store(tmp_path: P
     assert set(attempt_refs) == {attempt.validator_session_id}
     assert attempt_refs[attempt.validator_session_id].segment_name.startswith("attempts-")
     assert progress.next_attempt_number(batch.batch_id, attempt.artifact_id, attempt.task_id) == 2
-
-
-def test_run_progress_restore_floor_continues_without_replaying_restored_runs(tmp_path: Path) -> None:
-    progress = _progress(tmp_path)
-    batch = _make_batch()
-    submission = _make_submission(batch)
-
-    progress.register(batch)
-    progress.restore_progress_floor(batch.batch_id, 7)
-    progress.restore_completed_runs(batch, submissions=(submission,))
-
-    summary = progress.summary(batch.batch_id)
-    page = progress.completed_run_page(batch.batch_id, after_sequence=7, limit=10)
-    assert summary["completed"] == 1
-    assert summary["latest_sequence"] == 7
-    assert page["items"] == ()
-    assert progress.recorded_pairs(batch.batch_id) == {
-        (submission.run.artifact_id, submission.run.task_id),
-    }
-
-
-def test_run_progress_first_new_detail_after_restore_floor_is_dense(tmp_path: Path) -> None:
-    progress = _progress(tmp_path)
-    batch = _make_multi_batch()
-    restored, new_submission = _make_distinct_multi_submissions(batch)[:2]
-
-    progress.register(batch)
-    progress.restore_progress_floor(batch.batch_id, 7)
-    progress.restore_completed_runs(batch, submissions=(restored,))
-    progress.record(new_submission)
-
-    page = progress.completed_run_page(batch.batch_id, after_sequence=7, limit=10)
-    assert [item["sequence"] for item in page["items"]] == [8]
-
-
-def test_run_progress_page_below_restore_floor_fails_explicitly(tmp_path: Path) -> None:
-    progress = _progress(tmp_path)
-    batch = _make_batch()
-
-    progress.register(batch)
-    progress.restore_progress_floor(batch.batch_id, 7)
-
-    with pytest.raises(ProgressCursorBeforeRestoreFloorError, match="restored platform detail floor"):
-        progress.completed_run_page(batch.batch_id, after_sequence=0, limit=10)
 
 
 def test_run_progress_record_rejects_conflicting_duplicate_pair(tmp_path: Path) -> None:
@@ -455,70 +386,6 @@ def test_run_progress_record_rejects_conflicting_duplicate_pair(tmp_path: Path) 
         progress.record(conflicting)
 
 
-def test_run_progress_restore_provider_evidence_is_monotonic_for_duplicate_replay(tmp_path: Path) -> None:
-    progress = _progress(tmp_path)
-    batch = _make_batch()
-    session_id = uuid4()
-
-    progress.register(batch)
-    progress.register_task_session(
-        batch_id=batch.batch_id,
-        session_id=session_id,
-    )
-    progress.record_provider_call(session_id=session_id, provider="openai", model="gpt-4o")
-    progress.record_provider_call(session_id=session_id, provider="openai", model="gpt-4o")
-    progress.record_provider_failure(
-        session_id=session_id,
-        provider="openai",
-        model="gpt-4o",
-        reason="rate limited",
-    )
-    progress.record_provider_call(session_id=session_id, provider="desearch", model="search_web")
-    progress.record_provider_call(session_id=session_id, provider="desearch", model="search_web")
-    progress.record_provider_call(session_id=session_id, provider="desearch", model="search_web")
-
-    progress.restore_completed_runs(
-        batch,
-        submissions=(),
-        provider_evidence=(
-            {
-                "provider": "openai",
-                "model": "gpt-4o",
-                "total_calls": 1,
-                "failed_calls": 0,
-            },
-            {
-                "provider": "anthropic",
-                "model": "claude-sonnet",
-                "total_calls": 4,
-                "failed_calls": 1,
-            },
-        ),
-    )
-
-    assert progress.provider_evidence(batch.batch_id) == (
-        {
-            "provider": "anthropic",
-            "model": "claude-sonnet",
-            "total_calls": 4,
-            "failed_calls": 1,
-        },
-        {
-            "provider": "desearch",
-            "model": "search_web",
-            "total_calls": 3,
-            "failed_calls": 0,
-        },
-        {
-            "provider": "openai",
-            "model": "gpt-4o",
-            "total_calls": 2,
-            "failed_calls": 1,
-            "failure_reason": "rate limited",
-        },
-    )
-
-
 def test_run_progress_includes_failure_reason_in_consumed_provider_failures(tmp_path: Path) -> None:
     progress = _progress(tmp_path)
     batch = _make_batch()
@@ -545,73 +412,6 @@ def test_run_progress_includes_failure_reason_in_consumed_provider_failures(tmp_
     )
     assert progress.consume_provider_failures(session_id) == expected
     assert progress.provider_evidence(batch.batch_id) == expected
-
-
-def test_run_progress_rejected_restore_does_not_mutate_provider_evidence(tmp_path: Path) -> None:
-    progress = _progress(tmp_path)
-    batch = _make_batch()
-    other_batch = _make_batch()
-    session_id = uuid4()
-
-    progress.register(batch)
-    progress.register_task_session(
-        batch_id=batch.batch_id,
-        session_id=session_id,
-    )
-    progress.record_provider_call(session_id=session_id, provider="openai", model="gpt-4o")
-    progress.record_provider_failure(
-        session_id=session_id,
-        provider="openai",
-        model="gpt-4o",
-        reason="rate limited",
-    )
-    before = progress.provider_evidence(batch.batch_id)
-
-    with pytest.raises(RuntimeError, match="restored submission batch_id mismatch"):
-        progress.restore_completed_runs(
-            batch,
-            submissions=(_make_submission(other_batch),),
-            provider_evidence=(
-                {
-                    "provider": "anthropic",
-                    "model": "claude-sonnet",
-                    "total_calls": 4,
-                    "failed_calls": 1,
-                },
-            ),
-        )
-
-    assert progress.provider_evidence(batch.batch_id) == before
-
-
-def test_run_progress_rejected_restore_does_not_advance_sequence_cursor(tmp_path: Path) -> None:
-    progress = _progress(tmp_path)
-    batch = _make_batch()
-    submission = _make_submission(batch, score=1.0)
-    conflicting = _make_submission(batch, score=0.0).model_copy(
-        update={
-            "run": submission.run.model_copy(),
-            "session": replace(
-                submission.session,
-                session_id=submission.run.session_id,
-                task_id=submission.run.task_id,
-            ),
-        }
-    )
-
-    with pytest.raises(
-        RuntimeError,
-        match="batch already recorded a different result for artifact/task pair",
-    ):
-        progress.restore_completed_runs(batch, submissions=(submission, conflicting))
-
-    progress.restore_completed_runs(batch, submissions=(submission,))
-
-    summary = progress.summary(batch.batch_id)
-    page = progress.completed_run_page(batch.batch_id, after_sequence=0, limit=10)
-    assert summary["completed"] == 1
-    assert summary["latest_sequence"] == 1
-    assert page["items"] == ({"sequence": 1, "kind": "completed_run", "submission": submission, "attempt": None},)
 
 
 def test_run_progress_page_preserves_record_sequence_without_global_task_order(tmp_path: Path) -> None:

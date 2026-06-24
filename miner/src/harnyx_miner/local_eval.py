@@ -171,15 +171,6 @@ class _CliProgressReporter(ProgressRecorder):
         elapsed_text = f" elapsed_ms={round(elapsed_ms, 1)}" if elapsed_ms is not None else ""
         self.log(f"{label} task {completed}/{total} complete: task_id={result.run.task_id} {outcome}{elapsed_text}")
 
-    def restore_completed_runs(
-        self,
-        batch: MinerTaskBatchSpec,
-        submissions: Sequence[MinerTaskRunSubmission],
-        provider_evidence: Sequence[ProviderFailureEvidence] = (),
-    ) -> None:
-        del batch, submissions, provider_evidence
-        return None
-
     def recorded_pairs(self, batch_id: UUID) -> frozenset[tuple[UUID, UUID]]:
         del batch_id
         return frozenset()
@@ -283,24 +274,6 @@ class _LocalProgressRecorder(ProgressRecorder):
 
     def next_attempt_number(self, batch_id: UUID, artifact_id: UUID, task_id: UUID) -> int:
         return self._storage.next_attempt_number(batch_id, artifact_id, task_id)
-
-    def restore_completed_runs(
-        self,
-        batch: MinerTaskBatchSpec,
-        submissions: Sequence[MinerTaskRunSubmission],
-        provider_evidence: Sequence[ProviderFailureEvidence] = (),
-    ) -> None:
-        self._storage.restore_completed_runs(
-            batch,
-            submissions,
-            provider_evidence=provider_evidence,
-        )
-        if self._display is not None:
-            self._display.restore_completed_runs(
-                batch,
-                submissions,
-                provider_evidence=provider_evidence,
-            )
 
     def recorded_pairs(self, batch_id: UUID) -> frozenset[tuple[UUID, UUID]]:
         return self._storage.recorded_pairs(batch_id)

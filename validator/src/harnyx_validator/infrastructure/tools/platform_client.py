@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, cast
-from urllib.parse import urlencode
 from uuid import UUID
 
 import bittensor as bt
 import httpx
+from pydantic import BaseModel
 
 from harnyx_commons.bittensor import build_canonical_request
 from harnyx_commons.domain.tool_call import ToolExecutionFacts
@@ -19,26 +20,25 @@ from harnyx_commons.errors import BudgetExceededError, ToolInvocationTimeoutErro
 from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.protocol_headers import PLATFORM_TOOL_PROXY_TOKEN_HEADER
 from harnyx_commons.tools.types import ToolName
-from harnyx_validator.application.dto.evaluation import MinerTaskBatchSpec
+from harnyx_validator.application.dto.evaluation import (
+    MinerTaskBatchSpec,
+    MinerTaskWorkAssignment,
+    PlatformOwnedTaskResult,
+)
 from harnyx_validator.application.ports.platform import (
     ChampionWeights,
     PlatformPort,
+    PlatformTaskAttemptIdentity,
+    PlatformTaskResultAcknowledgement,
     PlatformToolProxyGrant,
     PlatformToolProxyPlatformPort,
     PlatformToolProxyToolResult,
-    RestoreAttemptNumberHighWater,
-    RestoreMetadata,
-    RestoreRunsPage,
-)
-from harnyx_validator.infrastructure.http.schemas import (
-    ProviderEvidenceModel,
-    RestoreMinerTaskRunSubmissionModel,
 )
 from harnyx_validator.infrastructure.parsers import parse_batch
 from harnyx_validator.infrastructure.transient_network import classify_transient_network_failure
 
 _GET_ATTEMPTS = 2
-_RESTORE_GET_TIMEOUT_SECONDS = 300.0
+_PLATFORM_WORK_RESULT_TIMEOUT_SECONDS = 300.0
 _PLATFORM_TOOL_PROXY_GRANT_RETRY_DELAYS_SECONDS = (0.25, 1.0)
 
 
@@ -147,6 +147,25 @@ class HttpPlatformClient(PlatformPort):
                     raise
         raise RuntimeError("platform GET retry loop exhausted without response")
 
+    def _post_json(
+        self,
+        path: str,
+        payload: JsonObject,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> httpx.Response:
+        body = _json_body(payload)
+        with self._client() as client:
+            kwargs: dict[str, Any] = {}
+            if timeout_seconds is not None:
+                kwargs["timeout"] = timeout_seconds
+            return client.post(
+                path,
+                content=body,
+                headers=self._request_headers("POST", path, body),
+                **kwargs,
+            )
+
     def get_miner_task_batch(self, batch_id: UUID) -> MinerTaskBatchSpec:
         path = f"/v1/miner-task-batches/batch/{batch_id}"
         response = self._get(path)
@@ -181,71 +200,72 @@ class HttpPlatformClient(PlatformPort):
         champion_uid = int(champion_uid_raw) if champion_uid_raw is not None else None
         return ChampionWeights(champion_uid=champion_uid, weights=weights)
 
-    def get_restore_metadata(self, batch_id: UUID) -> RestoreMetadata:
-        path = f"/v1/miner-task-batches/{batch_id}/restore"
-        response = self._get(path, timeout_seconds=_RESTORE_GET_TIMEOUT_SECONDS)
-        if response.status_code != httpx.codes.OK:
-            raise PlatformClientError(
-                status_code=response.status_code,
-                message=f"platform returned {response.status_code} for GET {path}",
-            )
-        payload = response.json()
-        provider_evidence = tuple(
-            ProviderEvidenceModel.model_validate(entry).to_domain()
-            for entry in payload.get("provider_model_evidence", ())
-        )
-        return RestoreMetadata(
-            batch_id=UUID(str(payload["batch_id"])),
-            snapshot_received_at=datetime.fromisoformat(str(payload["snapshot_received_at"])),
-            total_restore_runs=int(payload["total_restore_runs"]),
-            page_limit=int(payload["page_limit"]),
-            last_progress_detail_sequence=int(payload.get("last_progress_detail_sequence", 0)),
-            provider_model_evidence=provider_evidence,
-            terminated_miner_task_attempts=tuple(
-                _restore_attempt_high_water(entry)
-                for entry in payload.get("terminated_miner_task_attempts", ())
-            ),
-            consumed_platform_tool_proxy_attempts=tuple(
-                _restore_attempt_high_water(entry)
-                for entry in payload.get("consumed_platform_tool_proxy_attempts", ())
-            ),
-        )
-
-    def get_restore_runs_page(
+    def request_miner_task_work(
         self,
         *,
-        batch: MinerTaskBatchSpec,
-        snapshot_received_at: datetime,
-        cursor: int,
-        limit: int,
-    ) -> RestoreRunsPage:
-        query = urlencode(
+        target_concurrency: int,
+        max_active_artifacts: int,
+        active_attempts: Sequence[PlatformTaskAttemptIdentity],
+    ) -> tuple[MinerTaskWorkAssignment, ...]:
+        path = "/v2/miner-task-work/tasks"
+        response = self._post_json(
+            path,
             {
-                "snapshot_received_at": snapshot_received_at.isoformat(),
-                "cursor": cursor,
-                "limit": limit,
-            }
+                "target_concurrency": target_concurrency,
+                "max_active_artifacts": max_active_artifacts,
+                "active_attempts": [
+                    {
+                        "batch_id": str(attempt.batch_id),
+                        "artifact_id": str(attempt.artifact_id),
+                        "task_id": str(attempt.task_id),
+                        "attempt_number": attempt.attempt_number,
+                        "validator_session_id": (
+                            None
+                            if attempt.validator_session_id is None
+                            else str(attempt.validator_session_id)
+                        ),
+                    }
+                    for attempt in active_attempts
+                ],
+            },
         )
-        path = f"/v1/miner-task-batches/{batch.batch_id}/restore/runs?{query}"
-        response = self._get(path, timeout_seconds=_RESTORE_GET_TIMEOUT_SECONDS)
         if response.status_code != httpx.codes.OK:
             raise PlatformClientError(
                 status_code=response.status_code,
-                message=f"platform returned {response.status_code} for GET {path}",
+                message=f"platform returned {response.status_code} for POST {path}",
             )
-        payload: dict[str, Any] = response.json()
-        items = tuple(
-            RestoreMinerTaskRunSubmissionModel.model_validate(entry).to_domain(batch=batch)
-            for entry in payload.get("items", ())
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise PlatformClientError(status_code=response.status_code, message="platform work response is invalid")
+        tasks = payload.get("tasks", ())
+        if not isinstance(tasks, list):
+            raise PlatformClientError(status_code=response.status_code, message="platform work tasks are invalid")
+        return tuple(_miner_task_work_assignment(task) for task in tasks)
+
+    def submit_miner_task_work_results(
+        self,
+        results: Sequence[PlatformOwnedTaskResult],
+    ) -> tuple[PlatformTaskResultAcknowledgement, ...]:
+        path = "/v2/miner-task-work/results"
+        response = self._post_json(
+            path,
+            {
+                "results": [_platform_task_result_payload(result) for result in results],
+            },
+            timeout_seconds=_PLATFORM_WORK_RESULT_TIMEOUT_SECONDS,
         )
-        return RestoreRunsPage(
-            batch_id=UUID(str(payload["batch_id"])),
-            snapshot_received_at=datetime.fromisoformat(str(payload["snapshot_received_at"])),
-            cursor=int(payload["cursor"]),
-            limit=int(payload["limit"]),
-            next_cursor=int(payload["next_cursor"]) if payload.get("next_cursor") is not None else None,
-            items=items,
-        )
+        if response.status_code != httpx.codes.OK:
+            raise PlatformClientError(
+                status_code=response.status_code,
+                message=f"platform returned {response.status_code} for POST {path}",
+            )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise PlatformClientError(status_code=response.status_code, message="platform result response is invalid")
+        items = payload.get("results", ())
+        if not isinstance(items, list):
+            raise PlatformClientError(status_code=response.status_code, message="platform result items are invalid")
+        return tuple(_platform_result_acknowledgement(item) for item in items)
 
 
 @dataclass
@@ -284,6 +304,7 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
         task_id: UUID,
         validator_session_id: UUID,
         attempt_number: int,
+        assignment_token: str,
     ) -> PlatformToolProxyGrant:
         path = "/v1/platform-tool-proxy/grants"
         body = _json_body(
@@ -293,6 +314,7 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
                 "task_id": str(task_id),
                 "validator_session_id": str(validator_session_id),
                 "attempt_number": attempt_number,
+                "assignment_token": assignment_token,
             }
         )
         headers = {
@@ -533,6 +555,96 @@ def _json_body(payload: JsonObject) -> bytes:
     return json.dumps(payload, separators=(",", ":")).encode()
 
 
+def _platform_task_result_payload(result: PlatformOwnedTaskResult) -> JsonObject:
+    return {
+        "batch_id": str(result.batch_id),
+        "artifact_id": str(result.artifact_id),
+        "task_id": str(result.task_id),
+        "attempt_number": result.attempt_number,
+        "result": None if result.result is None else _run_submission_payload(result.result),
+        "terminal_attempt": _attempt_payload(result.terminal_attempt),
+    }
+
+
+def _run_submission_payload(submission: Any) -> JsonObject:
+    return {
+        "batch_id": str(submission.batch_id),
+        "validator": {"uid": submission.validator_uid},
+        "run": {
+            "artifact_id": str(submission.run.artifact_id),
+            "task_id": str(submission.run.task_id),
+            "completed_at": (
+                None
+                if submission.run.completed_at is None
+                else submission.run.completed_at.isoformat()
+            ),
+            "response": _jsonable(submission.run.response),
+        },
+        "score": submission.score,
+        "execution_log": _jsonable(submission.execution_log),
+        "usage": _jsonable(submission.usage),
+        "session": {
+            "session_id": str(submission.session.session_id),
+            "uid": submission.session.uid,
+            "status": submission.session.status.value,
+            "issued_at": submission.session.issued_at.isoformat(),
+            "expires_at": submission.session.expires_at.isoformat(),
+        },
+        "specifics": _jsonable(submission.run.details),
+    }
+
+
+def _attempt_payload(attempt: Any) -> JsonObject:
+    return {
+        "validator_session_id": str(attempt.validator_session_id),
+        "batch_id": str(attempt.batch_id),
+        "artifact_id": str(attempt.artifact_id),
+        "task_id": str(attempt.task_id),
+        "attempt_number": attempt.attempt_number,
+        "uid": attempt.uid,
+        "miner_hotkey_ss58": attempt.miner_hotkey_ss58,
+        "started_at": attempt.started_at.isoformat(),
+        "finished_at": attempt.finished_at.isoformat(),
+        "status": attempt.status.value,
+        "error_code": attempt.error_code,
+        "error_summary_code": attempt.error_summary_code,
+        "retry_decision": attempt.retry_decision.value,
+        "terminal_effect": None if attempt.terminal_effect is None else attempt.terminal_effect.value,
+        "max_attempts": attempt.max_attempts,
+        "execution_log": _jsonable(attempt.execution_log),
+    }
+
+
+def _platform_result_acknowledgement(value: object) -> PlatformTaskResultAcknowledgement:
+    if not isinstance(value, dict):
+        raise PlatformClientError(status_code=None, message="platform result item is invalid")
+    item = cast(dict[str, object], value)
+    return PlatformTaskResultAcknowledgement(
+        batch_id=UUID(str(item["batch_id"])),
+        artifact_id=UUID(str(item["artifact_id"])),
+        task_id=UUID(str(item["task_id"])),
+        attempt_number=_required_int(item, "attempt_number"),
+        outcome=str(item["outcome"]),
+        canonical=bool(item["canonical"]),
+        reason_code=None if item.get("reason_code") is None else str(item["reason_code"]),
+        reason=None if item.get("reason") is None else str(item["reason"]),
+    )
+
+
+def _jsonable(value: object) -> JsonValue:
+    if isinstance(value, BaseModel):
+        return cast(JsonValue, value.model_dump(mode="json"))
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, tuple | list):
+        return [_jsonable(entry) for entry in value]
+    if isinstance(value, dict):
+        return {str(key): _jsonable(entry) for key, entry in value.items()}
+    return cast(JsonValue, value)
+
+
 def _optional_float(value: object) -> float | None:
     if value is None:
         return None
@@ -541,24 +653,32 @@ def _optional_float(value: object) -> float | None:
     return float(value)
 
 
-def _restore_attempt_high_water(value: object) -> RestoreAttemptNumberHighWater:
+def _required_int(payload: dict[str, object], key: str) -> int:
+    value = payload.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise PlatformClientError(status_code=None, message=f"platform {key} field is invalid")
+    return value
+
+
+def _miner_task_work_assignment(value: object) -> MinerTaskWorkAssignment:
     if not isinstance(value, dict):
-        raise PlatformClientError(status_code=None, message="restore attempt high-water entry is invalid")
+        raise PlatformClientError(status_code=None, message="platform work assignment is invalid")
     entry = cast(dict[str, object], value)
-    raw_artifact_id = entry.get("artifact_id")
-    raw_task_id = entry.get("task_id")
-    raw_max_attempt_number = entry.get("max_attempt_number")
-    if not isinstance(raw_artifact_id, str | UUID) or not isinstance(raw_task_id, str | UUID):
-        raise PlatformClientError(status_code=None, message="restore attempt high-water ids are invalid")
-    if not isinstance(raw_max_attempt_number, int):
-        raise PlatformClientError(status_code=None, message="restore attempt high-water attempt number is invalid")
-    max_attempt_number = raw_max_attempt_number
-    if max_attempt_number < 1:
-        raise PlatformClientError(status_code=None, message="restore attempt high-water must be positive")
-    return RestoreAttemptNumberHighWater(
-        artifact_id=UUID(str(raw_artifact_id)),
-        task_id=UUID(str(raw_task_id)),
-        max_attempt_number=max_attempt_number,
+    artifact = entry.get("artifact")
+    task = entry.get("task")
+    if not isinstance(artifact, dict) or not isinstance(task, dict):
+        raise PlatformClientError(status_code=None, message="platform work assignment is invalid")
+    artifact_payload = dict(artifact)
+    task_payload = dict(task)
+    artifact_payload["artifact_id"] = UUID(str(artifact_payload["artifact_id"]))
+    task_payload["task_id"] = UUID(str(task_payload["task_id"]))
+    return MinerTaskWorkAssignment.model_validate(
+        {
+            **entry,
+            "batch_id": UUID(str(entry["batch_id"])),
+            "artifact": artifact_payload,
+            "task": task_payload,
+        }
     )
 
 

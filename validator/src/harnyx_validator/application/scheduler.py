@@ -15,7 +15,7 @@ from functools import partial
 from pathlib import Path
 from types import TracebackType
 from typing import TypeVar, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.application.session_manager import SessionManager
@@ -28,8 +28,14 @@ from harnyx_commons.sandbox.client import SandboxClient
 from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager
 from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_validator.application.dto.evaluation import (
+    MinerTaskAttemptAuditRecord,
+    MinerTaskAttemptRetryDecision,
+    MinerTaskAttemptStatus,
+    MinerTaskAttemptTerminalEffect,
     MinerTaskBatchRunResult,
     MinerTaskRunSubmission,
+    MinerTaskWorkAssignment,
+    PlatformOwnedTaskResult,
     ScriptArtifactSpec,
 )
 from harnyx_validator.application.evaluate_task_run import TaskRunOrchestrator
@@ -341,6 +347,152 @@ class EvaluationScheduler:
             artifacts=artifacts,
             blocking_executor=self._blocking_executor,
         )
+
+    async def run_assigned_task(
+        self,
+        *,
+        batch_id: UUID,
+        artifact: ScriptArtifactSpec,
+        task: MinerTask,
+        attempt_number: int,
+        max_attempts: int,
+        assignment_token: str,
+    ) -> PlatformOwnedTaskResult:
+        if self._activity is not None:
+            self._activity.mark_batch_started(batch_id)
+            self._activity.mark_artifact_started(batch_id, artifact.artifact_id)
+        deployment: SandboxDeployment | None = None
+        attempt_started_at = self._clock()
+        try:
+            deployment = await self._start_artifact_with_retry(
+                batch_id=batch_id,
+                artifact=artifact,
+                tasks=(task,),
+                blocking_executor=self._blocking_executor,
+            )
+            orchestrator = self._make_orchestrator(deployment.client)
+            return await self._runner.evaluate_assigned_task(
+                batch_id=batch_id,
+                artifact=artifact,
+                task=task,
+                attempt_number=attempt_number,
+                max_attempts=max_attempts,
+                assignment_token=assignment_token,
+                orchestrator=orchestrator,
+            )
+        except ArtifactExecutionFailedError as exc:
+            if exc.error_code is MinerTaskErrorCode.SCRIPT_VALIDATION_FAILED:
+                results = await self._runner.record_assigned_task_setup_failures(
+                    batch_id=batch_id,
+                    artifact=artifact,
+                    assignments=(
+                        MinerTaskWorkAssignment(
+                            batch_id=batch_id,
+                            artifact=artifact,
+                            task=task,
+                            attempt_number=attempt_number,
+                            max_attempts=max_attempts,
+                            assignment_token=assignment_token,
+                        ),
+                    ),
+                    error_code=exc.error_code,
+                    error_message=str(exc),
+                )
+                return results[0]
+            return self._platform_result_from_artifact_setup_failure(
+                batch_id=batch_id,
+                artifact=artifact,
+                task=task,
+                attempt_number=attempt_number,
+                max_attempts=max_attempts,
+                started_at=attempt_started_at,
+                failure=exc,
+            )
+        finally:
+            if deployment is not None:
+                await _run_blocking_call(self._blocking_executor, self._sandboxes.stop, deployment)
+            if self._activity is not None:
+                self._activity.mark_artifact_finished(batch_id, artifact.artifact_id)
+                self._activity.mark_batch_finished(batch_id)
+
+    async def run_assigned_artifact_queue(
+        self,
+        *,
+        batch_id: UUID,
+        artifact: ScriptArtifactSpec,
+        initial_assignments: Sequence[MinerTaskWorkAssignment],
+        assignment_queue: asyncio.Queue[MinerTaskWorkAssignment],
+        close_requested: asyncio.Event,
+        result_queue: asyncio.Queue[PlatformOwnedTaskResult],
+    ) -> None:
+        assignments = tuple(initial_assignments)
+        if not assignments:
+            raise ValueError("assigned artifact queue requires at least one assignment")
+        for assignment in assignments:
+            _require_assignment_for_artifact(
+                assignment,
+                batch_id=batch_id,
+                artifact_id=artifact.artifact_id,
+            )
+
+        if self._activity is not None:
+            self._activity.mark_batch_started(batch_id)
+            self._activity.mark_artifact_started(batch_id, artifact.artifact_id)
+        deployment: SandboxDeployment | None = None
+        attempt_started_at = self._clock()
+        try:
+            deployment = await self._start_artifact_with_retry(
+                batch_id=batch_id,
+                artifact=artifact,
+                tasks=tuple(assignment.task for assignment in assignments),
+                blocking_executor=self._blocking_executor,
+            )
+            orchestrator = self._make_orchestrator(deployment.client)
+            await self._runner.evaluate_assigned_task_queue(
+                batch_id=batch_id,
+                artifact=artifact,
+                initial_assignments=assignments,
+                assignment_queue=assignment_queue,
+                close_requested=close_requested,
+                result_queue=result_queue,
+                orchestrator=orchestrator,
+            )
+        except ArtifactExecutionFailedError as exc:
+            affected_assignments = (
+                assignments
+                if exc.error_code is not MinerTaskErrorCode.SCRIPT_VALIDATION_FAILED
+                else (*assignments, *_drain_assignment_queue(assignment_queue))
+            )
+            if exc.error_code is MinerTaskErrorCode.SCRIPT_VALIDATION_FAILED:
+                results = await self._runner.record_assigned_task_setup_failures(
+                    batch_id=batch_id,
+                    artifact=artifact,
+                    assignments=affected_assignments,
+                    error_code=exc.error_code,
+                    error_message=str(exc),
+                )
+                for result in results:
+                    await result_queue.put(result)
+                return
+
+            first_assignment = affected_assignments[0]
+            await result_queue.put(
+                self._platform_result_from_artifact_setup_failure(
+                    batch_id=batch_id,
+                    artifact=artifact,
+                    task=first_assignment.task,
+                    attempt_number=first_assignment.attempt_number,
+                    max_attempts=first_assignment.max_attempts,
+                    started_at=attempt_started_at,
+                    failure=exc,
+                )
+            )
+        finally:
+            if deployment is not None:
+                await _run_blocking_call(self._blocking_executor, self._sandboxes.stop, deployment)
+            if self._activity is not None:
+                self._activity.mark_artifact_finished(batch_id, artifact.artifact_id)
+                self._activity.mark_batch_finished(batch_id)
 
     async def _run_artifacts(
         self,
@@ -908,6 +1060,46 @@ class EvaluationScheduler:
         )
         return submissions
 
+    def _platform_result_from_artifact_setup_failure(
+        self,
+        *,
+        batch_id: UUID,
+        artifact: ScriptArtifactSpec,
+        task: MinerTask,
+        attempt_number: int,
+        max_attempts: int,
+        started_at: datetime,
+        failure: ArtifactExecutionFailedError,
+    ) -> PlatformOwnedTaskResult:
+        finished_at = self._clock()
+        attempt = MinerTaskAttemptAuditRecord(
+            validator_session_id=uuid4(),
+            batch_id=batch_id,
+            artifact_id=artifact.artifact_id,
+            task_id=task.task_id,
+            attempt_number=attempt_number,
+            uid=artifact.uid,
+            miner_hotkey_ss58=artifact.miner_hotkey_ss58 or "unknown-miner-hotkey",
+            started_at=started_at,
+            finished_at=finished_at,
+            status=MinerTaskAttemptStatus.FAILED,
+            error_code=str(failure.error_code),
+            error_summary_code=str(failure.error_code),
+            retry_decision=MinerTaskAttemptRetryDecision.WILL_NOT_RETRY,
+            terminal_effect=MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE,
+            max_attempts=max_attempts,
+            execution_log=(),
+        )
+        self._progress.record_terminated_attempt(attempt)
+        return PlatformOwnedTaskResult(
+            batch_id=batch_id,
+            artifact_id=artifact.artifact_id,
+            task_id=task.task_id,
+            attempt_number=attempt_number,
+            result=None,
+            terminal_attempt=attempt,
+        )
+
     def _artifact_execution_failure(
         self,
         *,
@@ -1036,6 +1228,29 @@ class EvaluationScheduler:
             if pair not in recorded_pairs:
                 completed_by_pair.setdefault(pair, submission)
         return tuple(completed_by_pair.values())
+
+
+def _require_assignment_for_artifact(
+    assignment: MinerTaskWorkAssignment,
+    *,
+    batch_id: UUID,
+    artifact_id: UUID,
+) -> None:
+    if assignment.batch_id != batch_id:
+        raise ValueError("assigned task batch_id does not match artifact queue")
+    if assignment.artifact.artifact_id != artifact_id:
+        raise ValueError("assigned task artifact_id does not match artifact queue")
+
+
+def _drain_assignment_queue(
+    assignment_queue: asyncio.Queue[MinerTaskWorkAssignment],
+) -> tuple[MinerTaskWorkAssignment, ...]:
+    assignments: list[MinerTaskWorkAssignment] = []
+    while True:
+        try:
+            assignments.append(assignment_queue.get_nowait())
+        except asyncio.QueueEmpty:
+            return tuple(assignments)
 
 
 def _sandbox_failure_diagnostics_from_options(options: object | None) -> SandboxFailureDiagnostics | None:

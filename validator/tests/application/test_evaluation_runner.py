@@ -34,9 +34,14 @@ from harnyx_commons.errors import SessionBudgetExhaustedError
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_validator.application.dto.evaluation import (
+    MinerTaskAttemptAuditRecord,
+    MinerTaskAttemptRetryDecision,
+    MinerTaskAttemptStatus,
     MinerTaskAttemptTerminalEffect,
     MinerTaskRunRequest,
     MinerTaskRunSubmission,
+    MinerTaskWorkAssignment,
+    PlatformOwnedTaskResult,
     ScriptArtifactSpec,
     TaskRunOutcome,
     TokenUsageSummary,
@@ -62,6 +67,9 @@ from validator.tests.fixtures.fakes import FakeReceiptLog, FakeSessionRegistry
 from validator.tests.fixtures.subtensor import FakeSubtensorClient
 
 pytestmark = pytest.mark.anyio("asyncio")
+_ASSIGNMENT_TOKEN = "assignment-token"  # noqa: S105 - fixed test-only assignment token
+_FAILED_ASSIGNMENT_TOKEN = "failed-assignment-token"  # noqa: S105 - fixed test-only assignment token
+_COMPLETED_ASSIGNMENT_TOKEN = "completed-assignment-token"  # noqa: S105 - fixed test-only assignment token
 
 
 def _progress(tmp_path: Path) -> FileBackedRunProgress:
@@ -248,6 +256,130 @@ def _submission_for_task(
         usage=TokenUsageSummary.empty(),
         session=session,
     )
+
+
+def _platform_owned_task_result(
+    assignment: MinerTaskWorkAssignment,
+    *,
+    terminal_effect: MinerTaskAttemptTerminalEffect,
+) -> PlatformOwnedTaskResult:
+    now = datetime(2025, 10, 17, 12, 0, tzinfo=UTC)
+    failed = terminal_effect is MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE
+    return PlatformOwnedTaskResult(
+        batch_id=assignment.batch_id,
+        artifact_id=assignment.artifact.artifact_id,
+        task_id=assignment.task.task_id,
+        attempt_number=assignment.attempt_number,
+        result=None,
+        terminal_attempt=MinerTaskAttemptAuditRecord(
+            validator_session_id=uuid4(),
+            batch_id=assignment.batch_id,
+            artifact_id=assignment.artifact.artifact_id,
+            task_id=assignment.task.task_id,
+            attempt_number=assignment.attempt_number,
+            uid=assignment.artifact.uid,
+            miner_hotkey_ss58="miner-hotkey",
+            started_at=now,
+            finished_at=now,
+            status=MinerTaskAttemptStatus.FAILED if failed else MinerTaskAttemptStatus.SUCCEEDED,
+            error_code="artifact_setup_failed" if failed else None,
+            error_summary_code="artifact_setup_failed" if failed else None,
+            retry_decision=MinerTaskAttemptRetryDecision.WILL_NOT_RETRY,
+            terminal_effect=terminal_effect,
+            max_attempts=assignment.max_attempts,
+            execution_log=(),
+        ),
+    )
+
+
+async def test_evaluate_assigned_task_queue_drains_same_tick_results_before_delivery_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=SessionManager(FakeSessionRegistry(), InMemoryTokenRegistry()),
+        evaluation_records=_RecordingEvaluationStore(),
+        receipt_log=FakeReceiptLog(),
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
+    )
+    batch_id = uuid4()
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+    failed_task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="failed"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    completed_task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="completed"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    failed_assignment = MinerTaskWorkAssignment(
+        batch_id=batch_id,
+        artifact=artifact,
+        task=failed_task,
+        attempt_number=1,
+        max_attempts=2,
+        assignment_token=_FAILED_ASSIGNMENT_TOKEN,
+    )
+    completed_assignment = MinerTaskWorkAssignment(
+        batch_id=batch_id,
+        artifact=artifact,
+        task=completed_task,
+        attempt_number=1,
+        max_attempts=2,
+        assignment_token=_COMPLETED_ASSIGNMENT_TOKEN,
+    )
+    results_by_task = {
+        failed_task.task_id: _platform_owned_task_result(
+            failed_assignment,
+            terminal_effect=MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE,
+        ),
+        completed_task.task_id: _platform_owned_task_result(
+            completed_assignment,
+            terminal_effect=MinerTaskAttemptTerminalEffect.TASK_RESULT,
+        ),
+    }
+
+    async def evaluate_assigned_task(**kwargs):
+        return results_by_task[kwargs["task"].task_id]
+
+    monkeypatch.setattr(runner, "evaluate_assigned_task", evaluate_assigned_task)
+
+    result_queue: asyncio.Queue[PlatformOwnedTaskResult] = asyncio.Queue()
+    await runner.evaluate_assigned_task_queue(
+        batch_id=batch_id,
+        artifact=artifact,
+        initial_assignments=(failed_assignment, completed_assignment),
+        assignment_queue=asyncio.Queue(),
+        close_requested=asyncio.Event(),
+        result_queue=result_queue,
+        orchestrator=cast(TaskRunOrchestrator, object()),
+    )
+
+    results = (result_queue.get_nowait(), result_queue.get_nowait())
+    assert {result.task_id for result in results} == {
+        failed_task.task_id,
+        completed_task.task_id,
+    }
+    assert {
+        result.terminal_attempt.terminal_effect
+        for result in results
+    } == {
+        MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE,
+        MinerTaskAttemptTerminalEffect.TASK_RESULT,
+    }
+    assert result_queue.empty()
 
 
 def test_usage_summarizer_falls_back_to_referenceable_result_count_when_search_cost_is_missing() -> None:
@@ -1437,6 +1569,175 @@ async def test_evaluation_runner_records_exhausted_submission(tmp_path: Path) ->
     assert tuple(receipt.receipt_id for receipt in submission.execution_log) == ("receipt-1",)
     assert receipt_log.for_session(submission.run.session_id) == ()
     assert evaluation_store.records == [submission]
+
+
+async def test_evaluation_runner_assigned_final_timeout_returns_terminal_failed_result(tmp_path: Path) -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    evaluation_store = _RecordingEvaluationStore()
+    receipt_log = FakeReceiptLog()
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_store,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        clock=_ClockSequence(
+            datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+            datetime(2025, 10, 17, 12, 1, tzinfo=UTC),
+            datetime(2025, 10, 17, 12, 2, tzinfo=UTC),
+            datetime(2025, 10, 17, 12, 3, tzinfo=UTC),
+        ),
+        progress=_progress(tmp_path),
+    )
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="assigned timeout"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+    orchestrator = _AlwaysMinerTimeoutOrchestrator(
+        sessions=session_registry,
+        receipt_log=receipt_log,
+        total_tokens=12,
+        elapsed_ms=500.0,
+    )
+
+    result = await runner.evaluate_assigned_task(
+        batch_id=uuid4(),
+        artifact=artifact,
+        task=task,
+        attempt_number=2,
+        max_attempts=2,
+        assignment_token=_ASSIGNMENT_TOKEN,
+        orchestrator=cast(TaskRunOrchestrator, orchestrator),
+    )
+
+    assert orchestrator.calls == 1
+    assert result.result is not None
+    assert result.result.run.details.error is not None
+    assert result.result.run.details.error.code == "timeout_miner_owned"
+    assert result.terminal_attempt.retry_decision is MinerTaskAttemptRetryDecision.WILL_NOT_RETRY
+    assert result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.TASK_RESULT
+    assert result.terminal_attempt.max_attempts == 2
+    assert evaluation_store.records == [result.result]
+
+
+async def test_evaluation_runner_assigned_task_delivery_disqualifies_scoring_retry_exhausted_submission(
+    tmp_path: Path,
+) -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    evaluation_store = _RecordingEvaluationStore()
+    receipt_log = FakeReceiptLog()
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_store,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
+    )
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="assigned scoring retry exhausted"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+
+    result = await runner.evaluate_assigned_task(
+        batch_id=uuid4(),
+        artifact=artifact,
+        task=task,
+        attempt_number=1,
+        max_attempts=1,
+        assignment_token=_ASSIGNMENT_TOKEN,
+        orchestrator=cast(TaskRunOrchestrator, _ScoringRetryExhaustedOrchestrator()),
+    )
+
+    assert result.result is None
+    assert result.terminal_attempt.status is MinerTaskAttemptStatus.FAILED
+    assert result.terminal_attempt.error_code == "scoring_llm_retry_exhausted"
+    assert result.terminal_attempt.retry_decision is MinerTaskAttemptRetryDecision.WILL_NOT_RETRY
+    assert result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE
+    assert evaluation_store.records[0].run.details.error == EvaluationError(
+        code="scoring_llm_retry_exhausted",
+        message="embedding retries exhausted",
+    )
+
+
+async def test_evaluation_runner_assigned_task_delivery_disqualifies_final_sandbox_invocation_failure(
+    tmp_path: Path,
+) -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    evaluation_store = _RecordingEvaluationStore()
+    receipt_log = FakeReceiptLog()
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_store,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=_progress(tmp_path),
+    )
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="assigned sandbox invocation failure"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+
+    result = await runner.evaluate_assigned_task(
+        batch_id=uuid4(),
+        artifact=artifact,
+        task=task,
+        attempt_number=1,
+        max_attempts=1,
+        assignment_token=_ASSIGNMENT_TOKEN,
+        orchestrator=cast(
+            TaskRunOrchestrator,
+            _AlwaysMinerTimeoutOrchestrator(
+                sessions=session_registry,
+                receipt_log=receipt_log,
+                status_code=500,
+                detail_exception="RuntimeError",
+            ),
+        ),
+    )
+
+    assert result.result is None
+    assert result.terminal_attempt.status is MinerTaskAttemptStatus.FAILED
+    assert result.terminal_attempt.error_code == "sandbox_invocation_failed"
+    assert result.terminal_attempt.retry_decision is MinerTaskAttemptRetryDecision.WILL_NOT_RETRY
+    assert result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE
+    assert evaluation_store.records[0].run.details.error == EvaluationError(
+        code="sandbox_invocation_failed",
+        message="sandbox entrypoint request timed out",
+    )
 
 
 async def test_evaluation_runner_proxy_control_receipt_overrides_later_budget_exhaustion(

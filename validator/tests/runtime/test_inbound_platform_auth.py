@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from threading import Event
 
 import bittensor as bt
@@ -9,11 +8,8 @@ import pytest
 
 import harnyx_validator.infrastructure.auth.sr25519 as sr25519
 from harnyx_commons.bittensor import VerificationError, build_canonical_request
-from harnyx_validator.application.accept_batch import AcceptEvaluationBatch
 from harnyx_validator.application.status import StatusProvider
 from harnyx_validator.infrastructure.auth.sr25519 import BittensorSr25519InboundVerifier
-from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
-from harnyx_validator.infrastructure.state.run_progress import FileBackedRunProgress
 from harnyx_validator.runtime import bootstrap
 from harnyx_validator.runtime.settings import Settings
 
@@ -24,10 +20,6 @@ class _StubHotkey:
 
     def sign(self, payload: bytes) -> bytes:
         return payload
-
-
-def _progress(tmp_path: Path) -> FileBackedRunProgress:
-    return FileBackedRunProgress(storage_root=tmp_path / "run-progress")
 
 
 def _build_signed_header(
@@ -408,7 +400,7 @@ def test_inbound_verifier_refresh_failure_keeps_last_known_hotkeys(monkeypatch) 
 
 @pytest.mark.anyio
 async def test_control_provider_offloads_auth_verification_to_thread(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     observed: dict[str, object] = {}
 
@@ -438,12 +430,8 @@ async def test_control_provider_offloads_auth_verification_to_thread(
     monkeypatch.setattr(bootstrap.asyncio, "to_thread", fake_to_thread)
 
     deps = bootstrap._make_control_provider(
-        AcceptEvaluationBatch(InMemoryBatchInbox(), StatusProvider(), _progress(tmp_path)),
-        object(),
-        object(),
         StatusProvider(),
         inbound_auth,
-        _progress(tmp_path),
         _StubHotkey(),
     )()
 
@@ -479,7 +467,7 @@ def test_inbound_verifier_stop_timeout_returns_false() -> None:
 
 
 @pytest.mark.anyio
-async def test_make_control_provider_verifies_request_inline(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+async def test_make_control_provider_verifies_request_inline(monkeypatch: pytest.MonkeyPatch) -> None:
     verify_calls: list[tuple[object, dict[str, object]]] = []
 
     def _record_verify_request(verifier: object, **kwargs: object) -> str:
@@ -488,25 +476,15 @@ async def test_make_control_provider_verifies_request_inline(monkeypatch: pytest
 
     monkeypatch.setattr(bootstrap, "_verify_request", _record_verify_request)
 
-    progress_tracker = _progress(tmp_path)
     status_provider = StatusProvider()
-    accept_batch = AcceptEvaluationBatch(
-        inbox=InMemoryBatchInbox(),
-        status=status_provider,
-        progress=progress_tracker,
-    )
     inbound_auth = BittensorSr25519InboundVerifier(
         netuid=2,
         network="ws://127.0.0.1:9945",
         owner_coldkey_ss58="5OwnerColdkey",
     )
     deps = bootstrap._make_control_provider(
-        accept_batch=accept_batch,
-        restore_batch=object(),
-        restore_worker=object(),
         status_provider=status_provider,
         inbound_auth=inbound_auth,
-        progress_tracker=progress_tracker,
         validator_hotkey=_StubHotkey(),
     )()
 
@@ -533,7 +511,6 @@ async def test_make_control_provider_verifies_request_inline(monkeypatch: pytest
 
 def test_make_control_provider_reuses_fallback_resource_usage_provider(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
 ) -> None:
     created: list[object] = []
 
@@ -544,12 +521,8 @@ def test_make_control_provider_reuses_fallback_resource_usage_provider(
     monkeypatch.setattr(bootstrap, "ValidatorResourceUsageProvider", _StubResourceUsageProvider)
 
     provider = bootstrap._make_control_provider(
-        AcceptEvaluationBatch(InMemoryBatchInbox(), StatusProvider(), _progress(tmp_path)),
-        object(),
-        object(),
         StatusProvider(),
         object(),
-        _progress(tmp_path),
         _StubHotkey(),
     )
 

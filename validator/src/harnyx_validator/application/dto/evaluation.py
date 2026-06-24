@@ -115,6 +115,25 @@ class MinerTaskBatchSpec(BaseModel):
         return self
 
 
+class MinerTaskWorkAssignment(BaseModel):
+    model_config = VALIDATOR_STRICT_CONFIG
+
+    """One platform-assigned miner-task attempt."""
+
+    batch_id: UUID
+    artifact: ScriptArtifactSpec
+    task: MinerTask
+    attempt_number: int = Field(ge=1)
+    max_attempts: int = Field(ge=1)
+    assignment_token: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_attempt_budget(self) -> MinerTaskWorkAssignment:
+        if self.max_attempts < self.attempt_number:
+            raise ValueError("max_attempts must be >= attempt_number")
+        return self
+
+
 class EntrypointInvocationRequest(BaseModel):
     model_config = VALIDATOR_STRICT_CONFIG
 
@@ -200,7 +219,6 @@ class MinerTaskAttemptRetryDecision(StrEnum):
 
 
 class MinerTaskAttemptTerminalEffect(StrEnum):
-    NONE = "none"
     TASK_RESULT = "task_result"
     DELIVERY_FAILURE = "delivery_failure"
 
@@ -221,7 +239,7 @@ class MinerTaskAttemptAuditRecord(BaseModel):
     error_code: str | None = Field(default=None, max_length=128)
     error_summary_code: str | None = Field(default=None, max_length=128)
     retry_decision: MinerTaskAttemptRetryDecision
-    terminal_effect: MinerTaskAttemptTerminalEffect
+    terminal_effect: MinerTaskAttemptTerminalEffect | None
     max_attempts: int = Field(ge=1)
     execution_log: tuple[ToolCall, ...] = ()
 
@@ -238,17 +256,27 @@ class MinerTaskAttemptAuditRecord(BaseModel):
                 raise ValueError("succeeded attempts must not retry")
             if self.terminal_effect is not MinerTaskAttemptTerminalEffect.TASK_RESULT:
                 raise ValueError("succeeded attempts must have task_result terminal effect")
-        if (
-            self.retry_decision is MinerTaskAttemptRetryDecision.WILL_RETRY
-            and self.terminal_effect is not MinerTaskAttemptTerminalEffect.NONE
-        ):
-            raise ValueError("retrying attempts must not have terminal effect")
-        if (
-            self.terminal_effect is not MinerTaskAttemptTerminalEffect.NONE
-            and self.retry_decision is not MinerTaskAttemptRetryDecision.WILL_NOT_RETRY
-        ):
-            raise ValueError("terminal attempts must not retry")
+        if self.retry_decision is MinerTaskAttemptRetryDecision.WILL_RETRY:
+            if self.terminal_effect is not None:
+                raise ValueError("retrying attempts must not have terminal effect")
+            if self.attempt_number >= self.max_attempts:
+                raise ValueError("retrying attempts must have remaining retry budget")
+        if self.retry_decision is MinerTaskAttemptRetryDecision.WILL_NOT_RETRY and self.terminal_effect is None:
+            raise ValueError("non-retrying attempts must have terminal effect")
         return self
+
+
+class PlatformOwnedTaskResult(BaseModel):
+    model_config = VALIDATOR_STRICT_CONFIG
+
+    """Completed payload for one platform-assigned miner-task attempt."""
+
+    batch_id: UUID
+    artifact_id: UUID
+    task_id: UUID
+    attempt_number: int = Field(ge=1)
+    result: MinerTaskRunSubmission | None = None
+    terminal_attempt: MinerTaskAttemptAuditRecord
 
 
 class MinerTaskBatchRunResult(BaseModel):
@@ -270,8 +298,10 @@ __all__ = [
     "MinerTaskAttemptTerminalEffect",
     "MinerTaskBatchRunResult",
     "MinerTaskBatchSpec",
+    "MinerTaskWorkAssignment",
     "MinerTaskRunRequest",
     "MinerTaskRunSubmission",
+    "PlatformOwnedTaskResult",
     "ScriptArtifactSpec",
     "TaskRunOutcome",
     "TokenUsageSummary",
