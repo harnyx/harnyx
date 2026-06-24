@@ -12,10 +12,10 @@ from uuid import UUID
 
 import bittensor as bt
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter
 
 from harnyx_commons.bittensor import build_canonical_request
-from harnyx_commons.domain.tool_call import ToolExecutionFacts
+from harnyx_commons.domain.tool_call import ToolCall, ToolExecutionFacts
 from harnyx_commons.errors import BudgetExceededError, ToolInvocationTimeoutError, ToolProviderError
 from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.protocol_headers import PLATFORM_TOOL_PROXY_TOKEN_HEADER
@@ -40,6 +40,7 @@ from harnyx_validator.infrastructure.transient_network import classify_transient
 _GET_ATTEMPTS = 2
 _PLATFORM_WORK_RESULT_TIMEOUT_SECONDS = 300.0
 _PLATFORM_TOOL_PROXY_GRANT_RETRY_DELAYS_SECONDS = (0.25, 1.0)
+_TOOL_CALLS_ADAPTER = TypeAdapter(tuple[ToolCall, ...])
 
 
 class PlatformClientError(RuntimeError):
@@ -581,7 +582,7 @@ def _run_submission_payload(submission: Any) -> JsonObject:
             "response": _jsonable(submission.run.response),
         },
         "score": submission.score,
-        "execution_log": _jsonable(submission.execution_log),
+        "execution_log": _execution_log_payload(submission.execution_log),
         "usage": _jsonable(submission.usage),
         "session": {
             "session_id": str(submission.session.session_id),
@@ -611,8 +612,12 @@ def _attempt_payload(attempt: Any) -> JsonObject:
         "retry_decision": attempt.retry_decision.value,
         "terminal_effect": None if attempt.terminal_effect is None else attempt.terminal_effect.value,
         "max_attempts": attempt.max_attempts,
-        "execution_log": _jsonable(attempt.execution_log),
+        "execution_log": _execution_log_payload(attempt.execution_log),
     }
+
+
+def _execution_log_payload(execution_log: tuple[ToolCall, ...]) -> list[JsonValue]:
+    return cast(list[JsonValue], _TOOL_CALLS_ADAPTER.dump_python(execution_log, mode="json"))
 
 
 def _platform_result_acknowledgement(value: object) -> PlatformTaskResultAcknowledgement:

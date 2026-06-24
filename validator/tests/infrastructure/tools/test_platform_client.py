@@ -11,14 +11,21 @@ import httpx
 import pytest
 
 from harnyx_commons.bittensor import build_canonical_request
+from harnyx_commons.domain.miner_task import EvaluationDetails, Response, ScoreBreakdown
+from harnyx_commons.domain.session import Session, SessionStatus
+from harnyx_commons.domain.tool_call import ToolCall, ToolCallDetails, ToolCallOutcome
 from harnyx_commons.errors import BudgetExceededError, ToolInvocationTimeoutError, ToolProviderError
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptAuditRecord,
     MinerTaskAttemptRetryDecision,
     MinerTaskAttemptStatus,
+    MinerTaskAttemptTerminalEffect,
+    MinerTaskRunSubmission,
     PlatformOwnedTaskResult,
+    TokenUsageSummary,
 )
 from harnyx_validator.application.ports.platform import PlatformTaskAttemptIdentity
+from harnyx_validator.domain.evaluation import MinerTaskRun
 from harnyx_validator.infrastructure.tools.platform_client import (
     AsyncPlatformToolProxyPlatformClient,
     HttpPlatformClient,
@@ -129,6 +136,23 @@ def _assert_signed(request: httpx.Request, keypair: bt.Keypair) -> None:
     canonical = build_canonical_request(request.method, path, body)
     signature = bytes.fromhex(match.group("sig"))
     assert keypair.verify(canonical, signature)
+
+
+def _tool_call(*, session_id, issued_at: datetime) -> ToolCall:
+    return ToolCall(
+        receipt_id="receipt-1",
+        session_id=session_id,
+        uid=7,
+        tool="search_web",
+        issued_at=issued_at,
+        outcome=ToolCallOutcome.OK,
+        details=ToolCallDetails(
+            request_hash="request-hash",
+            request_payload={"query": "smoke"},
+            response_hash="response-hash",
+            response_payload={"ok": True},
+        ),
+    )
 
 
 def test_get_champion_weights_returns_weights() -> None:
@@ -298,7 +322,7 @@ def test_submit_miner_task_work_results_posts_audit_only_retry_attempt() -> None
                     retry_decision=MinerTaskAttemptRetryDecision.WILL_RETRY,
                     terminal_effect=None,
                     max_attempts=2,
-                    execution_log=(),
+                    execution_log=(_tool_call(session_id=session_id, issued_at=started_at),),
                 ),
             ),
         )
@@ -310,9 +334,127 @@ def test_submit_miner_task_work_results_posts_audit_only_retry_attempt() -> None
     assert item["terminal_attempt"]["validator_session_id"] == str(session_id)
     assert item["terminal_attempt"]["retry_decision"] == "will_retry"
     assert item["terminal_attempt"]["terminal_effect"] is None
+    execution_log = item["terminal_attempt"]["execution_log"]
+    assert len(execution_log) == 1
+    assert execution_log[0]["receipt_id"] == "receipt-1"
+    assert execution_log[0]["session_id"] == str(session_id)
+    assert execution_log[0]["tool"] == "search_web"
+    assert execution_log[0]["outcome"] == "ok"
+    assert execution_log[0]["details"]["response_payload"] == {"ok": True}
     assert acknowledgements[0].outcome == "accepted"
     assert acknowledgements[0].canonical is False
     assert acknowledgements[0].reason_code is None
+
+
+def test_submit_miner_task_work_results_serializes_run_execution_log() -> None:
+    keypair = _keypair()
+    batch_id = uuid4()
+    artifact_id = uuid4()
+    task_id = uuid4()
+    session_id = uuid4()
+    started_at = datetime(2026, 6, 22, 0, 0, tzinfo=UTC)
+    seen_body: dict[str, object] | None = None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal seen_body
+        _assert_signed(request, keypair)
+        if request.method == "POST" and request.url.path == "/v2/miner-task-work/results":
+            seen_body = json.loads(request.content)
+            return httpx.Response(
+                status_code=200,
+                json={
+                    "server_time": "2026-06-22T00:00:02+00:00",
+                    "results": [
+                        {
+                            "batch_id": str(batch_id),
+                            "artifact_id": str(artifact_id),
+                            "task_id": str(task_id),
+                            "attempt_number": 1,
+                            "outcome": "accepted",
+                            "canonical": True,
+                            "reason_code": None,
+                            "reason": None,
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(status_code=404)
+
+    client = HttpPlatformClient(
+        base_url="https://mock.local",
+        hotkey=keypair,
+        transport=httpx.MockTransport(handler),
+    )
+    session = Session(
+        session_id=session_id,
+        uid=7,
+        task_id=task_id,
+        issued_at=started_at,
+        expires_at=started_at + timedelta(minutes=5),
+        budget_usd=0.05,
+        status=SessionStatus.COMPLETED,
+    )
+    result = PlatformOwnedTaskResult(
+        batch_id=batch_id,
+        artifact_id=artifact_id,
+        task_id=task_id,
+        attempt_number=1,
+        result=MinerTaskRunSubmission(
+            batch_id=batch_id,
+            validator_uid=7,
+            run=MinerTaskRun(
+                session_id=session_id,
+                uid=7,
+                artifact_id=artifact_id,
+                task_id=task_id,
+                response=Response(text="answer"),
+                details=EvaluationDetails(
+                    score_breakdown=ScoreBreakdown(
+                        comparison_score=1.0,
+                        total_score=1.0,
+                        scoring_version="v1",
+                    ),
+                ),
+                completed_at=started_at + timedelta(seconds=1),
+            ),
+            score=1.0,
+            execution_log=(_tool_call(session_id=session_id, issued_at=started_at),),
+            usage=TokenUsageSummary.empty(),
+            session=session,
+        ),
+        terminal_attempt=MinerTaskAttemptAuditRecord(
+            validator_session_id=session_id,
+            batch_id=batch_id,
+            artifact_id=artifact_id,
+            task_id=task_id,
+            attempt_number=1,
+            uid=7,
+            miner_hotkey_ss58="miner-hotkey",
+            started_at=started_at,
+            finished_at=started_at + timedelta(seconds=1),
+            status=MinerTaskAttemptStatus.SUCCEEDED,
+            error_code=None,
+            error_summary_code=None,
+            retry_decision=MinerTaskAttemptRetryDecision.WILL_NOT_RETRY,
+            terminal_effect=MinerTaskAttemptTerminalEffect.TASK_RESULT,
+            max_attempts=1,
+            execution_log=(),
+        ),
+    )
+
+    acknowledgements = client.submit_miner_task_work_results((result,))
+
+    assert seen_body is not None
+    item = seen_body["results"][0]  # type: ignore[index]
+    execution_log = item["result"]["execution_log"]
+    assert len(execution_log) == 1
+    assert execution_log[0]["receipt_id"] == "receipt-1"
+    assert execution_log[0]["session_id"] == str(session_id)
+    assert execution_log[0]["tool"] == "search_web"
+    assert execution_log[0]["outcome"] == "ok"
+    assert execution_log[0]["details"]["request_payload"] == {"query": "smoke"}
+    assert acknowledgements[0].outcome == "accepted"
+    assert acknowledgements[0].canonical is True
 
 
 def test_get_miner_task_batch_parses_tasks_and_artifacts() -> None:
