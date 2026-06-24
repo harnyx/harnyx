@@ -14,6 +14,22 @@ from harnyx_validator.runtime import bootstrap
 from harnyx_validator.runtime.settings import Settings
 
 pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
+_GEMMA_ENDPOINT_ID = "gemma4-cloud-run-turbo"
+_GEMMA_ROUTE_TARGET = f"custom-openai-compatible:{_GEMMA_ENDPOINT_ID}"
+_GEMMA_SERVICE_URL = "https://gemma-4-31b-turbo-obbrpx3ppa-uc.a.run.app"
+
+
+def _gemma_cloud_run_endpoint_config() -> dict[str, object]:
+    return {
+        "id": _GEMMA_ENDPOINT_ID,
+        "base_url": f"{_GEMMA_SERVICE_URL}/v1",
+        "auth": {
+            "type": "google_id_token",
+            "audience": _GEMMA_SERVICE_URL,
+            "credential_source": "service_account_json_b64_env",
+            "credential_env": "GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64",
+        },
+    }
 
 
 class RecordingProvider(LlmProviderPort):
@@ -38,14 +54,16 @@ async def test_similarity_judge_live_uses_real_structured_runtime_flow() -> None
         update={
             "llm": base_settings.llm.model_copy(
                 update={
+                    "openai_compatible_endpoints_json": json.dumps([_gemma_cloud_run_endpoint_config()]),
                     "llm_model_provider_overrides_json": json.dumps(
-                        {"duplication_detection": {bootstrap._DUPLICATION_DETECTION_LLM_MODEL: "bedrock"}}
+                        {"duplication_detection": {bootstrap._DUPLICATION_DETECTION_LLM_MODEL: _GEMMA_ROUTE_TARGET}}
                     )
                 }
             )
         }
     )
     similarity_route = bootstrap._resolve_similarity_judge_route(settings)
+    assert similarity_route.provider == _GEMMA_ROUTE_TARGET
 
     registry = build_cached_llm_provider_registry(
         llm_settings=settings.llm,
