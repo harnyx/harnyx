@@ -158,6 +158,14 @@ class TaskAttemptDecision:
 
 
 @dataclass(frozen=True, slots=True)
+class _AssignedTaskFinalization:
+    result: PlatformOwnedTaskResult
+    local_submission: MinerTaskRunSubmission | None
+    terminal_outcome: str
+    error_code: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class SandboxFailureDiagnostics:
     image: str | None = None
     pull_policy: str | None = None
@@ -346,123 +354,26 @@ class EvaluationRunner:
                 orchestrator=orchestrator,
                 final_attempt=attempt_number >= max_attempts,
             )
-            if decision.kind is AttemptControlKind.SUBMISSION:
-                terminal_outcome = AttemptControlKind.SUBMISSION.value
-                submission = _require_submission(decision)
-                error_code = _submission_error_code_or_none(submission)
-                terminal_effect = MinerTaskAttemptTerminalEffect.TASK_RESULT
-                platform_result: MinerTaskRunSubmission | None = submission
-                if error_code is not None and is_delivery_disqualifying_validator_pair_error(error_code):
-                    terminal_effect = MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE
-                    platform_result = None
-                attempt = self._record_terminated_attempt(
-                    batch_id=batch_id,
-                    artifact=artifact,
-                    task=task,
-                    issued=issued,
-                    attempt_number=attempt_number,
-                    max_attempts=max_attempts,
-                    started_at=attempt_started_at,
-                    decision=decision,
-                    retry_decision=MinerTaskAttemptRetryDecision.WILL_NOT_RETRY,
-                    terminal_effect=terminal_effect,
-                )
-                return PlatformOwnedTaskResult(
-                    batch_id=batch_id,
-                    artifact_id=artifact.artifact_id,
-                    task_id=task.task_id,
-                    attempt_number=attempt_number,
-                    result=platform_result,
-                    terminal_attempt=attempt,
-                )
-
-            if decision.kind is AttemptControlKind.REVIEW_TIMEOUT and attempt_number >= max_attempts:
-                timeout_exc = _require_timeout_exc(decision)
-                timeout_resolution = self._record_terminal_timeout_submission(
-                    batch_id=batch_id,
-                    artifact=artifact,
-                    task=task,
-                    issued=issued,
-                    timeout_exc=timeout_exc,
-                )
-                terminal_outcome = AttemptControlKind.SUBMISSION.value
-                submission = _require_submission(timeout_resolution)
-                error_code = _submission_error_code_or_none(submission)
-                attempt = self._record_terminated_attempt(
-                    batch_id=batch_id,
-                    artifact=artifact,
-                    task=task,
-                    issued=issued,
-                    attempt_number=attempt_number,
-                    max_attempts=max_attempts,
-                    started_at=attempt_started_at,
-                    decision=timeout_resolution,
-                    retry_decision=MinerTaskAttemptRetryDecision.WILL_NOT_RETRY,
-                    terminal_effect=MinerTaskAttemptTerminalEffect.TASK_RESULT,
-                )
-                return PlatformOwnedTaskResult(
-                    batch_id=batch_id,
-                    artifact_id=artifact.artifact_id,
-                    task_id=task.task_id,
-                    attempt_number=attempt_number,
-                    result=submission,
-                    terminal_attempt=attempt,
-                )
-
-            if decision.kind in {AttemptControlKind.RETRY, AttemptControlKind.REVIEW_TIMEOUT}:
-                terminal_outcome = decision.kind.value
-                error_code = _attempt_error_code(
-                    decision,
-                    execution_log=decision.attempt_execution_log
-                    or tuple(self._receipts.for_session(issued.session.session_id)),
-                )
-                attempt = self._record_terminated_attempt(
-                    batch_id=batch_id,
-                    artifact=artifact,
-                    task=task,
-                    issued=issued,
-                    attempt_number=attempt_number,
-                    max_attempts=max_attempts,
-                    started_at=attempt_started_at,
-                    decision=decision,
-                    retry_decision=MinerTaskAttemptRetryDecision.WILL_RETRY,
-                    terminal_effect=None,
-                )
-                return PlatformOwnedTaskResult(
-                    batch_id=batch_id,
-                    artifact_id=artifact.artifact_id,
-                    task_id=task.task_id,
-                    attempt_number=attempt_number,
-                    result=None,
-                    terminal_attempt=attempt,
-                )
-
-            if decision.kind is AttemptControlKind.VALIDATOR_BATCH_FAILURE:
-                validator_failure = _require_validator_failure(decision)
-                terminal_outcome = AttemptControlKind.VALIDATOR_BATCH_FAILURE.value
-                error_code = str(validator_failure.error_code)
-                attempt = self._record_terminated_attempt(
-                    batch_id=batch_id,
-                    artifact=artifact,
-                    task=task,
-                    issued=issued,
-                    attempt_number=attempt_number,
-                    max_attempts=max_attempts,
-                    started_at=attempt_started_at,
-                    decision=decision,
-                    retry_decision=MinerTaskAttemptRetryDecision.WILL_NOT_RETRY,
-                    terminal_effect=MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE,
-                )
-                return PlatformOwnedTaskResult(
-                    batch_id=batch_id,
-                    artifact_id=artifact.artifact_id,
-                    task_id=task.task_id,
-                    attempt_number=attempt_number,
-                    result=None,
-                    terminal_attempt=attempt,
-                )
-
-            raise RuntimeError("assigned task attempt returned unexpected decision")
+            finalization = self._finalize_assigned_task_decision(
+                batch_id=batch_id,
+                artifact=artifact,
+                task=task,
+                issued=issued,
+                attempt_number=attempt_number,
+                max_attempts=max_attempts,
+                started_at=attempt_started_at,
+                decision=decision,
+            )
+            terminal_outcome = finalization.terminal_outcome
+            error_code = finalization.error_code
+            self._record_assigned_task_local_side_effects_best_effort(
+                batch_id=batch_id,
+                artifact=artifact,
+                task=task,
+                result=finalization.result,
+                local_submission=finalization.local_submission,
+            )
+            return finalization.result
         finally:
             _log_session_finished(
                 batch_id=batch_id,
@@ -851,6 +762,7 @@ class EvaluationRunner:
                     terminal_outcome = AttemptControlKind.SUBMISSION.value
                     submission = _require_submission(decision)
                     error_code = _submission_error_code_or_none(submission)
+                    self._record_submission(submission)
                     self._record_terminated_attempt(
                         batch_id=batch_id,
                         artifact=artifact,
@@ -1018,7 +930,7 @@ class EvaluationRunner:
             if control_failure_decision is not None:
                 return control_failure_decision
             return _submission_decision(
-                self._record_exhausted(
+                self._build_exhausted(
                     batch_id=batch_id,
                     artifact=artifact,
                     task=task,
@@ -1113,7 +1025,7 @@ class EvaluationRunner:
         if provider_failure_decision is not None:
             return provider_failure_decision
         return _submission_decision(
-            self._record_success(
+            self._build_success_submission(
                 batch_id=batch_id,
                 session_id=issued.session.session_id,
                 outcome=outcome,
@@ -1154,11 +1066,26 @@ class EvaluationRunner:
         session_id: UUID,
         outcome: TaskRunOutcome,
     ) -> MinerTaskRunSubmission:
+        submission = self._build_success_submission(
+            batch_id=batch_id,
+            session_id=session_id,
+            outcome=outcome,
+        )
+        self._record_submission(submission)
+        return submission
+
+    def _build_success_submission(
+        self,
+        *,
+        batch_id: UUID,
+        session_id: UUID,
+        outcome: TaskRunOutcome,
+    ) -> MinerTaskRunSubmission:
         breakdown = outcome.run.details.score_breakdown
         if breakdown is None:
             raise RuntimeError("successful task runs require score breakdown details")
         envelope = self._sessions.mark_status(session_id, SessionStatus.COMPLETED)
-        submission = MinerTaskRunSubmission(
+        return MinerTaskRunSubmission(
             batch_id=batch_id,
             validator_uid=self._validator_uid_value(),
             run=outcome.run,
@@ -1167,8 +1094,6 @@ class EvaluationRunner:
             usage=outcome.usage,
             session=envelope.session,
         )
-        self._record_submission(submission)
-        return submission
 
     def _record_failure(
         self,
@@ -1207,7 +1132,39 @@ class EvaluationRunner:
         elapsed_ms: float | None = None,
     ) -> MinerTaskRunSubmission:
         envelope = self._sessions.mark_status(session_id, SessionStatus.ERROR)
-        return self._record_terminal_failure(
+        submission = self._build_terminal_failure(
+            batch_id=batch_id,
+            envelope=envelope,
+            uid=uid,
+            artifact_id=artifact_id,
+            task=task,
+            error_code=error_code,
+            error_message=error_message,
+            total_tool_usage=total_tool_usage,
+            usage=usage,
+            execution_log=execution_log,
+            elapsed_ms=elapsed_ms,
+        )
+        self._record_submission(submission)
+        return submission
+
+    def _build_failed_submission(
+        self,
+        *,
+        batch_id: UUID,
+        session_id: UUID,
+        uid: int,
+        artifact_id: UUID,
+        task: MinerTask,
+        error_code: MinerTaskErrorCode,
+        error_message: str,
+        total_tool_usage: ToolUsageSummary | None = None,
+        usage: TokenUsageSummary | None = None,
+        execution_log: tuple[ToolCall, ...] | None = None,
+        elapsed_ms: float | None = None,
+    ) -> MinerTaskRunSubmission:
+        envelope = self._sessions.mark_status(session_id, SessionStatus.ERROR)
+        return self._build_terminal_failure(
             batch_id=batch_id,
             envelope=envelope,
             uid=uid,
@@ -1230,10 +1187,29 @@ class EvaluationRunner:
         session_id: UUID,
         error_message: str,
     ) -> MinerTaskRunSubmission:
+        submission = self._build_exhausted(
+            batch_id=batch_id,
+            artifact=artifact,
+            task=task,
+            session_id=session_id,
+            error_message=error_message,
+        )
+        self._record_submission(submission)
+        return submission
+
+    def _build_exhausted(
+        self,
+        *,
+        batch_id: UUID,
+        artifact: ScriptArtifactSpec,
+        task: MinerTask,
+        session_id: UUID,
+        error_message: str,
+    ) -> MinerTaskRunSubmission:
         envelope = self._sessions.inspect(session_id)
         if envelope.session.status is not SessionStatus.EXHAUSTED:
             raise RuntimeError("exhausted task runs require exhausted session status")
-        return self._record_terminal_failure(
+        return self._build_terminal_failure(
             batch_id=batch_id,
             envelope=envelope,
             uid=artifact.uid,
@@ -1244,6 +1220,37 @@ class EvaluationRunner:
         )
 
     def _record_terminal_failure(
+        self,
+        *,
+        batch_id: UUID,
+        envelope: SessionEnvelope,
+        uid: int,
+        artifact_id: UUID,
+        task: MinerTask,
+        error_code: MinerTaskErrorCode,
+        error_message: str,
+        total_tool_usage: ToolUsageSummary | None = None,
+        usage: TokenUsageSummary | None = None,
+        execution_log: tuple[ToolCall, ...] | None = None,
+        elapsed_ms: float | None = None,
+    ) -> MinerTaskRunSubmission:
+        submission = self._build_terminal_failure(
+            batch_id=batch_id,
+            envelope=envelope,
+            uid=uid,
+            artifact_id=artifact_id,
+            task=task,
+            error_code=error_code,
+            error_message=error_message,
+            total_tool_usage=total_tool_usage,
+            usage=usage,
+            execution_log=execution_log,
+            elapsed_ms=elapsed_ms,
+        )
+        self._record_submission(submission)
+        return submission
+
+    def _build_terminal_failure(
         self,
         *,
         batch_id: UUID,
@@ -1286,10 +1293,34 @@ class EvaluationRunner:
             usage=summarized_usage if usage is None else usage,
             session=envelope.session,
         )
-        self._record_submission(submission)
         return submission
 
     def _record_task_failure(
+        self,
+        *,
+        batch_id: UUID,
+        artifact: ScriptArtifactSpec,
+        task: MinerTask,
+        session_id: UUID,
+        error_code: MinerTaskErrorCode,
+        error_message: str,
+        log_message: str,
+        exc: Exception,
+    ) -> MinerTaskRunSubmission:
+        submission = self._build_task_failure(
+            batch_id=batch_id,
+            artifact=artifact,
+            task=task,
+            session_id=session_id,
+            error_code=error_code,
+            error_message=error_message,
+            log_message=log_message,
+            exc=exc,
+        )
+        self._record_submission(submission)
+        return submission
+
+    def _build_task_failure(
         self,
         *,
         batch_id: UUID,
@@ -1311,7 +1342,7 @@ class EvaluationRunner:
             },
             exc_info=exc,
         )
-        return self._record_failure(
+        return self._build_failed_submission(
             batch_id=batch_id,
             session_id=session_id,
             uid=artifact.uid,
@@ -1330,6 +1361,25 @@ class EvaluationRunner:
         issued: SessionIssued,
         timeout_exc: SandboxInvocationError,
     ) -> TaskAttemptDecision:
+        decision = self._build_terminal_timeout_decision(
+            batch_id=batch_id,
+            artifact=artifact,
+            task=task,
+            issued=issued,
+            timeout_exc=timeout_exc,
+        )
+        self._record_submission(_require_submission(decision))
+        return decision
+
+    def _build_terminal_timeout_decision(
+        self,
+        *,
+        batch_id: UUID,
+        artifact: ScriptArtifactSpec,
+        task: MinerTask,
+        issued: SessionIssued,
+        timeout_exc: SandboxInvocationError,
+    ) -> TaskAttemptDecision:
         current_attempt_receipts = self._current_attempt_receipts(
             session_id=issued.session.session_id,
             active_attempt=issued.session.active_attempt,
@@ -1339,7 +1389,7 @@ class EvaluationRunner:
             envelope=envelope,
             receipts=current_attempt_receipts,
         )
-        submission = self._record_failed_submission(
+        submission = self._build_failed_submission(
             batch_id=batch_id,
             session_id=issued.session.session_id,
             uid=artifact.uid,
@@ -1395,7 +1445,7 @@ class EvaluationRunner:
         if not final_attempt:
             return _retry_decision(exc)
         return _submission_decision(
-            self._record_task_failure(
+            self._build_task_failure(
                 batch_id=batch_id,
                 artifact=artifact,
                 task=task,
@@ -1443,7 +1493,7 @@ class EvaluationRunner:
 
         if isinstance(exc, LlmRetryExhaustedError):
             return _submission_decision(
-                self._record_task_failure(
+                self._build_task_failure(
                     batch_id=batch_id,
                     artifact=artifact,
                     task=task,
@@ -1457,7 +1507,7 @@ class EvaluationRunner:
 
         if isinstance(exc, MinerResponseValidationError):
             return _submission_decision(
-                self._record_task_failure(
+                self._build_task_failure(
                     batch_id=batch_id,
                     artifact=artifact,
                     task=task,
@@ -1473,7 +1523,7 @@ class EvaluationRunner:
             detail_code=exc.detail_code,
         ):
             return _submission_decision(
-                self._record_task_failure(
+                self._build_task_failure(
                     batch_id=batch_id,
                     artifact=artifact,
                     task=task,
@@ -1487,7 +1537,7 @@ class EvaluationRunner:
 
         if isinstance(exc, SandboxInvocationError) and exc.detail_code == SANDBOX_DETAIL_CODE_UNHANDLED_EXCEPTION:
             return _submission_decision(
-                self._record_task_failure(
+                self._build_task_failure(
                     batch_id=batch_id,
                     artifact=artifact,
                     task=task,
@@ -1503,7 +1553,7 @@ class EvaluationRunner:
             if not final_attempt:
                 return _retry_decision(exc)
             return _submission_decision(
-                self._record_task_failure(
+                self._build_task_failure(
                     batch_id=batch_id,
                     artifact=artifact,
                     task=task,
@@ -1609,7 +1659,258 @@ class EvaluationRunner:
             )
         return None
 
+    def _finalize_assigned_task_decision(
+        self,
+        *,
+        batch_id: UUID,
+        artifact: ScriptArtifactSpec,
+        task: MinerTask,
+        issued: SessionIssued,
+        attempt_number: int,
+        max_attempts: int,
+        started_at: datetime,
+        decision: TaskAttemptDecision,
+    ) -> _AssignedTaskFinalization:
+        if decision.kind is AttemptControlKind.SUBMISSION:
+            terminal_outcome = AttemptControlKind.SUBMISSION.value
+            submission = _require_submission(decision)
+            error_code = _submission_error_code_or_none(submission)
+            terminal_effect = MinerTaskAttemptTerminalEffect.TASK_RESULT
+            platform_result: MinerTaskRunSubmission | None = submission
+            if error_code is not None and is_delivery_disqualifying_validator_pair_error(error_code):
+                terminal_effect = MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE
+                platform_result = None
+            attempt = self._build_terminated_attempt_record(
+                batch_id=batch_id,
+                artifact=artifact,
+                task=task,
+                issued=issued,
+                attempt_number=attempt_number,
+                max_attempts=max_attempts,
+                started_at=started_at,
+                decision=decision,
+                retry_decision=MinerTaskAttemptRetryDecision.WILL_NOT_RETRY,
+                terminal_effect=terminal_effect,
+            )
+            return _AssignedTaskFinalization(
+                result=PlatformOwnedTaskResult(
+                    batch_id=batch_id,
+                    artifact_id=artifact.artifact_id,
+                    task_id=task.task_id,
+                    attempt_number=attempt_number,
+                    result=platform_result,
+                    terminal_attempt=attempt,
+                ),
+                local_submission=submission,
+                terminal_outcome=terminal_outcome,
+                error_code=error_code,
+            )
+
+        if decision.kind is AttemptControlKind.REVIEW_TIMEOUT and attempt_number >= max_attempts:
+            timeout_resolution = self._build_terminal_timeout_decision(
+                batch_id=batch_id,
+                artifact=artifact,
+                task=task,
+                issued=issued,
+                timeout_exc=_require_timeout_exc(decision),
+            )
+            terminal_outcome = AttemptControlKind.SUBMISSION.value
+            submission = _require_submission(timeout_resolution)
+            error_code = _submission_error_code_or_none(submission)
+            attempt = self._build_terminated_attempt_record(
+                batch_id=batch_id,
+                artifact=artifact,
+                task=task,
+                issued=issued,
+                attempt_number=attempt_number,
+                max_attempts=max_attempts,
+                started_at=started_at,
+                decision=timeout_resolution,
+                retry_decision=MinerTaskAttemptRetryDecision.WILL_NOT_RETRY,
+                terminal_effect=MinerTaskAttemptTerminalEffect.TASK_RESULT,
+            )
+            return _AssignedTaskFinalization(
+                result=PlatformOwnedTaskResult(
+                    batch_id=batch_id,
+                    artifact_id=artifact.artifact_id,
+                    task_id=task.task_id,
+                    attempt_number=attempt_number,
+                    result=submission,
+                    terminal_attempt=attempt,
+                ),
+                local_submission=submission,
+                terminal_outcome=terminal_outcome,
+                error_code=error_code,
+            )
+
+        if decision.kind in {AttemptControlKind.RETRY, AttemptControlKind.REVIEW_TIMEOUT}:
+            terminal_outcome = decision.kind.value
+            error_code = _attempt_error_code(
+                decision,
+                execution_log=decision.attempt_execution_log
+                or tuple(self._receipts.for_session(issued.session.session_id)),
+            )
+            attempt = self._build_terminated_attempt_record(
+                batch_id=batch_id,
+                artifact=artifact,
+                task=task,
+                issued=issued,
+                attempt_number=attempt_number,
+                max_attempts=max_attempts,
+                started_at=started_at,
+                decision=decision,
+                retry_decision=MinerTaskAttemptRetryDecision.WILL_RETRY,
+                terminal_effect=None,
+            )
+            return _AssignedTaskFinalization(
+                result=PlatformOwnedTaskResult(
+                    batch_id=batch_id,
+                    artifact_id=artifact.artifact_id,
+                    task_id=task.task_id,
+                    attempt_number=attempt_number,
+                    result=None,
+                    terminal_attempt=attempt,
+                ),
+                local_submission=None,
+                terminal_outcome=terminal_outcome,
+                error_code=error_code,
+            )
+
+        if decision.kind is AttemptControlKind.VALIDATOR_BATCH_FAILURE:
+            validator_failure = _require_validator_failure(decision)
+            terminal_outcome = AttemptControlKind.VALIDATOR_BATCH_FAILURE.value
+            error_code = str(validator_failure.error_code)
+            attempt = self._build_terminated_attempt_record(
+                batch_id=batch_id,
+                artifact=artifact,
+                task=task,
+                issued=issued,
+                attempt_number=attempt_number,
+                max_attempts=max_attempts,
+                started_at=started_at,
+                decision=decision,
+                retry_decision=MinerTaskAttemptRetryDecision.WILL_NOT_RETRY,
+                terminal_effect=MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE,
+            )
+            return _AssignedTaskFinalization(
+                result=PlatformOwnedTaskResult(
+                    batch_id=batch_id,
+                    artifact_id=artifact.artifact_id,
+                    task_id=task.task_id,
+                    attempt_number=attempt_number,
+                    result=None,
+                    terminal_attempt=attempt,
+                ),
+                local_submission=None,
+                terminal_outcome=terminal_outcome,
+                error_code=error_code,
+            )
+
+        raise RuntimeError("assigned task attempt returned unexpected decision")
+
+    def _record_assigned_task_local_side_effects_best_effort(
+        self,
+        *,
+        batch_id: UUID,
+        artifact: ScriptArtifactSpec,
+        task: MinerTask,
+        result: PlatformOwnedTaskResult,
+        local_submission: MinerTaskRunSubmission | None,
+    ) -> None:
+        if local_submission is not None:
+            try:
+                self._progress.record(local_submission)
+            except Exception as exc:
+                self._log_assigned_task_local_recording_failure(
+                    batch_id=batch_id,
+                    artifact=artifact,
+                    task=task,
+                    result=result,
+                    local_write_target="progress.record",
+                    exc=exc,
+                )
+            try:
+                self._evaluation_records.record(local_submission)
+            except Exception as exc:
+                self._log_assigned_task_local_recording_failure(
+                    batch_id=batch_id,
+                    artifact=artifact,
+                    task=task,
+                    result=result,
+                    local_write_target="evaluation_records.record",
+                    exc=exc,
+                )
+        try:
+            self._progress.record_terminated_attempt(result.terminal_attempt)
+        except Exception as exc:
+            self._log_assigned_task_local_recording_failure(
+                batch_id=batch_id,
+                artifact=artifact,
+                task=task,
+                result=result,
+                local_write_target="progress.record_terminated_attempt",
+                exc=exc,
+            )
+
+    def _log_assigned_task_local_recording_failure(
+        self,
+        *,
+        batch_id: UUID,
+        artifact: ScriptArtifactSpec,
+        task: MinerTask,
+        result: PlatformOwnedTaskResult,
+        local_write_target: str,
+        exc: Exception,
+    ) -> None:
+        logger.warning(
+            "assigned miner task local recording failed",
+            extra={
+                "data": {
+                    "batch_id": str(batch_id),
+                    "artifact_id": str(artifact.artifact_id),
+                    "task_id": str(task.task_id),
+                    "uid": artifact.uid,
+                    "validator_session_id": str(result.terminal_attempt.validator_session_id),
+                    "attempt_number": result.attempt_number,
+                    "max_attempts": result.terminal_attempt.max_attempts,
+                    "error_code": result.terminal_attempt.error_code,
+                    "local_write_target": local_write_target,
+                    "exception_type": _exception_type_name(exc),
+                }
+            },
+            exc_info=exc,
+        )
+
     def _record_terminated_attempt(
+        self,
+        *,
+        batch_id: UUID,
+        artifact: ScriptArtifactSpec,
+        task: MinerTask,
+        issued: SessionIssued,
+        attempt_number: int,
+        max_attempts: int,
+        started_at: datetime,
+        decision: TaskAttemptDecision,
+        retry_decision: MinerTaskAttemptRetryDecision,
+        terminal_effect: MinerTaskAttemptTerminalEffect | None,
+    ) -> MinerTaskAttemptAuditRecord:
+        record = self._build_terminated_attempt_record(
+            batch_id=batch_id,
+            artifact=artifact,
+            task=task,
+            issued=issued,
+            attempt_number=attempt_number,
+            max_attempts=max_attempts,
+            started_at=started_at,
+            decision=decision,
+            retry_decision=retry_decision,
+            terminal_effect=terminal_effect,
+        )
+        self._progress.record_terminated_attempt(record)
+        return record
+
+    def _build_terminated_attempt_record(
         self,
         *,
         batch_id: UUID,
@@ -1649,7 +1950,6 @@ class EvaluationRunner:
             max_attempts=max_attempts,
             execution_log=attempt_receipts,
         )
-        self._progress.record_terminated_attempt(record)
         return record
 
     def _log_retry_attempt(

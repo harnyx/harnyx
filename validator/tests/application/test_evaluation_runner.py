@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -109,6 +110,90 @@ class _FailOnNthRecordEvaluationStore(_RecordingEvaluationStore):
         if self._call_count == self._fail_on_call:
             raise RuntimeError("evaluation record write failed")
         super().record(result)
+
+
+class _FailingSubmissionProgress(FileBackedRunProgress):
+    def record(self, result: MinerTaskRunSubmission) -> None:
+        raise RuntimeError("submission progress write failed")
+
+
+class _FailingTerminatedAttemptProgress(FileBackedRunProgress):
+    def record_terminated_attempt(self, attempt: MinerTaskAttemptAuditRecord) -> None:
+        raise RuntimeError("terminated attempt progress write failed")
+
+
+def _assigned_task_test_context(
+    tmp_path: Path,
+    *,
+    progress: FileBackedRunProgress | None = None,
+    evaluation_records: _RecordingEvaluationStore | None = None,
+    clock: _ClockSequence | None = None,
+) -> tuple[
+    EvaluationRunner,
+    UUID,
+    ScriptArtifactSpec,
+    MinerTask,
+    FakeSessionRegistry,
+    FakeReceiptLog,
+    FileBackedRunProgress,
+    _RecordingEvaluationStore,
+]:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    receipt_log = FakeReceiptLog()
+    progress = _progress(tmp_path) if progress is None else progress
+    evaluation_records = _RecordingEvaluationStore() if evaluation_records is None else evaluation_records
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_records,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        clock=clock or _ClockSequence(datetime(2025, 10, 17, 12, 0, tzinfo=UTC)),
+        progress=progress,
+    )
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="assigned local recording"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+    return runner, uuid4(), artifact, task, session_registry, receipt_log, progress, evaluation_records
+
+
+def _assert_local_recording_warning(
+    caplog: pytest.LogCaptureFixture,
+    *,
+    batch_id: UUID,
+    artifact: ScriptArtifactSpec,
+    task: MinerTask,
+    result: PlatformOwnedTaskResult,
+    exception_type: str,
+    local_write_target: str,
+) -> None:
+    matches = [
+        record
+        for record in caplog.records
+        if getattr(record, "data", {}).get("local_write_target") == local_write_target
+    ]
+    assert len(matches) == 1
+    data = matches[0].data
+    assert data["batch_id"] == str(batch_id)
+    assert data["artifact_id"] == str(artifact.artifact_id)
+    assert data["task_id"] == str(task.task_id)
+    assert data["validator_session_id"] == str(result.terminal_attempt.validator_session_id)
+    assert data["attempt_number"] == result.attempt_number
+    assert data["max_attempts"] == result.terminal_attempt.max_attempts
+    assert data["error_code"] == result.terminal_attempt.error_code
+    assert data["local_write_target"] == local_write_target
+    assert data["exception_type"] == exception_type
 
 
 def _record_receipt(
@@ -1501,6 +1586,17 @@ class _ScoringRetryExhaustedOrchestrator:
         raise LlmRetryExhaustedError("embedding retries exhausted")
 
 
+class _SandboxTimeoutOrchestrator:
+    async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
+        raise _sandbox_invocation_error(
+            "sandbox timed out",
+            status_code=408,
+            detail_code="SandboxTimeout",
+            detail_exception="TimeoutError",
+            detail_error="sandbox timed out",
+        )
+
+
 class _EmbeddingRetryExhaustedOrchestrator:
     async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
         raise VertexEmbeddingRetryExhaustedError("embedding retries exhausted")
@@ -1628,6 +1724,262 @@ async def test_evaluation_runner_assigned_final_timeout_returns_terminal_failed_
     assert result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.TASK_RESULT
     assert result.terminal_attempt.max_attempts == 2
     assert evaluation_store.records == [result.result]
+
+
+async def test_evaluation_runner_assigned_task_returns_platform_result_when_submission_progress_recording_fails(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="harnyx_validator.scheduler")
+    progress = _FailingSubmissionProgress(storage_root=tmp_path / "run-progress")
+    runner, batch_id, artifact, task, _, _, _, _ = _assigned_task_test_context(
+        tmp_path,
+        progress=progress,
+    )
+
+    result = await runner.evaluate_assigned_task(
+        batch_id=batch_id,
+        artifact=artifact,
+        task=task,
+        attempt_number=1,
+        max_attempts=2,
+        assignment_token=_ASSIGNMENT_TOKEN,
+        orchestrator=cast(TaskRunOrchestrator, _SuccessfulOrchestrator()),
+    )
+
+    assert result.result is not None
+    assert result.result.run.details.error is None
+    assert result.terminal_attempt.status is MinerTaskAttemptStatus.SUCCEEDED
+    assert result.terminal_attempt.retry_decision is MinerTaskAttemptRetryDecision.WILL_NOT_RETRY
+    assert result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.TASK_RESULT
+    _assert_local_recording_warning(
+        caplog,
+        batch_id=batch_id,
+        artifact=artifact,
+        task=task,
+        result=result,
+        exception_type="RuntimeError",
+        local_write_target="progress.record",
+    )
+
+
+async def test_evaluation_runner_assigned_task_returns_platform_result_when_evaluation_recording_fails(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="harnyx_validator.scheduler")
+    evaluation_store = _FailOnNthRecordEvaluationStore(fail_on_call=1)
+    runner, batch_id, artifact, task, _, _, _, _ = _assigned_task_test_context(
+        tmp_path,
+        evaluation_records=evaluation_store,
+    )
+
+    result = await runner.evaluate_assigned_task(
+        batch_id=batch_id,
+        artifact=artifact,
+        task=task,
+        attempt_number=1,
+        max_attempts=2,
+        assignment_token=_ASSIGNMENT_TOKEN,
+        orchestrator=cast(TaskRunOrchestrator, _SuccessfulOrchestrator()),
+    )
+
+    assert result.result is not None
+    assert result.result.run.details.error is None
+    assert result.terminal_attempt.status is MinerTaskAttemptStatus.SUCCEEDED
+    assert result.terminal_attempt.retry_decision is MinerTaskAttemptRetryDecision.WILL_NOT_RETRY
+    assert result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.TASK_RESULT
+    _assert_local_recording_warning(
+        caplog,
+        batch_id=batch_id,
+        artifact=artifact,
+        task=task,
+        result=result,
+        exception_type="RuntimeError",
+        local_write_target="evaluation_records.record",
+    )
+
+
+async def test_evaluation_runner_assigned_task_returns_platform_result_when_terminal_attempt_recording_fails(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="harnyx_validator.scheduler")
+    progress = _FailingTerminatedAttemptProgress(storage_root=tmp_path / "run-progress")
+    runner, batch_id, artifact, task, _, _, _, _ = _assigned_task_test_context(
+        tmp_path,
+        progress=progress,
+    )
+
+    result = await runner.evaluate_assigned_task(
+        batch_id=batch_id,
+        artifact=artifact,
+        task=task,
+        attempt_number=1,
+        max_attempts=2,
+        assignment_token=_ASSIGNMENT_TOKEN,
+        orchestrator=cast(TaskRunOrchestrator, _SuccessfulOrchestrator()),
+    )
+
+    assert result.result is not None
+    assert result.result.run.details.error is None
+    assert result.terminal_attempt.status is MinerTaskAttemptStatus.SUCCEEDED
+    assert result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.TASK_RESULT
+    _assert_local_recording_warning(
+        caplog,
+        batch_id=batch_id,
+        artifact=artifact,
+        task=task,
+        result=result,
+        exception_type="RuntimeError",
+        local_write_target="progress.record_terminated_attempt",
+    )
+
+
+async def test_evaluation_runner_assigned_task_preserves_delivery_failure_when_local_recording_fails(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="harnyx_validator.scheduler")
+    evaluation_store = _FailOnNthRecordEvaluationStore(fail_on_call=1)
+    runner, batch_id, artifact, task, _, _, _, _ = _assigned_task_test_context(
+        tmp_path,
+        evaluation_records=evaluation_store,
+    )
+
+    result = await runner.evaluate_assigned_task(
+        batch_id=batch_id,
+        artifact=artifact,
+        task=task,
+        attempt_number=1,
+        max_attempts=2,
+        assignment_token=_ASSIGNMENT_TOKEN,
+        orchestrator=cast(TaskRunOrchestrator, _ScoringRetryExhaustedOrchestrator()),
+    )
+
+    assert result.result is None
+    assert result.terminal_attempt.status is MinerTaskAttemptStatus.FAILED
+    assert result.terminal_attempt.error_code == "scoring_llm_retry_exhausted"
+    assert result.terminal_attempt.retry_decision is MinerTaskAttemptRetryDecision.WILL_NOT_RETRY
+    assert result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE
+    _assert_local_recording_warning(
+        caplog,
+        batch_id=batch_id,
+        artifact=artifact,
+        task=task,
+        result=result,
+        exception_type="RuntimeError",
+        local_write_target="evaluation_records.record",
+    )
+
+
+async def test_evaluation_runner_assigned_retry_result_survives_local_recording_failure(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="harnyx_validator.scheduler")
+    progress = _FailingTerminatedAttemptProgress(storage_root=tmp_path / "run-progress")
+    runner, batch_id, artifact, task, _, _, _, _ = _assigned_task_test_context(
+        tmp_path,
+        progress=progress,
+    )
+
+    result = await runner.evaluate_assigned_task(
+        batch_id=batch_id,
+        artifact=artifact,
+        task=task,
+        attempt_number=1,
+        max_attempts=2,
+        assignment_token=_ASSIGNMENT_TOKEN,
+        orchestrator=cast(TaskRunOrchestrator, _SandboxTimeoutOrchestrator()),
+    )
+
+    assert result.result is None
+    assert result.terminal_attempt.status is MinerTaskAttemptStatus.FAILED
+    assert result.terminal_attempt.error_code == "SandboxTimeout"
+    assert result.terminal_attempt.retry_decision is MinerTaskAttemptRetryDecision.WILL_RETRY
+    assert result.terminal_attempt.terminal_effect is None
+    _assert_local_recording_warning(
+        caplog,
+        batch_id=batch_id,
+        artifact=artifact,
+        task=task,
+        result=result,
+        exception_type="RuntimeError",
+        local_write_target="progress.record_terminated_attempt",
+    )
+
+
+async def test_evaluation_runner_assigned_final_timeout_result_survives_local_recording_failure(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="harnyx_validator.scheduler")
+    evaluation_store = _FailOnNthRecordEvaluationStore(fail_on_call=1)
+    clock = _ClockSequence(
+        datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        datetime(2025, 10, 17, 12, 1, tzinfo=UTC),
+        datetime(2025, 10, 17, 12, 2, tzinfo=UTC),
+        datetime(2025, 10, 17, 12, 3, tzinfo=UTC),
+    )
+    runner, batch_id, artifact, task, session_registry, receipt_log, _, _ = _assigned_task_test_context(
+        tmp_path,
+        evaluation_records=evaluation_store,
+        clock=clock,
+    )
+    orchestrator = _AlwaysMinerTimeoutOrchestrator(
+        sessions=session_registry,
+        receipt_log=receipt_log,
+        total_tokens=12,
+        elapsed_ms=500.0,
+    )
+
+    result = await runner.evaluate_assigned_task(
+        batch_id=batch_id,
+        artifact=artifact,
+        task=task,
+        attempt_number=2,
+        max_attempts=2,
+        assignment_token=_ASSIGNMENT_TOKEN,
+        orchestrator=cast(TaskRunOrchestrator, orchestrator),
+    )
+
+    assert result.result is not None
+    assert result.result.run.details.error is not None
+    assert result.result.run.details.error.code == "timeout_miner_owned"
+    assert result.terminal_attempt.status is MinerTaskAttemptStatus.FAILED
+    assert result.terminal_attempt.error_code == "timeout_miner_owned"
+    assert result.terminal_attempt.retry_decision is MinerTaskAttemptRetryDecision.WILL_NOT_RETRY
+    assert result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.TASK_RESULT
+    _assert_local_recording_warning(
+        caplog,
+        batch_id=batch_id,
+        artifact=artifact,
+        task=task,
+        result=result,
+        exception_type="RuntimeError",
+        local_write_target="evaluation_records.record",
+    )
+
+
+async def test_evaluation_runner_whole_batch_evaluation_still_records_local_submissions(
+    tmp_path: Path,
+) -> None:
+    runner, batch_id, artifact, task, _, _, progress, evaluation_store = _assigned_task_test_context(tmp_path)
+
+    outcome = await runner.evaluate_artifact(
+        batch_id=batch_id,
+        artifact=artifact,
+        tasks=(task,),
+        orchestrator=cast(TaskRunOrchestrator, _SuccessfulOrchestrator()),
+    )
+
+    assert outcome.submissions
+    page = progress.completed_run_page(batch_id=batch_id, after_sequence=0, limit=10)
+    assert [item["submission"] for item in page["items"] if item["submission"] is not None] == list(
+        outcome.submissions
+    )
+    assert evaluation_store.records == list(outcome.submissions)
 
 
 async def test_evaluation_runner_assigned_task_delivery_disqualifies_scoring_retry_exhausted_submission(
