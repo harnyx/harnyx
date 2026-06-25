@@ -213,6 +213,32 @@ async def test_scoring_service_records_split_pairwise_decision() -> None:
     assert score.total_score == pytest.approx(0.5)
 
 
+async def test_scoring_service_maps_reasoning_effort_to_typed_thinking() -> None:
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="What is the answer?"),
+        reference_answer=ReferenceAnswer(text="The answer is 42."),
+    )
+    llm = StubLlmProvider([("first", None, None), ("second", None, None)])
+    service = EvaluationScoringService(
+        llm_provider=llm,
+        config=EvaluationScoringConfig(
+            provider="chutes",
+            model="google/gemma-4-31B-turbo-TEE",
+            reasoning_effort="high",
+        ),
+    )
+
+    await service.score(task=task, response=Response(text="Miner says 42."))
+
+    request = llm.requests[0]
+    assert request.reasoning_effort == "high"
+    assert request.thinking is not None
+    assert request.thinking.enabled is True
+    assert request.thinking.effort == "high"
+    assert request.thinking.budget is None
+
+
 async def test_scoring_service_includes_citations_in_pairwise_prompt() -> None:
     task = MinerTask(
         task_id=uuid4(),

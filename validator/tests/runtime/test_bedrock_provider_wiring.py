@@ -9,6 +9,15 @@ from harnyx_commons.config.bedrock import BedrockSettings
 from harnyx_commons.config.llm import LlmSettings
 from harnyx_commons.config.vertex import VertexSettings
 from harnyx_commons.llm.routing import RoutedLlmProvider
+from harnyx_commons.llm.schema import (
+    AbstractLlmRequest,
+    LlmChoice,
+    LlmChoiceMessage,
+    LlmMessageContentPart,
+    LlmRequest,
+    LlmResponse,
+    LlmUsage,
+)
 from harnyx_commons.tools.invocation_clients import build_tool_invocation_clients
 from harnyx_validator.runtime import bootstrap
 from harnyx_validator.runtime.bootstrap import _build_llm_clients
@@ -18,6 +27,39 @@ from harnyx_validator.runtime.settings import Settings
 def _routed_surface(provider: object) -> str:
     assert isinstance(provider, RoutedLlmProvider)
     return provider._surface
+
+
+class _RecordingProvider:
+    def __init__(self) -> None:
+        self.requests: list[AbstractLlmRequest] = []
+
+    async def invoke(self, request: AbstractLlmRequest) -> LlmResponse:
+        self.requests.append(request)
+        return LlmResponse(
+            id="test-response",
+            choices=(
+                LlmChoice(
+                    index=0,
+                    message=LlmChoiceMessage(
+                        role="assistant",
+                        content=(LlmMessageContentPart(type="output_text", text="ok"),),
+                    ),
+                ),
+            ),
+            usage=LlmUsage(),
+            metadata={"raw_response": {"ok": True}},
+        )
+
+    async def aclose(self) -> None:
+        return None
+
+
+class _FakeRegistry:
+    def __init__(self, provider: _RecordingProvider | None = None) -> None:
+        self.provider = provider or _RecordingProvider()
+
+    def resolve(self, name: str) -> _RecordingProvider:
+        return self.provider
 
 
 def _settings() -> Settings:
@@ -132,30 +174,81 @@ def test_local_tool_invocation_clients_still_reject_tool_override_to_bedrock() -
         )
 
 
-def test_validator_runtime_allows_scoring_override_to_bedrock(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.anyio("asyncio")
+@pytest.mark.parametrize("fallback_model", ("moonshotai/Kimi-K2.5-TEE", "zai-org/GLM-5-TEE"))
+async def test_validator_runtime_routes_scoring_fallbacks_to_bedrock(
+    monkeypatch: pytest.MonkeyPatch,
+    fallback_model: str,
+) -> None:
+    settings = _settings()
+    settings = settings.model_copy(
+        update={
+            "llm": settings.llm.model_copy(
+                update={
+                    "llm_model_provider_overrides_json": json.dumps({"scoring": {fallback_model: "bedrock"}}),
+                }
+            )
+        }
+    )
+    registry = _FakeRegistry()
+    monkeypatch.setattr(bootstrap, "build_cached_llm_provider_registry", lambda **_: registry)
+
+    clients = _build_llm_clients(settings)
+    response = await clients.scoring_llm_provider.invoke(
+        LlmRequest(
+            provider=settings.llm.scoring_llm_provider,
+            model=fallback_model,
+            messages=(),
+            temperature=None,
+            max_output_tokens=128,
+        )
+    )
+
+    assert _routed_surface(clients.scoring_llm_provider) == "scoring"
+    assert registry.provider.requests[0].provider == "bedrock"
+    assert registry.provider.requests[0].model == fallback_model
+    assert response.metadata is not None
+    assert response.metadata["selected_provider"] == "bedrock"
+    assert response.metadata["selected_model"] == fallback_model
+
+
+def test_validator_runtime_routes_primary_scoring_gemma_to_custom_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     settings = _settings()
     settings = settings.model_copy(
         update={
             "llm": settings.llm.model_copy(
                 update={
                     "llm_model_provider_overrides_json": json.dumps(
-                        {"scoring": {bootstrap._SCORING_LLM_MODEL: "bedrock"}}
+                        {
+                            "scoring": {
+                                bootstrap._SCORING_LLM_MODEL: (
+                                    "custom-openai-compatible:gemma4-cloud-run-turbo"
+                                )
+                            }
+                        }
+                    ),
+                    "openai_compatible_endpoints_json": json.dumps(
+                        [
+                            {
+                                "id": "gemma4-cloud-run-turbo",
+                                "base_url": "https://gemma-4-31b-turbo-obbrpx3ppa-uc.a.run.app/v1",
+                                "auth": {"type": "none"},
+                            }
+                        ]
                     ),
                 }
             )
         }
     )
 
-    class _FakeRegistry:
-        def resolve(self, name: str) -> str:
-            return f"provider:{name}"
-
     monkeypatch.setattr(bootstrap, "build_cached_llm_provider_registry", lambda **_: _FakeRegistry())
 
     clients = _build_llm_clients(settings)
 
     assert _routed_surface(clients.scoring_llm_provider) == "scoring"
-    assert clients.scoring_route.provider == "bedrock"
+    assert clients.scoring_route.provider == "custom-openai-compatible:gemma4-cloud-run-turbo"
     assert clients.scoring_route.model == bootstrap._SCORING_LLM_MODEL
 
 
@@ -174,10 +267,6 @@ def test_validator_runtime_allows_duplication_detection_override_to_bedrock(
             )
         }
     )
-
-    class _FakeRegistry:
-        def resolve(self, name: str) -> str:
-            return f"provider:{name}"
 
     monkeypatch.setattr(bootstrap, "build_cached_llm_provider_registry", lambda **_: _FakeRegistry())
 

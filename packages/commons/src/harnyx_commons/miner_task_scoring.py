@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import AliasChoices, BaseModel, Field
 
@@ -20,10 +20,18 @@ from harnyx_commons.llm.json_utils import pydantic_postprocessor
 from harnyx_commons.llm.provider import LlmProviderPort, LlmRetryExhaustedError
 from harnyx_commons.llm.provider_types import LlmProviderName
 from harnyx_commons.llm.retry_utils import RetryPolicy
-from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest, LlmResponse
+from harnyx_commons.llm.schema import (
+    LlmMessage,
+    LlmMessageContentPart,
+    LlmRequest,
+    LlmResponse,
+    LlmThinkingConfig,
+    ReasoningEffort,
+)
 
 _MAX_RENDERED_CITATIONS = 200
 _PAIRWISE_REASONING_SEPARATOR = "\n\n---\n\n"
+_TYPED_THINKING_EFFORTS = frozenset(("low", "medium", "high"))
 _PAIRWISE_SYSTEM_PROMPT = (
     "You are a strict pairwise evaluator comparing two answers to the same query.\n\n"
     "Authority and evidence rules:\n"
@@ -243,6 +251,7 @@ class EvaluationScoringService:
             postprocessor=pydantic_postprocessor(_PairwisePreference),
             temperature=self._config.temperature,
             max_output_tokens=self._config.max_output_tokens,
+            thinking=_thinking_config_for_reasoning_effort(self._config.reasoning_effort),
             reasoning_effort=self._config.reasoning_effort,
             timeout_seconds=self._config.timeout_seconds,
             retry_policy=self._config.retry_policy,
@@ -252,6 +261,15 @@ class EvaluationScoringService:
 
 def _judge_candidate_models(config: EvaluationScoringConfig) -> tuple[str, ...]:
     return (config.model, *config.fallback_models)
+
+
+def _thinking_config_for_reasoning_effort(reasoning_effort: str | None) -> LlmThinkingConfig | None:
+    if reasoning_effort is None:
+        return None
+    normalized = reasoning_effort.strip().lower()
+    if normalized not in _TYPED_THINKING_EFFORTS:
+        return None
+    return LlmThinkingConfig(enabled=True, effort=cast(ReasoningEffort, normalized))
 
 
 def _build_pairwise_reasoning_trace(

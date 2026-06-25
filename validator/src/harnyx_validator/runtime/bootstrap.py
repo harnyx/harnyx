@@ -98,12 +98,12 @@ from harnyx_validator.runtime.settings import Settings
 
 logger = logging.getLogger("harnyx_validator.runtime")
 
-_SCORING_LLM_MODEL = "moonshotai/Kimi-K2.5-TEE"
+_SCORING_LLM_MODEL = "google/gemma-4-31B-turbo-TEE"
 _SCORING_LLM_REASONING_EFFORT = "high"
 _DUPLICATION_DETECTION_LLM_MODEL = "google/gemma-4-31B-turbo-TEE"
 _SCORING_JUDGE_FALLBACK_TAIL_MODELS = (
+    "moonshotai/Kimi-K2.5-TEE",
     "zai-org/GLM-5-TEE",
-    "google/gemma-4-31B-turbo-TEE",
 )
 _DUPLICATION_DETECTION_FALLBACK_MODELS = (
     "moonshotai/Kimi-K2.5-TEE",
