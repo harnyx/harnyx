@@ -122,12 +122,11 @@ async def test_similarity_judge_live_uses_real_structured_runtime_flow() -> None
     assert llm_request.output_mode == "structured"
     assert llm_request.provider == settings.llm.similarity_llm_provider
     assert llm_request.model == similarity_route.model
+    assert llm_request.reasoning_effort == "high"
     assert llm_request.max_output_tokens == settings.llm.similarity_llm_max_output_tokens
     assert llm_request.timeout_seconds == settings.llm.similarity_llm_timeout_seconds
     assert llm_request.retry_policy == settings.llm.similarity_llm_retry_policy
-    assert llm_request.thinking is not None
-    assert llm_request.thinking.enabled is True
-    assert llm_request.thinking.effort == "high"
+    assert llm_request.thinking is None
     assert llm_request.use_case == "miner_task_similarity_judge"
     assert llm_provider.responses[0].metadata is not None
     assert llm_provider.responses[0].metadata["selected_provider"] == similarity_route.provider

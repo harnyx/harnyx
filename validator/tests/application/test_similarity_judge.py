@@ -137,7 +137,7 @@ async def test_similarity_judge_returns_verdict_and_provider_reasoning() -> None
     assert "When the evidence is borderline or the diff is mostly cosmetic, choose `duplicate`" in system_prompt
 
 
-async def test_similarity_judge_maps_reasoning_effort_to_typed_thinking() -> None:
+async def test_similarity_judge_keeps_reasoning_effort_on_request_without_typed_thinking() -> None:
     llm = StubLlmProvider()
     service = SimilarityJudge(
         llm_provider=llm,
@@ -162,10 +162,7 @@ async def test_similarity_judge_maps_reasoning_effort_to_typed_thinking() -> Non
 
     llm_request = llm.requests[0]
     assert llm_request.reasoning_effort == "high"
-    assert llm_request.thinking is not None
-    assert llm_request.thinking.enabled is True
-    assert llm_request.thinking.effort == "high"
-    assert llm_request.thinking.budget is None
+    assert llm_request.thinking is None
 
 
 async def test_similarity_judge_tries_next_candidate_after_true_retry_exhaustion() -> None:

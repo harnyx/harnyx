@@ -15,6 +15,7 @@ from harnyx_commons.llm.providers.openai_stream import (
     _OpenAiStreamEvent,
     normalize_openai_text_fragments,
 )
+from harnyx_commons.llm.providers.thinking import resolve_template_thinking
 from harnyx_commons.llm.schema import (
     AbstractLlmRequest,
     LlmChoice,
@@ -24,7 +25,6 @@ from harnyx_commons.llm.schema import (
     LlmResponse,
     LlmUsage,
 )
-from harnyx_commons.llm.tool_models import tool_model_thinking_capability
 
 _CHUTES_CONTENT_PARTS_ADAPTER = TypeAdapter(list[object])
 _CHUTES_TOOL_CALLS_ADAPTER = TypeAdapter(list[object])
@@ -93,13 +93,15 @@ def _apply_chutes_thinking(
     payload: _ChutesChatRequest,
     request: AbstractLlmRequest,
 ) -> _ChutesChatRequest:
-    thinking = request.thinking
-    if thinking is None:
+    resolved = resolve_template_thinking(
+        canonical_model=request.model,
+        provider_name="chutes",
+        request_thinking=request.thinking,
+        reasoning_effort=request.reasoning_effort,
+    )
+    if resolved is None:
         return payload
-    capability = tool_model_thinking_capability(request.model, provider_name="chutes")
-    if capability is None:
-        return payload
-    return _with_chat_template_kwargs(payload, capability.chat_template_kwargs(enabled=thinking.enabled))
+    return _with_chat_template_kwargs(payload, resolved.chat_template_kwargs())
 
 
 def _with_chat_template_kwargs(

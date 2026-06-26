@@ -106,6 +106,35 @@ async def test_gemma_cloud_run_custom_openai_compatible_scoring_route_live() -> 
 
 @pytest.mark.expensive
 @pytest.mark.anyio("asyncio")
+async def test_gemma_cloud_run_reasoning_effort_live() -> None:
+    response = await _invoke_live_gemma(
+        LlmRequest(
+            provider="chutes",
+            model=_GEMMA_MODEL,
+            messages=(
+                LlmMessage(
+                    role="user",
+                    content=(LlmMessageContentPart.input_text('Think briefly, then reply with only "ok".'),),
+                ),
+            ),
+            temperature=0.0,
+            max_output_tokens=128,
+            timeout_seconds=180.0,
+            reasoning_effort="high",
+        )
+    )
+
+    assert response.raw_text
+    assert response.metadata is not None
+    assert response.metadata["effective_provider"] == _GEMMA_ROUTE_TARGET
+    assert response.metadata["effective_model"] == _GEMMA_MODEL
+    assert response.choices[0].message.reasoning or (
+        response.usage.reasoning_tokens is not None and response.usage.reasoning_tokens > 0
+    )
+
+
+@pytest.mark.expensive
+@pytest.mark.anyio("asyncio")
 async def test_qwen36_cloud_run_custom_openai_compatible_live() -> None:
     response = await _invoke_live_tool_model(
         model=_QWEN36_MODEL,

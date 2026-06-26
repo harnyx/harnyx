@@ -62,6 +62,7 @@ def _basic_chutes_request(
     *,
     model: str = "deepseek-ai/DeepSeek-V3.2-TEE",
     thinking: LlmThinkingConfig | None = None,
+    reasoning_effort: str | None = None,
 ) -> LlmRequest:
     return LlmRequest(
         provider="chutes",
@@ -75,6 +76,7 @@ def _basic_chutes_request(
         temperature=0.0,
         max_output_tokens=32,
         thinking=thinking,
+        reasoning_effort=reasoning_effort,
     )
 
 
@@ -263,6 +265,43 @@ def test_chutes_qwen_and_gemma_thinking_use_only_enable_thinking_template_kwarg(
     assert payload["chat_template_kwargs"] == {"enable_thinking": thinking.enabled}
     assert "reasoning_effort" not in payload
     assert "budget" not in payload
+
+
+def test_chutes_reasoning_effort_derives_template_thinking_for_capable_model() -> None:
+    payload = _ChutesChatRequest.from_request(
+        _basic_chutes_request(
+            model="google/gemma-4-31B-turbo-TEE",
+            reasoning_effort="high",
+        )
+    ).model_dump(mode="python", exclude_none=True)
+
+    assert payload["chat_template_kwargs"] == {"enable_thinking": True}
+    assert "reasoning_effort" not in payload
+
+
+def test_chutes_explicit_thinking_overrides_reasoning_effort() -> None:
+    payload = _ChutesChatRequest.from_request(
+        _basic_chutes_request(
+            model="google/gemma-4-31B-turbo-TEE",
+            thinking=LlmThinkingConfig(enabled=False),
+            reasoning_effort="high",
+        )
+    ).model_dump(mode="python", exclude_none=True)
+
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "reasoning_effort" not in payload
+
+
+def test_chutes_unsupported_reasoning_effort_capability_serializes_nothing() -> None:
+    payload = _ChutesChatRequest.from_request(
+        _basic_chutes_request(
+            model="unsupported/model",
+            reasoning_effort="high",
+        )
+    ).model_dump(mode="python", exclude_none=True)
+
+    assert "chat_template_kwargs" not in payload
+    assert "reasoning_effort" not in payload
 
 
 def test_parse_payload_preserves_reasoning_usage_without_double_counting_completion_tokens() -> None:

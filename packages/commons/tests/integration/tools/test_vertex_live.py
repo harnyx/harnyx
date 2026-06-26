@@ -260,8 +260,24 @@ async def test_vertex_reasoning_effort_live() -> None:
             max_output_tokens=256,
             reasoning_effort="low",
         )
+        generation_config = provider._build_generation_config(
+            request,
+            system_instruction=None,
+            tools=None,
+            tool_config=None,
+        )
+        assert generation_config is not None
+        assert generation_config.thinking_config is not None
+        assert generation_config.thinking_config.include_thoughts is True
+
         response = await provider.invoke(request)
         assert response.raw_text, "Vertex reasoning response should include text output"
+        assert response.metadata is not None
+        assert isinstance(response.metadata.get("raw_response"), dict)
+        if response.choices and response.choices[0].message.reasoning is not None:
+            assert response.choices[0].message.reasoning.strip()
+        if response.usage.reasoning_tokens is not None:
+            assert response.usage.reasoning_tokens >= 0
     finally:
         await provider.aclose()
 

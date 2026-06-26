@@ -219,6 +219,48 @@ async def test_openai_compatible_gemma_thinking_uses_enable_thinking_template_kw
     assert "reasoning_effort" not in seen_payload
 
 
+async def test_openai_compatible_reasoning_effort_derives_template_thinking() -> None:
+    seen_payload: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_payload.update(json.loads(request.content.decode("utf-8")))
+        return _streaming_response()
+
+    provider = OpenAiCompatibleLlmProvider(
+        endpoint=_endpoint(auth={"type": "none"}),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    try:
+        await provider.invoke(_request(reasoning_effort="high"))
+    finally:
+        await provider.aclose()
+
+    assert seen_payload["chat_template_kwargs"] == {"enable_thinking": True}
+    assert "reasoning_effort" not in seen_payload
+
+
+async def test_openai_compatible_explicit_thinking_overrides_reasoning_effort() -> None:
+    seen_payload: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_payload.update(json.loads(request.content.decode("utf-8")))
+        return _streaming_response()
+
+    provider = OpenAiCompatibleLlmProvider(
+        endpoint=_endpoint(auth={"type": "none"}),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    try:
+        await provider.invoke(_request(thinking=LlmThinkingConfig(enabled=False), reasoning_effort="high"))
+    finally:
+        await provider.aclose()
+
+    assert seen_payload["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "reasoning_effort" not in seen_payload
+
+
 @pytest.mark.parametrize("enabled", (True, False))
 async def test_openai_compatible_gemma_thinking_survives_custom_route_model_alias(enabled: bool) -> None:
     route_target = "custom-openai-compatible:gemma4-cloud-run-turbo"
@@ -280,6 +322,38 @@ async def test_openai_compatible_qwen36_thinking_survives_custom_route_model_ali
 
     assert seen_payload["model"] == "Qwen/Qwen3.6-27B-FP8"
     assert seen_payload["chat_template_kwargs"] == {"enable_thinking": enabled}
+
+
+async def test_openai_compatible_qwen36_reasoning_effort_survives_custom_route_model_alias() -> None:
+    route_target = "custom-openai-compatible:qwen36-cloud-run"
+    seen_payload: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_payload.update(json.loads(request.content.decode("utf-8")))
+        return _streaming_response()
+
+    provider = LlmProviderAdapter(
+        provider_name=route_target,
+        delegate=OpenAiCompatibleLlmProvider(
+            endpoint=_endpoint(endpoint_id="qwen36-cloud-run", auth={"type": "none"}),
+            client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        ),
+    )
+
+    try:
+        await provider.invoke(
+            _request(
+                provider=route_target,
+                model="Qwen/Qwen3.6-27B-TEE",
+                reasoning_effort="high",
+            )
+        )
+    finally:
+        await provider.aclose()
+
+    assert seen_payload["model"] == "Qwen/Qwen3.6-27B-FP8"
+    assert seen_payload["chat_template_kwargs"] == {"enable_thinking": True}
+    assert "reasoning_effort" not in seen_payload
 
 
 async def test_openai_compatible_unsupported_thinking_capability_serializes_nothing() -> None:
@@ -405,6 +479,7 @@ def _request(
     provider: str = "custom-openai-compatible:local",
     model: str = "google/gemma-4-31B-turbo-TEE",
     thinking: LlmThinkingConfig | None = None,
+    reasoning_effort: str | None = None,
 ) -> LlmRequest:
     return LlmRequest(
         provider=provider,
@@ -418,6 +493,7 @@ def _request(
         temperature=0.0,
         max_output_tokens=8,
         thinking=thinking,
+        reasoning_effort=reasoning_effort,
     )
 
 

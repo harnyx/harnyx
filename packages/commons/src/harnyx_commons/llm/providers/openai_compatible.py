@@ -33,6 +33,7 @@ from harnyx_commons.llm.providers.openai_stream import (
     iter_openai_sse_events,
     normalize_openai_reasoning_fragments,
 )
+from harnyx_commons.llm.providers.thinking import resolve_template_thinking
 from harnyx_commons.llm.schema import (
     AbstractLlmRequest,
     LlmChoice,
@@ -42,7 +43,6 @@ from harnyx_commons.llm.schema import (
     LlmResponse,
     LlmUsage,
 )
-from harnyx_commons.llm.tool_models import tool_model_thinking_capability
 
 
 class OpenAiCompatibleLlmProvider(BaseLlmProvider):
@@ -225,17 +225,19 @@ def _apply_openai_compatible_thinking(
     *,
     provider_name: str,
 ) -> _OpenAiCompatibleChatRequest:
-    thinking = request.thinking
-    if thinking is None:
-        return payload
     canonical_model = canonical_model_for_provider_model(
         provider_name=provider_name,
         model=request.model,
     )
-    capability = tool_model_thinking_capability(canonical_model, provider_name=provider_name)
-    if capability is None:
+    resolved = resolve_template_thinking(
+        canonical_model=canonical_model,
+        provider_name=provider_name,
+        request_thinking=request.thinking,
+        reasoning_effort=request.reasoning_effort,
+    )
+    if resolved is None:
         return payload
-    return _with_chat_template_kwargs(payload, capability.chat_template_kwargs(enabled=thinking.enabled))
+    return _with_chat_template_kwargs(payload, resolved.chat_template_kwargs())
 
 
 def _with_chat_template_kwargs(

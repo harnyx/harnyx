@@ -19,6 +19,7 @@ from harnyx_commons.llm.providers.openai_chat_codec import (
     json_schema_from_model,
 )
 from harnyx_commons.llm.providers.openai_stream import OpenAiChoiceState, OpenAiStreamState
+from harnyx_commons.llm.providers.thinking import resolve_template_thinking
 from harnyx_commons.llm.schema import (
     AbstractLlmRequest,
     LlmChoice,
@@ -63,6 +64,9 @@ class _VertexMaasChatRequest(BaseModel):
 
     @classmethod
     def from_request(cls, request: AbstractLlmRequest) -> _VertexMaasChatRequest:
+        wire_model = vertex_maas_openai_chat_model_name(request.model)
+        canonical_model = canonical_model_for_provider_model(provider_name="vertex", model=wire_model)
+        template_thinking_capable = tool_model_thinking_capability(canonical_model, provider_name="vertex") is not None
         request_parts = OpenAiChatRequestParts.from_request(
             request,
             provider_name="Vertex MaaS",
@@ -75,7 +79,7 @@ class _VertexMaasChatRequest(BaseModel):
             ),
         )
         payload = cls(
-            model=vertex_maas_openai_chat_model_name(request.model),
+            model=wire_model,
             messages=[message.model_dump(mode="python", exclude_none=True) for message in request_parts.messages],
             temperature=request.temperature,
             max_tokens=request.max_output_tokens,
@@ -85,7 +89,7 @@ class _VertexMaasChatRequest(BaseModel):
                 else None
             ),
             tool_choice=request_parts.tool_choice,
-            reasoning_effort=request.reasoning_effort,
+            reasoning_effort=None if template_thinking_capable else request.reasoning_effort,
             include=request_parts.include,
             response_format=(
                 request_parts.response_format.model_dump(mode="python", exclude_none=True)
@@ -93,7 +97,7 @@ class _VertexMaasChatRequest(BaseModel):
                 else None
             ),
         )
-        payload = _apply_vertex_maas_thinking(payload, request)
+        payload = _apply_vertex_maas_thinking(payload, request, canonical_model=canonical_model)
         if request.extra:
             payload = payload.model_copy(update=dict(request.extra))
         return payload.model_copy(update={"stream": True})
@@ -102,21 +106,18 @@ class _VertexMaasChatRequest(BaseModel):
 def _apply_vertex_maas_thinking(
     payload: _VertexMaasChatRequest,
     request: AbstractLlmRequest,
+    *,
+    canonical_model: str | None,
 ) -> _VertexMaasChatRequest:
-    thinking = request.thinking
-    if thinking is None:
-        return payload
-    canonical_model = canonical_model_for_provider_model(
+    resolved = resolve_template_thinking(
+        canonical_model=canonical_model,
         provider_name="vertex",
-        model=vertex_maas_openai_chat_model_name(request.model),
+        request_thinking=request.thinking,
+        reasoning_effort=request.reasoning_effort,
     )
-    capability = tool_model_thinking_capability(canonical_model, provider_name="vertex")
-    if capability is None:
+    if resolved is None:
         return payload
-    return _with_vertex_chat_template_kwargs(
-        payload,
-        capability.chat_template_kwargs(enabled=thinking.enabled),
-    )
+    return _with_vertex_chat_template_kwargs(payload, resolved.chat_template_kwargs())
 
 
 def _with_vertex_chat_template_kwargs(

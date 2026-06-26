@@ -1575,6 +1575,7 @@ def _basic_vertex_maas_request(
     *,
     model: str = "deepseek-ai/deepseek-v3.2-maas",
     thinking: LlmThinkingConfig | None = None,
+    reasoning_effort: str | None = None,
 ) -> LlmRequest:
     return LlmRequest(
         provider="vertex",
@@ -1588,6 +1589,7 @@ def _basic_vertex_maas_request(
         temperature=0.0,
         max_output_tokens=32,
         thinking=thinking,
+        reasoning_effort=reasoning_effort,
     )
 
 
@@ -1624,6 +1626,46 @@ def test_vertex_maas_glm_thinking_disabled_uses_enable_thinking_template_kwarg()
     ).model_dump(mode="python", exclude_none=True)
 
     assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "reasoning_effort" not in payload
+
+
+def test_vertex_maas_reasoning_effort_derives_template_thinking_and_suppresses_raw_effort() -> None:
+    payload = _VertexMaasChatRequest.from_request(
+        _basic_vertex_maas_request(
+            model="zai-org/glm-5-maas",
+            reasoning_effort="high",
+        )
+    ).model_dump(mode="python", exclude_none=True)
+
+    assert payload["chat_template_kwargs"] == {"enable_thinking": True}
+    assert "reasoning_effort" not in payload
+
+
+def test_vertex_maas_explicit_thinking_overrides_reasoning_effort() -> None:
+    payload = _VertexMaasChatRequest.from_request(
+        _basic_vertex_maas_request(
+            model="zai-org/glm-5-maas",
+            thinking=LlmThinkingConfig(enabled=False),
+            reasoning_effort="high",
+        )
+    ).model_dump(mode="python", exclude_none=True)
+
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "reasoning_effort" not in payload
+
+
+@pytest.mark.parametrize("reasoning_effort", ("2048", " "))
+def test_vertex_maas_template_model_suppresses_raw_numeric_and_blank_reasoning_effort(
+    reasoning_effort: str,
+) -> None:
+    payload = _VertexMaasChatRequest.from_request(
+        _basic_vertex_maas_request(
+            model="zai-org/glm-5-maas",
+            reasoning_effort=reasoning_effort,
+        )
+    ).model_dump(mode="python", exclude_none=True)
+
+    assert "chat_template_kwargs" not in payload
     assert "reasoning_effort" not in payload
 
 
