@@ -92,19 +92,37 @@ class _AssignedWork:
     def mark_dispatch_ready(self) -> None:
         self.dispatch_ready = True
 
-    def claim_initial_for_dispatch(self, assignment: MinerTaskWorkAssignment) -> bool:
+    def claim_initial_for_dispatch(self, assignment: MinerTaskWorkAssignment) -> _ClaimedAssignedTaskFake:
         self.initial_claims.append(assignment)
-        return True
+        return _ClaimedAssignedTaskFake(self, assignment)
 
-    async def claim_for_dispatch(self) -> MinerTaskWorkAssignment:
-        return await self.queue.get()
+    async def claim_for_dispatch(self) -> _ClaimedAssignedTaskFake:
+        return _ClaimedAssignedTaskFake(self, await self.queue.get())
 
-    def claim_nowait_for_dispatch(self) -> MinerTaskWorkAssignment:
-        return self.queue.get_nowait()
+    def claim_nowait_for_dispatch(self) -> _ClaimedAssignedTaskFake:
+        return _ClaimedAssignedTaskFake(self, self.queue.get_nowait())
 
-    def mark_started(self, assignment: MinerTaskWorkAssignment, validator_session_id: UUID) -> bool:
+    def _mark_started(self, assignment: MinerTaskWorkAssignment, validator_session_id: UUID) -> None:
         self.started.append((assignment, validator_session_id))
-        return True
+
+    def _fail_before_start(self, _assignment: MinerTaskWorkAssignment, _result: PlatformOwnedTaskResult) -> None:
+        return None
+
+
+class _ClaimedAssignedTaskFake:
+    def __init__(self, owner: _AssignedWork, assignment: MinerTaskWorkAssignment) -> None:
+        self._owner = owner
+        self._assignment = assignment
+
+    @property
+    def assignment(self) -> MinerTaskWorkAssignment:
+        return self._assignment
+
+    def mark_started(self, validator_session_id: UUID) -> None:
+        self._owner._mark_started(self._assignment, validator_session_id)
+
+    def fail_before_start(self, result: PlatformOwnedTaskResult) -> None:
+        self._owner._fail_before_start(self._assignment, result)
 
 
 def _runner_for(func: Callable[..., Awaitable[ArtifactEvaluationOutcome]]) -> object:

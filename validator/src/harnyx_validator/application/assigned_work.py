@@ -5,7 +5,21 @@ from __future__ import annotations
 from typing import Protocol
 from uuid import UUID
 
-from harnyx_validator.application.dto.evaluation import MinerTaskWorkAssignment
+from harnyx_validator.application.dto.evaluation import MinerTaskWorkAssignment, PlatformOwnedTaskResult
+
+
+class ClaimedAssignedTask(Protocol):
+    """Assignment claimed for validator session start."""
+
+    @property
+    def assignment(self) -> MinerTaskWorkAssignment:
+        """The platform-owned assignment carried by this claim."""
+
+    def mark_started(self, validator_session_id: UUID) -> None:
+        """Attach the issued validator session and make the claim reportable."""
+
+    def fail_before_start(self, result: PlatformOwnedTaskResult) -> None:
+        """Publish a terminal result and release the claim before sandbox execution starts."""
 
 
 class AssignedArtifactWork(Protocol):
@@ -23,17 +37,14 @@ class AssignedArtifactWork(Protocol):
     def mark_dispatch_ready(self) -> None:
         """Mark the artifact ready to dispatch assigned tasks."""
 
-    def claim_initial_for_dispatch(self, assignment: MinerTaskWorkAssignment) -> bool:
-        """Claim a startup-drained assignment before runner scheduling."""
+    def claim_initial_for_dispatch(self, assignment: MinerTaskWorkAssignment) -> ClaimedAssignedTask | None:
+        """Claim a startup-drained assignment before validator session start."""
 
-    async def claim_for_dispatch(self) -> MinerTaskWorkAssignment:
-        """Wait for and claim a queued assignment for task dispatch."""
+    async def claim_for_dispatch(self) -> ClaimedAssignedTask:
+        """Wait for and claim a queued assignment before validator session start."""
 
-    def claim_nowait_for_dispatch(self) -> MinerTaskWorkAssignment:
-        """Claim a queued assignment for task dispatch without waiting."""
-
-    def mark_started(self, assignment: MinerTaskWorkAssignment, validator_session_id: UUID) -> bool:
-        """Mark an already-dispatched assignment as having an issued session."""
+    def claim_nowait_for_dispatch(self) -> ClaimedAssignedTask:
+        """Claim a queued assignment before validator session start without waiting."""
 
 
-__all__ = ["AssignedArtifactWork"]
+__all__ = ["AssignedArtifactWork", "ClaimedAssignedTask"]

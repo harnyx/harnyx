@@ -21,7 +21,7 @@ from harnyx_validator.application.ports.platform import (
     PlatformTaskResultAcknowledgement,
 )
 from harnyx_validator.runtime import platform_work_worker as platform_work_worker_module
-from harnyx_validator.runtime.platform_work_worker import PlatformWorkWorker, _AssignmentState
+from harnyx_validator.runtime.platform_work_worker import PlatformWorkWorker, _AssignedArtifactGroup, _AssignmentState
 
 pytestmark = pytest.mark.anyio("asyncio")
 _ASSIGNMENT_TOKEN_PREFIX = "assignment-token"  # noqa: S105 - fixed test-only assignment token prefix
@@ -243,6 +243,59 @@ async def test_worker_does_not_release_reservations_while_artifact_startup_is_in
     await worker._cancel_artifact_group_tasks()
 
 
+async def test_claimed_assignment_counts_capacity_but_is_not_reportable_until_started() -> None:
+    batch_id = uuid4()
+    artifact = _artifact(uid=1)
+    assignment = _assignment(batch_id=batch_id, artifact=artifact, task=_task("claimed"))
+    group = _assigned_group(artifact_id=artifact.artifact_id)
+    session_id = uuid4()
+
+    assert group.put_nowait(assignment)
+    group.mark_dispatch_ready()
+    claimed = group.claim_initial_for_dispatch(assignment)
+
+    assert claimed is not None
+    assert group.local_inflight_count() == 1
+    assert group.reportable_identities() == ()
+
+    claimed.mark_started(session_id)
+
+    assert group.local_inflight_count() == 1
+    assert group.reportable_identities() == (
+        PlatformTaskAttemptIdentity(
+            batch_id=assignment.batch_id,
+            artifact_id=assignment.artifact.artifact_id,
+            task_id=assignment.task.task_id,
+            attempt_number=assignment.attempt_number,
+            validator_session_id=session_id,
+        ),
+    )
+
+
+async def test_claimed_assignment_failure_before_start_enqueues_result_and_clears_capacity() -> None:
+    batch_id = uuid4()
+    artifact = _artifact(uid=1)
+    assignment = _assignment(batch_id=batch_id, artifact=artifact, task=_task("start-failed"))
+    group = _assigned_group(artifact_id=artifact.artifact_id)
+    result = _platform_result(
+        assignment=assignment,
+        terminal_effect=MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE,
+    )
+
+    assert group.put_nowait(assignment)
+    group.mark_dispatch_ready()
+    claimed = group.claim_initial_for_dispatch(assignment)
+    assert claimed is not None
+
+    claimed.fail_before_start(result)
+    claimed.fail_before_start(result)
+
+    assert group.local_inflight_count() == 0
+    assert group.reportable_identities() == ()
+    assert group.result_queue.get_nowait() is result
+    assert group.result_queue.empty()
+
+
 async def test_mark_started_does_not_resurrect_released_dispatchable_assignment() -> None:
     clock = _MonotonicClock()
     batch_id = uuid4()
@@ -287,7 +340,7 @@ async def test_mark_started_does_not_resurrect_released_dispatchable_assignment(
     clock.advance(11.0)
     await worker.run_once()
 
-    assert group.mark_started(assignment, uuid4()) is False
+    assert group.claim_initial_for_dispatch(assignment) is None
     assert group.assignment_records == {}
 
     worker._request_all_artifact_groups_close()
@@ -376,7 +429,7 @@ async def test_worker_does_not_release_started_assignment_when_pre_start_lease_e
     ) -> None:
         assigned_work.mark_dispatch_ready()
         queued = await assigned_work.claim_for_dispatch()
-        assigned_work.mark_started(queued, session_id)
+        queued.mark_started(session_id)
         started.set()
         await close_requested.wait()
 
@@ -450,9 +503,9 @@ async def test_worker_expires_queued_reservation_inside_started_group_without_dr
         _result_queue: asyncio.Queue[PlatformOwnedTaskResult],
     ) -> None:
         assigned_work.mark_dispatch_ready()
-        assignment = await assigned_work.claim_for_dispatch()
-        assert assignment.task.task_id == started_assignment.task.task_id
-        assigned_work.mark_started(assignment, session_id)
+        claimed = await assigned_work.claim_for_dispatch()
+        assert claimed.assignment.task.task_id == started_assignment.task.task_id
+        claimed.mark_started(session_id)
         started.set()
         await close_requested.wait()
 
@@ -547,8 +600,9 @@ async def test_worker_submits_finished_task_results_without_waiting_for_artifact
         result_queue: asyncio.Queue[PlatformOwnedTaskResult],
     ) -> None:
         assigned_work.mark_dispatch_ready()
-        assignment = await assigned_work.claim_for_dispatch()
-        await result_queue.put(_platform_result(assignment=assignment))
+        claimed = await assigned_work.claim_for_dispatch()
+        claimed.mark_started(uuid4())
+        await result_queue.put(_platform_result(assignment=claimed.assignment))
         result_ready.set()
         await close_requested.wait()
 
@@ -605,9 +659,9 @@ async def test_worker_keeps_same_artifact_assignments_separate_across_batches() 
         _result_queue: asyncio.Queue[PlatformOwnedTaskResult],
     ) -> None:
         assigned_work.mark_dispatch_ready()
-        assignment = await assigned_work.claim_for_dispatch()
-        assigned_work.mark_started(assignment, uuid4())
-        started_batches.append(assignment.batch_id)
+        claimed = await assigned_work.claim_for_dispatch()
+        claimed.mark_started(uuid4())
+        started_batches.append(claimed.assignment.batch_id)
         await close_requested.wait()
 
     worker = PlatformWorkWorker(
@@ -669,7 +723,8 @@ async def test_worker_collects_result_from_group_that_finishes_before_cleanup() 
     ) -> None:
         assigned_work.mark_dispatch_ready()
         queued = await assigned_work.claim_for_dispatch()
-        await result_queue.put(_platform_result(assignment=queued))
+        queued.mark_started(uuid4())
+        await result_queue.put(_platform_result(assignment=queued.assignment))
 
     worker = PlatformWorkWorker(
         platform=_Platform(),  # type: ignore[arg-type]
@@ -723,11 +778,13 @@ async def test_worker_delivery_failure_clears_group_identities_and_frees_capacit
         result_queue: asyncio.Queue[PlatformOwnedTaskResult],
     ) -> None:
         assigned_work.mark_dispatch_ready()
-        delivery_failure_assignment = await assigned_work.claim_for_dispatch()
-        assigned_work.mark_started(delivery_failure_assignment, uuid4())
-        completed_assignment = await assigned_work.claim_for_dispatch()
-        assigned_work.mark_started(completed_assignment, uuid4())
-        ignored_assignment = await assigned_work.claim_for_dispatch()
+        delivery_failure_claim = await assigned_work.claim_for_dispatch()
+        delivery_failure_claim.mark_started(uuid4())
+        delivery_failure_assignment = delivery_failure_claim.assignment
+        completed_claim = await assigned_work.claim_for_dispatch()
+        completed_claim.mark_started(uuid4())
+        completed_assignment = completed_claim.assignment
+        ignored_claim = await assigned_work.claim_for_dispatch()
         await result_queue.put(
             _platform_result(
                 assignment=completed_assignment,
@@ -740,7 +797,7 @@ async def test_worker_delivery_failure_clears_group_identities_and_frees_capacit
                 terminal_effect=MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE,
             )
         )
-        assert ignored_assignment is assignments[2]
+        assert ignored_claim.assignment is assignments[2]
         emitted.set()
 
     worker = PlatformWorkWorker(
@@ -751,7 +808,6 @@ async def test_worker_delivery_failure_clears_group_identities_and_frees_capacit
     )
     await worker.run_once()
     assert len(worker._active_attempts()) == 3
-    assert any(attempt.validator_session_id is None for attempt in worker._active_attempts())
 
     await asyncio.wait_for(emitted.wait(), timeout=1)
     await worker.run_once()
@@ -800,9 +856,13 @@ async def test_worker_collects_all_results_before_clearing_closed_artifact_group
         assigned_work.mark_dispatch_ready()
         while True:
             try:
-                assignment = assigned_work.claim_nowait_for_dispatch()
+                claimed = assigned_work.claim_nowait_for_dispatch()
             except asyncio.QueueEmpty:
                 break
+            # Results represent completed task execution, so the claim must have crossed
+            # the validator-session start boundary first.
+            claimed.mark_started(uuid4())
+            assignment = claimed.assignment
             await result_queue.put(_platform_result(assignment=assignment))
 
     worker = PlatformWorkWorker(
@@ -866,6 +926,19 @@ def _assignment(
         attempt_number=attempt_number,
         max_attempts=max_attempts,
         assignment_token=f"{_ASSIGNMENT_TOKEN_PREFIX}-{attempt_number}",
+    )
+
+
+def _assigned_group(*, artifact_id: UUID) -> _AssignedArtifactGroup:
+    return _AssignedArtifactGroup(
+        artifact_id=artifact_id,
+        state=platform_work_worker_module._ArtifactGroupState.OPEN,
+        assignment_queue=asyncio.Queue(),
+        close_requested=asyncio.Event(),
+        result_queue=asyncio.Queue(),
+        assignment_records={},
+        starting_records={},
+        monotonic_clock=_MonotonicClock(),
     )
 
 

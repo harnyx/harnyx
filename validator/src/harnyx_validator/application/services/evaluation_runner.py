@@ -45,7 +45,7 @@ from harnyx_commons.miner_task_failure_policy import (
     provider_batch_failure_message,
 )
 from harnyx_commons.tools.types import is_search_tool
-from harnyx_validator.application.assigned_work import AssignedArtifactWork
+from harnyx_validator.application.assigned_work import AssignedArtifactWork, ClaimedAssignedTask
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptAuditRecord,
     MinerTaskAttemptRetryDecision,
@@ -501,10 +501,27 @@ class EvaluationRunner:
         orchestrator: TaskRunOrchestrator,
     ) -> None:
         active: dict[asyncio.Task[PlatformOwnedTaskResult], _ActiveAssignedTask] = {}
-        queue_waiter: asyncio.Task[MinerTaskWorkAssignment] | None = None
+        queue_waiter: asyncio.Task[ClaimedAssignedTask] | None = None
+        claim_to_start: ClaimedAssignedTask | None = None
         close_waiter = asyncio.create_task(close_requested.wait())
 
-        def start_assignment(assignment: MinerTaskWorkAssignment) -> bool:
+        def fail_unstarted_claim(claimed: ClaimedAssignedTask, exc: Exception) -> bool:
+            assignment = claimed.assignment
+            result = self._assigned_task_unexpected_failure_result(
+                batch_id=batch_id,
+                artifact=artifact,
+                task=assignment.task,
+                issued=None,
+                attempt_number=assignment.attempt_number,
+                max_attempts=assignment.max_attempts,
+                started_at=self._clock(),
+                exc=exc,
+            )
+            claimed.fail_before_start(result)
+            return result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE
+
+        def start_assignment(claimed: ClaimedAssignedTask) -> bool:
+            assignment = claimed.assignment
             session_started_at = time.monotonic()
             issued: SessionIssued | None = None
             attempt_started_at = self._clock()
@@ -519,8 +536,7 @@ class EvaluationRunner:
                 )
                 issued = self._begin_session_attempt(issued.session.session_id)
                 attempt_started_at = self._clock()
-                if not assigned_work.mark_started(assignment, issued.session.session_id):
-                    raise RuntimeError("assigned work start mark failed")
+                claimed.mark_started(issued.session.session_id)
             except Exception as exc:
                 if isinstance(exc, _PartialSessionIssueError):
                     issued = exc.issued
@@ -556,7 +572,7 @@ class EvaluationRunner:
                         artifact_id=artifact.artifact_id,
                         task_id=assignment.task.task_id,
                     )
-                result_queue.put_nowait(result)
+                claimed.fail_before_start(result)
                 return result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE
 
             execution_task = asyncio.create_task(
@@ -606,14 +622,22 @@ class EvaluationRunner:
 
         try:
             for assignment in initial_assignments:
-                if assigned_work.claim_initial_for_dispatch(assignment) and start_assignment(assignment):
+                claim_to_start = assigned_work.claim_initial_for_dispatch(assignment)
+                if claim_to_start is None:
+                    continue
+                if start_assignment(claim_to_start):
+                    claim_to_start = None
                     return
+                claim_to_start = None
 
             while active or not close_requested.is_set():
                 while not close_requested.is_set():
                     try:
-                        if start_assignment(assigned_work.claim_nowait_for_dispatch()):
+                        claim_to_start = assigned_work.claim_nowait_for_dispatch()
+                        if start_assignment(claim_to_start):
+                            claim_to_start = None
                             return
+                        claim_to_start = None
                     except asyncio.QueueEmpty:
                         break
 
@@ -626,8 +650,11 @@ class EvaluationRunner:
                         return_when=asyncio.FIRST_COMPLETED,
                     )
                     if queue_waiter in done:
-                        if start_assignment(queue_waiter.result()):
+                        claim_to_start = queue_waiter.result()
+                        if start_assignment(claim_to_start):
+                            claim_to_start = None
                             return
+                        claim_to_start = None
                         queue_waiter = None
                     continue
 
@@ -644,11 +671,19 @@ class EvaluationRunner:
                     return
 
                 if queue_waiter is not None and queue_waiter in done:
-                    if start_assignment(queue_waiter.result()):
+                    claim_to_start = queue_waiter.result()
+                    if start_assignment(claim_to_start):
+                        claim_to_start = None
                         await cancel_remaining_active()
                         return
+                    claim_to_start = None
                     queue_waiter = None
         finally:
+            if claim_to_start is not None:
+                fail_unstarted_claim(
+                    claim_to_start,
+                    RuntimeError("assigned work cancelled before validator session start"),
+                )
             if queue_waiter is not None and not queue_waiter.done():
                 queue_waiter.cancel()
             close_waiter.cancel()

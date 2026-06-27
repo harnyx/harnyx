@@ -50,7 +50,6 @@ class _ArtifactGroupState(StrEnum):
 class _AssignmentState(StrEnum):
     STARTUP_RESERVED = "startup_reserved"
     DISPATCHABLE_QUEUED = "dispatchable_queued"
-    DISPATCHING = "dispatching"
     STARTED = "started"
 
 
@@ -64,6 +63,24 @@ class _AssignmentRecord:
 
 
 @dataclass(slots=True)
+class _ClaimedAssignment:
+    group: _AssignedArtifactGroup
+    key: _AssignmentKey
+    record: _AssignmentRecord
+    closed: bool = False
+
+    @property
+    def assignment(self) -> MinerTaskWorkAssignment:
+        return self.record.assignment
+
+    def mark_started(self, validator_session_id: UUID) -> None:
+        self.group._finish_starting_claim(self, validator_session_id)
+
+    def fail_before_start(self, result: PlatformOwnedTaskResult) -> None:
+        self.group._fail_starting_claim(self, result)
+
+
+@dataclass(slots=True)
 class _AssignedArtifactGroup:
     artifact_id: UUID
     state: _ArtifactGroupState
@@ -71,13 +88,14 @@ class _AssignedArtifactGroup:
     close_requested: asyncio.Event
     result_queue: asyncio.Queue[PlatformOwnedTaskResult]
     assignment_records: dict[_AssignmentKey, _AssignmentRecord]
+    starting_records: dict[_AssignmentKey, _AssignmentRecord]
     monotonic_clock: Callable[[], float]
     task: asyncio.Task[None] | None = None
     dispatch_ready: bool = False
 
     def put_nowait(self, assignment: MinerTaskWorkAssignment) -> bool:
         key = _assignment_key(assignment)
-        if key in self.assignment_records:
+        if key in self.assignment_records or key in self.starting_records:
             return False
         now = self.monotonic_clock()
         state = _AssignmentState.DISPATCHABLE_QUEUED if self.dispatch_ready else _AssignmentState.STARTUP_RESERVED
@@ -109,28 +127,22 @@ class _AssignedArtifactGroup:
                 record.state = _AssignmentState.DISPATCHABLE_QUEUED
                 record.dispatchable_at = now
 
-    def claim_initial_for_dispatch(self, assignment: MinerTaskWorkAssignment) -> bool:
+    def claim_initial_for_dispatch(self, assignment: MinerTaskWorkAssignment) -> _ClaimedAssignment | None:
         return self._claim_for_dispatch(assignment)
 
-    async def claim_for_dispatch(self) -> MinerTaskWorkAssignment:
+    async def claim_for_dispatch(self) -> _ClaimedAssignment:
         while True:
             assignment = await self.assignment_queue.get()
-            if self._claim_for_dispatch(assignment):
-                return assignment
+            claimed = self._claim_for_dispatch(assignment)
+            if claimed is not None:
+                return claimed
 
-    def claim_nowait_for_dispatch(self) -> MinerTaskWorkAssignment:
+    def claim_nowait_for_dispatch(self) -> _ClaimedAssignment:
         while True:
             assignment = self.assignment_queue.get_nowait()
-            if self._claim_for_dispatch(assignment):
-                return assignment
-
-    def mark_started(self, assignment: MinerTaskWorkAssignment, validator_session_id: UUID) -> bool:
-        record = self.assignment_records.get(_assignment_key(assignment))
-        if record is None or record.state is not _AssignmentState.DISPATCHING:
-            return False
-        record.state = _AssignmentState.STARTED
-        record.session_id = validator_session_id
-        return True
+            claimed = self._claim_for_dispatch(assignment)
+            if claimed is not None:
+                return claimed
 
     def release_expired_queued(self, *, now: float, dispatch_start_lease_seconds: float) -> int:
         expired_keys = frozenset(
@@ -154,18 +166,40 @@ class _AssignedArtifactGroup:
         )
 
     def local_inflight_count(self) -> int:
-        return len(self.assignment_records)
+        return len(self.assignment_records) + len(self.starting_records)
 
     def clear_assignments(self) -> None:
         self.assignment_records.clear()
+        self.starting_records.clear()
         _drain_assignment_queue(self.assignment_queue)
 
-    def _claim_for_dispatch(self, assignment: MinerTaskWorkAssignment) -> bool:
-        record = self.assignment_records.get(_assignment_key(assignment))
+    def _claim_for_dispatch(self, assignment: MinerTaskWorkAssignment) -> _ClaimedAssignment | None:
+        key = _assignment_key(assignment)
+        record = self.assignment_records.get(key)
         if record is None or record.state is not _AssignmentState.DISPATCHABLE_QUEUED:
-            return False
-        record.state = _AssignmentState.DISPATCHING
-        return True
+            return None
+        self.assignment_records.pop(key)
+        self.starting_records[key] = record
+        return _ClaimedAssignment(group=self, key=key, record=record)
+
+    def _finish_starting_claim(self, claimed: _ClaimedAssignment, validator_session_id: UUID) -> None:
+        if claimed.closed:
+            raise RuntimeError("claimed assignment already closed")
+        record = self.starting_records.get(claimed.key)
+        if record is None:
+            raise RuntimeError("claimed assignment is no longer starting")
+        record.state = _AssignmentState.STARTED
+        record.session_id = validator_session_id
+        self.assignment_records[claimed.key] = record
+        self.starting_records.pop(claimed.key, None)
+        claimed.closed = True
+
+    def _fail_starting_claim(self, claimed: _ClaimedAssignment, result: PlatformOwnedTaskResult) -> None:
+        if claimed.closed:
+            return
+        self.result_queue.put_nowait(result)
+        self.starting_records.pop(claimed.key, None)
+        claimed.closed = True
 
 
 class PlatformWorkWorker:
@@ -294,6 +328,7 @@ class PlatformWorkWorker:
             close_requested=close_requested,
             result_queue=result_queue,
             assignment_records={},
+            starting_records={},
             monotonic_clock=self._monotonic_clock,
         )
         group.task = asyncio.create_task(

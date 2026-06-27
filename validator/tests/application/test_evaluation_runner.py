@@ -76,13 +76,19 @@ _COMPLETED_ASSIGNMENT_TOKEN = "completed-assignment-token"  # noqa: S105 - fixed
 
 
 class _AssignedWork:
-    def __init__(self, queued: tuple[MinerTaskWorkAssignment, ...] = ()) -> None:
+    def __init__(
+        self,
+        queued: tuple[MinerTaskWorkAssignment, ...] = (),
+        result_queue: asyncio.Queue[PlatformOwnedTaskResult] | None = None,
+    ) -> None:
         self.queue: asyncio.Queue[MinerTaskWorkAssignment] = asyncio.Queue()
         for assignment in queued:
             self.queue.put_nowait(assignment)
+        self.result_queue = result_queue
         self.initial_claims: list[MinerTaskWorkAssignment] = []
         self.dispatch_claims: list[MinerTaskWorkAssignment] = []
         self.started: list[tuple[MinerTaskWorkAssignment, UUID]] = []
+        self.failed_before_start: list[tuple[MinerTaskWorkAssignment, PlatformOwnedTaskResult]] = []
 
     async def take_for_startup(self) -> MinerTaskWorkAssignment:
         return await self.queue.get()
@@ -101,23 +107,43 @@ class _AssignedWork:
     def mark_dispatch_ready(self) -> None:
         return None
 
-    def claim_initial_for_dispatch(self, assignment: MinerTaskWorkAssignment) -> bool:
+    def claim_initial_for_dispatch(self, assignment: MinerTaskWorkAssignment) -> _ClaimedAssignedTaskFake:
         self.initial_claims.append(assignment)
-        return True
+        return _ClaimedAssignedTaskFake(self, assignment)
 
-    async def claim_for_dispatch(self) -> MinerTaskWorkAssignment:
+    async def claim_for_dispatch(self) -> _ClaimedAssignedTaskFake:
         assignment = await self.queue.get()
         self.dispatch_claims.append(assignment)
-        return assignment
+        return _ClaimedAssignedTaskFake(self, assignment)
 
-    def claim_nowait_for_dispatch(self) -> MinerTaskWorkAssignment:
+    def claim_nowait_for_dispatch(self) -> _ClaimedAssignedTaskFake:
         assignment = self.queue.get_nowait()
         self.dispatch_claims.append(assignment)
-        return assignment
+        return _ClaimedAssignedTaskFake(self, assignment)
 
-    def mark_started(self, assignment: MinerTaskWorkAssignment, validator_session_id: UUID) -> bool:
+    def _mark_started(self, assignment: MinerTaskWorkAssignment, validator_session_id: UUID) -> None:
         self.started.append((assignment, validator_session_id))
-        return True
+
+    def _fail_before_start(self, assignment: MinerTaskWorkAssignment, result: PlatformOwnedTaskResult) -> None:
+        self.failed_before_start.append((assignment, result))
+        if self.result_queue is not None:
+            self.result_queue.put_nowait(result)
+
+
+class _ClaimedAssignedTaskFake:
+    def __init__(self, owner: _AssignedWork, assignment: MinerTaskWorkAssignment) -> None:
+        self._owner = owner
+        self._assignment = assignment
+
+    @property
+    def assignment(self) -> MinerTaskWorkAssignment:
+        return self._assignment
+
+    def mark_started(self, validator_session_id: UUID) -> None:
+        self._owner._mark_started(self._assignment, validator_session_id)
+
+    def fail_before_start(self, result: PlatformOwnedTaskResult) -> None:
+        self._owner._fail_before_start(self._assignment, result)
 
 
 def _progress(tmp_path: Path) -> FileBackedRunProgress:
@@ -668,7 +694,7 @@ async def test_evaluate_assigned_task_queue_drains_active_failure_before_ready_q
         raise AssertionError("queued assignment should not start after active delivery failure")
 
     class _ReadyQueuedAssignedWork(_AssignedWork):
-        def claim_nowait_for_dispatch(self) -> MinerTaskWorkAssignment:
+        def claim_nowait_for_dispatch(self) -> _ClaimedAssignedTaskFake:
             raise asyncio.QueueEmpty
 
     monkeypatch.setattr(evaluation_runner_module.asyncio, "wait", wait_after_ready_tick)
@@ -755,20 +781,23 @@ async def test_evaluate_assigned_task_queue_drains_active_result_before_queue_st
         raise AssertionError("unexpected assignment execution")
 
     class _QueueStartFailureAssignedWork(_AssignedWork):
-        def claim_nowait_for_dispatch(self) -> MinerTaskWorkAssignment:
+        def claim_nowait_for_dispatch(self) -> _ClaimedAssignedTaskFake:
             raise asyncio.QueueEmpty
 
-        def mark_started(self, assignment: MinerTaskWorkAssignment, validator_session_id: UUID) -> bool:
+        def _mark_started(self, assignment: MinerTaskWorkAssignment, validator_session_id: UUID) -> None:
             if assignment is queued_assignment:
                 self.started.append((assignment, validator_session_id))
-                return False
-            return super().mark_started(assignment, validator_session_id)
+                raise RuntimeError("assigned work start mark failed")
+            return super()._mark_started(assignment, validator_session_id)
 
     monkeypatch.setattr(evaluation_runner_module.asyncio, "wait", wait_after_ready_tick)
     monkeypatch.setattr(runner, "_evaluate_issued_assigned_task", evaluate_issued_assigned_task)
 
-    assigned_work = _QueueStartFailureAssignedWork(queued=(queued_assignment,))
     result_queue: asyncio.Queue[PlatformOwnedTaskResult] = asyncio.Queue()
+    assigned_work = _QueueStartFailureAssignedWork(
+        queued=(queued_assignment,),
+        result_queue=result_queue,
+    )
 
     await runner.evaluate_assigned_task_queue(
         batch_id=batch_id,
@@ -1003,8 +1032,8 @@ async def test_evaluate_assigned_task_queue_session_issue_failure_returns_delive
         max_attempts=2,
         assignment_token=_ASSIGNMENT_TOKEN,
     )
-    assigned_work = _AssignedWork()
     result_queue: asyncio.Queue[PlatformOwnedTaskResult] = asyncio.Queue()
+    assigned_work = _AssignedWork(result_queue=result_queue)
 
     def fail_issue_session(**_kwargs):
         raise RuntimeError("session issue failed")
@@ -1067,8 +1096,8 @@ async def test_evaluate_assigned_task_queue_partial_session_issue_failure_cleans
         max_attempts=2,
         assignment_token=_ASSIGNMENT_TOKEN,
     )
-    assigned_work = _AssignedWork()
     result_queue: asyncio.Queue[PlatformOwnedTaskResult] = asyncio.Queue()
+    assigned_work = _AssignedWork(result_queue=result_queue)
     issued_session_ids: list[UUID] = []
 
     def fail_begin_session_attempt(session_id: UUID):
@@ -1115,19 +1144,19 @@ async def test_evaluate_assigned_task_queue_mark_started_failure_cleans_issued_s
     result_queue: asyncio.Queue[PlatformOwnedTaskResult] = asyncio.Queue()
 
     class _RejectingAssignedWork(_AssignedWork):
-        def __init__(self) -> None:
-            super().__init__()
+        def __init__(self, result_queue: asyncio.Queue[PlatformOwnedTaskResult]) -> None:
+            super().__init__(result_queue=result_queue)
             self.rejected: list[tuple[MinerTaskWorkAssignment, UUID]] = []
 
-        def mark_started(self, assignment: MinerTaskWorkAssignment, validator_session_id: UUID) -> bool:
+        def _mark_started(self, assignment: MinerTaskWorkAssignment, validator_session_id: UUID) -> None:
             self.rejected.append((assignment, validator_session_id))
-            return False
+            raise RuntimeError("assigned work start mark failed")
 
     class _UnexpectedOrchestrator:
         async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
             raise AssertionError("execution should not spawn when mark_started fails")
 
-    assigned_work = _RejectingAssignedWork()
+    assigned_work = _RejectingAssignedWork(result_queue=result_queue)
 
     await runner.evaluate_assigned_task_queue(
         batch_id=batch_id,
@@ -1178,22 +1207,22 @@ async def test_evaluate_assigned_task_queue_initial_start_failure_cleans_prior_c
     result_queue: asyncio.Queue[PlatformOwnedTaskResult] = asyncio.Queue()
 
     class _RejectSecondAssignedWork(_AssignedWork):
-        def __init__(self) -> None:
-            super().__init__()
+        def __init__(self, result_queue: asyncio.Queue[PlatformOwnedTaskResult]) -> None:
+            super().__init__(result_queue=result_queue)
             self.rejected: list[tuple[MinerTaskWorkAssignment, UUID]] = []
 
-        def mark_started(self, assignment: MinerTaskWorkAssignment, validator_session_id: UUID) -> bool:
+        def _mark_started(self, assignment: MinerTaskWorkAssignment, validator_session_id: UUID) -> None:
             if assignment is second_assignment:
                 self.rejected.append((assignment, validator_session_id))
-                return False
-            return super().mark_started(assignment, validator_session_id)
+                raise RuntimeError("assigned work start mark failed")
+            return super()._mark_started(assignment, validator_session_id)
 
     class _BlockingOrchestrator:
         async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
             await asyncio.Event().wait()
             raise AssertionError("blocked evaluation should be cancelled before completion")
 
-    assigned_work = _RejectSecondAssignedWork()
+    assigned_work = _RejectSecondAssignedWork(result_queue=result_queue)
 
     await runner.evaluate_assigned_task_queue(
         batch_id=batch_id,
@@ -1262,8 +1291,8 @@ async def test_evaluate_assigned_task_queue_internal_issue_registration_failure_
         max_attempts=2,
         assignment_token=_ASSIGNMENT_TOKEN,
     )
-    assigned_work = _AssignedWork()
     result_queue: asyncio.Queue[PlatformOwnedTaskResult] = asyncio.Queue()
+    assigned_work = _AssignedWork(result_queue=result_queue)
 
     await runner.evaluate_assigned_task_queue(
         batch_id=batch_id,
