@@ -108,6 +108,10 @@ class Settings(BaseSettings):
         return self.llm.chutes_api_key_value
 
     @property
+    def openrouter_api_key_value(self) -> str:
+        return self.llm.openrouter_api_key_value
+
+    @property
     def gcp_sa_credential_b64_value(self) -> str:
         return self.vertex.gcp_sa_credential_b64_value
 

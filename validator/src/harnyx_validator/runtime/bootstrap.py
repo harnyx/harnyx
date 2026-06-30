@@ -741,6 +741,7 @@ def _build_http_dependencies(
         state.tool_concurrency_limiter,
     )
     control_provider = _make_control_provider(
+        resolved,
         status_provider,
         inbound_auth,
         validator_hotkey,
@@ -921,6 +922,7 @@ def _make_dependency_provider(
 
 
 def _make_control_provider(
+    settings: Settings,
     status_provider: StatusProvider,
     inbound_auth: BittensorSr25519InboundVerifier,
     validator_hotkey: bt.Keypair,
@@ -931,6 +933,8 @@ def _make_control_provider(
     platform_tool_proxy_scopes: PlatformToolProxyScopeRegistry | None = None,
 ) -> Callable[[], ValidatorControlDeps]:
     effective_resource_usage_provider = resource_usage_provider or ValidatorResourceUsageProvider()
+    is_chutes_configured = bool(settings.chutes_api_key_value.strip())
+    is_openrouter_configured = bool(settings.openrouter_api_key_value.strip())
 
     async def auth(
         method: str,
@@ -954,6 +958,8 @@ def _make_control_provider(
             validator_hotkey=cast(StatusSigner, validator_hotkey),
             resource_usage_provider=effective_resource_usage_provider,
             batch_activity=batch_activity or BatchActivityTracker(),
+            is_chutes_configured=is_chutes_configured,
+            is_openrouter_configured=is_openrouter_configured,
             platform_tool_proxy_platform=platform_tool_proxy_platform_client,
             platform_tool_proxy_scopes=platform_tool_proxy_scopes,
             similarity_judge=similarity_judge,

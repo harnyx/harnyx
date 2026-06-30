@@ -8,6 +8,7 @@ import pytest
 
 import harnyx_validator.infrastructure.auth.sr25519 as sr25519
 from harnyx_commons.bittensor import VerificationError, build_canonical_request
+from harnyx_commons.config.llm import LlmSettings
 from harnyx_validator.application.status import StatusProvider
 from harnyx_validator.infrastructure.auth.sr25519 import BittensorSr25519InboundVerifier
 from harnyx_validator.runtime import bootstrap
@@ -430,6 +431,7 @@ async def test_control_provider_offloads_auth_verification_to_thread(
     monkeypatch.setattr(bootstrap.asyncio, "to_thread", fake_to_thread)
 
     deps = bootstrap._make_control_provider(
+        Settings(),
         StatusProvider(),
         inbound_auth,
         _StubHotkey(),
@@ -483,6 +485,7 @@ async def test_make_control_provider_verifies_request_inline(monkeypatch: pytest
         owner_coldkey_ss58="5OwnerColdkey",
     )
     deps = bootstrap._make_control_provider(
+        settings=Settings(),
         status_provider=status_provider,
         inbound_auth=inbound_auth,
         validator_hotkey=_StubHotkey(),
@@ -521,6 +524,7 @@ def test_make_control_provider_reuses_fallback_resource_usage_provider(
     monkeypatch.setattr(bootstrap, "ValidatorResourceUsageProvider", _StubResourceUsageProvider)
 
     provider = bootstrap._make_control_provider(
+        Settings(),
         StatusProvider(),
         object(),
         _StubHotkey(),
@@ -531,3 +535,22 @@ def test_make_control_provider_reuses_fallback_resource_usage_provider(
 
     assert len(created) == 1
     assert first.resource_usage_provider is second.resource_usage_provider
+
+
+def test_make_control_provider_reports_api_key_configuration_from_settings() -> None:
+    settings = Settings(
+        llm=LlmSettings(
+            chutes_api_key=" chutes-key ",
+            openrouter_api_key=" openrouter-key ",
+        )
+    )
+
+    deps = bootstrap._make_control_provider(
+        settings,
+        StatusProvider(),
+        object(),
+        _StubHotkey(),
+    )()
+
+    assert deps.is_chutes_configured is True
+    assert deps.is_openrouter_configured is True

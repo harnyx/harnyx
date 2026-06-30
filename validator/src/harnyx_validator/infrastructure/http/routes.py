@@ -57,6 +57,8 @@ class ValidatorControlDeps:
     validator_hotkey: StatusSigner
     resource_usage_provider: ResourceUsageProvider
     batch_activity: BatchActivityTracker
+    is_chutes_configured: bool = False
+    is_openrouter_configured: bool = False
     platform_tool_proxy_platform: PlatformToolProxyPlatformPort | None = None
     platform_tool_proxy_scopes: PlatformToolProxyScopeRegistry | None = None
     similarity_judge: SimilarityJudgePort | None = None
@@ -234,6 +236,8 @@ def add_control_routes(
             response = ValidatorStatusResponse(
                 **snapshot,
                 hotkey=deps.validator_hotkey.ss58_address,
+                is_chutes_configured=deps.is_chutes_configured,
+                is_openrouter_configured=deps.is_openrouter_configured,
                 resource_usage=_safe_resource_usage_response(deps.resource_usage_provider),
             )
             request_ts = request.headers.get(_STATUS_TIMESTAMP_HEADER)

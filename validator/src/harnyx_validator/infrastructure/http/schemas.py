@@ -107,6 +107,8 @@ class ValidatorStatusResponse(BaseModel):
     last_error: str | None = None
     last_weight_submission_at: str | None = None
     last_weight_error: str | None = None
+    is_chutes_configured: bool = False
+    is_openrouter_configured: bool = False
     resource_usage: ValidatorResourceUsageResponse | None = None
     signature_hex: str | None = None
 

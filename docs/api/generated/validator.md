@@ -86,6 +86,8 @@ Body: [ValidatorStatusResponse](#model-validatorstatusresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `hotkey` |  |  | req | `string` |
+| `is_chutes_configured` |  |  | opt | `boolean` (default: False) |
+| `is_openrouter_configured` |  |  | opt | `boolean` (default: False) |
 | `last_batch_id` |  |  | opt | `string` (nullable) |
 | `last_completed_at` |  |  | opt | `string` (nullable) |
 | `last_error` |  |  | opt | `string` (nullable) |
@@ -919,6 +921,8 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `hotkey` |  |  | req | `string` |
+| `is_chutes_configured` |  |  | opt | `boolean` (default: False) |
+| `is_openrouter_configured` |  |  | opt | `boolean` (default: False) |
 | `last_batch_id` |  |  | opt | `string` (nullable) |
 | `last_completed_at` |  |  | opt | `string` (nullable) |
 | `last_error` |  |  | opt | `string` (nullable) |
@@ -951,6 +955,16 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "minLength": 1,
       "title": "Hotkey",
       "type": "string"
+    },
+    "is_chutes_configured": {
+      "default": false,
+      "title": "Is Chutes Configured",
+      "type": "boolean"
+    },
+    "is_openrouter_configured": {
+      "default": false,
+      "title": "Is Openrouter Configured",
+      "type": "boolean"
     },
     "last_batch_id": {
       "anyOf": [

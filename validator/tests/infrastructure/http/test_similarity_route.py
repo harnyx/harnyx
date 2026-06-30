@@ -49,6 +49,8 @@ def _client(judge: StubSimilarityJudge) -> TestClient:
         validator_hotkey=_StubHotkey(),
         resource_usage_provider=_StubResourceUsageProvider(),
         batch_activity=BatchActivityTracker(),
+        is_chutes_configured=False,
+        is_openrouter_configured=False,
         similarity_judge=judge,
     )
     app = FastAPI()

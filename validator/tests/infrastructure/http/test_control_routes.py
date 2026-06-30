@@ -63,6 +63,8 @@ class DemoControlDependencyProvider:
         validator_hotkey: _StubHotkey | None = None,
         status_provider: StatusProvider | None = None,
         resource_usage_provider: object | None = None,
+        is_chutes_configured: bool = True,
+        is_openrouter_configured: bool = False,
     ) -> None:
         self._deps = ValidatorControlDeps(
             status_provider=StubStatusProvider() if status_provider is None else status_provider,
@@ -72,6 +74,8 @@ class DemoControlDependencyProvider:
                 StubResourceUsageProvider() if resource_usage_provider is None else resource_usage_provider
             ),
             batch_activity=object(),
+            is_chutes_configured=is_chutes_configured,
+            is_openrouter_configured=is_openrouter_configured,
         )
 
     def __call__(self) -> ValidatorControlDeps:
@@ -113,6 +117,8 @@ def test_status_endpoint_awaits_auth_with_request_primitives() -> None:
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
     assert response.json()["hotkey"] == "5validator"
+    assert response.json()["is_chutes_configured"] is True
+    assert response.json()["is_openrouter_configured"] is False
     assert response.json()["resource_usage"] == {
         "captured_at": "2026-03-31T06:42:00+00:00",
         "cpu_percent": 12.5,
@@ -132,6 +138,24 @@ def test_status_endpoint_awaits_auth_with_request_primitives() -> None:
             'Bittensor ss58="5demo",sig="00"',
         )
     ]
+
+
+def test_status_endpoint_reports_api_key_configuration_from_control_deps() -> None:
+    provider = DemoControlDependencyProvider(
+        is_chutes_configured=False,
+        is_openrouter_configured=True,
+    )
+    app = _create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.get(
+        "/validator/status",
+        headers={"Authorization": 'Bittensor ss58="5demo",sig="00"'},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["is_chutes_configured"] is False
+    assert response.json()["is_openrouter_configured"] is True
 
 
 def test_status_endpoint_returns_signed_ownership_proof_when_timestamp_header_is_present() -> None:
