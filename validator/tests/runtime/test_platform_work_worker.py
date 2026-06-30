@@ -124,15 +124,24 @@ async def test_platform_work_worker_removes_acknowledged_rejected_result(caplog:
     """Prevent an explicitly rejected result from blocking future work forever."""
 
     result = _platform_result()
+    observed: dict[str, object] = {}
 
     class _Platform:
         def submit_miner_task_work_results(
             self,
             _results: tuple[PlatformOwnedTaskResult, ...],
         ) -> tuple[PlatformTaskResultAcknowledgement, ...]:
-            return (_ack(result, outcome="rejected"),)
+            return (
+                _ack(
+                    result,
+                    outcome="rejected",
+                    reason_code="conflicting_replay",
+                    reason="terminal result conflicts with accepted attempt",
+                ),
+            )
 
-        def request_miner_task_work(self, **_kwargs: object) -> tuple[object, ...]:
+        def request_miner_task_work(self, **kwargs: object) -> tuple[object, ...]:
+            observed["request_work_kwargs"] = kwargs
             return ()
 
     worker = PlatformWorkWorker(
@@ -148,6 +157,12 @@ async def test_platform_work_worker_removes_acknowledged_rejected_result(caplog:
 
     assert worker._pending_results == []
     assert "platform rejected miner task result" in caplog.text
+    assert any(record.__dict__.get("reason_code") == "conflicting_replay" for record in caplog.records)
+    assert observed["request_work_kwargs"] == {
+        "target_concurrency": 1,
+        "max_active_artifacts": 1,
+        "active_attempts": (),
+    }
 
 
 async def test_worker_groups_assignments_by_artifact_and_reports_all_active_attempts() -> None:
@@ -1431,6 +1446,8 @@ def _ack(
     result: PlatformOwnedTaskResult,
     *,
     outcome: str = "accepted",
+    reason_code: str | None = None,
+    reason: str | None = None,
 ) -> PlatformTaskResultAcknowledgement:
     return PlatformTaskResultAcknowledgement(
         batch_id=result.batch_id,
@@ -1439,4 +1456,6 @@ def _ack(
         attempt_number=result.attempt_number,
         outcome=outcome,
         canonical=True,
+        reason_code=reason_code,
+        reason=reason,
     )
