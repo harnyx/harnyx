@@ -21,7 +21,6 @@ from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.protocol_headers import PLATFORM_TOOL_PROXY_TOKEN_HEADER
 from harnyx_commons.tools.types import ToolName
 from harnyx_validator.application.dto.evaluation import (
-    MinerTaskBatchSpec,
     MinerTaskWorkAssignment,
     PlatformOwnedTaskResult,
 )
@@ -34,7 +33,6 @@ from harnyx_validator.application.ports.platform import (
     PlatformToolProxyPlatformPort,
     PlatformToolProxyToolResult,
 )
-from harnyx_validator.infrastructure.parsers import parse_batch
 from harnyx_validator.infrastructure.transient_network import classify_transient_network_failure
 
 _GET_ATTEMPTS = 2
@@ -193,16 +191,6 @@ class HttpPlatformClient(PlatformPort):
                 headers=self._request_headers("POST", path, body),
                 **kwargs,
             )
-
-    def get_miner_task_batch(self, batch_id: UUID) -> MinerTaskBatchSpec:
-        path = f"/v1/miner-task-batches/batch/{batch_id}"
-        response = self._get(path)
-        if response.status_code != httpx.codes.OK:
-            raise PlatformClientError(
-                status_code=response.status_code,
-                message=f"platform returned {response.status_code} for GET {path}",
-            )
-        return parse_batch(response.json())
 
     def fetch_artifact(self, batch_id: UUID, artifact_id: UUID) -> bytes:
         path = f"/v1/miner-task-batches/{batch_id}/artifacts/{artifact_id}"
@@ -649,6 +637,8 @@ def _attempt_payload(attempt: Any) -> JsonObject:
     }
     if attempt.diagnostics is not None:
         payload["diagnostics"] = _jsonable(attempt.diagnostics)
+    if attempt.delivery_failure_detail is not None:
+        payload["delivery_failure_detail"] = _jsonable(attempt.delivery_failure_detail)
     return payload
 
 

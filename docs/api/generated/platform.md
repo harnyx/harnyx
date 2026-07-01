@@ -430,6 +430,7 @@ Body: [MinerTaskWorkResultsRequest](#model-minertaskworkresultsrequest)
 |  |  | `artifact_id` | req | `string` (format: uuid) |
 |  |  | `attempt_number` | req | `integer` |
 |  |  | `batch_id` | req | `string` (format: uuid) |
+|  |  | `delivery_failure_detail` | opt | [FailureDetailPayload](#model-failuredetailpayload) (nullable) |
 |  |  | `diagnostics` | opt | [MinerTaskAttemptDiagnosticsPayload](#model-minertaskattemptdiagnosticspayload) (nullable) |
 |  |  | `error_code` | opt | `string` (nullable) |
 |  |  | `error_summary_code` | opt | `string` (nullable) |
@@ -1561,6 +1562,138 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
+<a id="model-failuredetailpayload"></a>
+### Model: FailureDetailPayload
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `artifact_id` |  |  | opt | `string` (format: uuid; nullable) |
+| `error_code` |  |  | req | `string` |
+| `error_message` |  |  | req | `string` |
+| `exception_type` |  |  | opt | `string` (nullable) |
+| `occurred_at` |  |  | req | `string` (format: date-time) |
+| `sandbox_diagnostics` |  |  | opt | [SandboxFailureDiagnostics](#model-sandboxfailurediagnostics) (nullable) |
+|  | `container_id` |  | opt | `string` (nullable) |
+|  | `container_name` |  | opt | `string` (nullable) |
+|  | `docker_logs_tail` |  | opt | `string` (nullable) |
+|  | `error_text` |  | opt | `string` (nullable) |
+|  | `exit_code` |  | opt | `integer` (nullable) |
+|  | `image` |  | opt | `string` (nullable) |
+|  | `oom_killed` |  | opt | `boolean` (nullable) |
+|  | `pull_policy` |  | opt | `string` (nullable) |
+|  | `pull_returncode` |  | opt | `integer` (nullable) |
+|  | `pull_stderr_tail` |  | opt | `string` (nullable) |
+|  | `pull_stdout_tail` |  | opt | `string` (nullable) |
+|  | `run_returncode` |  | opt | `integer` (nullable) |
+|  | `run_stderr_tail` |  | opt | `string` (nullable) |
+|  | `run_stdout_tail` |  | opt | `string` (nullable) |
+|  | `state_error` |  | opt | `string` (nullable) |
+|  | `status` |  | opt | `string` (nullable) |
+| `task_id` |  |  | opt | `string` (format: uuid; nullable) |
+| `traceback` |  |  | opt | `string` (nullable) |
+| `uid` |  |  | opt | `integer` (nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "artifact_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Artifact Id"
+    },
+    "error_code": {
+      "title": "Error Code",
+      "type": "string"
+    },
+    "error_message": {
+      "title": "Error Message",
+      "type": "string"
+    },
+    "exception_type": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Exception Type"
+    },
+    "occurred_at": {
+      "format": "date-time",
+      "title": "Occurred At",
+      "type": "string"
+    },
+    "sandbox_diagnostics": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/SandboxFailureDiagnostics"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "task_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Task Id"
+    },
+    "traceback": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Traceback"
+    },
+    "uid": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Uid"
+    }
+  },
+  "required": [
+    "error_code",
+    "error_message",
+    "occurred_at"
+  ],
+  "title": "FailureDetailPayload",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-feedsearchhitmodel"></a>
 ### Model: FeedSearchHitModel
 
@@ -2540,6 +2673,32 @@ Body: [WeightsResponse](#model-weightsresponse)
 | `artifact_id` |  |  | req | `string` (format: uuid) |
 | `attempt_number` |  |  | req | `integer` |
 | `batch_id` |  |  | req | `string` (format: uuid) |
+| `delivery_failure_detail` |  |  | opt | [FailureDetailPayload](#model-failuredetailpayload) (nullable) |
+|  | `artifact_id` |  | opt | `string` (format: uuid; nullable) |
+|  | `error_code` |  | req | `string` |
+|  | `error_message` |  | req | `string` |
+|  | `exception_type` |  | opt | `string` (nullable) |
+|  | `occurred_at` |  | req | `string` (format: date-time) |
+|  | `sandbox_diagnostics` |  | opt | [SandboxFailureDiagnostics](#model-sandboxfailurediagnostics) (nullable) |
+|  |  | `container_id` | opt | `string` (nullable) |
+|  |  | `container_name` | opt | `string` (nullable) |
+|  |  | `docker_logs_tail` | opt | `string` (nullable) |
+|  |  | `error_text` | opt | `string` (nullable) |
+|  |  | `exit_code` | opt | `integer` (nullable) |
+|  |  | `image` | opt | `string` (nullable) |
+|  |  | `oom_killed` | opt | `boolean` (nullable) |
+|  |  | `pull_policy` | opt | `string` (nullable) |
+|  |  | `pull_returncode` | opt | `integer` (nullable) |
+|  |  | `pull_stderr_tail` | opt | `string` (nullable) |
+|  |  | `pull_stdout_tail` | opt | `string` (nullable) |
+|  |  | `run_returncode` | opt | `integer` (nullable) |
+|  |  | `run_stderr_tail` | opt | `string` (nullable) |
+|  |  | `run_stdout_tail` | opt | `string` (nullable) |
+|  |  | `state_error` | opt | `string` (nullable) |
+|  |  | `status` | opt | `string` (nullable) |
+|  | `task_id` |  | opt | `string` (format: uuid; nullable) |
+|  | `traceback` |  | opt | `string` (nullable) |
+|  | `uid` |  | opt | `integer` (nullable) |
 | `diagnostics` |  |  | opt | [MinerTaskAttemptDiagnosticsPayload](#model-minertaskattemptdiagnosticspayload) (nullable) |
 |  | `elapsed_ms` |  | opt | `number` (nullable) |
 |  | `failure_owner` |  | opt | `string` (nullable) |
@@ -2600,6 +2759,16 @@ Body: [WeightsResponse](#model-weightsresponse)
       "format": "uuid",
       "title": "Batch Id",
       "type": "string"
+    },
+    "delivery_failure_detail": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/FailureDetailPayload"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "diagnostics": {
       "anyOf": [
@@ -3616,6 +3785,16 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  | `artifact_id` |  | req | `string` (format: uuid) |
 |  | `attempt_number` |  | req | `integer` |
 |  | `batch_id` |  | req | `string` (format: uuid) |
+|  | `delivery_failure_detail` |  | opt | [FailureDetailPayload](#model-failuredetailpayload) (nullable) |
+|  |  | `artifact_id` | opt | `string` (format: uuid; nullable) |
+|  |  | `error_code` | req | `string` |
+|  |  | `error_message` | req | `string` |
+|  |  | `exception_type` | opt | `string` (nullable) |
+|  |  | `occurred_at` | req | `string` (format: date-time) |
+|  |  | `sandbox_diagnostics` | opt | [SandboxFailureDiagnostics](#model-sandboxfailurediagnostics) (nullable) |
+|  |  | `task_id` | opt | `string` (format: uuid; nullable) |
+|  |  | `traceback` | opt | `string` (nullable) |
+|  |  | `uid` | opt | `integer` (nullable) |
 |  | `diagnostics` |  | opt | [MinerTaskAttemptDiagnosticsPayload](#model-minertaskattemptdiagnosticspayload) (nullable) |
 |  |  | `elapsed_ms` | opt | `number` (nullable) |
 |  |  | `failure_owner` | opt | `string` (nullable) |
@@ -3805,6 +3984,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  |  | `artifact_id` | req | `string` (format: uuid) |
 |  |  | `attempt_number` | req | `integer` |
 |  |  | `batch_id` | req | `string` (format: uuid) |
+|  |  | `delivery_failure_detail` | opt | [FailureDetailPayload](#model-failuredetailpayload) (nullable) |
 |  |  | `diagnostics` | opt | [MinerTaskAttemptDiagnosticsPayload](#model-minertaskattemptdiagnosticspayload) (nullable) |
 |  |  | `error_code` | opt | `string` (nullable) |
 |  |  | `error_summary_code` | opt | `string` (nullable) |
@@ -4376,6 +4556,231 @@ Body: [WeightsResponse](#model-weightsresponse)
     "text"
   ],
   "title": "Response",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-sandboxfailurediagnostics"></a>
+### Model: SandboxFailureDiagnostics
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `container_id` |  |  | opt | `string` (nullable) |
+| `container_name` |  |  | opt | `string` (nullable) |
+| `docker_logs_tail` |  |  | opt | `string` (nullable) |
+| `error_text` |  |  | opt | `string` (nullable) |
+| `exit_code` |  |  | opt | `integer` (nullable) |
+| `image` |  |  | opt | `string` (nullable) |
+| `oom_killed` |  |  | opt | `boolean` (nullable) |
+| `pull_policy` |  |  | opt | `string` (nullable) |
+| `pull_returncode` |  |  | opt | `integer` (nullable) |
+| `pull_stderr_tail` |  |  | opt | `string` (nullable) |
+| `pull_stdout_tail` |  |  | opt | `string` (nullable) |
+| `run_returncode` |  |  | opt | `integer` (nullable) |
+| `run_stderr_tail` |  |  | opt | `string` (nullable) |
+| `run_stdout_tail` |  |  | opt | `string` (nullable) |
+| `state_error` |  |  | opt | `string` (nullable) |
+| `status` |  |  | opt | `string` (nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "container_id": {
+      "anyOf": [
+        {
+          "maxLength": 512,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Container Id"
+    },
+    "container_name": {
+      "anyOf": [
+        {
+          "maxLength": 512,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Container Name"
+    },
+    "docker_logs_tail": {
+      "anyOf": [
+        {
+          "maxLength": 8192,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Docker Logs Tail"
+    },
+    "error_text": {
+      "anyOf": [
+        {
+          "maxLength": 4096,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Error Text"
+    },
+    "exit_code": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Exit Code"
+    },
+    "image": {
+      "anyOf": [
+        {
+          "maxLength": 512,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Image"
+    },
+    "oom_killed": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Oom Killed"
+    },
+    "pull_policy": {
+      "anyOf": [
+        {
+          "maxLength": 512,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Pull Policy"
+    },
+    "pull_returncode": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Pull Returncode"
+    },
+    "pull_stderr_tail": {
+      "anyOf": [
+        {
+          "maxLength": 4096,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Pull Stderr Tail"
+    },
+    "pull_stdout_tail": {
+      "anyOf": [
+        {
+          "maxLength": 4096,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Pull Stdout Tail"
+    },
+    "run_returncode": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Run Returncode"
+    },
+    "run_stderr_tail": {
+      "anyOf": [
+        {
+          "maxLength": 4096,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Run Stderr Tail"
+    },
+    "run_stdout_tail": {
+      "anyOf": [
+        {
+          "maxLength": 4096,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Run Stdout Tail"
+    },
+    "state_error": {
+      "anyOf": [
+        {
+          "maxLength": 2048,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "State Error"
+    },
+    "status": {
+      "anyOf": [
+        {
+          "maxLength": 512,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Status"
+    }
+  },
+  "title": "SandboxFailureDiagnostics",
   "type": "object"
 }
 ```

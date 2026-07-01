@@ -30,10 +30,13 @@ from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptAuditRecord,
     MinerTaskAttemptRetryDecision,
     MinerTaskAttemptStatus,
+    MinerTaskAttemptTerminalEffect,
     MinerTaskBatchSpec,
     MinerTaskRunSubmission,
+    SandboxFailureDiagnostics,
     ScriptArtifactSpec,
     TokenUsageSummary,
+    ValidatorBatchFailureDetail,
 )
 from harnyx_validator.domain.evaluation import MinerTaskRun
 from harnyx_validator.infrastructure.state.run_progress import FileBackedRunProgress
@@ -341,7 +344,23 @@ def test_run_progress_record_is_idempotent_for_duplicate_pair(tmp_path: Path) ->
 def test_run_progress_terminated_attempts_round_trip_from_blob_store(tmp_path: Path) -> None:
     progress = _progress(tmp_path)
     batch = _make_batch()
-    attempt = _make_attempt(batch)
+    base_attempt = _make_attempt(batch)
+    attempt = base_attempt.model_copy(
+        update={
+            "retry_decision": MinerTaskAttemptRetryDecision.WILL_NOT_RETRY,
+            "terminal_effect": MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE,
+            "max_attempts": 1,
+            "delivery_failure_detail": ValidatorBatchFailureDetail(
+                error_code="sandbox_start_failed",
+                error_message="sandbox start failed",
+                occurred_at=base_attempt.finished_at,
+                artifact_id=base_attempt.artifact_id,
+                task_id=base_attempt.task_id,
+                uid=base_attempt.uid,
+                sandbox_diagnostics=SandboxFailureDiagnostics(exit_code=255),
+            ),
+        }
+    )
 
     progress.register(batch)
     progress.record_terminated_attempt(attempt)
@@ -356,6 +375,11 @@ def test_run_progress_terminated_attempts_round_trip_from_blob_store(tmp_path: P
     assert set(attempt_refs) == {attempt.validator_session_id}
     assert attempt_refs[attempt.validator_session_id].segment_name.startswith("attempts-")
     assert progress.next_attempt_number(batch.batch_id, attempt.artifact_id, attempt.task_id) == 2
+    restored = page["items"][0]["attempt"]
+    assert restored is not None
+    assert restored.delivery_failure_detail is not None
+    assert restored.delivery_failure_detail.sandbox_diagnostics is not None
+    assert restored.delivery_failure_detail.sandbox_diagnostics.exit_code == 255
 
 
 def test_run_progress_record_rejects_conflicting_duplicate_pair(tmp_path: Path) -> None:

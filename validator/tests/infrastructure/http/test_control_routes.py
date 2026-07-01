@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from uuid import uuid4
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -198,14 +197,3 @@ def test_control_routes_return_503_when_auth_warmup_is_unavailable() -> None:
     assert response.json() == {
         "detail": "inbound auth verifier has not completed initial hotkey warmup",
     }
-
-
-def test_pushed_batch_and_restore_routes_are_not_registered() -> None:
-    provider = DemoControlDependencyProvider()
-    app = _create_test_app(provider)
-    client = TestClient(app)
-    batch_id = uuid4()
-
-    assert client.post("/validator/miner-task-batches/batch", json={}).status_code == 404
-    assert client.get(f"/validator/miner-task-batches/{batch_id}/status").status_code == 404
-    assert client.get(f"/validator/miner-task-batches/{batch_id}/runs").status_code == 404

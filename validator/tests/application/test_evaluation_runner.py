@@ -43,9 +43,11 @@ from harnyx_validator.application.dto.evaluation import (
     MinerTaskRunSubmission,
     MinerTaskWorkAssignment,
     PlatformOwnedTaskResult,
+    SandboxFailureDiagnostics,
     ScriptArtifactSpec,
     TaskRunOutcome,
     TokenUsageSummary,
+    ValidatorBatchFailureDetail,
 )
 from harnyx_validator.application.evaluate_task_run import TaskRunOrchestrator, UsageSummarizer
 from harnyx_validator.application.invoke_entrypoint import (
@@ -61,7 +63,6 @@ from harnyx_validator.application.services.evaluation_runner import (
     EvaluationRunner,
     UnexpectedArtifactExecutionError,
     ValidatorBatchFailedError,
-    ValidatorBatchFailureDetail,
 )
 from harnyx_validator.domain.evaluation import MinerTaskRun
 from harnyx_validator.infrastructure.scoring.vertex_embedding import VertexEmbeddingRetryExhaustedError
@@ -784,6 +785,189 @@ async def test_evaluate_assigned_task_queue_final_invocation_exception_becomes_a
     assert result_queue.empty()
 
 
+async def test_evaluation_runner_assigned_task_final_delivery_disqualifying_validator_failure_carries_detail(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runner, batch_id, artifact, task, _, _, _, _ = _assigned_task_test_context(tmp_path)
+    failure_detail = ValidatorBatchFailureDetail(
+        error_code=MinerTaskErrorCode.SANDBOX_START_FAILED,
+        error_message="sandbox start failed",
+        occurred_at=datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        artifact_id=artifact.artifact_id,
+        task_id=task.task_id,
+        uid=artifact.uid,
+        sandbox_diagnostics=SandboxFailureDiagnostics(
+            image="harnyx/sandbox:test",
+            status="exited",
+            exit_code=255,
+        ),
+    )
+
+    async def evaluate_task_attempt(**_kwargs) -> evaluation_runner_module.TaskAttemptDecision:
+        return evaluation_runner_module._validator_batch_failure_decision(
+            ValidatorBatchFailedError(
+                error_code=MinerTaskErrorCode.SANDBOX_START_FAILED,
+                message="sandbox start failed",
+                failure_detail=failure_detail,
+            )
+        )
+
+    monkeypatch.setattr(runner, "_evaluate_task_attempt", evaluate_task_attempt)
+
+    result = await runner.evaluate_assigned_task(
+        batch_id=batch_id,
+        artifact=artifact,
+        task=task,
+        attempt_number=1,
+        max_attempts=1,
+        assignment_token=_ASSIGNMENT_TOKEN,
+        orchestrator=cast(TaskRunOrchestrator, object()),
+    )
+
+    assert result.result is None
+    assert result.terminal_attempt.status is MinerTaskAttemptStatus.FAILED
+    assert result.terminal_attempt.error_code == str(MinerTaskErrorCode.SANDBOX_START_FAILED)
+    assert result.terminal_attempt.retry_decision is MinerTaskAttemptRetryDecision.WILL_NOT_RETRY
+    assert result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE
+    assert result.terminal_attempt.delivery_failure_detail == failure_detail
+
+
+async def test_evaluation_runner_assigned_task_retryable_delivery_disqualifying_validator_failure_does_not_carry_detail(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runner, batch_id, artifact, task, _, _, _, _ = _assigned_task_test_context(tmp_path)
+    failure_detail = ValidatorBatchFailureDetail(
+        error_code=MinerTaskErrorCode.SANDBOX_START_FAILED,
+        error_message="sandbox start failed",
+        occurred_at=datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        artifact_id=artifact.artifact_id,
+        task_id=task.task_id,
+        uid=artifact.uid,
+        sandbox_diagnostics=SandboxFailureDiagnostics(exit_code=255),
+    )
+
+    async def evaluate_task_attempt(**_kwargs) -> evaluation_runner_module.TaskAttemptDecision:
+        return evaluation_runner_module._validator_batch_failure_decision(
+            ValidatorBatchFailedError(
+                error_code=MinerTaskErrorCode.SANDBOX_START_FAILED,
+                message="sandbox start failed",
+                failure_detail=failure_detail,
+            )
+        )
+
+    monkeypatch.setattr(runner, "_evaluate_task_attempt", evaluate_task_attempt)
+
+    result = await runner.evaluate_assigned_task(
+        batch_id=batch_id,
+        artifact=artifact,
+        task=task,
+        attempt_number=1,
+        max_attempts=2,
+        assignment_token=_ASSIGNMENT_TOKEN,
+        orchestrator=cast(TaskRunOrchestrator, object()),
+    )
+
+    assert result.result is None
+    assert result.terminal_attempt.status is MinerTaskAttemptStatus.FAILED
+    assert result.terminal_attempt.error_code == str(MinerTaskErrorCode.SANDBOX_START_FAILED)
+    assert result.terminal_attempt.retry_decision is MinerTaskAttemptRetryDecision.WILL_RETRY
+    assert result.terminal_attempt.terminal_effect is None
+    assert result.terminal_attempt.delivery_failure_detail is None
+
+
+async def test_evaluate_assigned_task_queue_final_delivery_failure_closes_group_after_started_sibling(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runner, batch_id, artifact, started_task, _, _, _, _ = _assigned_task_test_context(tmp_path)
+    delivery_failure_task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="delivery failure"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    started_assignment = MinerTaskWorkAssignment(
+        batch_id=batch_id,
+        artifact=artifact,
+        task=started_task,
+        attempt_number=1,
+        max_attempts=1,
+        assignment_token=_ASSIGNMENT_TOKEN,
+    )
+    delivery_failure_assignment = MinerTaskWorkAssignment(
+        batch_id=batch_id,
+        artifact=artifact,
+        task=delivery_failure_task,
+        attempt_number=1,
+        max_attempts=1,
+        assignment_token=_FAILED_ASSIGNMENT_TOKEN,
+    )
+    failure_detail = ValidatorBatchFailureDetail(
+        error_code=MinerTaskErrorCode.SANDBOX_START_FAILED,
+        error_message="sandbox start failed",
+        occurred_at=datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        artifact_id=artifact.artifact_id,
+        task_id=delivery_failure_task.task_id,
+        uid=artifact.uid,
+        sandbox_diagnostics=SandboxFailureDiagnostics(exit_code=255),
+    )
+    started_entered = asyncio.Event()
+    release_started = asyncio.Event()
+    result_queue: asyncio.Queue[PlatformOwnedTaskResult] = asyncio.Queue()
+    close_requested = asyncio.Event()
+
+    async def evaluate_task_attempt(**kwargs) -> evaluation_runner_module.TaskAttemptDecision:
+        if kwargs["task"].task_id == delivery_failure_task.task_id:
+            return evaluation_runner_module._validator_batch_failure_decision(
+                ValidatorBatchFailedError(
+                    error_code=MinerTaskErrorCode.SANDBOX_START_FAILED,
+                    message="sandbox start failed",
+                    failure_detail=failure_detail,
+                )
+            )
+        started_entered.set()
+        await release_started.wait()
+        return evaluation_runner_module._submission_decision(
+            _submission_for_task(
+                batch_id=batch_id,
+                artifact=artifact,
+                task=started_task,
+            )
+        )
+
+    monkeypatch.setattr(runner, "_evaluate_task_attempt", evaluate_task_attempt)
+    execution = asyncio.create_task(
+        runner.evaluate_assigned_task_queue(
+            batch_id=batch_id,
+            artifact=artifact,
+            initial_assignments=(started_assignment, delivery_failure_assignment),
+            assigned_work=_AssignedWork(result_queue=result_queue),
+            close_requested=close_requested,
+            result_queue=result_queue,
+            orchestrator=cast(TaskRunOrchestrator, object()),
+        )
+    )
+
+    try:
+        await asyncio.wait_for(started_entered.wait(), timeout=1.0)
+        delivery_result = await asyncio.wait_for(result_queue.get(), timeout=1.0)
+        assert delivery_result.task_id == delivery_failure_task.task_id
+        assert delivery_result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE
+        assert delivery_result.terminal_attempt.delivery_failure_detail == failure_detail
+        assert not execution.done()
+
+        release_started.set()
+        started_result = await asyncio.wait_for(result_queue.get(), timeout=1.0)
+        assert started_result.task_id == started_task.task_id
+        assert started_result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.TASK_RESULT
+    finally:
+        close_requested.set()
+        release_started.set()
+
+    await asyncio.wait_for(execution, timeout=1.0)
+
+
 async def test_evaluation_runner_assigned_task_final_validator_failure_becomes_attempt_failure(
     tmp_path: Path,
 ) -> None:
@@ -809,6 +993,7 @@ async def test_evaluation_runner_assigned_task_final_validator_failure_becomes_a
     assert result.terminal_attempt.error_code == str(MinerTaskErrorCode.UNEXPECTED_VALIDATOR_FAILURE)
     assert result.terminal_attempt.retry_decision is MinerTaskAttemptRetryDecision.WILL_NOT_RETRY
     assert result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.ATTEMPT_FAILURE
+    assert result.terminal_attempt.delivery_failure_detail is None
 
 
 async def test_evaluate_assigned_task_queue_invocation_timeout_records_phase_owned_diagnostics(
@@ -5824,6 +6009,18 @@ async def test_evaluate_artifact_with_state_preserves_partial_submissions_for_va
         content_hash="artifact-hash",
         size_bytes=128,
     )
+    failure_detail = ValidatorBatchFailureDetail(
+        error_code="validator_internal_timeout",
+        error_message="validator timeout",
+        occurred_at=datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        artifact_id=artifact.artifact_id,
+        uid=artifact.uid,
+        sandbox_diagnostics=SandboxFailureDiagnostics(
+            image="harnyx/sandbox:test",
+            status="exited",
+            exit_code=255,
+        ),
+    )
     completed_submission = _submission_for_task(
         batch_id=batch_id,
         artifact=artifact,
@@ -5836,13 +6033,7 @@ async def test_evaluate_artifact_with_state_preserves_partial_submissions_for_va
         dispatch.validator_failure = ValidatorBatchFailedError(
             error_code="validator_internal_timeout",
             message="validator timeout",
-            failure_detail=ValidatorBatchFailureDetail(
-                error_code="validator_internal_timeout",
-                error_message="validator timeout",
-                occurred_at=datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
-                artifact_id=artifact.artifact_id,
-                uid=artifact.uid,
-            ),
+            failure_detail=failure_detail,
         )
 
     runner._run_artifact_worker = run_artifact_worker  # type: ignore[method-assign]
@@ -5858,6 +6049,75 @@ async def test_evaluate_artifact_with_state_preserves_partial_submissions_for_va
     exc = exc_info.value
     assert exc.completed_submissions == (completed_submission,)
     assert exc.remaining_tasks == (pending_task,)
+
+
+async def test_evaluate_task_retry_loop_records_validator_batch_failure_detail(
+    tmp_path: Path,
+) -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    evaluation_store = _RecordingEvaluationStore()
+    receipt_log = FakeReceiptLog()
+    progress = _progress(tmp_path)
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_store,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=progress,
+    )
+    batch_id = uuid4()
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="platform-owned batch failure"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+    failure_detail = ValidatorBatchFailureDetail(
+        error_code="validator_internal_timeout",
+        error_message="validator timeout",
+        occurred_at=datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        artifact_id=artifact.artifact_id,
+        task_id=task.task_id,
+        uid=artifact.uid,
+        sandbox_diagnostics=SandboxFailureDiagnostics(
+            image="harnyx/sandbox:test",
+            status="exited",
+            exit_code=255,
+        ),
+    )
+
+    async def evaluate_task_attempt(**kwargs) -> evaluation_runner_module.TaskAttemptDecision:
+        return evaluation_runner_module._validator_batch_failure_decision(
+            ValidatorBatchFailedError(
+                error_code="validator_internal_timeout",
+                message="validator timeout",
+                failure_detail=failure_detail,
+            )
+        )
+
+    runner._evaluate_task_attempt = evaluate_task_attempt  # type: ignore[method-assign]
+
+    with pytest.raises(ValidatorBatchFailedError, match="validator timeout"):
+        await runner._evaluate_task_with_retry(
+            batch_id=batch_id,
+            artifact=artifact,
+            task=task,
+            orchestrator=cast(TaskRunOrchestrator, object()),
+        )
+
+    attempts = progress.completed_run_page(batch_id, after_sequence=0, limit=10)["items"]
+    terminal_attempt = attempts[-1]["attempt"]
+    assert terminal_attempt.delivery_failure_detail == failure_detail
 
 
 async def test_evaluate_artifact_with_state_preserves_partial_submissions_for_unexpected_failure(

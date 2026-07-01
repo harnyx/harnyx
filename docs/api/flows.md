@@ -186,7 +186,7 @@ sequenceDiagram
   - [POST /v2/miner-task-work/results](generated/platform.md#endpoint-post-v2-miner-task-work-results)
 - Validator:
   - [GET /validator/status](generated/validator.md#endpoint-get-validator-status) (health snapshot; not miner-task lifecycle progress)
-  - [POST /validator/miner-task-batches/{batch_id}/similarity](generated/validator.md#endpoint-post-validator-miner-task-batches-batch_id-similarity) (similarity judging; not lifecycle dispatch/status/result draining)
+  - [POST /validator/miner-task-batches/{batch_id}/similarity](generated/validator.md#endpoint-post-validator-miner-task-batches-batch_id-similarity) (similarity judging)
   - [POST /v1/tools/execute](generated/validator.md#endpoint-post-v1-tools-execute)
 - Sandbox:
   - [POST /entry/{entrypoint_name}](generated/sandbox.md#endpoint-post-entry-entrypoint_name)

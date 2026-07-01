@@ -12,7 +12,6 @@ from harnyx_commons.domain.tool_call import ToolExecutionFacts
 from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.tools.types import ToolName
 from harnyx_validator.application.dto.evaluation import (
-    MinerTaskBatchSpec,
     MinerTaskWorkAssignment,
     PlatformOwnedTaskResult,
 )
@@ -20,10 +19,6 @@ from harnyx_validator.application.dto.evaluation import (
 
 class PlatformPort(Protocol):
     """Abstract platform client capable of champion lookup and logging."""
-
-    def get_miner_task_batch(self, batch_id: UUID) -> MinerTaskBatchSpec:
-        """Retrieve a platform-composed miner-task batch."""
-        ...
 
     def fetch_artifact(self, batch_id: UUID, artifact_id: UUID) -> bytes:
         """Download the python agent artifact for a given candidate in the batch."""

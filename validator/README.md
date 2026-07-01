@@ -55,7 +55,7 @@ The defaults in `.env.example` already target mainnet (`finney`) and netuid `67`
 
 Provider-backed miner script tools execute through platform tool proxy with miner-stored credentials. Validators do not need `SEARCH_PROVIDER`, `DESEARCH_API_KEY`, `PARALLEL_API_KEY`, or `TOOL_LLM_PROVIDER` for normal miner task provider-backed tool execution.
 
-Completed-run execution logs are stored under the validator state volume for local audit and troubleshooting. The platform does not drain validator `/runs` pages for active miner-task lifecycle progress; it owns assignment, result acceptance, delivery projection, and finalization. `VALIDATOR_RUN_PROGRESS_RETENTION_SECONDS` controls how long terminal local progress blobs are retained before cleanup; it defaults to 24 hours. `VALIDATOR_RUN_PROGRESS_CLEANUP_INTERVAL_SECONDS` controls the idle cleanup cadence and defaults to 10 minutes.
+Completed-run execution logs are stored under the validator state volume for local audit and troubleshooting. Platform owns assignment, result acceptance, delivery projection, and finalization. `VALIDATOR_RUN_PROGRESS_RETENTION_SECONDS` controls how long terminal local progress blobs are retained before cleanup; it defaults to 24 hours. `VALIDATOR_RUN_PROGRESS_CLEANUP_INTERVAL_SECONDS` controls the idle cleanup cadence and defaults to 10 minutes.
 
 Validator pairwise scoring keeps `SCORING_LLM_PROVIDER` configurable, but the primary scoring model contract is fixed in code to `google/gemma-4-31B-turbo-TEE` with `reasoning_effort="high"`. Pairwise scoring uses `SCORING_LLM_RETRY_*` for the LLM request retry loop, including retryable provider errors, response verification failures, and structured-output repair retries; exhausting that policy records `scoring_llm_retry_exhausted` and does not schedule a new miner task attempt. If the primary candidate exhausts provider retries, scoring tries `moonshotai/Kimi-K2.5-TEE` and then `zai-org/GLM-5-TEE`; non-retryable provider failures fail fast. Validators use the configured `SCORING_LLM_PROVIDER`, which defaults to Chutes. The pairwise scoring prompt, request shape, fallback loop, and score mapping live in `public/packages/commons/src/harnyx_commons/miner_task_scoring.py`; validator runtime code wires providers, sandbox execution, and submission flow.
 
@@ -118,7 +118,7 @@ Watchtower polls Docker Hub every 5 minutes and will pull/restart the validator 
 
 The stack now uses a normal short shutdown budget (`60s`), not a long correctness-critical drain window.
 
-Miner-task restart safety no longer depends on the validator staying alive until every in-flight batch fully finishes. Platform owns expected work, attempt numbering, accepted results, delivery projection, and finalization. After restart, the validator starts with empty active-task memory and polls Platform for new assignments; unfinished work is resolved by Platform deadline and retry handling rather than validator batch restore.
+Miner-task restart safety no longer depends on the validator staying alive until every in-flight batch fully finishes. Platform owns expected work, attempt numbering, accepted results, delivery projection, and finalization. After restart, the validator starts with empty active-task memory and polls Platform for new assignments; unfinished work is resolved by Platform deadline and retry handling.
 
 ## Troubleshooting
 

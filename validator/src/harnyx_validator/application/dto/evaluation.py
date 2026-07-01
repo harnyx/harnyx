@@ -7,7 +7,7 @@ from enum import StrEnum
 from typing import Self
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from harnyx_commons.domain.miner_task import MinerTask, Query, Response
 from harnyx_commons.domain.session import LlmUsageTotals, Session, SessionUsage
@@ -223,6 +223,53 @@ class MinerTaskAttemptTerminalEffect(StrEnum):
     ATTEMPT_FAILURE = "attempt_failure"
 
 
+DIAGNOSTIC_ID_MAX_LENGTH = 512
+DIAGNOSTIC_STATE_ERROR_MAX_LENGTH = 2048
+DIAGNOSTIC_TEXT_MAX_LENGTH = 4096
+DIAGNOSTIC_LOG_TAIL_MAX_LENGTH = 8192
+DIAGNOSTIC_STRICT_CONFIG = ConfigDict(
+    extra="forbid",
+    frozen=True,
+    strict=True,
+    str_strip_whitespace=False,
+)
+
+
+class SandboxFailureDiagnostics(BaseModel):
+    model_config = DIAGNOSTIC_STRICT_CONFIG
+
+    image: str | None = Field(default=None, max_length=DIAGNOSTIC_ID_MAX_LENGTH)
+    pull_policy: str | None = Field(default=None, max_length=DIAGNOSTIC_ID_MAX_LENGTH)
+    container_name: str | None = Field(default=None, max_length=DIAGNOSTIC_ID_MAX_LENGTH)
+    container_id: str | None = Field(default=None, max_length=DIAGNOSTIC_ID_MAX_LENGTH)
+    status: str | None = Field(default=None, max_length=DIAGNOSTIC_ID_MAX_LENGTH)
+    exit_code: int | None = None
+    oom_killed: bool | None = None
+    state_error: str | None = Field(default=None, max_length=DIAGNOSTIC_STATE_ERROR_MAX_LENGTH)
+    error_text: str | None = Field(default=None, max_length=DIAGNOSTIC_TEXT_MAX_LENGTH)
+    docker_logs_tail: str | None = Field(default=None, max_length=DIAGNOSTIC_LOG_TAIL_MAX_LENGTH)
+    pull_returncode: int | None = None
+    pull_stdout_tail: str | None = Field(default=None, max_length=DIAGNOSTIC_TEXT_MAX_LENGTH)
+    pull_stderr_tail: str | None = Field(default=None, max_length=DIAGNOSTIC_TEXT_MAX_LENGTH)
+    run_returncode: int | None = None
+    run_stdout_tail: str | None = Field(default=None, max_length=DIAGNOSTIC_TEXT_MAX_LENGTH)
+    run_stderr_tail: str | None = Field(default=None, max_length=DIAGNOSTIC_TEXT_MAX_LENGTH)
+
+
+class ValidatorBatchFailureDetail(BaseModel):
+    model_config = VALIDATOR_STRICT_CONFIG
+
+    error_code: str
+    error_message: str
+    occurred_at: datetime
+    artifact_id: UUID | None = None
+    task_id: UUID | None = None
+    uid: int | None = None
+    exception_type: str | None = None
+    traceback: str | None = None
+    sandbox_diagnostics: SandboxFailureDiagnostics | None = None
+
+
 class MinerTaskAttemptDiagnostics(BaseModel):
     model_config = VALIDATOR_STRICT_CONFIG
 
@@ -253,6 +300,7 @@ class MinerTaskAttemptAuditRecord(BaseModel):
     max_attempts: int = Field(ge=1)
     execution_log: tuple[ToolCall, ...] = ()
     diagnostics: MinerTaskAttemptDiagnostics | None = None
+    delivery_failure_detail: ValidatorBatchFailureDetail | None = None
 
     @model_validator(mode="after")
     def _validate_attempt(self) -> MinerTaskAttemptAuditRecord:
@@ -279,6 +327,11 @@ class MinerTaskAttemptAuditRecord(BaseModel):
             raise ValueError("attempt_failure requires final attempt")
         if self.retry_decision is MinerTaskAttemptRetryDecision.WILL_NOT_RETRY and self.terminal_effect is None:
             raise ValueError("non-retrying attempts must have terminal effect")
+        if (
+            self.delivery_failure_detail is not None
+            and self.terminal_effect is not MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE
+        ):
+            raise ValueError("delivery_failure_detail requires delivery_failure terminal effect")
         return self
 
 
@@ -295,17 +348,11 @@ class PlatformOwnedTaskResult(BaseModel):
     terminal_attempt: MinerTaskAttemptAuditRecord
 
 
-class MinerTaskBatchRunResult(BaseModel):
-    model_config = VALIDATOR_STRICT_CONFIG
-
-    """Outcome of running a miner-task batch across the supplied artifacts."""
-
-    batch_id: UUID
-    tasks: tuple[MinerTask, ...]
-    completed_run_count: int = Field(ge=0)
-
-
 __all__ = [
+    "DIAGNOSTIC_ID_MAX_LENGTH",
+    "DIAGNOSTIC_LOG_TAIL_MAX_LENGTH",
+    "DIAGNOSTIC_STATE_ERROR_MAX_LENGTH",
+    "DIAGNOSTIC_TEXT_MAX_LENGTH",
     "EntrypointInvocationRequest",
     "EntrypointInvocationResult",
     "MinerTaskAttemptAuditRecord",
@@ -313,13 +360,14 @@ __all__ = [
     "MinerTaskAttemptRetryDecision",
     "MinerTaskAttemptStatus",
     "MinerTaskAttemptTerminalEffect",
-    "MinerTaskBatchRunResult",
     "MinerTaskBatchSpec",
     "MinerTaskWorkAssignment",
     "MinerTaskRunRequest",
     "MinerTaskRunSubmission",
     "PlatformOwnedTaskResult",
+    "SandboxFailureDiagnostics",
     "ScriptArtifactSpec",
     "TaskRunOutcome",
     "TokenUsageSummary",
+    "ValidatorBatchFailureDetail",
 ]

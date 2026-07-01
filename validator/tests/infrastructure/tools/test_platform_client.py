@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import socket
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -23,7 +22,9 @@ from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptTerminalEffect,
     MinerTaskRunSubmission,
     PlatformOwnedTaskResult,
+    SandboxFailureDiagnostics,
     TokenUsageSummary,
+    ValidatorBatchFailureDetail,
 )
 from harnyx_validator.application.ports.platform import PlatformTaskAttemptIdentity
 from harnyx_validator.domain.evaluation import MinerTaskRun
@@ -50,43 +51,6 @@ def _weights_response() -> httpx.Response:
     payload = {
         "weights": {"42": 0.7, "7": 0.3},
         "champion_uid": 42,
-    }
-    return httpx.Response(status_code=200, json=payload)
-
-
-def _batch_response(
-    *,
-    batch_id,
-    task_id,
-    artifact_id,
-    champion_artifact_id,
-    budget_usd: float,
-) -> httpx.Response:
-    payload = {
-        "batch_id": str(batch_id),
-        "cutoff_at": "2025-10-17T12:00:00Z",
-        "created_at": "2025-10-17T12:00:00Z",
-        "tasks": [
-            {
-                "task_id": str(task_id),
-                "query": {"text": "smoke"},
-                "reference_answer": {"text": "ok"},
-                "budget_usd": budget_usd,
-            },
-        ],
-        "artifacts": [
-            {
-                "uid": 7,
-                "artifact_id": str(artifact_id),
-                "content_hash": "abc",
-                "size_bytes": 1,
-                "miner_hotkey_ss58": "miner-hotkey",
-                "task_retry_count": 2,
-            }
-        ],
-        "champion_artifact_id": str(champion_artifact_id),
-        "completed_at": "2025-10-17T12:05:00Z",
-        "failed_at": None,
     }
     return httpx.Response(status_code=200, json=payload)
 
@@ -395,6 +359,89 @@ def test_submit_miner_task_work_results_posts_audit_only_retry_attempt() -> None
     assert acknowledgements[0].reason_code is None
 
 
+def test_submit_miner_task_work_results_posts_delivery_failure_detail() -> None:
+    keypair = _keypair()
+    batch_id = uuid4()
+    artifact_id = uuid4()
+    task_id = uuid4()
+    session_id = uuid4()
+    started_at = datetime(2026, 6, 22, 0, 0, tzinfo=UTC)
+    seen_body: dict[str, object] | None = None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal seen_body
+        _assert_signed(request, keypair)
+        if request.method == "POST" and request.url.path == "/v2/miner-task-work/results":
+            seen_body = json.loads(request.content)
+            return httpx.Response(
+                status_code=200,
+                json={
+                    "server_time": "2026-06-22T00:00:02+00:00",
+                    "results": [
+                        {
+                            "batch_id": str(batch_id),
+                            "artifact_id": str(artifact_id),
+                            "task_id": str(task_id),
+                            "attempt_number": 1,
+                            "outcome": "accepted",
+                            "canonical": True,
+                            "reason_code": None,
+                            "reason": None,
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(status_code=404)
+
+    client = HttpPlatformClient(
+        base_url="https://mock.local",
+        hotkey=keypair,
+        transport=httpx.MockTransport(handler),
+    )
+    client.submit_miner_task_work_results(
+        (
+            PlatformOwnedTaskResult(
+                batch_id=batch_id,
+                artifact_id=artifact_id,
+                task_id=task_id,
+                attempt_number=1,
+                result=None,
+                terminal_attempt=MinerTaskAttemptAuditRecord(
+                    validator_session_id=session_id,
+                    batch_id=batch_id,
+                    artifact_id=artifact_id,
+                    task_id=task_id,
+                    attempt_number=1,
+                    uid=7,
+                    miner_hotkey_ss58="miner-hotkey",
+                    started_at=started_at,
+                    finished_at=started_at + timedelta(seconds=1),
+                    status=MinerTaskAttemptStatus.FAILED,
+                    error_code="sandbox_start_failed",
+                    error_summary_code="sandbox_start_failed",
+                    retry_decision=MinerTaskAttemptRetryDecision.WILL_NOT_RETRY,
+                    terminal_effect=MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE,
+                    max_attempts=1,
+                    delivery_failure_detail=ValidatorBatchFailureDetail(
+                        error_code="sandbox_start_failed",
+                        error_message="sandbox start failed",
+                        occurred_at=started_at,
+                        artifact_id=artifact_id,
+                        task_id=task_id,
+                        uid=7,
+                        sandbox_diagnostics=SandboxFailureDiagnostics(exit_code=255),
+                    ),
+                ),
+            ),
+        )
+    )
+
+    assert seen_body is not None
+    attempt = seen_body["results"][0]["terminal_attempt"]  # type: ignore[index]
+    assert attempt["delivery_failure_detail"]["error_message"] == "sandbox start failed"
+    assert attempt["delivery_failure_detail"]["sandbox_diagnostics"]["exit_code"] == 255
+
+
 def test_submit_miner_task_work_results_serializes_run_execution_log() -> None:
     keypair = _keypair()
     batch_id = uuid4()
@@ -506,142 +553,7 @@ def test_submit_miner_task_work_results_serializes_run_execution_log() -> None:
     assert acknowledgements[0].canonical is True
 
 
-def test_get_miner_task_batch_parses_tasks_and_artifacts() -> None:
-    batch_id = uuid4()
-    task_id = uuid4()
-    artifact_id = uuid4()
-    champion_artifact_id = uuid4()
-    budget_usd = 0.123
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        _assert_signed(request, keypair)
-        expected_path = f"/v1/miner-task-batches/batch/{batch_id}"
-        if request.method == "GET" and request.url.path == expected_path:
-            return _batch_response(
-                batch_id=batch_id,
-                task_id=task_id,
-                artifact_id=artifact_id,
-                champion_artifact_id=champion_artifact_id,
-                budget_usd=budget_usd,
-            )
-        return httpx.Response(status_code=404)
-
-    keypair = _keypair()
-    client = HttpPlatformClient(
-        base_url="https://mock.local",
-        hotkey=keypair,
-        transport=httpx.MockTransport(handler),
-    )
-
-    batch = client.get_miner_task_batch(batch_id)
-
-    assert batch.batch_id == batch_id
-    assert batch.tasks[0].task_id == task_id
-    assert batch.tasks[0].budget_usd == pytest.approx(budget_usd)
-    assert batch.tasks[0].query.text == "smoke"
-    assert batch.tasks[0].reference_answer.text == "ok"
-    assert batch.artifacts[0].artifact_id == artifact_id
-
-
-def test_get_miner_task_batch_accepts_bri_494_deployment_safe_response_shape() -> None:
-    batch_id = uuid4()
-    task_id = uuid4()
-    artifact_id = uuid4()
-    champion_artifact_id = uuid4()
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        _assert_signed(request, keypair)
-        if request.method == "GET" and request.url.path == f"/v1/miner-task-batches/batch/{batch_id}":
-            return _batch_response(
-                batch_id=batch_id,
-                task_id=task_id,
-                artifact_id=artifact_id,
-                champion_artifact_id=champion_artifact_id,
-                budget_usd=0.1,
-            )
-        return httpx.Response(status_code=404)
-
-    keypair = _keypair()
-    client = HttpPlatformClient(
-        base_url="https://mock.local",
-        hotkey=keypair,
-        transport=httpx.MockTransport(handler),
-    )
-
-    batch = client.get_miner_task_batch(batch_id)
-
-    assert batch.artifacts[0].artifact_id == artifact_id
-    assert batch.artifacts[0].miner_hotkey_ss58 == "miner-hotkey"
-    assert batch.artifacts[0].task_retry_count == 2
-
-
-def test_get_miner_task_batch_accepts_submitted_at_on_platform_read_artifacts() -> None:
-    batch_id = uuid4()
-    task_id = uuid4()
-    artifact_id = uuid4()
-    champion_artifact_id = uuid4()
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        _assert_signed(request, keypair)
-        if request.method == "GET" and request.url.path == f"/v1/miner-task-batches/batch/{batch_id}":
-            response = _batch_response(
-                batch_id=batch_id,
-                task_id=task_id,
-                artifact_id=artifact_id,
-                champion_artifact_id=champion_artifact_id,
-                budget_usd=0.1,
-            )
-            payload = response.json()
-            payload["artifacts"][0]["submitted_at"] = "2026-05-30T12:00:00Z"
-            return httpx.Response(status_code=200, json=payload)
-        return httpx.Response(status_code=404)
-
-    keypair = _keypair()
-    client = HttpPlatformClient(
-        base_url="https://mock.local",
-        hotkey=keypair,
-        transport=httpx.MockTransport(handler),
-    )
-
-    batch = client.get_miner_task_batch(batch_id)
-
-    assert batch.artifacts[0].artifact_id == artifact_id
-
-
-def test_get_miner_task_batch_rejects_unknown_artifact_extra_after_submitted_at_strip() -> None:
-    batch_id = uuid4()
-    task_id = uuid4()
-    artifact_id = uuid4()
-    champion_artifact_id = uuid4()
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        _assert_signed(request, keypair)
-        if request.method == "GET" and request.url.path == f"/v1/miner-task-batches/batch/{batch_id}":
-            response = _batch_response(
-                batch_id=batch_id,
-                task_id=task_id,
-                artifact_id=artifact_id,
-                champion_artifact_id=champion_artifact_id,
-                budget_usd=0.1,
-            )
-            payload = response.json()
-            payload["artifacts"][0]["submitted_at"] = "2026-05-30T12:00:00Z"
-            payload["artifacts"][0]["unexpected_extra"] = True
-            return httpx.Response(status_code=200, json=payload)
-        return httpx.Response(status_code=404)
-
-    keypair = _keypair()
-    client = HttpPlatformClient(
-        base_url="https://mock.local",
-        hotkey=keypair,
-        transport=httpx.MockTransport(handler),
-    )
-
-    with pytest.raises(ValueError):
-        client.get_miner_task_batch(batch_id)
-
-
-@pytest.mark.anyio("asyncio")
 async def test_platform_tool_proxy_grant_posts_attempt_number() -> None:
     batch_id = uuid4()
     artifact_id = uuid4()
@@ -1401,24 +1313,6 @@ def test_get_champion_weights_retries_transient_connect_timeout() -> None:
         _assert_signed(request, keypair)
 
 
-def test_get_miner_task_batch_does_not_retry_broad_connect_error() -> None:
-    batch_id = uuid4()
-    keypair = _keypair()
-    connect_error = httpx.ConnectError("connect failed")
-    transport = _AlwaysFailTransport(exceptions=[connect_error])
-    client = HttpPlatformClient(
-        base_url="https://mock.local",
-        hotkey=keypair,
-        transport=httpx.MockTransport(transport),
-    )
-
-    with pytest.raises(httpx.ConnectError) as exc_info:
-        client.get_miner_task_batch(batch_id)
-
-    assert exc_info.value is connect_error
-    expected_path = f"/v1/miner-task-batches/batch/{batch_id}"
-    assert [request.url.path for request in transport.requests] == [expected_path]
-
 
 def test_fetch_artifact_retries_transient_connect_timeout() -> None:
     batch_id = uuid4()
@@ -1446,58 +1340,6 @@ def test_fetch_artifact_retries_transient_connect_timeout() -> None:
     for request in transport.requests:
         _assert_signed(request, keypair)
 
-
-def test_get_miner_task_batch_raises_original_exception_after_retry_exhaustion() -> None:
-    batch_id = uuid4()
-    keypair = _keypair()
-    first_exception = httpx.ConnectTimeout("first timeout")
-    final_exception = httpx.ConnectTimeout("final timeout")
-    transport = _AlwaysFailTransport(exceptions=[first_exception, final_exception])
-    client = HttpPlatformClient(
-        base_url="https://mock.local",
-        hotkey=keypair,
-        transport=httpx.MockTransport(transport),
-    )
-
-    with pytest.raises(httpx.ConnectTimeout) as exc_info:
-        client.get_miner_task_batch(batch_id)
-
-    assert exc_info.value is final_exception
-    expected_path = f"/v1/miner-task-batches/batch/{batch_id}"
-    assert [request.url.path for request in transport.requests] == [
-        expected_path,
-        expected_path,
-    ]
-
-
-def test_get_miner_task_batch_retries_connect_error_with_temporary_dns_cause() -> None:
-    batch_id = uuid4()
-    keypair = _keypair()
-    connect_error = httpx.ConnectError("connect failed")
-    connect_error.__cause__ = socket.gaierror(socket.EAI_AGAIN, "temporary dns")
-    final_exception = httpx.ConnectError("second connect failed")
-    final_exception.__cause__ = socket.gaierror(socket.EAI_AGAIN, "temporary dns")
-    transport = _AlwaysFailTransport(
-        exceptions=[
-            connect_error,
-            final_exception,
-        ]
-    )
-    client = HttpPlatformClient(
-        base_url="https://mock.local",
-        hotkey=keypair,
-        transport=httpx.MockTransport(transport),
-    )
-
-    with pytest.raises(httpx.ConnectError) as exc_info:
-        client.get_miner_task_batch(batch_id)
-
-    assert exc_info.value is final_exception
-    expected_path = f"/v1/miner-task-batches/batch/{batch_id}"
-    assert [request.url.path for request in transport.requests] == [
-        expected_path,
-        expected_path,
-    ]
 
 
 def test_get_champion_weights_does_not_retry_non_connect_transport_failure() -> None:

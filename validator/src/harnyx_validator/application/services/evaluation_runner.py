@@ -57,9 +57,11 @@ from harnyx_validator.application.dto.evaluation import (
     MinerTaskRunSubmission,
     MinerTaskWorkAssignment,
     PlatformOwnedTaskResult,
+    SandboxFailureDiagnostics,
     ScriptArtifactSpec,
     TaskRunOutcome,
     TokenUsageSummary,
+    ValidatorBatchFailureDetail,
 )
 from harnyx_validator.application.evaluate_task_run import TaskRunOrchestrator, UsageSummarizer
 from harnyx_validator.application.invoke_entrypoint import (
@@ -83,10 +85,6 @@ TaskSessionLimiter = AbstractAsyncContextManager[None]
 logger = logging.getLogger("harnyx_validator.scheduler")
 measurement_logger = logging.getLogger("harnyx_validator.measurement")
 LOCAL_RETRY_ATTEMPTS = 2
-DIAGNOSTIC_ID_MAX_LENGTH = 512
-DIAGNOSTIC_STATE_ERROR_MAX_LENGTH = 2048
-DIAGNOSTIC_TEXT_MAX_LENGTH = 4096
-DIAGNOSTIC_LOG_TAIL_MAX_LENGTH = 8192
 VALIDATOR_OWNED_PLATFORM_TOOL_PROXY_CONTROL_ERROR_CODES = frozenset(
     {
         "platform_tool_proxy_denied",
@@ -168,39 +166,6 @@ class _AssignedTaskFinalization:
     local_submission: MinerTaskRunSubmission | None
     terminal_outcome: str
     error_code: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class SandboxFailureDiagnostics:
-    image: str | None = None
-    pull_policy: str | None = None
-    container_name: str | None = None
-    container_id: str | None = None
-    status: str | None = None
-    exit_code: int | None = None
-    oom_killed: bool | None = None
-    state_error: str | None = None
-    error_text: str | None = None
-    docker_logs_tail: str | None = None
-    pull_returncode: int | None = None
-    pull_stdout_tail: str | None = None
-    pull_stderr_tail: str | None = None
-    run_returncode: int | None = None
-    run_stdout_tail: str | None = None
-    run_stderr_tail: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ValidatorBatchFailureDetail:
-    error_code: str
-    error_message: str
-    occurred_at: datetime
-    artifact_id: UUID | None = None
-    task_id: UUID | None = None
-    uid: int | None = None
-    exception_type: str | None = None
-    traceback: str | None = None
-    sandbox_diagnostics: SandboxFailureDiagnostics | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1428,6 +1393,7 @@ class EvaluationRunner:
                         decision=decision,
                         retry_decision=MinerTaskAttemptRetryDecision.WILL_NOT_RETRY,
                         terminal_effect=MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE,
+                        delivery_failure_detail=validator_failure.failure_detail,
                     )
                     raise validator_failure
 
@@ -2347,11 +2313,22 @@ class EvaluationRunner:
                 if attempt_number < max_attempts
                 else MinerTaskAttemptRetryDecision.WILL_NOT_RETRY
             )
-            terminal_effect = (
-                None
-                if retry_decision is MinerTaskAttemptRetryDecision.WILL_RETRY
-                else MinerTaskAttemptTerminalEffect.ATTEMPT_FAILURE
+            try:
+                validator_error_code = MinerTaskErrorCode(validator_failure.error_code)
+            except ValueError:
+                validator_error_code = None
+            is_delivery_disqualifying = (
+                validator_error_code is not None
+                and is_delivery_disqualifying_validator_pair_error(validator_error_code)
             )
+            delivery_failure_detail = None
+            if retry_decision is MinerTaskAttemptRetryDecision.WILL_RETRY:
+                terminal_effect = None
+            elif is_delivery_disqualifying:
+                terminal_effect = MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE
+                delivery_failure_detail = validator_failure.failure_detail
+            else:
+                terminal_effect = MinerTaskAttemptTerminalEffect.ATTEMPT_FAILURE
             attempt = self._build_terminated_attempt_record(
                 batch_id=batch_id,
                 artifact=artifact,
@@ -2364,6 +2341,7 @@ class EvaluationRunner:
                 retry_decision=retry_decision,
                 terminal_effect=terminal_effect,
                 diagnostics=diagnostics,
+                delivery_failure_detail=delivery_failure_detail,
             )
             return _AssignedTaskFinalization(
                 result=PlatformOwnedTaskResult(
@@ -2468,6 +2446,7 @@ class EvaluationRunner:
         retry_decision: MinerTaskAttemptRetryDecision,
         terminal_effect: MinerTaskAttemptTerminalEffect | None,
         diagnostics: MinerTaskAttemptDiagnostics | None = None,
+        delivery_failure_detail: ValidatorBatchFailureDetail | None = None,
     ) -> MinerTaskAttemptAuditRecord:
         record = self._build_terminated_attempt_record(
             batch_id=batch_id,
@@ -2481,6 +2460,7 @@ class EvaluationRunner:
             retry_decision=retry_decision,
             terminal_effect=terminal_effect,
             diagnostics=diagnostics,
+            delivery_failure_detail=delivery_failure_detail,
         )
         self._progress.record_terminated_attempt(record)
         return record
@@ -2499,6 +2479,7 @@ class EvaluationRunner:
         retry_decision: MinerTaskAttemptRetryDecision,
         terminal_effect: MinerTaskAttemptTerminalEffect | None,
         diagnostics: MinerTaskAttemptDiagnostics | None = None,
+        delivery_failure_detail: ValidatorBatchFailureDetail | None = None,
     ) -> MinerTaskAttemptAuditRecord:
         status = MinerTaskAttemptStatus.FAILED
         attempt_receipts = decision.attempt_execution_log or tuple(
@@ -2526,6 +2507,7 @@ class EvaluationRunner:
             max_attempts=max_attempts,
             execution_log=attempt_receipts,
             diagnostics=diagnostics,
+            delivery_failure_detail=delivery_failure_detail,
         )
         return record
 
