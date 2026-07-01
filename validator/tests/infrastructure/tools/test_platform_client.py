@@ -26,7 +26,10 @@ from harnyx_validator.application.dto.evaluation import (
     TokenUsageSummary,
     ValidatorBatchFailureDetail,
 )
-from harnyx_validator.application.ports.platform import PlatformTaskAttemptIdentity
+from harnyx_validator.application.ports.platform import (
+    PlatformTaskAttemptIdentity,
+    PlatformWeightsUnavailableError,
+)
 from harnyx_validator.domain.evaluation import MinerTaskRun
 from harnyx_validator.infrastructure.tools.platform_client import (
     AsyncPlatformToolProxyPlatformClient,
@@ -138,6 +141,35 @@ def test_get_champion_weights_returns_weights() -> None:
 
     assert weights.weights == {42: 0.7, 7: 0.3}
     assert weights.champion_uid == 42
+
+
+def test_get_champion_weights_maps_weights_unavailable_response() -> None:
+    seen_requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_requests.append(request)
+        _assert_signed(request, keypair)
+        if request.method == "GET" and request.url.path == "/v1/weights":
+            return httpx.Response(
+                status_code=503,
+                json={
+                    "error_code": "weights_unavailable",
+                    "message": "participant emission unavailable",
+                },
+            )
+        return httpx.Response(status_code=404)
+
+    keypair = _keypair()
+    client = HttpPlatformClient(
+        base_url="https://mock.local",
+        hotkey=keypair,
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(PlatformWeightsUnavailableError, match="participant emission unavailable"):
+        client.get_champion_weights()
+
+    assert [request.url.path for request in seen_requests] == ["/v1/weights"]
 
 
 @pytest.mark.anyio("asyncio")

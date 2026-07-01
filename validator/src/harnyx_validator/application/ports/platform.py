@@ -87,6 +87,10 @@ class ChampionWeights:
     weights: dict[int, float]
 
 
+class PlatformWeightsUnavailableError(RuntimeError):
+    """Raised when platform has no safe weights for this submission tick."""
+
+
 @dataclass(frozen=True)
 class PlatformToolProxyGrant:
     token: str
@@ -135,6 +139,7 @@ class PlatformTaskResultAcknowledgement:
 
 __all__ = [
     "PlatformPort",
+    "PlatformWeightsUnavailableError",
     "PlatformToolProxyPlatformPort",
     "ChampionWeights",
     "PlatformToolProxyControlError",

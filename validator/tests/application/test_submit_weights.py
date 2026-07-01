@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from harnyx_validator.application.ports.platform import ChampionWeights
+from harnyx_validator.application.ports.platform import ChampionWeights, PlatformWeightsUnavailableError
 from harnyx_validator.application.ports.subtensor import ValidatorNodeInfo, WeightSubmissionTooEarlyError
 from harnyx_validator.application.submit_weights import WeightSubmissionService
 from validator.tests.fixtures.subtensor import FakeSubtensorClient
@@ -28,6 +28,15 @@ class StubPlatform:
     def get_champion_weights(self) -> ChampionWeights:
         self.calls += 1
         return ChampionWeights(champion_uid=self._champion_uid, weights=self._weights)
+
+
+class UnavailablePlatform:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def get_champion_weights(self) -> ChampionWeights:
+        self.calls += 1
+        raise PlatformWeightsUnavailableError("participant emission unavailable")
 
 
 def test_submission_service_submits_platform_weights() -> None:
@@ -130,6 +139,36 @@ def test_try_submit_returns_none_when_chain_reports_too_early() -> None:
     assert result is None
     assert platform.calls == 1
     assert fake.weight_updates == []
+
+
+def test_try_submit_skips_when_platform_weights_unavailable(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fake = FakeSubtensorClient()
+    fake.validator_metadata = ValidatorNodeInfo(uid=7, version_key=None)
+    platform = UnavailablePlatform()
+    service = WeightSubmissionService(
+        subtensor=fake,
+        netuid=1,
+        clock=fixed_clock,
+        platform=platform,
+    )
+
+    with caplog.at_level(logging.INFO, logger="harnyx_validator.weights.ranking"):
+        result = service.try_submit()
+
+    assert result is None
+    assert platform.calls == 1
+    assert fake.weight_updates == []
+    record = next(
+        record
+        for record in caplog.records
+        if record.message == "weight submission skipped because platform weights are unavailable"
+    )
+    assert record.data == {
+        "event": "validator_weight_submission_skipped",
+        "reason": "weights_unavailable",
+    }
 
 
 def test_try_submit_propagates_non_too_early_submission_errors() -> None:

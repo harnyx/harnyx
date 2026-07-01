@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
-from harnyx_validator.application.ports.platform import PlatformPort
+from harnyx_validator.application.ports.platform import PlatformPort, PlatformWeightsUnavailableError
 from harnyx_validator.application.ports.subtensor import SubtensorClientPort, WeightSubmissionTooEarlyError
 
 weights_logger = logging.getLogger("harnyx_validator.weights.ranking")
@@ -50,6 +50,18 @@ class WeightSubmissionService:
             # A chain-level too-early refusal is harmless; the next scheduled attempt will retry.
             weights_logger.debug(
                 "weight submission skipped because chain reported the attempt is too early",
+                exc_info=exc,
+            )
+            return None
+        except PlatformWeightsUnavailableError as exc:
+            weights_logger.info(
+                "weight submission skipped because platform weights are unavailable",
+                extra={
+                    "data": {
+                        "event": "validator_weight_submission_skipped",
+                        "reason": "weights_unavailable",
+                    }
+                },
                 exc_info=exc,
             )
             return None

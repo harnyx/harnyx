@@ -32,6 +32,7 @@ from harnyx_validator.application.ports.platform import (
     PlatformToolProxyGrant,
     PlatformToolProxyPlatformPort,
     PlatformToolProxyToolResult,
+    PlatformWeightsUnavailableError,
 )
 from harnyx_validator.infrastructure.transient_network import classify_transient_network_failure
 
@@ -206,6 +207,13 @@ class HttpPlatformClient(PlatformPort):
         path = "/v1/weights"
         response = self._get(path)
         if response.status_code != httpx.codes.OK:
+            if (
+                response.status_code == httpx.codes.SERVICE_UNAVAILABLE
+                and _platform_error_code(response) == "weights_unavailable"
+            ):
+                raise PlatformWeightsUnavailableError(
+                    _platform_error_message(response) or "platform weights unavailable"
+                )
             raise PlatformClientError(
                 status_code=response.status_code,
                 message=f"platform returned {response.status_code} for GET /v1/weights",
