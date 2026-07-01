@@ -345,6 +345,14 @@ def _recorded_rows(*, batch_id, champion_artifact_id, tasks: tuple[MinerTask, ..
     return tuple(rows)
 
 
+def _artifact_task_index_path(batch_id: object, artifact_id: object) -> str:
+    return f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/{artifact_id}/tasks"
+
+
+def _task_results_path(batch_id: object, artifact_id: object, task_id: object) -> str:
+    return f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/{artifact_id}/tasks/{task_id}/results"
+
+
 def _recorded_results_snapshot(
     *,
     batch_id: UUID,
@@ -1257,7 +1265,7 @@ def test_local_eval_target_only_continues_when_recorded_results_fetch_fails(
             source="explicit",
             detail=detail,
             recorded_results=_unavailable_recorded_results_snapshot(
-                path=(f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/{champion_artifact_id}/results")
+                path=_artifact_task_index_path(batch_id, champion_artifact_id)
             ),
         ),
         champion_script={
@@ -1307,7 +1315,7 @@ def test_local_eval_target_only_continues_when_recorded_results_fetch_fails(
     assert report["recorded_platform_context"]["results_status"] == {
         "state": "unavailable",
         "error": {
-            "path": (f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/{champion_artifact_id}/results"),
+            "path": _artifact_task_index_path(batch_id, champion_artifact_id),
             "status_code": 503,
             "detail": "upstream connect error",
         },
@@ -1334,7 +1342,7 @@ def test_local_eval_vs_champion_continues_when_recorded_results_fetch_fails(
             source="latest-completed",
             detail=detail,
             recorded_results=_unavailable_recorded_results_snapshot(
-                path=(f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/{champion_artifact_id}/results")
+                path=_artifact_task_index_path(batch_id, champion_artifact_id)
             ),
         ),
         champion_script={
@@ -1395,7 +1403,7 @@ def test_local_eval_target_only_continues_when_recorded_results_transport_fails(
             source="explicit",
             detail=detail,
             recorded_results=_request_error_recorded_results_snapshot(
-                path=(f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/{champion_artifact_id}/results")
+                path=_artifact_task_index_path(batch_id, champion_artifact_id)
             ),
         ),
         champion_script={
@@ -1443,7 +1451,7 @@ def test_local_eval_target_only_continues_when_recorded_results_transport_fails(
     assert report["recorded_platform_context"]["results_status"] == {
         "state": "unavailable",
         "error": {
-            "path": (f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/{champion_artifact_id}/results"),
+            "path": _artifact_task_index_path(batch_id, champion_artifact_id),
             "status_code": 0,
             "detail": "connection terminated",
         },
@@ -2522,7 +2530,9 @@ def test_resolve_batch_context_rejects_explicit_non_completed_batch() -> None:
 def test_resolve_batch_context_records_results_failure_without_aborting() -> None:
     batch_id = uuid4()
     champion_artifact_id = uuid4()
-    results_path = f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/{champion_artifact_id}/results"
+    task_id = uuid4()
+    task_index_path = _artifact_task_index_path(batch_id, champion_artifact_id)
+    task_results_path = _task_results_path(batch_id, champion_artifact_id, task_id)
 
     class _StubClient:
         def __init__(self) -> None:
@@ -2543,7 +2553,9 @@ def test_resolve_batch_context_records_results_failure_without_aborting() -> Non
                     },
                     request=request,
                 )
-            if path == results_path:
+            if path == task_index_path:
+                return httpx.Response(200, json=[{"task_id": str(task_id)}], request=request)
+            if path == task_results_path:
                 return httpx.Response(503, text="upstream connect error", request=request)
             pytest.fail(f"unexpected path: {path}")
 
@@ -2558,19 +2570,20 @@ def test_resolve_batch_context_records_results_failure_without_aborting() -> Non
 
     assert context.recorded_results.rows is None
     assert context.recorded_results.error is not None
-    assert context.recorded_results.error.path == results_path
+    assert context.recorded_results.error.path == task_results_path
     assert context.recorded_results.error.status_code == 503
     assert context.recorded_results.scope is None
     assert client._client.calls == [
         (f"/v1/monitoring/miner-task-batches/{batch_id}", None),
-        (results_path, None),
+        (task_index_path, None),
+        (task_results_path, None),
     ]
 
 
 def test_resolve_batch_context_records_results_transport_failure_without_aborting() -> None:
     batch_id = uuid4()
     champion_artifact_id = uuid4()
-    results_path = f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/{champion_artifact_id}/results"
+    task_index_path = _artifact_task_index_path(batch_id, champion_artifact_id)
 
     class _StubClient:
         def __init__(self) -> None:
@@ -2591,7 +2604,7 @@ def test_resolve_batch_context_records_results_transport_failure_without_abortin
                     },
                     request=request,
                 )
-            if path == results_path:
+            if path == task_index_path:
                 raise httpx.ConnectError("connection terminated", request=request)
             pytest.fail(f"unexpected path: {path}")
 
@@ -2606,13 +2619,13 @@ def test_resolve_batch_context_records_results_transport_failure_without_abortin
 
     assert context.recorded_results.rows is None
     assert context.recorded_results.error is not None
-    assert context.recorded_results.error.path == results_path
+    assert context.recorded_results.error.path == task_index_path
     assert context.recorded_results.error.status_code == 0
     assert context.recorded_results.error.detail == "connection terminated"
     assert context.recorded_results.scope is None
     assert client._client.calls == [
         (f"/v1/monitoring/miner-task-batches/{batch_id}", None),
-        (results_path, None),
+        (task_index_path, None),
     ]
 
 
@@ -2718,10 +2731,16 @@ def test_resolve_batch_context_still_raises_when_batch_detail_request_fails() ->
     ]
 
 
-def test_get_recorded_results_uses_artifact_monitoring_route() -> None:
+def test_get_recorded_results_uses_task_index_and_detail_routes() -> None:
     batch_id = uuid4()
     champion_artifact_id = uuid4()
-    results_path = f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/{champion_artifact_id}/results"
+    task_id_a = uuid4()
+    task_id_b = uuid4()
+    task_index_path = _artifact_task_index_path(batch_id, champion_artifact_id)
+    task_a_path = _task_results_path(batch_id, champion_artifact_id, task_id_a)
+    task_b_path = _task_results_path(batch_id, champion_artifact_id, task_id_b)
+    task_a_row = {"task_id": str(task_id_a), "score": 1.0}
+    task_b_row = {"task_id": str(task_id_b), "score": 0.5}
 
     class _StubClient:
         def __init__(self) -> None:
@@ -2729,9 +2748,26 @@ def test_get_recorded_results_uses_artifact_monitoring_route() -> None:
 
         def get(self, path: str, params=None):
             self.calls.append((path, params))
+            assert not path.endswith(f"/artifacts/{champion_artifact_id}/results")
             request = httpx.Request("GET", f"https://platform.example.com{path}")
-            if path == results_path:
-                return httpx.Response(200, json=[], request=request)
+            if path == task_index_path:
+                return httpx.Response(
+                    200,
+                    json=[
+                        {"task_id": str(task_id_a)},
+                        {"task_id": str(task_id_a)},
+                        {"task_id": str(task_id_b)},
+                        {
+                            "task_id": str(uuid4()),
+                            "lifecycle_status": "pending_unassignable_missing_terminal_result",
+                        },
+                    ],
+                    request=request,
+                )
+            if path == task_a_path:
+                return httpx.Response(200, json=[task_a_row], request=request)
+            if path == task_b_path:
+                return httpx.Response(200, json=[task_b_row], request=request)
             pytest.fail(f"unexpected path: {path}")
 
         def close(self) -> None:
@@ -2743,5 +2779,9 @@ def test_get_recorded_results_uses_artifact_monitoring_route() -> None:
 
     rows = client.get_recorded_results(batch_id=batch_id, artifact_id=champion_artifact_id)
 
-    assert rows == ()
-    assert client._client.calls == [(results_path, None)]
+    assert rows == (task_a_row, task_b_row)
+    assert client._client.calls == [
+        (task_index_path, None),
+        (task_a_path, None),
+        (task_b_path, None),
+    ]

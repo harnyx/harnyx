@@ -17,7 +17,7 @@ Collect completed-batch evidence for one submitted artifact.
   - `get_miner_task_batch`
   - `get_miner_task_batch_comparison`
   - `get_miner_task_batch_results`
-  - `get_artifact_results`
+  - `get_task_results`
 
 ## Steps
 
@@ -27,8 +27,8 @@ Collect completed-batch evidence for one submitted artifact.
    cost totals, and `error_counts`.
 4. Call `get_miner_task_batch_results(batch_id, artifact_id, ...)` for
    artifact-scoped result rows.
-5. Call `get_artifact_results(batch_id, artifact_id, ...)` when attempts or
-   `execution_log` detail are needed.
+5. Call `get_task_results(batch_id, artifact_id, task_id)` when attempts or
+   `execution_log` detail are needed for one task.
 6. Join task metadata and result rows by `task_id`.
 
 ## Stop Conditions

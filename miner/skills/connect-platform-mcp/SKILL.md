@@ -29,7 +29,7 @@ the workflow tools are available.
    - `get_miner_task_batch`
    - `get_miner_task_batch_comparison`
    - `get_miner_task_batch_results`
-   - `get_artifact_results`
+   - `get_task_results`
 
 ## Stop Conditions
 

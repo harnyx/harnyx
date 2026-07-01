@@ -30,8 +30,11 @@ the next workflow action.
    - delivery state/progress from `get_miner_task_batch(batch_id)`
    - aggregate `error_counts` from `get_miner_task_batch_comparison(batch_id)`
 5. If timeout, crash, or budget is suspected, inspect attempts, `elapsed_ms`,
-   `execution_log`, `specifics.error`, and cost totals from
-   `get_artifact_results(batch_id, artifact_id)`.
+   `execution_log`, `specifics.error`, and cost totals:
+   - use `get_miner_task_batch_results(batch_id, artifact_id, ...)` to find the
+     affected `task_id`
+   - call `get_task_results(batch_id, artifact_id, task_id)` for full task
+     result detail
 6. If the answer is weak:
    - read `reference_answer` from `get_miner_task_batch(batch_id).batch.tasks[]`
    - read `response`, `citations`, and `specifics.score_breakdown` from

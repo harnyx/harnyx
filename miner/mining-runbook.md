@@ -35,7 +35,7 @@ Workflow tools used below:
 - `get_miner_task_batch`
 - `get_miner_task_batch_comparison`
 - `get_miner_task_batch_results`
-- `get_artifact_results`
+- `get_task_results`
 
 ## Start From Current Champion Context
 
@@ -188,8 +188,8 @@ Use completed-batch tools by purpose:
 - `get_miner_task_batch_results(batch_id, artifact_id, ...)` for
   artifact-scoped result rows. Add `task_id`, `validator_hotkey`, or
   `miner_uid` only when narrowing the query.
-- `get_artifact_results(batch_id, artifact_id, ...)` for per-artifact attempt
-  and `execution_log` detail.
+- `get_task_results(batch_id, artifact_id, task_id)` for full result detail,
+  attempts, and `execution_log` evidence for one task.
 
 ## Diagnose Bad Or Weird Scores
 
@@ -201,9 +201,9 @@ Work from the first failed condition that applies.
 | Accepted but not in completed batch | `submitted_at` versus `cutoff_at`, completed batch artifact/result visibility | `get_latest_submissions`, `get_miner_task_batch` |
 | Batch still running | Delivery state and progress only; do not look for public result rows yet | `get_miner_task_batch` |
 | Execution did not happen | Delivery state/progress, then aggregate `error_counts` after completion | `get_miner_task_batch`, `get_miner_task_batch_comparison` |
-| Timeout, crash, or budget issue | Attempts, `elapsed_ms`, `execution_log`, `specifics.error`, cost totals | `get_artifact_results` |
-| Weak answer | Reference answer from batch task metadata; miner response/citations/score details from artifact result rows joined by `task_id` | `get_miner_task_batch`, `get_miner_task_batch_results` or `get_artifact_results` |
-| Judge rationale is surprising | `specifics.score_breakdown.reasoning.text` when present | `get_miner_task_batch_results` or `get_artifact_results` |
+| Timeout, crash, or budget issue | Attempts, `elapsed_ms`, `execution_log`, `specifics.error`, cost totals | `get_miner_task_batch_results`, then `get_task_results` for the chosen `task_id` |
+| Weak answer | Reference answer from batch task metadata; miner response/citations/score details from artifact result rows joined by `task_id` | `get_miner_task_batch`, `get_miner_task_batch_results`, then `get_task_results` when full task detail is needed |
+| Judge rationale is surprising | `specifics.score_breakdown.reasoning.text` when present | `get_miner_task_batch_results` or `get_task_results` |
 | Need direct target-vs-champion answer comparison | Re-run local eval in `vs-champion` mode and compare the report's `target` and `opponent` fields | `harnyx-miner-local-eval` |
 
 For weak answers, join the data like this:
@@ -213,6 +213,8 @@ For weak answers, join the data like this:
 2. Use artifact-scoped result rows for `response`, `citations`, and
    `specifics.score_breakdown`.
 3. Join task metadata and result rows by `task_id`.
+4. When you need full attempts or execution logs, call
+   `get_task_results(batch_id, artifact_id, task_id)` for that one task.
 
 Then choose the next action:
 

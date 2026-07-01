@@ -120,12 +120,23 @@ class PlatformMonitoringClient:
         batch_id: UUID,
         artifact_id: UUID,
     ) -> tuple[dict[str, object], ...]:
-        payload = self._request_json(
-            f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/{artifact_id}/results",
+        task_index = self._request_json(
+            f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/{artifact_id}/tasks",
         )
-        if not isinstance(payload, list):
-            raise RuntimeError("monitoring artifact results response must be a JSON array")
-        return tuple(dict(_require_mapping(row, label="monitoring result row")) for row in payload)
+        task_ids = _completed_task_ids_from_index_payload(task_index)
+        rows: list[dict[str, object]] = []
+        for task_id in task_ids:
+            payload = self._request_json(
+                f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/{artifact_id}/tasks/{task_id}/results",
+            )
+            if not isinstance(payload, list):
+                raise RuntimeError("monitoring task results response must be a JSON array")
+            rows.extend(
+                dict(row)
+                for row in (_require_mapping(item, label="monitoring task result row") for item in payload)
+                if "lifecycle_status" not in row
+            )
+        return tuple(rows)
 
     def get_recorded_results_snapshot(
         self,
@@ -221,6 +232,24 @@ def _require_sequence(value: object, *, label: str) -> Sequence[object]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
         raise RuntimeError(f"{label} must be a JSON array")
     return value
+
+
+def _completed_task_ids_from_index_payload(payload: object) -> tuple[UUID, ...]:
+    rows = _require_sequence(payload, label="monitoring task index")
+    task_ids: list[UUID] = []
+    seen: set[UUID] = set()
+    for raw_row in rows:
+        row = _require_mapping(raw_row, label="monitoring task index row")
+        if "lifecycle_status" in row:
+            continue
+        task_id_value = row.get("task_id")
+        if task_id_value in (None, ""):
+            raise RuntimeError("monitoring task index row missing task_id")
+        task_id = UUID(str(task_id_value))
+        if task_id not in seen:
+            seen.add(task_id)
+            task_ids.append(task_id)
+    return tuple(task_ids)
 
 
 def _require_completed_batch_detail(detail: Mapping[str, object], *, batch_id: UUID) -> None:
