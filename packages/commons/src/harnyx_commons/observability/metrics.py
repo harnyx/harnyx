@@ -6,11 +6,46 @@ import os
 
 from opentelemetry.exporter.prometheus import PrometheusMetricReader
 from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.view import ExplicitBucketHistogramAggregation, View
 from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 
 _METRICS_CONFIGURED = False
 _METER_PROVIDER: MeterProvider | None = None
 _PROMETHEUS_READER: PrometheusMetricReader | None = None
+_HTTP_SERVER_DURATION_MILLISECONDS_BUCKETS = (
+    0,
+    5,
+    10,
+    25,
+    50,
+    75,
+    100,
+    250,
+    500,
+    750,
+    1000,
+    2500,
+    5000,
+    7500,
+    10000,
+    30000,
+    60000,
+    120000,
+    300000,
+    600000,
+    900000,
+)
+
+
+def _metrics_views() -> tuple[View, ...]:
+    return (
+        View(
+            instrument_name="http.server.duration",
+            aggregation=ExplicitBucketHistogramAggregation(
+                boundaries=_HTTP_SERVER_DURATION_MILLISECONDS_BUCKETS,
+            ),
+        ),
+    )
 
 
 def configure_metrics(*, service_name: str) -> None:
@@ -26,7 +61,11 @@ def configure_metrics(*, service_name: str) -> None:
 
     resource = Resource.create({SERVICE_NAME: resolved_service_name})
     reader = PrometheusMetricReader()
-    provider = MeterProvider(resource=resource, metric_readers=[reader])
+    provider = MeterProvider(
+        resource=resource,
+        metric_readers=[reader],
+        views=_metrics_views(),
+    )
 
     _PROMETHEUS_READER = reader
     _METER_PROVIDER = provider
