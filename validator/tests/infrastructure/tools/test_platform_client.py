@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import socket
@@ -175,19 +176,22 @@ def test_get_champion_weights_returns_weights() -> None:
     assert weights.champion_uid == 42
 
 
-def test_request_miner_task_work_posts_active_attempts_and_parses_assignments() -> None:
+@pytest.mark.anyio("asyncio")
+async def test_request_miner_task_work_posts_active_attempts_and_parses_assignments() -> None:
     keypair = _keypair()
     batch_id = uuid4()
     artifact_id = uuid4()
     task_id = uuid4()
     session_id = uuid4()
     seen_body: dict[str, object] | None = None
+    seen_timeout: dict[str, float] | None = None
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal seen_body
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal seen_body, seen_timeout
         _assert_signed(request, keypair)
         if request.method == "POST" and request.url.path == "/v2/miner-task-work/tasks":
             seen_body = json.loads(request.content)
+            seen_timeout = request.extensions.get("timeout")
             return httpx.Response(
                 status_code=200,
                 json={
@@ -223,7 +227,7 @@ def test_request_miner_task_work_posts_active_attempts_and_parses_assignments() 
         transport=httpx.MockTransport(handler),
     )
 
-    assignments = client.request_miner_task_work(
+    assignments = await client.request_miner_task_work(
         target_concurrency=4,
         max_active_artifacts=2,
         active_attempts=(
@@ -250,12 +254,57 @@ def test_request_miner_task_work_posts_active_attempts_and_parses_assignments() 
             }
         ],
     }
+    assert seen_timeout == {
+        "connect": 10.0,
+        "read": 300.0,
+        "write": 10.0,
+        "pool": 10.0,
+    }
     assert len(assignments) == 1
     assert assignments[0].artifact.artifact_id == artifact_id
     assert assignments[0].task.task_id == task_id
     assert assignments[0].attempt_number == 2
     assert assignments[0].max_attempts == 3
     assert assignments[0].assignment_token == _ASSIGNMENT_TOKEN
+
+
+@pytest.mark.anyio("asyncio")
+async def test_request_miner_task_work_cancels_http_request() -> None:
+    keypair = _keypair()
+    request_started = asyncio.Event()
+    request_cancelled = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        _assert_signed(request, keypair)
+        assert request.method == "POST"
+        assert request.url.path == "/v2/miner-task-work/tasks"
+        request_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            request_cancelled.set()
+            raise
+
+    client = HttpPlatformClient(
+        base_url="https://mock.local",
+        hotkey=keypair,
+        transport=httpx.MockTransport(handler),
+    )
+
+    task = asyncio.create_task(
+        client.request_miner_task_work(
+            target_concurrency=1,
+            max_active_artifacts=1,
+            active_attempts=(),
+        )
+    )
+    await asyncio.wait_for(request_started.wait(), timeout=1.0)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await asyncio.wait_for(request_cancelled.wait(), timeout=1.0)
 
 
 def test_submit_miner_task_work_results_posts_audit_only_retry_attempt() -> None:

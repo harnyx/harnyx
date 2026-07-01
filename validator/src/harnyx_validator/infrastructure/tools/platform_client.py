@@ -38,6 +38,7 @@ from harnyx_validator.infrastructure.parsers import parse_batch
 from harnyx_validator.infrastructure.transient_network import classify_transient_network_failure
 
 _GET_ATTEMPTS = 2
+_PLATFORM_WORK_TASKS_READ_TIMEOUT_SECONDS = 300.0
 _PLATFORM_WORK_RESULT_TIMEOUT_SECONDS = 300.0
 _PLATFORM_TOOL_PROXY_GRANT_RETRY_DELAYS_SECONDS = (0.25, 1.0)
 _TOOL_CALLS_ADAPTER = TypeAdapter(tuple[ToolCall, ...])
@@ -104,7 +105,7 @@ class HttpPlatformClient(PlatformPort):
     base_url: str
     hotkey: bt.Keypair
     timeout_seconds: float = 10.0
-    transport: httpx.BaseTransport | None = None
+    transport: httpx.BaseTransport | httpx.AsyncBaseTransport | None = None
 
     def __post_init__(self) -> None:
         if not self.base_url:
@@ -114,7 +115,14 @@ class HttpPlatformClient(PlatformPort):
         return httpx.Client(
             base_url=self.base_url,
             timeout=self.timeout_seconds,
-            transport=self.transport,
+            transport=cast(httpx.BaseTransport | None, self.transport),
+        )
+
+    def _async_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            base_url=self.base_url,
+            timeout=self.timeout_seconds,
+            transport=cast(httpx.AsyncBaseTransport | None, self.transport),
         )
 
     def _signed_header(self, method: str, path_qs: str, body: bytes) -> str:
@@ -153,14 +161,33 @@ class HttpPlatformClient(PlatformPort):
         path: str,
         payload: JsonObject,
         *,
-        timeout_seconds: float | None = None,
+        timeout: float | httpx.Timeout | None = None,
     ) -> httpx.Response:
         body = _json_body(payload)
         with self._client() as client:
             kwargs: dict[str, Any] = {}
-            if timeout_seconds is not None:
-                kwargs["timeout"] = timeout_seconds
+            if timeout is not None:
+                kwargs["timeout"] = timeout
             return client.post(
+                path,
+                content=body,
+                headers=self._request_headers("POST", path, body),
+                **kwargs,
+            )
+
+    async def _post_json_async(
+        self,
+        path: str,
+        payload: JsonObject,
+        *,
+        timeout: float | httpx.Timeout | None = None,
+    ) -> httpx.Response:
+        body = _json_body(payload)
+        async with self._async_client() as client:
+            kwargs: dict[str, Any] = {}
+            if timeout is not None:
+                kwargs["timeout"] = timeout
+            return await client.post(
                 path,
                 content=body,
                 headers=self._request_headers("POST", path, body),
@@ -201,7 +228,7 @@ class HttpPlatformClient(PlatformPort):
         champion_uid = int(champion_uid_raw) if champion_uid_raw is not None else None
         return ChampionWeights(champion_uid=champion_uid, weights=weights)
 
-    def request_miner_task_work(
+    async def request_miner_task_work(
         self,
         *,
         target_concurrency: int,
@@ -209,7 +236,13 @@ class HttpPlatformClient(PlatformPort):
         active_attempts: Sequence[PlatformTaskAttemptIdentity],
     ) -> tuple[MinerTaskWorkAssignment, ...]:
         path = "/v2/miner-task-work/tasks"
-        response = self._post_json(
+        timeout = httpx.Timeout(
+            connect=self.timeout_seconds,
+            read=_PLATFORM_WORK_TASKS_READ_TIMEOUT_SECONDS,
+            write=self.timeout_seconds,
+            pool=self.timeout_seconds,
+        )
+        response = await self._post_json_async(
             path,
             {
                 "target_concurrency": target_concurrency,
@@ -229,6 +262,7 @@ class HttpPlatformClient(PlatformPort):
                     for attempt in active_attempts
                 ],
             },
+            timeout=timeout,
         )
         if response.status_code != httpx.codes.OK:
             raise PlatformClientError(
@@ -253,7 +287,7 @@ class HttpPlatformClient(PlatformPort):
             {
                 "results": [_platform_task_result_payload(result) for result in results],
             },
-            timeout_seconds=_PLATFORM_WORK_RESULT_TIMEOUT_SECONDS,
+            timeout=_PLATFORM_WORK_RESULT_TIMEOUT_SECONDS,
         )
         if response.status_code != httpx.codes.OK:
             raise PlatformClientError(

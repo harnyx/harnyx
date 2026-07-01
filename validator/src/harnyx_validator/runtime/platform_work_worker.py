@@ -276,6 +276,7 @@ class PlatformWorkWorker:
         self._monotonic_clock = monotonic_clock
         self._active_artifacts: dict[_ArtifactGroupKey, _AssignedArtifactGroup] = {}
         self._pending_results: list[PlatformOwnedTaskResult] = []
+        self._work_request_task: asyncio.Task[tuple[MinerTaskWorkAssignment, ...]] | None = None
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
 
@@ -294,6 +295,7 @@ class PlatformWorkWorker:
         try:
             await asyncio.wait_for(task, timeout=timeout)
         finally:
+            await self._cancel_work_request_task()
             await self._cancel_artifact_group_tasks()
             self._task = None
 
@@ -321,20 +323,53 @@ class PlatformWorkWorker:
         if self._pending_results:
             if not await self._submit_pending_results():
                 return
-        self._request_idle_artifact_groups_close(set())
+        refilled_artifact_ids = self._consume_completed_work_request()
+        self._request_idle_artifact_groups_close(refilled_artifact_ids)
         free_slots = self._target_concurrency - self._local_inflight_count()
         if free_slots <= 0:
             return
         if not self._can_request_platform_work():
             return
-        assignments = await asyncio.to_thread(
-            self._platform.request_miner_task_work,
+        if self._work_request_task is None:
+            self._start_work_request()
+
+    def _start_work_request(self) -> None:
+        self._work_request_task = asyncio.create_task(
+            self._request_platform_work(),
+            name="validator-platform-work-request",
+        )
+
+    async def _request_platform_work(self) -> tuple[MinerTaskWorkAssignment, ...]:
+        active_attempts = self._active_attempts()
+        return await self._platform.request_miner_task_work(
             target_concurrency=self._target_concurrency,
             max_active_artifacts=self._max_active_artifacts,
-            active_attempts=self._active_attempts(),
+            active_attempts=active_attempts,
         )
-        refilled_artifact_ids = self._enqueue_assignments(assignments[:free_slots])
-        self._request_idle_artifact_groups_close(refilled_artifact_ids)
+
+    def _consume_completed_work_request(self) -> set[_ArtifactGroupKey]:
+        task = self._work_request_task
+        if task is None or not task.done():
+            return set()
+        self._work_request_task = None
+        try:
+            assignments = task.result()
+        except Exception as exc:
+            logger.warning("platform work request failed; will retry", exc_info=exc)
+            return set()
+        free_slots = self._target_concurrency - self._local_inflight_count()
+        if free_slots <= 0:
+            return set()
+        return self._enqueue_assignments(assignments[:free_slots])
+
+    async def _cancel_work_request_task(self) -> None:
+        task = self._work_request_task
+        if task is None or task.done():
+            self._work_request_task = None
+            return
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        self._work_request_task = None
 
     def _enqueue_assignments(
         self,

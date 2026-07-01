@@ -33,7 +33,7 @@ class PlatformPort(Protocol):
         """Return platform-computed champion weights."""
         ...
 
-    def request_miner_task_work(
+    async def request_miner_task_work(
         self,
         *,
         target_concurrency: int,
