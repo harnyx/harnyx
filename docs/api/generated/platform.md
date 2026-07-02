@@ -1635,6 +1635,8 @@ Body: [WeightsResponse](#model-weightsresponse)
 | `sandbox_diagnostics` |  |  | opt | [SandboxFailureDiagnostics](#model-sandboxfailurediagnostics) (nullable) |
 |  | `container_id` |  | opt | `string` (nullable) |
 |  | `container_name` |  | opt | `string` (nullable) |
+|  | `docker_inspect_error_tail` |  | opt | `string` (nullable) |
+|  | `docker_logs_error_tail` |  | opt | `string` (nullable) |
 |  | `docker_logs_tail` |  | opt | `string` (nullable) |
 |  | `error_text` |  | opt | `string` (nullable) |
 |  | `exit_code` |  | opt | `integer` (nullable) |
@@ -2938,6 +2940,8 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  | `sandbox_diagnostics` |  | opt | [SandboxFailureDiagnostics](#model-sandboxfailurediagnostics) (nullable) |
 |  |  | `container_id` | opt | `string` (nullable) |
 |  |  | `container_name` | opt | `string` (nullable) |
+|  |  | `docker_inspect_error_tail` | opt | `string` (nullable) |
+|  |  | `docker_logs_error_tail` | opt | `string` (nullable) |
 |  |  | `docker_logs_tail` | opt | `string` (nullable) |
 |  |  | `error_text` | opt | `string` (nullable) |
 |  |  | `exit_code` | opt | `integer` (nullable) |
@@ -4834,6 +4838,8 @@ Body: [WeightsResponse](#model-weightsresponse)
 | --- | --- | --- | --- | --- |
 | `container_id` |  |  | opt | `string` (nullable) |
 | `container_name` |  |  | opt | `string` (nullable) |
+| `docker_inspect_error_tail` |  |  | opt | `string` (nullable) |
+| `docker_logs_error_tail` |  |  | opt | `string` (nullable) |
 | `docker_logs_tail` |  |  | opt | `string` (nullable) |
 | `error_text` |  |  | opt | `string` (nullable) |
 | `exit_code` |  |  | opt | `integer` (nullable) |
@@ -4879,6 +4885,30 @@ Body: [WeightsResponse](#model-weightsresponse)
         }
       ],
       "title": "Container Name"
+    },
+    "docker_inspect_error_tail": {
+      "anyOf": [
+        {
+          "maxLength": 4096,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Docker Inspect Error Tail"
+    },
+    "docker_logs_error_tail": {
+      "anyOf": [
+        {
+          "maxLength": 4096,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Docker Logs Error Tail"
     },
     "docker_logs_tail": {
       "anyOf": [

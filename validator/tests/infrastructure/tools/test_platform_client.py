@@ -461,7 +461,11 @@ def test_submit_miner_task_work_results_posts_delivery_failure_detail() -> None:
                         artifact_id=artifact_id,
                         task_id=task_id,
                         uid=7,
-                        sandbox_diagnostics=SandboxFailureDiagnostics(exit_code=255),
+                        sandbox_diagnostics=SandboxFailureDiagnostics(
+                            exit_code=255,
+                            docker_inspect_error_tail="command=docker inspect stderr=No such container",
+                            docker_logs_error_tail="command=docker logs stderr=daemon unavailable",
+                        ),
                     ),
                 ),
             ),
@@ -472,6 +476,12 @@ def test_submit_miner_task_work_results_posts_delivery_failure_detail() -> None:
     attempt = seen_body["results"][0]["terminal_attempt"]  # type: ignore[index]
     assert attempt["delivery_failure_detail"]["error_message"] == "sandbox start failed"
     assert attempt["delivery_failure_detail"]["sandbox_diagnostics"]["exit_code"] == 255
+    assert attempt["delivery_failure_detail"]["sandbox_diagnostics"]["docker_inspect_error_tail"] == (
+        "command=docker inspect stderr=No such container"
+    )
+    assert attempt["delivery_failure_detail"]["sandbox_diagnostics"]["docker_logs_error_tail"] == (
+        "command=docker logs stderr=daemon unavailable"
+    )
 
 
 def test_submit_miner_task_work_results_serializes_run_execution_log() -> None:

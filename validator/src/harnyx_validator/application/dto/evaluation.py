@@ -248,6 +248,8 @@ class SandboxFailureDiagnostics(BaseModel):
     state_error: str | None = Field(default=None, max_length=DIAGNOSTIC_STATE_ERROR_MAX_LENGTH)
     error_text: str | None = Field(default=None, max_length=DIAGNOSTIC_TEXT_MAX_LENGTH)
     docker_logs_tail: str | None = Field(default=None, max_length=DIAGNOSTIC_LOG_TAIL_MAX_LENGTH)
+    docker_inspect_error_tail: str | None = Field(default=None, max_length=DIAGNOSTIC_TEXT_MAX_LENGTH)
+    docker_logs_error_tail: str | None = Field(default=None, max_length=DIAGNOSTIC_TEXT_MAX_LENGTH)
     pull_returncode: int | None = None
     pull_stdout_tail: str | None = Field(default=None, max_length=DIAGNOSTIC_TEXT_MAX_LENGTH)
     pull_stderr_tail: str | None = Field(default=None, max_length=DIAGNOSTIC_TEXT_MAX_LENGTH)

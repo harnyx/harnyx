@@ -538,6 +538,14 @@ def _sandbox_failure_diagnostics_from_options(options: object | None) -> Sandbox
             docker_logs_tail=_bounded_log_tail(
                 _redact_sensitive_text(_read_text(diagnostics_dir / "docker-logs.txt"), options)
             ),
+            docker_inspect_error_tail=_bounded_text(
+                _redact_sensitive_text(_read_text(diagnostics_dir / "docker-inspect.json.error.txt"), options),
+                max_length=DIAGNOSTIC_TEXT_MAX_LENGTH,
+            ),
+            docker_logs_error_tail=_bounded_text(
+                _redact_sensitive_text(_read_text(diagnostics_dir / "docker-logs.txt.error.txt"), options),
+                max_length=DIAGNOSTIC_TEXT_MAX_LENGTH,
+            ),
             pull_returncode=_int_field(docker_pull_result, "returncode"),
             pull_stdout_tail=_bounded_text(
                 _redact_sensitive_text(_string_field(docker_pull_result, "stdout"), options),

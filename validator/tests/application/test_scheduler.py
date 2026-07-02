@@ -22,6 +22,7 @@ from harnyx_commons.domain.tool_usage import ToolUsageSummary
 from harnyx_commons.infrastructure.state.session_registry import InMemorySessionRegistry
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager
+from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptAuditRecord,
     MinerTaskAttemptRetryDecision,
@@ -38,7 +39,11 @@ from harnyx_validator.application.dto.evaluation import (
 )
 from harnyx_validator.application.ports.progress import RunProgressPage, RunProgressSummary
 from harnyx_validator.application.ports.subtensor import ValidatorNodeInfo
-from harnyx_validator.application.scheduler import EvaluationScheduler, SchedulerConfig
+from harnyx_validator.application.scheduler import (
+    EvaluationScheduler,
+    SchedulerConfig,
+    _sandbox_failure_diagnostics_from_options,
+)
 from harnyx_validator.application.services.evaluation_runner import (
     ArtifactExecutionFailedError,
 )
@@ -49,6 +54,49 @@ pytestmark = pytest.mark.anyio("asyncio")
 _ASSIGNMENT_TOKEN = "assignment-token"  # noqa: S105 - fixed test-only assignment token
 _ASSIGNMENT_TOKEN_1 = "assignment-token-1"  # noqa: S105 - fixed test-only assignment token
 _ASSIGNMENT_TOKEN_2 = "assignment-token-2"  # noqa: S105 - fixed test-only assignment token
+
+
+def test_sandbox_failure_diagnostics_reads_docker_command_error_files(tmp_path) -> None:
+    options = SandboxOptions(
+        image="harnyx/sandbox:test",
+        pull_policy="always",
+        container_name="harnyx-sandbox-7-artifact-batch",
+        env={
+            "SECRET_TOKEN": "super-secret",
+            "SANDBOX_HOST": "127.0.0.1",
+        },
+        failure_diagnostics_dir=str(tmp_path),
+    )
+    (tmp_path / "sandbox-options.json").write_text(
+        '{"image":"harnyx/sandbox:test","pull_policy":"always","container_name":"harnyx-sandbox-7-artifact-batch"}',
+        encoding="utf-8",
+    )
+    (tmp_path / "docker-inspect.json").write_text(
+        '[{"Id":"container-id","State":{"Status":"exited","ExitCode":255,"OOMKilled":false,"Error":""}}]',
+        encoding="utf-8",
+    )
+    (tmp_path / "docker-pull-result.json").write_text('{"returncode":0}', encoding="utf-8")
+    (tmp_path / "docker-run-result.json").write_text('{"returncode":0}', encoding="utf-8")
+    (tmp_path / "error.txt").write_text("sandbox start failed", encoding="utf-8")
+    (tmp_path / "docker-logs.txt").write_text("", encoding="utf-8")
+    (tmp_path / "docker-inspect.json.error.txt").write_text(
+        "command=docker inspect stderr=No such container token=super-secret",
+        encoding="utf-8",
+    )
+    (tmp_path / "docker-logs.txt.error.txt").write_text(
+        "command=docker logs stderr=daemon unavailable token=super-secret",
+        encoding="utf-8",
+    )
+
+    diagnostics = _sandbox_failure_diagnostics_from_options(options)
+
+    assert diagnostics is not None
+    assert diagnostics.docker_inspect_error_tail == (
+        "command=docker inspect stderr=No such container token=<redacted>"
+    )
+    assert diagnostics.docker_logs_error_tail == (
+        "command=docker logs stderr=daemon unavailable token=<redacted>"
+    )
 
 
 class _AssignedWork:
