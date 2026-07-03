@@ -25,6 +25,7 @@ from harnyx_commons.domain.judge_usage import JudgeUsageSummary
 from harnyx_commons.domain.miner_task import (
     EvaluationDetails,
     EvaluationError,
+    EvaluationTrace,
     MinerTask,
     MinerTaskErrorCode,
     is_delivery_disqualifying_validator_pair_error,
@@ -1684,6 +1685,7 @@ class EvaluationRunner:
         execution_log: tuple[ToolCall, ...] | None = None,
         elapsed_ms: float | None = None,
         scoring_judge_usage: JudgeUsageSummary | None = None,
+        trace: EvaluationTrace | None = None,
     ) -> MinerTaskRunSubmission:
         envelope = self._sessions.mark_status(session_id, SessionStatus.ERROR)
         return self._build_terminal_failure(
@@ -1699,6 +1701,7 @@ class EvaluationRunner:
             execution_log=execution_log,
             elapsed_ms=elapsed_ms,
             scoring_judge_usage=scoring_judge_usage,
+            trace=trace,
         )
 
     def _record_exhausted(
@@ -1757,6 +1760,7 @@ class EvaluationRunner:
         execution_log: tuple[ToolCall, ...] | None = None,
         elapsed_ms: float | None = None,
         scoring_judge_usage: JudgeUsageSummary | None = None,
+        trace: EvaluationTrace | None = None,
     ) -> MinerTaskRunSubmission:
         submission = self._build_terminal_failure(
             batch_id=batch_id,
@@ -1771,6 +1775,7 @@ class EvaluationRunner:
             execution_log=execution_log,
             elapsed_ms=elapsed_ms,
             scoring_judge_usage=scoring_judge_usage,
+            trace=trace,
         )
         self._record_submission(submission)
         return submission
@@ -1790,6 +1795,7 @@ class EvaluationRunner:
         execution_log: tuple[ToolCall, ...] | None = None,
         elapsed_ms: float | None = None,
         scoring_judge_usage: JudgeUsageSummary | None = None,
+        trace: EvaluationTrace | None = None,
     ) -> MinerTaskRunSubmission:
         session_id = envelope.session.session_id
         completed_at = self._clock()
@@ -1798,6 +1804,7 @@ class EvaluationRunner:
         details = EvaluationDetails(
             error=EvaluationError(code=error_code, message=error_message),
             scoring_judge_usage=scoring_judge_usage,
+            trace=trace,
             total_tool_usage=total_tool_usage or summarized_tool_usage,
             elapsed_ms=elapsed_ms or _elapsed_ms(issued_at=envelope.session.issued_at, completed_at=completed_at),
         )
@@ -1869,6 +1876,7 @@ class EvaluationRunner:
             },
             exc_info=exc,
         )
+        evaluation_trace = getattr(exc, "evaluation_trace", None)
         return self._build_failed_submission(
             batch_id=batch_id,
             session_id=session_id,
@@ -1878,6 +1886,7 @@ class EvaluationRunner:
             error_code=error_code,
             error_message=error_message,
             scoring_judge_usage=scoring_judge_usage or getattr(exc, "judge_usage", None),
+            trace=evaluation_trace if isinstance(evaluation_trace, EvaluationTrace) else None,
         )
 
     def _record_terminal_timeout_submission(

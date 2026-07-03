@@ -16,6 +16,7 @@ from harnyx_commons.domain.judge_usage import JudgeModelUsage, JudgeUsageSummary
 from harnyx_commons.domain.miner_task import (
     EvaluationDetails,
     EvaluationError,
+    EvaluationTrace,
     MinerTask,
     MinerTaskErrorCode,
     Query,
@@ -3170,6 +3171,17 @@ class _ScoringRetryExhaustedWithJudgeUsageOrchestrator:
     async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
         exc = LlmRetryExhaustedError("embedding retries exhausted")
         exc.__dict__["judge_usage"] = _judge_usage(actual_cost_usd=0.031)
+        exc.__dict__["evaluation_trace"] = EvaluationTrace(
+            entrypoint_invocation_ms=120.0,
+            scoring_ms=250.0,
+            orchestration_ms=400.0,
+            scoring_judge_selected_routes=("chutes/judge-model",),
+            scoring_judge_attempt_count=2,
+            scoring_judge_retry_count=1,
+            scoring_judge_retry_reasons=("transport_error",),
+            scoring_judge_duration_ms=200.0,
+            scoring_judge_status="exhausted",
+        )
         raise exc
 
 
@@ -3691,6 +3703,17 @@ async def test_evaluation_runner_assigned_task_final_scoring_failure_records_par
     assert judge_usage.call_count == 1
     assert judge_usage.total_tokens == 120
     assert judge_usage.actual_cost_usd == pytest.approx(0.031)
+    trace = evaluation_store.records[0].run.details.trace
+    assert trace is not None
+    assert trace.entrypoint_invocation_ms == pytest.approx(120.0)
+    assert trace.scoring_ms == pytest.approx(250.0)
+    assert trace.orchestration_ms == pytest.approx(400.0)
+    assert trace.scoring_judge_selected_routes == ("chutes/judge-model",)
+    assert trace.scoring_judge_attempt_count == 2
+    assert trace.scoring_judge_retry_count == 1
+    assert trace.scoring_judge_retry_reasons == ("transport_error",)
+    assert trace.scoring_judge_duration_ms == pytest.approx(200.0)
+    assert trace.scoring_judge_status == "exhausted"
 
 
 async def test_evaluation_runner_assigned_task_final_sandbox_invocation_failure_stays_task_result(

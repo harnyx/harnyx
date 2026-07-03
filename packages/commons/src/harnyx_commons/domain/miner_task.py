@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, TypeAdapter, field_validator, model_validator
@@ -178,11 +179,33 @@ class EvaluationError(BaseModel):
         return value
 
 
+class EvaluationTrace(BaseModel):
+    model_config = COMMONS_STRICT_CONFIG
+
+    entrypoint_invocation_ms: float | None = Field(default=None, ge=0.0)
+    scoring_ms: float | None = Field(default=None, ge=0.0)
+    orchestration_ms: float | None = Field(default=None, ge=0.0)
+    scoring_judge_selected_routes: tuple[str, ...] = ()
+    scoring_judge_attempt_count: int | None = Field(default=None, ge=0)
+    scoring_judge_retry_count: int | None = Field(default=None, ge=0)
+    scoring_judge_retry_reasons: tuple[str, ...] = ()
+    scoring_judge_duration_ms: float | None = Field(default=None, ge=0.0)
+    scoring_judge_status: Literal["ok", "exhausted", "failed"] | None = None
+
+    @field_validator("scoring_judge_selected_routes", "scoring_judge_retry_reasons", mode="before")
+    @classmethod
+    def _normalize_tuple_fields(cls, value: object) -> object:
+        if isinstance(value, list):
+            return tuple(value)
+        return value
+
+
 class EvaluationDetails(BaseModel):
     model_config = COMMONS_STRICT_CONFIG
 
     score_breakdown: ScoreBreakdown | None = None
     scoring_judge_usage: JudgeUsageSummary | None = None
+    trace: EvaluationTrace | None = None
     total_tool_usage: ToolUsageSummary = Field(default_factory=ToolUsageSummary.zero)
     elapsed_ms: float | None = Field(default=None, ge=0.0)
     error: EvaluationError | None = None
@@ -222,6 +245,7 @@ __all__ = [
     "DEFAULT_MINER_TASK_BUDGET_USD",
     "DELIVERY_DISQUALIFYING_VALIDATOR_PAIR_ERROR_CODES",
     "EvaluationDetails",
+    "EvaluationTrace",
     "EvaluationError",
     "MINER_ATTRIBUTED_PAIR_ERROR_CODES",
     "MinerTask",

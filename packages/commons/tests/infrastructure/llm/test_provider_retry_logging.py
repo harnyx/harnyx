@@ -4,6 +4,7 @@ import logging
 
 import pytest
 
+import harnyx_commons.llm.provider as provider_module
 from harnyx_commons.llm.provider import BaseLlmProvider, LlmProviderError, LlmRetryExhaustedError
 from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import (
@@ -156,6 +157,33 @@ async def test_retryable_exception_still_raises_retry_exhausted_after_attempts()
 
     with pytest.raises(LlmRetryExhaustedError, match="transport_error"):
         await provider.invoke_with_retry(_request())
+
+
+async def test_retry_success_exposes_safe_retry_metadata() -> None:
+    provider = _RetryOnceExceptionProvider()
+
+    result = await provider.invoke_with_retry(_request())
+
+    assert result.metadata is not None
+    assert result.metadata["attempts"] == 2
+    assert result.metadata["retry_reasons"] == ("transport_error: provider transport failed",)
+    assert result.metadata["latency_ms_total"] >= 0
+    assert "prompt_tokens" not in result.metadata
+    assert "actual_cost_usd" not in result.metadata
+
+
+async def test_retry_exhaustion_without_response_carries_retry_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    perf_counter_values = iter((0.0, 0.125, 0.125, 0.5))
+    monkeypatch.setattr(provider_module.time, "perf_counter", lambda: next(perf_counter_values))
+    provider = _RetryExhaustingExceptionProvider()
+
+    with pytest.raises(LlmRetryExhaustedError, match="transport_error") as raised:
+        await provider.invoke_with_retry(_request())
+
+    assert raised.value.response is None
+    assert raised.value.attempts == 2
+    assert raised.value.retry_reasons == ("transport_error",)
+    assert raised.value.latency_ms_total == 500.0
 
 
 async def test_non_retryable_exception_raises_provider_error_without_retry_exhaustion() -> None:

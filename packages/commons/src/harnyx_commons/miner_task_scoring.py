@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -11,6 +12,7 @@ from pydantic import AliasChoices, BaseModel, Field
 from harnyx_commons.domain.judge_usage import JudgeUsageSummary
 from harnyx_commons.domain.miner_task import (
     AnswerCitation,
+    EvaluationTrace,
     MinerTask,
     ReferenceAnswer,
     Response,
@@ -118,6 +120,7 @@ class _PairwiseJudgeResult:
     reasoning_text: str | None
     reasoning_tokens: int | None
     judge_usage: JudgeUsageSummary
+    evaluation_trace: EvaluationTrace | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,12 +128,14 @@ class _PairwiseScore:
     comparison_score: float
     reasoning: ScorerReasoning | None
     judge_usage: JudgeUsageSummary
+    evaluation_trace: EvaluationTrace | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class EvaluationScoringResult:
     score_breakdown: ScoreBreakdown
     judge_usage: JudgeUsageSummary
+    evaluation_trace: EvaluationTrace | None = None
 
     @property
     def comparison_score(self) -> float:
@@ -193,6 +198,7 @@ class EvaluationScoringService:
                 reasoning=pairwise_score.reasoning,
             ),
             judge_usage=pairwise_score.judge_usage,
+            evaluation_trace=pairwise_score.evaluation_trace,
         )
 
     async def _score_pairwise(
@@ -215,7 +221,11 @@ class EvaluationScoringService:
             )
         except Exception as exc:
             partial_usage = merge_judge_usage((miner_first.judge_usage, _judge_usage_from_exception(exc)))
-            raise attach_scoring_judge_usage(exc, partial_usage) from None
+            partial_trace = _merge_scoring_evaluation_traces(
+                (miner_first.evaluation_trace, _evaluation_trace_from_exception(exc)),
+                status="exhausted" if isinstance(exc, LlmRetryExhaustedError) else "failed",
+            )
+            raise attach_scoring_judge_usage(exc, partial_usage, evaluation_trace=partial_trace) from None
         miner_wins = 0
         if miner_first.preferred_position == "first":
             miner_wins += 1
@@ -226,6 +236,10 @@ class EvaluationScoringService:
             comparison_score=miner_wins / 2.0,
             reasoning=_build_pairwise_reasoning_trace(miner_first, reference_first),
             judge_usage=judge_usage,
+            evaluation_trace=_merge_scoring_evaluation_traces(
+                (miner_first.evaluation_trace, reference_first.evaluation_trace),
+                status="ok",
+            ),
         )
 
     async def _judge_pair(
@@ -246,6 +260,7 @@ class EvaluationScoringService:
         )
         last_error: LlmRetryExhaustedError | None = None
         failed_candidate_usage: list[JudgeUsageSummary] = []
+        failed_retry_metadata: list[dict[str, object]] = []
         for model in _judge_candidate_models(self._config):
             request = self._build_pairwise_request(model=model, user_prompt=user_prompt)
             try:
@@ -258,8 +273,30 @@ class EvaluationScoringService:
                 )
                 if failed_usage is not None:
                     failed_candidate_usage.append(failed_usage)
+                failed_retry_metadata.append(
+                    _retry_metadata_from_exception(
+                        exc,
+                        default_provider=str(self._config.provider),
+                        default_model=model,
+                    )
+                )
                 if failed_candidate_usage:
-                    attach_scoring_judge_usage(exc, merge_judge_usage(failed_candidate_usage))
+                    attach_scoring_judge_usage(
+                        exc,
+                        merge_judge_usage(failed_candidate_usage),
+                        evaluation_trace=_aggregate_scoring_evaluation_trace(
+                            failed_retry_metadata,
+                            status="exhausted",
+                        ),
+                    )
+                else:
+                    attach_scoring_evaluation_trace(
+                        exc,
+                        _aggregate_scoring_evaluation_trace(
+                            failed_retry_metadata,
+                            status="exhausted",
+                        ),
+                    )
                 last_error = exc
                 continue
             parsed = response.postprocessed
@@ -271,11 +308,20 @@ class EvaluationScoringService:
                 default_provider=self._config.provider,
                 default_model=model,
             )
+            success_retry_metadata = _retry_metadata_from_response(
+                response,
+                default_provider=str(self._config.provider),
+                default_model=model,
+            )
             return _PairwiseJudgeResult(
                 preferred_position=preference.preferred_position,
                 reasoning_text=_extract_reasoning_text(response),
                 reasoning_tokens=response.usage.reasoning_tokens,
                 judge_usage=merge_judge_usage((*failed_candidate_usage, success_usage)),
+                evaluation_trace=_aggregate_scoring_evaluation_trace(
+                    (*failed_retry_metadata, success_retry_metadata),
+                    status="ok",
+                ),
             )
         assert last_error is not None
         raise last_error
@@ -310,8 +356,20 @@ def _judge_candidate_models(config: EvaluationScoringConfig) -> tuple[str, ...]:
     return (config.model, *config.fallback_models)
 
 
-def attach_scoring_judge_usage(exc: Exception, judge_usage: JudgeUsageSummary) -> Exception:
+def attach_scoring_judge_usage(
+    exc: Exception,
+    judge_usage: JudgeUsageSummary,
+    *,
+    evaluation_trace: EvaluationTrace | None = None,
+) -> Exception:
     exc.__dict__["judge_usage"] = judge_usage
+    if evaluation_trace is not None:
+        attach_scoring_evaluation_trace(exc, evaluation_trace)
+    return exc
+
+
+def attach_scoring_evaluation_trace(exc: Exception, evaluation_trace: EvaluationTrace) -> Exception:
+    exc.__dict__["evaluation_trace"] = evaluation_trace
     return exc
 
 
@@ -333,6 +391,181 @@ def _judge_usage_from_retry_response(
 def _judge_usage_from_exception(exc: Exception) -> JudgeUsageSummary | None:
     usage = getattr(exc, "judge_usage", None)
     return usage if isinstance(usage, JudgeUsageSummary) else None
+
+
+def _evaluation_trace_from_exception(exc: Exception) -> EvaluationTrace | None:
+    trace = getattr(exc, "evaluation_trace", None)
+    return trace if isinstance(trace, EvaluationTrace) else None
+
+
+def _retry_metadata_from_response(
+    response: LlmResponse,
+    *,
+    default_provider: str,
+    default_model: str,
+) -> dict[str, object]:
+    metadata = response.metadata or {}
+    return {
+        "selected_provider": _metadata_string(metadata, "selected_provider", default_provider),
+        "selected_model": _metadata_string(metadata, "selected_model", default_model),
+        "attempts": _metadata_positive_int(metadata, "attempts", fallback=1),
+        "retry_reasons": _metadata_strings(metadata, "retry_reasons"),
+        "latency_ms_total": _metadata_non_negative_float(metadata, "latency_ms_total"),
+    }
+
+
+def _retry_metadata_from_exception(
+    exc: LlmRetryExhaustedError,
+    *,
+    default_provider: str,
+    default_model: str,
+) -> dict[str, object]:
+    response_metadata = exc.response.metadata if exc.response is not None and exc.response.metadata is not None else {}
+    return {
+        "selected_provider": _metadata_string(response_metadata, "selected_provider", default_provider),
+        "selected_model": _metadata_string(response_metadata, "selected_model", default_model),
+        "attempts": exc.attempts or _metadata_positive_int(response_metadata, "attempts", fallback=1),
+        "retry_reasons": exc.retry_reasons or _metadata_strings(response_metadata, "retry_reasons"),
+        "latency_ms_total": exc.latency_ms_total
+        if exc.latency_ms_total is not None
+        else _metadata_non_negative_float(response_metadata, "latency_ms_total"),
+    }
+
+
+def _aggregate_scoring_evaluation_trace(
+    retry_metadata: Sequence[Mapping[str, object]],
+    *,
+    status: Literal["ok", "exhausted", "failed"],
+) -> EvaluationTrace:
+    selected_routes = _unique_ordered(route for metadata in retry_metadata if (route := _selected_route(metadata)))
+    attempts = tuple(_metadata_attempts(metadata) for metadata in retry_metadata)
+    durations = tuple(
+        duration
+        for metadata in retry_metadata
+        if (duration := _metadata_duration_ms(metadata)) is not None
+    )
+    return EvaluationTrace(
+        scoring_judge_selected_routes=selected_routes,
+        scoring_judge_attempt_count=sum(attempts),
+        scoring_judge_retry_count=sum(max(attempt - 1, 0) for attempt in attempts),
+        scoring_judge_retry_reasons=_unique_ordered(
+            _normalize_retry_reason(reason)
+            for metadata in retry_metadata
+            for reason in _metadata_retry_reasons(metadata)
+        ),
+        scoring_judge_duration_ms=round(sum(durations), 2) if durations else None,
+        scoring_judge_status=status,
+    )
+
+
+def _merge_scoring_evaluation_traces(
+    traces: Iterable[EvaluationTrace | None],
+    *,
+    status: Literal["ok", "exhausted", "failed"],
+) -> EvaluationTrace | None:
+    present = tuple(trace for trace in traces if trace is not None)
+    if not present:
+        return None
+    durations = tuple(
+        trace.scoring_judge_duration_ms for trace in present if trace.scoring_judge_duration_ms is not None
+    )
+    return EvaluationTrace(
+        scoring_judge_selected_routes=_unique_ordered(
+            route for trace in present for route in trace.scoring_judge_selected_routes
+        ),
+        scoring_judge_attempt_count=sum(trace.scoring_judge_attempt_count or 0 for trace in present),
+        scoring_judge_retry_count=sum(trace.scoring_judge_retry_count or 0 for trace in present),
+        scoring_judge_retry_reasons=_unique_ordered(
+            reason for trace in present for reason in trace.scoring_judge_retry_reasons
+        ),
+        scoring_judge_duration_ms=round(sum(durations), 2) if durations else None,
+        scoring_judge_status=status,
+    )
+
+
+def _metadata_string(metadata: Mapping[str, object], key: str, fallback: str) -> str:
+    value = metadata.get(key)
+    return value.strip() if isinstance(value, str) and value.strip() else fallback
+
+
+def _metadata_positive_int(metadata: Mapping[str, object], key: str, *, fallback: int) -> int:
+    value = metadata.get(key)
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return fallback
+
+
+def _metadata_non_negative_float(metadata: Mapping[str, object], key: str) -> float | None:
+    value = metadata.get(key)
+    if isinstance(value, int | float) and not isinstance(value, bool) and value >= 0:
+        return float(value)
+    return None
+
+
+def _metadata_strings(metadata: Mapping[str, object], key: str) -> tuple[str, ...]:
+    value = metadata.get(key)
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, list | tuple):
+        return tuple(item for item in value if isinstance(item, str))
+    return ()
+
+
+def _metadata_attempts(metadata: Mapping[str, object]) -> int:
+    value = metadata.get("attempts")
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 1
+
+
+def _metadata_retry_reasons(metadata: Mapping[str, object]) -> tuple[str, ...]:
+    value = metadata.get("retry_reasons")
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, list | tuple):
+        return tuple(item for item in value if isinstance(item, str))
+    return ()
+
+
+def _metadata_duration_ms(metadata: Mapping[str, object]) -> float | None:
+    value = metadata.get("latency_ms_total")
+    if isinstance(value, int | float) and not isinstance(value, bool) and value >= 0:
+        return float(value)
+    return None
+
+
+def _selected_route(metadata: Mapping[str, object]) -> str | None:
+    provider = metadata.get("selected_provider")
+    model = metadata.get("selected_model")
+    if not isinstance(provider, str) or not provider.strip():
+        return None
+    if not isinstance(model, str) or not model.strip():
+        return None
+    return f"{provider.strip()}/{model.strip()}"
+
+
+def _unique_ordered(values: Iterable[str]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return tuple(result)
+
+
+def _normalize_retry_reason(reason: str) -> str:
+    normalized = reason.lower()
+    if "transport" in normalized or "connection" in normalized or "network" in normalized:
+        return "transport_error"
+    if "timeout" in normalized or "timed out" in normalized:
+        return "timeout"
+    if "rate" in normalized or "429" in normalized:
+        return "rate_limited"
+    if "postprocess" in normalized or "structured" in normalized or "parse" in normalized:
+        return "structured_output_invalid"
+    if "provider" in normalized:
+        return "provider_error"
+    return "unknown"
 
 
 def _build_pairwise_reasoning_trace(

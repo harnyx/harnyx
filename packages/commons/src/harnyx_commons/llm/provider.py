@@ -132,9 +132,20 @@ class LlmProviderConfigurationError(LlmProviderError):
 class LlmRetryExhaustedError(RuntimeError):
     """Retry flow failed after exhausting attempts."""
 
-    def __init__(self, reason: str, *, response: LlmResponse | None = None) -> None:
+    def __init__(
+        self,
+        reason: str,
+        *,
+        response: LlmResponse | None = None,
+        attempts: int | None = None,
+        retry_reasons: tuple[str, ...] = (),
+        latency_ms_total: float | None = None,
+    ) -> None:
         super().__init__(reason)
         self.response = response
+        self.attempts = attempts
+        self.retry_reasons = retry_reasons
+        self.latency_ms_total = latency_ms_total
 
 
 @dataclass(frozen=True)
@@ -391,6 +402,9 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         raise LlmRetryExhaustedError(
             "LLM call exhausted all retry attempts",
             response=self._build_response_for_error(ctx.last_response, ctx),
+            attempts=len(ctx.reasons) + 1,
+            retry_reasons=tuple(ctx.reasons),
+            latency_ms_total=round(ctx.total_latency_ms, 2),
         )
 
     async def _try_call(
@@ -408,6 +422,8 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            latency_ms = (time.perf_counter() - start) * 1000
+            ctx.total_latency_ms += latency_ms
             retryable, reason = classify_exception(exc) if classify_exception else (False, str(exc))
             await self._handle_failure(
                 attempt,
@@ -581,6 +597,9 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             raise LlmRetryExhaustedError(
                 failure.reason,
                 response=self._build_response_for_error(response_for_error, ctx),
+                attempts=len(ctx.reasons) + 1,
+                retry_reasons=tuple(ctx.reasons),
+                latency_ms_total=round(ctx.total_latency_ms, 2),
             )
         if not retryable:
             if source_exception is not None:
@@ -623,6 +642,7 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         else:
             metadata.pop("actual_cost_usd_total", None)
         metadata["retry_reasons"] = tuple(ctx.reasons)
+        metadata["latency_ms_total"] = round(ctx.total_latency_ms, 2)
         if ctx.recovery_events:
             metadata["postprocess_recoveries"] = tuple(ctx.recovery_events)
 

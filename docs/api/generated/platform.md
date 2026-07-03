@@ -1460,6 +1460,16 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  |  | `cost` | opt | `number` (default: 0.0) |
 |  |  | `reference_cost` | opt | `number` (default: 0.0) |
 |  | `search_tool_cost` |  | opt | `number` (default: 0.0) |
+| `trace` |  |  | opt | [EvaluationTrace](#model-evaluationtrace) (nullable) |
+|  | `entrypoint_invocation_ms` |  | opt | `number` (nullable) |
+|  | `orchestration_ms` |  | opt | `number` (nullable) |
+|  | `scoring_judge_attempt_count` |  | opt | `integer` (nullable) |
+|  | `scoring_judge_duration_ms` |  | opt | `number` (nullable) |
+|  | `scoring_judge_retry_count` |  | opt | `integer` (nullable) |
+|  | `scoring_judge_retry_reasons` |  | opt | array[`string`] (default: []) |
+|  | `scoring_judge_selected_routes` |  | opt | array[`string`] (default: []) |
+|  | `scoring_judge_status` |  | opt | `string` (enum: [ok, exhausted, failed]; nullable) |
+|  | `scoring_ms` |  | opt | `number` (nullable) |
 
 <details>
 <summary>JSON schema</summary>
@@ -1512,6 +1522,16 @@ Body: [WeightsResponse](#model-weightsresponse)
     },
     "total_tool_usage": {
       "$ref": "#/components/schemas/ToolUsageSummary"
+    },
+    "trace": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/EvaluationTrace"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "title": "EvaluationDetails",
@@ -1550,6 +1570,140 @@ Body: [WeightsResponse](#model-weightsresponse)
     "message"
   ],
   "title": "EvaluationError",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-evaluationtrace"></a>
+### Model: EvaluationTrace
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `entrypoint_invocation_ms` |  |  | opt | `number` (nullable) |
+| `orchestration_ms` |  |  | opt | `number` (nullable) |
+| `scoring_judge_attempt_count` |  |  | opt | `integer` (nullable) |
+| `scoring_judge_duration_ms` |  |  | opt | `number` (nullable) |
+| `scoring_judge_retry_count` |  |  | opt | `integer` (nullable) |
+| `scoring_judge_retry_reasons` |  |  | opt | array[`string`] (default: []) |
+| `scoring_judge_selected_routes` |  |  | opt | array[`string`] (default: []) |
+| `scoring_judge_status` |  |  | opt | `string` (enum: [ok, exhausted, failed]; nullable) |
+| `scoring_ms` |  |  | opt | `number` (nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "entrypoint_invocation_ms": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Entrypoint Invocation Ms"
+    },
+    "orchestration_ms": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Orchestration Ms"
+    },
+    "scoring_judge_attempt_count": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Scoring Judge Attempt Count"
+    },
+    "scoring_judge_duration_ms": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Scoring Judge Duration Ms"
+    },
+    "scoring_judge_retry_count": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Scoring Judge Retry Count"
+    },
+    "scoring_judge_retry_reasons": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Scoring Judge Retry Reasons",
+      "type": "array"
+    },
+    "scoring_judge_selected_routes": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Scoring Judge Selected Routes",
+      "type": "array"
+    },
+    "scoring_judge_status": {
+      "anyOf": [
+        {
+          "enum": [
+            "ok",
+            "exhausted",
+            "failed"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Scoring Judge Status"
+    },
+    "scoring_ms": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Scoring Ms"
+    }
+  },
+  "title": "EvaluationTrace",
   "type": "object"
 }
 ```
@@ -3739,6 +3893,16 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  |  | `reference_total_cost_usd` | opt | `number` (default: 0.0) |
 |  |  | `search_tool` | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
 |  |  | `search_tool_cost` | opt | `number` (default: 0.0) |
+|  | `trace` |  | opt | [EvaluationTrace](#model-evaluationtrace) (nullable) |
+|  |  | `entrypoint_invocation_ms` | opt | `number` (nullable) |
+|  |  | `orchestration_ms` | opt | `number` (nullable) |
+|  |  | `scoring_judge_attempt_count` | opt | `integer` (nullable) |
+|  |  | `scoring_judge_duration_ms` | opt | `number` (nullable) |
+|  |  | `scoring_judge_retry_count` | opt | `integer` (nullable) |
+|  |  | `scoring_judge_retry_reasons` | opt | array[`string`] (default: []) |
+|  |  | `scoring_judge_selected_routes` | opt | array[`string`] (default: []) |
+|  |  | `scoring_judge_status` | opt | `string` (enum: [ok, exhausted, failed]; nullable) |
+|  |  | `scoring_ms` | opt | `number` (nullable) |
 | `usage` |  |  | req | [UsageModel](#model-usagemodel) |
 |  | `by_provider` |  | opt | `object` |
 |  | `call_count` |  | req | `integer` |
@@ -4043,6 +4207,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  |  | `score_breakdown` | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
 |  |  | `scoring_judge_usage` | opt | [JudgeUsageSummary](#model-judgeusagesummary) (nullable) |
 |  |  | `total_tool_usage` | opt | [ToolUsageSummary](#model-toolusagesummary) |
+|  |  | `trace` | opt | [EvaluationTrace](#model-evaluationtrace) (nullable) |
 |  | `usage` |  | req | [UsageModel](#model-usagemodel) |
 |  |  | `by_provider` | opt | `object` |
 |  |  | `call_count` | req | `integer` |

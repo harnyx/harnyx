@@ -10,7 +10,7 @@ from uuid import UUID
 
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.application.ports.session_registry import SessionRegistryPort
-from harnyx_commons.domain.miner_task import EvaluationDetails, MinerTaskErrorCode
+from harnyx_commons.domain.miner_task import EvaluationDetails, EvaluationTrace, MinerTaskErrorCode
 from harnyx_commons.domain.session import Session, SessionUsage
 from harnyx_commons.domain.tool_call import ToolCall
 from harnyx_commons.domain.tool_usage import (
@@ -85,6 +85,31 @@ def _scoring_error_code(exc: Exception) -> str:
     if isinstance(exc, LlmRetryExhaustedError):
         return str(MinerTaskErrorCode.SCORING_LLM_RETRY_EXHAUSTED)
     return str(MinerTaskErrorCode.UNEXPECTED_VALIDATOR_FAILURE)
+
+
+def _evaluation_trace_with_timing(
+    trace: EvaluationTrace | None,
+    *,
+    entrypoint_invocation_ms: float,
+    scoring_ms: float,
+    orchestration_ms: float,
+) -> EvaluationTrace:
+    timing = {
+        "entrypoint_invocation_ms": entrypoint_invocation_ms,
+        "scoring_ms": scoring_ms,
+        "orchestration_ms": orchestration_ms,
+    }
+    if trace is None:
+        return EvaluationTrace(
+            entrypoint_invocation_ms=entrypoint_invocation_ms,
+            scoring_ms=scoring_ms,
+            orchestration_ms=orchestration_ms,
+        )
+    return trace.model_copy(update=timing)
+
+
+def _attach_evaluation_trace_to_exception(exc: Exception, trace: EvaluationTrace) -> None:
+    exc.__dict__["evaluation_trace"] = trace
 
 
 class UsageSummarizer:
@@ -348,6 +373,24 @@ class TaskRunOrchestrator:
                 response=invocation.response,
             )
         except Exception as exc:
+            scoring_ms = _monotonic_elapsed_ms(
+                started_at=scoring_started_at,
+                completed_at=time.monotonic(),
+            )
+            orchestration_ms = _monotonic_elapsed_ms(
+                started_at=orchestration_started_at,
+                completed_at=time.monotonic(),
+            )
+            existing_trace = getattr(exc, "evaluation_trace", None)
+            _attach_evaluation_trace_to_exception(
+                exc,
+                _evaluation_trace_with_timing(
+                    existing_trace if isinstance(existing_trace, EvaluationTrace) else None,
+                    entrypoint_invocation_ms=invocation_ms,
+                    scoring_ms=scoring_ms,
+                    orchestration_ms=orchestration_ms,
+                ),
+            )
             _log_scoring_finished(
                 batch_id=request.batch_id,
                 session_id=request.session_id,
@@ -355,14 +398,8 @@ class TaskRunOrchestrator:
                 task_id=request.task.task_id,
                 uid=request.uid,
                 invocation_ms=invocation_ms,
-                scoring_ms=_monotonic_elapsed_ms(
-                    started_at=scoring_started_at,
-                    completed_at=time.monotonic(),
-                ),
-                orchestration_ms=_monotonic_elapsed_ms(
-                    started_at=orchestration_started_at,
-                    completed_at=time.monotonic(),
-                ),
+                scoring_ms=scoring_ms,
+                orchestration_ms=orchestration_ms,
                 comparison_score=None,
                 total_score=None,
                 outcome="error",
@@ -372,9 +409,11 @@ class TaskRunOrchestrator:
         if isinstance(scoring_result, EvaluationScoringResult):
             score_breakdown = scoring_result.score_breakdown
             scoring_judge_usage = scoring_result.judge_usage
+            evaluation_trace = scoring_result.evaluation_trace
         else:
             score_breakdown = scoring_result
             scoring_judge_usage = None
+            evaluation_trace = None
         scoring_ms = _monotonic_elapsed_ms(
             started_at=scoring_started_at,
             completed_at=time.monotonic(),
@@ -397,6 +436,17 @@ class TaskRunOrchestrator:
             details=details,
             completed_at=completed_at,
         )
+        orchestration_ms = _monotonic_elapsed_ms(
+            started_at=orchestration_started_at,
+            completed_at=time.monotonic(),
+        )
+        final_trace = _evaluation_trace_with_timing(
+            evaluation_trace,
+            entrypoint_invocation_ms=invocation_ms,
+            scoring_ms=scoring_ms,
+            orchestration_ms=orchestration_ms,
+        )
+        run = run.model_copy(update={"details": run.details.model_copy(update={"trace": final_trace})})
         _log_scoring_finished(
             batch_id=request.batch_id,
             session_id=request.session_id,
@@ -405,10 +455,7 @@ class TaskRunOrchestrator:
             uid=request.uid,
             invocation_ms=invocation_ms,
             scoring_ms=scoring_ms,
-            orchestration_ms=_monotonic_elapsed_ms(
-                started_at=orchestration_started_at,
-                completed_at=time.monotonic(),
-            ),
+            orchestration_ms=orchestration_ms,
             comparison_score=score_breakdown.comparison_score,
             total_score=score_breakdown.total_score,
             outcome="ok",

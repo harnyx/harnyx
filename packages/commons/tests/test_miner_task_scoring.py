@@ -227,6 +227,12 @@ async def test_scoring_service_records_two_judge_calls_in_scoring_result() -> No
     assert result.judge_usage.total_tokens == 36
     assert result.judge_usage.reasoning_tokens == 7
     assert result.judge_usage.actual_cost_usd == pytest.approx(0.03)
+    assert result.evaluation_trace is not None
+    assert result.evaluation_trace.scoring_judge_selected_routes == ("chutes/judge-model",)
+    assert result.evaluation_trace.scoring_judge_attempt_count == 2
+    assert result.evaluation_trace.scoring_judge_retry_count == 0
+    assert result.evaluation_trace.scoring_judge_retry_reasons == ()
+    assert result.evaluation_trace.scoring_judge_status == "ok"
 
 
 async def test_scoring_service_tries_next_candidate_after_true_retry_exhaustion() -> None:
@@ -472,6 +478,86 @@ async def test_scoring_service_counts_exhausted_primary_usage_before_fallback_su
     ]
 
 
+async def test_scoring_service_preserves_selected_provider_model_routes_across_fallbacks() -> None:
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="What is the answer?"),
+        reference_answer=ReferenceAnswer(text="The answer is 42."),
+    )
+    primary_error = LlmRetryExhaustedError(
+        "primary exhausted",
+        response=_pairwise_response(
+            preferred_position="first",
+            reasoning_text=None,
+            reasoning_tokens=2,
+            prompt_tokens=7,
+            completion_tokens=4,
+            total_tokens=11,
+            metadata={
+                "selected_provider": "chutes",
+                "selected_model": "primary-judge",
+                "attempts": 2,
+                "retry_reasons": ("transport_error: provider transport failed",),
+                "latency_ms_total": 123.45,
+            },
+        ),
+    )
+    llm = SequenceLlmProvider(
+        [
+            primary_error,
+            _pairwise_response(
+                preferred_position="first",
+                reasoning_text=None,
+                reasoning_tokens=3,
+                prompt_tokens=11,
+                completion_tokens=5,
+                total_tokens=16,
+                metadata={
+                    "selected_provider": "vertex",
+                    "selected_model": "fallback-judge",
+                    "attempts": 1,
+                    "latency_ms_total": 300.0,
+                },
+            ),
+            _pairwise_response(
+                preferred_position="second",
+                reasoning_text=None,
+                reasoning_tokens=4,
+                prompt_tokens=13,
+                completion_tokens=7,
+                total_tokens=20,
+                metadata={
+                    "selected_provider": "chutes",
+                    "selected_model": "primary-judge",
+                    "attempts": 1,
+                    "latency_ms_total": 200.0,
+                },
+            ),
+        ]
+    )
+    service = EvaluationScoringService(
+        llm_provider=llm,
+        config=EvaluationScoringConfig(
+            provider="chutes",
+            model="primary-judge",
+            fallback_models=("fallback-judge",),
+        ),
+    )
+
+    result = await service.score(task=task, response=Response(text="Miner says 42."))
+
+    assert result.evaluation_trace is not None
+    assert result.evaluation_trace.scoring_judge_selected_routes == (
+        "chutes/primary-judge",
+        "vertex/fallback-judge",
+    )
+    assert result.evaluation_trace.scoring_judge_attempt_count == 4
+    assert result.evaluation_trace.scoring_judge_retry_count == 1
+    assert result.evaluation_trace.scoring_judge_retry_reasons == ("transport_error",)
+    assert result.evaluation_trace.scoring_judge_duration_ms == pytest.approx(623.45)
+    assert result.evaluation_trace.scoring_judge_status == "ok"
+
+
 async def test_scoring_service_carries_failed_usage_when_final_fallback_has_no_response() -> None:
     task = MinerTask(
         task_id=uuid4(),
@@ -490,7 +576,12 @@ async def test_scoring_service_carries_failed_usage_when_final_fallback_has_no_r
             metadata={"selected_provider": "chutes", "selected_model": "primary-judge", "actual_cost_usd": 0.02},
         ),
     )
-    fallback_error = LlmRetryExhaustedError("fallback exhausted")
+    fallback_error = LlmRetryExhaustedError(
+        "fallback exhausted",
+        attempts=2,
+        retry_reasons=("timeout while waiting for provider",),
+        latency_ms_total=250.0,
+    )
     service = EvaluationScoringService(
         llm_provider=SequenceLlmProvider([primary_error, fallback_error]),
         config=EvaluationScoringConfig(
@@ -510,6 +601,15 @@ async def test_scoring_service_carries_failed_usage_when_final_fallback_has_no_r
     assert raised.value.judge_usage.total_tokens == 11
     assert raised.value.judge_usage.reasoning_tokens == 2
     assert raised.value.judge_usage.actual_cost_usd == pytest.approx(0.02)
+    assert raised.value.evaluation_trace.scoring_judge_selected_routes == (
+        "chutes/primary-judge",
+        "chutes/fallback-judge",
+    )
+    assert raised.value.evaluation_trace.scoring_judge_attempt_count == 3
+    assert raised.value.evaluation_trace.scoring_judge_retry_count == 1
+    assert raised.value.evaluation_trace.scoring_judge_retry_reasons == ("timeout",)
+    assert raised.value.evaluation_trace.scoring_judge_duration_ms == pytest.approx(250.0)
+    assert raised.value.evaluation_trace.scoring_judge_status == "exhausted"
 
 
 async def test_scoring_service_counts_accumulated_retry_usage_from_exhausted_provider_response() -> None:
