@@ -41,7 +41,7 @@ These flows are the subnet’s core evaluation path.
 |---|---|
 | **What’s happening** | Miner manages platform-stored config for a signing hotkey. |
 | **Execution status** | Stored provider credentials are used by active miner-task batch execution through scoped platform tool proxy calls. Raw provider API keys are never returned to validators or sandboxes. |
-| **Credential cleanup** | On successful metagraph refresh, platform prunes provider credentials for miner hotkeys absent from the refreshed metagraph. Empty registered-hotkey snapshots and suspiciously broad cleanup candidates are skipped. |
+| **Credential cleanup** | On successful metagraph refresh, platform prunes provider credentials for miner hotkeys absent from the refreshed metagraph, but defers deletion while that hotkey has a script submitted after the latest completed source-batch cutoff or current champion ownership. Empty registered-hotkey snapshots and suspiciously broad cleanup candidates are skipped. |
 | **Actors** | Miner ↔ Platform |
 | **Auth** | `Authorization: Bittensor ss58="...",sig="..."` |
 | **Happy path** | `GET`, `PUT`, or `DELETE /v1/miner-config` returns retry count and redacted provider status. |
