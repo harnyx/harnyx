@@ -169,11 +169,12 @@ class DomainTweakReferenceAnswerPhasePolicy(BaseModel):
 
     validation_retries_per_answer: int = Field(default=1, ge=0)
     invocation_retries_per_answer: int = Field(default=1, ge=0)
+    failed_finalization_retries_per_batch_item: int = Field(default=3, ge=0)
     timeout_seconds: float = Field(default=1800.0, gt=0)
     soft_timeout_seconds: float | None = Field(default=600.0, gt=0)
     soft_timeout_interval_seconds: float | None = Field(default=300.0, gt=0)
     answer_attempt_multiplier: float = Field(default=1.0, ge=1.0)
-    hard_answer_attempt_cap_multiplier: int = Field(default=2, ge=1)
+    hard_answer_attempt_cap_multiplier: int = Field(default=5, ge=1)
 
     @model_validator(mode="after")
     def _soft_timeout_must_leave_hard_timeout_budget(self) -> DomainTweakReferenceAnswerPhasePolicy:
@@ -195,7 +196,9 @@ class DomainTweakReferenceAnswerPhasePolicy(BaseModel):
 
     def invocation_attempt_cap(self, target_count: int) -> int:
         base_attempts = ceil(target_count * self.answer_attempt_multiplier)
-        retry_attempts = target_count * self.invocation_retries_per_answer
+        retry_attempts = target_count * (
+            self.invocation_retries_per_answer + self.failed_finalization_retries_per_batch_item
+        )
         return min(self.hard_attempt_cap(target_count), base_attempts + retry_attempts)
 
 
@@ -261,6 +264,9 @@ class DomainTweakBatchGenerationResult(BaseModel):
     finalized_tasks: tuple[DomainTweakFinalizedTask, ...] = ()
     rejected_attempts: tuple[DomainTweakRejectedQuestionAttempt, ...] = ()
     failed_finalizations: tuple[DomainTweakFailedFinalization, ...] = ()
+    reference_answer_finalization_attempt_count: int = Field(default=0, ge=0)
+    reference_answer_retry_attempt_count: int = Field(default=0, ge=0)
+    reference_answer_retry_round_count: int = Field(default=0, ge=0)
     underfilled: bool
     tool_usage: ToolUsageSummary = Field(default_factory=ToolUsageSummary.zero)
 

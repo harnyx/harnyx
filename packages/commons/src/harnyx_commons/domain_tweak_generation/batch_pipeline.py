@@ -101,38 +101,90 @@ class DomainTweakBatchGenerationPipeline:
                 finalized_tasks=(),
                 rejected_attempts=tuple(rejected),
                 failed_finalizations=(),
+                reference_answer_finalization_attempt_count=0,
+                reference_answer_retry_attempt_count=0,
+                reference_answer_retry_round_count=0,
                 underfilled=True,
                 tool_usage=total_usage,
             )
 
-        finalized: list[DomainTweakFinalizedTask] = []
-        failed_finalizations: list[DomainTweakFailedFinalization] = []
+        finalized_by_question: dict[str, DomainTweakFinalizedTask] = {}
+        failed_by_question: dict[str, DomainTweakFailedFinalization] = {}
+        pending = tuple(frozen_selected)
+        finalization_attempt_count = 0
+        retry_attempt_count = 0
+        retry_round_count = 0
         answer_invocation_cap = config.reference_answer_policy.invocation_attempt_cap(config.target_count)
         answer_invocation_budget = _InvocationBudget(answer_invocation_cap)
-        for chunk in _chunks(frozen_selected, _MAX_DOMAIN_TWEAK_GENERATION_CONCURRENCY):
-            chunk_finalizations = await asyncio.gather(
-                *(
-                    self._finalize_with_retries(
-                        reviewed_question,
-                        policy=config.reference_answer_policy,
-                        invocation_budget=answer_invocation_budget,
-                    )
-                    for reviewed_question in chunk
-                )
+        for round_index in range(config.reference_answer_policy.failed_finalization_retries_per_batch_item + 1):
+            if not pending:
+                break
+            if round_index > 0:
+                retry_round_count += 1
+            fresh_invocation_retries = (
+                config.reference_answer_policy.invocation_retries_per_answer if round_index == 0 else 0
             )
-            for finalization in chunk_finalizations:
-                total_usage = merge_tool_usage_summaries(total_usage, finalization.tool_usage)
-                if isinstance(finalization, DomainTweakFinalizedTask):
-                    finalized.append(finalization)
-                else:
-                    failed_finalizations.append(finalization)
+            next_pending: list[DomainTweakReviewedQuestion] = []
+            pending_index = 0
+            while pending_index < len(pending):
+                remaining_invocations = await answer_invocation_budget.remaining_count()
+                if remaining_invocations <= 0:
+                    break
+                chunk_size = min(
+                    _MAX_DOMAIN_TWEAK_GENERATION_CONCURRENCY,
+                    remaining_invocations,
+                    len(pending) - pending_index,
+                )
+                chunk = pending[pending_index : pending_index + chunk_size]
+                pending_index += chunk_size
+                chunk_finalizations = await asyncio.gather(
+                    *(
+                        self._finalize_with_retries(
+                            reviewed_question,
+                            policy=config.reference_answer_policy,
+                            invocation_budget=answer_invocation_budget,
+                            invocation_retries=fresh_invocation_retries,
+                        )
+                        for reviewed_question in chunk
+                    )
+                )
+                finalization_attempt_count += len(chunk_finalizations)
+                if round_index > 0:
+                    retry_attempt_count += len(chunk_finalizations)
+                for reviewed_question, finalization in zip(chunk, chunk_finalizations, strict=True):
+                    total_usage = merge_tool_usage_summaries(total_usage, finalization.tool_usage)
+                    question_key = _canonical_question_text(reviewed_question.question_candidate.question)
+                    if isinstance(finalization, DomainTweakFinalizedTask):
+                        finalized_by_question[question_key] = finalization
+                        failed_by_question.pop(question_key, None)
+                        continue
+                    failed_by_question[question_key] = _merge_failed_finalization_attempts(
+                        failed_by_question.get(question_key),
+                        finalization,
+                    )
+                    next_pending.append(reviewed_question)
+            pending = tuple(next_pending)
+
+        finalized = tuple(
+            finalized_by_question[question_key]
+            for item in frozen_selected
+            if (question_key := _canonical_question_text(item.question_candidate.question)) in finalized_by_question
+        )
+        failed_finalizations = tuple(
+            failed_by_question[question_key]
+            for item in frozen_selected
+            if (question_key := _canonical_question_text(item.question_candidate.question)) in failed_by_question
+        )
 
         return DomainTweakBatchGenerationResult(
             target_count=config.target_count,
             selected_questions=frozen_selected,
-            finalized_tasks=tuple(finalized),
+            finalized_tasks=finalized,
             rejected_attempts=tuple(rejected),
-            failed_finalizations=tuple(failed_finalizations),
+            failed_finalizations=failed_finalizations,
+            reference_answer_finalization_attempt_count=finalization_attempt_count,
+            reference_answer_retry_attempt_count=retry_attempt_count,
+            reference_answer_retry_round_count=retry_round_count,
             underfilled=len(finalized) < config.target_count,
             tool_usage=total_usage,
         )
@@ -143,10 +195,11 @@ class DomainTweakBatchGenerationPipeline:
         *,
         policy: DomainTweakReferenceAnswerPhasePolicy,
         invocation_budget: _InvocationBudget,
+        invocation_retries: int,
     ) -> DomainTweakFinalizedTask | DomainTweakFailedFinalization:
         reference_results: list[DomainTweakAdkPhaseResult] = []
         answer_usage = ToolUsageSummary.zero()
-        max_invocations = policy.invocation_retries_per_answer + 1
+        max_invocations = invocation_retries + 1
         for _ in range(max_invocations):
             if not await invocation_budget.acquire():
                 break
@@ -271,6 +324,19 @@ def _should_retry_a2_invocation(results: tuple[DomainTweakAdkPhaseResult, ...]) 
     return bool(results and results[-1].terminal_status in _RETRYABLE_A2_INVOCATION_STATUSES)
 
 
+def _merge_failed_finalization_attempts(
+    existing: DomainTweakFailedFinalization | None,
+    current: DomainTweakFailedFinalization,
+) -> DomainTweakFailedFinalization:
+    if existing is None:
+        return current
+    return DomainTweakFailedFinalization(
+        reviewed_question=existing.reviewed_question,
+        reference_answer_results=(*existing.reference_answer_results, *current.reference_answer_results),
+        tool_usage=merge_tool_usage_summaries(existing.tool_usage, current.tool_usage),
+    )
+
+
 def _canonical_question_text(question: str) -> str:
     return " ".join(question.split()).casefold()
 
@@ -290,6 +356,10 @@ class _InvocationBudget:
                 return False
             self._remaining -= 1
             return True
+
+    async def remaining_count(self) -> int:
+        async with self._lock:
+            return self._remaining
 
 
 __all__ = [

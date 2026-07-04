@@ -14,6 +14,7 @@ from harnyx_commons.domain_tweak_generation import (
     DomainTweakAdkTurn,
     DomainTweakBatchGenerationConfig,
     DomainTweakBatchGenerationPipeline,
+    DomainTweakReferenceAnswerPhasePolicy,
 )
 from harnyx_commons.domain_tweak_generation.batch_pipeline import _question_attempt_windows
 from harnyx_commons.domain_tweak_generation.types import DomainTweakAdkEventSummary
@@ -188,6 +189,7 @@ async def test_batch_pipeline_applies_phase_specific_defaults() -> None:
         ("form_review", 2, 600.0, None, None),
         ("reference_answer", 1, 1800.0, 600.0, 300.0),
     ]
+    assert DomainTweakReferenceAnswerPhasePolicy().invocation_attempt_cap(10) == 50
 
 
 async def test_batch_pipeline_retries_a2_invocation_error_with_fresh_answer_phase() -> None:
@@ -217,6 +219,111 @@ async def test_batch_pipeline_retries_a2_invocation_error_with_fresh_answer_phas
         "reference_answer",
     ]
     assert result.tool_usage.llm.call_count == 3
+
+
+async def test_batch_pipeline_retries_only_failed_a2_finalizations_until_n_tasks_are_finalized() -> None:
+    executor = _FakeTurnExecutor(
+        responses=(
+            _question_payload(1),
+            _question_payload(2),
+            _review_payload(form_match=True),
+            _review_payload(form_match=True),
+            _invalid_answer_payload(1),
+            _answer_payload(2),
+            _answer_payload(1),
+        )
+    )
+    task_ids = iter(_TASK_IDS)
+    pipeline = DomainTweakBatchGenerationPipeline(
+        base_config=DomainTweakAdkRunConfig(model="gemini-3-pro-preview"),
+        runner=DomainTweakAdkRunner(turn_executor=executor),
+        task_id_factory=lambda: next(task_ids),
+    )
+
+    config = DomainTweakBatchGenerationConfig(
+        target_count=2,
+        reference_answer_policy=DomainTweakReferenceAnswerPhasePolicy(invocation_retries_per_answer=0),
+    )
+
+    result = await pipeline.generate_batch(_pair_inputs(2), config)
+
+    assert not result.underfilled
+    assert result.failed_finalizations == ()
+    assert [item.task.query.text for item in result.finalized_tasks] == [
+        "Which players meet all constraints in domain 1?",
+        "Which players meet all constraints in domain 2?",
+    ]
+    assert result.reference_answer_finalization_attempt_count == 3
+    assert result.reference_answer_retry_attempt_count == 1
+    assert result.reference_answer_retry_round_count == 1
+    assert executor.reference_answer_indexes == [1, 2, 1]
+
+
+async def test_batch_pipeline_reports_underfill_after_failed_a2_retry_bound() -> None:
+    executor = _FakeTurnExecutor(
+        responses=(
+            _question_payload(1),
+            _review_payload(form_match=True),
+            _invalid_answer_payload(1),
+            _invalid_answer_payload(1),
+            _invalid_answer_payload(1),
+            _invalid_answer_payload(1),
+        )
+    )
+    pipeline = DomainTweakBatchGenerationPipeline(
+        base_config=DomainTweakAdkRunConfig(model="gemini-3-pro-preview"),
+        runner=DomainTweakAdkRunner(turn_executor=executor),
+    )
+    config = DomainTweakBatchGenerationConfig(
+        target_count=1,
+        reference_answer_policy=DomainTweakReferenceAnswerPhasePolicy(
+            failed_finalization_retries_per_batch_item=3,
+            invocation_retries_per_answer=0,
+            hard_answer_attempt_cap_multiplier=4,
+        ),
+    )
+
+    result = await pipeline.generate_batch(_pair_inputs(1), config)
+
+    assert result.underfilled
+    assert len(result.failed_finalizations) == 1
+    failed_finalization = result.failed_finalizations[0]
+    assert len(failed_finalization.reference_answer_results) == 4
+    assert sum(len(item.attempts) for item in failed_finalization.reference_answer_results) == 8
+    assert failed_finalization.tool_usage.llm.call_count == 4
+    assert result.reference_answer_finalization_attempt_count == 4
+    assert result.reference_answer_retry_attempt_count == 3
+    assert result.reference_answer_retry_round_count == 3
+
+
+async def test_batch_pipeline_stops_failed_a2_retries_when_invocation_budget_is_exhausted() -> None:
+    executor = _FakeTurnExecutor(
+        responses=(
+            _question_payload(1),
+            _review_payload(form_match=True),
+            _invalid_answer_payload(1),
+        )
+    )
+    pipeline = DomainTweakBatchGenerationPipeline(
+        base_config=DomainTweakAdkRunConfig(model="gemini-3-pro-preview"),
+        runner=DomainTweakAdkRunner(turn_executor=executor),
+    )
+    config = DomainTweakBatchGenerationConfig(
+        target_count=1,
+        reference_answer_policy=DomainTweakReferenceAnswerPhasePolicy(
+            failed_finalization_retries_per_batch_item=3,
+            invocation_retries_per_answer=0,
+            hard_answer_attempt_cap_multiplier=1,
+        ),
+    )
+
+    result = await pipeline.generate_batch(_pair_inputs(1), config)
+
+    assert result.underfilled
+    assert len(result.failed_finalizations) == 1
+    assert result.reference_answer_finalization_attempt_count == 1
+    assert result.reference_answer_retry_attempt_count == 0
+    assert result.reference_answer_retry_round_count == 1
 
 
 async def test_batch_pipeline_runs_question_and_a2_with_fixed_bounded_concurrency() -> None:
@@ -261,6 +368,7 @@ class _FakeTurnExecutor:
         self._responses = list(responses)
         self.phases: list[DomainTweakAdkPhase] = []
         self.configs: list[DomainTweakAdkRunConfig] = []
+        self.reference_answer_indexes: list[int] = []
 
     async def __call__(
         self,
@@ -273,6 +381,8 @@ class _FakeTurnExecutor:
     ) -> DomainTweakAdkTurn:
         self.phases.append(phase)
         self.configs.append(config)
+        if phase == "reference_answer":
+            self.reference_answer_indexes.append(_index_from_prompt(prompt))
         response = self._responses.pop(0)
         if isinstance(response, BaseException):
             raise response
@@ -408,6 +518,10 @@ def _answer_payload(index: int) -> str:
             },
         }
     )
+
+
+def _invalid_answer_payload(index: int) -> str:
+    return f"reference answer for domain {index} without json"
 
 
 def _no_generate_payload() -> str:

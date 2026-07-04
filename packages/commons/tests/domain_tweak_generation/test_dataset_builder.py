@@ -88,6 +88,21 @@ async def test_domain_tweak_dataset_builder_fails_on_failed_finalizations() -> N
         await builder.build(_dataset_request(minimum_task_total=1))
 
 
+async def test_domain_tweak_dataset_builder_returns_tasks_after_recovered_a2_finalization() -> None:
+    pair_source = _RecordingPairSource(_pair_inputs(4))
+    batch_pipeline = _FakeBatchPipeline(
+        finalized_count=1,
+        failed_finalizations=0,
+        reference_answer_finalization_attempt_count=2,
+        reference_answer_retry_attempt_count=1,
+    )
+    builder = DomainTweakMinerTaskDatasetBuilder(pair_source=pair_source, batch_pipeline=batch_pipeline)
+
+    tasks = await builder.build(_dataset_request(minimum_task_total=1))
+
+    assert len(tasks) == 1
+
+
 async def test_domain_tweak_dataset_builder_requires_batch_created_at() -> None:
     pair_source = _RecordingPairSource(_pair_inputs(4))
     batch_pipeline = _FakeBatchPipeline(finalized_count=1)
@@ -172,6 +187,9 @@ class _FakeBatchPipeline:
     finalized_count: int
     underfilled: bool = False
     failed_finalizations: int = 0
+    reference_answer_finalization_attempt_count: int = 0
+    reference_answer_retry_attempt_count: int = 0
+    reference_answer_retry_round_count: int = 0
     observed_pair_inputs: tuple[DomainTweakPairInput, ...] = ()
     observed_target_count: int | None = None
 
@@ -182,13 +200,19 @@ class _FakeBatchPipeline:
     ) -> DomainTweakBatchGenerationResult:
         self.observed_pair_inputs = tuple(pair_inputs)
         self.observed_target_count = config.target_count
-        reviewed = tuple(_reviewed_question(index) for index in range(1, self.finalized_count + 1))
+        selected_count = max(self.finalized_count, self.failed_finalizations)
+        reviewed = tuple(_reviewed_question(index) for index in range(1, selected_count + 1))
         return DomainTweakBatchGenerationResult(
             target_count=config.target_count,
             selected_questions=reviewed,
-            finalized_tasks=tuple(_finalized_task(item, index) for index, item in enumerate(reviewed, start=1)),
+            finalized_tasks=tuple(
+                _finalized_task(item, index) for index, item in enumerate(reviewed[: self.finalized_count], start=1)
+            ),
             rejected_attempts=(),
             failed_finalizations=tuple(_failed_finalization(item) for item in reviewed[: self.failed_finalizations]),
+            reference_answer_finalization_attempt_count=self.reference_answer_finalization_attempt_count,
+            reference_answer_retry_attempt_count=self.reference_answer_retry_attempt_count,
+            reference_answer_retry_round_count=self.reference_answer_retry_round_count,
             underfilled=self.underfilled,
         )
 
