@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from uuid import uuid4
 
 import pytest
 
+import harnyx_commons.miner_task_scoring as miner_task_scoring
 from harnyx_commons.domain.miner_task import (
     AnswerCitation,
     MinerTask,
@@ -83,35 +85,40 @@ class SequenceLlmProvider:
     def __init__(self, outcomes: list[LlmResponse | Exception]) -> None:
         self._outcomes = outcomes
         self.requests: list[object] = []
+        self.requests_by_side: dict[str, list[object]] = {"miner_first": [], "reference_first": []}
 
     async def invoke(self, request: object) -> LlmResponse:
         self.requests.append(request)
+        self.requests_by_side[_pairwise_side(request)].append(request)
         if not self._outcomes:
             raise RuntimeError("missing pairwise outcome")
         outcome = self._outcomes.pop(0)
-        if isinstance(outcome, Exception):
-            raise outcome
-        return outcome
+        return _resolve_llm_outcome(outcome)
 
     async def aclose(self) -> None:
         return None
 
 
 class RetryWrappedSequenceLlmProvider(BaseLlmProvider):
-    def __init__(self, outcomes: list[LlmResponse | Exception]) -> None:
+    def __init__(self, outcomes: list[LlmResponse | Exception], *, hold_sides: tuple[str, ...] = ()) -> None:
         super().__init__(provider_label="chutes")
         self._outcomes = outcomes
+        self._hold_sides = set(hold_sides)
+        self._release_held = asyncio.Event()
         self.requests: list[AbstractLlmRequest] = []
+        self.requests_by_side: dict[str, list[AbstractLlmRequest]] = {"miner_first": [], "reference_first": []}
 
     async def _invoke(self, request: AbstractLlmRequest) -> LlmResponse:
         async def _call(current_request: AbstractLlmRequest) -> LlmResponse:
             self.requests.append(current_request)
+            side = _pairwise_side(current_request)
+            self.requests_by_side[side].append(current_request)
+            if side in self._hold_sides:
+                await self._release_held.wait()
             if not self._outcomes:
                 raise RuntimeError("missing pairwise outcome")
             outcome = self._outcomes.pop(0)
-            if isinstance(outcome, Exception):
-                raise outcome
-            return outcome
+            return _resolve_llm_outcome(outcome)
 
         return await self._call_with_retry(
             request,
@@ -121,10 +128,81 @@ class RetryWrappedSequenceLlmProvider(BaseLlmProvider):
         )
 
 
+class ConcurrentPairwiseLlmProvider:
+    def __init__(
+        self,
+        outcomes_by_side_and_model: dict[tuple[str, str], list[LlmResponse | Exception]],
+        *,
+        wait_for_both_primary: bool = False,
+        hold_sides: tuple[str, ...] = (),
+    ) -> None:
+        self._outcomes = outcomes_by_side_and_model
+        self._wait_for_both_primary = wait_for_both_primary
+        self._hold_sides = set(hold_sides)
+        self._both_primary_started = asyncio.Event()
+        self._started_changed = asyncio.Event()
+        self._release_held = asyncio.Event()
+        self.requests: list[object] = []
+        self.requests_by_side: dict[str, list[object]] = {"miner_first": [], "reference_first": []}
+        self.started_primary_sides: set[str] = set()
+        self.cancelled_sides: set[str] = set()
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    def release_held_sides(self) -> None:
+        self._release_held.set()
+
+    async def wait_for_started_sides(self, sides: set[str]) -> None:
+        while not sides.issubset(self.started_primary_sides):
+            self._started_changed.clear()
+            await self._started_changed.wait()
+
+    async def invoke(self, request: object) -> LlmResponse:
+        side = _pairwise_side(request)
+        self.requests.append(request)
+        self.requests_by_side[side].append(request)
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            if request.model == "primary-judge" or request.model == "judge-model":
+                self.started_primary_sides.add(side)
+                self._started_changed.set()
+                if self.started_primary_sides == {"miner_first", "reference_first"}:
+                    self._both_primary_started.set()
+                if self._wait_for_both_primary:
+                    await self._both_primary_started.wait()
+            if side in self._hold_sides:
+                await self._release_held.wait()
+            outcomes = self._outcomes.get((side, request.model))
+            if not outcomes:
+                raise RuntimeError(f"missing pairwise outcome for {side}/{request.model}")
+            return _resolve_llm_outcome(outcomes.pop(0))
+        except asyncio.CancelledError:
+            self.cancelled_sides.add(side)
+            raise
+        finally:
+            self.in_flight -= 1
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _resolve_llm_outcome(outcome: LlmResponse | Exception) -> LlmResponse:
+    if type(outcome) is LlmResponse:
+        return outcome
+    raise outcome
+
+
 def _pairwise_payload(request: object) -> dict[str, object]:
     user_prompt = request.messages[1].content[0].text
     _, payload_json = user_prompt.split("Payload:\n", 1)
     return json.loads(payload_json)
+
+
+def _pairwise_side(request: object) -> str:
+    payload = _pairwise_payload(request)
+    first_answer = payload["answers"][0]["answer_text"]
+    return "miner_first" if first_answer.startswith("Miner") else "reference_first"
 
 
 def _pairwise_response(
@@ -235,6 +313,325 @@ async def test_scoring_service_records_two_judge_calls_in_scoring_result() -> No
     assert result.evaluation_trace.scoring_judge_status == "ok"
 
 
+async def test_scoring_service_runs_swapped_pairwise_calls_concurrently() -> None:
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="What is the answer?"),
+        reference_answer=ReferenceAnswer(text="The answer is 42."),
+    )
+    llm = ConcurrentPairwiseLlmProvider(
+        {
+            ("miner_first", "judge-model"): [
+                _pairwise_response(preferred_position="first", reasoning_text=None, reasoning_tokens=None)
+            ],
+            ("reference_first", "judge-model"): [
+                _pairwise_response(preferred_position="second", reasoning_text=None, reasoning_tokens=None)
+            ],
+        },
+        wait_for_both_primary=True,
+    )
+    service = EvaluationScoringService(
+        llm_provider=llm,
+        config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
+    )
+
+    result = await asyncio.wait_for(
+        service.score(task=task, response=Response(text="Miner says 42.")),
+        timeout=1.0,
+    )
+
+    assert result.score_breakdown.total_score == pytest.approx(1.0)
+    assert llm.max_in_flight == 2
+    assert len(llm.requests_by_side["miner_first"]) == 1
+    assert len(llm.requests_by_side["reference_first"]) == 1
+    assert result.judge_usage.call_count == 2
+    assert result.evaluation_trace is not None
+    assert result.evaluation_trace.scoring_judge_attempt_count == 2
+
+
+async def test_scoring_service_cancels_sibling_when_miner_first_exhausts() -> None:
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="What is the answer?"),
+        reference_answer=ReferenceAnswer(text="The answer is 42."),
+    )
+    miner_first_error = LlmRetryExhaustedError(
+        "miner first exhausted",
+        response=_pairwise_response(
+            preferred_position="first",
+            reasoning_text=None,
+            reasoning_tokens=2,
+            prompt_tokens=7,
+            completion_tokens=4,
+            total_tokens=11,
+            metadata={"selected_provider": "chutes", "selected_model": "judge-model"},
+        ),
+    )
+    llm = ConcurrentPairwiseLlmProvider(
+        {("miner_first", "judge-model"): [miner_first_error], ("reference_first", "judge-model"): []},
+        hold_sides=("reference_first",),
+    )
+    service = EvaluationScoringService(
+        llm_provider=llm,
+        config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
+    )
+
+    with pytest.raises(LlmRetryExhaustedError) as raised:
+        await asyncio.wait_for(
+            service.score(task=task, response=Response(text="Miner says 42.")),
+            timeout=1.0,
+        )
+
+    assert raised.value is miner_first_error
+    assert "reference_first" in llm.cancelled_sides
+    assert raised.value.judge_usage.call_count == 1
+    assert raised.value.evaluation_trace.scoring_judge_retry_reasons == ("interrupted",)
+    assert raised.value.evaluation_trace.scoring_judge_status == "exhausted"
+
+
+async def test_scoring_service_cancels_sibling_when_pairwise_fails_without_retry_exhaustion() -> None:
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="What is the answer?"),
+        reference_answer=ReferenceAnswer(text="The answer is 42."),
+    )
+    miner_first_error = RuntimeError("provider rejected request")
+    llm = ConcurrentPairwiseLlmProvider(
+        {("miner_first", "judge-model"): [miner_first_error], ("reference_first", "judge-model"): []},
+        hold_sides=("reference_first",),
+    )
+    service = EvaluationScoringService(
+        llm_provider=llm,
+        config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
+    )
+
+    with pytest.raises(RuntimeError, match="provider rejected request") as raised:
+        await asyncio.wait_for(
+            service.score(task=task, response=Response(text="Miner says 42.")),
+            timeout=1.0,
+        )
+
+    assert raised.value is miner_first_error
+    assert "reference_first" in llm.cancelled_sides
+    assert not hasattr(raised.value, "judge_usage")
+    assert raised.value.evaluation_trace.scoring_judge_retry_reasons == ("interrupted",)
+    assert raised.value.evaluation_trace.scoring_judge_status == "failed"
+
+
+async def test_scoring_service_preserves_completed_sibling_metadata_when_other_side_fails() -> None:
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="What is the answer?"),
+        reference_answer=ReferenceAnswer(text="The answer is 42."),
+    )
+    reference_first_error = LlmRetryExhaustedError(
+        "reference first exhausted",
+        response=_pairwise_response(
+            preferred_position="first",
+            reasoning_text=None,
+            reasoning_tokens=4,
+            prompt_tokens=13,
+            completion_tokens=7,
+            total_tokens=20,
+            metadata={"selected_provider": "chutes", "selected_model": "judge-model"},
+        ),
+    )
+    llm = ConcurrentPairwiseLlmProvider(
+        {
+            ("miner_first", "judge-model"): [
+                _pairwise_response(
+                    preferred_position="first",
+                    reasoning_text=None,
+                    reasoning_tokens=3,
+                    prompt_tokens=11,
+                    completion_tokens=5,
+                    total_tokens=16,
+                    metadata={"selected_provider": "chutes", "selected_model": "judge-model"},
+                )
+            ],
+            ("reference_first", "judge-model"): [reference_first_error],
+        }
+    )
+    service = EvaluationScoringService(
+        llm_provider=llm,
+        config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
+    )
+
+    with pytest.raises(LlmRetryExhaustedError) as raised:
+        await asyncio.wait_for(
+            service.score(task=task, response=Response(text="Miner says 42.")),
+            timeout=1.0,
+        )
+
+    assert raised.value is reference_first_error
+    assert raised.value.judge_usage.call_count == 2
+    assert raised.value.evaluation_trace.scoring_judge_status == "exhausted"
+
+
+async def test_scoring_service_prefers_existing_non_retryable_error_when_both_sides_fail() -> None:
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="What is the answer?"),
+        reference_answer=ReferenceAnswer(text="The answer is 42."),
+    )
+    miner_first_error = LlmRetryExhaustedError(
+        "miner first exhausted",
+        response=_pairwise_response(
+            preferred_position="first",
+            reasoning_text=None,
+            reasoning_tokens=2,
+            prompt_tokens=7,
+            completion_tokens=4,
+            total_tokens=11,
+            metadata={"selected_provider": "chutes", "selected_model": "judge-model"},
+        ),
+    )
+    non_retryable_error = RuntimeError("provider rejected request")
+    llm = ConcurrentPairwiseLlmProvider(
+        {
+            ("miner_first", "judge-model"): [miner_first_error],
+            ("reference_first", "judge-model"): [non_retryable_error],
+        },
+        wait_for_both_primary=True,
+    )
+    service = EvaluationScoringService(
+        llm_provider=llm,
+        config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
+    )
+
+    with pytest.raises(RuntimeError, match="provider rejected request") as raised:
+        await asyncio.wait_for(
+            service.score(task=task, response=Response(text="Miner says 42.")),
+            timeout=1.0,
+        )
+
+    assert raised.value is non_retryable_error
+    assert raised.value.evaluation_trace.scoring_judge_status == "failed"
+
+
+async def test_scoring_service_reselects_failure_after_sibling_beats_cancellation_cleanup(monkeypatch) -> None:
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="What is the answer?"),
+        reference_answer=ReferenceAnswer(text="The answer is 42."),
+    )
+    miner_first_error = LlmRetryExhaustedError(
+        "miner first exhausted",
+        response=_pairwise_response(
+            preferred_position="first",
+            reasoning_text=None,
+            reasoning_tokens=2,
+            prompt_tokens=7,
+            completion_tokens=4,
+            total_tokens=11,
+            metadata={"selected_provider": "chutes", "selected_model": "judge-model"},
+        ),
+    )
+    reference_first_error = RuntimeError("provider rejected request")
+    llm = ConcurrentPairwiseLlmProvider(
+        {
+            ("miner_first", "judge-model"): [miner_first_error],
+            ("reference_first", "judge-model"): [reference_first_error],
+        },
+        hold_sides=("reference_first",),
+    )
+    service = EvaluationScoringService(
+        llm_provider=llm,
+        config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
+    )
+    original_cancel = miner_task_scoring._cancel_unfinished_pairwise_tasks
+
+    async def release_sibling_then_cancel(pair_tasks: object) -> None:
+        llm.release_held_sides()
+        await asyncio.sleep(0)
+        await original_cancel(pair_tasks)
+
+    monkeypatch.setattr(miner_task_scoring, "_cancel_unfinished_pairwise_tasks", release_sibling_then_cancel)
+
+    with pytest.raises(RuntimeError, match="provider rejected request") as raised:
+        await service.score(task=task, response=Response(text="Miner says 42."))
+
+    assert raised.value is reference_first_error
+    assert raised.value.evaluation_trace.scoring_judge_status == "failed"
+
+
+async def test_scoring_service_reports_retry_exhausted_when_both_sides_exhaust() -> None:
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="What is the answer?"),
+        reference_answer=ReferenceAnswer(text="The answer is 42."),
+    )
+    miner_first_error = LlmRetryExhaustedError(
+        "miner first exhausted",
+        response=_pairwise_response(
+            preferred_position="first",
+            reasoning_text=None,
+            reasoning_tokens=2,
+            prompt_tokens=7,
+            completion_tokens=4,
+            total_tokens=11,
+            metadata={"selected_provider": "chutes", "selected_model": "judge-model"},
+        ),
+    )
+    reference_first_error = LlmRetryExhaustedError(
+        "reference first exhausted",
+        response=_pairwise_response(
+            preferred_position="first",
+            reasoning_text=None,
+            reasoning_tokens=4,
+            prompt_tokens=13,
+            completion_tokens=7,
+            total_tokens=20,
+            metadata={"selected_provider": "chutes", "selected_model": "judge-model"},
+        ),
+    )
+    llm = ConcurrentPairwiseLlmProvider(
+        {
+            ("miner_first", "judge-model"): [miner_first_error],
+            ("reference_first", "judge-model"): [reference_first_error],
+        },
+        wait_for_both_primary=True,
+    )
+    service = EvaluationScoringService(
+        llm_provider=llm,
+        config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
+    )
+
+    with pytest.raises(LlmRetryExhaustedError) as raised:
+        await asyncio.wait_for(
+            service.score(task=task, response=Response(text="Miner says 42.")),
+            timeout=1.0,
+        )
+
+    assert raised.value is miner_first_error
+    assert raised.value.evaluation_trace.scoring_judge_status == "exhausted"
+
+
+async def test_scoring_service_propagates_external_cancellation() -> None:
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="What is the answer?"),
+        reference_answer=ReferenceAnswer(text="The answer is 42."),
+    )
+    llm = ConcurrentPairwiseLlmProvider(
+        {("miner_first", "judge-model"): [], ("reference_first", "judge-model"): []},
+        hold_sides=("miner_first", "reference_first"),
+    )
+    service = EvaluationScoringService(
+        llm_provider=llm,
+        config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
+    )
+
+    scoring_task = asyncio.create_task(service.score(task=task, response=Response(text="Miner says 42.")))
+    await asyncio.wait_for(llm.wait_for_started_sides({"miner_first", "reference_first"}), timeout=1.0)
+    scoring_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await scoring_task
+
+    assert llm.cancelled_sides == {"miner_first", "reference_first"}
+
+
 async def test_scoring_service_tries_next_candidate_after_true_retry_exhaustion() -> None:
     task = MinerTask(
         task_id=uuid4(),
@@ -260,11 +657,11 @@ async def test_scoring_service_tries_next_candidate_after_true_retry_exhaustion(
     score = await service.score(task=task, response=Response(text="Miner says 42."))
 
     assert score.comparison_score == pytest.approx(1.0)
-    assert [request.model for request in llm.requests] == [
+    assert [request.model for request in llm.requests_by_side["miner_first"]] == [
         "primary-judge",
         "fallback-judge",
-        "primary-judge",
     ]
+    assert [request.model for request in llm.requests_by_side["reference_first"]] == ["primary-judge"]
 
 
 async def test_scoring_service_does_not_advance_after_non_retryable_failure() -> None:
@@ -286,7 +683,8 @@ async def test_scoring_service_does_not_advance_after_non_retryable_failure() ->
     with pytest.raises(RuntimeError, match="provider rejected request"):
         await service.score(task=task, response=Response(text="Miner says 42."))
 
-    assert [request.model for request in llm.requests] == ["primary-judge"]
+    assert [request.model for request in llm.requests_by_side["miner_first"]] == ["primary-judge"]
+    assert "fallback-judge" not in {request.model for request in llm.requests_by_side["miner_first"]}
 
 
 async def test_scoring_service_attaches_partial_judge_usage_to_second_pair_failure() -> None:
@@ -357,7 +755,10 @@ async def test_scoring_service_attaches_failed_usage_when_first_pair_exhausts() 
         ),
     )
     service = EvaluationScoringService(
-        llm_provider=SequenceLlmProvider([retry_error]),
+        llm_provider=ConcurrentPairwiseLlmProvider(
+            {("miner_first", "judge-model"): [retry_error], ("reference_first", "judge-model"): []},
+            hold_sides=("reference_first",),
+        ),
         config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
     )
 
@@ -396,7 +797,10 @@ async def test_scoring_service_preserves_retry_tokens_when_actual_cost_total_una
         ),
     )
     service = EvaluationScoringService(
-        llm_provider=SequenceLlmProvider([retry_error]),
+        llm_provider=ConcurrentPairwiseLlmProvider(
+            {("miner_first", "judge-model"): [retry_error], ("reference_first", "judge-model"): []},
+            hold_sides=("reference_first",),
+        ),
         config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
     )
 
@@ -471,11 +875,11 @@ async def test_scoring_service_counts_exhausted_primary_usage_before_fallback_su
     assert result.judge_usage.total_tokens == 47
     assert result.judge_usage.reasoning_tokens == 9
     assert result.judge_usage.actual_cost_usd == pytest.approx(0.06)
-    assert [request.model for request in llm.requests] == [
+    assert [request.model for request in llm.requests_by_side["miner_first"]] == [
         "primary-judge",
         "fallback-judge",
-        "primary-judge",
     ]
+    assert [request.model for request in llm.requests_by_side["reference_first"]] == ["primary-judge"]
 
 
 async def test_scoring_service_preserves_selected_provider_model_routes_across_fallbacks() -> None:
@@ -583,7 +987,14 @@ async def test_scoring_service_carries_failed_usage_when_final_fallback_has_no_r
         latency_ms_total=250.0,
     )
     service = EvaluationScoringService(
-        llm_provider=SequenceLlmProvider([primary_error, fallback_error]),
+        llm_provider=ConcurrentPairwiseLlmProvider(
+            {
+                ("miner_first", "primary-judge"): [primary_error],
+                ("miner_first", "fallback-judge"): [fallback_error],
+                ("reference_first", "primary-judge"): [],
+            },
+            hold_sides=("reference_first",),
+        ),
         config=EvaluationScoringConfig(
             provider="chutes",
             model="primary-judge",
@@ -607,7 +1018,7 @@ async def test_scoring_service_carries_failed_usage_when_final_fallback_has_no_r
     )
     assert raised.value.evaluation_trace.scoring_judge_attempt_count == 3
     assert raised.value.evaluation_trace.scoring_judge_retry_count == 1
-    assert raised.value.evaluation_trace.scoring_judge_retry_reasons == ("timeout",)
+    assert raised.value.evaluation_trace.scoring_judge_retry_reasons == ("timeout", "interrupted")
     assert raised.value.evaluation_trace.scoring_judge_duration_ms == pytest.approx(250.0)
     assert raised.value.evaluation_trace.scoring_judge_status == "exhausted"
 
@@ -639,7 +1050,8 @@ async def test_scoring_service_counts_accumulated_retry_usage_from_exhausted_pro
                     total_tokens=16,
                     metadata={"selected_provider": "chutes", "selected_model": "judge-model", "actual_cost_usd": 0.01},
                 ),
-            ]
+            ],
+            hold_sides=("reference_first",),
         ),
         config=EvaluationScoringConfig(
             provider="chutes",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -33,6 +34,7 @@ from harnyx_commons.llm.schema import (
 
 _MAX_RENDERED_CITATIONS = 200
 _PAIRWISE_REASONING_SEPARATOR = "\n\n---\n\n"
+_PAIRWISE_INTERRUPTED_RETRY_REASON = "interrupted"
 _PAIRWISE_SYSTEM_PROMPT = (
     "You are a strict pairwise evaluator comparing two answers to the same query.\n\n"
     "Authority and evidence rules:\n"
@@ -124,6 +126,13 @@ class _PairwiseJudgeResult:
 
 
 @dataclass(frozen=True, slots=True)
+class _CompletedPairwiseOutcome:
+    result: _PairwiseJudgeResult | None = None
+    failure: Exception | None = None
+    interrupted: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class _PairwiseScore:
     comparison_score: float
     reasoning: ScorerReasoning | None
@@ -208,24 +217,33 @@ class EvaluationScoringService:
         miner_response: Response,
         reference_response: ReferenceAnswer,
     ) -> _PairwiseScore:
-        miner_first = await self._judge_pair(
-            query_text=query_text,
-            first_answer=miner_response,
-            second_answer=reference_response,
+        pair_tasks = (
+            asyncio.create_task(
+                self._judge_pair(
+                    query_text=query_text,
+                    first_answer=miner_response,
+                    second_answer=reference_response,
+                )
+            ),
+            asyncio.create_task(
+                self._judge_pair(
+                    query_text=query_text,
+                    first_answer=reference_response,
+                    second_answer=miner_response,
+                )
+            ),
         )
         try:
-            reference_first = await self._judge_pair(
-                query_text=query_text,
-                first_answer=reference_response,
-                second_answer=miner_response,
-            )
-        except Exception as exc:
-            partial_usage = merge_judge_usage((miner_first.judge_usage, _judge_usage_from_exception(exc)))
-            partial_trace = _merge_scoring_evaluation_traces(
-                (miner_first.evaluation_trace, _evaluation_trace_from_exception(exc)),
-                status="exhausted" if isinstance(exc, LlmRetryExhaustedError) else "failed",
-            )
-            raise attach_scoring_judge_usage(exc, partial_usage, evaluation_trace=partial_trace) from None
+            await asyncio.wait(pair_tasks, return_when=asyncio.FIRST_EXCEPTION)
+            if _selected_pairwise_failure(pair_tasks) is not None:
+                await _cancel_unfinished_pairwise_tasks(pair_tasks)
+            failure = _selected_pairwise_failure(pair_tasks)
+            if failure is not None:
+                raise _attach_pairwise_failure_metadata(failure, pair_tasks) from None
+            miner_first, reference_first = (task.result() for task in pair_tasks)
+        except BaseException:
+            await _cancel_unfinished_pairwise_tasks(pair_tasks)
+            raise
         miner_wins = 0
         if miner_first.preferred_position == "first":
             miner_wins += 1
@@ -350,6 +368,78 @@ class EvaluationScoringService:
             retry_policy=self._config.retry_policy,
             use_case="miner_task_pairwise_judge",
         )
+
+
+def _selected_pairwise_failure(pair_tasks: Sequence[asyncio.Task[_PairwiseJudgeResult]]) -> Exception | None:
+    failures = tuple(
+        outcome.failure
+        for outcome in (_completed_pairwise_outcome(task) for task in pair_tasks)
+        if outcome is not None and outcome.failure is not None
+    )
+    for exc in failures:
+        if _pairwise_failure_category(exc) != "retry_exhausted":
+            return exc
+    return failures[0] if failures else None
+
+
+def _pairwise_failure_category(exc: Exception) -> Literal["retry_exhausted", "non_retryable"]:
+    return "retry_exhausted" if type(exc) is LlmRetryExhaustedError else "non_retryable"
+
+
+async def _cancel_unfinished_pairwise_tasks(pair_tasks: Sequence[asyncio.Task[_PairwiseJudgeResult]]) -> None:
+    pending = tuple(task for task in pair_tasks if not task.done())
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
+def _attach_pairwise_failure_metadata(
+    exc: Exception,
+    pair_tasks: Sequence[asyncio.Task[_PairwiseJudgeResult]],
+) -> Exception:
+    outcomes = tuple(_completed_pairwise_outcome(task) for task in pair_tasks)
+    partial_usage = merge_judge_usage(_judge_usage_from_pairwise_outcome(outcome) for outcome in outcomes)
+    partial_trace = _merge_scoring_evaluation_traces(
+        (_evaluation_trace_from_pairwise_outcome(outcome) for outcome in outcomes),
+        status="exhausted" if _pairwise_failure_category(exc) == "retry_exhausted" else "failed",
+    )
+    if partial_usage.call_count > 0:
+        return attach_scoring_judge_usage(exc, partial_usage, evaluation_trace=partial_trace)
+    if partial_trace is not None:
+        return attach_scoring_evaluation_trace(exc, partial_trace)
+    return exc
+
+
+def _completed_pairwise_outcome(task: asyncio.Task[_PairwiseJudgeResult]) -> _CompletedPairwiseOutcome | None:
+    if task.cancelled() or not task.done():
+        return _CompletedPairwiseOutcome(interrupted=True)
+    try:
+        return _CompletedPairwiseOutcome(result=task.result())
+    except Exception as exc:
+        return _CompletedPairwiseOutcome(failure=exc)
+
+
+def _judge_usage_from_pairwise_outcome(outcome: _CompletedPairwiseOutcome | None) -> JudgeUsageSummary | None:
+    if outcome is None:
+        return None
+    if outcome.result is not None:
+        return outcome.result.judge_usage
+    if outcome.failure is not None:
+        return _judge_usage_from_exception(outcome.failure)
+    return None
+
+
+def _evaluation_trace_from_pairwise_outcome(outcome: _CompletedPairwiseOutcome | None) -> EvaluationTrace | None:
+    if outcome is None:
+        return None
+    if outcome.interrupted:
+        return EvaluationTrace(scoring_judge_retry_reasons=(_PAIRWISE_INTERRUPTED_RETRY_REASON,))
+    if outcome.result is not None:
+        return outcome.result.evaluation_trace
+    if outcome.failure is not None:
+        return _evaluation_trace_from_exception(outcome.failure)
+    return None
 
 
 def _judge_candidate_models(config: EvaluationScoringConfig) -> tuple[str, ...]:
