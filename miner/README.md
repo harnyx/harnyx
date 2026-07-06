@@ -85,6 +85,7 @@ harnyx-miner-config --wallet-name <wallet> --hotkey-name <hotkey> --delete-provi
 Supported providers are `chutes`, `openrouter`, `desearch`, and `parallel`.
 Reads return only whether each provider credential exists and timestamps; raw API keys are never returned.
 Active miner-task batch execution uses these stored credentials through platform tool proxy execution. Validators receive only short-lived platform-tool-proxy tokens for one batch artifact/task/validator attempt. Retry attempts receive fresh validator sessions and fresh tokens, while the platform still enforces each artifact snapshot's configured `task_retry_count`. Raw provider API keys stay inside the platform boundary.
+When your artifact becomes the active champion and receives champion emission, the platform also uses those stored provider API keys to run benchmark suites for that champion artifact.
 
 ---
 
