@@ -676,6 +676,59 @@ def test_submit_miner_task_work_executions_does_not_send_platform_owned_attempt_
     assert acknowledgements[0].canonical is True
 
 
+def test_request_scoreable_miner_task_work_executions_posts_limit() -> None:
+    keypair = _keypair()
+    batch_id = uuid4()
+    artifact_id = uuid4()
+    task_id = uuid4()
+    validator_session_id = uuid4()
+    seen_body: dict[str, object] | None = None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal seen_body
+        _assert_signed(request, keypair)
+        if request.method == "POST" and request.url.path == "/v2/miner-task-work/scoreable-executions":
+            seen_body = json.loads(request.content)
+            return httpx.Response(
+                status_code=200,
+                json={"server_time": "2026-07-07T00:00:00+00:00", "executions": []},
+            )
+        return httpx.Response(status_code=404)
+
+    client = HttpPlatformClient(
+        base_url="https://mock.local",
+        hotkey=keypair,
+        transport=httpx.MockTransport(handler),
+    )
+
+    executions = client.request_scoreable_miner_task_work_executions(
+        limit=3,
+        active_scoring=(
+            PlatformTaskAttemptIdentity(
+                batch_id=batch_id,
+                artifact_id=artifact_id,
+                task_id=task_id,
+                attempt_number=2,
+                validator_session_id=validator_session_id,
+            ),
+        ),
+    )
+
+    assert executions == ()
+    assert seen_body == {
+        "limit": 3,
+        "active_scoring": [
+            {
+                "batch_id": str(batch_id),
+                "artifact_id": str(artifact_id),
+                "task_id": str(task_id),
+                "attempt_number": 2,
+                "validator_session_id": str(validator_session_id),
+            }
+        ],
+    }
+
+
 
 async def test_platform_tool_proxy_grant_posts_attempt_number() -> None:
     batch_id = uuid4()

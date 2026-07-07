@@ -319,6 +319,7 @@ def test_platform_work_worker_uses_task_capacity_and_artifact_cap() -> None:
     assert worker is not None
     assert worker._target_concurrency == 20
     assert worker._max_active_artifacts == 4
+    assert worker._scoring_limit == 20
     assert worker._target_concurrency > worker._max_active_artifacts
 
 

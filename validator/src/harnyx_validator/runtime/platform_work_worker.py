@@ -30,6 +30,7 @@ _PLATFORM_WORK_DISPATCH_START_LEASE_SECONDS = 300.0
 This applies only after an assigned artifact has started and a specific
 assignment is dispatchable but still queued.
 """
+_PLATFORM_WORK_SCORING_LIMIT = 20
 
 ArtifactAssignmentExecutor = Callable[
     [
@@ -258,6 +259,7 @@ class PlatformWorkWorker:
         score_execution: ScoringExecutor | None = None,
         target_concurrency: int,
         max_active_artifacts: int,
+        scoring_limit: int = _PLATFORM_WORK_SCORING_LIMIT,
         poll_interval_seconds: float = 1.0,
         dispatch_start_lease_seconds: float = _PLATFORM_WORK_DISPATCH_START_LEASE_SECONDS,
         monotonic_clock: Callable[[], float] = time.monotonic,
@@ -266,6 +268,8 @@ class PlatformWorkWorker:
             raise ValueError("target_concurrency must be positive")
         if max_active_artifacts < 1:
             raise ValueError("max_active_artifacts must be positive")
+        if scoring_limit < 1:
+            raise ValueError("scoring_limit must be positive")
         if poll_interval_seconds <= 0:
             raise ValueError("poll_interval_seconds must be positive")
         if dispatch_start_lease_seconds <= 0:
@@ -275,6 +279,7 @@ class PlatformWorkWorker:
         self._score_execution = score_execution
         self._target_concurrency = target_concurrency
         self._max_active_artifacts = max_active_artifacts
+        self._scoring_limit = scoring_limit
         self._poll_interval_seconds = poll_interval_seconds
         self._dispatch_start_lease_seconds = dispatch_start_lease_seconds
         self._monotonic_clock = monotonic_clock
@@ -390,17 +395,19 @@ class PlatformWorkWorker:
     def _start_scoreable_execution_request(self) -> None:
         if self._score_execution is None:
             return
-        if not hasattr(self._platform, "request_scoreable_miner_task_work_executions"):
+        remaining_slots = self._remaining_scoring_slots()
+        if remaining_slots <= 0:
             return
         self._scoreable_execution_request_task = asyncio.create_task(
-            self._request_scoreable_executions(),
+            self._request_scoreable_executions(limit=remaining_slots),
             name="validator-platform-scoreable-execution-request",
         )
 
-    async def _request_scoreable_executions(self) -> tuple[PlatformOwnedTaskExecution, ...]:
+    async def _request_scoreable_executions(self, *, limit: int) -> tuple[PlatformOwnedTaskExecution, ...]:
         request_scoreable = self._platform.request_scoreable_miner_task_work_executions
         return await asyncio.to_thread(
             request_scoreable,
+            limit=limit,
             active_scoring=self._active_scoring_attempts(),
         )
 
@@ -658,6 +665,8 @@ class PlatformWorkWorker:
             return
         active_keys = set(self._active_scoring_attempts())
         for execution in executions:
+            if self._remaining_scoring_slots() <= 0:
+                break
             identity = _execution_identity(execution)
             if identity in active_keys:
                 continue
@@ -742,6 +751,9 @@ class PlatformWorkWorker:
             for identity in group.reportable_identities()
         )
         return active + pending
+
+    def _remaining_scoring_slots(self) -> int:
+        return self._scoring_limit - len(self._active_scoring_attempts())
 
     def _active_scoring_attempts(self) -> tuple[PlatformTaskAttemptIdentity, ...]:
         pending_results = tuple(

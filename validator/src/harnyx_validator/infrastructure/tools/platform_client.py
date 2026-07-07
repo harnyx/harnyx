@@ -331,12 +331,14 @@ class HttpPlatformClient(PlatformPort):
     def request_scoreable_miner_task_work_executions(
         self,
         *,
+        limit: int,
         active_scoring: Sequence[PlatformTaskAttemptIdentity],
     ) -> tuple[PlatformOwnedTaskExecution, ...]:
         path = "/v2/miner-task-work/scoreable-executions"
         response = self._post_json(
             path,
             {
+                "limit": limit,
                 "active_scoring": [
                     {
                         "batch_id": str(attempt.batch_id),

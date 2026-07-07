@@ -174,7 +174,7 @@ sequenceDiagram
   P->>DB: Persist accepted execution evidence on the existing run row
   P-->>V: 200 { executions:[{ outcome:"accepted"|"rejected", canonical:true|false, reason_code:null|... }] }
 
-  V->>P: POST /v2/miner-task-work/scoreable-executions<br/>{ active_scoring:[...] }
+  V->>P: POST /v2/miner-task-work/scoreable-executions<br/>{ limit:remaining_scoring_slots, active_scoring:[...] }
   P-->>V: 200 { executions:[persisted execution evidence still needing scoring] }
 
   V->>P: POST /v2/miner-task-work/results<br/>{ results:[{ batch_id, artifact_id, task_id, attempt_number, result, terminal_attempt }] }

@@ -632,6 +632,7 @@ Body: [MinerTaskWorkScoreableExecutionsRequest](#model-minertaskworkscoreableexe
 |  | `batch_id` |  | req | `string` (format: uuid) |
 |  | `task_id` |  | req | `string` (format: uuid) |
 |  | `validator_session_id` |  | opt | `string` (format: uuid; nullable) |
+| `limit` |  |  | req | `integer` |
 
 **Responses**
 `200` Successful Response
@@ -5384,6 +5385,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  | `batch_id` |  | req | `string` (format: uuid) |
 |  | `task_id` |  | req | `string` (format: uuid) |
 |  | `validator_session_id` |  | opt | `string` (format: uuid; nullable) |
+| `limit` |  |  | req | `integer` |
 
 <details>
 <summary>JSON schema</summary>
@@ -5399,8 +5401,17 @@ Body: [WeightsResponse](#model-weightsresponse)
       },
       "title": "Active Scoring",
       "type": "array"
+    },
+    "limit": {
+      "maximum": 20.0,
+      "minimum": 1.0,
+      "title": "Limit",
+      "type": "integer"
     }
   },
+  "required": [
+    "limit"
+  ],
   "title": "MinerTaskWorkScoreableExecutionsRequest",
   "type": "object"
 }

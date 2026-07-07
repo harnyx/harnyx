@@ -56,6 +56,7 @@ class PlatformPort(Protocol):
     def request_scoreable_miner_task_work_executions(
         self,
         *,
+        limit: int,
         active_scoring: Sequence[PlatformTaskAttemptIdentity],
     ) -> tuple[PlatformOwnedTaskExecution, ...]:
         """Return accepted execution evidence that still needs final scoring."""

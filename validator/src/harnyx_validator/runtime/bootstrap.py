@@ -463,6 +463,7 @@ def _build_platform_work_worker(
         ),
         target_concurrency=config.artifact_task_parallelism,
         max_active_artifacts=config.artifact_parallelism,
+        scoring_limit=20,
     )
 
 
