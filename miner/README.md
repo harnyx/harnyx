@@ -16,7 +16,6 @@ batch monitoring, and score diagnosis, start with the
       ▼
   ┌──────────────────────────────────────────┐
   │  miner/                                  │  ◀── what you interact with
-  │  • harnyx-miner-dev         (test)       │
   │  • harnyx-miner-local-eval  (batch eval) │
   │  • harnyx-miner-local-benchmark          │
   │  • harnyx-miner-submit      (upload)     │
@@ -39,13 +38,13 @@ batch monitoring, and score diagnosis, start with the
 
 **What each directory is:**
 
-- `miner/` — CLI tools you use directly (`harnyx-miner-dev`, `harnyx-miner-local-eval`, `harnyx-miner-local-benchmark`, `harnyx-miner-submit`, `harnyx-miner-config`)
+- `miner/` — CLI tools you use directly (`harnyx-miner-local-eval`, `harnyx-miner-local-benchmark`, `harnyx-miner-submit`, `harnyx-miner-config`)
 - [`packages/miner-sdk/`](../packages/miner-sdk/README.md) — SDK your script imports; you don't need to read its docs first
 - `sandbox/` — runtime that validators use to execute your script; you don't run it directly
 
 ---
 
-## Write → Test → Local Eval → Submit
+## Write → Local Eval → Submit
 
 ### Step 1: Setup
 
@@ -297,23 +296,7 @@ Repository-grounding tools exist elsewhere in the monorepo for content-review fl
 
 ---
 
-### Step 3: Test locally
-
-`harnyx-miner-dev` loads your file, finds `query`, and runs it with a `Query` payload. It uses real tool calls, so you need the API keys configured above.
-
-```bash
-uv run --package harnyx-miner harnyx-miner-dev --agent-path ./agent.py
-```
-
-To test with a specific request payload:
-
-```bash
-uv run --package harnyx-miner harnyx-miner-dev --agent-path ./agent.py --request-json ./request.json
-```
-
----
-
-### Step 4: Run local batch evaluation
+### Step 3: Run local batch evaluation
 
 Use `harnyx-miner-local-eval` to benchmark your local artifact against a completed public miner-task batch before you submit.
 
@@ -354,7 +337,7 @@ That flow keeps the surface intentionally small:
 
 ---
 
-### Step 5: Submit to the platform
+### Step 4: Submit to the platform
 
 Set the platform base URL:
 

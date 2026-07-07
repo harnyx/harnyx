@@ -191,8 +191,6 @@ During active development, run focused diagnostics first. Do not run the full ev
 Focused diagnostics may use existing tools and generated artifacts:
 
 - inspect prior local-eval and benchmark JSON reports
-- create temporary request JSON files under `.autoresearch/`
-- run `uv run harnyx-miner-dev --agent-path ./train.py --request-json <request.json>` for a small case
 - add temporary debug logging or oracle checks in `train.py` only while diagnosing, then remove them before any keep decision
 - compare baseline and modified outputs line by line
 

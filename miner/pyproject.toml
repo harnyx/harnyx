@@ -17,7 +17,6 @@ dependencies = [
 ]
 
 [project.scripts]
-harnyx-miner-dev = "harnyx_miner.dev:main"
 harnyx-miner-hash = "harnyx_miner.hash:main"
 harnyx-miner-local-eval = "harnyx_miner.local_eval:main"
 harnyx-miner-local-benchmark = "harnyx_miner.local_benchmark:main"

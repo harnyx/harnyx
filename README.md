@@ -121,7 +121,7 @@ Failed terminal batches with artifacts count for participant emission. Initializ
 ## Repo layout
 
 ```text
-miner/                # miner-facing CLI tooling (dev, local-eval, submit)
+miner/                # miner-facing CLI tooling (local-eval, local-benchmark, submit)
 validator/            # validator runtime + operator docs
 sandbox/              # sandbox runtime (run by validators, not miners)
 packages/
