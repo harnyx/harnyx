@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
+from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import (
     LlmChoice,
     LlmChoiceMessage,
@@ -75,6 +76,34 @@ async def test_runtime_invoker_lowers_openrouter_provider_extra_to_request_extra
     assert request.internal_metadata is None
     assert request.output_mode == "text"
     assert output.actual_cost_provider == "openrouter"
+
+
+async def test_runtime_invoker_sets_single_attempt_retry_policy_for_llm_chat() -> None:
+    llm_provider = _CapturingLlmProvider()
+    invoker = RuntimeToolInvoker(
+        InMemoryReceiptLog(),
+        llm_provider=llm_provider,
+        llm_provider_name="openrouter",
+    )
+
+    output = await invoker.invoke(
+        "llm_chat",
+        args=(),
+        kwargs={
+            "provider": "openrouter",
+            "model": "openai/gpt-oss-120b",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+
+    assert isinstance(output, ToolInvocationOutput)
+    assert len(llm_provider.requests) == 1
+    assert llm_provider.requests[0].retry_policy == RetryPolicy(
+        attempts=1,
+        initial_ms=0,
+        max_ms=0,
+        jitter=0.0,
+    )
 
 
 async def test_runtime_invoker_lowers_ai_gateway_provider_options_extra_to_request_extra() -> None:

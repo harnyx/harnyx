@@ -28,6 +28,7 @@ from harnyx_commons.llm.pricing import (
     price_search,
 )
 from harnyx_commons.llm.provider import LlmProviderError, LlmProviderPort, LlmRetryExhaustedError
+from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import (
     LlmChoice,
     LlmChoiceMessage,
@@ -728,6 +729,7 @@ class RuntimeToolInvoker(ToolInvoker):
             thinking=invocation.thinking.to_schema() if invocation.thinking is not None else None,
             extra=request_extra,
             use_case="tool_runtime_invoker",
+            retry_policy=RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0.0),
         )
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 
 import pytest
 
@@ -223,3 +224,17 @@ async def test_request_retry_policy_overrides_provider_default() -> None:
     result = await provider.invoke_with_retry(request)
 
     assert result.choices[0].message.content[0].text == "ok"
+
+
+async def test_request_retry_policy_attempts_one_disables_retry() -> None:
+    provider = _RetryOnceExceptionProvider()
+    provider._retry_policy = RetryPolicy(attempts=2, initial_ms=0, max_ms=0, jitter=0.0)
+    request = replace(
+        _request(),
+        retry_policy=RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0.0),
+    )
+
+    with pytest.raises(LlmRetryExhaustedError) as raised:
+        await provider.invoke_with_retry(request)
+
+    assert raised.value.attempts == 1

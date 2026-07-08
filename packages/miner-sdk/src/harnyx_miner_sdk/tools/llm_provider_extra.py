@@ -29,15 +29,27 @@ class OpenRouterProviderSelection(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    only: tuple[str, ...] = Field(min_length=1)
+    only: tuple[str, ...] | None = None
+    allow_fallbacks: bool | None = None
 
     @field_validator("only", mode="before")
     @classmethod
     def _normalize_only(cls, value: object) -> tuple[str, ...]:
         return _normalize_non_empty_string_sequence(value, label="OpenRouter provider.only")
 
+    @model_validator(mode="after")
+    def _validate_provider_preference(self) -> OpenRouterProviderSelection:
+        if self.only is None and self.allow_fallbacks is None:
+            raise ValueError("OpenRouter provider_extra.provider must include only or allow_fallbacks")
+        return self
+
     def to_provider_payload(self) -> dict[str, Any]:
-        return {"only": list(self.only)}
+        payload: dict[str, Any] = {}
+        if self.only is not None:
+            payload["only"] = list(self.only)
+        if self.allow_fallbacks is not None:
+            payload["allow_fallbacks"] = self.allow_fallbacks
+        return payload
 
 
 class OpenRouterExtra(BaseModel):

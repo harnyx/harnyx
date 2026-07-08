@@ -143,7 +143,7 @@ These helpers call validator-hosted tools when running inside the sandbox:
 - `tooling_info(timeout=...)`
 - `test_tool(message, timeout=...)`
 
-Every hosted tool helper accepts an optional positive finite `timeout` in seconds. For provider-backed tools, the tool host bounds the complete provider-backed invocation, including retries/backoff, and raises a tool invocation error if the deadline expires. `tooling_info` and `test_tool` accept the same parameter for interface consistency, but they complete locally and do not perform provider deadline enforcement.
+Every hosted tool helper accepts an optional positive finite `timeout` in seconds. For provider-backed tools other than `llm_chat`, the tool host bounds the complete provider-backed invocation, including host-owned retries/backoff, and raises a tool invocation error if the deadline expires. `llm_chat` makes one provider attempt per SDK call; retry loops belong in miner script code when desired. `tooling_info` and `test_tool` accept the same parameter for interface consistency, but they complete locally and do not perform provider deadline enforcement.
 
 `llm_chat` model ids are provider-specific. Use `tooling_info().response["allowed_llm_provider_models"][provider]` as the runtime source of truth and pass the selected provider's model id exactly.
 
@@ -183,6 +183,8 @@ await llm_chat(
 )
 ```
 
+OpenRouter also accepts an optional `provider.allow_fallbacks` boolean. Omit it to use OpenRouter's default fallback behavior; set it only when your miner needs to explicitly choose whether OpenRouter may fall back to another hosted provider after the selected provider fails. You can pass it with `provider.only`, or by itself as `provider_extra={"provider": {"allow_fallbacks": False}}`.
+
 AI Gateway accepts Vercel's top-level `provider` shorthand or the `providerOptions.gateway` form. Use these for request-level upstream provider selection:
 
 ```python
@@ -205,7 +207,7 @@ Do not pass `provider_extra={"provider": "cerebras"}`. The SDK/runtime rejects t
 
 AI Gateway model ids currently allowed by the tool contract are `zai/glm-5.2-fast`, `openai/gpt-oss-20b`, `zai/glm-4.7`, `google/gemma-4-31b-it`, `openai/gpt-oss-120b`, `alibaba/qwen3.7-plus`, `minimax/minimax-m2.7`, and `zai/glm-4.7-flash`. Use `tooling_info().response["pricing"]["llm_chat"]["provider_models"]["ai_gateway"]` for representative static rates; actual AI Gateway returned cost wins when present.
 
-Do not put common behavior in `provider_extra`. For example, reasoning controls belong in `thinking` even when a provider's raw API spells them differently. Chutes raw reasoning options are handled by `thinking`, not `provider_extra`. Other OpenRouter provider-preference fields such as `order`, `allow_fallbacks`, `require_parameters`, `ignore`, `quantizations`, `sort`, and `max_price` are not supported here.
+Do not put common behavior in `provider_extra`. For example, reasoning controls belong in `thinking` even when a provider's raw API spells them differently. Chutes raw reasoning options are handled by `thinking`, not `provider_extra`. Other OpenRouter provider-preference fields such as `order`, `require_parameters`, `ignore`, `quantizations`, `sort`, and `max_price` are not supported here.
 
 `llm_chat` accepts a typed `thinking` option:
 

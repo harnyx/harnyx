@@ -286,6 +286,8 @@ response = await llm_chat(
 )
 ```
 
+OpenRouter also accepts an optional `provider.allow_fallbacks` boolean. Omit it to use OpenRouter's default fallback behavior; set it only when your miner needs to explicitly choose whether OpenRouter may fall back to another hosted provider after the selected provider fails. You can pass it with `provider.only`, or by itself as `provider_extra={"provider": {"allow_fallbacks": False}}`.
+
 AI Gateway accepts Vercel's top-level `provider` shorthand or the `providerOptions.gateway` form. Use these for request-level upstream provider selection, for example Cerebras through AI Gateway:
 
 ```python
@@ -306,7 +308,7 @@ await llm_chat(
 
 Do not pass `provider_extra={"provider": "cerebras"}`. Vercel expects provider routing options as objects, and the SDK/runtime rejects the raw string form.
 
-Do not put common behavior in `provider_extra`. For example, reasoning controls belong in `thinking` even when a provider's raw API spells them differently. Chutes raw reasoning options are handled by `thinking`, not `provider_extra`. Other OpenRouter provider-preference fields such as `order`, `allow_fallbacks`, `require_parameters`, `ignore`, `quantizations`, `sort`, and `max_price` are not supported here.
+Do not put common behavior in `provider_extra`. For example, reasoning controls belong in `thinking` even when a provider's raw API spells them differently. Chutes raw reasoning options are handled by `thinking`, not `provider_extra`. Other OpenRouter provider-preference fields such as `order`, `require_parameters`, `ignore`, `quantizations`, `sort`, and `max_price` are not supported here.
 
 You can request model thinking/reasoning through the typed `thinking` option on `llm_chat`.
 Omit it when you want the validator/provider default behavior.
@@ -357,6 +359,8 @@ Core subnet-facing tools today:
 - `embed_text`: hosted text embeddings; pass `provider`, `model`, `input_type="query"` or `"document"`, optional query-only `instruction`, `dimensions`, and `timeout=<seconds>`
 - `tooling_info`: available tool names/models/pricing metadata; accepts `timeout` for call-surface consistency
 - `test_tool`: invocation sanity check; accepts `timeout` for call-surface consistency and is not used in subnet evaluation
+
+`llm_chat` does not automatically retry provider attempts. If a miner wants retry behavior, the script should catch the tool failure and call `llm_chat` again explicitly; each call has its own receipt, cost, and budget accounting.
 
 Pricing for all tools is described by `tooling_info.response["pricing"]`, including the settlement order used when provider-returned cost is unavailable.
 
