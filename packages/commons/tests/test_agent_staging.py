@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 
-from harnyx_commons.sandbox.agent_staging import MAX_AGENT_BYTES, AgentSourceValidationError, stage_agent_source
+from harnyx_commons.sandbox import agent_staging
+from harnyx_commons.sandbox.agent_staging import (
+    MAX_AGENT_BYTES,
+    AgentArtifact,
+    AgentSourceValidationError,
+    stage_agent_source,
+)
 
 
 def _mode(path: Path) -> int:
@@ -46,6 +54,39 @@ def test_stage_agent_source_normalizes_bind_mount_permissions(tmp_path: Path) ->
     assert _mode(artifact.host_path.parent) == 0o755
     assert _mode(artifact.host_path) == 0o644
     assert _mode(checksum_path) == 0o644
+
+
+def test_stage_agent_source_allows_concurrent_first_write_for_same_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_dir = tmp_path / "state"
+    data = b"print('hello')\n"
+    barrier = Barrier(2)
+    original_validate_agent_source = agent_staging._validate_agent_source
+
+    def wait_then_validate(path: Path) -> None:
+        barrier.wait(timeout=5)
+        original_validate_agent_source(path)
+
+    monkeypatch.setattr(agent_staging, "_validate_agent_source", wait_then_validate)
+
+    def stage() -> AgentArtifact:
+        return stage_agent_source(
+            state_dir=state_dir,
+            container_root="/workspace/.harnyx_state",
+            namespace="local_eval_agents",
+            key="artifact-1",
+            data=data,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(stage) for _ in range(2)]
+        artifacts = [future.result(timeout=5) for future in futures]
+
+    assert artifacts[0] == artifacts[1]
+    assert artifacts[0].host_path.read_bytes() == data
+    assert not list(artifacts[0].host_path.parent.glob("*.tmp"))
 
 
 def test_stage_agent_source_rejects_empty_source_as_script_validation(tmp_path: Path) -> None:

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import uuid
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -91,11 +93,7 @@ def stage_agent_source(
     checksum_path = agent_path.parent / "agent.sha256"
 
     if agent_path.exists():
-        existing_hash = hashlib.sha256(agent_path.read_bytes()).hexdigest()
-        if existing_hash != content_hash:
-            raise RuntimeError(
-                f"staged agent content hash mismatch for {agent_path}: expected={content_hash} actual={existing_hash}"
-            )
+        _verify_existing_agent(agent_path=agent_path, content_hash=content_hash)
         _normalize_staged_permissions(
             state_dir=state_dir,
             agent_path=agent_path,
@@ -109,15 +107,20 @@ def stage_agent_source(
 
     agent_dir = agent_path.parent
     agent_dir.mkdir(parents=True, exist_ok=True)
-    temp_path = agent_dir / f"{filename}.tmp"
+    temp_path = agent_dir / f".{filename}.{uuid.uuid4().hex}.tmp"
     temp_path.write_bytes(data)
     try:
         _validate_agent_source(temp_path)
-        temp_path.replace(agent_path)
+        try:
+            os.link(temp_path, agent_path)
+        except FileExistsError:
+            _verify_existing_agent(agent_path=agent_path, content_hash=content_hash)
     except Exception:
         with suppress(FileNotFoundError):
             temp_path.unlink()
         raise
+    else:
+        temp_path.unlink()
 
     checksum_path.write_text(content_hash, encoding="utf-8")
     _normalize_staged_permissions(
@@ -150,6 +153,14 @@ def _normalize_staged_permissions(
     for extra_file in extra_files:
         if extra_file.exists():
             extra_file.chmod(_FILE_MODE)
+
+
+def _verify_existing_agent(*, agent_path: Path, content_hash: str) -> None:
+    existing_hash = hashlib.sha256(agent_path.read_bytes()).hexdigest()
+    if existing_hash != content_hash:
+        raise RuntimeError(
+            f"staged agent content hash mismatch for {agent_path}: expected={content_hash} actual={existing_hash}"
+        )
 
 
 def _validate_agent_source(path: Path) -> None:
