@@ -88,7 +88,7 @@ def test_apply_miner_emission_cap_rejects_invalid_max_fraction(max_fraction: flo
         )
 
 
-def test_owner_fallback_weights_assigns_all_emission_to_owner() -> None:
+def test_owner_uid_weights_burn_all_miner_emission() -> None:
     assert owner_fallback_weights() == {0: 1.0}
 
 

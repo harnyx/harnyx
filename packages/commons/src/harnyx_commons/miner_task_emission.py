@@ -165,6 +165,7 @@ def compose_emission_weights(*components: dict[int, float]) -> dict[int, float]:
     miner_fraction = fsum(weights.values())
     if _exceeds_total_emission(miner_fraction):
         raise ValueError("emission exceeds total weight")
+    # Assigning miner emission to owner UID burns it; owner is not a miner payout recipient.
     weights[OWNER_UID] = TOTAL_EMISSION_FRACTION - min(TOTAL_EMISSION_FRACTION, miner_fraction)
     return weights
 
