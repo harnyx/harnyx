@@ -299,6 +299,84 @@ def test_execute_tool_endpoint_returns_generic_detail_for_provider_failure() -> 
     assert stored.failure_code is None
 
 
+def test_execute_tool_endpoint_returns_platform_provider_failure_detail() -> None:
+    provider = DemoDependencyProvider()
+    provider.dependencies = ToolRouteDeps(
+        tool_executor=_PlatformProviderFailingToolExecutor("empty_output"),
+        tool_concurrency_limiter=provider.tool_concurrency_limiter,
+    )
+    app = create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/tools/execute",
+        json={
+            "tool": "search_web",
+            "args": ["demo"],
+            "kwargs": {"query": "demo"},
+        },
+        headers={
+            "x-platform-token": DEMO_SESSION_TOKEN,
+            SESSION_ID_HEADER: str(provider.session.session_id),
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "empty_output"}
+
+
+def test_execute_tool_endpoint_coarsens_platform_provider_http_detail() -> None:
+    provider = DemoDependencyProvider()
+    provider.dependencies = ToolRouteDeps(
+        tool_executor=_PlatformProviderFailingToolExecutor("http_429: provider body with detail"),
+        tool_concurrency_limiter=provider.tool_concurrency_limiter,
+    )
+    app = create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/tools/execute",
+        json={
+            "tool": "search_web",
+            "args": ["demo"],
+            "kwargs": {"query": "demo"},
+        },
+        headers={
+            "x-platform-token": DEMO_SESSION_TOKEN,
+            SESSION_ID_HEADER: str(provider.session.session_id),
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "http_429"}
+
+
+def test_execute_tool_endpoint_keeps_unsafe_platform_provider_failure_detail_generic() -> None:
+    provider = DemoDependencyProvider()
+    provider.dependencies = ToolRouteDeps(
+        tool_executor=_PlatformProviderFailingToolExecutor("provider body with detail"),
+        tool_concurrency_limiter=provider.tool_concurrency_limiter,
+    )
+    app = create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/tools/execute",
+        json={
+            "tool": "search_web",
+            "args": ["demo"],
+            "kwargs": {"query": "demo"},
+        },
+        headers={
+            "x-platform-token": DEMO_SESSION_TOKEN,
+            SESSION_ID_HEADER: str(provider.session.session_id),
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "tool execution failed"}
+
+
 def test_execute_tool_endpoint_unexpected_internal_error_uses_generic_500_body() -> None:
     provider = DemoDependencyProvider()
     provider.dependencies = ToolRouteDeps(
@@ -556,6 +634,19 @@ class _StaticToolExecutor:
 class _ProviderFailingToolExecutor:
     async def execute(self, _: object) -> object:
         raise ToolProviderError("provider failed")
+
+
+class _PlatformToolProxyProviderError(ToolProviderError):
+    status_code = 502
+    error_code = "provider_failed"
+
+
+class _PlatformProviderFailingToolExecutor:
+    def __init__(self, message: str) -> None:
+        self._message = message
+
+    async def execute(self, _: object) -> object:
+        raise _PlatformToolProxyProviderError(self._message)
 
 
 class _UnexpectedFailingToolExecutor:

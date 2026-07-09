@@ -15,6 +15,7 @@ from fastapi.security import APIKeyHeader
 
 from harnyx_commons.bittensor import VerificationError
 from harnyx_commons.errors import ConcurrencyLimitError, ToolProviderError
+from harnyx_commons.llm.provider_error_summary import public_llm_provider_failure_summary
 from harnyx_commons.miner_task_similarity import SimilarityJudgeRequest, SimilarityJudgeResult
 from harnyx_commons.protocol_headers import SESSION_ID_HEADER
 from harnyx_commons.tools.dto import ToolInvocationRequest
@@ -284,6 +285,9 @@ def _log_tool_error(
 
 
 def _public_error_message(exc: Exception) -> str:
+    platform_provider_message = _platform_tool_proxy_provider_failure_message(exc)
+    if platform_provider_message is not None:
+        return platform_provider_message
     if isinstance(exc, PermissionError):
         return "session token rejected"
     if isinstance(exc, LookupError):
@@ -293,6 +297,15 @@ def _public_error_message(exc: Exception) -> str:
     if isinstance(exc, ValueError):
         return "tool response validation failed"
     return "tool execution failed"
+
+
+def _platform_tool_proxy_provider_failure_message(exc: Exception) -> str | None:
+    if not isinstance(exc, ToolProviderError):
+        return None
+    error_code = getattr(exc, "error_code", None)
+    if error_code != "provider_failed":
+        return None
+    return public_llm_provider_failure_summary(str(exc))
 
 
 def _control_route_request_id(request: Request) -> str:
