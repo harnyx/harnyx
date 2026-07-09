@@ -110,6 +110,14 @@ uv run --package harnyx-miner harnyx-miner-config \
 
 Supported providers are `chutes`, `openrouter`, `ai_gateway`, `desearch`, and `parallel`.
 
+If repeated `429` errors or provider instability are isolated to an upstream
+provider selected through OpenRouter, consider using an OpenRouter API key from
+a workspace with that provider configured through OpenRouter BYOK. BYOK is
+configured in OpenRouter, not in `harnyx-miner-config`: store the OpenRouter
+API key in miner config, and manage the upstream provider key in the OpenRouter
+workspace. This often helps when shared OpenRouter capacity for that provider is
+unstable because the provider account owns its own rate limits and costs.
+
 Set retry behavior only when it is intentional:
 
 ```bash

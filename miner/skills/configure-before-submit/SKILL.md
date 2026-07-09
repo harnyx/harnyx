@@ -39,7 +39,15 @@ uv run --package harnyx-miner harnyx-miner-config \
 ```
 
 3. Use only supported providers: `chutes`, `openrouter`, `ai_gateway`, `desearch`, `parallel`.
-4. Set retry behavior only when intentional:
+4. If repeated `429` errors or provider instability are isolated to an upstream
+   provider selected through OpenRouter, consider using an OpenRouter API key
+   from a workspace with that provider configured through OpenRouter BYOK. BYOK
+   is configured in OpenRouter, not in `harnyx-miner-config`: store the
+   OpenRouter API key in miner config, and manage the upstream provider key in
+   the OpenRouter workspace. This often helps when shared OpenRouter capacity
+   for that provider is unstable because the provider account owns its own rate
+   limits and costs.
+5. Set retry behavior only when intentional:
 
 ```bash
 uv run --package harnyx-miner harnyx-miner-config \
@@ -48,7 +56,7 @@ uv run --package harnyx-miner harnyx-miner-config \
   --task-retry-count <0-3>
 ```
 
-5. Re-read config and confirm expected provider statuses and retry count.
+6. Re-read config and confirm expected provider statuses and retry count.
 
 ## Stop Conditions
 
