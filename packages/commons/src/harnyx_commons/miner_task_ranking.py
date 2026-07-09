@@ -273,7 +273,7 @@ def _normalize_score(value: float) -> float:
 
 
 def run_ranking_cost_usd(details: EvaluationDetails) -> float:
-    return float(details.total_tool_usage.llm_cost + details.total_tool_usage.search_tool_cost)
+    return float(details.total_tool_usage.reference_total_cost_usd)
 
 
 def run_contribution_score(

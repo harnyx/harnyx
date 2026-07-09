@@ -16,7 +16,12 @@ from harnyx_commons.domain.miner_task import (
     ScoreBreakdown,
 )
 from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
-from harnyx_commons.domain.tool_usage import ToolUsageSummary
+from harnyx_commons.domain.tool_usage import (
+    EmbeddingToolUsageSummary,
+    LlmUsageSummary,
+    SearchToolUsageSummary,
+    ToolUsageSummary,
+)
 from harnyx_commons.miner_task_benchmark import (
     BENCHMARK_CORRECTNESS_SCORING_VERSION,
     BENCHMARK_WEIGHTED_RUBRIC_SCORING_VERSION,
@@ -140,6 +145,7 @@ def _submission(
     artifact: ScriptArtifactSpec,
     task: MinerTask,
     answer: str,
+    total_tool_usage: ToolUsageSummary | None = None,
 ) -> MinerTaskRunSubmission:
     completed_at = datetime(2026, 4, 30, 10, 0, tzinfo=UTC)
     return MinerTaskRunSubmission(
@@ -156,7 +162,7 @@ def _submission(
                     total_score=0.0,
                     scoring_version="benchmark-invocation-only",
                 ),
-                total_tool_usage=ToolUsageSummary.zero(),
+                total_tool_usage=total_tool_usage or ToolUsageSummary.zero(),
                 elapsed_ms=125.0,
             ),
             completed_at=completed_at,
@@ -174,6 +180,25 @@ def _submission(
             status=SessionStatus.COMPLETED,
             active_attempt=1,
         ),
+    )
+
+
+def _tool_usage_with_embedding() -> ToolUsageSummary:
+    return ToolUsageSummary(
+        llm=LlmUsageSummary(
+            call_count=1,
+            prompt_tokens=10,
+            completion_tokens=5,
+            total_tokens=15,
+            cost=0.011,
+            reference_cost=0.011,
+        ),
+        llm_cost=0.011,
+        search_tool=SearchToolUsageSummary(call_count=2, cost=0.004, reference_cost=0.004),
+        search_tool_cost=0.004,
+        embedding=EmbeddingToolUsageSummary(call_count=3, cost=0.006, reference_cost=0.006),
+        embedding_cost=0.006,
+        reference_total_cost_usd=0.021,
     )
 
 
@@ -549,6 +574,69 @@ def test_local_benchmark_report_includes_answers_and_summary(tmp_path: Path) -> 
     assert report["items"][0]["score_detail"] is None
     assert report["items"][1]["error"]["code"] == "missing_submission"
     assert report["items"][1]["score"] == 0.0
+
+
+def test_local_benchmark_cost_totals_preserve_embedding_breakdown(tmp_path: Path) -> None:
+    snapshot = _snapshot()
+    source_batch_id = UUID("00000000-0000-4000-8000-00000000b501")
+    run_id = benchmark_run_id_for_source_batch(
+        suite_slug=snapshot.manifest.suite_slug,
+        source_batch_id=source_batch_id,
+        dataset_version=snapshot.manifest.dataset_version,
+        scoring_version=snapshot.manifest.scoring_version,
+    )
+    backing_batch_id = uuid4()
+    target_bytes = b"print('agent')\n"
+    target_artifact = local_benchmark._build_target_artifact_spec(
+        run_id=run_id,
+        target_bytes=target_bytes,
+    )
+    tasks = local_benchmark._build_tasks(run_id=run_id, snapshot=snapshot, items=snapshot.items)
+    submission = _submission(
+        batch_id=backing_batch_id,
+        artifact=target_artifact,
+        task=tasks[0],
+        answer="The benchmark authors.",
+        total_tool_usage=_tool_usage_with_embedding(),
+    )
+
+    report = local_benchmark._build_report(
+        snapshot=snapshot,
+        source_batch_id=source_batch_id,
+        run_id=run_id,
+        backing_batch_id=backing_batch_id,
+        target_path=Path("train.py"),
+        target_bytes=target_bytes,
+        target_artifact=target_artifact,
+        results=(
+            local_benchmark._BenchmarkItemResult(
+                item=snapshot.items[0],
+                task=tasks[0],
+                submission=submission,
+                score=local_benchmark._BenchmarkItemScore(
+                    is_correct=True,
+                    score=1.0,
+                    score_reason="Matches the reference.",
+                    score_detail=None,
+                ),
+                error_code=None,
+                error_message=None,
+            ),
+        ),
+        scoring=_correctness_scoring_bundle(),
+        output_dir=tmp_path,
+        elapsed_seconds=12.5,
+        parallelism=1,
+    )
+
+    summary_totals = report["summary"]["cost_totals"]
+    item_totals = report["items"][0]["invocation"]["cost_totals"]
+    assert summary_totals["llm_cost_usd"] == pytest.approx(0.011)
+    assert summary_totals["search_tool_cost_usd"] == pytest.approx(0.004)
+    assert summary_totals["embedding_cost_usd"] == pytest.approx(0.006)
+    assert summary_totals["total_cost_usd"] == pytest.approx(0.021)
+    assert summary_totals["embedding_call_count"] == 3
+    assert item_totals == summary_totals
 
 
 def test_weighted_rubric_local_benchmark_report_uses_numeric_score_detail(tmp_path: Path) -> None:

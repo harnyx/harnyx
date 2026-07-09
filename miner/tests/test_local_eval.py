@@ -28,6 +28,7 @@ from harnyx_commons.domain.miner_task import (
 )
 from harnyx_commons.domain.session import LlmUsageTotals, Session, SessionStatus, SessionUsage
 from harnyx_commons.domain.tool_usage import (
+    EmbeddingToolUsageSummary,
     LlmModelUsageCost,
     LlmUsageSummary,
     SearchToolUsageSummary,
@@ -138,8 +139,9 @@ def _usage_totals() -> dict[str, dict[str, LlmUsageTotals]]:
     }
 
 
-def _tool_usage(*, total_cost: float) -> ToolUsageSummary:
+def _tool_usage(*, total_cost: float, embedding_cost: float = 0.0) -> ToolUsageSummary:
     usage = _usage_totals()["openai"]["openai/gpt-oss-120b-TEE"]
+    llm_cost = round(total_cost - 0.001 - embedding_cost, 6)
     return ToolUsageSummary(
         search_tool=SearchToolUsageSummary(call_count=1, cost=0.001),
         search_tool_cost=0.001,
@@ -148,17 +150,24 @@ def _tool_usage(*, total_cost: float) -> ToolUsageSummary:
             prompt_tokens=usage.prompt_tokens,
             completion_tokens=usage.completion_tokens,
             total_tokens=usage.total_tokens,
-            cost=round(total_cost - 0.001, 6),
+            cost=llm_cost,
             providers={
                 "openai": {
                     "openai/gpt-oss-120b-TEE": LlmModelUsageCost(
                         usage=usage,
-                        cost=round(total_cost - 0.001, 6),
+                        cost=llm_cost,
                     )
                 }
             },
         ),
-        llm_cost=round(total_cost - 0.001, 6),
+        llm_cost=llm_cost,
+        embedding=EmbeddingToolUsageSummary(
+            call_count=1 if embedding_cost else 0,
+            cost=embedding_cost,
+            reference_cost=embedding_cost,
+        ),
+        embedding_cost=embedding_cost,
+        reference_total_cost_usd=total_cost,
     )
 
 
@@ -171,6 +180,8 @@ def _submission(
     answer_text: str,
     citations: tuple[dict[str, str], ...] | None = None,
     attempt_count: int = 1,
+    total_cost: float = 0.011,
+    embedding_cost: float = 0.0,
 ) -> MinerTaskRunSubmission:
     usage_totals = _usage_totals()
     completed_at = datetime(2026, 3, 27, 6, 0, tzinfo=UTC)
@@ -188,7 +199,7 @@ def _submission(
                     total_score=score,
                     scoring_version="v1",
                 ),
-                total_tool_usage=_tool_usage(total_cost=0.011),
+                total_tool_usage=_tool_usage(total_cost=total_cost, embedding_cost=embedding_cost),
                 elapsed_ms=125.0,
             ),
             completed_at=completed_at,
@@ -207,6 +218,34 @@ def _submission(
             active_attempt=attempt_count,
         ),
     )
+
+
+def test_local_eval_cost_totals_preserve_embedding_breakdown() -> None:
+    batch_id = uuid4()
+    task = _task(uuid4(), "Need a source?")
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="hash-7",
+        size_bytes=42,
+    )
+    submission = _submission(
+        batch_id=batch_id,
+        artifact=artifact,
+        task=task,
+        score=1.0,
+        answer_text="answer",
+        total_cost=0.015,
+        embedding_cost=0.004,
+    )
+
+    totals = local_eval._aggregate_cost_totals((submission,))
+    row = local_eval._ranking_row_from_submission(submission)
+
+    assert totals["embedding_cost_usd"] == pytest.approx(0.004)
+    assert totals["embedding_call_count"] == 1
+    assert totals["total_cost_usd"] == pytest.approx(0.015)
+    assert row.total_cost_usd == pytest.approx(0.015)
 
 
 def _attempt_for_local_progress(
@@ -278,18 +317,22 @@ def _batch_detail(*, batch_id, champion_artifact_id, tasks: tuple[MinerTask, ...
         "cost_totals": {
             "llm_cost_usd": 0.1,
             "search_tool_cost_usd": 0.02,
+            "embedding_cost_usd": 0.0,
             "total_cost_usd": 0.12,
             "llm_total_tokens": 100,
             "llm_call_count": 6,
             "search_tool_call_count": 6,
+            "embedding_call_count": 0,
         },
         "observed_cost_totals": {
             "llm_cost_usd": 0.1,
             "search_tool_cost_usd": 0.02,
+            "embedding_cost_usd": 0.0,
             "total_cost_usd": 0.12,
             "llm_total_tokens": 100,
             "llm_call_count": 6,
             "search_tool_call_count": 6,
+            "embedding_call_count": 0,
         },
     }
 
@@ -326,6 +369,8 @@ def _recorded_rows(*, batch_id, champion_artifact_id, tasks: tuple[MinerTask, ..
                             "providers": {},
                         },
                         "llm_cost": 0.01,
+                        "embedding": {"call_count": 0, "cost": 0.0},
+                        "embedding_cost": 0.0,
                     },
                     "elapsed_ms": 100.0,
                     "error": None,
@@ -333,10 +378,12 @@ def _recorded_rows(*, batch_id, champion_artifact_id, tasks: tuple[MinerTask, ..
                 "cost_totals": {
                     "llm_cost_usd": 0.01,
                     "search_tool_cost_usd": 0.001,
+                    "embedding_cost_usd": 0.0,
                     "total_cost_usd": 0.011,
                     "llm_total_tokens": 15,
                     "llm_call_count": 1,
                     "search_tool_call_count": 1,
+                    "embedding_call_count": 0,
                 },
                 "llm_models": (),
                 "payload_json": {"source": "platform"},

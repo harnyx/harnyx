@@ -19,13 +19,13 @@ from harnyx_commons.miner_task_ranking import (
 )
 
 
-def test_run_ranking_cost_usd_sums_llm_and_search_tool_costs() -> None:
+def test_run_ranking_cost_usd_uses_reference_total_with_embedding_cost() -> None:
     details = EvaluationDetails(
         score_breakdown=ScoreBreakdown(comparison_score=1.0, total_score=1.0, scoring_version="test"),
-        total_tool_usage=ToolUsageSummary(llm_cost=0.12, search_tool_cost=0.03),
+        total_tool_usage=ToolUsageSummary(llm_cost=0.12, search_tool_cost=0.03, embedding_cost=0.05),
     )
 
-    assert run_ranking_cost_usd(details) == pytest.approx(0.15)
+    assert run_ranking_cost_usd(details) == pytest.approx(0.20)
 
 
 def test_aggregate_ranking_rows_uses_per_task_validator_medians() -> None:

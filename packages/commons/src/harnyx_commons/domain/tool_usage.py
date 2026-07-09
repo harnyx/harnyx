@@ -34,6 +34,28 @@ class SearchToolUsageSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class EmbeddingToolUsageSummary:
+    call_count: int = 0
+    cost: float = 0.0
+    reference_cost: float = 0.0
+    actual_cost: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.reference_cost == 0.0 and self.cost != 0.0:
+            object.__setattr__(self, "reference_cost", self.cost)
+        if self.cost == 0.0 and self.reference_cost != 0.0:
+            object.__setattr__(self, "cost", self.reference_cost)
+        if self.call_count < 0:
+            raise ValueError("call_count must be non-negative")
+        if self.cost < 0.0:
+            raise ValueError("cost must be non-negative")
+        if self.reference_cost < 0.0:
+            raise ValueError("reference_cost must be non-negative")
+        if self.actual_cost is not None and self.actual_cost < 0.0:
+            raise ValueError("actual_cost must be non-negative when supplied")
+
+
+@dataclass(frozen=True, slots=True)
 class LlmModelUsageCost:
     usage: LlmUsageTotals = field(default_factory=LlmUsageTotals)
     cost: float = 0.0
@@ -94,19 +116,36 @@ class ToolUsageSummary:
     search_tool_cost: float = 0.0
     llm: LlmUsageSummary = field(default_factory=LlmUsageSummary)
     llm_cost: float = 0.0
+    embedding: EmbeddingToolUsageSummary = field(default_factory=EmbeddingToolUsageSummary)
+    embedding_cost: float = 0.0
     reference_total_cost_usd: float = 0.0
     reference_cost_by_provider: dict[str, float] = field(default_factory=dict)
     actual_total_cost_usd: float | None = None
     actual_cost_by_provider: dict[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        legacy_reference_total = self.llm_cost + self.search_tool_cost
+        if self.embedding_cost == 0.0 and self.embedding.reference_cost != 0.0:
+            object.__setattr__(self, "embedding_cost", self.embedding.reference_cost)
+        if self.embedding.reference_cost == 0.0 and self.embedding_cost != 0.0:
+            object.__setattr__(
+                self,
+                "embedding",
+                EmbeddingToolUsageSummary(
+                    call_count=self.embedding.call_count,
+                    cost=self.embedding_cost,
+                    reference_cost=self.embedding_cost,
+                    actual_cost=self.embedding.actual_cost,
+                ),
+            )
+        legacy_reference_total = self.llm_cost + self.search_tool_cost + self.embedding_cost
         if self.reference_total_cost_usd == 0.0 and legacy_reference_total != 0.0:
             object.__setattr__(self, "reference_total_cost_usd", legacy_reference_total)
         if self.search_tool_cost < 0.0:
             raise ValueError("search_tool_cost must be non-negative")
         if self.llm_cost < 0.0:
             raise ValueError("llm_cost must be non-negative")
+        if self.embedding_cost < 0.0:
+            raise ValueError("embedding_cost must be non-negative")
         if self.reference_total_cost_usd < 0.0:
             raise ValueError("reference_total_cost_usd must be non-negative")
         if self.actual_total_cost_usd is not None and self.actual_total_cost_usd < 0.0:
@@ -118,6 +157,7 @@ class ToolUsageSummary:
 
 
 __all__ = [
+    "EmbeddingToolUsageSummary",
     "LlmModelUsageCost",
     "LlmUsageSummary",
     "SearchToolUsageSummary",

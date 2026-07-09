@@ -1497,7 +1497,7 @@ def _ranking_row_from_submission(submission: MinerTaskRunSubmission) -> Artifact
         artifact_id=submission.run.artifact_id,
         task_id=submission.run.task_id,
         score=float(submission.score),
-        total_cost_usd=float(details.total_tool_usage.llm_cost + details.total_tool_usage.search_tool_cost),
+        total_cost_usd=float(details.total_tool_usage.reference_total_cost_usd),
         elapsed_ms=details.elapsed_ms,
     )
 
@@ -1513,23 +1513,31 @@ def _group_recorded_rows(results: Sequence[dict[str, object]]) -> dict[UUID, tup
 def _aggregate_cost_totals(submissions: Sequence[MinerTaskRunSubmission]) -> dict[str, object]:
     total_llm_cost = 0.0
     total_search_cost = 0.0
+    total_embedding_cost = 0.0
+    total_reference_cost = 0.0
     total_llm_tokens = 0
     total_llm_calls = 0
     total_search_calls = 0
+    total_embedding_calls = 0
     for submission in submissions:
         details = submission.run.details.total_tool_usage
         total_llm_cost += details.llm_cost
         total_search_cost += details.search_tool_cost
+        total_embedding_cost += details.embedding_cost
+        total_reference_cost += details.reference_total_cost_usd
         total_llm_tokens += submission.usage.total_tokens
         total_llm_calls += submission.usage.call_count
         total_search_calls += details.search_tool.call_count
+        total_embedding_calls += details.embedding.call_count
     return {
         "llm_cost_usd": round(total_llm_cost, 6),
         "search_tool_cost_usd": round(total_search_cost, 6),
-        "total_cost_usd": round(total_llm_cost + total_search_cost, 6),
+        "embedding_cost_usd": round(total_embedding_cost, 6),
+        "total_cost_usd": round(total_reference_cost, 6),
         "llm_total_tokens": total_llm_tokens,
         "llm_call_count": total_llm_calls,
         "search_tool_call_count": total_search_calls,
+        "embedding_call_count": total_embedding_calls,
     }
 
 

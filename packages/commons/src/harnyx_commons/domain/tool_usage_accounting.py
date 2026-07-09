@@ -6,6 +6,7 @@ from collections.abc import Iterable, Mapping
 
 from harnyx_commons.domain.session import LlmUsageTotals
 from harnyx_commons.domain.tool_usage import (
+    EmbeddingToolUsageSummary,
     LlmModelUsageCost,
     LlmUsageSummary,
     SearchToolUsageSummary,
@@ -88,6 +89,13 @@ def merge_tool_usage_summaries(left: ToolUsageSummary, right: ToolUsageSummary) 
             providers=_merge_llm_provider_usage(left.llm.providers, right.llm.providers),
         ),
         llm_cost=left.llm_cost + right.llm_cost,
+        embedding=EmbeddingToolUsageSummary(
+            call_count=left.embedding.call_count + right.embedding.call_count,
+            cost=left.embedding.cost + right.embedding.cost,
+            reference_cost=left.embedding.reference_cost + right.embedding.reference_cost,
+            actual_cost=_merge_optional_cost(left.embedding.actual_cost, right.embedding.actual_cost),
+        ),
+        embedding_cost=left.embedding_cost + right.embedding_cost,
         reference_total_cost_usd=left.reference_total_cost_usd + right.reference_total_cost_usd,
         reference_cost_by_provider=_merge_cost_by_provider(
             left.reference_cost_by_provider,
