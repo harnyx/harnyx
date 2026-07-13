@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections.abc import Callable, Mapping
 from concurrent.futures import Executor, ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol, cast, get_args, runtime_checkable
@@ -107,6 +108,8 @@ from harnyx_validator.runtime.settings import Settings
 
 logger = logging.getLogger("harnyx_validator.runtime")
 
+_SANDBOX_CPUSET_MAX_CPUS = 4
+_SANDBOX_CPUSET_LABEL = "harnyx.sandbox.cpuset_cpus"
 _DIRECT_SCORING_LLM_MODEL = "google/gemma-4-31B-turbo-TEE"
 _SCORING_LLM_REASONING_EFFORT = "high"
 _DUPLICATION_DETECTION_LLM_MODEL = "google/gemma-4-31B-turbo-TEE"
@@ -1066,13 +1069,31 @@ def _make_orchestrator_factory(
 
 
 def _make_options_factory(resolved: Settings) -> Callable[[], SandboxOptions]:
+    allowed_cpu_ids = sorted(os.sched_getaffinity(0))
+    selected_cpu_ids = allowed_cpu_ids[:_SANDBOX_CPUSET_MAX_CPUS]
+    cpuset_cpus = ",".join(str(cpu_id) for cpu_id in selected_cpu_ids)
+    logger.info(
+        "configured shared sandbox CPU set",
+        extra={
+            "data": {
+                "sandbox_cpuset_cpus": cpuset_cpus,
+                "sandbox_cpuset_max_cpus": _SANDBOX_CPUSET_MAX_CPUS,
+            },
+        },
+    )
+
     def factory() -> SandboxOptions:
-        return build_sandbox_options(
+        base_options = build_sandbox_options(
             image=resolved.sandbox.sandbox_image,
             network=resolved.sandbox.sandbox_network,
             pull_policy=resolved.sandbox.sandbox_pull_policy,
             rpc_port=resolved.rpc_port,
             container_name="harnyx-sandbox-smoke",
+            labels={_SANDBOX_CPUSET_LABEL: cpuset_cpus},
+        )
+        return replace(
+            base_options,
+            extra_args=base_options.extra_args + ("--cpuset-cpus", cpuset_cpus),
         )
 
     return factory

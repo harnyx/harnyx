@@ -15,7 +15,117 @@ import harnyx_validator.runtime.bootstrap as bootstrap_mod
 import harnyx_validator.runtime.registration_worker as registration_worker_mod
 import harnyx_validator.runtime.settings as settings_mod
 import harnyx_validator.runtime.weight_worker as weight_worker_mod
+from harnyx_commons.sandbox.options import SandboxOptions
+from harnyx_commons.sandbox.runtime import CONTAINER_SECURITY
 from harnyx_validator.application.dto.registration import ValidatorRegistrationMetadata
+
+_SANDBOX_CPUSET_LABEL = "harnyx.sandbox.cpuset_cpus"
+
+
+def _sandbox_settings() -> SimpleNamespace:
+    return SimpleNamespace(
+        sandbox=SimpleNamespace(
+            sandbox_image="sandbox:test",
+            sandbox_network="sandbox-network",
+            sandbox_pull_policy="missing",
+        ),
+        rpc_port=8100,
+    )
+
+
+def _capture_sandbox_options_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _build_sandbox_options(**kwargs: object) -> SandboxOptions:
+        labels = kwargs.get("labels")
+        assert isinstance(labels, dict)
+        return SandboxOptions(
+            image=str(kwargs["image"]),
+            container_name=str(kwargs["container_name"]),
+            extra_args=CONTAINER_SECURITY.extra_args,
+            labels=labels,
+        )
+
+    monkeypatch.setattr(bootstrap_mod, "build_sandbox_options", _build_sandbox_options)
+
+
+def _docker_argument_value(options: SandboxOptions, name: str) -> str:
+    argument_index = options.extra_args.index(name)
+    return options.extra_args[argument_index + 1]
+
+
+@pytest.mark.parametrize(
+    ("allowed_cpu_ids", "expected_cpuset"),
+    [
+        ({9}, "9"),
+        ({7, 3, 11}, "3,7,11"),
+        ({7, 1, 5, 3}, "1,3,5,7"),
+    ],
+)
+def test_sandbox_options_factory_uses_all_allowed_cpu_ids_up_to_four(
+    monkeypatch: pytest.MonkeyPatch,
+    allowed_cpu_ids: set[int],
+    expected_cpuset: str,
+) -> None:
+    monkeypatch.setattr(
+        bootstrap_mod,
+        "os",
+        SimpleNamespace(sched_getaffinity=lambda process_id: allowed_cpu_ids),
+        raising=False,
+    )
+    _capture_sandbox_options_build(monkeypatch)
+
+    options = bootstrap_mod._make_options_factory(_sandbox_settings())()
+
+    assert _docker_argument_value(options, "--cpuset-cpus") == expected_cpuset
+    assert _docker_argument_value(options, "--cpus") == "1"
+    assert options.labels[_SANDBOX_CPUSET_LABEL] == expected_cpuset
+
+
+def test_sandbox_options_factory_resolves_one_shared_four_cpu_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    affinity_reads = 0
+
+    def _sched_getaffinity(process_id: int) -> set[int]:
+        nonlocal affinity_reads
+        assert process_id == 0
+        affinity_reads += 1
+        return {10, 8, 6, 4, 2}
+
+    monkeypatch.setattr(
+        bootstrap_mod,
+        "os",
+        SimpleNamespace(sched_getaffinity=_sched_getaffinity),
+        raising=False,
+    )
+    _capture_sandbox_options_build(monkeypatch)
+
+    factory = bootstrap_mod._make_options_factory(_sandbox_settings())
+    first_options = factory()
+    second_options = factory()
+
+    assert affinity_reads == 1
+    assert _docker_argument_value(first_options, "--cpuset-cpus") == "2,4,6,8"
+    assert _docker_argument_value(second_options, "--cpuset-cpus") == "2,4,6,8"
+    assert first_options.extra_args[:-2] == CONTAINER_SECURITY.extra_args
+    assert first_options.labels[_SANDBOX_CPUSET_LABEL] == "2,4,6,8"
+    assert second_options.labels[_SANDBOX_CPUSET_LABEL] == "2,4,6,8"
+
+
+def test_sandbox_options_factory_fails_when_process_affinity_cannot_be_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _raise_affinity_error(process_id: int) -> set[int]:
+        raise OSError(f"cannot read affinity for process {process_id}")
+
+    monkeypatch.setattr(
+        bootstrap_mod,
+        "os",
+        SimpleNamespace(sched_getaffinity=_raise_affinity_error),
+        raising=False,
+    )
+
+    with pytest.raises(OSError, match="cannot read affinity"):
+        bootstrap_mod._make_options_factory(_sandbox_settings())
 
 
 def test_validator_import_configures_sentry_before_tracing(monkeypatch) -> None:
