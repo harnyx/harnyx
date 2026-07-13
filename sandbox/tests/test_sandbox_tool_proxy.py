@@ -384,3 +384,90 @@ async def test_llm_chat_helper_rejects_coerced_thinking_scalars() -> None:
                 )
     finally:
         await proxy.aclose()
+
+
+async def test_llm_chat_full_tool_loop_crosses_sandbox_proxy() -> None:
+    captured: dict[str, dict[str, object]] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "receipt_id": "chat-loop",
+                "response": {
+                    "id": "resp-loop",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": [],
+                                "tool_calls": [
+                                    {
+                                        "id": "call-2",
+                                        "type": "function",
+                                        "name": "lookup_weather",
+                                        "arguments": '{"city":"Rome"}',
+                                    }
+                                ],
+                                "reasoning_details": [
+                                    {"type": "reasoning.encrypted", "data": "opaque-response"}
+                                ],
+                            },
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
+                },
+                "results": [],
+                "result_policy": "log_only",
+                "budget": {
+                    "session_budget_usd": 1.0,
+                    "session_hard_limit_usd": 1.0,
+                    "session_used_budget_usd": 0.0,
+                    "session_remaining_budget_usd": 1.0,
+                },
+            },
+        )
+
+    proxy = ToolProxy(
+        base_url="http://validator",
+        token=TEST_TOKEN,
+        session_id=SESSION_ID,
+        client=httpx.AsyncClient(base_url="http://validator", transport=httpx.MockTransport(handler)),
+    )
+    messages = [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "name": "lookup_weather",
+                    "arguments": '{"city":"Paris"}',
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": '{"temperature":19}'},
+    ]
+    try:
+        with bind_tool_invoker(proxy):
+            result = await llm_chat(
+                provider="openrouter",
+                model="openai/gpt-oss-20b",
+                messages=messages,
+                tools=[{"type": "function", "function": {"name": "lookup_weather"}}],
+                tool_choice="auto",
+                parallel_tool_calls=True,
+            )
+    finally:
+        await proxy.aclose()
+
+    assert captured["payload"]["kwargs"]["messages"] == messages
+    tool_calls = result.llm.choices[0].message.tool_calls
+    assert tool_calls is not None
+    assert tool_calls[0].id == "call-2"
+    assert result.llm.choices[0].message.reasoning_details == [
+        {"type": "reasoning.encrypted", "data": "opaque-response"}
+    ]

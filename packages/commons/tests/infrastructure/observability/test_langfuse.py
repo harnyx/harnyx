@@ -143,6 +143,7 @@ def test_build_generation_input_payload_is_concise() -> None:
         "temperature": None,
         "timeout_seconds": None,
         "tool_choice": None,
+        "parallel_tool_calls": None,
         "reasoning_effort": None,
     }
     assert payload["messages"] == [
@@ -200,6 +201,44 @@ def test_build_generation_input_payload_preserves_tool_result_output_json() -> N
             ],
         }
     ]
+
+
+def test_build_generation_input_payload_preserves_tool_loop_controls_and_replay_state() -> None:
+    reasoning_details = ({"type": "reasoning.encrypted", "data": "opaque"},)
+    request = LlmRequest(
+        provider="openrouter",
+        model="openai/gpt-oss-20b",
+        messages=(
+            LlmMessage(
+                role="assistant",
+                content=(),
+                tool_calls=(
+                    LlmMessageToolCall(
+                        id="call-1",
+                        type="function",
+                        name="lookup_weather",
+                        arguments='{"city":"Paris"}',
+                    ),
+                ),
+                reasoning_details=reasoning_details,
+            ),
+        ),
+        temperature=0.0,
+        max_output_tokens=64,
+        output_mode="text",
+        tool_choice={"type": "function", "function": {"name": "lookup_weather"}},
+        parallel_tool_calls=True,
+    )
+
+    payload = langfuse.build_generation_input_payload(request)
+
+    assert payload["request_config"]["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "lookup_weather"},
+    }
+    assert payload["request_config"]["parallel_tool_calls"] is True
+    assert payload["messages"][0]["tool_calls"][0]["id"] == "call-1"
+    assert payload["messages"][0]["reasoning_details"] == list(reasoning_details)
 
 
 def test_build_generation_input_payload_redacts_tool_api_keys() -> None:

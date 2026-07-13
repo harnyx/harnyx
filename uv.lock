@@ -793,7 +793,7 @@ wheels = [
 
 [[package]]
 name = "harnyx-commons"
-version = "0.1.6"
+version = "0.1.7"
 source = { editable = "packages/commons" }
 dependencies = [
     { name = "aiobotocore" },
@@ -873,7 +873,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "harnyx-miner-sdk"
-version = "0.1.6"
+version = "0.1.7"
 source = { editable = "packages/miner-sdk" }
 dependencies = [
     { name = "httpx" },

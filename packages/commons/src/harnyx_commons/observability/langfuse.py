@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from collections.abc import Mapping, Sequence
@@ -174,12 +175,7 @@ class _LangfuseTraceAttributesScope(AbstractContextManager[None]):
         if self._tags is not None:
             tags_payload = [str(tag) for tag in self._tags]
 
-        if (
-            self._trace_name is None
-            and self._session_id is None
-            and metadata_payload is None
-            and tags_payload is None
-        ):
+        if self._trace_name is None and self._session_id is None and metadata_payload is None and tags_payload is None:
             return None
 
         try:
@@ -323,7 +319,8 @@ def build_generation_input_payload(request: AbstractLlmRequest) -> dict[str, obj
             "max_output_tokens": request.max_output_tokens,
             "temperature": request.temperature,
             "timeout_seconds": request.timeout_seconds,
-            "tool_choice": request.tool_choice,
+            "tool_choice": _sanitize_for_json(request.tool_choice),
+            "parallel_tool_calls": request.parallel_tool_calls,
             "reasoning_effort": request.reasoning_effort,
         },
         "tools": _redact_tool_auth_secrets(tools_payload),
@@ -467,11 +464,16 @@ def _read_config() -> dict[str, str] | None:
     return values
 
 
-def _model_parameters(request: AbstractLlmRequest) -> dict[str, str | int | bool | list[str] | None]:
-    params: dict[str, str | int | bool | list[str] | None] = {
+def _model_parameters(request: AbstractLlmRequest) -> dict[str, str | None | int | list[str]]:
+    tool_choice = request.tool_choice
+    serialized_tool_choice = (
+        json.dumps(dict(tool_choice), separators=(",", ":")) if isinstance(tool_choice, Mapping) else tool_choice
+    )
+    params: dict[str, str | int | list[str] | None] = {
         "temperature": None if request.temperature is None else str(request.temperature),
         "max_output_tokens": request.max_output_tokens,
-        "tool_choice": request.tool_choice,
+        "tool_choice": serialized_tool_choice,
+        "parallel_tool_calls": request.parallel_tool_calls,
         "grounded": request.grounded,
         "output_mode": request.output_mode,
         "reasoning_effort": request.reasoning_effort,
@@ -483,10 +485,15 @@ def _model_parameters(request: AbstractLlmRequest) -> dict[str, str | int | bool
 
 
 def _request_message_payload(message: LlmMessage) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "role": message.role,
         "content": [_request_content_part_payload(part) for part in message.content],
     }
+    if message.tool_calls is not None:
+        payload["tool_calls"] = _sanitize_for_json(message.tool_calls)
+    if message.reasoning_details is not None:
+        payload["reasoning_details"] = _sanitize_for_json(message.reasoning_details)
+    return payload
 
 
 def _request_content_part_payload(part: object) -> dict[str, object]:
@@ -537,11 +544,7 @@ def _derive_tags(metadata: Mapping[str, object]) -> list[str]:
 def _normalize_trace_metadata(metadata: Mapping[str, object] | None) -> dict[str, str] | None:
     if metadata is None:
         return None
-    normalized = {
-        str(key): str(value)
-        for key, value in metadata.items()
-        if value is not None
-    }
+    normalized = {str(key): str(value) for key, value in metadata.items() if value is not None}
     return normalized or None
 
 

@@ -65,6 +65,7 @@ async def test_runtime_invoker_lowers_openrouter_provider_extra_to_request_extra
             "provider": "openrouter",
             "model": "openai/gpt-oss-120b",
             "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 128,
             "provider_extra": {"provider": {"only": ["cerebras"]}},
         },
     )
@@ -75,6 +76,7 @@ async def test_runtime_invoker_lowers_openrouter_provider_extra_to_request_extra
     assert request.extra == {"provider": {"only": ["cerebras"]}}
     assert request.internal_metadata is None
     assert request.output_mode == "text"
+    assert request.max_output_tokens == 128
     assert output.actual_cost_provider == "openrouter"
 
 
@@ -150,3 +152,82 @@ async def test_runtime_invoker_rejects_chutes_provider_extra() -> None:
                 "provider_extra": {"provider": {"only": ["cerebras"]}},
             },
         )
+
+
+async def test_runtime_invoker_lowers_complete_tool_loop_without_routing_policy() -> None:
+    llm_provider = _CapturingLlmProvider()
+    invoker = RuntimeToolInvoker(
+        InMemoryReceiptLog(),
+        llm_provider=llm_provider,
+        llm_provider_name="openrouter",
+    )
+    reasoning_details = [{"type": "reasoning.encrypted", "data": "opaque"}]
+
+    await invoker.invoke(
+        "llm_chat",
+        args=(),
+        kwargs={
+            "provider": "openrouter",
+            "model": "openai/gpt-oss-20b",
+            "messages": [
+                {"role": "user", "content": "Weather in Paris?"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call-1",
+                            "type": "function",
+                            "name": "lookup_weather",
+                            "arguments": '{"city":"Paris"}',
+                        }
+                    ],
+                    "reasoning_details": reasoning_details,
+                },
+                {"role": "tool", "tool_call_id": "call-1", "content": '{"temperature":19}'},
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {"name": "lookup_weather", "strict": True},
+                }
+            ],
+            "tool_choice": {"type": "function", "function": {"name": "lookup_weather"}},
+            "parallel_tool_calls": True,
+            "provider_extra": {"provider": {"only": ["cerebras"]}},
+        },
+    )
+
+    request = llm_provider.requests[0]
+    assert request.messages[1].tool_calls is not None
+    assert request.messages[1].tool_calls[0].id == "call-1"
+    assert request.messages[1].reasoning_details == tuple(reasoning_details)
+    assert request.messages[2].content[0].tool_call_id == "call-1"
+    assert request.tool_choice == {"type": "function", "function": {"name": "lookup_weather"}}
+    assert request.parallel_tool_calls is True
+    assert request.extra == {"provider": {"only": ["cerebras"]}}
+    assert "require_parameters" not in request.extra["provider"]
+
+
+@pytest.mark.parametrize("field", ("include", "response_format"))
+async def test_runtime_invoker_rejects_removed_fields_before_provider(field: str) -> None:
+    llm_provider = _CapturingLlmProvider()
+    invoker = RuntimeToolInvoker(
+        InMemoryReceiptLog(),
+        llm_provider=llm_provider,
+        llm_provider_name="chutes",
+    )
+
+    with pytest.raises(ValidationError, match=field):
+        await invoker.invoke(
+            "llm_chat",
+            args=(),
+            kwargs={
+                "provider": "chutes",
+                "model": "demo-model",
+                "messages": [{"role": "user", "content": "hi"}],
+                field: [] if field == "include" else 10,
+            },
+        )
+
+    assert llm_provider.requests == []

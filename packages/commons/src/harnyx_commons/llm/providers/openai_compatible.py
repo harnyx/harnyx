@@ -195,7 +195,8 @@ class _OpenAiCompatibleChatRequest(BaseModel):
     temperature: float | None = None
     max_tokens: int | None = None
     tools: list[dict[str, Any]] | None = None
-    tool_choice: str | None = None
+    tool_choice: str | dict[str, Any] | None = None
+    parallel_tool_calls: bool | None = None
     include: list[str] | None = None
     response_format: dict[str, Any] | None = None
     chat_template_kwargs: dict[str, Any] | None = None
@@ -222,6 +223,7 @@ class _OpenAiCompatibleChatRequest(BaseModel):
                 else None
             ),
             tool_choice=request_parts.tool_choice,
+            parallel_tool_calls=request_parts.parallel_tool_calls,
             include=request_parts.include,
             response_format=(
                 request_parts.response_format.model_dump(mode="python", exclude_none=True)
@@ -345,6 +347,7 @@ class _OpenAiCompatibleChoicePayload(BaseModel):
     index: int
     content: str
     reasoning: str | None = None
+    reasoning_details: tuple[dict[str, Any], ...] | None = None
     tool_calls: tuple[LlmMessageToolCall, ...] | None = None
     finish_reason: str | None = None
 
@@ -354,6 +357,7 @@ class _OpenAiCompatibleChoicePayload(BaseModel):
             index=index,
             content=state.content_text,
             reasoning=state.reasoning_text or None,
+            reasoning_details=tuple(state.reasoning_details) or None,
             tool_calls=_to_llm_tool_calls(state),
             finish_reason=state.finish_reason,
         )
@@ -365,6 +369,7 @@ class _OpenAiCompatibleChoicePayload(BaseModel):
                 role="assistant",
                 content=(LlmMessageContentPart(type="text", text=self.content),),
                 reasoning=self.reasoning,
+                reasoning_details=self.reasoning_details,
                 tool_calls=self.tool_calls,
             ),
             finish_reason=self.finish_reason or "stop",
@@ -428,13 +433,13 @@ def _to_llm_tool_calls(state: OpenAiChoiceState) -> tuple[LlmMessageToolCall, ..
     tool_calls = state.tool_call_values()
     if not tool_calls:
         return None
-    return tuple(_to_llm_tool_call(tool_call, index=index) for index, tool_call in enumerate(tool_calls))
+    return tuple(_to_llm_tool_call(tool_call) for tool_call in tool_calls)
 
 
-def _to_llm_tool_call(tool_call: OpenAiToolCall, *, index: int) -> LlmMessageToolCall:
+def _to_llm_tool_call(tool_call: OpenAiToolCall) -> LlmMessageToolCall:
     return LlmMessageToolCall(
-        id=tool_call.id or f"toolcall-{index}",
-        type=tool_call.type or "function",
+        id=tool_call.id,
+        type=tool_call.type,
         name=tool_call.name,
         arguments=tool_call.arguments,
     )

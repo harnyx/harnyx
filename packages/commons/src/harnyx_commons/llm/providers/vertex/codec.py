@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 import mimetypes
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from google.genai import types
@@ -61,7 +61,8 @@ class _VertexMaasChatRequest(BaseModel):
     temperature: float | None = None
     max_tokens: int | None = None
     tools: list[dict[str, Any]] | None = None
-    tool_choice: str | None = None
+    tool_choice: str | dict[str, Any] | None = None
+    parallel_tool_calls: bool | None = None
     reasoning_effort: str | None = None
     include: list[str] | None = None
     response_format: dict[str, Any] | None = None
@@ -94,6 +95,7 @@ class _VertexMaasChatRequest(BaseModel):
                 else None
             ),
             tool_choice=request_parts.tool_choice,
+            parallel_tool_calls=request_parts.parallel_tool_calls,
             reasoning_effort=None if template_thinking_capable else request.reasoning_effort,
             include=request_parts.include,
             response_format=(
@@ -250,11 +252,7 @@ class _VertexMaasChoicePayload(BaseModel):
         payload = {
             "index": self.index,
             "finish_reason": self.finish_reason,
-            "message": {
-                key: value
-                for key, value in message_payload.items()
-                if value is not None
-            },
+            "message": {key: value for key, value in message_payload.items() if value is not None},
         }
         return {key: value for key, value in payload.items() if value is not None}
 
@@ -293,8 +291,7 @@ class _VertexMaasChatResponse(BaseModel):
     def to_llm_response(self, *, model: str | None = None) -> LlmResponse:
         response_model = model or self.model
         choices = tuple(
-            choice.to_choice(index=index, model=response_model)
-            for index, choice in enumerate(self.choices)
+            choice.to_choice(index=index, model=response_model) for index, choice in enumerate(self.choices)
         )
         usage_payload = self.usage
         usage = LlmUsage(
@@ -343,6 +340,8 @@ def normalize_messages(messages: Sequence[LlmMessage]) -> tuple[str | None, list
     system_instruction: str | None = None
     converted: list[Any] = []
     for message in messages:
+        if message.tool_calls or message.reasoning_details:
+            raise ValueError("native Vertex messages do not support tool-call or reasoning-detail replay")
         if message.role == "system":
             system_instruction = _join_text_parts(message.content, label="system")
             continue
@@ -466,7 +465,7 @@ def _vertex_maas_tool_call_payloads(state: OpenAiChoiceState) -> list[_VertexMaa
 
 
 def resolve_tool_config(
-    choice: str | None,
+    choice: str | Mapping[str, Any] | None,
     tools: Sequence[types.Tool] | None,
 ) -> types.ToolConfig | None:
     if not tools:
@@ -475,10 +474,28 @@ def resolve_tool_config(
         return types.ToolConfig()
     if choice == "auto":
         return types.ToolConfig()
+    if choice == "none":
+        return types.ToolConfig(
+            function_calling_config=types.FunctionCallingConfig(
+                mode=types.FunctionCallingConfigMode.NONE,
+            ),
+        )
     if choice == "required":
         return types.ToolConfig(
             function_calling_config=types.FunctionCallingConfig(
                 mode=types.FunctionCallingConfigMode.ANY,
+            ),
+        )
+    if isinstance(choice, Mapping):
+        choice_mapping = cast(Mapping[str, Any], choice)
+        function = choice_mapping.get("function")
+        name = function.get("name") if isinstance(function, Mapping) else None
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("named tool_choice requires a function name")
+        return types.ToolConfig(
+            function_calling_config=types.FunctionCallingConfig(
+                mode=types.FunctionCallingConfigMode.ANY,
+                allowed_function_names=[name],
             ),
         )
     return None
@@ -506,7 +523,9 @@ def _gemini_major_version(model: str) -> int | None:
 
 
 def resolve_thinking_config(
-    *, model: str, reasoning_effort: str | None,
+    *,
+    model: str,
+    reasoning_effort: str | None,
 ) -> types.ThinkingConfig | None:
     validate_supported_gemini_model(model=model)
     include_thoughts = True
@@ -527,10 +546,7 @@ def resolve_thinking_config(
 
 
 def build_choices(response: types.GenerateContentResponse) -> tuple[LlmChoice, ...]:
-    return tuple(
-        _choice_from_candidate(idx, candidate)
-        for idx, candidate in enumerate(response.candidates or ())
-    )
+    return tuple(_choice_from_candidate(idx, candidate) for idx, candidate in enumerate(response.candidates or ()))
 
 
 def _choice_from_candidate(index: int, candidate: Any) -> LlmChoice:
@@ -638,6 +654,8 @@ def _serialize_vertex_parts(parts: Sequence[LlmInputContentPart]) -> list[Any]:
 
 
 def _serialize_vertex_tool_result_part(part: LlmInputToolResultPart) -> Any:
+    if part.name is None:
+        raise ValueError("Vertex tool results require a function name")
     try:
         parsed = json.loads(part.output_json)
     except json.JSONDecodeError as exc:
@@ -735,6 +753,7 @@ def attach_search_metadata(
             "web_search_queries": tuple(queries),
         }, usage
     return None, usage
+
 
 __all__ = [
     "normalize_messages",

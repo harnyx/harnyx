@@ -39,14 +39,6 @@ class _OpenAiMessageDelta(BaseModel):
     tool_calls: list[_OpenAiToolCallDelta] | None = None
 
 
-class _OpenAiReasoningDetail(BaseModel):
-    model_config = ConfigDict(extra="ignore", strict=True)
-
-    type: str
-    text: str | None = None
-    summary: str | None = None
-
-
 class _OpenAiChoiceDelta(BaseModel):
     model_config = ConfigDict(extra="allow", strict=True)
 
@@ -61,11 +53,7 @@ class _OpenAiChoiceDelta(BaseModel):
         if self.message is not None:
             return self.message
         extra = self.model_extra or {}
-        payload = {
-            key: extra[key]
-            for key in ("content", "tool_calls", *reasoning_keys)
-            if key in extra
-        }
+        payload = {key: extra[key] for key in ("content", "tool_calls", *reasoning_keys) if key in extra}
         if not payload:
             return None
         return _OpenAiMessageDelta.model_validate(payload)
@@ -104,8 +92,12 @@ class _OpenAiStreamEnvelope(BaseModel):
 
 
 _TEXT_OR_PARTS_ADAPTER = TypeAdapter(str | list[_OpenAiTextFragment] | None)
-_REASONING_DETAILS_ADAPTER = TypeAdapter(list[_OpenAiReasoningDetail])
+_REASONING_DETAILS_ADAPTER = TypeAdapter(list[dict[str, Any]])
 FragmentNormalizer = Callable[[object], tuple[str, ...]]
+
+
+def _reject_non_finite_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant is not supported: {value}")
 
 
 def _stream_error_status_code(code: str | int | None) -> int | None:
@@ -157,34 +149,68 @@ class OpenAiToolCallState(BaseModel):
     name: str | None = None
     arguments_text: str = ""
 
-    def merge_delta(self, payload: _OpenAiToolCallDelta) -> bool:
+    def merge_delta(
+        self,
+        payload: _OpenAiToolCallDelta,
+        *,
+        complete_snapshot: bool = False,
+    ) -> bool:
         saw_output = False
-        if payload.id:
-            self.id = payload.id
-        if payload.type:
+        if payload.id is not None:
+            if complete_snapshot:
+                if self.id is not None and payload.id != self.id:
+                    raise ValueError("tool call id changed across complete message snapshots")
+                self.id = payload.id
+            else:
+                self.id = f"{self.id or ''}{payload.id}"
+        if payload.type is not None:
+            if self.type is not None and payload.type != self.type:
+                raise ValueError("tool call type changed across provider payloads")
             self.type = payload.type
         function = payload.function
         if function is None:
             return bool(self.id or self.name)
-        if function.name:
-            self.name = function.name
+        if function.name is not None:
+            if complete_snapshot:
+                if self.name is not None and function.name != self.name:
+                    raise ValueError("tool call function name changed across complete message snapshots")
+                self.name = function.name
+            else:
+                self.name = f"{self.name or ''}{function.name}"
         match function.arguments:
             case str() as arguments if arguments:
-                self.arguments_text += arguments
+                if complete_snapshot:
+                    self.arguments_text = arguments
+                else:
+                    self.arguments_text += arguments
                 saw_output = True
             case dict() as arguments:
-                self.arguments_text = json.dumps(arguments)
+                self.arguments_text = json.dumps(arguments, allow_nan=False)
                 saw_output = True
             case _ if self.id or self.name:
                 saw_output = True
         return saw_output or bool(self.id or self.name)
 
-    def to_tool_call(self, *, index: int) -> OpenAiToolCall | None:
-        if not self.name:
-            return None
+    def to_tool_call(self, *, index: int) -> OpenAiToolCall:
+        _ = index
+        if not self.id or not self.id.strip():
+            raise ValueError("completed tool call is missing id")
+        if self.type != "function":
+            raise ValueError("completed tool call type must be 'function'")
+        if not self.name or not self.name.strip():
+            raise ValueError("completed tool call is missing function name")
+        try:
+            arguments = json.loads(
+                self.arguments_text,
+                parse_constant=_reject_non_finite_json_constant,
+            )
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise ValueError("completed tool call arguments must encode a JSON object") from exc
+        if not isinstance(arguments, dict):
+            raise ValueError("completed tool call arguments must encode a JSON object")
         return OpenAiToolCall(
-            id=self.id or f"toolcall-{index}",
-            type=self.type or "function",
+            id=self.id,
+            type=self.type,
             name=self.name,
             arguments=self.arguments_text,
         )
@@ -204,6 +230,7 @@ class OpenAiChoiceState(BaseModel):
 
     content_parts: list[str] = Field(default_factory=list)
     reasoning_parts: list[str] = Field(default_factory=list)
+    reasoning_details: list[dict[str, Any]] = Field(default_factory=list)
     tool_calls: dict[int, OpenAiToolCallState] = Field(default_factory=dict)
     finish_reason: str | None = None
 
@@ -234,6 +261,9 @@ class OpenAiChoiceState(BaseModel):
             self.content_parts.append(text)
             saw_output = True
         extra = message_payload.model_extra or {}
+        if "reasoning_details" in reasoning_keys and extra.get("reasoning_details") is not None:
+            self.reasoning_details.extend(_REASONING_DETAILS_ADAPTER.validate_python(extra["reasoning_details"]))
+            saw_output = True
         appended_reasoning: set[str] = set()
         for key in reasoning_keys:
             for reasoning in normalize_reasoning_fragment(extra.get(key)):
@@ -242,7 +272,10 @@ class OpenAiChoiceState(BaseModel):
                 appended_reasoning.add(reasoning)
                 self.reasoning_parts.append(reasoning)
                 saw_output = True
-        if self._merge_tool_calls(message_payload.tool_calls):
+        if self._merge_tool_calls(
+            message_payload.tool_calls,
+            complete_snapshot=payload.delta is None,
+        ):
             saw_output = True
         if payload.finish_reason:
             self.finish_reason = payload.finish_reason
@@ -251,25 +284,39 @@ class OpenAiChoiceState(BaseModel):
     def tool_call_values(self) -> tuple[OpenAiToolCall, ...] | None:
         if not self.tool_calls:
             return None
-        tool_calls: list[OpenAiToolCall] = []
-        for index in sorted(self.tool_calls):
-            tool_call = self.tool_calls[index].to_tool_call(index=index)
-            if tool_call is None:
-                continue
-            tool_calls.append(tool_call)
-        return tuple(tool_calls) or None
+        try:
+            tool_calls = [
+                self.tool_calls[index].to_tool_call(index=index) for index in sorted(self.tool_calls)
+            ]
+            call_ids = [tool_call.id for tool_call in tool_calls]
+            if len(call_ids) != len(set(call_ids)):
+                raise ValueError("completed tool call IDs must be unique within each assistant block")
+            return tuple(tool_calls) or None
+        except ValueError as exc:
+            raise OpenAiStreamError(
+                message=str(exc),
+                error_type="server_error",
+                code=502,
+            ) from exc
 
-    def _merge_tool_calls(self, payloads: list[_OpenAiToolCallDelta] | None) -> bool:
+    def _merge_tool_calls(
+        self,
+        payloads: list[_OpenAiToolCallDelta] | None,
+        *,
+        complete_snapshot: bool,
+    ) -> bool:
         if not payloads:
             return False
         saw_output = False
         for fallback_index, payload in enumerate(payloads):
+            if payload.index is None and not complete_snapshot:
+                raise ValueError("streamed tool call deltas require an index")
             index = payload.index if payload.index is not None else fallback_index
             state = self.tool_calls.get(index)
             if state is None:
                 state = OpenAiToolCallState()
                 self.tool_calls[index] = state
-            if state.merge_delta(payload):
+            if state.merge_delta(payload, complete_snapshot=complete_snapshot):
                 saw_output = True
         return saw_output
 
@@ -450,13 +497,15 @@ def normalize_openai_reasoning_fragments(value: object) -> tuple[str, ...]:
 
     fragments: list[str] = []
     for detail in details:
-        match detail.type:
+        match detail.get("type"):
             case "reasoning.text":
-                if detail.text:
-                    fragments.append(detail.text)
+                text = detail.get("text")
+                if isinstance(text, str) and text:
+                    fragments.append(text)
             case "reasoning.summary":
-                if detail.summary:
-                    fragments.append(detail.summary)
+                summary = detail.get("summary")
+                if isinstance(summary, str) and summary:
+                    fragments.append(summary)
             case _:
                 continue
     return tuple(fragments) or normalize_openai_text_fragments(value)

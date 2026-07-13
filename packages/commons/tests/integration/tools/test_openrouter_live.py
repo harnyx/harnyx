@@ -9,7 +9,14 @@ from harnyx_commons.llm.providers.openrouter import (
     OpenRouterEmbeddingClient,
     OpenRouterLlmProvider,
 )
-from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest, LlmThinkingConfig
+from harnyx_commons.llm.schema import (
+    LlmInputToolResultPart,
+    LlmMessage,
+    LlmMessageContentPart,
+    LlmRequest,
+    LlmThinkingConfig,
+    LlmTool,
+)
 from harnyx_commons.tools.embedding_models import QWEN3_OPENROUTER_EMBEDDING_MODEL
 
 pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
@@ -163,3 +170,83 @@ async def test_openrouter_embedding_client_invokes_qwen3_8b_live() -> None:
     assert response.usage is not None
     assert response.usage.prompt_tokens is not None
     assert response.usage.prompt_tokens > 0
+
+
+async def test_openrouter_two_turn_function_tool_loop_with_reasoning_replay_live() -> None:
+    model = OPENROUTER_LIVE_CHAT_MODEL
+    settings = LlmSettings()
+    assert settings.openrouter_api_key_value, "OPENROUTER_API_KEY must be configured"
+    provider = OpenRouterLlmProvider(openrouter_api_key=settings.openrouter_api_key)
+    tool = LlmTool(
+        type="function",
+        function={
+            "name": "lookup_weather",
+            "description": "Return weather for a city.",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+        },
+    )
+    user_message = LlmMessage(
+        role="user",
+        content=(LlmMessageContentPart.input_text("Use lookup_weather for Paris."),),
+    )
+
+    try:
+        first = await provider.invoke(
+            LlmRequest(
+                provider="openrouter",
+                model=model,
+                messages=(user_message,),
+                temperature=0.0,
+                max_output_tokens=256,
+                tools=(tool,),
+                tool_choice={"type": "function", "function": {"name": "lookup_weather"}},
+                thinking=LlmThinkingConfig(enabled=True, effort="low"),
+                extra=_openrouter_reasoning_provider_extra(model=model),
+                timeout_seconds=180.0,
+            )
+        )
+        first_message = first.choices[0].message
+        calls = first_message.tool_calls
+        assert calls and calls[0].id
+        assert first_message.reasoning_details
+        replayed_details = tuple(first_message.reasoning_details)
+        tool_result_messages = tuple(
+            LlmMessage(
+                role="tool",
+                content=(
+                    LlmInputToolResultPart(
+                        tool_call_id=call.id,
+                        name=None,
+                        output_json='{"temperature_c":19}',
+                    ),
+                ),
+            )
+            for call in calls
+        )
+        second = await provider.invoke(
+            LlmRequest(
+                provider="openrouter",
+                model=model,
+                messages=(
+                    user_message,
+                    first_message.to_input_message(),
+                    *tool_result_messages,
+                ),
+                temperature=0.0,
+                max_output_tokens=256,
+                tools=(tool,),
+                tool_choice="none",
+                thinking=LlmThinkingConfig(enabled=True, effort="low"),
+                extra=_openrouter_reasoning_provider_extra(model=model),
+                timeout_seconds=180.0,
+            )
+        )
+    finally:
+        await provider.aclose()
+
+    assert first_message.to_input_message().reasoning_details == replayed_details
+    assert second.raw_text

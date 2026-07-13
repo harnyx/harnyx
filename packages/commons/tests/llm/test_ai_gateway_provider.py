@@ -8,12 +8,21 @@ import pytest
 from pydantic import SecretStr
 
 from harnyx_commons.llm.provider import LlmProviderConfigurationError, LlmProviderError
+from harnyx_commons.llm.providers import ai_gateway
 from harnyx_commons.llm.providers.ai_gateway import (
     AI_GATEWAY_BASE_URL,
     AI_GATEWAY_SUPPORTED_MODELS,
     AiGatewayLlmProvider,
 )
-from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest, LlmThinkingConfig
+from harnyx_commons.llm.schema import (
+    LlmInputToolResultPart,
+    LlmMessage,
+    LlmMessageContentPart,
+    LlmMessageToolCall,
+    LlmRequest,
+    LlmThinkingConfig,
+    LlmTool,
+)
 from harnyx_commons.llm.tool_models import MINER_SELECTED_LLM_PROVIDER_MODELS
 
 pytestmark = pytest.mark.anyio("asyncio")
@@ -239,3 +248,57 @@ def _streaming_response(request: httpx.Request) -> httpx.Response:
         )
     )
     return httpx.Response(200, text=payload, request=request, headers={"content-type": "text/event-stream"})
+
+
+def test_ai_gateway_request_serializes_complete_tool_loop() -> None:
+    request = LlmRequest(
+        provider="ai_gateway",
+        model="openai/gpt-oss-20b",
+        messages=(
+            LlmMessage(
+                role="assistant",
+                content=(),
+                tool_calls=(
+                    LlmMessageToolCall(
+                        id="call-1",
+                        type="function",
+                        name="lookup_weather",
+                        arguments='{"city":"Paris"}',
+                    ),
+                ),
+                reasoning_details=({"type": "reasoning.encrypted", "data": "opaque"},),
+            ),
+            LlmMessage(
+                role="tool",
+                content=(
+                    LlmInputToolResultPart(
+                        tool_call_id="call-1",
+                        name=None,
+                        output_json='{"temperature":19}',
+                    ),
+                ),
+            ),
+        ),
+        temperature=0.0,
+        max_output_tokens=32,
+        tools=(LlmTool(type="function", function={"name": "lookup_weather", "strict": True}),),
+        tool_choice={"type": "function", "function": {"name": "lookup_weather"}},
+        parallel_tool_calls=True,
+    )
+
+    payload = ai_gateway._AiGatewayChatRequest.from_request(request).model_dump(
+        mode="json",
+        by_alias=True,
+        exclude_none=True,
+    )
+
+    assert payload["messages"][0]["reasoning_details"] == [
+        {"type": "reasoning.encrypted", "data": "opaque"}
+    ]
+    assert payload["messages"][1] == {
+        "role": "tool",
+        "content": '{"temperature":19}',
+        "tool_call_id": "call-1",
+    }
+    assert payload["tool_choice"] == {"type": "function", "function": {"name": "lookup_weather"}}
+    assert payload["parallel_tool_calls"] is True

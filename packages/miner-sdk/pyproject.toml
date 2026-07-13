@@ -1,6 +1,6 @@
 [project]
 name = "harnyx-miner-sdk"
-version = "0.1.6"
+version = "0.1.7"
 description = "Agent-facing SDK for Harnyx miners (entrypoints, tool helpers, LLM wire types)."
 requires-python = ">=3.11,<3.12"
 authors = [

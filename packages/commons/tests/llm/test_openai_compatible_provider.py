@@ -13,7 +13,15 @@ from harnyx_commons.llm.adapter import LlmProviderAdapter
 from harnyx_commons.llm.providers import openai_compatible
 from harnyx_commons.llm.providers.openai_compatible import OpenAiCompatibleLlmProvider
 from harnyx_commons.llm.retry_utils import RetryPolicy
-from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest, LlmThinkingConfig
+from harnyx_commons.llm.schema import (
+    LlmInputToolResultPart,
+    LlmMessage,
+    LlmMessageContentPart,
+    LlmMessageToolCall,
+    LlmRequest,
+    LlmThinkingConfig,
+    LlmTool,
+)
 
 pytestmark = pytest.mark.anyio("asyncio")
 
@@ -518,6 +526,33 @@ async def test_openai_compatible_provider_uses_request_retry_policy_over_default
     assert response.raw_text == "ok"
 
 
+async def test_openai_compatible_provider_retries_malformed_tool_call_response() -> None:
+    calls = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _streaming_response_with_malformed_tool_call()
+        return _streaming_response()
+
+    provider = OpenAiCompatibleLlmProvider(
+        endpoint=_endpoint(auth={"type": "none"}),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    request = replace(_request(), retry_policy=RetryPolicy(attempts=2, initial_ms=0, max_ms=0, jitter=0.0))
+
+    try:
+        response = await provider.invoke(request)
+    finally:
+        await provider.aclose()
+
+    assert calls == 2
+    assert response.raw_text == "ok"
+    assert response.metadata is not None
+    assert response.metadata["attempts"] == 2
+
+
 def _endpoint(
     *,
     auth: dict[str, object],
@@ -566,6 +601,40 @@ def _streaming_response() -> httpx.Response:
     return httpx.Response(200, content=payload.encode("utf-8"))
 
 
+def _streaming_response_with_malformed_tool_call() -> httpx.Response:
+    tool_call_delta = {
+        "id": "chatcmpl-malformed",
+        "choices": [
+            {
+                "index": 0,
+                "delta": {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {"name": "lookup_weather", "arguments": '{"city":'},
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+    completion_delta = {
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+    }
+    payload = "\n\n".join(
+        (
+            f"data: {json.dumps(tool_call_delta)}",
+            f"data: {json.dumps(completion_delta)}",
+            "data: [DONE]",
+            "",
+        )
+    )
+    return httpx.Response(200, content=payload.encode("utf-8"))
+
+
 def _streaming_response_without_usage_cost() -> httpx.Response:
     payload = "\n\n".join(
         (
@@ -577,6 +646,306 @@ def _streaming_response_without_usage_cost() -> httpx.Response:
         )
     )
     return httpx.Response(200, content=payload.encode("utf-8"))
+
+
+def test_openai_compatible_request_serializes_complete_tool_loop() -> None:
+    request = LlmRequest(
+        provider="openrouter",
+        model="openai/gpt-oss-20b",
+        messages=(
+            LlmMessage(
+                role="assistant",
+                content=(),
+                tool_calls=(
+                    LlmMessageToolCall(
+                        id="call-1",
+                        type="function",
+                        name="lookup_weather",
+                        arguments='{"city":"Paris"}',
+                    ),
+                ),
+                reasoning_details=({"type": "reasoning.encrypted", "data": "opaque"},),
+            ),
+            LlmMessage(
+                role="tool",
+                content=(
+                    LlmInputToolResultPart(
+                        tool_call_id="call-1",
+                        name=None,
+                        output_json='{"temperature":19}',
+                    ),
+                ),
+            ),
+        ),
+        temperature=0.0,
+        max_output_tokens=32,
+        tools=(
+            LlmTool(
+                type="function",
+                function={"name": "lookup_weather", "strict": True},
+            ),
+        ),
+        tool_choice={"type": "function", "function": {"name": "lookup_weather"}},
+        parallel_tool_calls=True,
+    )
+
+    payload = openai_compatible._OpenAiCompatibleChatRequest.from_request(
+        request,
+        provider_name="openrouter",
+    ).model_dump(mode="json", exclude_none=True)
+
+    assert payload["messages"] == [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "lookup_weather", "arguments": '{"city":"Paris"}'},
+                }
+            ],
+            "reasoning_details": [{"type": "reasoning.encrypted", "data": "opaque"}],
+        },
+        {"role": "tool", "content": '{"temperature":19}', "tool_call_id": "call-1"},
+    ]
+    assert payload["tools"] == [
+        {"type": "function", "function": {"name": "lookup_weather", "strict": True}}
+    ]
+    assert payload["tool_choice"] == {"type": "function", "function": {"name": "lookup_weather"}}
+    assert payload["parallel_tool_calls"] is True
+
+
+def test_openai_compatible_request_preserves_assistant_reasoning_without_tool_calls() -> None:
+    request = LlmRequest(
+        provider="openrouter",
+        model="openai/gpt-oss-20b",
+        messages=(
+            LlmMessage(
+                role="assistant",
+                content=(LlmMessageContentPart.input_text("Prior answer."),),
+                reasoning_details=({"type": "reasoning.encrypted", "data": "opaque"},),
+            ),
+        ),
+        temperature=0.0,
+        max_output_tokens=32,
+    )
+
+    payload = openai_compatible._OpenAiCompatibleChatRequest.from_request(
+        request,
+        provider_name="openrouter",
+    ).model_dump(mode="json", exclude_none=True)
+
+    assert payload["messages"] == [
+        {
+            "role": "assistant",
+            "content": "Prior answer.",
+            "reasoning_details": [{"type": "reasoning.encrypted", "data": "opaque"}],
+        }
+    ]
+
+
+def test_openai_stream_preserves_opaque_reasoning_details_in_order() -> None:
+    from harnyx_commons.llm.providers.openai_stream import OpenAiStreamState, _OpenAiStreamEvent
+
+    details = [
+        {"type": "reasoning.encrypted", "data": "opaque", "index": 0},
+        {"type": "reasoning.text", "text": "thinking", "signature": "sig"},
+    ]
+    state = OpenAiStreamState()
+    state.merge_event(
+        _OpenAiStreamEvent.model_validate(
+            {"choices": [{"index": 0, "delta": {"reasoning_details": details}}]}
+        ),
+        reasoning_keys=("reasoning_details",),
+    )
+
+    assert state.choice(0).reasoning_details == details
+
+
+@pytest.mark.parametrize(
+    "tool_call",
+    (
+        {"type": "function", "name": "lookup", "arguments": "{}"},
+        {"id": "call-1", "name": "lookup", "arguments": "{}"},
+        {"id": "call-1", "type": "function", "name": "", "arguments": "{}"},
+        {"id": " ", "type": "function", "name": "lookup", "arguments": "{}"},
+        {"id": "call-1", "type": "function", "name": " ", "arguments": "{}"},
+        {"id": "call-1", "type": "function", "name": "lookup", "arguments": "[]"},
+        {"id": "call-1", "type": "function", "name": "lookup", "arguments": '{"x":NaN}'},
+        {"id": "call-1", "type": "function", "name": "lookup", "arguments": '{"x":Infinity}'},
+    ),
+)
+def test_openai_stream_rejects_malformed_completed_tool_calls(tool_call: dict[str, object]) -> None:
+    from harnyx_commons.llm.providers.openai_stream import OpenAiToolCallState
+
+    state = OpenAiToolCallState(
+        id=tool_call.get("id"),
+        type=tool_call.get("type"),
+        name=tool_call.get("name"),
+        arguments_text=str(tool_call["arguments"]),
+    )
+
+    with pytest.raises(ValueError):
+        state.to_tool_call(index=0)
+
+
+def test_openai_stream_rejects_tool_call_delta_without_index() -> None:
+    from harnyx_commons.llm.providers.openai_stream import OpenAiStreamState, _OpenAiStreamEvent
+
+    state = OpenAiStreamState()
+    event = _OpenAiStreamEvent.model_validate(
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "id": "call-1",
+                                "type": "function",
+                                "function": {"name": "lookup", "arguments": "{}"},
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+    )
+
+    with pytest.raises(ValueError, match="require an index"):
+        state.merge_event(event, reasoning_keys=())
+
+
+def test_openai_stream_accumulates_fragmented_tool_call_identity() -> None:
+    from harnyx_commons.llm.providers.openai_stream import OpenAiStreamState, _OpenAiStreamEvent
+
+    state = OpenAiStreamState()
+    for payload in (
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_",
+                                "type": "function",
+                                "function": {"name": "look", "arguments": '{"city":"'},
+                            }
+                        ]
+                    },
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "123",
+                                "function": {"name": "up", "arguments": 'Paris"}'},
+                            }
+                        ]
+                    },
+                }
+            ]
+        },
+    ):
+        state.merge_event(_OpenAiStreamEvent.model_validate(payload), reasoning_keys=())
+
+    tool_calls = state.choice(0).tool_call_values()
+    assert tool_calls is not None
+    assert tool_calls[0].id == "call_123"
+    assert tool_calls[0].name == "lookup"
+    assert tool_calls[0].arguments == '{"city":"Paris"}'
+
+
+def test_openai_stream_accepts_complete_message_tool_calls_without_indices() -> None:
+    from harnyx_commons.llm.providers.openai_stream import OpenAiStreamState, _OpenAiStreamEvent
+
+    state = OpenAiStreamState()
+    state.merge_event(
+        _OpenAiStreamEvent.model_validate(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "type": "function",
+                                    "function": {"name": "lookup", "arguments": "{}"},
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+        ),
+        reasoning_keys=(),
+    )
+
+    tool_calls = state.choice(0).tool_call_values()
+    assert tool_calls is not None
+    assert tool_calls[0].id == "call-1"
+    assert tool_calls[0].name == "lookup"
+
+
+def test_openai_stream_rejects_duplicate_tool_call_ids_within_one_block() -> None:
+    from harnyx_commons.llm.providers.openai_stream import (
+        OpenAiChoiceState,
+        OpenAiStreamError,
+        OpenAiToolCallState,
+    )
+
+    state = OpenAiChoiceState(
+        tool_calls={
+            0: OpenAiToolCallState(
+                id="call-1",
+                type="function",
+                name="lookup_a",
+                arguments_text="{}",
+            ),
+            1: OpenAiToolCallState(
+                id="call-1",
+                type="function",
+                name="lookup_b",
+                arguments_text="{}",
+            ),
+        }
+    )
+
+    with pytest.raises(OpenAiStreamError, match="unique"):
+        state.tool_call_values()
+
+
+@pytest.mark.parametrize(
+    "changed_delta",
+    (
+        {"index": 0, "id": "call-2"},
+        {"index": 0, "type": "custom"},
+        {"index": 0, "function": {"name": "other"}},
+    ),
+)
+def test_openai_stream_rejects_tool_call_identity_changes(
+    changed_delta: dict[str, object],
+) -> None:
+    from harnyx_commons.llm.providers.openai_stream import OpenAiToolCallState, _OpenAiToolCallDelta
+
+    state = OpenAiToolCallState(id="call-1", type="function", name="lookup")
+
+    with pytest.raises(ValueError, match="changed"):
+        state.merge_delta(
+            _OpenAiToolCallDelta.model_validate(changed_delta),
+            complete_snapshot=True,
+        )
 
 
 def _streaming_reasoning_response() -> httpx.Response:

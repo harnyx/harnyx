@@ -19,9 +19,15 @@ class LlmMessage:
 
     role: Literal["system", "user", "assistant", "tool"]
     content: Sequence[LlmInputContentPart]
+    tool_calls: Sequence[LlmMessageToolCall] | None = None
+    reasoning_details: Sequence[Mapping[str, Any]] | None = None
 
     def __post_init__(self) -> None:
-        if not self.content:
+        if self.tool_calls and self.role != "assistant":
+            raise ValueError("LlmMessage.tool_calls are only valid for assistant messages")
+        if self.reasoning_details and self.role != "assistant":
+            raise ValueError("LlmMessage.reasoning_details are only valid for assistant messages")
+        if not self.content and not (self.role == "assistant" and self.tool_calls):
             raise ValueError("LlmMessage.content must include at least one content part")
         for part in self.content:
             if isinstance(part, (LlmInputTextPart, LlmInputImagePart, LlmInputToolResultPart)):
@@ -70,7 +76,8 @@ class ToolLlmRequest:
     temperature: float | None
     max_output_tokens: int | None
     tools: Sequence[LlmTool] | None = None
-    tool_choice: Literal["auto", "required"] | None = None
+    tool_choice: Literal["none", "auto", "required"] | Mapping[str, Any] | None = None
+    parallel_tool_calls: bool | None = None
     thinking: LlmThinkingConfig | None = None
 
 
@@ -145,7 +152,7 @@ class LlmInputImagePart:
 @dataclass(frozen=True)
 class LlmInputToolResultPart:
     tool_call_id: str
-    name: str
+    name: str | None
     output_json: str
     type: Literal["input_tool_result"] = field(init=False, default=INPUT_TOOL_RESULT_PART_TYPE)
 
@@ -154,9 +161,9 @@ class LlmInputToolResultPart:
             raise TypeError("input_tool_result tool_call_id must be a string")
         if not self.tool_call_id.strip():
             raise ValueError("input_tool_result tool_call_id must be non-empty")
-        if not isinstance(self.name, str):
+        if self.name is not None and not isinstance(self.name, str):
             raise TypeError("input_tool_result name must be a string")
-        if not self.name.strip():
+        if self.name is not None and not self.name.strip():
             raise ValueError("input_tool_result name must be non-empty")
         if not isinstance(self.output_json, str):
             raise TypeError("input_tool_result output_json must be a string")
@@ -176,6 +183,22 @@ class LlmChoiceMessage:
     tool_calls: Sequence[LlmMessageToolCall] | None = None
     refusal: Mapping[str, Any] | None = None
     reasoning: str | None = None
+    reasoning_details: Sequence[Mapping[str, Any]] | None = None
+
+    def to_input_message(self) -> LlmMessage:
+        if self.role != "assistant":
+            raise ValueError("only assistant choice messages can be replayed as input")
+        content = tuple(
+            LlmInputTextPart(text=part.text)
+            for part in self.content
+            if part.text is not None and part.text
+        )
+        return LlmMessage(
+            role="assistant",
+            content=content,
+            tool_calls=self.tool_calls,
+            reasoning_details=self.reasoning_details,
+        )
 
 
 @dataclass(frozen=True)

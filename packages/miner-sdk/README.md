@@ -147,6 +147,72 @@ Every hosted tool helper accepts an optional positive finite `timeout` in second
 
 `llm_chat` model ids are provider-specific. Use `tooling_info().response["allowed_llm_provider_models"][provider]` as the runtime source of truth and pass the selected provider's model id exactly.
 
+### Function tool calls
+
+Pass function definitions through `tools`. Functions may include `description`, recursive JSON Schema `parameters`, and `strict`. Use `tool_choice="none"`, `"auto"`, `"required"`, or name one declared function. Set `parallel_tool_calls` when you need to control whether the model may request more than one function in a turn.
+
+The model returns flattened tool calls with `id`, `type`, `name`, and JSON-string `arguments`. Run those functions in your miner, then make a second `llm_chat` call with the assistant message followed by one linked tool-result message per call. `to_input_message()` preserves the assistant's tool calls and any ordered `reasoning_details` needed for replay.
+
+```python
+import json
+
+from harnyx_miner_sdk.api import llm_chat
+
+question = {"role": "user", "content": "What is the weather in Paris?"}
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "lookup_weather",
+            "description": "Return the current weather for one city.",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+                "additionalProperties": False,
+            },
+            "strict": True,
+        },
+    }
+]
+
+first = await llm_chat(
+    provider="openrouter",
+    model="openai/gpt-oss-20b",
+    messages=[question],
+    tools=tools,
+    tool_choice={"type": "function", "function": {"name": "lookup_weather"}},
+    parallel_tool_calls=False,
+)
+assistant = first.llm.choices[0].message
+assert assistant.tool_calls is not None
+call = assistant.tool_calls[0]
+arguments = json.loads(call.arguments)
+tool_output = {"city": arguments["city"], "temperature_c": 19}
+
+final = await llm_chat(
+    provider="openrouter",
+    model="openai/gpt-oss-20b",
+    messages=[
+        question,
+        assistant.to_input_message(),
+        {
+            "role": "tool",
+            "tool_call_id": call.id,
+            "content": json.dumps(tool_output),
+        },
+    ],
+    tools=tools,
+    tool_choice="auto",
+    parallel_tool_calls=False,
+)
+answer = final.llm.raw_text
+```
+
+Tool-result messages must immediately resolve every call in the preceding assistant message, once each, before another user or assistant message. Parallel results may be supplied in any order. Provider and model support for the forwarded controls can vary; an upstream rejection is returned as a tool failure.
+
+The canonical miner request field is `max_output_tokens`. The SDK accepts `max_tokens` as a compatibility alias and normalizes it to `max_output_tokens`; setting both is rejected. The former miner-facing `include` and `response_format` fields are rejected. Internal validator structured-output postprocessing is separate and is not exposed through `llm_chat`.
+
 `embed_text` model ids are provider-specific too. Use `tooling_info().response["allowed_embedding_provider_models"][provider]` as the runtime source of truth. The current miner-facing embedding model ids are `Qwen/Qwen3-Embedding-8B-TEE` on `chutes` and `qwen/qwen3-embedding-8b` on `openrouter`, with pricing exposed under `tooling_info().response["pricing"]["embed_text"]["provider_models"]`.
 
 Use `input_type="query"` for query or instruction-style embeddings and `input_type="document"` for document embeddings. Query embeddings use Qwen's retrieval instruction by default and accept an optional `instruction` override. Document embeddings are sent as raw text and reject `instruction`.

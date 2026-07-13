@@ -6,7 +6,14 @@ from harnyx_commons.clients import CHUTES
 from harnyx_commons.config.llm import LlmSettings
 from harnyx_commons.llm.provider_factory import build_miner_paid_llm_provider
 from harnyx_commons.llm.providers.chutes import ChutesLlmProvider
-from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest, LlmThinkingConfig
+from harnyx_commons.llm.schema import (
+    LlmInputToolResultPart,
+    LlmMessage,
+    LlmMessageContentPart,
+    LlmRequest,
+    LlmThinkingConfig,
+    LlmTool,
+)
 from harnyx_commons.llm.tool_models import MINER_SELECTED_LLM_PROVIDER_MODELS
 
 pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
@@ -122,3 +129,73 @@ async def test_miner_paid_chutes_helper_completion_live() -> None:
         await provider.aclose()
 
     assert response.raw_text
+
+
+async def test_chutes_two_turn_function_tool_loop_live() -> None:
+    api_key, timeout = _provider_settings()
+    provider = ChutesLlmProvider(base_url=CHUTES.base_url, api_key=api_key, timeout=timeout)
+    model = CHUTES_TOOL_MODELS[0]
+    tool = LlmTool(
+        type="function",
+        function={
+            "name": "lookup_weather",
+            "description": "Return weather for a city.",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+        },
+    )
+    user_message = LlmMessage(
+        role="user",
+        content=(LlmMessageContentPart.input_text("Use lookup_weather for Paris."),),
+    )
+    first_request = LlmRequest(
+        provider="chutes",
+        model=model,
+        messages=(user_message,),
+        temperature=0.0,
+        max_output_tokens=128,
+        tools=(tool,),
+        tool_choice={"type": "function", "function": {"name": "lookup_weather"}},
+        timeout_seconds=180.0,
+    )
+
+    try:
+        first = await provider.invoke(first_request)
+        calls = first.choices[0].message.tool_calls
+        assert calls and calls[0].id
+        tool_result_messages = tuple(
+            LlmMessage(
+                role="tool",
+                content=(
+                    LlmInputToolResultPart(
+                        tool_call_id=call.id,
+                        name=None,
+                        output_json='{"temperature_c":19}',
+                    ),
+                ),
+            )
+            for call in calls
+        )
+        second = await provider.invoke(
+            LlmRequest(
+                provider="chutes",
+                model=model,
+                messages=(
+                    user_message,
+                    first.choices[0].message.to_input_message(),
+                    *tool_result_messages,
+                ),
+                temperature=0.0,
+                max_output_tokens=128,
+                tools=(tool,),
+                tool_choice="none",
+                timeout_seconds=180.0,
+            )
+        )
+    finally:
+        await provider.aclose()
+
+    assert second.raw_text

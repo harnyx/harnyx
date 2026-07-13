@@ -4,10 +4,16 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from typing import Any, Generic, Literal, TypeVar, cast, overload
 
-from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from harnyx_miner_sdk._internal.tool_invoker import _current_tool_invoker
-from harnyx_miner_sdk.llm import LlmResponse, LlmThinkingConfig
+from harnyx_miner_sdk.llm import (
+    LlmInputTextPart,
+    LlmInputToolResultPart,
+    LlmMessage,
+    LlmResponse,
+    LlmThinkingConfig,
+)
 from harnyx_miner_sdk.tools.embedding_models import (
     EmbeddingInputType,
     EmbeddingProviderName,
@@ -20,11 +26,17 @@ from harnyx_miner_sdk.tools.http_models import (
     ToolResultDTO,
     ToolUsageDTO,
 )
+from harnyx_miner_sdk.tools.llm_chat_models import (
+    LlmChatFunctionTool,
+    LlmChatMessage,
+    LlmChatRequest,
+    LlmChatThinking,
+    LlmChatToolChoice,
+)
 from harnyx_miner_sdk.tools.llm_provider_extra import (
     AiGatewayExtra,
     OpenRouterExtra,
     ProviderExtra,
-    validate_provider_extra,
 )
 from harnyx_miner_sdk.tools.search_models import (
     FetchPageRequest,
@@ -83,62 +95,6 @@ class _TestToolInvocationPayload(BaseModel):
 
     message: str
     timeout: ToolInvocationTimeout | None = None
-
-
-class _LlmChatThinkingPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: StrictBool
-    budget: StrictInt | None = None
-    effort: Literal["low", "medium", "high"] | None = None
-
-    @field_validator("budget")
-    @classmethod
-    def _validate_budget(cls, value: int | None) -> int | None:
-        if value is not None and value < 1:
-            raise ValueError("thinking.budget must be positive")
-        return value
-
-    @model_validator(mode="after")
-    def _validate_single_tuning_knob(self) -> _LlmChatThinkingPayload:
-        if self.budget is not None and self.effort is not None:
-            raise ValueError("thinking.budget and thinking.effort are mutually exclusive")
-        return self
-
-
-class _LlmChatInvocationPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    provider: Literal["chutes", "openrouter", "ai_gateway"]
-    model: str
-    messages: list[dict[str, Any]]
-    timeout: ToolInvocationTimeout | None = None
-    temperature: float | None = None
-    max_output_tokens: int | None = None
-    max_tokens: int | None = None
-    response_format: Any | None = None
-    tools: list[dict[str, Any]] | None = None
-    tool_choice: Literal["auto", "required"] | None = None
-    include: list[str] | None = None
-    thinking: _LlmChatThinkingPayload | None = None
-    provider_extra: dict[str, Any] | None = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def _validate_provider_extra(cls, value: object) -> object:
-        if not isinstance(value, Mapping):
-            return value
-        data = cast(Mapping[str, object], value)
-        if "provider_extra" not in data:
-            return value
-        provider = data.get("provider")
-        if not isinstance(provider, str):
-            return value
-
-        parsed = validate_provider_extra(provider=provider, provider_extra=data.get("provider_extra"))
-        normalized = dict(data)
-        normalized["provider_extra"] = parsed.to_request_extra() if parsed is not None else None
-        return normalized
 
 
 def _parse_execute_response(raw_response: object) -> ToolExecuteResponseDTO:
@@ -367,12 +323,17 @@ async def embed_text(
 async def llm_chat(
     *,
     provider: Literal["openrouter"],
-    messages: Sequence[Mapping[str, Any]],
+    messages: Sequence[Mapping[str, Any] | LlmChatMessage | LlmMessage],
     model: str,
-    thinking: Mapping[str, Any] | LlmThinkingConfig | None = None,
+    temperature: float | None = None,
+    max_output_tokens: int | None = None,
+    max_tokens: int | None = None,
+    tools: Sequence[Mapping[str, Any] | LlmChatFunctionTool] | None = None,
+    tool_choice: LlmChatToolChoice | Mapping[str, Any] | None = None,
+    parallel_tool_calls: bool | None = None,
+    thinking: Mapping[str, Any] | LlmChatThinking | LlmThinkingConfig | None = None,
     provider_extra: Mapping[str, Any] | OpenRouterExtra | None = None,
     timeout: float | None = None,
-    **params: Any,
 ) -> LlmChatResult: ...
 
 
@@ -380,12 +341,17 @@ async def llm_chat(
 async def llm_chat(
     *,
     provider: Literal["ai_gateway"],
-    messages: Sequence[Mapping[str, Any]],
+    messages: Sequence[Mapping[str, Any] | LlmChatMessage | LlmMessage],
     model: str,
-    thinking: Mapping[str, Any] | LlmThinkingConfig | None = None,
+    temperature: float | None = None,
+    max_output_tokens: int | None = None,
+    max_tokens: int | None = None,
+    tools: Sequence[Mapping[str, Any] | LlmChatFunctionTool] | None = None,
+    tool_choice: LlmChatToolChoice | Mapping[str, Any] | None = None,
+    parallel_tool_calls: bool | None = None,
+    thinking: Mapping[str, Any] | LlmChatThinking | LlmThinkingConfig | None = None,
     provider_extra: Mapping[str, Any] | AiGatewayExtra | None = None,
     timeout: float | None = None,
-    **params: Any,
 ) -> LlmChatResult: ...
 
 
@@ -393,28 +359,51 @@ async def llm_chat(
 async def llm_chat(
     *,
     provider: Literal["chutes"],
-    messages: Sequence[Mapping[str, Any]],
+    messages: Sequence[Mapping[str, Any] | LlmChatMessage | LlmMessage],
     model: str,
-    thinking: Mapping[str, Any] | LlmThinkingConfig | None = None,
+    temperature: float | None = None,
+    max_output_tokens: int | None = None,
+    max_tokens: int | None = None,
+    tools: Sequence[Mapping[str, Any] | LlmChatFunctionTool] | None = None,
+    tool_choice: LlmChatToolChoice | Mapping[str, Any] | None = None,
+    parallel_tool_calls: bool | None = None,
+    thinking: Mapping[str, Any] | LlmChatThinking | LlmThinkingConfig | None = None,
     provider_extra: None = None,
     timeout: float | None = None,
-    **params: Any,
 ) -> LlmChatResult: ...
 
 
 async def llm_chat(
     *,
     provider: Literal["chutes", "openrouter", "ai_gateway"],
-    messages: Sequence[Mapping[str, Any]],
+    messages: Sequence[Mapping[str, Any] | LlmChatMessage | LlmMessage],
     model: str,
-    thinking: Mapping[str, Any] | LlmThinkingConfig | None = None,
+    temperature: float | None = None,
+    max_output_tokens: int | None = None,
+    max_tokens: int | None = None,
+    tools: Sequence[Mapping[str, Any] | LlmChatFunctionTool] | None = None,
+    tool_choice: LlmChatToolChoice | Mapping[str, Any] | None = None,
+    parallel_tool_calls: bool | None = None,
+    thinking: Mapping[str, Any] | LlmChatThinking | LlmThinkingConfig | None = None,
     provider_extra: Mapping[str, Any] | ProviderExtra | None = None,
     timeout: float | None = None,
     **params: Any,
 ) -> LlmChatResult:
     """Invoke the validator-hosted LLM chat tool and return its response payload."""
 
-    payload_raw = {"provider": provider, "model": model, "messages": [dict(message) for message in messages]}
+    payload_raw: dict[str, object] = {
+        "provider": provider,
+        "model": model,
+        "messages": [_llm_chat_message_input(message) for message in messages],
+        "temperature": temperature,
+        "tools": tools,
+        "tool_choice": tool_choice,
+        "parallel_tool_calls": parallel_tool_calls,
+    }
+    if max_output_tokens is not None:
+        payload_raw["max_output_tokens"] = max_output_tokens
+    if max_tokens is not None:
+        payload_raw["max_tokens"] = max_tokens
     if thinking is not None:
         payload_raw["thinking"] = asdict(thinking) if isinstance(thinking, LlmThinkingConfig) else thinking
     if provider_extra is not None:
@@ -426,9 +415,10 @@ async def llm_chat(
         payload_raw["timeout"] = timeout
     if params:
         payload_raw.update(params)
-    payload = _LlmChatInvocationPayload.model_validate(payload_raw).model_dump(
+    payload = LlmChatRequest.model_validate(payload_raw).model_dump(
         exclude_none=True,
         mode="json",
+        by_alias=True,
     )
     raw_response = await _current_tool_invoker().invoke(
         "llm_chat",
@@ -447,6 +437,38 @@ async def llm_chat(
         usage=dto.usage,
         budget=dto.budget,
     )
+
+
+def _llm_chat_message_input(message: Mapping[str, Any] | LlmChatMessage | LlmMessage) -> object:
+    if isinstance(message, Mapping):
+        return dict(message)
+    if not isinstance(message, LlmMessage):
+        return message
+
+    text_parts = [part.text for part in message.content if isinstance(part, LlmInputTextPart)]
+    if message.role == "assistant":
+        if len(text_parts) != len(message.content):
+            raise ValueError("assistant messages can contain only input_text parts")
+        return {
+            "role": "assistant",
+            "content": "\n".join(text_parts) if text_parts else None,
+            "tool_calls": [asdict(tool_call) for tool_call in message.tool_calls or ()] or None,
+            "reasoning_details": list(message.reasoning_details) if message.reasoning_details is not None else None,
+        }
+    tool_results = [part for part in message.content if isinstance(part, LlmInputToolResultPart)]
+    if message.role == "tool":
+        if len(message.content) != 1 or len(tool_results) != 1:
+            raise ValueError("tool messages require exactly one input_tool_result part")
+        result = tool_results[0]
+        return {
+            "role": "tool",
+            "tool_call_id": result.tool_call_id,
+            "content": result.output_json,
+            "name": result.name,
+        }
+    if len(text_parts) != len(message.content):
+        raise ValueError("system and user messages can contain only input_text parts")
+    return {"role": message.role, "content": "\n".join(text_parts)}
 
 
 __all__ = [

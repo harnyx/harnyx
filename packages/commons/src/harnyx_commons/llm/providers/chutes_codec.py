@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
 
@@ -31,6 +31,10 @@ _CHUTES_TOOL_CALLS_ADAPTER = TypeAdapter(list[object])
 _CHUTES_CHOICES_ADAPTER = TypeAdapter(list[object])
 
 
+def _reject_non_finite_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant is not supported: {value}")
+
+
 class _ChutesChatRequest(BaseModel):
     model_config = ConfigDict(extra="allow", strict=True)
 
@@ -44,7 +48,8 @@ class _ChutesChatRequest(BaseModel):
     temperature: float | None = None
     max_output_tokens: int | None = None
     tools: list[dict[str, Any]] | None = None
-    tool_choice: str | None = None
+    tool_choice: str | dict[str, Any] | None = None
+    parallel_tool_calls: bool | None = None
     include: list[str] | None = None
     response_format: dict[str, Any] | None = None
     chat_template_kwargs: dict[str, Any] | None = None
@@ -72,6 +77,7 @@ class _ChutesChatRequest(BaseModel):
                 else None
             ),
             tool_choice=request_parts.tool_choice,
+            parallel_tool_calls=request_parts.parallel_tool_calls,
             include=request_parts.include,
             response_format=(
                 request_parts.response_format.model_dump(mode="python", exclude_none=True)
@@ -165,21 +171,35 @@ class _ChutesToolFunctionPayload(BaseModel):
     model_config = ConfigDict(extra="ignore", strict=True)
 
     name: str = Field(min_length=1)
-    arguments: str | dict[str, Any] | None = None
+    arguments: str | dict[str, Any]
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("chutes tool call function name must be non-empty")
+        return value
 
 
 class _ChutesToolCallPayload(BaseModel):
     model_config = ConfigDict(extra="ignore", strict=True)
 
-    id: str | None = None
-    type: str | None = None
+    id: str = Field(min_length=1)
+    type: Literal["function"]
     function: _ChutesToolFunctionPayload
+
+    @field_validator("id")
+    @classmethod
+    def _validate_id(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("chutes tool call ID must be non-empty")
+        return value
 
     @classmethod
     def from_openai_tool_call(cls, tool_call: OpenAiToolCall) -> _ChutesToolCallPayload:
         return cls(
             id=tool_call.id,
-            type=tool_call.type,
+            type="function",
             function=_ChutesToolFunctionPayload(
                 name=tool_call.name,
                 arguments=tool_call.arguments,
@@ -191,12 +211,18 @@ class _ChutesToolCallPayload(BaseModel):
             case str() as arguments:
                 serialized_arguments = arguments
             case dict() as arguments:
-                serialized_arguments = json.dumps(arguments)
+                serialized_arguments = json.dumps(arguments, allow_nan=False)
             case _:
-                serialized_arguments = ""
+                raise ValueError("chutes tool call arguments must encode a JSON object")
+        parsed_arguments = json.loads(
+            serialized_arguments,
+            parse_constant=_reject_non_finite_json_constant,
+        )
+        if not isinstance(parsed_arguments, dict):
+            raise ValueError("chutes tool call arguments must encode a JSON object")
         return LlmMessageToolCall(
-            id=self.id or f"toolcall-{index}",
-            type=self.type or "function",
+            id=self.id,
+            type=self.type,
             name=self.function.name,
             arguments=serialized_arguments,
         )
@@ -207,6 +233,7 @@ class _ChutesMessagePayload(BaseModel):
 
     content: str | list[_ChutesTextContentPart] | None = None
     reasoning: str | _ChutesReasoningObject | None = None
+    reasoning_details: list[dict[str, Any]] | None = None
     tool_calls: list[_ChutesToolCallPayload] | None = None
 
     @field_validator("content", mode="before")
@@ -256,13 +283,13 @@ class _ChutesMessagePayload(BaseModel):
             raw_tool_calls = _CHUTES_TOOL_CALLS_ADAPTER.validate_python(value)
         except ValidationError as exc:
             raise RuntimeError("chutes message tool_calls must be an array") from exc
-        tool_calls: list[_ChutesToolCallPayload] = []
-        for payload in raw_tool_calls:
-            try:
-                tool_call = _ChutesToolCallPayload.model_validate(payload)
-            except ValidationError:
-                continue
-            tool_calls.append(tool_call)
+        try:
+            tool_calls = [_ChutesToolCallPayload.model_validate(payload) for payload in raw_tool_calls]
+        except ValidationError as exc:
+            raise RuntimeError("chutes message tool_calls contain an invalid function call") from exc
+        call_ids = [tool_call.id for tool_call in tool_calls]
+        if len(call_ids) != len(set(call_ids)):
+            raise RuntimeError("chutes tool call IDs must be unique within each assistant block")
         return tool_calls
 
     def content_parts(self) -> tuple[LlmMessageContentPart, ...]:
@@ -302,6 +329,7 @@ class _ChutesMessagePayload(BaseModel):
             content=parts,
             tool_calls=self.tool_call_parts(),
             reasoning=self.reasoning_text(),
+            reasoning_details=self.reasoning_details,
         )
 
 
@@ -410,6 +438,7 @@ class _ChutesChatResponse(BaseModel):
                 message=_ChutesMessagePayload(
                     content=choice_state.content_text,
                     reasoning=_ChutesReasoningObject.from_stream_state(reasoning_state.choice(index)),
+                    reasoning_details=choice_state.reasoning_details or None,
                     tool_calls=_chutes_stream_tool_calls(choice_state),
                 ),
                 finish_reason=choice_state.finish_reason,
@@ -541,13 +570,7 @@ def _chutes_stream_tool_calls(choice_state: OpenAiChoiceState) -> list[_ChutesTo
     tool_calls = choice_state.tool_call_values()
     if not tool_calls:
         return None
-    result: list[_ChutesToolCallPayload] = []
-    for tool_call in tool_calls:
-        try:
-            result.append(_ChutesToolCallPayload.from_openai_tool_call(tool_call))
-        except ValidationError:
-            continue
-    return result or None
+    return [_ChutesToolCallPayload.from_openai_tool_call(tool_call) for tool_call in tool_calls]
 
 
 def _normalize_reasoning_text(value: object) -> str | None:

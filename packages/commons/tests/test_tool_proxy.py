@@ -21,6 +21,7 @@ from harnyx_commons.tools.api import (
 )
 from harnyx_commons.tools.proxy import ToolInvocationError, ToolProxy
 from harnyx_miner_sdk._internal.tool_invoker import bind_tool_invoker
+from harnyx_miner_sdk.llm import LlmInputImageData, LlmInputImagePart, LlmInputTextPart, LlmMessage
 from harnyx_miner_sdk.sandbox_headers import SESSION_ID_HEADER
 from harnyx_miner_sdk.tools import proxy as proxy_module
 
@@ -1018,6 +1019,148 @@ async def test_llm_chat_helper_rejects_coerced_thinking_scalars() -> None:
                     messages=[{"role": "user", "content": "hi"}],
                     model="demo-model",
                     thinking={"enabled": "false", "budget": True},
+                )
+    finally:
+        await proxy.aclose()
+
+
+async def test_llm_chat_helper_serializes_complete_tool_loop_request() -> None:
+    captured: dict[str, dict[str, object]] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json=_tool_response_payload(
+                receipt_id="chat-tool-loop",
+                response={
+                    "id": "resp-tool-loop",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": [{"type": "text", "text": "Paris is 19C."}],
+                            },
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 2, "total_tokens": 4},
+                },
+            ),
+        )
+
+    proxy = ToolProxy(
+        base_url="http://validator",
+        token=TEST_TOKEN,
+        session_id=SESSION_ID,
+        client=httpx.AsyncClient(base_url="http://validator", transport=httpx.MockTransport(handler)),
+    )
+    messages = [
+        {"role": "user", "content": "Weather in Paris?"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "name": "lookup_weather",
+                    "arguments": '{"city":"Paris"}',
+                }
+            ],
+            "reasoning_details": [{"type": "reasoning.encrypted", "data": "opaque"}],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": '{"temperature":19}'},
+    ]
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "lookup_weather",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+                "strict": True,
+            },
+        }
+    ]
+    try:
+        with bind_tool_invoker(proxy):
+            await llm_chat(
+                provider="openrouter",
+                model="openai/gpt-oss-20b",
+                messages=messages,
+                tools=tools,
+                tool_choice={"type": "function", "function": {"name": "lookup_weather"}},
+                parallel_tool_calls=True,
+                max_tokens=512,
+            )
+    finally:
+        await proxy.aclose()
+
+    kwargs = captured["payload"]["kwargs"]
+    assert kwargs["messages"] == messages
+    assert kwargs["tools"] == tools
+    assert kwargs["tool_choice"] == {"type": "function", "function": {"name": "lookup_weather"}}
+    assert kwargs["parallel_tool_calls"] is True
+    assert kwargs["max_output_tokens"] == 512
+    assert "max_tokens" not in kwargs
+
+
+async def test_llm_chat_helper_rejects_typed_message_parts_it_cannot_serialize() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("unsupported typed message parts must fail before proxy I/O")
+
+    proxy = ToolProxy(
+        base_url="http://validator",
+        token=TEST_TOKEN,
+        session_id=SESSION_ID,
+        client=httpx.AsyncClient(base_url="http://validator", transport=httpx.MockTransport(handler)),
+    )
+    try:
+        with bind_tool_invoker(proxy):
+            with pytest.raises(ValueError, match="only input_text"):
+                await llm_chat(
+                    provider="chutes",
+                    model="demo-model",
+                    messages=[
+                        LlmMessage(
+                            role="user",
+                            content=(
+                                LlmInputTextPart(text="Describe this image."),
+                                LlmInputImagePart(data=LlmInputImageData(url="https://example.com/image.png")),
+                            ),
+                        )
+                    ],
+                )
+    finally:
+        await proxy.aclose()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("include", ["sources"]), ("response_format", "json")),
+)
+async def test_llm_chat_helper_rejects_removed_fields_before_proxy_io(field: str, value: object) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("removed llm_chat fields must fail before proxy I/O")
+
+    proxy = ToolProxy(
+        base_url="http://validator",
+        token=TEST_TOKEN,
+        session_id=SESSION_ID,
+        client=httpx.AsyncClient(base_url="http://validator", transport=httpx.MockTransport(handler)),
+    )
+    try:
+        with bind_tool_invoker(proxy):
+            with pytest.raises(ValidationError, match=field):
+                await llm_chat(
+                    provider="chutes",
+                    model="demo-model",
+                    messages=[{"role": "user", "content": "hi"}],
+                    **{field: value},
                 )
     finally:
         await proxy.aclose()

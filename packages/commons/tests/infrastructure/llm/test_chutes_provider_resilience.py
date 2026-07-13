@@ -20,6 +20,7 @@ from harnyx_commons.llm.providers.chutes_codec import (
     _ChutesChatRequest,
     _ChutesChatResponse,
     _ChutesReasoningStreamState,
+    _ChutesToolCallPayload,
 )
 from harnyx_commons.llm.providers.chutes_pricing import ChutesModelPricingCache
 from harnyx_commons.llm.providers.openai_stream import (
@@ -133,7 +134,7 @@ def test_non_array_choices_fall_back_to_retryable_empty_choices_verifier() -> No
     assert (ok, retryable, reason) == (False, True, "empty_choices")
 
 
-def test_parse_payload_ignores_malformed_tool_call_and_keeps_valid_choice() -> None:
+def test_parse_payload_rejects_response_containing_malformed_tool_call() -> None:
     payload = {
         "id": "resp_4",
         "choices": [
@@ -163,12 +164,82 @@ def test_parse_payload_ignores_malformed_tool_call_and_keeps_valid_choice() -> N
         ],
     }
 
-    parsed = _parse_chutes_response_payload(payload)
+    with pytest.raises(RuntimeError, match="tool_calls"):
+        _parse_chutes_response_payload(payload)
 
-    assert len(parsed.choices) == 1
-    assert parsed.to_llm_response().choices[0].message.content[0].text == "ok"
-    tool_calls = parsed.choices[0].message.tool_calls or ()
-    assert tuple(call.id for call in tool_calls) == ("tc-valid",)
+
+@pytest.mark.parametrize(
+    "tool_call",
+    (
+        {"id": " ", "type": "function", "function": {"name": "summarize", "arguments": "{}"}},
+        {"id": "tc-1", "type": "function", "function": {"name": " ", "arguments": "{}"}},
+    ),
+)
+def test_parse_payload_rejects_whitespace_only_tool_call_identifiers(
+    tool_call: dict[str, object],
+) -> None:
+    payload = {
+        "id": "resp-whitespace",
+        "choices": [{"message": {"content": None, "tool_calls": [tool_call]}}],
+    }
+
+    with pytest.raises(RuntimeError, match="tool_calls"):
+        _parse_chutes_response_payload(payload)
+
+
+def test_parse_payload_rejects_duplicate_tool_call_ids_within_one_block() -> None:
+    tool_call = {
+        "id": "tc-1",
+        "type": "function",
+        "function": {"name": "summarize", "arguments": "{}"},
+    }
+    payload = {
+        "id": "resp-duplicate",
+        "choices": [{"message": {"content": None, "tool_calls": [tool_call, tool_call]}}],
+    }
+
+    with pytest.raises(RuntimeError, match="unique"):
+        _parse_chutes_response_payload(payload)
+
+
+@pytest.mark.parametrize("arguments", ('{"x":NaN}', '{"x":Infinity}'))
+def test_parse_payload_rejects_non_standard_json_constants_in_tool_arguments(
+    arguments: str,
+) -> None:
+    payload = {
+        "id": "resp-non-finite",
+        "choices": [
+            {
+                "message": {
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "tc-1",
+                            "type": "function",
+                            "function": {"name": "summarize", "arguments": arguments},
+                        }
+                    ],
+                }
+            }
+        ],
+    }
+
+    parsed = _parse_chutes_response_payload(payload)
+    with pytest.raises(ValueError, match="non-finite"):
+        parsed.to_llm_response()
+
+
+def test_chutes_tool_call_rejects_non_finite_values_in_object_arguments() -> None:
+    tool_call = _ChutesToolCallPayload.model_validate(
+        {
+            "id": "tc-1",
+            "type": "function",
+            "function": {"name": "summarize", "arguments": {"x": float("nan")}},
+        }
+    )
+
+    with pytest.raises(ValueError, match="Out of range float values"):
+        tool_call.to_tool_call(index=0)
 
 
 def test_parse_payload_skips_malformed_content_fragment_and_keeps_valid_text() -> None:
@@ -232,6 +303,52 @@ def test_chutes_request_forces_stream_even_when_extra_overrides() -> None:
     ).model_dump(mode="python", exclude_none=True)
 
     assert payload["stream"] is True
+
+
+def test_chutes_request_serializes_complete_tool_loop() -> None:
+    from harnyx_commons.llm.schema import LlmInputToolResultPart, LlmMessageToolCall, LlmTool
+
+    request = replace(
+        _basic_chutes_request(),
+        messages=(
+            LlmMessage(
+                role="assistant",
+                content=(),
+                tool_calls=(
+                    LlmMessageToolCall(
+                        id="call-1",
+                        type="function",
+                        name="lookup_weather",
+                        arguments='{"city":"Paris"}',
+                    ),
+                ),
+            ),
+            LlmMessage(
+                role="tool",
+                content=(
+                    LlmInputToolResultPart(
+                        tool_call_id="call-1",
+                        name=None,
+                        output_json='{"temperature":19}',
+                    ),
+                ),
+            ),
+        ),
+        tools=(LlmTool(type="function", function={"name": "lookup_weather", "strict": True}),),
+        tool_choice={"type": "function", "function": {"name": "lookup_weather"}},
+        parallel_tool_calls=True,
+    )
+
+    payload = _ChutesChatRequest.from_request(request).model_dump(mode="json", exclude_none=True)
+
+    assert payload["messages"][0]["tool_calls"][0]["id"] == "call-1"
+    assert payload["messages"][1] == {
+        "role": "tool",
+        "content": '{"temperature":19}',
+        "tool_call_id": "call-1",
+    }
+    assert payload["tool_choice"] == {"type": "function", "function": {"name": "lookup_weather"}}
+    assert payload["parallel_tool_calls"] is True
 
 
 def test_chutes_deepseek_thinking_enabled_and_disabled_use_template_kwargs() -> None:

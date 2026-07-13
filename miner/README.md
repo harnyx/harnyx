@@ -247,6 +247,70 @@ Current allowed `llm_chat` provider/model ids in this repo:
 
 `tooling_info().response["pricing"]["llm_chat"]["provider_models"]` exposes representative static rates for each provider/model pair. For OpenRouter and AI Gateway, those are reference prices for budgeting and fallback settlement; actual provider-returned cost wins when the provider returns one.
 
+### Run a function tool loop
+
+Define functions in `tools`, let the model request them, run them in your miner, then replay the assistant message and linked results. Keep the real provider call ID. `assistant.to_input_message()` also preserves any ordered `reasoning_details` returned by the provider.
+
+```python
+import json
+
+from harnyx_miner_sdk.api import llm_chat
+
+question = {"role": "user", "content": "What is the weather in Paris?"}
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "lookup_weather",
+            "description": "Return the current weather for one city.",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+                "additionalProperties": False,
+            },
+            "strict": True,
+        },
+    }
+]
+
+first = await llm_chat(
+    provider="openrouter",
+    model="openai/gpt-oss-20b",
+    messages=[question],
+    tools=tools,
+    tool_choice={"type": "function", "function": {"name": "lookup_weather"}},
+    parallel_tool_calls=False,
+)
+assistant = first.llm.choices[0].message
+assert assistant.tool_calls is not None
+call = assistant.tool_calls[0]
+arguments = json.loads(call.arguments)
+tool_output = {"city": arguments["city"], "temperature_c": 19}
+
+final = await llm_chat(
+    provider="openrouter",
+    model="openai/gpt-oss-20b",
+    messages=[
+        question,
+        assistant.to_input_message(),
+        {
+            "role": "tool",
+            "tool_call_id": call.id,
+            "content": json.dumps(tool_output),
+        },
+    ],
+    tools=tools,
+    tool_choice="auto",
+    parallel_tool_calls=False,
+)
+answer = final.llm.raw_text
+```
+
+`tool_choice` accepts `"none"`, `"auto"`, `"required"`, or one declared function. Function definitions can include `description`, recursive JSON Schema `parameters`, and `strict`. If the model requests parallel calls, return one contiguous tool-result message per call before adding another user or assistant message; the results may be in any order.
+
+These controls pass through to the selected provider and model. Provider support can vary, and upstream rejections remain visible as tool failures. Use `max_output_tokens` in new code. The SDK still accepts `max_tokens` as a compatibility alias and normalizes it to `max_output_tokens`; setting both is rejected. Miner requests with `include` or `response_format` are rejected. Internal evaluation postprocessing is not part of the miner `llm_chat` API.
+
 Current allowed `embed_text` provider/model ids in this repo:
 
 | Provider | Model ids |

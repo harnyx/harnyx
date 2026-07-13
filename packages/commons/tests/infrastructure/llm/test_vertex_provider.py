@@ -9,7 +9,7 @@ from typing import Any, cast
 import pytest
 from anthropic.types.text_block import TextBlock
 from anthropic.types.thinking_block import ThinkingBlock
-from google.genai import errors
+from google.genai import errors, types
 from pydantic import BaseModel
 
 from harnyx_commons.clients import CHUTES
@@ -31,6 +31,7 @@ from harnyx_commons.llm.providers.vertex.codec import (
     build_choices,
     normalize_messages,
     resolve_thinking_config,
+    resolve_tool_config,
     supports_thinking_config,
     vertex_maas_openai_chat_model_name,
 )
@@ -1101,7 +1102,7 @@ async def test_vertex_provider_gemini_stream_overwrites_partial_tool_call_same_i
     assert response.choices[0].message.tool_calls[0].id == "call-1"
 
 
-def test_openai_choice_state_skips_tool_call_without_function_name() -> None:
+def test_openai_choice_state_rejects_tool_call_without_function_name() -> None:
     state = OpenAiChoiceState(
         tool_calls={
             0: OpenAiToolCallState(
@@ -1112,7 +1113,8 @@ def test_openai_choice_state_skips_tool_call_without_function_name() -> None:
         }
     )
 
-    assert state.tool_call_values() is None
+    with pytest.raises(OpenAiStreamError):
+        state.tool_call_values()
 
 
 def test_openai_tool_call_state_replaces_dict_argument_snapshots() -> None:
@@ -1120,12 +1122,12 @@ def test_openai_tool_call_state_replaces_dict_argument_snapshots() -> None:
 
     assert state.merge_delta(
         _OpenAiToolCallDelta.model_validate(
-            {"function": {"arguments": {"query": "a"}}}
+            {"index": 0, "function": {"arguments": {"query": "a"}}}
         )
     )
     assert state.merge_delta(
         _OpenAiToolCallDelta.model_validate(
-            {"function": {"arguments": {"query": "ab"}}}
+            {"index": 0, "function": {"arguments": {"query": "ab"}}}
         )
     )
 
@@ -1464,6 +1466,45 @@ def test_vertex_codec_fails_fast_on_unknown_request_role() -> None:
                 ),
             )
         )
+
+
+def test_vertex_codec_rejects_assistant_replay_state_it_cannot_serialize() -> None:
+    with pytest.raises(ValueError, match="do not support"):
+        normalize_messages(
+            (
+                LlmMessage(
+                    role="assistant",
+                    content=(),
+                    tool_calls=(
+                        LlmMessageToolCall(
+                            id="call-1",
+                            type="function",
+                            name="lookup",
+                            arguments="{}",
+                        ),
+                    ),
+                ),
+            )
+        )
+
+    with pytest.raises(ValueError, match="do not support"):
+        normalize_messages(
+            (
+                LlmMessage(
+                    role="assistant",
+                    content=(LlmMessageContentPart.input_text("answer"),),
+                    reasoning_details=({"type": "reasoning.encrypted", "data": "opaque"},),
+                ),
+            )
+        )
+
+
+def test_vertex_tool_choice_none_disables_function_calling() -> None:
+    config = resolve_tool_config("none", [types.Tool()])
+
+    assert config is not None
+    assert config.function_calling_config is not None
+    assert config.function_calling_config.mode.name == "NONE"
 
 
 def test_vertex_resolve_thinking_config_returns_none_when_effort_is_null() -> None:
@@ -2034,10 +2075,11 @@ def test_vertex_maas_response_payload_preserves_multi_event_interleaving() -> No
                         "content": "first ",
                         "reasoning_content": "think-1",
                         "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "call-1",
-                                "function": {
+                                {
+                                    "index": 0,
+                                    "id": "call-1",
+                                    "type": "function",
+                                    "function": {
                                     "name": "lookup",
                                     "arguments": '{"q":',
                                 },

@@ -1161,8 +1161,8 @@ async def test_runtime_invoker_llm_provider_resolver_failure_does_not_fall_back_
 @pytest.mark.parametrize(
     ("tool_spec", "expected_message"),
     [
-        ({"type": "function", "function": "not-object"}, "tool spec function"),
-        ({"type": "web_search", "config": "not-object"}, "tool spec config"),
+        ({"type": "function", "function": "not-object"}, "tools.0.function"),
+        ({"type": "web_search", "config": "not-object"}, "tools.0.type"),
     ],
 )
 async def test_runtime_invoker_validates_llm_tools_before_resolving_provider(
@@ -1185,7 +1185,7 @@ async def test_runtime_invoker_validates_llm_tools_before_resolving_provider(
         allowed_models=ALLOWED_TOOL_MODELS,
     )
 
-    with pytest.raises(TypeError, match=expected_message):
+    with pytest.raises(ValidationError, match=expected_message):
         await _invoke(
             invoker,
             "llm_chat",

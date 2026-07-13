@@ -10,10 +10,9 @@ import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import asdict, dataclass
-from typing import Literal, TypeVar, cast
+from typing import TypeVar, cast
 
-from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, ValidationError, field_validator, model_validator
-from pydantic import JsonValue as PydanticJsonValue
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.domain.tool_call import ToolExecutionFacts
@@ -32,13 +31,10 @@ from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import (
     LlmChoice,
     LlmChoiceMessage,
-    LlmMessage,
     LlmMessageContentPart,
     LlmMessageToolCall,
     LlmRequest,
     LlmResponse,
-    LlmThinkingConfig,
-    LlmTool,
 )
 from harnyx_commons.llm.tool_models import (
     ALLOWED_TOOL_MODELS,
@@ -79,7 +75,7 @@ from harnyx_commons.tools.types import (
     is_search_tool,
 )
 from harnyx_commons.tools.usage_tracker import ToolCallUsage  # noqa: F401 - compatibility
-from harnyx_miner_sdk.tools.llm_provider_extra import ProviderExtra, validate_provider_extra
+from harnyx_miner_sdk.tools.llm_chat_models import LlmChatRequest
 
 MINER_SANDBOX_TOOL_NAMES: tuple[ToolName, ...] = tuple(sorted(TOOL_NAMES))
 DEFAULT_TOOL_LLM_TIMEOUT_SECONDS = PLATFORM_TOOL_PROXY_LLM_CHAT_DEFAULT_TIMEOUT_SECONDS
@@ -122,80 +118,6 @@ class _TestToolInvocation(BaseModel):
 
     message: str = ""
     timeout: ToolInvocationTimeout | None = None
-
-
-class LlmToolMessage(BaseModel):
-    """Message format for LLM tool invocations."""
-
-    role: Literal["system", "user", "assistant", "tool"]
-    content: str
-
-
-class LlmThinkingConfigPayload(BaseModel):
-    """Typed public thinking config for miner llm_chat tool calls."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: StrictBool
-    budget: StrictInt | None = None
-    effort: Literal["low", "medium", "high"] | None = None
-
-    @field_validator("budget")
-    @classmethod
-    def _validate_budget(cls, value: int | None) -> int | None:
-        if value is not None and value < 1:
-            raise ValueError("thinking.budget must be positive")
-        return value
-
-    @model_validator(mode="after")
-    def _validate_single_tuning_knob(self) -> LlmThinkingConfigPayload:
-        if self.budget is not None and self.effort is not None:
-            raise ValueError("thinking.budget and thinking.effort are mutually exclusive")
-        return self
-
-    def to_schema(self) -> LlmThinkingConfig:
-        return LlmThinkingConfig(
-            enabled=self.enabled,
-            budget=self.budget,
-            effort=self.effort,
-        )
-
-
-class LlmToolInvocation(BaseModel):
-    """Request payload for llm_chat tool calls."""
-
-    provider: Literal["chutes", "openrouter", "ai_gateway"]
-    model: str
-    messages: tuple[LlmToolMessage, ...]
-    timeout: ToolInvocationTimeout | None = None
-    temperature: float | None = None
-    max_output_tokens: int | None = None
-    max_tokens: int | None = None
-    response_format: str = "text"
-    tools: tuple[dict[str, PydanticJsonValue], ...] | None = None
-    tool_choice: Literal["auto", "required"] | None = None
-    include: tuple[str, ...] | None = None
-    thinking: LlmThinkingConfigPayload | None = None
-    provider_extra: ProviderExtra | None = None
-
-    model_config = ConfigDict(extra="forbid")
-
-    @model_validator(mode="before")
-    @classmethod
-    def _validate_provider_extra(cls, value: object) -> object:
-        if not isinstance(value, Mapping):
-            return value
-        data = cast(Mapping[str, object], value)
-        if "provider_extra" not in data:
-            return value
-        provider = data.get("provider")
-        if not isinstance(provider, str):
-            return value
-
-        parsed = validate_provider_extra(provider=provider, provider_extra=data.get("provider_extra"))
-        normalized = dict(data)
-        normalized["provider_extra"] = parsed
-        return normalized
 
 
 def build_miner_sandbox_tool_invoker(
@@ -511,16 +433,7 @@ class RuntimeToolInvoker(ToolInvoker):
         if self._llm_provider is None and self._llm_provider_resolver is None:
             raise LookupError("llm provider is not configured")
         invocation = self._parse_invocation(args, kwargs)
-        messages = self._normalize_messages(invocation)
-        tools = self._normalize_tools(invocation)
-        max_output_tokens = invocation.max_output_tokens or invocation.max_tokens
-
-        request = self._build_llm_request(
-            invocation,
-            messages,
-            tools,
-            max_output_tokens,
-        )
+        request = self._build_llm_request(invocation)
 
         llm_provider = await self._resolve_llm_provider(invocation.provider, context)
 
@@ -593,9 +506,9 @@ class RuntimeToolInvoker(ToolInvoker):
         self,
         args: Sequence[JsonValue],
         kwargs: Mapping[str, JsonValue],
-    ) -> LlmToolInvocation:
+    ) -> LlmChatRequest:
         payload = tool_payload_from_args_kwargs(args, kwargs)
-        invocation = LlmToolInvocation.model_validate(payload)
+        invocation = LlmChatRequest.model_validate(payload)
         selection = parse_miner_selected_llm_provider_model(
             provider=invocation.provider,
             model=invocation.model,
@@ -681,53 +594,27 @@ class RuntimeToolInvoker(ToolInvoker):
         self._require_embedding_provider(requested_provider)
         return embedding_provider
 
-    @staticmethod
-    def _normalize_messages(invocation: LlmToolInvocation) -> tuple[LlmMessage, ...]:
-        return tuple(
-            LlmMessage(
-                role=message.role,
-                content=(LlmMessageContentPart.input_text(message.content),),
-            )
-            for message in invocation.messages
-        )
-
-    @staticmethod
-    def _normalize_tools(invocation: LlmToolInvocation) -> tuple[LlmTool, ...] | None:
-        if not invocation.tools:
-            return None
-        return tuple(
-            LlmTool(
-                type=str(tool_spec.get("type", "")),
-                function=_optional_mapping(tool_spec.get("function"), label="function"),
-                config=_optional_mapping(tool_spec.get("config"), label="config"),
-            )
-            for tool_spec in invocation.tools
-        )
-
     def _build_llm_request(
         self,
-        invocation: LlmToolInvocation,
-        messages: tuple[LlmMessage, ...],
-        tools: tuple[LlmTool, ...] | None,
-        max_output_tokens: int | None,
+        invocation: LlmChatRequest,
     ) -> LlmRequest:
-        request_extra = invocation.provider_extra.to_request_extra() if invocation.provider_extra is not None else None
+        normalized = invocation.to_tool_request()
         return LlmRequest(
-            provider=invocation.provider,
-            model=invocation.model,
-            messages=messages,
-            temperature=invocation.temperature,
-            max_output_tokens=int(max_output_tokens) if max_output_tokens is not None else None,
+            provider=normalized.provider,
+            model=normalized.model,
+            messages=normalized.messages,
+            temperature=normalized.temperature,
+            max_output_tokens=normalized.max_output_tokens,
             output_mode="text",
-            tools=tools,
-            tool_choice=invocation.tool_choice,
-            include=invocation.include,
+            tools=normalized.tools,
+            tool_choice=normalized.tool_choice,
+            parallel_tool_calls=normalized.parallel_tool_calls,
             timeout_seconds=_provider_request_timeout_seconds(
                 default=DEFAULT_TOOL_LLM_TIMEOUT_SECONDS,
                 effective_timeout=invocation.timeout,
             ),
-            thinking=invocation.thinking.to_schema() if invocation.thinking is not None else None,
-            extra=request_extra,
+            thinking=normalized.thinking,
+            extra=invocation.provider_extra_payload(),
             use_case="tool_runtime_invoker",
             retry_policy=RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0.0),
         )
@@ -797,17 +684,6 @@ async def _cancel_provider_task(task: asyncio.Task[TInvocationResult]) -> None:
         await task
 
 
-def _optional_mapping(value: object | None, *, label: str) -> Mapping[str, object] | None:
-    if value is None:
-        return None
-    if not isinstance(value, dict):
-        raise TypeError(f"tool spec {label} must be a JSON object")
-    for key in value:
-        if not isinstance(key, str):
-            raise TypeError(f"tool spec {label} must have string keys")
-    return cast(Mapping[str, object], value)
-
-
 def _public_embedding_pricing_payload(rates: EmbeddingPricing) -> JsonObject:
     payload: JsonObject = {}
     if rates.input_per_million is not None:
@@ -857,6 +733,8 @@ def _public_llm_message_payload(message: LlmChoiceMessage) -> JsonObject:
         payload["tool_calls"] = [_public_llm_tool_call_payload(call) for call in message.tool_calls]
     if message.reasoning is not None:
         payload["reasoning"] = message.reasoning
+    if message.reasoning_details is not None:
+        payload["reasoning_details"] = cast(JsonValue, list(message.reasoning_details))
     return payload
 
 
@@ -981,9 +859,6 @@ __all__ = [
     "DEFAULT_EMBEDDING_TOOL_TIMEOUT_SECONDS",
     "DEFAULT_TOOL_LLM_TIMEOUT_SECONDS",
     "EmbeddingProviderResolver",
-    "LlmToolInvocation",
-    "LlmToolMessage",
-    "LlmThinkingConfigPayload",
     "RuntimeToolInvoker",
     "MINER_SANDBOX_TOOL_NAMES",
     "build_miner_sandbox_tool_invoker",
