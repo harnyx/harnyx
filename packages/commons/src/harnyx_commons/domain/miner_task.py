@@ -6,11 +6,14 @@ from enum import StrEnum
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, TypeAdapter, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
 from harnyx_commons.domain.judge_usage import JudgeUsageSummary
 from harnyx_commons.domain.shared_config import COMMONS_STRICT_CONFIG
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
+from harnyx_miner_sdk.json_types import JsonValue
+from harnyx_miner_sdk.query import Query
+from harnyx_miner_sdk.structured_output import compact_json, validate_output_size
 
 _JUDGE_USAGE_ADAPTER = TypeAdapter(JudgeUsageSummary)
 _TOOL_USAGE_ADAPTER = TypeAdapter(ToolUsageSummary)
@@ -21,10 +24,6 @@ class _TextModel(BaseModel):
     model_config = COMMONS_STRICT_CONFIG
 
     text: str = Field(min_length=1)
-
-
-class Query(_TextModel):
-    pass
 
 
 class AnswerCitation(BaseModel):
@@ -51,8 +50,35 @@ class ReferenceAnswer(_TextModel):
         return value
 
 
-class Response(_TextModel):
+class Response(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_mode_override="validation",
+        strict=True,
+        str_strip_whitespace=False,
+    )
+
+    text: str | None = Field(default=None, max_length=80_000, exclude_if=lambda value: value is None)
+    output: JsonValue | None = Field(default=None, exclude_if=lambda value: value is None)
     citations: tuple[AnswerCitation, ...] | None = None
+
+    @field_validator("text")
+    @classmethod
+    def _validate_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("response text must not be blank")
+        return stripped
+
+    @field_validator("output")
+    @classmethod
+    def _validate_output(cls, value: JsonValue | None) -> JsonValue | None:
+        if value is None:
+            return None
+        return validate_output_size(value)
 
     @field_validator("citations", mode="before")
     @classmethod
@@ -65,6 +91,19 @@ class Response(_TextModel):
         if isinstance(value, list):
             return tuple(value)
         return value
+
+    @model_validator(mode="after")
+    def _validate_answer_mode(self) -> Response:
+        if (self.text is None) == (self.output is None):
+            raise ValueError("response must include exactly one non-null answer field")
+        return self
+
+    @property
+    def answer_text(self) -> str:
+        if self.text is not None:
+            return self.text
+        assert self.output is not None
+        return compact_json(self.output)
 
 
 class ScorerReasoning(BaseModel):

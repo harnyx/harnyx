@@ -1738,7 +1738,8 @@ def _render_answer_markdown(
     if raw_answer is None:
         return [f"- {label} answer: (none)"]
     answer = model_type.model_validate(raw_answer, strict=True)
-    lines = [f"- {label} answer: {answer.text}"]
+    answer_text = answer.answer_text if isinstance(answer, Response) else answer.text
+    lines = [f"- {label} answer: {answer_text}"]
     lines.extend(_render_citations_markdown(label, answer.citations))
     return lines
 

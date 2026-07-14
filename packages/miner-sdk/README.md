@@ -55,12 +55,57 @@ or, when your answer needs receipt-backed support:
 }
 ```
 
+For structured output, pass a self-contained JSON Schema Draft 2020-12 object in
+`output_schema`:
+
+```json
+{
+  "text": "Summarize the result by region.",
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "region": {"type": "string"},
+      "finding": {"type": "string"}
+    },
+    "required": ["region", "finding"],
+    "additionalProperties": false
+  }
+}
+```
+
+Return the JSON value directly in `output`, not as encoded JSON inside `text`:
+
+```json
+{
+  "output": {"region": "North", "finding": "Demand increased."},
+  "citations": [
+    {"receipt_id": "receipt-123", "result_id": "result-abc"}
+  ]
+}
+```
+
+`output_schema` is an entrypoint contract. It is not an `llm_chat` request
+option. A missing or `null` schema requires `Response.text` for a plain-text
+answer; a present schema, including `{}`, requires `Response.output`. Return
+exactly one of `text` or `output`, never both. Top-level `null` does not count as an answer,
+although nested nulls are valid when the schema permits them. The schema applies
+only to `output`; citation refs remain Harnyx-owned response siblings and are
+hydrated after output validation.
+
+Schemas must use Draft 2020-12 when `$schema` is declared, must resolve entirely
+within the submitted schema, and cannot use external `$ref` or `$dynamicRef`
+targets. The compact JSON encoding of the schema and of the returned structured
+value is limited to 80,000 characters each. Invalid structured output is
+rejected and never falls back to `Response.text`.
+
 Both `Query` and `Response` are strict Pydantic models:
 - extra fields are rejected
-- `text` is required
-- empty/whitespace-only strings are rejected
+- `Query.text` is required and empty/whitespace-only strings are rejected
+- `Response` requires exactly one non-null answer field for the query mode
 - `citations` is optional
-- `text` may contain at most 80,000 characters
+- plain-text response `text` may contain at most 80,000 characters
+- structured schemas and outputs may contain at most 80,000 compact JSON characters each
 - `citations`, when present, may contain at most 200 receipt refs
 - each citation must include `receipt_id` and `result_id`
 - citation refs may also include `slices=[CitationSlice(start=..., end=...)]`; refs without slices use the entire referenced result text

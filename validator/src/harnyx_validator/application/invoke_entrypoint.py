@@ -13,7 +13,6 @@ from harnyx_commons.application.miner_response_hydration import (
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.application.ports.session_registry import SessionRegistryPort
 from harnyx_commons.application.ports.token_registry import TokenRegistryPort
-from harnyx_commons.domain.miner_task import Response
 from harnyx_commons.domain.session import Session, SessionStatus
 from harnyx_commons.errors import SessionBudgetExhaustedError
 from harnyx_commons.sandbox.client import SandboxClient, SandboxInvokeError
@@ -68,8 +67,9 @@ class EntrypointInvoker:
         self._raise_if_session_exhausted(session.session_id)
         receipts = tuple(self._receipts.for_session(session.session_id))
         try:
-            hydrated_response = _hydrate_miner_response(
+            hydrated_response = hydrate_miner_response_payload(
                 payload,
+                query=request.query,
                 session_id=session.session_id,
                 receipt_log=self._receipts,
             )
@@ -151,20 +151,6 @@ class EntrypointInvoker:
         if session is None:
             raise LookupError(f"session {session_id} not found after entrypoint invocation")
         return session
-
-
-def _hydrate_miner_response(
-    payload: object,
-    *,
-    session_id: UUID,
-    receipt_log: ReceiptLogPort,
-) -> Response:
-    return hydrate_miner_response_payload(
-        payload,
-        session_id=session_id,
-        receipt_log=receipt_log,
-    )
-
 
 __all__ = [
     "EntrypointInvoker",

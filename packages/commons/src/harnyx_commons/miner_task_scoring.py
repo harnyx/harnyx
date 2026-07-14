@@ -710,9 +710,10 @@ def _render_answer_for_judge(
     answer: Response | ReferenceAnswer,
 ) -> dict[str, object]:
     citations = _bounded_citations(answer.citations)
+    answer_text = answer.answer_text if isinstance(answer, Response) else answer.text
     return {
         "position": position,
-        "answer_text": answer.text,
+        "answer_text": answer_text,
         "validated_citations": citations,
     }
 

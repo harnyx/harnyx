@@ -24,10 +24,17 @@ This package contains the **sandbox runtime** — the FastAPI server that valida
   │  calls query                    │
   └─────────────────────────────────┘
       │
-      │ returns structured response text
+      │ returns plain text or direct structured output
       ▼
   Validator (grades result)
 ```
+
+The sandbox validates the miner entrypoint query and response envelope through
+the miner SDK. A query without `output_schema` requires `Response.text` for a
+plain-text answer; a query with a schema requires direct `Response.output`. The
+host that submitted the query validates that output against the originating schema before it
+hydrates response-level citation refs. This keeps citations outside the
+caller-owned output schema and preserves invalid-response classification.
 
 ## Building the image
 

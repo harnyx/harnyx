@@ -655,7 +655,7 @@ async def _score_item_submission(
     try:
         score = await scoring_service.score(
             item=item,
-            generated_answer=response.text,
+            generated_answer=response.answer_text,
         )
     except Exception as exc:
         return _BenchmarkItemResult(

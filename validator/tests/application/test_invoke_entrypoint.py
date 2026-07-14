@@ -121,6 +121,45 @@ async def test_invoke_entrypoint_calls_query_with_query_payload() -> None:
     ]
 
 
+async def test_invoke_entrypoint_returns_structured_output() -> None:
+    token = uuid4().hex
+    invoker, sandbox, session_id, _, _, _, _ = _build_invoker(token)
+    sandbox.response = {"output": {"answer": [1, None]}}
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "array"}},
+        "required": ["answer"],
+    }
+
+    result = await invoker.invoke(
+        EntrypointInvocationRequest(
+            session_id=session_id,
+            token=token,
+            uid=42,
+            query=Query(text="question", output_schema=schema),
+        )
+    )
+
+    assert result.response == Response(output={"answer": [1, None]})
+    assert sandbox.invocations[0][1] == {"text": "question", "output_schema": schema}
+
+
+async def test_invoke_entrypoint_maps_schema_mismatch_as_miner_response_invalid() -> None:
+    token = uuid4().hex
+    invoker, sandbox, session_id, _, _, _, _ = _build_invoker(token)
+    sandbox.response = {"output": {"answer": 1}}
+
+    with pytest.raises(MinerResponseValidationError):
+        await invoker.invoke(
+            EntrypointInvocationRequest(
+                session_id=session_id,
+                token=token,
+                uid=42,
+                query=Query(text="question", output_schema={"type": "array"}),
+            )
+        )
+
+
 async def test_invoke_entrypoint_returns_tool_receipts() -> None:
     token = uuid4().hex
     invoker, _, session_id, _, _, _, receipt_log = _build_invoker(token)

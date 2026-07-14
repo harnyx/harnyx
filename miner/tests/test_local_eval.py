@@ -1175,6 +1175,16 @@ def test_render_answer_markdown_uses_shared_models_and_ignores_empty_optional_ci
     ]
 
 
+def test_render_answer_markdown_uses_canonical_structured_json() -> None:
+    lines = local_eval._render_answer_markdown(
+        "Target",
+        {"output": {"z": [1, None], "a": True}},
+        model_type=Response,
+    )
+
+    assert lines == ['- Target answer: {"a":true,"z":[1,null]}']
+
+
 def test_invocation_only_runtime_factory_skips_default_scoring_provider(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -123,6 +123,34 @@ async def query(query: Query) -> Response:
 
 The `query` entrypoint must stay `async def`, accept exactly one parameter annotated as `Query`, and return `Response`. The parameter name itself does not matter.
 
+The entrypoint also supports caller-selected structured output. When
+`query.output_schema` is absent or `None`, return the existing text response.
+When it is present, return the JSON value directly in `Response.output`:
+
+```python
+from harnyx_miner_sdk.query import CitationRef
+
+
+@entrypoint("query")
+async def query(query: Query) -> Response:
+    refs = [CitationRef(receipt_id="receipt-123", result_id="result-abc")]
+    if query.output_schema is None:
+        return Response(text="legacy answer", citations=refs)
+
+    return Response(
+        output={"summary": "structured answer"},
+        citations=refs,
+    )
+```
+
+Return exactly one of `text` or `output`. Top-level `None` is treated as a
+missing answer; nested nulls remain ordinary JSON values when the caller's
+schema allows them. Citation refs remain response-level siblings rather than
+fields inside the caller's schema. Invalid structured output is rejected rather
+than converted to text. See the
+[miner SDK query contract](../packages/miner-sdk/README.md#query-contract) for
+the Draft 2020-12 restrictions and 80,000-character compact JSON limits.
+
 `Response.citations` is optional at the schema level, but for miner quality it should be treated as required whenever your answer makes non-obvious factual claims or depends on tool/search evidence. Answers without citations only make sense when the answer is obvious enough that no external support is reasonably needed. Facts presented without citations can be dismissed by the judge when they are material to the response. When present, `Response.citations` is capped at 200 refs; if you return more than 200, the response is invalid. `Response.text` is capped at 80,000 characters.
 
 When citations are present, validators hydrate them into shared citations shaped like

@@ -464,6 +464,26 @@ class _FakeLocalBenchmarkScoringService:
         raise AssertionError("report construction must not call the scoring service")
 
 
+class _CapturingLocalBenchmarkScoringService:
+    def __init__(self) -> None:
+        self.generated_answers: list[str] = []
+
+    async def score(
+        self,
+        *,
+        item: BenchmarkDatasetItem,
+        generated_answer: str,
+    ) -> local_benchmark._BenchmarkItemScore:
+        del item
+        self.generated_answers.append(generated_answer)
+        return local_benchmark._BenchmarkItemScore(
+            is_correct=True,
+            score=1.0,
+            score_reason="Captured structured answer.",
+            score_detail=None,
+        )
+
+
 class _FakeBenchmarkScoringRegistry:
     async def aclose(self) -> None:
         return None
@@ -497,6 +517,45 @@ def _weighted_rubric_scoring_bundle() -> local_benchmark._BenchmarkScoringBundle
         uses_numeric_scores=True,
         failed_item_report_score=None,
     )
+
+
+async def test_local_benchmark_uses_canonical_structured_answer() -> None:
+    snapshot = _snapshot()
+    task = local_benchmark._build_tasks(
+        run_id=uuid4(),
+        snapshot=snapshot,
+        items=snapshot.items[:1],
+    )[0]
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="structured-output",
+        size_bytes=128,
+    )
+    submission = _submission(
+        batch_id=uuid4(),
+        artifact=artifact,
+        task=task,
+        answer="unused legacy answer",
+    )
+    submission = submission.model_copy(
+        update={
+            "run": submission.run.model_copy(
+                update={"response": Response(output={"z": [1, None], "a": True})},
+            )
+        }
+    )
+    scoring_service = _CapturingLocalBenchmarkScoringService()
+
+    result = await local_benchmark._score_item_submission(
+        item=snapshot.items[0],
+        task=task,
+        submission=submission,
+        scoring_service=scoring_service,
+    )
+
+    assert result.error_code is None
+    assert scoring_service.generated_answers == ['{"a":true,"z":[1,null]}']
 
 
 def test_local_benchmark_report_includes_answers_and_summary(tmp_path: Path) -> None:

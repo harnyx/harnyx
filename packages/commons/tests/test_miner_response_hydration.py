@@ -8,9 +8,11 @@ from pydantic import ValidationError
 
 from harnyx_commons.application.miner_response_hydration import (
     MinerResponsePayloadError,
-    hydrate_miner_response_payload,
 )
-from harnyx_commons.domain.miner_task import AnswerCitation, Response
+from harnyx_commons.application.miner_response_hydration import (
+    hydrate_miner_response_payload as _hydrate_miner_response_payload,
+)
+from harnyx_commons.domain.miner_task import AnswerCitation, Query, Response
 from harnyx_commons.domain.tool_call import (
     SearchToolResult,
     ToolCall,
@@ -19,6 +21,23 @@ from harnyx_commons.domain.tool_call import (
     ToolResultPolicy,
 )
 from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
+
+_LEGACY_QUERY = Query(text="question")
+
+
+def hydrate_miner_response_payload(
+    payload: object,
+    *,
+    session_id: UUID,
+    receipt_log: InMemoryReceiptLog,
+    query: Query = _LEGACY_QUERY,
+) -> Response:
+    return _hydrate_miner_response_payload(
+        payload,
+        query=query,
+        session_id=session_id,
+        receipt_log=receipt_log,
+    )
 
 
 def _source_text(length: int = 160) -> str:
@@ -329,6 +348,55 @@ def test_hydrate_miner_response_payload_rejects_text_over_eighty_thousand_chars(
     with pytest.raises(ValidationError):
         hydrate_miner_response_payload(
             {"text": "x" * 80_001},
+            session_id=uuid4(),
+            receipt_log=InMemoryReceiptLog(),
+        )
+
+
+def test_hydrate_structured_output_and_citations() -> None:
+    session_id = uuid4()
+    source_text = "Primary source"
+    response = hydrate_miner_response_payload(
+        {
+            "output": {"answer": [1, None, "  exact  "]},
+            "citations": [{"receipt_id": "receipt-1", "result_id": "result-1"}],
+        },
+        query=Query(
+            text="question",
+            output_schema={
+                "type": "object",
+                "properties": {"answer": {"type": "array"}},
+                "required": ["answer"],
+            },
+        ),
+        session_id=session_id,
+        receipt_log=_receipt_log_with_result(session_id=session_id, note=source_text),
+    )
+
+    assert response.output == {"answer": [1, None, "  exact  "]}
+    assert response.text is None
+    assert response.citations == (
+        AnswerCitation(
+            url="https://example.com/source",
+            note=f"[slice 0:{len(source_text)}]\n{source_text}",
+            title="Example source",
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("query", "payload"),
+    [
+        (Query(text="question"), {"output": {"answer": 1}}),
+        (Query(text="question", output_schema={}), {"text": "answer"}),
+        (Query(text="question", output_schema={"type": "array"}), {"output": {"answer": 1}}),
+    ],
+)
+def test_hydration_rejects_wrong_mode_and_schema_mismatch(query: Query, payload: object) -> None:
+    with pytest.raises(MinerResponsePayloadError):
+        hydrate_miner_response_payload(
+            payload,
+            query=query,
             session_id=uuid4(),
             receipt_log=InMemoryReceiptLog(),
         )

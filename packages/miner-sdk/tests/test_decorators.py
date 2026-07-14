@@ -36,6 +36,51 @@ async def test_query_entrypoint_allows_domain_named_parameter() -> None:
     assert await handler({"text": "hello"}) == Response(text="hello")
 
 
+async def test_query_entrypoint_accepts_structured_envelope() -> None:
+    clear_entrypoints()
+
+    @entrypoint("query")
+    async def query(request: Query) -> Response:
+        return Response(output={"answer": request.text})
+
+    handler = get_entrypoint("query")
+    assert await handler(
+        {"text": "hello", "output_schema": {"type": "object"}}
+    ) == Response(output={"answer": "hello"})
+
+
+async def test_query_entrypoint_does_not_apply_relational_schema_conformance() -> None:
+    clear_entrypoints()
+
+    @entrypoint("query")
+    async def query(request: Query) -> Response:
+        return Response(output={"answer": request.text})
+
+    handler = get_entrypoint("query")
+    response = await handler(
+        {"text": "hello", "output_schema": {"type": "array"}}
+    )
+
+    assert response == Response(output={"answer": "hello"})
+
+
+async def test_invalid_query_schema_prevents_miner_invocation() -> None:
+    clear_entrypoints()
+    invoked = False
+
+    @entrypoint("query")
+    async def query(request: Query) -> Response:
+        nonlocal invoked
+        invoked = True
+        return Response(text=request.text)
+
+    handler = get_entrypoint("query")
+    with pytest.raises(ValueError):
+        await handler({"text": "hello", "output_schema": {"$ref": "https://example.com/schema"}})
+
+    assert invoked is False
+
+
 async def test_query_entrypoint_rejects_wrong_parameter_type() -> None:
     clear_entrypoints()
 

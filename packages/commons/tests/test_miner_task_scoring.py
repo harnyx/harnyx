@@ -1213,6 +1213,24 @@ async def test_scoring_service_includes_citations_in_pairwise_prompt() -> None:
     )
 
 
+def test_structured_object_renders_deterministically_in_judge_answer_text() -> None:
+    rendered = miner_task_scoring._render_answer_for_judge(
+        position="first",
+        answer=Response(output={"z": [1, None], "a": True}),
+    )
+
+    assert rendered["answer_text"] == '{"a":true,"z":[1,null]}'
+
+
+def test_structured_string_renders_as_json_string_not_legacy_text() -> None:
+    rendered = miner_task_scoring._render_answer_for_judge(
+        position="first",
+        answer=Response(output="structured string"),
+    )
+
+    assert rendered["answer_text"] == '"structured string"'
+
+
 def test_evaluation_scoring_config_default_timeout_is_300_seconds() -> None:
     config = EvaluationScoringConfig(provider="chutes", model="judge-model")
 

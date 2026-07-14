@@ -6,13 +6,15 @@ from dataclasses import dataclass
 from typing import Self
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
-from harnyx_commons.domain.miner_task import AnswerCitation, Response
+from harnyx_commons.domain.miner_task import AnswerCitation, Query, Response
 from harnyx_commons.domain.shared_config import COMMONS_STRICT_CONFIG
 from harnyx_commons.domain.tool_call import SearchToolResult, ToolCall, ToolResultPolicy
 from harnyx_commons.tools.types import is_citation_source
+from harnyx_miner_sdk.json_types import JsonValue
+from harnyx_miner_sdk.structured_output import validate_output_against_schema, validate_output_size
 
 _MAX_RESPONSE_CHARS = 80_000
 _MAX_CITATION_REFS = 200
@@ -65,13 +67,23 @@ class _CitationRefPayload(BaseModel):
 
 
 class _RawMinerResponsePayload(BaseModel):
-    model_config = COMMONS_STRICT_CONFIG
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        strict=True,
+        str_strip_whitespace=False,
+    )
 
-    text: str = Field(max_length=_MAX_RESPONSE_CHARS)
+    text: str | None = Field(default=None, max_length=_MAX_RESPONSE_CHARS)
+    output: JsonValue | None = None
     citations: list[_CitationRefPayload] | None = Field(default=None, max_length=_MAX_CITATION_REFS)
 
     @model_validator(mode="after")
     def validate_total_evidence_segments(self) -> Self:
+        if (self.text is None) == (self.output is None):
+            raise ValueError("response must include exactly one non-null answer field")
+        if self.output is not None:
+            validate_output_size(self.output)
         total_segments = sum(len(citation.slices) if citation.slices else 1 for citation in self.citations or ())
         if total_segments > _MAX_EVIDENCE_SEGMENTS_PER_RESPONSE:
             raise ValueError("response citations exceed 400 materialized evidence segments")
@@ -81,12 +93,15 @@ class _RawMinerResponsePayload(BaseModel):
 def hydrate_miner_response_payload(
     payload: object,
     *,
+    query: Query,
     session_id: UUID,
     receipt_log: ReceiptLogPort,
 ) -> Response:
     raw_response = _RawMinerResponsePayload.model_validate(payload, strict=True)
-    if not raw_response.text.strip():
-        raise MinerResponsePayloadError("response text must not be blank")
+    try:
+        _validate_answer_for_query(raw_response, query)
+    except ValueError as exc:
+        raise MinerResponsePayloadError(str(exc)) from exc
     hydrated_citations = _hydrate_citations(
         tuple(raw_response.citations or ()),
         session_id=session_id,
@@ -96,8 +111,21 @@ def hydrate_miner_response_payload(
         raise MinerResponsePayloadError("response citations exceed 120000 materialized source-text characters")
     return Response(
         text=raw_response.text,
+        output=raw_response.output,
         citations=hydrated_citations.citations or None,
     )
+
+
+def _validate_answer_for_query(response: _RawMinerResponsePayload, query: Query) -> None:
+    if query.output_schema is None:
+        if response.text is None:
+            raise ValueError("legacy query response must use text")
+        if not response.text.strip():
+            raise ValueError("response text must not be blank")
+        return
+    if response.output is None:
+        raise ValueError("structured query response must use output")
+    validate_output_against_schema(response.output, query.output_schema)
 
 
 def _hydrate_citations(

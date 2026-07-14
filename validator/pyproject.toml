@@ -9,7 +9,7 @@ authors = [
 ]
 dependencies = [
   "pydantic>=2.8",
-  "harnyx-commons>=0.1.7",
+  "harnyx-commons>=0.1.8",
   "fastapi>=0.133,<1",
   "httpx>=0.27",
   "uvicorn>=0.30",
