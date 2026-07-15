@@ -280,7 +280,7 @@ Body: [CreateBatchRequest](#model-createbatchrequest)
 | `override_task_dataset` |  |  | opt | [OverrideMinerTaskDatasetModel](#model-overrideminertaskdatasetmodel) (nullable) |
 |  | `tasks` |  | req | array[[MinerTaskInputModel](#model-minertaskinputmodel)] |
 |  |  | `budget_usd` | opt | `number` (default: 0.5) |
-|  |  | `query` | req | [Query-Input](#model-query-input) |
+|  |  | `query` | req | [Query](#model-query) |
 |  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `task_id` | req | `string` (format: uuid) |
 | `use_previous_task_dataset` |  |  | opt | `boolean` (default: False) |
@@ -372,8 +372,8 @@ Body: [MinerTaskBatchModel](#model-minertaskbatchmodel)
 | `failed_at` |  |  | opt | `string` (format: date-time; nullable) |
 | `tasks` |  |  | req | array[[MinerTask](#model-minertask)] |
 |  | `budget_usd` |  | opt | `number` (default: 0.5) |
-|  | `query` |  | req | [Query-Output](#model-query-output) |
-|  |  | `output_schema` | opt | [JsonObject-Output](#model-jsonobject-output) (nullable) |
+|  | `query` |  | req | [Query](#model-query) |
+|  |  | `output_schema` | opt | [JsonObject](#model-jsonobject) (nullable) |
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
@@ -462,7 +462,7 @@ Body: [MinerTaskWorkExecutionsRequest](#model-minertaskworkexecutionsrequest)
 |  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
 |  |  | `uid` | req | `integer` |
 |  | `miner_hotkey_ss58` |  | req | `string` |
-|  | `response` |  | req | [Response-Input](#model-response-input) |
+|  | `response` |  | req | [Response](#model-response) |
 |  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
 |  |  | `output` | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
 |  |  | `text` | opt | `string` (nullable) |
@@ -666,9 +666,9 @@ Body: [MinerTaskWorkScoreableExecutionsResponse](#model-minertaskworkscoreableex
 |  |  | `uid` | req | `integer` |
 |  | `max_attempts` |  | req | `integer` |
 |  | `miner_hotkey_ss58` |  | req | `string` |
-|  | `response` |  | req | [Response-Output](#model-response-output) (nullable) |
+|  | `response` |  | req | [Response](#model-response) (nullable) |
 |  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
-|  |  | `output` | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+|  |  | `output` | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
 |  |  | `text` | opt | `string` (nullable) |
 |  | `session` |  | req | [SessionModel](#model-sessionmodel) |
 |  |  | `expires_at` | req | `string` |
@@ -679,7 +679,7 @@ Body: [MinerTaskWorkScoreableExecutionsResponse](#model-minertaskworkscoreableex
 |  | `started_at` |  | req | `string` (format: date-time) |
 |  | `task` |  | req | [MinerTask](#model-minertask) |
 |  |  | `budget_usd` | opt | `number` (default: 0.5) |
-|  |  | `query` | req | [Query-Output](#model-query-output) |
+|  |  | `query` | req | [Query](#model-query) |
 |  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `task_id` | req | `string` (format: uuid) |
 |  | `total_tool_usage` |  | req | [ToolUsageSummary](#model-toolusagesummary) |
@@ -772,7 +772,7 @@ Body: [MinerTaskWorkTasksResponse](#model-minertaskworktasksresponse)
 |  | `max_attempts` |  | req | `integer` |
 |  | `task` |  | req | [MinerTask](#model-minertask) |
 |  |  | `budget_usd` | opt | `number` (default: 0.5) |
-|  |  | `query` | req | [Query-Output](#model-query-output) |
+|  |  | `query` | req | [Query](#model-query) |
 |  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `task_id` | req | `string` (format: uuid) |
 
@@ -1403,7 +1403,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 | `override_task_dataset` |  |  | opt | [OverrideMinerTaskDatasetModel](#model-overrideminertaskdatasetmodel) (nullable) |
 |  | `tasks` |  | req | array[[MinerTaskInputModel](#model-minertaskinputmodel)] |
 |  |  | `budget_usd` | opt | `number` (default: 0.5) |
-|  |  | `query` | req | [Query-Input](#model-query-input) |
+|  |  | `query` | req | [Query](#model-query) |
 |  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `task_id` | req | `string` (format: uuid) |
 | `use_previous_task_dataset` |  |  | opt | `boolean` (default: False) |
@@ -2779,8 +2779,8 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
-<a id="model-jsonobject-input"></a>
-### Model: JsonObject-Input
+<a id="model-jsonobject"></a>
+### Model: JsonObject
 
 (no documented fields)
 
@@ -2791,25 +2791,6 @@ Body: [WeightsResponse](#model-weightsresponse)
 {
   "additionalProperties": {
     "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Input"
-  },
-  "type": "object"
-}
-```
-
-</details>
-
-<a id="model-jsonobject-output"></a>
-### Model: JsonObject-Output
-
-(no documented fields)
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "additionalProperties": {
-    "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Output"
   },
   "type": "object"
 }
@@ -3399,8 +3380,8 @@ Body: [WeightsResponse](#model-weightsresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `budget_usd` |  |  | opt | `number` (default: 0.5) |
-| `query` |  |  | req | [Query-Output](#model-query-output) |
-|  | `output_schema` |  | opt | [JsonObject-Output](#model-jsonobject-output) (nullable) |
+| `query` |  |  | req | [Query](#model-query) |
+|  | `output_schema` |  | opt | [JsonObject](#model-jsonobject) (nullable) |
 |  | `text` |  | req | `string` |
 | `reference_answer` |  |  | req | [ReferenceAnswer](#model-referenceanswer) |
 |  | `citations` |  | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
@@ -3424,7 +3405,7 @@ Body: [WeightsResponse](#model-weightsresponse)
       "type": "number"
     },
     "query": {
-      "$ref": "#/components/schemas/Query-Output"
+      "$ref": "#/components/schemas/Query"
     },
     "reference_answer": {
       "$ref": "#/components/schemas/ReferenceAnswer"
@@ -3961,8 +3942,8 @@ Body: [WeightsResponse](#model-weightsresponse)
 | `failed_at` |  |  | opt | `string` (format: date-time; nullable) |
 | `tasks` |  |  | req | array[[MinerTask](#model-minertask)] |
 |  | `budget_usd` |  | opt | `number` (default: 0.5) |
-|  | `query` |  | req | [Query-Output](#model-query-output) |
-|  |  | `output_schema` | opt | [JsonObject-Output](#model-jsonobject-output) (nullable) |
+|  | `query` |  | req | [Query](#model-query) |
+|  |  | `output_schema` | opt | [JsonObject](#model-jsonobject) (nullable) |
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
@@ -4106,8 +4087,8 @@ Body: [WeightsResponse](#model-weightsresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `budget_usd` |  |  | opt | `number` (default: 0.5) |
-| `query` |  |  | req | [Query-Input](#model-query-input) |
-|  | `output_schema` |  | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
+| `query` |  |  | req | [Query](#model-query) |
+|  | `output_schema` |  | opt | [JsonObject](#model-jsonobject) (nullable) |
 |  | `text` |  | req | `string` |
 | `reference_answer` |  |  | req | [ReferenceAnswer](#model-referenceanswer) |
 |  | `citations` |  | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
@@ -4131,7 +4112,7 @@ Body: [WeightsResponse](#model-weightsresponse)
       "type": "number"
     },
     "query": {
-      "$ref": "#/components/schemas/Query-Input"
+      "$ref": "#/components/schemas/Query"
     },
     "reference_answer": {
       "$ref": "#/components/schemas/ReferenceAnswer"
@@ -4228,7 +4209,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 | `run` |  |  | req | [MinerTaskRunSection](#model-minertaskrunsection) |
 |  | `artifact_id` |  | req | `string` (format: uuid) |
 |  | `completed_at` |  | opt | `string` (format: date-time; nullable) |
-|  | `response` |  | opt | [Response-Input](#model-response-input) (nullable) |
+|  | `response` |  | opt | [Response](#model-response) (nullable) |
 |  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
 |  |  | `output` | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
 |  |  | `text` | opt | `string` (nullable) |
@@ -4353,7 +4334,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 | --- | --- | --- | --- | --- |
 | `artifact_id` |  |  | req | `string` (format: uuid) |
 | `completed_at` |  |  | opt | `string` (format: date-time; nullable) |
-| `response` |  |  | opt | [Response-Input](#model-response-input) (nullable) |
+| `response` |  |  | opt | [Response](#model-response) (nullable) |
 |  | `citations` |  | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `title` | opt | `string` (nullable) |
@@ -4388,7 +4369,7 @@ Body: [WeightsResponse](#model-weightsresponse)
     "response": {
       "anyOf": [
         {
-          "$ref": "#/components/schemas/Response-Input"
+          "$ref": "#/components/schemas/Response"
         },
         {
           "type": "null"
@@ -4492,8 +4473,8 @@ Body: [WeightsResponse](#model-weightsresponse)
 | `max_attempts` |  |  | req | `integer` |
 | `task` |  |  | req | [MinerTask](#model-minertask) |
 |  | `budget_usd` |  | opt | `number` (default: 0.5) |
-|  | `query` |  | req | [Query-Output](#model-query-output) |
-|  |  | `output_schema` | opt | [JsonObject-Output](#model-jsonobject-output) (nullable) |
+|  | `query` |  | req | [Query](#model-query) |
+|  |  | `output_schema` | opt | [JsonObject](#model-jsonobject) (nullable) |
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
@@ -4579,7 +4560,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
 |  | `uid` |  | req | `integer` |
 | `miner_hotkey_ss58` |  |  | req | `string` |
-| `response` |  |  | req | [Response-Input](#model-response-input) |
+| `response` |  |  | req | [Response](#model-response) |
 |  | `citations` |  | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `title` | opt | `string` (nullable) |
@@ -4682,7 +4663,7 @@ Body: [WeightsResponse](#model-weightsresponse)
       "type": "string"
     },
     "response": {
-      "$ref": "#/components/schemas/Response-Input"
+      "$ref": "#/components/schemas/Response"
     },
     "session": {
       "$ref": "#/components/schemas/SessionModel"
@@ -4850,7 +4831,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
 |  |  | `uid` | req | `integer` |
 |  | `miner_hotkey_ss58` |  | req | `string` |
-|  | `response` |  | req | [Response-Input](#model-response-input) |
+|  | `response` |  | req | [Response](#model-response) |
 |  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
 |  |  | `output` | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
 |  |  | `text` | opt | `string` (nullable) |
@@ -4983,7 +4964,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  | `run` |  | req | [MinerTaskRunSection](#model-minertaskrunsection) |
 |  |  | `artifact_id` | req | `string` (format: uuid) |
 |  |  | `completed_at` | opt | `string` (format: date-time; nullable) |
-|  |  | `response` | opt | [Response-Input](#model-response-input) (nullable) |
+|  |  | `response` | opt | [Response](#model-response) (nullable) |
 |  |  | `task_id` | req | `string` (format: uuid) |
 |  | `score` |  | opt | `number` (nullable) |
 |  | `session` |  | req | [SessionModel](#model-sessionmodel) |
@@ -5331,12 +5312,12 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  | `uid` |  | req | `integer` |
 | `max_attempts` |  |  | req | `integer` |
 | `miner_hotkey_ss58` |  |  | req | `string` |
-| `response` |  |  | req | [Response-Output](#model-response-output) (nullable) |
+| `response` |  |  | req | [Response](#model-response) (nullable) |
 |  | `citations` |  | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `title` | opt | `string` (nullable) |
 |  |  | `url` | req | `string` |
-|  | `output` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+|  | `output` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
 |  | `text` |  | opt | `string` (nullable) |
 | `session` |  |  | req | [SessionModel](#model-sessionmodel) |
 |  | `expires_at` |  | req | `string` |
@@ -5347,8 +5328,8 @@ Body: [WeightsResponse](#model-weightsresponse)
 | `started_at` |  |  | req | `string` (format: date-time) |
 | `task` |  |  | req | [MinerTask](#model-minertask) |
 |  | `budget_usd` |  | opt | `number` (default: 0.5) |
-|  | `query` |  | req | [Query-Output](#model-query-output) |
-|  |  | `output_schema` | opt | [JsonObject-Output](#model-jsonobject-output) (nullable) |
+|  | `query` |  | req | [Query](#model-query) |
+|  |  | `output_schema` | opt | [JsonObject](#model-jsonobject) (nullable) |
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
@@ -5447,7 +5428,7 @@ Body: [WeightsResponse](#model-weightsresponse)
     "response": {
       "anyOf": [
         {
-          "$ref": "#/components/schemas/Response-Output"
+          "$ref": "#/components/schemas/Response"
         },
         {
           "type": "null"
@@ -5585,9 +5566,9 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  |  | `uid` | req | `integer` |
 |  | `max_attempts` |  | req | `integer` |
 |  | `miner_hotkey_ss58` |  | req | `string` |
-|  | `response` |  | req | [Response-Output](#model-response-output) (nullable) |
+|  | `response` |  | req | [Response](#model-response) (nullable) |
 |  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
-|  |  | `output` | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
+|  |  | `output` | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
 |  |  | `text` | opt | `string` (nullable) |
 |  | `session` |  | req | [SessionModel](#model-sessionmodel) |
 |  |  | `expires_at` | req | `string` |
@@ -5598,7 +5579,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  | `started_at` |  | req | `string` (format: date-time) |
 |  | `task` |  | req | [MinerTask](#model-minertask) |
 |  |  | `budget_usd` | opt | `number` (default: 0.5) |
-|  |  | `query` | req | [Query-Output](#model-query-output) |
+|  |  | `query` | req | [Query](#model-query) |
 |  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `task_id` | req | `string` (format: uuid) |
 |  | `total_tool_usage` |  | req | [ToolUsageSummary](#model-toolusagesummary) |
@@ -5735,7 +5716,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  | `max_attempts` |  | req | `integer` |
 |  | `task` |  | req | [MinerTask](#model-minertask) |
 |  |  | `budget_usd` | opt | `number` (default: 0.5) |
-|  |  | `query` | req | [Query-Output](#model-query-output) |
+|  |  | `query` | req | [Query](#model-query) |
 |  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `task_id` | req | `string` (format: uuid) |
 
@@ -5777,8 +5758,8 @@ Body: [WeightsResponse](#model-weightsresponse)
 | --- | --- | --- | --- | --- |
 | `tasks` |  |  | req | array[[MinerTaskInputModel](#model-minertaskinputmodel)] |
 |  | `budget_usd` |  | opt | `number` (default: 0.5) |
-|  | `query` |  | req | [Query-Input](#model-query-input) |
-|  |  | `output_schema` | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
+|  | `query` |  | req | [Query](#model-query) |
+|  |  | `output_schema` | opt | [JsonObject](#model-jsonobject) (nullable) |
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
@@ -5912,12 +5893,12 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
-<a id="model-query-input"></a>
-### Model: Query-Input
+<a id="model-query"></a>
+### Model: Query
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `output_schema` |  |  | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
+| `output_schema` |  |  | opt | [JsonObject](#model-jsonobject) (nullable) |
 | `text` |  |  | req | `string` |
 
 <details>
@@ -5930,48 +5911,7 @@ Body: [WeightsResponse](#model-weightsresponse)
     "output_schema": {
       "anyOf": [
         {
-          "$ref": "#/components/schemas/JsonObject-Input"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "text": {
-      "minLength": 1,
-      "title": "Text",
-      "type": "string"
-    }
-  },
-  "required": [
-    "text"
-  ],
-  "title": "Query",
-  "type": "object"
-}
-```
-
-</details>
-
-<a id="model-query-output"></a>
-### Model: Query-Output
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `output_schema` |  |  | opt | [JsonObject-Output](#model-jsonobject-output) (nullable) |
-| `text` |  |  | req | `string` |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "additionalProperties": false,
-  "properties": {
-    "output_schema": {
-      "anyOf": [
-        {
-          "$ref": "#/components/schemas/JsonObject-Output"
+          "$ref": "#/components/schemas/JsonObject"
         },
         {
           "type": "null"
@@ -6160,8 +6100,8 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
-<a id="model-response-input"></a>
-### Model: Response-Input
+<a id="model-response"></a>
+### Model: Response
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
@@ -6197,69 +6137,6 @@ Body: [WeightsResponse](#model-weightsresponse)
       "anyOf": [
         {
           "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Input"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "text": {
-      "anyOf": [
-        {
-          "maxLength": 80000,
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Text"
-    }
-  },
-  "title": "Response",
-  "type": "object"
-}
-```
-
-</details>
-
-<a id="model-response-output"></a>
-### Model: Response-Output
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `citations` |  |  | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
-|  | `note` |  | opt | `string` (nullable) |
-|  | `title` |  | opt | `string` (nullable) |
-|  | `url` |  | req | `string` |
-| `output` |  |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
-| `text` |  |  | opt | `string` (nullable) |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "additionalProperties": false,
-  "properties": {
-    "citations": {
-      "anyOf": [
-        {
-          "items": {
-            "$ref": "#/components/schemas/AnswerCitation"
-          },
-          "type": "array"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Citations"
-    },
-    "output": {
-      "anyOf": [
-        {
-          "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Output"
         },
         {
           "type": "null"

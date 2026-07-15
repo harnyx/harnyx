@@ -28,6 +28,7 @@ MCP client.
 Workflow tools used below:
 
 - `get_champion`
+- `get_validators`
 - `get_benchmark`
 - `get_latest_submissions`
 - `get_miner_script`
@@ -36,6 +37,10 @@ Workflow tools used below:
 - `get_miner_task_batch_comparison`
 - `get_miner_task_batch_results`
 - `get_task_results`
+
+Call `get_validators` and read `runtime.next_scheduled_batch_at` when you need
+the next configured batch time. The value is UTC on the wire; `null` means
+automatic miner-task batch scheduling is disabled.
 
 ## Start From Current Champion Context
 

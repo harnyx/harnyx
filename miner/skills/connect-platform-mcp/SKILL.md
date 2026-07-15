@@ -22,6 +22,7 @@ the workflow tools are available.
 3. List available tools.
 4. Confirm these workflow tools are present:
    - `get_champion`
+   - `get_validators`
    - `get_benchmark`
    - `get_latest_submissions`
    - `get_miner_script`
