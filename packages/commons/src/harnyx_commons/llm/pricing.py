@@ -101,6 +101,7 @@ MINER_TOOL_LLM_PRICING: Mapping[MinerSelectedLlmProviderName, Mapping[str, Model
         "google/gemma-4-31b-it": MODEL_PRICING["google/gemma-4-31B-turbo-TEE"],
     },
     AI_GATEWAY_PROVIDER: {
+        "thinkingmachines/inkling": ModelPricing(1.00, 4.05, 0.0),
         "zai/glm-5.2-fast": ModelPricing(2.10, 6.60, 0.0),
         "openai/gpt-oss-20b": ModelPricing(0.03, 0.14, 0.0),
         "zai/glm-4.7": ModelPricing(0.43, 1.75, 0.0),

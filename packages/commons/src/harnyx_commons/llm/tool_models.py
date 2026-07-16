@@ -65,6 +65,7 @@ MINER_SELECTED_LLM_PROVIDER_MODELS: Mapping[
         "google/gemma-4-31b-it",
     ),
     AI_GATEWAY_PROVIDER: (
+        "thinkingmachines/inkling",
         "zai/glm-5.2-fast",
         "openai/gpt-oss-20b",
         "zai/glm-4.7",

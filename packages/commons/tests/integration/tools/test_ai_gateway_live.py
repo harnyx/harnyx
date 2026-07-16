@@ -63,6 +63,45 @@ async def test_miner_paid_ai_gateway_groq_selection_live() -> None:
     assert raw_response["providerMetadata"]["gateway"]["cost"]
 
 
+async def test_miner_paid_ai_gateway_inkling_live() -> None:
+    settings = LlmSettings()
+    provider = build_miner_paid_llm_provider(
+        provider="ai_gateway",
+        api_key=_api_key(),
+        llm_settings=settings,
+    )
+    request = LlmRequest(
+        provider="ai_gateway",
+        model="thinkingmachines/inkling",
+        messages=(
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text('Reply with only "ok".'),),
+            ),
+        ),
+        temperature=None,
+        max_output_tokens=None,
+        thinking=LlmThinkingConfig(enabled=True, effort="low"),
+        timeout_seconds=180.0,
+        extra=None,
+    )
+
+    try:
+        response = await provider.invoke(request)
+    finally:
+        await provider.aclose()
+
+    assert response.raw_text
+    assert response.metadata is not None
+    assert response.metadata["actual_cost_provider"] == "ai_gateway"
+    assert response.metadata["actual_cost_usd"] >= 0.0
+    message = response.choices[0].message
+    assert message.reasoning, "Inkling must expose a reasoning trace through AI Gateway"
+    assert message.reasoning_details, "Inkling must expose reasoning details through AI Gateway"
+    assert response.usage.reasoning_tokens is not None
+    assert response.usage.reasoning_tokens > 0
+
+
 async def test_ai_gateway_cerebras_gemma_reasoning_live() -> None:
     settings = LlmSettings()
     provider = build_miner_paid_llm_provider(

@@ -97,6 +97,7 @@ def test_miner_selected_openrouter_uses_native_model_ids_without_translation(
 @pytest.mark.parametrize(
     "model",
     (
+        "thinkingmachines/inkling",
         "zai/glm-5.2-fast",
         "openai/gpt-oss-20b",
         "zai/glm-4.7",
