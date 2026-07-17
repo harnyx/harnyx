@@ -29,6 +29,11 @@ the workflow tools are available.
    - `list_miner_task_batches`
    - `get_miner_task_batch`
    - `get_miner_task_batch_comparison`
+   - `list_miner_task_batch_artifact_comparisons`
+   - `get_miner_task_batch_artifact_comparison`
+   - `list_miner_task_batch_challenger_steps`
+   - `get_miner_task_batch_challenger_step`
+   - `get_miner_task_batch_similarity_round`
    - `get_miner_task_batch_results`
    - `get_task_results`
 

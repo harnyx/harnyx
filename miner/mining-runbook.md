@@ -35,6 +35,11 @@ Workflow tools used below:
 - `list_miner_task_batches`
 - `get_miner_task_batch`
 - `get_miner_task_batch_comparison`
+- `list_miner_task_batch_artifact_comparisons`
+- `get_miner_task_batch_artifact_comparison`
+- `list_miner_task_batch_challenger_steps`
+- `get_miner_task_batch_challenger_step`
+- `get_miner_task_batch_similarity_round`
 - `get_miner_task_batch_results`
 - `get_task_results`
 
@@ -201,8 +206,18 @@ rows, miner responses, reference answers, or script content before completion.
 
 Use completed-batch tools by purpose:
 
-- `get_miner_task_batch_comparison(batch_id)` for aggregate comparison,
-  artifact totals, scores, cost totals, and `error_counts`.
+- `get_miner_task_batch_comparison(batch_id)` for the batch outcome and total
+  costs without downloading artifact, challenger-step, or duplicate-vote collections.
+- `list_miner_task_batch_artifact_comparisons(batch_id)` for the compact artifact
+  index, then `get_miner_task_batch_artifact_comparison(batch_id, artifact_id)`
+  for one artifact's scores, costs, observed work, `error_counts`, and per-model
+  LLM usage.
+- `list_miner_task_batch_challenger_steps(batch_id)` for the compact champion
+  sequence, then `get_miner_task_batch_challenger_step(batch_id, step_number)`
+  for one step's rule evaluations.
+- `get_miner_task_batch_similarity_round(batch_id, candidate_artifact_id)` only
+  when full validator votes, reasoning, errors, and judge usage are needed for
+  one candidate.
 - `get_miner_task_batch_results(batch_id, artifact_id, ...)` for
   artifact-scoped result rows in `results[]`. Add `task_id`, `validator_hotkey`, or
   `miner_uid` only when narrowing the query.
@@ -218,7 +233,7 @@ Work from the first failed condition that applies.
 | Upload not accepted | Submit response, local hash, signing wallet/hotkey, current candidate or finalized non-terminal membership metadata | `harnyx-miner-submit`, `harnyx-miner-hash`, `get_latest_submissions`, `get_miner_task_batch` |
 | Accepted but not in completed batch | `submitted_at` versus `cutoff_at`, current candidate or finalized non-terminal membership, completed batch artifact/result visibility | `get_latest_submissions`, `get_miner_task_batch` |
 | Batch still running | Delivery state and progress only; do not look for public result rows yet | `get_miner_task_batch` |
-| Execution did not happen | Delivery state/progress, then aggregate `error_counts` after completion | `get_miner_task_batch`, `get_miner_task_batch_comparison` |
+| Execution did not happen | Delivery state/progress, then the selected artifact's `error_counts` after completion | `get_miner_task_batch`, `get_miner_task_batch_artifact_comparison` |
 | Timeout, crash, or budget issue | Attempts, `elapsed_ms`, `execution_log`, `specifics.error`, cost totals | `get_miner_task_batch_results`, then `get_task_results` for the chosen `task_id` |
 | Weak answer | Reference answer from batch task metadata; miner response/citations/score details from artifact result rows joined by `task_id` | `get_miner_task_batch`, `get_miner_task_batch_results`, then `get_task_results` when full task detail is needed |
 | Judge rationale is surprising | `specifics.score_breakdown.reasoning.text` when present | `get_miner_task_batch_results` or `get_task_results` |

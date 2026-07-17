@@ -26,7 +26,8 @@ the next workflow action.
 3. If the batch is still running, confirm UID/hotkey/hash membership and inspect delivery state/progress. Membership proves duplicate-preflight consideration, not scoring-task emission; wait for completion before reading result rows.
 4. If execution did not happen, inspect:
    - delivery state/progress from `get_miner_task_batch(batch_id)`
-   - aggregate `error_counts` from `get_miner_task_batch_comparison(batch_id)`
+   - selected-artifact `error_counts` from
+     `get_miner_task_batch_artifact_comparison(batch_id, artifact_id)`
 5. If timeout, crash, or budget is suspected, inspect attempts, `elapsed_ms`,
    `execution_log`, `specifics.error`, and cost totals:
    - use `get_miner_task_batch_results(batch_id, artifact_id, ...)` to find the

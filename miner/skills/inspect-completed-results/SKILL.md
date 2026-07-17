@@ -16,6 +16,10 @@ Collect completed-batch evidence for one submitted artifact.
 - MCP tools:
   - `get_miner_task_batch`
   - `get_miner_task_batch_comparison`
+  - `list_miner_task_batch_artifact_comparisons`
+  - `get_miner_task_batch_artifact_comparison`
+  - `get_miner_task_batch_challenger_step`
+  - `get_miner_task_batch_similarity_round`
   - `get_miner_task_batch_results`
   - `get_task_results`
 
@@ -23,14 +27,19 @@ Collect completed-batch evidence for one submitted artifact.
 
 1. Call `get_miner_task_batch(batch_id)` and confirm the batch is completed.
 2. Read `batch.tasks[]` for `task_id`, query, and `reference_answer`.
-3. Call `get_miner_task_batch_comparison(batch_id)` for aggregate score,
-   cost totals, and `error_counts`.
-4. Call `get_miner_task_batch_results(batch_id, artifact_id, ...)` for
+3. Call `get_miner_task_batch_comparison(batch_id)` for batch outcome and total
+   costs, without downloading all artifact or vote evidence.
+4. Call `get_miner_task_batch_artifact_comparison(batch_id, artifact_id)` for
+   the selected artifact's scores, costs, observed work, and `error_counts`.
+5. Call `get_miner_task_batch_challenger_step(batch_id, step_number)` or
+   `get_miner_task_batch_similarity_round(batch_id, artifact_id)` only when the
+   selected artifact needs rule-evaluation or duplicate-vote evidence.
+6. Call `get_miner_task_batch_results(batch_id, artifact_id, ...)` for
    artifact-scoped result rows, then read those rows from `results[]`.
-5. Call `get_task_results(batch_id, artifact_id, task_id)` when attempts or
+7. Call `get_task_results(batch_id, artifact_id, task_id)` when attempts or
    `execution_log` detail are needed for one task, then read those rows from
    `results[]`.
-6. Join task metadata and result rows by `task_id`.
+8. Join task metadata and result rows by `task_id`.
 
 ## Stop Conditions
 
@@ -41,6 +50,7 @@ Collect completed-batch evidence for one submitted artifact.
 ## Output
 
 - batch task metadata
-- aggregate comparison
+- compact batch comparison and selected artifact comparison
+- selected challenger-step or similarity-round evidence when needed
 - artifact-scoped result rows
 - attempt and execution-log evidence when needed
