@@ -18,7 +18,7 @@ from opentelemetry.util.types import AttributeValue
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from harnyx_commons.config.external_client import ExternalClientRetrySettings
-from harnyx_commons.errors import ToolProviderError
+from harnyx_commons.errors import ToolProviderError, ToolProviderFailureCode
 from harnyx_commons.llm.retry_utils import RetryPolicy, backoff_ms
 from harnyx_commons.tools.desearch_ai_protocol import (
     DeSearchAiDocsResponse,
@@ -146,6 +146,7 @@ class DeSearchClient:
         client: httpx.AsyncClient | None = None,
         retry_policy: RetryPolicy | None = None,
         max_concurrent: int | None = None,
+        include_payloads_in_logs: bool = True,
     ) -> None:
         if not api_key:
             raise ValueError("DeSearch API key must be provided")
@@ -157,6 +158,7 @@ class DeSearchClient:
         )
         self._api_key = api_key
         self._retry_policy = retry_policy or ExternalClientRetrySettings().retry_policy
+        self._include_payloads_in_logs = include_payloads_in_logs
         self._semaphore: asyncio.Semaphore | None = (
             asyncio.Semaphore(max_concurrent) if max_concurrent and max_concurrent > 0 else None
         )
@@ -638,6 +640,8 @@ class DeSearchClient:
                 "http.method": method.upper(),
                 "http.target": path,
             },
+            record_exception=self._include_payloads_in_logs,
+            set_status_on_exception=self._include_payloads_in_logs,
         ) as span:
             try:
                 for attempt in range(self._retry_policy.attempts):
@@ -675,30 +679,29 @@ class DeSearchClient:
                             }
                         )
 
-                        _LOGGER.info(
-                            "desearch.request.complete",
-                            extra={
-                                "data": {
+                        log_extra: dict[str, object] = {
+                            "data": {
+                                "method": method.upper(),
+                                "path": path,
+                                "status_code": resp.status_code,
+                                "attempts": attempt + 1,
+                                "latency_ms_total": round(total_latency_ms, 2),
+                                "retry_reasons": tuple(reasons),
+                                "result_count": len(data["data"]) if isinstance(data.get("data"), list) else None,
+                                "wait_ms": round(wait_ms, 2),
+                            }
+                        }
+                        if self._include_payloads_in_logs:
+                            log_extra["json_fields"] = {
+                                "request": {
                                     "method": method.upper(),
                                     "path": path,
-                                    "status_code": resp.status_code,
-                                    "attempts": attempt + 1,
-                                    "latency_ms_total": round(total_latency_ms, 2),
-                                    "retry_reasons": tuple(reasons),
-                                    "result_count": len(data["data"]) if isinstance(data.get("data"), list) else None,
-                                    "wait_ms": round(wait_ms, 2),
+                                    "params": params,
+                                    "json": json_payload,
                                 },
-                                "json_fields": {
-                                    "request": {
-                                        "method": method.upper(),
-                                        "path": path,
-                                        "params": params,
-                                        "json": json_payload,
-                                    },
-                                    "response_raw": raw_response,
-                                },
-                            },
-                        )
+                                "response_raw": raw_response,
+                            }
+                        _LOGGER.info("desearch.request.complete", extra=log_extra)
                         return _DeSearchRequestData(data=data, billing=billing)
                     except httpx.HTTPStatusError as exc:  # pragma: no cover - network errors
                         status = exc.response.status_code if exc.response else None
@@ -710,28 +713,27 @@ class DeSearchClient:
                                     "desearch.not_found": True,
                                 }
                             )
-                            _LOGGER.info(
-                                "desearch.request.not_found",
-                                extra={
-                                    "data": {
+                            log_extra = {
+                                "data": {
+                                    "method": method.upper(),
+                                    "path": path,
+                                    "status_code": status,
+                                    "attempts": attempt + 1,
+                                    "latency_ms_total": round(total_latency_ms, 2),
+                                    "retry_reasons": tuple(reasons),
+                                    "wait_ms": round(wait_ms, 2),
+                                }
+                            }
+                            if self._include_payloads_in_logs:
+                                log_extra["json_fields"] = {
+                                    "request": {
                                         "method": method.upper(),
                                         "path": path,
-                                        "status_code": status,
-                                        "attempts": attempt + 1,
-                                        "latency_ms_total": round(total_latency_ms, 2),
-                                        "retry_reasons": tuple(reasons),
-                                        "wait_ms": round(wait_ms, 2),
-                                    },
-                                    "json_fields": {
-                                        "request": {
-                                            "method": method.upper(),
-                                            "path": path,
-                                            "params": params,
-                                            "json": json_payload,
-                                        },
-                                    },
-                                },
-                            )
+                                        "params": params,
+                                        "json": json_payload,
+                                    }
+                                }
+                            _LOGGER.info("desearch.request.not_found", extra=log_extra)
                             return None
                         retryable = status == 429 or (status is not None and status >= 500)
                         reasons.append(f"http_{status}")
@@ -742,7 +744,16 @@ class DeSearchClient:
                                     "desearch.error": f"http_{status}",
                                 }
                             )
-                            raise ToolProviderError("tool provider failed") from exc
+                            raise ToolProviderError(
+                                "tool provider failed",
+                                failure_code=(
+                                    ToolProviderFailureCode.AUTHENTICATION_FAILED
+                                    if status == 403
+                                    else ToolProviderFailureCode.PROVIDER_FAILED
+                                ),
+                                provider="desearch",
+                                http_status=status,
+                            ) from exc
                         await self._sleep(attempt)
                     except httpx.HTTPError as exc:  # pragma: no cover
                         reasons.append(exc.__class__.__name__)

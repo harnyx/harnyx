@@ -114,6 +114,7 @@ def _request(
     use_case: str | None = None,
     internal_metadata: Mapping[str, object] | None = None,
     extra: Mapping[str, object] | None = None,
+    include_payloads_in_observability: bool = True,
 ) -> LlmRequest:
     return LlmRequest(
         provider=provider,
@@ -131,6 +132,7 @@ def _request(
         use_case=use_case,
         internal_metadata=internal_metadata,
         extra=extra,
+        include_payloads_in_observability=include_payloads_in_observability,
     )
 
 
@@ -254,6 +256,86 @@ async def test_invoke_success_updates_generation_payload(monkeypatch: pytest.Mon
     wait_ms = update_call.metadata["wait_ms"]
     assert isinstance(elapsed_ms, float)
     assert isinstance(wait_ms, float)
+
+
+async def test_metadata_only_invoke_exports_usage_without_request_or_response_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    request = _request(
+        internal_metadata={"private": "metadata-sentinel"},
+        extra={"private": "extra-sentinel"},
+        include_payloads_in_observability=False,
+    )
+    response = _response(
+        metadata={"raw_response": {"private": "response-sentinel"}},
+    )
+    provider = _StubProvider(response=response)
+    scope = _Scope(generation=object())
+    update_calls: list[_UpdateCall] = []
+
+    monkeypatch.setattr(provider_module, "start_llm_generation", lambda **_: scope)
+
+    def fake_update(
+        generation: object | None,
+        *,
+        input_payload: object | None = None,
+        output: object | None = None,
+        usage: LlmUsage | None = None,
+        metadata: Mapping[str, object] | None = None,
+    ) -> None:
+        update_calls.append(_UpdateCall(generation, input_payload, output, usage, metadata))
+
+    monkeypatch.setattr(provider_module, "update_generation_best_effort", fake_update)
+    caplog.set_level("DEBUG", logger="harnyx_commons.llm.calls")
+
+    assert await provider.invoke(request) == response
+
+    assert len(update_calls) == 1
+    assert update_calls[0].output is None
+    assert update_calls[0].usage == response.usage
+    assert update_calls[0].metadata is not None
+    assert "raw" not in update_calls[0].metadata
+    assert "response_metadata" not in update_calls[0].metadata
+    serialized_logs = repr([record.__dict__ for record in caplog.records])
+    for sentinel in ("metadata-sentinel", "extra-sentinel", "response-sentinel"):
+        assert sentinel not in serialized_logs
+
+
+async def test_metadata_only_invoke_disables_automatic_otel_exception_recording(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request(include_payloads_in_observability=False)
+    provider = _StubProvider(error=RuntimeError("raw-provider-exception-sentinel"))
+    start_kwargs: list[dict[str, object]] = []
+
+    class Span:
+        def set_attributes(self, attributes: Mapping[str, object]) -> None:
+            del attributes
+
+        def set_attribute(self, key: str, value: object) -> None:
+            del key, value
+
+    class SpanScope:
+        def __enter__(self) -> Span:
+            return Span()
+
+        def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> bool:
+            return False
+
+    class Tracer:
+        def start_as_current_span(self, name: str, **kwargs: object) -> SpanScope:
+            start_kwargs.append({"name": name, **kwargs})
+            return SpanScope()
+
+    monkeypatch.setattr(provider_module.trace, "get_tracer", lambda _: Tracer())
+    monkeypatch.setattr(provider_module, "start_llm_generation", lambda **_: _Scope(generation=None))
+
+    with pytest.raises(RuntimeError, match="raw-provider-exception-sentinel"):
+        await provider.invoke(request)
+
+    assert start_kwargs[0]["record_exception"] is False
+    assert start_kwargs[0]["set_status_on_exception"] is False
 
 
 async def test_invoke_keeps_use_case_trace_name_inside_generic_otel_parent_span(

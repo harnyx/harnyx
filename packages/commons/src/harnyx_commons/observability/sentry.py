@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from pydantic_settings.sources import DotEnvSettingsSource
@@ -14,8 +14,16 @@ from sentry_sdk.integrations.logging import LoggingIntegration
 
 from harnyx_commons.config.observability import ObservabilitySettings
 
+SentryEventFilter = Callable[[dict[str, Any], object], dict[str, Any] | None]
 
-def configure_sentry_sdk(*, dsn: str, observability: ObservabilitySettings) -> None:
+
+def configure_sentry_sdk(
+    *,
+    dsn: str,
+    observability: ObservabilitySettings,
+    before_send: SentryEventFilter | None = None,
+    before_send_transaction: SentryEventFilter | None = None,
+) -> None:
     _configure_sentry_sdk(
         dsn=dsn,
         environment=_clean_optional(observability.sentry_environment),
@@ -24,10 +32,17 @@ def configure_sentry_sdk(*, dsn: str, observability: ObservabilitySettings) -> N
         send_default_pii=observability.sentry_send_default_pii,
         enable_logs=observability.sentry_enable_logs,
         debug=observability.sentry_debug,
+        before_send=before_send,
+        before_send_transaction=before_send_transaction,
     )
 
 
-def configure_sentry_sdk_from_env(*, dsn_env_var: str) -> None:
+def configure_sentry_sdk_from_env(
+    *,
+    dsn_env_var: str,
+    before_send: SentryEventFilter | None = None,
+    before_send_transaction: SentryEventFilter | None = None,
+) -> None:
     dotenv_env = _dotenv_bootstrap_env()
     _configure_sentry_sdk(
         dsn=_clean_optional(_bootstrap_env_value(dsn_env_var, dotenv_env)) or "",
@@ -37,6 +52,8 @@ def configure_sentry_sdk_from_env(*, dsn_env_var: str) -> None:
         send_default_pii=_clean_bool(_bootstrap_env_value("SENTRY_SEND_DEFAULT_PII", dotenv_env)),
         enable_logs=_clean_bool(_bootstrap_env_value("SENTRY_ENABLE_LOGS", dotenv_env)),
         debug=_clean_bool(_bootstrap_env_value("SENTRY_DEBUG", dotenv_env)),
+        before_send=before_send,
+        before_send_transaction=before_send_transaction,
     )
 
 
@@ -49,6 +66,8 @@ def _configure_sentry_sdk(
     send_default_pii: bool,
     enable_logs: bool,
     debug: bool,
+    before_send: SentryEventFilter | None,
+    before_send_transaction: SentryEventFilter | None,
 ) -> None:
     if dsn == "":
         return
@@ -62,6 +81,8 @@ def _configure_sentry_sdk(
         enable_logs=enable_logs,
         debug=debug,
         disabled_integrations=[LoggingIntegration],
+        before_send=before_send,
+        before_send_transaction=before_send_transaction,
     )
 
 

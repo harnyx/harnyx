@@ -35,9 +35,7 @@ from harnyx_commons.sandbox.options import DEFAULT_TOKEN_HEADER, SandboxOptions
 
 logger = logging.getLogger(__name__)
 
-_MOUNTINFO_CONTAINER_ID_PATTERN = re.compile(
-    r"/containers/([0-9a-f]{12,64})/(?:hostname|hosts|resolv\.conf)(?:\s|$)"
-)
+_MOUNTINFO_CONTAINER_ID_PATTERN = re.compile(r"/containers/([0-9a-f]{12,64})/(?:hostname|hosts|resolv\.conf)(?:\s|$)")
 _NON_SENSITIVE_DIAGNOSTIC_ENV_KEYS = frozenset({"SANDBOX_HOST", "SANDBOX_PORT"})
 _STALE_LEGACY_CONTAINER_STATUSES = ("created", "exited", "dead")
 _SANDBOX_ENTRYPOINT_CONNECT_ATTEMPTS = 2
@@ -45,9 +43,7 @@ _CONTAINER_IP_READY_TIMEOUT_SECONDS = 5.0
 _CONTAINER_IP_READY_POLL_INTERVAL_SECONDS = 0.1
 _IMAGE_PULL_ATTEMPTS = 3
 _IMAGE_PULL_INITIAL_BACKOFF_SECONDS = 1.0
-_RETRYABLE_SANDBOX_ENTRYPOINT_CONNECTION_NOT_ESTABLISHED_ERRORS = (
-    httpx.ConnectError,
-)
+_RETRYABLE_SANDBOX_ENTRYPOINT_CONNECTION_NOT_ESTABLISHED_ERRORS = (httpx.ConnectError,)
 
 
 class _ContainerIpNotReadyError(RuntimeError):
@@ -94,6 +90,7 @@ class HttpSandboxClient(SandboxClient):
         context: Mapping[str, JsonValue],
         token: str,
         session_id: UUID,
+        include_failure_details: bool = True,
     ) -> Mapping[str, JsonValue]:
         headers: dict[str, str] = {
             self._token_header: token,
@@ -115,27 +112,23 @@ class HttpSandboxClient(SandboxClient):
                 "sandbox entrypoint request timed out: entrypoint=%s session_id=%s",
                 entrypoint,
                 session_id,
-                exc_info=exc,
-                extra={
-                    "entrypoint": entrypoint,
-                    "session_id": str(session_id),
-                },
+                exc_info=exc if include_failure_details else None,
+                extra={"entrypoint": entrypoint, "session_id": str(session_id)},
             )
             raise _sandbox_invoke_error(
                 status_code=504,
-                detail={"exception": "TimeoutException", "error": str(exc)},
-                message=(
-                    f"sandbox entrypoint request timed out: "
-                    f"entrypoint={entrypoint} session_id={session_id}"
-                ),
-            ) from exc
+                detail={
+                    "exception": "TimeoutException",
+                    "error": str(exc) if include_failure_details else None,
+                },
+                message=(f"sandbox entrypoint request timed out: entrypoint={entrypoint} session_id={session_id}"),
+            ) from (exc if include_failure_details else None)
         except httpx.RequestError as exc:  # pragma: no cover - network errors
             logger.error(
-                "sandbox entrypoint request failed: entrypoint=%s session_id=%s error=%s",
+                "sandbox entrypoint request failed: entrypoint=%s session_id=%s",
                 entrypoint,
                 session_id,
-                str(exc),
-                exc_info=exc,
+                exc_info=exc if include_failure_details else None,
                 extra={
                     "entrypoint": entrypoint,
                     "session_id": str(session_id),
@@ -143,40 +136,40 @@ class HttpSandboxClient(SandboxClient):
             )
             raise _sandbox_invoke_error(
                 status_code=0,
-                detail={"exception": exc.__class__.__name__, "error": str(exc)},
-                message=(
-                    f"sandbox entrypoint request failed: "
-                    f"entrypoint={entrypoint} session_id={session_id} error={exc}"
-                ),
-            ) from exc
+                detail={
+                    "exception": exc.__class__.__name__,
+                    "error": str(exc) if include_failure_details else None,
+                },
+                message=(f"sandbox entrypoint request failed: entrypoint={entrypoint} session_id={session_id}"),
+            ) from (exc if include_failure_details else None)
         except httpx.HTTPStatusError as exc:
             detail_payload = _unwrap_response_detail(_response_json_or_text(exc.response))
             detail = _parse_sandbox_response_detail(detail_payload)
             status = exc.response.status_code
             logger.error(
-                (
-                    "sandbox entrypoint request failed: entrypoint=%s status=%s "
-                    "session_id=%s detail=%s"
-                ),
+                "sandbox entrypoint request failed: entrypoint=%s status=%s session_id=%s",
                 entrypoint,
                 status,
                 session_id,
-                detail,
-                exc_info=exc,
+                exc_info=exc if include_failure_details else None,
                 extra={
                     "entrypoint": entrypoint,
                     "status": status,
-                    "detail": detail,
                     "session_id": str(session_id),
+                    **({"detail": detail} if include_failure_details else {}),
                 },
             )
             raise SandboxInvokeError(
-                f"sandbox entrypoint request failed with status {status}: {detail.raw}",
+                (
+                    f"sandbox entrypoint request failed with status {status}: {detail.raw}"
+                    if include_failure_details
+                    else f"sandbox entrypoint request failed with status {status}"
+                ),
                 status_code=status,
                 detail_code=detail.code,
                 detail_exception=detail.exception,
-                detail_error=detail.error,
-            ) from exc
+                detail_error=detail.error if include_failure_details else None,
+            ) from (exc if include_failure_details else None)
         body = response.json()
         return _parse_sandbox_invoke_result(body)
 
@@ -380,9 +373,7 @@ class DockerSandboxManager(SandboxManager):
             )
         )
         self._log_consumer = log_consumer
-        self._popen: Callable[..., subprocess.Popen[str]] | None = (
-            log_runner or self._default_popen
-        )
+        self._popen: Callable[..., subprocess.Popen[str]] | None = log_runner or self._default_popen
         self._log_streams: dict[str, tuple[subprocess.Popen[str], threading.Thread]] = {}
 
     def start(self, options: SandboxOptions) -> SandboxDeployment:
@@ -509,7 +500,8 @@ class DockerSandboxManager(SandboxManager):
         return base_url, client
 
     def _post_launch_steps(self, options: SandboxOptions, base_url: str, container_id: str) -> None:
-        self._maybe_start_logs(container_id)
+        if options.include_container_logs:
+            self._maybe_start_logs(container_id)
         if options.startup_delay_seconds > 0:
             time.sleep(options.startup_delay_seconds)
 
@@ -614,9 +606,7 @@ class DockerSandboxManager(SandboxManager):
                 "docker_cmd": cmd_str,
             },
         )
-        raise RuntimeError(
-            f"docker run failed (returncode={exc.returncode}) cmd={cmd_str} stderr={stderr}"
-        ) from exc
+        raise RuntimeError(f"docker run failed (returncode={exc.returncode}) cmd={cmd_str} stderr={stderr}") from exc
 
     def _write_failure_diagnostics(
         self,
@@ -852,9 +842,7 @@ class DockerSandboxManager(SandboxManager):
                 timeout=command_timeout_seconds,
             )
         except subprocess.TimeoutExpired as exc:
-            raise _ContainerIpNotReadyError(
-                f"docker inspect timed out while waiting for network: {network}"
-            ) from exc
+            raise _ContainerIpNotReadyError(f"docker inspect timed out while waiting for network: {network}") from exc
         except subprocess.CalledProcessError as exc:
             stdout = _redact_sensitive_text((exc.stdout or "").strip(), options)
             stderr = _redact_sensitive_text((exc.stderr or "").strip(), options)
@@ -1161,11 +1149,7 @@ def _redact_sensitive_text(text: str, options: SandboxOptions) -> str:
 
 
 def _sensitive_env_values(options: SandboxOptions) -> tuple[str, ...]:
-    return tuple(
-        value
-        for key, value in options.env.items()
-        if key not in _NON_SENSITIVE_DIAGNOSTIC_ENV_KEYS
-    )
+    return tuple(value for key, value in options.env.items() if key not in _NON_SENSITIVE_DIAGNOSTIC_ENV_KEYS)
 
 
 def _diagnostic_env_snapshot(options: SandboxOptions) -> dict[str, str]:
@@ -1209,9 +1193,7 @@ def resolve_network_gateway(*, docker_binary: str, network: str) -> str:
         result = subprocess.run(args, capture_output=True, text=True, check=True)  # noqa: S603
     except subprocess.CalledProcessError as exc:  # pragma: no cover - integration only
         stderr = (exc.stderr or "").strip()
-        raise RuntimeError(
-            f"docker network inspect failed for network={network}: stderr={stderr}"
-        ) from exc
+        raise RuntimeError(f"docker network inspect failed for network={network}: stderr={stderr}") from exc
 
     output = (result.stdout or "").strip()
     if not output:
@@ -1238,9 +1220,7 @@ def resolve_container_ip(*, docker_binary: str, container: str, network: str) ->
         result = subprocess.run(args, capture_output=True, text=True, check=True)  # noqa: S603
     except subprocess.CalledProcessError as exc:  # pragma: no cover - integration only
         stderr = (exc.stderr or "").strip()
-        raise RuntimeError(
-            f"docker inspect failed for container={container}: stderr={stderr}"
-        ) from exc
+        raise RuntimeError(f"docker inspect failed for container={container}: stderr={stderr}") from exc
 
     output = (result.stdout or "").strip()
     if not output:
@@ -1256,9 +1236,7 @@ def resolve_container_ip(*, docker_binary: str, container: str, network: str) ->
 
     ip_address = network_details.get("IPAddress")
     if not isinstance(ip_address, str) or not ip_address:
-        raise RuntimeError(
-            f"docker inspect returned invalid IP address for container={container} network={network}"
-        )
+        raise RuntimeError(f"docker inspect returned invalid IP address for container={container} network={network}")
 
     return ip_address
 
@@ -1305,9 +1283,7 @@ def _resolve_runtime_container_ip(*, docker_binary: str, network: str) -> str:
             ) from mountinfo_error
 
 
-def resolve_sandbox_host_container_url(
-    *, docker_binary: str, sandbox_network: str | None, rpc_port: int
-) -> str:
+def resolve_sandbox_host_container_url(*, docker_binary: str, sandbox_network: str | None, rpc_port: int) -> str:
     if not sandbox_network:
         raise RuntimeError("SANDBOX_NETWORK must be configured to derive HOST_CONTAINER_URL")
 

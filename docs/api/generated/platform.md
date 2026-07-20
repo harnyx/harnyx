@@ -7182,7 +7182,7 @@ Body: [WeightsResponse](#model-weightsresponse)
       "anyOf": [
         {
           "additionalProperties": {
-            "type": "string"
+            "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Input"
           },
           "type": "object"
         },
@@ -7340,7 +7340,7 @@ Body: [WeightsResponse](#model-weightsresponse)
       "anyOf": [
         {
           "additionalProperties": {
-            "type": "string"
+            "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Output"
           },
           "type": "object"
         },

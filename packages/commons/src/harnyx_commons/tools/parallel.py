@@ -12,7 +12,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from harnyx_commons.config.external_client import ExternalClientRetrySettings
-from harnyx_commons.errors import ToolProviderError
+from harnyx_commons.errors import ToolProviderError, ToolProviderFailureCode
 from harnyx_commons.llm.pricing import price_parallel_extract, price_parallel_search
 from harnyx_commons.llm.retry_utils import RetryPolicy, backoff_ms
 from harnyx_commons.tools.provider_billing import ProviderBillingMetadata, SearchProviderResult
@@ -122,6 +122,7 @@ class ParallelClient:
         client: httpx.AsyncClient | None = None,
         retry_policy: RetryPolicy | None = None,
         max_concurrent: int | None = None,
+        include_payloads_in_logs: bool = True,
     ) -> None:
         if not api_key:
             raise ValueError("Parallel API key must be provided")
@@ -133,6 +134,7 @@ class ParallelClient:
         )
         self._api_key = api_key
         self._retry_policy = retry_policy or ExternalClientRetrySettings().retry_policy
+        self._include_payloads_in_logs = include_payloads_in_logs
         self._semaphore: asyncio.Semaphore | None = (
             asyncio.Semaphore(max_concurrent) if max_concurrent and max_concurrent > 0 else None
         )
@@ -268,29 +270,37 @@ class ParallelClient:
                 total_latency_ms += (time.perf_counter() - attempt_start) * 1000
                 data["attempts"] = attempt + 1
                 data["retry_reasons"] = tuple(reasons)
-                _LOGGER.info(
-                    "parallel.request.complete",
-                    extra={
-                        "data": {
-                            "path": path,
-                            "status_code": response.status_code,
-                            "attempts": attempt + 1,
-                            "latency_ms_total": round(total_latency_ms, 2),
-                            "retry_reasons": tuple(reasons),
-                            "wait_ms": round(wait_ms, 2),
-                        },
-                        "json_fields": {
-                            "request": {"path": path, "json": dict(payload)},
-                            "response_raw": data,
-                        },
-                    },
-                )
+                log_extra: dict[str, object] = {
+                    "data": {
+                        "path": path,
+                        "status_code": response.status_code,
+                        "attempts": attempt + 1,
+                        "latency_ms_total": round(total_latency_ms, 2),
+                        "retry_reasons": tuple(reasons),
+                        "wait_ms": round(wait_ms, 2),
+                    }
+                }
+                if self._include_payloads_in_logs:
+                    log_extra["json_fields"] = {
+                        "request": {"path": path, "json": dict(payload)},
+                        "response_raw": data,
+                    }
+                _LOGGER.info("parallel.request.complete", extra=log_extra)
                 return data
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code if exc.response is not None else None
                 reasons.append(f"http_{status}")
                 if not _should_retry_status(status) or not self._should_retry(attempt):
-                    raise ToolProviderError("tool provider failed") from exc
+                    raise ToolProviderError(
+                        "tool provider failed",
+                        failure_code=(
+                            ToolProviderFailureCode.AUTHENTICATION_FAILED
+                            if status == 401
+                            else ToolProviderFailureCode.PROVIDER_FAILED
+                        ),
+                        provider="parallel",
+                        http_status=status,
+                    ) from exc
                 await self._sleep(attempt)
             except httpx.HTTPError as exc:
                 reasons.append(exc.__class__.__name__)

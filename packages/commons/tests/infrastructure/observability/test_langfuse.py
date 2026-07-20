@@ -509,6 +509,64 @@ def test_generation_scope_propagates_trace_name_with_existing_tags(
     assert captured_observation_kwargs["name"] == "llm.invoke"
 
 
+def test_metadata_only_generation_scope_omits_request_payload_and_internal_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    updates: list[dict[str, object]] = []
+    exit_args: list[tuple[object, object, object]] = []
+
+    class CaptureGeneration:
+        def update(self, **kwargs: object) -> None:
+            updates.append(kwargs)
+
+    class ObservationContextManager:
+        def __enter__(self) -> CaptureGeneration:
+            return CaptureGeneration()
+
+        def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> bool:
+            exit_args.append((exc_type, exc, exc_tb))
+            return False
+
+    class CaptureClient:
+        def start_as_current_observation(self, **kwargs: object) -> ObservationContextManager:
+            return ObservationContextManager()
+
+    monkeypatch.setenv("OTEL_SERVICE_NAME", "test-server")
+    request = LlmRequest(
+        provider="openai",
+        model="gpt-5-mini",
+        messages=(
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text("query-sentinel"),),
+            ),
+        ),
+        temperature=None,
+        max_output_tokens=64,
+        output_mode="text",
+        internal_metadata={"private": "metadata-sentinel"},
+        include_payloads_in_observability=False,
+    )
+
+    with pytest.raises(RuntimeError, match="raw-provider-exception-sentinel"):
+        with langfuse._LangfuseGenerationScope(
+            client=CaptureClient(),
+            provider_label="openai",
+            request=request,
+        ):
+            raise RuntimeError("raw-provider-exception-sentinel")
+
+    assert updates == [
+        {
+            "metadata": {
+                "provider": "openai",
+                "server": "test-server",
+            }
+        }
+    ]
+    assert exit_args == [(None, None, None)]
+
+
 def test_propagate_trace_attributes_best_effort_noops_when_unconfigured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

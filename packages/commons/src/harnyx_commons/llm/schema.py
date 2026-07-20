@@ -52,6 +52,7 @@ class AbstractLlmRequest(ToolLlmRequest, ABC):
     timeout_seconds: float | None = None
     retry_policy: RetryPolicy | None = None
     allow_postprocess_recovery: bool = True
+    include_payloads_in_observability: bool = True
 
     def __post_init__(self) -> None:
         if self.internal_metadata is not None and "use_case" in self.internal_metadata:

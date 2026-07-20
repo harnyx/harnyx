@@ -84,7 +84,11 @@ class _LangfuseGenerationScope(AbstractContextManager[LangfuseGeneration | None]
             generation = cast(LangfuseGeneration, self._observation_cm.__enter__())
             update_generation_best_effort(
                 generation,
-                input_payload=build_generation_input_payload(self._request),
+                input_payload=(
+                    build_generation_input_payload(self._request)
+                    if self._request.include_payloads_in_observability
+                    else None
+                ),
                 metadata=metadata,
             )
             return generation
@@ -108,6 +112,10 @@ class _LangfuseGenerationScope(AbstractContextManager[LangfuseGeneration | None]
         exc: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> bool:
+        if not self._request.include_payloads_in_observability:
+            exc_type = None
+            exc = None
+            exc_tb = None
         result = False
         try:
             if self._observation_cm is None:
@@ -436,7 +444,7 @@ def build_generation_metadata(
     request: AbstractLlmRequest,
     metadata: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
-    internal_metadata = request.internal_metadata or {}
+    internal_metadata = (request.internal_metadata or {}) if request.include_payloads_in_observability else {}
     merged: dict[str, object] = {str(key): value for key, value in internal_metadata.items()}
     merged["provider"] = provider_label
     merged["server"] = _resolve_server_label()

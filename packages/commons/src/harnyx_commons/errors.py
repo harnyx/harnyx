@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 
 class SandboxError(Exception):
     """Base class for sandbox-specific failures."""
@@ -27,8 +29,27 @@ class ToolInvocationTimeoutError(RuntimeError):
     """Raised when a caller-selected tool invocation deadline expires."""
 
 
+class ToolProviderFailureCode(StrEnum):
+    CREDENTIAL_UNAVAILABLE = "credential_unavailable"
+    AUTHENTICATION_FAILED = "authentication_failed"
+    PROVIDER_FAILED = "provider_failed"
+
+
 class ToolProviderError(RuntimeError):
     """Raised when a tool's backing provider fails after retry exhaustion."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure_code: ToolProviderFailureCode = ToolProviderFailureCode.PROVIDER_FAILED,
+        provider: str | None = None,
+        http_status: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.failure_code = failure_code
+        self.provider = provider
+        self.http_status = http_status
 
 
 __all__ = [
@@ -38,5 +59,6 @@ __all__ = [
     "SessionBudgetExhaustedError",
     "ConcurrencyLimitError",
     "ToolInvocationTimeoutError",
+    "ToolProviderFailureCode",
     "ToolProviderError",
 ]

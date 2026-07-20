@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
-from harnyx_commons.domain.session import Session
+from harnyx_commons.domain.session import ProviderCredentialSource, Session
 
 
 @dataclass(frozen=True)
@@ -22,6 +22,7 @@ class SessionTokenRequest:
     token: str
     hard_limit_usd: float | None = None
     miner_hotkey_ss58: str | None = None
+    provider_credential_source: ProviderCredentialSource = ProviderCredentialSource.MINER
 
     def __post_init__(self) -> None:
         if self.budget_usd < 0.0:
@@ -30,9 +31,7 @@ class SessionTokenRequest:
             raise ValueError("miner_hotkey_ss58 must be non-empty when provided")
         if self.hard_limit_usd is not None and self.hard_limit_usd < 0.0:
             raise ValueError("hard_limit_usd must be non-negative")
-        effective_hard_limit_usd = (
-            self.budget_usd if self.hard_limit_usd is None else self.hard_limit_usd
-        )
+        effective_hard_limit_usd = self.budget_usd if self.hard_limit_usd is None else self.hard_limit_usd
         if effective_hard_limit_usd < self.budget_usd:
             raise ValueError("hard_limit_usd must be greater than or equal to budget_usd")
 

@@ -154,6 +154,45 @@ async def test_http_sandbox_client_does_not_retry_sandbox_http_status_error() ->
     assert exc_info.value.detail_code == "UnhandledException"
 
 
+@pytest.mark.anyio("asyncio")
+async def test_http_sandbox_client_metadata_only_failure_omits_raw_detail_and_cause(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code=500,
+            json={
+                "detail": {
+                    "code": "UnhandledException",
+                    "exception": "ValueError",
+                    "error": "sandbox-response-sentinel",
+                }
+            },
+        )
+
+    caplog.set_level("ERROR", logger="harnyx_commons.sandbox.docker")
+    async with httpx.AsyncClient(
+        base_url="http://sandbox.local",
+        transport=httpx.MockTransport(handler),
+    ) as http_client:
+        with pytest.raises(SandboxInvokeError) as exc_info:
+            await HttpSandboxClient("http://sandbox.local", client=http_client).invoke(
+                "query",
+                payload={"question": "query-sentinel"},
+                context={},
+                token="session-token",  # noqa: S106 - fixed test-only sandbox token
+                session_id=uuid4(),
+                include_failure_details=False,
+            )
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail_code == "UnhandledException"
+    assert exc_info.value.detail_error is None
+    assert exc_info.value.__cause__ is None
+    serialized = repr(exc_info.value) + repr([record.__dict__ for record in caplog.records])
+    assert "sandbox-response-sentinel" not in serialized
+
+
 def test_http_sandbox_client_owned_client_disables_keepalive_pooling(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

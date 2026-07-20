@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
+import httpx
 import pytest
 from pydantic import ValidationError
 
+from harnyx_commons.domain.session import ProviderCredentialSource
+from harnyx_commons.errors import ToolProviderError, ToolProviderFailureCode
 from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
+from harnyx_commons.llm.provider import LlmProviderConfigurationError, LlmProviderError
 from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import (
     LlmChoice,
@@ -13,7 +19,7 @@ from harnyx_commons.llm.schema import (
     LlmResponse,
     LlmUsage,
 )
-from harnyx_commons.tools.executor import ToolInvocationOutput
+from harnyx_commons.tools.executor import ToolInvocationContext, ToolInvocationOutput
 from harnyx_commons.tools.runtime_invoker import RuntimeToolInvoker
 
 pytestmark = pytest.mark.anyio("asyncio")
@@ -50,6 +56,209 @@ class _CapturingLlmProvider:
         return None
 
 
+def _platform_context() -> ToolInvocationContext:
+    return ToolInvocationContext(
+        receipt_id="receipt-1",
+        session_id=uuid4(),
+        active_attempt=0,
+        uid=1,
+        provider_credential_source=ProviderCredentialSource.PLATFORM,
+    )
+
+
+async def test_platform_credential_session_uses_configured_provider_without_miner_fallback() -> None:
+    platform_provider = _CapturingLlmProvider()
+    resolver_calls: list[str] = []
+
+    async def miner_resolver(provider: str, _context: ToolInvocationContext | None) -> _CapturingLlmProvider:
+        resolver_calls.append(provider)
+        return _CapturingLlmProvider()
+
+    invoker = RuntimeToolInvoker(
+        InMemoryReceiptLog(),
+        llm_provider=platform_provider,
+        llm_provider_name="openrouter",
+        llm_provider_resolver=miner_resolver,
+    )
+
+    await invoker.invoke(
+        "llm_chat",
+        args=(),
+        kwargs={
+            "provider": "openrouter",
+            "model": "openai/gpt-oss-120b",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+        context=_platform_context(),
+    )
+
+    assert len(platform_provider.requests) == 1
+    assert platform_provider.requests[0].include_payloads_in_observability is False
+    assert resolver_calls == []
+
+
+async def test_platform_credential_session_does_not_fallback_when_provider_is_missing() -> None:
+    resolver_calls: list[str] = []
+
+    async def miner_resolver(provider: str, _context: ToolInvocationContext | None) -> _CapturingLlmProvider:
+        resolver_calls.append(provider)
+        return _CapturingLlmProvider()
+
+    invoker = RuntimeToolInvoker(
+        InMemoryReceiptLog(),
+        llm_provider_name="openrouter",
+        llm_provider_resolver=miner_resolver,
+    )
+
+    with pytest.raises(ToolProviderError) as exc_info:
+        await invoker.invoke(
+            "llm_chat",
+            args=(),
+            kwargs={
+                "provider": "openrouter",
+                "model": "openai/gpt-oss-120b",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            context=_platform_context(),
+        )
+
+    assert exc_info.value.failure_code is ToolProviderFailureCode.CREDENTIAL_UNAVAILABLE
+    assert exc_info.value.provider == "openrouter"
+    assert resolver_calls == []
+
+
+async def test_platform_llm_authentication_status_is_preserved_as_typed_failure() -> None:
+    class AuthenticationFailureProvider:
+        async def invoke(self, request: LlmRequest) -> LlmResponse:
+            response = httpx.Response(401, request=httpx.Request("POST", "https://provider.test/v1/chat"))
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                raise LlmProviderError("raw-provider-envelope") from exc
+            raise AssertionError("unreachable")
+
+    invoker = RuntimeToolInvoker(
+        InMemoryReceiptLog(),
+        llm_provider=AuthenticationFailureProvider(),
+        llm_provider_name="chutes",
+    )
+
+    with pytest.raises(ToolProviderError) as exc_info:
+        await invoker.invoke(
+            "llm_chat",
+            args=(),
+            kwargs={
+                "provider": "chutes",
+                "model": "deepseek-ai/DeepSeek-V3.2-TEE",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            context=_platform_context(),
+        )
+
+    assert exc_info.value.failure_code is ToolProviderFailureCode.AUTHENTICATION_FAILED
+    assert exc_info.value.provider == "chutes"
+    assert exc_info.value.http_status == 401
+    assert exc_info.value.__cause__ is None
+
+
+async def test_platform_llm_blank_credential_configuration_is_typed() -> None:
+    class BlankCredentialProvider:
+        async def invoke(self, request: LlmRequest) -> LlmResponse:
+            raise LlmProviderConfigurationError("raw-blank-credential-detail")
+
+    invoker = RuntimeToolInvoker(
+        InMemoryReceiptLog(),
+        llm_provider=BlankCredentialProvider(),
+        llm_provider_name="chutes",
+    )
+
+    with pytest.raises(ToolProviderError) as exc_info:
+        await invoker.invoke(
+            "llm_chat",
+            args=(),
+            kwargs={
+                "provider": "chutes",
+                "model": "deepseek-ai/DeepSeek-V3.2-TEE",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            context=_platform_context(),
+        )
+
+    assert exc_info.value.failure_code is ToolProviderFailureCode.CREDENTIAL_UNAVAILABLE
+    assert exc_info.value.provider == "chutes"
+
+
+async def test_platform_embedding_missing_credential_is_typed() -> None:
+    invoker = RuntimeToolInvoker(
+        InMemoryReceiptLog(),
+        embedding_provider_name="chutes",
+    )
+
+    with pytest.raises(ToolProviderError) as exc_info:
+        await invoker.invoke(
+            "embed_text",
+            args=(),
+            kwargs={
+                "provider": "chutes",
+                "model": "Qwen/Qwen3-Embedding-8B-TEE",
+                "texts": ["hello"],
+                "input_type": "query",
+            },
+            context=_platform_context(),
+        )
+
+    assert exc_info.value.failure_code is ToolProviderFailureCode.CREDENTIAL_UNAVAILABLE
+    assert exc_info.value.provider == "chutes"
+
+
+async def test_platform_search_missing_credential_is_typed() -> None:
+    invoker = RuntimeToolInvoker(
+        InMemoryReceiptLog(),
+        web_search_provider_name="parallel",
+    )
+
+    with pytest.raises(ToolProviderError) as exc_info:
+        await invoker.invoke(
+            "search_web",
+            args=(),
+            kwargs={"provider": "parallel", "search_queries": ["hello"]},
+            context=_platform_context(),
+        )
+
+    assert exc_info.value.failure_code is ToolProviderFailureCode.CREDENTIAL_UNAVAILABLE
+    assert exc_info.value.provider == "parallel"
+
+
+async def test_platform_embedding_authentication_status_is_preserved_as_typed_failure() -> None:
+    class AuthenticationFailureProvider:
+        async def embed_text(self, request) -> None:
+            response = httpx.Response(401, request=httpx.Request("POST", "https://provider.test/v1/embed"))
+            response.raise_for_status()
+
+    invoker = RuntimeToolInvoker(
+        InMemoryReceiptLog(),
+        embedding_provider=AuthenticationFailureProvider(),
+        embedding_provider_name="chutes",
+    )
+
+    with pytest.raises(ToolProviderError) as exc_info:
+        await invoker.invoke(
+            "embed_text",
+            args=(),
+            kwargs={
+                "provider": "chutes",
+                "model": "Qwen/Qwen3-Embedding-8B-TEE",
+                "texts": ["hello"],
+                "input_type": "query",
+            },
+            context=_platform_context(),
+        )
+
+    assert exc_info.value.failure_code is ToolProviderFailureCode.AUTHENTICATION_FAILED
+    assert exc_info.value.provider == "chutes"
+    assert exc_info.value.http_status == 401
+
+
 async def test_runtime_invoker_lowers_openrouter_provider_extra_to_request_extra() -> None:
     llm_provider = _CapturingLlmProvider()
     invoker = RuntimeToolInvoker(
@@ -78,6 +287,7 @@ async def test_runtime_invoker_lowers_openrouter_provider_extra_to_request_extra
     assert request.output_mode == "text"
     assert request.max_output_tokens == 128
     assert output.actual_cost_provider == "openrouter"
+    assert request.include_payloads_in_observability is True
 
 
 async def test_runtime_invoker_sets_single_attempt_retry_policy_for_llm_chat() -> None:

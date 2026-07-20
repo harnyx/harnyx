@@ -37,6 +37,7 @@ class SandboxOptions:
     ulimits: Sequence[str] = field(default_factory=tuple)
     failure_diagnostics_dir: str | None = None
     labels: Mapping[str, str] = field(default_factory=dict)
+    include_container_logs: bool = True
 
 
 __all__ = [

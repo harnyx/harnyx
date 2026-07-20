@@ -1,17 +1,52 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import httpx
 import pytest
 
-from harnyx_commons.errors import ToolProviderError
+from harnyx_commons.errors import ToolProviderError, ToolProviderFailureCode
 from harnyx_commons.llm.pricing import price_parallel_extract, price_parallel_search
 from harnyx_commons.tools.parallel import ParallelClient
 from harnyx_commons.tools.search_models import FetchPageRequest, SearchAiSearchRequest, SearchWebSearchRequest
 
 pytestmark = pytest.mark.anyio("asyncio")
+
+
+async def test_parallel_client_can_suppress_request_and_raw_response_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="harnyx_commons.tools.parallel.calls")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "search_id": "raw-provider-envelope",
+                "results": [{"url": "https://example.com/private"}],
+            },
+        )
+
+    adapter = ParallelClient(
+        base_url="https://api.parallel.ai",
+        api_key="parallel-key",
+        client=httpx.AsyncClient(
+            base_url="https://api.parallel.ai",
+            transport=httpx.MockTransport(handler),
+        ),
+        include_payloads_in_logs=False,
+    )
+
+    await adapter.search_web(
+        SearchWebSearchRequest(provider="parallel", search_queries=("private-query",))
+    )
+
+    record = next(record for record in caplog.records if record.msg == "parallel.request.complete")
+    assert not hasattr(record, "json_fields")
+    assert "private-query" not in str(record.__dict__)
+    assert "raw-provider-envelope" not in str(record.__dict__)
 
 
 async def test_parallel_client_search_web_posts_keyword_list() -> None:
@@ -155,6 +190,26 @@ async def test_parallel_client_raises_on_error_status() -> None:
 
     with pytest.raises(ToolProviderError):
         await adapter.fetch_page(FetchPageRequest(provider="parallel", url="https://example.com"))
+
+
+async def test_parallel_401_is_typed_as_authentication_failure() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": "raw-provider-envelope"})
+
+    adapter = ParallelClient(
+        base_url="https://api.parallel.ai",
+        api_key="parallel-key",
+        client=httpx.AsyncClient(
+            base_url="https://api.parallel.ai",
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+
+    with pytest.raises(ToolProviderError) as exc_info:
+        await adapter.fetch_page(FetchPageRequest(provider="parallel", url="https://example.com"))
+
+    assert exc_info.value.failure_code is ToolProviderFailureCode.AUTHENTICATION_FAILED
+    assert exc_info.value.http_status == 401
 
 
 async def test_parallel_client_fetch_page_raises_on_empty_extract_results() -> None:

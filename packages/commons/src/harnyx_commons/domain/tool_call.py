@@ -84,7 +84,7 @@ class ToolCallDetails:
     reference_cost_usd: float | None = None
     actual_cost_usd: float | None = None
     actual_cost_provider: str | None = None
-    extra: Mapping[str, str] | None = None
+    extra: Mapping[str, JsonValue] | None = None
     execution: ToolExecutionFacts | None = None
 
     def __post_init__(self) -> None:
@@ -125,8 +125,8 @@ class ToolCall:
     def __post_init__(self) -> None:
         if not self.receipt_id.strip():
             raise ValueError("receipt_id must not be empty")
-        if self.uid <= 0:
-            raise ValueError("uid must be positive")
+        if self.uid < 0:
+            raise ValueError("uid must be non-negative")
         if self.tool not in TOOL_NAMES:
             raise ValueError(f"unsupported tool {self.tool!r}")
 
@@ -154,8 +154,8 @@ class StartedToolCall:
             raise ValueError("receipt_id must not be empty")
         if self.session_active_attempt < 0:
             raise ValueError("session_active_attempt must be non-negative")
-        if self.uid <= 0:
-            raise ValueError("uid must be positive")
+        if self.uid < 0:
+            raise ValueError("uid must be non-negative")
         if self.tool not in TOOL_NAMES:
             raise ValueError(f"unsupported tool {self.tool!r}")
 
@@ -170,7 +170,7 @@ class StartedToolCall:
         reference_cost_usd: float | None = None,
         actual_cost_usd: float | None = None,
         actual_cost_provider: str | None = None,
-        extra: Mapping[str, str] | None = None,
+        extra: Mapping[str, JsonValue] | None = None,
         execution: ToolExecutionFacts | None = None,
     ) -> ToolCall:
         """Build the final receipt for this started invocation."""
@@ -179,7 +179,7 @@ class StartedToolCall:
             reference_cost_usd = actual_cost_usd
         if reference_cost_usd is None and cost_usd is not None:
             reference_cost_usd = cost_usd
-        merged_extra = {
+        merged_extra: dict[str, JsonValue] = {
             "issued_at": self.issued_at.isoformat(),
             "session_active_attempt": str(self.session_active_attempt),
         }
@@ -209,14 +209,10 @@ class StartedToolCall:
             details=ToolCallDetails(
                 request_hash=_hash_json_payload(self.request_payload),
                 request_payload=self.request_payload,
-                response_hash=(
-                    None if response_payload is None else _hash_json_payload(response_payload)
-                ),
+                response_hash=(None if response_payload is None else _hash_json_payload(response_payload)),
                 response_payload=response_payload,
                 results=results,
-                result_policy=(
-                    self.result_policy if result_policy is None else result_policy
-                ),
+                result_policy=(self.result_policy if result_policy is None else result_policy),
                 cost_usd=cost_usd,
                 reference_cost_usd=reference_cost_usd,
                 actual_cost_usd=actual_cost_usd,

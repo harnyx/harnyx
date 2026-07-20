@@ -206,8 +206,9 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         }
         if request.use_case is not None:
             data["use_case"] = request.use_case
-        data |= request.internal_metadata or {}
-        data |= request.extra or {}
+        if request.include_payloads_in_observability:
+            data |= request.internal_metadata or {}
+            data |= request.extra or {}
 
         span_attributes: dict[str, AttributeValue] = {
             "llm.provider": self._provider_label,
@@ -225,6 +226,8 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             "llm.invoke",
             kind=SpanKind.CLIENT,
             attributes=span_attributes,
+            record_exception=request.include_payloads_in_observability,
+            set_status_on_exception=request.include_payloads_in_observability,
         ) as span:
             with start_llm_generation(
                 provider_label=self._provider_label,
@@ -249,13 +252,14 @@ class BaseLlmProvider(ABC, LlmProviderPort):
                 except Exception as exc:
                     elapsed = round((time.perf_counter() - start) * 1000, 2)
                     error_metadata: dict[str, object] = {
-                        "error": repr(exc),
                         "elapsed_ms": elapsed,
                         "wait_ms": round(wait_ms, 2),
                     }
-                    raw_error_payload = _error_raw_payload_metadata(request=request, exc=exc)
-                    if raw_error_payload is not None:
-                        error_metadata["raw"] = raw_error_payload
+                    if request.include_payloads_in_observability:
+                        error_metadata["error"] = repr(exc)
+                        raw_error_payload = _error_raw_payload_metadata(request=request, exc=exc)
+                        if raw_error_payload is not None:
+                            error_metadata["raw"] = raw_error_payload
                     update_generation_best_effort(
                         generation,
                         metadata=build_generation_metadata(
@@ -264,10 +268,16 @@ class BaseLlmProvider(ABC, LlmProviderPort):
                             metadata=error_metadata,
                         ),
                     )
-                    self._llm_logger.exception(
-                        "llm.invoke.error",
-                        extra={"data": data | {"elapsed_ms": elapsed}},
-                    )
+                    if request.include_payloads_in_observability:
+                        self._llm_logger.exception(
+                            "llm.invoke.error",
+                            extra={"data": data | {"elapsed_ms": elapsed}},
+                        )
+                    else:
+                        self._llm_logger.error(
+                            "llm.invoke.error",
+                            extra={"data": data | {"elapsed_ms": elapsed}},
+                        )
                     span.set_attributes(
                         {
                             "llm.elapsed_ms": elapsed,
@@ -279,28 +289,39 @@ class BaseLlmProvider(ABC, LlmProviderPort):
                 elapsed = round((time.perf_counter() - start) * 1000, 2)
                 usage = response.usage or LlmUsage()
                 web_search_calls = int(usage.web_search_calls or 0)
-                response_metadata = _instrumentation_response_metadata(response)
-                reasoning_metadata = _build_reasoning_metadata(
-                    provider_label=self._provider_label,
-                    request=request,
-                    response=response,
-                    usage=usage,
+                response_metadata = (
+                    _instrumentation_response_metadata(response) if request.include_payloads_in_observability else {}
                 )
-                grounding_metadata = _build_grounding_metadata(
-                    response_metadata=response_metadata,
-                    web_search_calls=web_search_calls,
+                reasoning_metadata = (
+                    _build_reasoning_metadata(
+                        provider_label=self._provider_label,
+                        request=request,
+                        response=response,
+                        usage=usage,
+                    )
+                    if request.include_payloads_in_observability
+                    else None
+                )
+                grounding_metadata = (
+                    _build_grounding_metadata(
+                        response_metadata=response_metadata,
+                        web_search_calls=web_search_calls,
+                    )
+                    if request.include_payloads_in_observability
+                    else None
                 )
                 generation_metadata: dict[str, object] = {
                     "elapsed_ms": elapsed,
                     "wait_ms": round(wait_ms, 2),
                     "finish_reason": response.finish_reason,
-                    "response_metadata": response_metadata,
-                    "raw": _build_raw_payload_metadata(
+                }
+                if request.include_payloads_in_observability:
+                    generation_metadata["response_metadata"] = response_metadata
+                    generation_metadata["raw"] = _build_raw_payload_metadata(
                         request=request,
                         response=response,
                         response_metadata=response_metadata,
-                    ),
-                }
+                    )
                 if reasoning_metadata is not None:
                     generation_metadata["reasoning"] = reasoning_metadata
                 if grounding_metadata is not None:
@@ -320,9 +341,6 @@ class BaseLlmProvider(ABC, LlmProviderPort):
                     span.set_attribute("llm.usage.reasoning_tokens", int(usage.reasoning_tokens))
 
                 data |= {
-                    "request": _request_snapshot(request),
-                    "response": response.payload,
-                    "response_metadata": response_metadata,
                     "elapsed_ms": elapsed,
                     "usage_prompt": usage.prompt_tokens or 0,
                     "usage_completion": usage.completion_tokens or 0,
@@ -332,9 +350,17 @@ class BaseLlmProvider(ABC, LlmProviderPort):
                     "web_search_calls": web_search_calls,
                     "wait_ms": round(wait_ms, 2),
                 }
+                if request.include_payloads_in_observability:
+                    data |= {
+                        "request": _request_snapshot(request),
+                        "response": response.payload,
+                        "response_metadata": response_metadata,
+                    }
                 update_generation_best_effort(
                     generation,
-                    output=build_generation_output_payload(response),
+                    output=(
+                        build_generation_output_payload(response) if request.include_payloads_in_observability else None
+                    ),
                     usage=usage,
                     metadata=build_generation_metadata(
                         provider_label=self._provider_label,
@@ -342,7 +368,7 @@ class BaseLlmProvider(ABC, LlmProviderPort):
                         metadata=generation_metadata,
                     ),
                 )
-                if generation is not None:
+                if generation is not None and request.include_payloads_in_observability:
                     _record_child_observations(
                         provider_label=self._provider_label,
                         model=request.model,
@@ -657,9 +683,15 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         )
 
     def _log_retry_complete(self, *, request: AbstractLlmRequest, response: LlmResponse, ctx: RetryContext) -> None:
-        request_snapshot = _request_snapshot(request)
-        response_payload = response.payload
-        response_raw = (response.metadata or {}).get("raw_response")
+        json_fields = (
+            {
+                "request": _request_snapshot(request),
+                "response": response.payload,
+                "response_raw": (response.metadata or {}).get("raw_response"),
+            }
+            if request.include_payloads_in_observability
+            else None
+        )
         self._llm_logger.info(
             "llm.invoke.retry.complete",
             extra={
@@ -672,11 +704,7 @@ class BaseLlmProvider(ABC, LlmProviderPort):
                     "postprocess_recoveries": tuple(ctx.recovery_events),
                     "usage": _usage_snapshot(ctx.total_usage),
                 },
-                "json_fields": {
-                    "request": request_snapshot,
-                    "response": response_payload,
-                    "response_raw": response_raw,
-                },
+                **({"json_fields": json_fields} if json_fields is not None else {}),
             },
         )
 
@@ -693,21 +721,21 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             "provider": self._provider_label,
             "model": request.model,
             "attempt": attempt + 1,
-            "reason": failure.reason,
+            "reason": (failure.reason if request.include_payloads_in_observability else "provider_retry"),
             "backoff_ms": backoff_ms(attempt, policy),
         }
         if request.use_case is not None:
             data["use_case"] = request.use_case
         if failure.exception_type is not None:
             data["exception_type"] = failure.exception_type
-        if failure.exception_message:
+        if request.include_payloads_in_observability and failure.exception_message:
             data["exception_message"] = failure.exception_message
-        if failure.exception_repr:
+        if request.include_payloads_in_observability and failure.exception_repr:
             data["exception_repr"] = failure.exception_repr
-        if failure.cause_chain:
+        if request.include_payloads_in_observability and failure.cause_chain:
             data["cause_chain"] = failure.cause_chain
         message = f"llm.retry.{phase}"
-        if phase == "exception" and failure.exception_type is not None:
+        if request.include_payloads_in_observability and phase == "exception" and failure.exception_type is not None:
             message = f"{message}: {failure.exception_type}: {failure.exception_message or failure.reason}"
         self._llm_logger.warning(
             message,

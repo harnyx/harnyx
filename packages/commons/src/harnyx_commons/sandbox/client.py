@@ -39,6 +39,7 @@ class SandboxClient(Protocol):
         context: Mapping[str, JsonValue],
         token: str,
         session_id: UUID,
+        include_failure_details: bool = True,
     ) -> Mapping[str, JsonValue]:
         """Invoke the sandbox entrypoint and return its response payload."""
 

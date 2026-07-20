@@ -25,6 +25,15 @@ class SessionFailureCode(StrEnum):
     """Transient execution markers attached to a live session."""
 
     TOOL_PROVIDER_FAILED = "tool_provider_failed"
+    PROVIDER_CREDENTIAL_UNAVAILABLE = "provider_credential_unavailable"
+    PROVIDER_AUTHENTICATION_FAILED = "provider_authentication_failed"
+
+
+class ProviderCredentialSource(StrEnum):
+    """Credential owner used by provider-backed sandbox tools."""
+
+    MINER = "miner"
+    PLATFORM = "platform"
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,9 +129,7 @@ class SessionUsage:
         updated_provider_costs = self.cost_by_provider if cost_by_provider is None else cost_by_provider
         return replace(
             self,
-            llm_tokens_last_call=(
-                self.llm_tokens_last_call if llm_tokens_last_call is None else llm_tokens_last_call
-            ),
+            llm_tokens_last_call=(self.llm_tokens_last_call if llm_tokens_last_call is None else llm_tokens_last_call),
             llm_usage_totals=self.llm_usage_totals if llm_usage_totals is None else llm_usage_totals,
             total_cost_usd=updated_total,
             cost_by_provider=updated_provider_costs,
@@ -134,9 +141,7 @@ class SessionUsage:
                 else cast(float | None, actual_total_cost_usd)
             ),
             actual_cost_by_provider=(
-                self.actual_cost_by_provider
-                if actual_cost_by_provider is None
-                else actual_cost_by_provider
+                self.actual_cost_by_provider if actual_cost_by_provider is None else actual_cost_by_provider
             ),
         )
 
@@ -160,6 +165,7 @@ class Session:
     budget_usd: float
     hard_limit_usd: float | None = None
     miner_hotkey_ss58: str | None = None
+    provider_credential_source: ProviderCredentialSource = ProviderCredentialSource.MINER
     usage: SessionUsage = field(default_factory=SessionUsage)
     status: SessionStatus = SessionStatus.ACTIVE
     active_attempt: int = 0
@@ -167,8 +173,8 @@ class Session:
     failure_attempt: int | None = None
 
     def __post_init__(self) -> None:
-        if self.uid <= 0:
-            raise ValueError("uid must be positive")
+        if self.uid < 0:
+            raise ValueError("uid must be non-negative")
         if self.expires_at <= self.issued_at:
             raise ValueError("expires_at must be later than issued_at")
         if self.budget_usd < 0.0:
@@ -248,6 +254,7 @@ class Session:
 
 __all__ = [
     "LlmUsageTotals",
+    "ProviderCredentialSource",
     "Session",
     "SessionFailureCode",
     "SessionUsage",

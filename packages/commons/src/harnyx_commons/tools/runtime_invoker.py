@@ -12,11 +12,13 @@ from contextlib import suppress
 from dataclasses import asdict, dataclass
 from typing import TypeVar, cast
 
+import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
+from harnyx_commons.domain.session import ProviderCredentialSource
 from harnyx_commons.domain.tool_call import ToolExecutionFacts
-from harnyx_commons.errors import ToolInvocationTimeoutError, ToolProviderError
+from harnyx_commons.errors import ToolInvocationTimeoutError, ToolProviderError, ToolProviderFailureCode
 from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.llm.cost_settlement import settled_cost_from_metadata
 from harnyx_commons.llm.pricing import (
@@ -26,7 +28,12 @@ from harnyx_commons.llm.pricing import (
     EmbeddingPricing,
     price_search,
 )
-from harnyx_commons.llm.provider import LlmProviderError, LlmProviderPort, LlmRetryExhaustedError
+from harnyx_commons.llm.provider import (
+    LlmProviderConfigurationError,
+    LlmProviderError,
+    LlmProviderPort,
+    LlmRetryExhaustedError,
+)
 from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import (
     LlmChoice,
@@ -82,6 +89,14 @@ DEFAULT_TOOL_LLM_TIMEOUT_SECONDS = PLATFORM_TOOL_PROXY_LLM_CHAT_DEFAULT_TIMEOUT_
 DEFAULT_SEARCH_TOOL_TIMEOUT_SECONDS = PLATFORM_TOOL_PROXY_SEARCH_TOOL_DEFAULT_TIMEOUT_SECONDS
 DEFAULT_EMBEDDING_TOOL_TIMEOUT_SECONDS = PLATFORM_TOOL_PROXY_EMBEDDING_TOOL_DEFAULT_TIMEOUT_SECONDS
 TInvocationResult = TypeVar("TInvocationResult")
+_AUTHENTICATION_STATUSES_BY_PROVIDER: Mapping[str, frozenset[int]] = {
+    "ai_gateway": frozenset({401}),
+    "chutes": frozenset({401}),
+    "desearch": frozenset({403}),
+    "openrouter": frozenset({401}),
+    "parallel": frozenset({401}),
+    "vertex": frozenset({401}),
+}
 SearchProviderResolver = Callable[
     [SearchProviderName, ToolInvocationContext | None],
     WebSearchProviderPort | Awaitable[WebSearchProviderPort],
@@ -188,6 +203,45 @@ async def _resolve_maybe_awaitable(value: TInvocationResult | Awaitable[TInvocat
     return value
 
 
+def _credential_unavailable(provider: str) -> ToolProviderError:
+    return ToolProviderError(
+        "tool provider credential unavailable",
+        failure_code=ToolProviderFailureCode.CREDENTIAL_UNAVAILABLE,
+        provider=provider,
+    )
+
+
+def _typed_provider_error(exc: BaseException, *, provider: str) -> ToolProviderError:
+    status = _provider_http_status(exc)
+    authentication_statuses = _AUTHENTICATION_STATUSES_BY_PROVIDER.get(provider, frozenset())
+    failure_code = (
+        ToolProviderFailureCode.AUTHENTICATION_FAILED
+        if status in authentication_statuses
+        else ToolProviderFailureCode.PROVIDER_FAILED
+    )
+    return ToolProviderError(
+        "tool provider failed",
+        failure_code=failure_code,
+        provider=provider,
+        http_status=status,
+    )
+
+
+def _provider_http_status(exc: BaseException) -> int | None:
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, httpx.HTTPStatusError):
+            return current.response.status_code
+        for attribute in ("status_code", "http_status", "code"):
+            value = getattr(current, attribute, None)
+            if isinstance(value, int) and not isinstance(value, bool):
+                return value
+        current = current.__cause__ or current.__context__
+    return None
+
+
 class RuntimeToolInvoker(ToolInvoker):
     """Dispatches sandbox tool invocations."""
 
@@ -229,18 +283,28 @@ class RuntimeToolInvoker(ToolInvoker):
         kwargs: Mapping[str, JsonValue],
         context: ToolInvocationContext | None = None,
     ) -> JsonObject | ToolInvocationOutput:
-        if tool_name == "test_tool":
-            return self._invoke_test_tool(args, kwargs)
-        if tool_name == "tooling_info":
-            return self._invoke_tooling_info(args, kwargs)
-        if is_search_tool(tool_name):
-            return await self._dispatch_search(tool_name, args, kwargs, context=context)
-        if is_embedding_tool(tool_name):
-            return await self._dispatch_embedding(args, kwargs, context=context)
-        if tool_name == "llm_chat":
-            return await self._dispatch_llm(args, kwargs, context=context)
-        self._log_unhandled(tool_name, args, kwargs)
-        raise LookupError(f"tool {tool_name!r} is not registered")
+        try:
+            if tool_name == "test_tool":
+                return self._invoke_test_tool(args, kwargs)
+            if tool_name == "tooling_info":
+                return self._invoke_tooling_info(args, kwargs)
+            if is_search_tool(tool_name):
+                return await self._dispatch_search(tool_name, args, kwargs, context=context)
+            if is_embedding_tool(tool_name):
+                return await self._dispatch_embedding(args, kwargs, context=context)
+            if tool_name == "llm_chat":
+                return await self._dispatch_llm(args, kwargs, context=context)
+            self._log_unhandled(tool_name, args, kwargs)
+            raise LookupError(f"tool {tool_name!r} is not registered")
+        except ToolProviderError as exc:
+            if not _uses_platform_credentials(context):
+                raise
+            raise ToolProviderError(
+                "tool provider failed",
+                failure_code=exc.failure_code,
+                provider=exc.provider,
+                http_status=exc.http_status,
+            ) from None
 
     def _invoke_test_tool(
         self,
@@ -316,8 +380,7 @@ class RuntimeToolInvoker(ToolInvoker):
                 "settlement_order": ["static_pricing"],
                 "provider_models": {
                     provider: {
-                        model: _public_embedding_pricing_payload(rates)
-                        for model, rates in model_pricing.items()
+                        model: _public_embedding_pricing_payload(rates) for model, rates in model_pricing.items()
                     }
                     for provider, model_pricing in MINER_TOOL_EMBEDDING_PRICING.items()
                 },
@@ -362,6 +425,8 @@ class RuntimeToolInvoker(ToolInvoker):
         context: ToolInvocationContext | None,
     ) -> ToolInvocationOutput:
         if self._web_search is None and self._web_search_provider_resolver is None:
+            if _uses_platform_credentials(context):
+                raise _credential_unavailable(self._web_search_provider_name or "search")
             raise LookupError("search client is not configured")
         payload = tool_payload_from_args_kwargs(args, kwargs)
         if tool_name == "search_web":
@@ -431,11 +496,16 @@ class RuntimeToolInvoker(ToolInvoker):
         context: ToolInvocationContext | None,
     ) -> ToolInvocationOutput:
         if self._llm_provider is None and self._llm_provider_resolver is None:
+            if _uses_platform_credentials(context):
+                raise _credential_unavailable(self._llm_provider_name or "llm")
             raise LookupError("llm provider is not configured")
         invocation = self._parse_invocation(args, kwargs)
-        request = self._build_llm_request(invocation)
+        request = self._build_llm_request(invocation, context=context)
 
-        llm_provider = await self._resolve_llm_provider(invocation.provider, context)
+        try:
+            llm_provider = await self._resolve_llm_provider(invocation.provider, context)
+        except LlmProviderConfigurationError as exc:
+            raise _credential_unavailable(invocation.provider) from exc
 
         try:
             started_at = time.perf_counter()
@@ -445,10 +515,18 @@ class RuntimeToolInvoker(ToolInvoker):
                 lambda: llm_provider.invoke(request),
             )
             elapsed_ms = (time.perf_counter() - started_at) * 1000.0
-        except (ToolProviderError, ToolInvocationTimeoutError):
+        except ToolProviderError as exc:
+            if _uses_platform_credentials(context) and exc.failure_code is ToolProviderFailureCode.PROVIDER_FAILED:
+                typed = _typed_provider_error(exc, provider=invocation.provider)
+                if typed.http_status is not None:
+                    raise typed from exc
             raise
+        except ToolInvocationTimeoutError:
+            raise
+        except LlmProviderConfigurationError as exc:
+            raise _credential_unavailable(invocation.provider) from exc
         except (LlmProviderError, LlmRetryExhaustedError) as exc:
-            raise ToolProviderError("tool provider failed") from exc
+            raise _typed_provider_error(exc, provider=invocation.provider) from exc
         try:
             actual_cost = _require_settled_llm_cost(llm_response)
             _require_actual_cost(actual_cost, tool_name="llm_chat")
@@ -470,6 +548,8 @@ class RuntimeToolInvoker(ToolInvoker):
         context: ToolInvocationContext | None,
     ) -> ToolInvocationOutput:
         if self._embedding_provider is None and self._embedding_provider_resolver is None:
+            if _uses_platform_credentials(context):
+                raise _credential_unavailable(self._embedding_provider_name or "embedding")
             raise LookupError("embedding provider is not configured")
         request = EmbedTextRequest.model_validate(tool_payload_from_args_kwargs(args, kwargs))
         embedding_provider = await self._resolve_embedding_provider(request.provider, context)
@@ -481,10 +561,16 @@ class RuntimeToolInvoker(ToolInvoker):
                 lambda: embedding_provider.embed_text(request),
             )
             elapsed_ms = (time.perf_counter() - started_at) * 1000.0
-        except (ToolProviderError, ToolInvocationTimeoutError):
+        except ToolProviderError as exc:
+            if _uses_platform_credentials(context) and exc.failure_code is ToolProviderFailureCode.PROVIDER_FAILED:
+                typed = _typed_provider_error(exc, provider=request.provider)
+                if typed.http_status is not None:
+                    raise typed from exc
+            raise
+        except ToolInvocationTimeoutError:
             raise
         except Exception as exc:
-            raise ToolProviderError("tool provider failed") from exc
+            raise _typed_provider_error(exc, provider=request.provider) from exc
         actual_cost = _ActualCost(
             response.actual_cost_usd,
             response.actual_cost_provider,
@@ -536,6 +622,11 @@ class RuntimeToolInvoker(ToolInvoker):
         requested_provider: SearchProviderName,
         context: ToolInvocationContext | None,
     ) -> tuple[WebSearchProviderPort, SearchProviderName]:
+        if _uses_platform_credentials(context):
+            web_search = self._web_search
+            if web_search is None:
+                raise _credential_unavailable(requested_provider)
+            return web_search, self._require_search_provider(requested_provider)
         resolver = self._web_search_provider_resolver
         if resolver is not None:
             return await _resolve_maybe_awaitable(resolver(requested_provider, context)), requested_provider
@@ -560,6 +651,12 @@ class RuntimeToolInvoker(ToolInvoker):
         requested_provider: str,
         context: ToolInvocationContext | None,
     ) -> LlmProviderPort:
+        if _uses_platform_credentials(context):
+            llm_provider = self._llm_provider
+            if llm_provider is None:
+                raise _credential_unavailable(requested_provider)
+            self._require_llm_provider(requested_provider)
+            return llm_provider
         resolver = self._llm_provider_resolver
         if resolver is not None:
             return await _resolve_maybe_awaitable(resolver(requested_provider, context))
@@ -585,6 +682,12 @@ class RuntimeToolInvoker(ToolInvoker):
         requested_provider: str,
         context: ToolInvocationContext | None,
     ) -> EmbeddingProviderPort:
+        if _uses_platform_credentials(context):
+            embedding_provider = self._embedding_provider
+            if embedding_provider is None:
+                raise _credential_unavailable(requested_provider)
+            self._require_embedding_provider(requested_provider)
+            return embedding_provider
         resolver = self._embedding_provider_resolver
         if resolver is not None:
             return await _resolve_maybe_awaitable(resolver(requested_provider, context))
@@ -597,6 +700,8 @@ class RuntimeToolInvoker(ToolInvoker):
     def _build_llm_request(
         self,
         invocation: LlmChatRequest,
+        *,
+        context: ToolInvocationContext | None,
     ) -> LlmRequest:
         normalized = invocation.to_tool_request()
         return LlmRequest(
@@ -617,7 +722,12 @@ class RuntimeToolInvoker(ToolInvoker):
             extra=invocation.provider_extra_payload(),
             use_case="tool_runtime_invoker",
             retry_policy=RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0.0),
+            include_payloads_in_observability=not _uses_platform_credentials(context),
         )
+
+
+def _uses_platform_credentials(context: ToolInvocationContext | None) -> bool:
+    return context is not None and context.provider_credential_source is ProviderCredentialSource.PLATFORM
 
 
 async def _invoke_search_provider(

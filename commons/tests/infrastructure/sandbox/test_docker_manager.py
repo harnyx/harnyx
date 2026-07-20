@@ -173,6 +173,35 @@ def test_docker_sandbox_manager_builds_commands(monkeypatch) -> None:
     assert rm_kwargs["capture_output"] is True
 
 
+def test_docker_sandbox_manager_can_skip_container_log_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = RecordingRunner()
+    manager = DockerSandboxManager(
+        docker_binary="docker",
+        host="127.0.0.1",
+        command_runner=runner,
+        client_factory=lambda base_url, host_container_url: DummyClient(base_url, host_container_url),
+        log_consumer=lambda _line: None,
+    )
+    monkeypatch.setattr(
+        manager,
+        "_start_log_stream",
+        lambda _container_id: pytest.fail("container log stream must remain disabled"),
+    )
+    options = SandboxOptions(
+        image="harnyx/sandbox:demo",
+        container_name="sandbox-demo",
+        pull_policy="missing",
+        host_container_url=_HOST_CONTAINER_URL,
+        include_container_logs=False,
+    )
+
+    deployment = manager.start(options)
+
+    manager.stop(deployment)
+
+
 def test_pull_policy_always_retries_docker_pull_before_local_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

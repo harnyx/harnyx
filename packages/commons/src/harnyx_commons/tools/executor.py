@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from typing import Protocol
@@ -14,7 +14,7 @@ from uuid import UUID, uuid4
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.application.ports.session_registry import SessionRegistryPort
 from harnyx_commons.application.ports.token_registry import TokenRegistryPort
-from harnyx_commons.domain.session import Session, SessionStatus
+from harnyx_commons.domain.session import ProviderCredentialSource, Session, SessionFailureCode, SessionStatus
 from harnyx_commons.domain.tool_call import (
     SearchToolResult,
     StartedToolCall,
@@ -24,7 +24,12 @@ from harnyx_commons.domain.tool_call import (
     ToolResult,
     ToolResultPolicy,
 )
-from harnyx_commons.errors import BudgetExceededError, ToolInvocationTimeoutError, ToolProviderError
+from harnyx_commons.errors import (
+    BudgetExceededError,
+    ToolInvocationTimeoutError,
+    ToolProviderError,
+    ToolProviderFailureCode,
+)
 from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.llm.schema import LlmResponse
 from harnyx_commons.tools.dto import (
@@ -111,6 +116,10 @@ class ToolInvocationContext:
     active_attempt: int
     uid: int
     miner_hotkey_ss58: str | None = None
+    provider_credential_source: ProviderCredentialSource = ProviderCredentialSource.MINER
+
+
+ToolCallObserver = Callable[[Session, ToolCall], Awaitable[None]]
 
 
 class ToolExecutor:
@@ -125,6 +134,7 @@ class ToolExecutor:
         *,
         token_registry: TokenRegistryPort,
         clock: Callable[[], datetime],
+        tool_call_observer: ToolCallObserver | None = None,
     ) -> None:
         self._sessions = session_registry
         self._receipts = receipt_log
@@ -132,6 +142,7 @@ class ToolExecutor:
         self._tool_invoker = tool_invoker
         self._tokens = token_registry
         self._clock = clock
+        self._tool_call_observer = tool_call_observer
 
     async def execute(self, request: ToolInvocationRequest) -> ToolInvocationResult:
         """Execute a tool call on behalf of the supplied session."""
@@ -151,7 +162,7 @@ class ToolExecutor:
                 call_id=debug_call_id,
                 session=session,
                 request=request,
-                request_payload=request_payload,
+                request_payload=_debug_payload(session, request_payload),
                 response_payload=None,
                 usage=None,
                 cost_usd=None,
@@ -176,13 +187,13 @@ class ToolExecutor:
                     call_id=debug_call_id,
                     session=session,
                     request=request,
-                    request_payload=request_payload,
+                    request_payload=_debug_payload(session, request_payload),
                     response_payload=None,
                     usage=None,
                     cost_usd=None,
                     budget=None,
                     elapsed_ms=None,
-                    error=_debug_error_data(exc),
+                    error=_debug_error_for_session(session, exc),
                 ),
             )
             raise
@@ -289,6 +300,7 @@ class ToolExecutor:
             active_attempt=session.active_attempt,
             uid=session.uid,
             miner_hotkey_ss58=session.miner_hotkey_ss58,
+            provider_credential_source=session.provider_credential_source,
         )
         try:
             result = await self._execute_pending_receipt_async(
@@ -301,7 +313,7 @@ class ToolExecutor:
                 invocation_context=invocation_context,
             )
         except asyncio.CancelledError as exc:
-            self._try_materialize_failed_pending_receipt(
+            await self._try_materialize_failed_pending_receipt(
                 session=session,
                 started_call=started_call,
                 started_at=started_at,
@@ -309,7 +321,7 @@ class ToolExecutor:
             )
             raise
         except Exception as exc:
-            self._try_materialize_failed_pending_receipt(
+            await self._try_materialize_failed_pending_receipt(
                 session=session,
                 started_call=started_call,
                 started_at=started_at,
@@ -378,6 +390,7 @@ class ToolExecutor:
         if completion is None:
             raise RuntimeError("tool completion arrived after pending receipt was abandoned")
         updated_session, should_raise_budget_exhausted = completion
+        await self._observe_tool_call(updated_session, receipt)
         budget_snapshot = _build_budget_snapshot(updated_session)
         result = _ExecutionResult(
             receipt=receipt,
@@ -393,8 +406,8 @@ class ToolExecutor:
                 call_id=debug_call_id,
                 session=updated_session,
                 request=request,
-                request_payload=request_payload,
-                response_payload=result.response_payload,
+                request_payload=_debug_payload(session, request_payload),
+                response_payload=_debug_payload(session, result.response_payload),
                 usage=asdict(result.usage_details) if result.usage_details else None,
                 cost_usd=result.receipt.details.cost_usd,
                 actual_cost_evidence=invocation_output.actual_cost_evidence,
@@ -404,13 +417,11 @@ class ToolExecutor:
             ),
         )
         if should_raise_budget_exhausted:
-            raise BudgetExceededError(
-                f"session {session.session_id} exhausted during tool accounting"
-            )
+            raise BudgetExceededError(f"session {session.session_id} exhausted during tool accounting")
 
         return result
 
-    def _try_materialize_failed_pending_receipt(
+    async def _try_materialize_failed_pending_receipt(
         self,
         *,
         session: Session,
@@ -419,7 +430,10 @@ class ToolExecutor:
         exc: BaseException,
     ) -> None:
         finished_at = self._clock()
-        error_extra = _failed_receipt_error_extra(exc)
+        error_extra = _failed_receipt_error_extra(
+            exc,
+            provider_credential_source=session.provider_credential_source,
+        )
         failed_receipt = started_call.materialize(
             outcome=_tool_failure_outcome(exc),
             response_payload=None,
@@ -438,6 +452,35 @@ class ToolExecutor:
         )
         if completion is None:
             return
+        updated_session, _ = completion
+        await self._observe_tool_call(updated_session, failed_receipt)
+        if (
+            session.provider_credential_source is ProviderCredentialSource.PLATFORM
+            and isinstance(exc, ToolProviderError)
+            and exc.failure_code
+            in {
+                ToolProviderFailureCode.CREDENTIAL_UNAVAILABLE,
+                ToolProviderFailureCode.AUTHENTICATION_FAILED,
+            }
+        ):
+            failure_code = (
+                SessionFailureCode.PROVIDER_CREDENTIAL_UNAVAILABLE
+                if exc.failure_code is ToolProviderFailureCode.CREDENTIAL_UNAVAILABLE
+                else SessionFailureCode.PROVIDER_AUTHENTICATION_FAILED
+            )
+            self._sessions.mutate(
+                session.session_id,
+                lambda current: current.mark_failure_code(failure_code).mark_error(),
+            )
+
+    async def _observe_tool_call(self, session: Session, tool_call: ToolCall) -> None:
+        if self._tool_call_observer is None:
+            return
+        try:
+            await self._tool_call_observer(session, tool_call)
+        except Exception:
+            self._sessions.mutate(session.session_id, lambda current: current.mark_error())
+            raise
 
     def _settle_usage(
         self,
@@ -456,9 +499,7 @@ class ToolExecutor:
             nonlocal budget_exhausted_by_this_call
 
             if current.status not in {SessionStatus.ACTIVE, SessionStatus.EXHAUSTED}:
-                raise RuntimeError(
-                    f"session {session_id} became {current.status.value} during tool accounting"
-                )
+                raise RuntimeError(f"session {session_id} became {current.status.value} during tool accounting")
 
             was_already_exhausted = current.status is SessionStatus.EXHAUSTED
             session_for_accounting = _session_for_usage_accounting(current)
@@ -482,6 +523,17 @@ class ToolExecutor:
         return updated_session, budget_exhausted_by_this_call
 
     def _log_success(self, log_context: dict[str, object], result: _ExecutionResult) -> None:
+        log_fields = {
+            **log_context,
+            "event": "tool_call_success",
+            "receipt_id": result.receipt.receipt_id,
+            "llm_tokens": result.llm_tokens,
+            "usage": asdict(result.usage_details) if result.usage_details else None,
+        }
+        if log_context.get("provider_credential_source") == ProviderCredentialSource.PLATFORM.value:
+            tool_logger.info("tool call completed", extra=log_fields)
+            return
+
         response_preview = _summarize_value(result.response_payload, limit=500)
         results_preview = _summarize_value(result.results, limit=200)
 
@@ -490,23 +542,20 @@ class ToolExecutor:
             response_preview,
             results_preview,
             extra={
-                **log_context,
-                "event": "tool_call_success",
-                "receipt_id": result.receipt.receipt_id,
-                "llm_tokens": result.llm_tokens,
-                "usage": asdict(result.usage_details) if result.usage_details else None,
+                **log_fields,
                 "response_preview": response_preview,
                 "results_preview": results_preview,
             },
         )
 
     def _log_failure(self, log_context: dict[str, object], exc: Exception) -> None:
+        platform_credentials = log_context.get("provider_credential_source") == ProviderCredentialSource.PLATFORM.value
         tool_logger.error(
             "tool call failed",
             extra={
                 **log_context,
                 "event": "tool_call_error",
-                "error": str(exc),
+                "error": "tool execution failed" if platform_credentials else str(exc),
                 "error_type": exc.__class__.__name__,
                 **_platform_tool_proxy_failure_metadata(exc),
             },
@@ -537,6 +586,7 @@ class ToolExecutor:
     def _validate_token(self, session_id: UUID, presented: str) -> None:
         if not self._tokens.verify(session_id, presented):
             raise PermissionError("invalid session token presented for tool execution")
+
 
 def _normalize_invocation_output(value: object) -> ToolInvocationOutput:
     if isinstance(value, ToolInvocationOutput):
@@ -606,7 +656,20 @@ def _tool_failure_outcome(
     return ToolCallOutcome.INTERNAL_ERROR
 
 
-def _failed_receipt_error_extra(exc: BaseException) -> dict[str, str]:
+def _failed_receipt_error_extra(
+    exc: BaseException,
+    *,
+    provider_credential_source: ProviderCredentialSource,
+) -> dict[str, JsonValue]:
+    if provider_credential_source is ProviderCredentialSource.PLATFORM:
+        extra = {
+            "error_type": exc.__class__.__name__,
+            "error_message": "tool execution failed",
+        }
+        if exc.__cause__ is not None:
+            extra["error_cause_type"] = exc.__cause__.__class__.__name__
+        extra.update(_platform_tool_proxy_failure_metadata(exc))
+        return extra
     source = exc.__cause__ or exc
     error_message = str(source) or source.__class__.__name__
     extra = {
@@ -620,8 +683,14 @@ def _failed_receipt_error_extra(exc: BaseException) -> dict[str, str]:
     return extra
 
 
-def _platform_tool_proxy_failure_metadata(exc: BaseException) -> dict[str, str]:
-    extra: dict[str, str] = {}
+def _platform_tool_proxy_failure_metadata(exc: BaseException) -> dict[str, JsonValue]:
+    extra: dict[str, JsonValue] = {}
+    if isinstance(exc, ToolProviderError):
+        extra["provider_failure_code"] = exc.failure_code.value
+        if exc.provider is not None:
+            extra["provider"] = exc.provider
+        if exc.http_status is not None:
+            extra["provider_http_status"] = exc.http_status
     error_code = getattr(exc, "error_code", None)
     if isinstance(error_code, str) and error_code:
         extra["platform_tool_proxy_error_code"] = error_code
@@ -803,8 +872,7 @@ def _extract_llm_usage(
     if usage_obj is None:
         keys = ", ".join(str(key) for key in sorted(parsed_payload.payload_mapping.keys())) or "none"
         raise ValueError(
-            "llm tool response missing 'usage' field "
-            f"(payload keys: {keys})",
+            f"llm tool response missing 'usage' field (payload keys: {keys})",
         )
 
     prompt = usage_obj.prompt_tokens
@@ -901,6 +969,18 @@ def _debug_error_data(exc: Exception) -> dict[str, str]:
     return {"type": exc.__class__.__name__, "message": str(exc)}
 
 
+def _debug_payload(session: Session, payload: JsonValue | None) -> JsonValue | None:
+    if session.provider_credential_source is ProviderCredentialSource.PLATFORM:
+        return None
+    return payload
+
+
+def _debug_error_for_session(session: Session, exc: Exception) -> dict[str, str]:
+    if session.provider_credential_source is ProviderCredentialSource.PLATFORM:
+        return {"type": exc.__class__.__name__, "message": "tool execution failed"}
+    return _debug_error_data(exc)
+
+
 def _tool_call_debug_data(
     *,
     call_id: str,
@@ -944,15 +1024,18 @@ def _is_sensitive_key(key: str) -> bool:
 
 
 def _build_tool_log_context(request: ToolInvocationRequest, session: Session) -> dict[str, object]:
-    return {
+    context: dict[str, object] = {
         "tool_name": request.tool,
         "session_id": str(session.session_id),
         "task_id": str(session.task_id),
         "attempt": session.active_attempt,
         "uid": session.uid,
-        "tool_args": _summarize_args(request.args),
-        "tool_kwargs": _sanitize_kwargs(request.kwargs),
+        "provider_credential_source": session.provider_credential_source.value,
     }
+    if session.provider_credential_source is ProviderCredentialSource.MINER:
+        context["tool_args"] = _summarize_args(request.args)
+        context["tool_kwargs"] = _sanitize_kwargs(request.kwargs)
+    return context
 
 
 def _summarize_args(args: Sequence[object]) -> tuple[str, ...]:

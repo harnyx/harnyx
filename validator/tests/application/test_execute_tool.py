@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import cast
 from uuid import uuid4
@@ -10,13 +10,19 @@ from uuid import uuid4
 import pytest
 
 import harnyx_commons.tools.executor as tool_executor_module
-from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
+from harnyx_commons.domain.session import (
+    ProviderCredentialSource,
+    Session,
+    SessionFailureCode,
+    SessionStatus,
+    SessionUsage,
+)
 from harnyx_commons.domain.tool_call import (
     ToolCall,
     ToolCallOutcome,
     ToolExecutionFacts,
 )
-from harnyx_commons.errors import ToolInvocationTimeoutError, ToolProviderError
+from harnyx_commons.errors import ToolInvocationTimeoutError, ToolProviderError, ToolProviderFailureCode
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.llm.schema import LlmChoice, LlmChoiceMessage, LlmMessageContentPart, LlmResponse, LlmUsage
 from harnyx_commons.tools.dto import ToolInvocationRequest
@@ -158,7 +164,12 @@ class BlockingProviderErrorInvoker(ToolInvoker):
         self._release.set()
 
 
-def make_session(*, budget_usd: float = 0.1, hard_limit_usd: float | None = None) -> Session:
+def make_session(
+    *,
+    budget_usd: float = 0.1,
+    hard_limit_usd: float | None = None,
+    provider_credential_source: ProviderCredentialSource = ProviderCredentialSource.MINER,
+) -> Session:
     return Session(
         session_id=uuid4(),
         uid=7,
@@ -167,6 +178,7 @@ def make_session(*, budget_usd: float = 0.1, hard_limit_usd: float | None = None
         expires_at=datetime(2025, 10, 17, 13, tzinfo=UTC),
         budget_usd=budget_usd,
         hard_limit_usd=hard_limit_usd,
+        provider_credential_source=provider_credential_source,
         usage=SessionUsage(),
         status=SessionStatus.ACTIVE,
     )
@@ -187,6 +199,7 @@ def build_executor(
     *,
     token: str,
     clock: Callable[[], datetime] | None = None,
+    tool_call_observer: Callable[[Session, ToolCall], Awaitable[None]] | None = None,
 ) -> tuple[
     ToolExecutor,
     RecordingToolInvoker,
@@ -209,6 +222,7 @@ def build_executor(
         tool_invoker=invoker,
         token_registry=token_registry,
         clock=clock or (lambda: datetime(2025, 10, 17, 12, 5, tzinfo=UTC)),
+        tool_call_observer=tool_call_observer,
     )
     return executor, invoker, receipt_log, session_registry, token_registry
 
@@ -252,9 +266,7 @@ async def test_execute_tool_records_receipt_and_updates_budget() -> None:
 
     result = await executor.execute(request)
 
-    assert invoker.calls == [
-        ("search_web", (), {"search_queries": ["harnyx", "subnet"]})
-    ]
+    assert invoker.calls == [("search_web", (), {"search_queries": ["harnyx", "subnet"]})]
     stored_session = session_registry.get(session.session_id)
     assert stored_session is not None
     assert stored_session.usage.total_cost_usd == pytest.approx(TEST_SEARCH_COST_USD)
@@ -269,6 +281,48 @@ async def test_execute_tool_records_receipt_and_updates_budget() -> None:
 
     assert token_registry.verify(session.session_id, token)
     assert result.response_payload["data"] == []
+
+
+async def test_execute_tool_observes_exact_materialized_receipt() -> None:
+    session = make_session()
+    token = generate_token()
+    observed: list[tuple[Session, ToolCall]] = []
+
+    async def observe(observed_session: Session, tool_call: ToolCall) -> None:
+        observed.append((observed_session, tool_call))
+
+    executor, _invoker, _receipt_log, _session_registry, _token_registry = build_executor(
+        session,
+        token=token,
+        tool_call_observer=observe,
+    )
+
+    result = await executor.execute(make_request(session, token=token))
+
+    assert len(observed) == 1
+    assert observed[0][0].session_id == session.session_id
+    assert observed[0][1] == result.receipt
+
+
+async def test_execute_tool_marks_session_error_when_receipt_observer_fails() -> None:
+    session = make_session()
+    token = generate_token()
+
+    async def observe(_session: Session, _tool_call: ToolCall) -> None:
+        raise RuntimeError("durable receipt write failed")
+
+    executor, _invoker, _receipt_log, session_registry, _token_registry = build_executor(
+        session,
+        token=token,
+        tool_call_observer=observe,
+    )
+
+    with pytest.raises(RuntimeError, match="durable receipt write failed"):
+        await executor.execute(make_request(session, token=token))
+
+    stored = session_registry.get(session.session_id)
+    assert stored is not None
+    assert stored.status is SessionStatus.ERROR
 
 
 async def test_execute_tool_rejects_nonfinite_provider_cost_before_settling_usage() -> None:
@@ -464,9 +518,7 @@ async def test_execute_tool_supports_tooling_info_without_consuming_budget() -> 
 
     result = await executor.execute(request)
 
-    assert invoker.calls == [
-        ("tooling_info", (), {})
-    ]
+    assert invoker.calls == [("tooling_info", (), {})]
     stored_session = session_registry.get(session.session_id)
     assert stored_session is not None
     assert stored_session.usage.total_cost_usd == pytest.approx(0.0)
@@ -693,14 +745,45 @@ async def test_execute_tool_logs_response_preview(caplog: pytest.LogCaptureFixtu
     with caplog.at_level("INFO", logger="harnyx_commons.tools"):
         await executor.execute(request)
 
-    completed = next(
-        record
-        for record in caplog.records
-        if record.message.startswith("tool call completed:")
-    )
+    completed = next(record for record in caplog.records if record.message.startswith("tool call completed:"))
     assert "response_preview={'data': [], 'search_queries': ['harnyx', 'subnet']}" in completed.message
     assert completed.response_preview == "{'data': [], 'search_queries': ['harnyx', 'subnet']}"
     assert completed.results_preview == "()"
+
+
+async def test_platform_success_log_omits_provider_response_payload(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    response_sentinel = "platform-provider-response-sentinel"
+    session = make_session(provider_credential_source=ProviderCredentialSource.PLATFORM)
+    token = generate_token()
+
+    class SuccessfulInvoker(ToolInvoker):
+        async def invoke(
+            self,
+            tool_name: str,
+            *,
+            args: tuple[object, ...],
+            kwargs: dict[str, object],
+            context: ToolInvocationContext | None = None,
+        ) -> ToolInvocationOutput:
+            return search_output({"data": [{"snippet": response_sentinel}]})
+
+    executor, receipt_log, _ = build_executor_with_invoker(
+        session,
+        token=token,
+        invoker=SuccessfulInvoker(),
+    )
+
+    with caplog.at_level("INFO", logger="harnyx_commons.tools"):
+        result = await executor.execute(make_request(session, token=token))
+
+    assert result.response_payload == {"data": [{"snippet": response_sentinel}]}
+    assert tuple(receipt_log.for_session(session.session_id))[0].details.response_payload == result.response_payload
+    completed = require_log_record(caplog, "tool call completed")
+    assert not hasattr(completed, "response_preview")
+    assert not hasattr(completed, "results_preview")
+    assert response_sentinel not in "\n".join(str(record.__dict__) for record in caplog.records)
 
 
 async def test_execute_tool_debug_log_includes_full_request_response_payload(
@@ -750,7 +833,7 @@ async def test_execute_tool_debug_log_preserves_raw_payload_and_error_text(
             context: ToolInvocationContext | None = None,
         ) -> dict[str, object]:
             raise RuntimeError(
-                'access_token=access-secret Authorization: Bearer bearer-secret '
+                "access_token=access-secret Authorization: Bearer bearer-secret "
                 '{"api_key":"json-secret"} password: "password-secret" '
                 '{"authorization":"Bearer quoted-bearer-secret"} token=plain-token-secret '
                 '"token":"json-token-secret" '
@@ -850,6 +933,63 @@ async def test_execute_tool_records_failed_receipt_before_reraising_provider_err
     stored = session_registry.get(session.session_id)
     assert stored is not None
     assert stored.usage.total_cost_usd == pytest.approx(0.0)
+
+
+async def test_platform_receipt_does_not_store_runtime_provider_error_detail(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="harnyx_commons.tools")
+    session = make_session(provider_credential_source=ProviderCredentialSource.PLATFORM)
+    token = generate_token()
+
+    class FailingInvoker(ToolInvoker):
+        async def invoke(
+            self,
+            tool_name: str,
+            *,
+            args: tuple[object, ...],
+            kwargs: dict[str, object],
+            context: ToolInvocationContext | None = None,
+        ) -> dict[str, object]:
+            raise ToolProviderError(
+                "outer-provider-envelope",
+                failure_code=ToolProviderFailureCode.AUTHENTICATION_FAILED,
+                provider="chutes",
+                http_status=401,
+            ) from ValueError("raw-provider-body-and-header")
+
+    executor, receipt_log, session_registry = build_executor_with_invoker(
+        session,
+        token=token,
+        invoker=FailingInvoker(),
+    )
+
+    with pytest.raises(ToolProviderError):
+        await executor.execute(make_request(session, token=token))
+
+    receipt = tuple(receipt_log.for_session(session.session_id))[0]
+    assert receipt.details.extra is not None
+    assert receipt.details.extra["error_type"] == "ToolProviderError"
+    assert receipt.details.extra["error_message"] == "tool execution failed"
+    assert receipt.details.extra["error_cause_type"] == "ValueError"
+    assert "outer-provider-envelope" not in str(receipt.details.extra)
+    assert "raw-provider-body-and-header" not in str(receipt.details.extra)
+    assert receipt.details.extra["provider_failure_code"] == "authentication_failed"
+    assert receipt.details.extra["provider_http_status"] == 401
+    failed_session = session_registry.get(session.session_id)
+    assert failed_session is not None
+    assert failed_session.status is SessionStatus.ERROR
+    assert failed_session.failure_code is SessionFailureCode.PROVIDER_AUTHENTICATION_FAILED
+
+    with pytest.raises(RuntimeError, match="is not active"):
+        await executor.execute(make_request(session, token=token))
+
+    logged = "\n".join(str(record.__dict__) for record in caplog.records)
+    assert "outer-provider-envelope" not in logged
+    assert "raw-provider-body-and-header" not in logged
+    assert "search_queries" not in logged
+    assert all(not hasattr(record, "tool_args") for record in caplog.records)
+    assert all(not hasattr(record, "tool_kwargs") for record in caplog.records)
 
 
 async def test_execute_tool_records_failed_receipt_before_reraising_generic_error() -> None:
@@ -1135,9 +1275,7 @@ async def test_execute_tool_debug_logs_completion_before_budget_exhausted_failur
     completed = require_log_record(caplog, "miner_tool_call.completed")
     failed = require_log_record(caplog, "miner_tool_call.failed")
     assert completed.data["call_id"] == failed.data["call_id"]
-    assert completed.data["response"] == {
-        "data": [{"link": "https://a.example", "snippet": "A"}]
-    }
+    assert completed.data["response"] == {"data": [{"link": "https://a.example", "snippet": "A"}]}
     assert completed.data["cost_usd"] == pytest.approx(0.0001)
     assert completed.data["budget"]["session_used_budget_usd"] == pytest.approx(0.0001)
 
@@ -1343,8 +1481,10 @@ async def test_execute_tool_returns_unknown_cost_embedding_and_allows_future_cal
 async def test_execute_tool_rejects_expired_session() -> None:
     session = make_session()
     token = generate_token()
+
     def expired_clock() -> datetime:
         return session.expires_at + timedelta(seconds=1)
+
     executor, *_ = build_executor(session, token=token, clock=expired_clock)
     request = make_request(session, token=token)
 
@@ -2182,9 +2322,7 @@ async def test_execute_tool_budget_exhaustion_records_one_successful_receipt_onl
     assert len(receipts) == 1
     receipt = receipts[0]
     assert receipt.outcome is ToolCallOutcome.OK
-    assert receipt.details.response_payload == {
-        "data": [{"link": "https://a.example", "snippet": "A"}]
-    }
+    assert receipt.details.response_payload == {"data": [{"link": "https://a.example", "snippet": "A"}]}
     assert receipt.details.extra is not None
     assert "error_type" not in receipt.details.extra
 
