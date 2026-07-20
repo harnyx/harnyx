@@ -49,7 +49,7 @@ Debug or oracle experiments are allowed during research when they help isolate a
 Each committed full experiment evaluates `train.py` against the pinned local-eval batch and the pinned benchmark snapshot selected by `prepare.py`. Launch it simply as:
 
 ```
-uv run train.py
+LOG_LEVEL=DEBUG uv run train.py
 ```
 
 Score A is the primary local batch-eval score against the current champion. Score B is the selected benchmark score against open canonical answers. Neither score is a perfect generalization test, but the pair is the fixed metric for this run.
@@ -91,7 +91,7 @@ Do not randomly tweak the harness, run the full evaluation after every tiny chan
 
 ### Start from failures
 
-Before changing code, inspect concrete weak or failed cases. Use the latest `run.log`, structured local-eval report, structured benchmark report, and any diagnostic output you created.
+Before changing code, inspect concrete weak or failed cases. Use the latest `run.log`, structured local-eval report, structured benchmark report, `.autoresearch/reports/<timestamp>/local-eval.stderr`, and any diagnostic output you created. The local-eval stderr file contains detailed tool-call events when the experiment ran with `LOG_LEVEL=DEBUG`.
 
 Look at:
 
@@ -194,7 +194,7 @@ Focused diagnostics may use existing tools and generated artifacts:
 - add temporary debug logging or oracle checks in `train.py` only while diagnosing, then remove them before any keep decision
 - compare baseline and modified outputs line by line
 
-Full evaluation with `uv run train.py > run.log 2>&1` is allowed only when:
+Full evaluation with `LOG_LEVEL=DEBUG uv run train.py > run.log 2>&1` is allowed only when:
 
 - focused diagnostic cases show clear improvement
 - a focused hypothesis cycle is complete
@@ -390,10 +390,10 @@ LOOP FOREVER:
 8. Run focused diagnostics and inspect intermediate artifacts.
 9. If the intended behavior did not execute or did not change, refine the same hypothesis before full evaluation.
 10. If diagnostics show the mechanism improved for the right reason, git commit the `train.py` change.
-11. Run the full experiment: `uv run train.py > run.log 2>&1`. Redirect everything; do not let output flood your context.
+11. Run the full experiment: `LOG_LEVEL=DEBUG uv run train.py > run.log 2>&1`. Redirect everything; do not let output flood your context.
 12. Read out the results with `grep "^score_a:\|^score_b:\|^champion_score_a:\|^delta_vs_champion_a:\|^cost_usd:\|^error_count:" run.log`.
 13. If the grep output is empty, the run crashed. Run `tail -n 80 run.log` to read the error and decide whether to fix the implementation bug or abandon the idea.
-14. Inspect the structured report paths printed in `run.log`; compare intermediate artifacts and diagnostic behavior against the hypothesis.
+14. Inspect the structured report paths printed in `run.log` and the matching `.autoresearch/reports/<timestamp>/local-eval.stderr`; compare tool-call evidence, intermediate artifacts, and diagnostic behavior against the hypothesis.
 15. Record the result in `results.tsv`. Do not commit `results.tsv`; leave it untracked.
 16. Update `.autoresearch/experiment-ledger.md` with interpretation, decision, and next action.
 17. If the score improved for a plausible mechanism-level reason, advance the branch by keeping the git commit.

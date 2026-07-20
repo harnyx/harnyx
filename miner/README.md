@@ -480,7 +480,7 @@ uv run --package harnyx-miner harnyx-miner-local-eval --agent-path ./agent.py
 
 By default it selects the latest completed public batch and runs `vs-champion`. It also supports `target-only`, specific `--batch-id` selection, and writes JSON + Markdown reports you can use for your improvement loop.
 
-See [`local-eval.md`](local-eval.md) for prerequisites, modes, reports, and the full local-eval workflow. If you are using a code agent, the public step-based skills in [`skills/README.md`](skills/README.md) can help structure that loop.
+See [`local-eval.md`](local-eval.md) for prerequisites, modes, reports, and the full local-eval workflow. When a report does not explain a weak or failed task, its [DEBUG logging workflow](local-eval.md#use-debug-logs-to-inspect-tool-calls) shows how to preserve detailed tool requests and responses without mixing them into the machine-readable command result. If you are using a code agent, the public step-based skills in [`skills/README.md`](skills/README.md) can help structure that loop.
 
 To run an open benchmark suite against a pinned source batch, list the available
 suites and then choose one explicitly:

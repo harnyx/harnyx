@@ -267,7 +267,8 @@ def test_public_program_matches_single_file_contract() -> None:
     assert "score_a" in program
     assert "score_b" in program
     assert "hardcode benchmark item IDs" in program
-    assert "uv run train.py > run.log 2>&1" in program
+    assert "LOG_LEVEL=DEBUG uv run train.py > run.log 2>&1" in program
+    assert ".autoresearch/reports/<timestamp>/local-eval.stderr" in program
 
 
 def test_public_program_requires_failure_first_research_cycle() -> None:
@@ -279,7 +280,7 @@ def test_public_program_requires_failure_first_research_cycle() -> None:
     assert "### Pick one bottleneck per cycle" in program
     assert "### Write the hypothesis before editing" in program
     assert "### Use focused diagnostic cases before full evaluation" in program
-    assert "Full evaluation with `uv run train.py > run.log 2>&1` is allowed only when:" in program
+    assert "Full evaluation with `LOG_LEVEL=DEBUG uv run train.py > run.log 2>&1` is allowed only when:" in program
     assert "### Inspect intermediate artifacts, not just score" in program
     assert "### Do not abandon a hypothesis after one failed attempt" in program
     assert "### Use the intervention ladder" in program
@@ -315,6 +316,8 @@ def test_auto_research_runbook_documents_operator_startup_contract() -> None:
     assert "DESEARCH_API_KEY" in runbook
     assert "BENCHMARK_LLM_PROVIDER" in runbook
     assert "BENCHMARK_LLM_MODEL" in runbook
+    assert "LOG_LEVEL=DEBUG uv run train.py > run.log 2>&1" in runbook
+    assert "local-eval.stderr" in runbook
     assert "AutoResearch does not upload automatically" in runbook
     assert "cd miner" in runbook
     assert "public/miner" not in runbook

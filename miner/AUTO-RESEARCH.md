@@ -105,11 +105,17 @@ The agent should:
 4. write a hypothesis before editing
 5. run focused diagnostics
 6. commit the candidate when diagnostics justify full eval
-7. run `uv run train.py > run.log 2>&1`
+7. run `LOG_LEVEL=DEBUG uv run train.py > run.log 2>&1`
 8. record Score A, Score B, cost, and keep/discard/crash status in `results.tsv`
 9. keep or reset the commit according to [`program.md`](program.md)
 
 Do not ask it to run the expensive full evaluation after every tiny edit. `program.md` defines when full evaluation is allowed.
+
+`prepare.py` passes `LOG_LEVEL` to local eval and stores its captured streams
+under `.autoresearch/reports/<timestamp>/`. Inspect `local-eval.stderr` for the
+detailed tool-call events; `run.log` remains the combined top-level experiment
+output and metric summary. Review DEBUG logs before sharing because they can
+contain task content, retrieved pages, and model responses.
 
 ## Stopping And Upload
 

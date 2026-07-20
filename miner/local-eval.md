@@ -87,6 +87,42 @@ During the run, the CLI prints human progress logs to `stderr` so you can see ba
 
 If sandbox startup or the evaluated agent fails, the CLI writes a failure bundle under `/tmp/harnyx-local-eval-failures/<run-id>/...` before cleanup and prints the failure category plus bundle path to `stderr`. The bundle includes the evaluated `agent.py`, local-eval context, redacted sandbox options, redacted Docker run arguments, and Docker inspect/log output when Docker created a container.
 
+## Use DEBUG Logs To Inspect Tool Calls
+
+The default `LOG_LEVEL` is `WARNING`. Set `LOG_LEVEL=DEBUG` when you need the
+detailed tool-call execution log for a diagnosis. DEBUG events include the tool
+name, request, response, usage, cost, budget, elapsed time, and error details,
+with identifiers such as `task_id`, `attempt`, and `call_id` for correlation.
+
+Pin the batch while comparing changes. Use `target-only` when you only need to
+inspect your artifact and want to avoid interleaved champion logs:
+
+```bash
+LOG_LEVEL=DEBUG uv run --package harnyx-miner harnyx-miner-local-eval \
+  --agent-path ./agent.py \
+  --batch-id <completed-batch-id> \
+  --mode target-only \
+  > local-eval-paths.json \
+  2> local-eval-debug.log
+```
+
+`local-eval-paths.json` contains the machine-readable paths to the generated
+reports. `local-eval-debug.log` contains DEBUG events such as
+`miner_tool_call.started`, `miner_tool_call.completed`, and
+`miner_tool_call.failed`.
+
+Use the DEBUG log together with the JSON report:
+
+1. Start with a weak or failed task in the report.
+2. Filter the DEBUG log by its `task_id` and `attempt`.
+3. Compare the tool request, returned evidence, cost, and error details with the
+   final answer and score details.
+4. Change one behavior in `agent.py`, then rerun the same pinned batch.
+
+DEBUG logging changes log verbosity only; it does not change evaluation or add
+the tool-call execution log to the generated reports. Logs can contain task
+content, retrieved pages, and model responses, so review them before sharing.
+
 ## What The Reports Contain
 
 Both reports include:
@@ -143,10 +179,12 @@ Each task record includes enough detail to drive your own analysis loop:
 Recommended loop:
 
 1. Find the tasks where your artifact lost to the champion or scored poorly.
-2. Look for repeated patterns: missing evidence, weak synthesis, over-spending, brittle tool handling, slow answers.
-3. Change `./agent.py` to test one or two specific hypotheses.
-4. Re-run local eval.
-5. Compare the new JSON/Markdown report with the previous run.
+2. When the report is not enough to explain the result, rerun the same batch
+   with [DEBUG tool-call logs](#use-debug-logs-to-inspect-tool-calls).
+3. Look for repeated patterns: missing evidence, weak synthesis, over-spending, brittle tool handling, slow answers.
+4. Change `./agent.py` to test one or two specific hypotheses.
+5. Re-run local eval.
+6. Compare the new JSON/Markdown report and DEBUG evidence with the previous run.
 
 After local eval shows a candidate is worth submitting, or after it exposes a
 failure pattern you need to diagnose against platform state, use the

@@ -14,6 +14,7 @@ Run `harnyx-miner-local-eval`, collect the reports, and decide the next move.
 - target artifact path, usually `./agent.py`
 - mode: `vs-champion` or `target-only`
 - optional completed `batch_id`
+- log detail: default logs or `LOG_LEVEL=DEBUG` for tool-call diagnosis
 
 ## Steps
 
@@ -26,14 +27,28 @@ Run `harnyx-miner-local-eval`, collect the reports, and decide the next move.
 uv run --package harnyx-miner harnyx-miner-local-eval --agent-path ./agent.py
 ```
 
+   If a report does not explain a weak or failed task, pin its batch and capture
+   DEBUG logs. Prefer `target-only` when diagnosing only the target artifact:
+
+```bash
+LOG_LEVEL=DEBUG uv run --package harnyx-miner harnyx-miner-local-eval \
+  --agent-path ./agent.py \
+  --batch-id <completed-batch-id> \
+  --mode target-only \
+  > local-eval-paths.json \
+  2> local-eval-debug.log
+```
+
 3. Read:
    - `local-eval-report-<batch-id>-<mode>.json`
    - `local-eval-report-<batch-id>-<mode>.md`
+   - `local-eval-debug.log` when DEBUG logging was enabled
 4. Extract:
    - score deltas
    - task-level wins / losses
    - cost regressions
    - retries / failures
+   - tool requests, responses, and errors for the selected `task_id` and `attempt`
 5. Decide whether to:
    - keep iterating on the artifact
    - switch to `target-only`
@@ -49,5 +64,6 @@ uv run --package harnyx-miner harnyx-miner-local-eval --agent-path ./agent.py
 
 - command used
 - report paths
+- DEBUG log path when captured
 - key findings from the run
 - next recommended action
