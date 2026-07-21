@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from harnyx_commons.config.external_client import ExternalClientRetrySettings
 from harnyx_commons.errors import ToolProviderError, ToolProviderFailureCode
 from harnyx_commons.llm.retry_utils import RetryPolicy, backoff_ms
+from harnyx_commons.platform_tool_proxy import platform_tool_proxy_effective_provider_timeout_seconds
 from harnyx_commons.tools.desearch_ai_protocol import (
     DeSearchAiDocsResponse,
     parse_desearch_ai_response,
@@ -152,6 +153,7 @@ class DeSearchClient:
             raise ValueError("DeSearch API key must be provided")
         normalized_base = base_url.rstrip("/")
         self._owns_client = client is None
+        self._timeout = timeout
         self._client: httpx.AsyncClient = client or httpx.AsyncClient(
             base_url=normalized_base,
             timeout=timeout,
@@ -171,6 +173,7 @@ class DeSearchClient:
         expect_data: bool = True,
         allow_not_found: bool = False,
         response_format: str = "json",
+        requested_timeout: float | None = None,
     ) -> dict[str, Any] | None:
         path = endpoint if endpoint.startswith("/") else f"/{endpoint}"
         result = await self._request_with_billing(
@@ -180,6 +183,7 @@ class DeSearchClient:
             expect_data=expect_data,
             allow_not_found=allow_not_found,
             response_format=response_format,
+            requested_timeout=requested_timeout,
         )
         return result.data if result is not None else None
 
@@ -191,6 +195,7 @@ class DeSearchClient:
         expect_data: bool = True,
         allow_not_found: bool = False,
         response_format: str = "json",
+        requested_timeout: float | None = None,
     ) -> _DeSearchRequestData | None:
         path = endpoint if endpoint.startswith("/") else f"/{endpoint}"
         return await self._request_with_billing(
@@ -200,6 +205,7 @@ class DeSearchClient:
             expect_data=expect_data,
             allow_not_found=allow_not_found,
             response_format=response_format,
+            requested_timeout=requested_timeout,
         )
 
     async def _get(
@@ -210,6 +216,7 @@ class DeSearchClient:
         expect_data: bool = True,
         allow_not_found: bool = False,
         response_format: str = "json",
+        requested_timeout: float | None = None,
     ) -> dict[str, Any] | None:
         path = endpoint if endpoint.startswith("/") else f"/{endpoint}"
         result = await self._request_with_billing(
@@ -219,6 +226,7 @@ class DeSearchClient:
             expect_data=expect_data,
             allow_not_found=allow_not_found,
             response_format=response_format,
+            requested_timeout=requested_timeout,
         )
         return result.data if result is not None else None
 
@@ -230,6 +238,7 @@ class DeSearchClient:
         expect_data: bool = True,
         allow_not_found: bool = False,
         response_format: str = "json",
+        requested_timeout: float | None = None,
     ) -> _DeSearchRequestData | None:
         path = endpoint if endpoint.startswith("/") else f"/{endpoint}"
         return await self._request_with_billing(
@@ -239,6 +248,7 @@ class DeSearchClient:
             expect_data=expect_data,
             allow_not_found=allow_not_found,
             response_format=response_format,
+            requested_timeout=requested_timeout,
         )
 
     # Convenience wrappers ------------------------------------------------------------------------
@@ -272,6 +282,7 @@ class DeSearchClient:
             date_filter=None,
             result_type=DeSearchAiResultType.LINKS_WITH_FINAL_SUMMARY,
             system_message="",
+            requested_timeout=request.timeout,
         )
         metadata = _DeSearchRetryMetadataPayload.model_validate(raw.data)
         response = SearchAiSearchResponse(
@@ -297,6 +308,7 @@ class DeSearchClient:
             {"url": request.url, "format": "text"},
             expect_data=False,
             response_format="text",
+            requested_timeout=request.timeout,
         )
         if data is None:
             raise ToolProviderError("tool provider failed")
@@ -343,7 +355,7 @@ class DeSearchClient:
             params["num"] = request.num
         if start is not None:
             params["start"] = start
-        return await self._get_with_billing("web", params)
+        return await self._get_with_billing("web", params, requested_timeout=request.timeout)
 
     async def search_links_twitter(
         self,
@@ -529,6 +541,7 @@ class DeSearchClient:
         date_filter: DeSearchAiDateFilter | None,
         result_type: DeSearchAiResultType,
         system_message: str,
+        requested_timeout: float | None = None,
     ) -> _DeSearchRequestData:
         if not prompt.strip():
             raise ValueError("desearch ai_search requires non-empty prompt")
@@ -549,7 +562,12 @@ class DeSearchClient:
             "count": max(_DESEARCH_AI_MIN_COUNT, min(_DESEARCH_AI_MAX_COUNT, count)),
         }
         payload = {key: value for key, value in payload_items.items() if value is not None}
-        data = await self._post_with_billing("desearch/ai/search", payload, expect_data=False)
+        data = await self._post_with_billing(
+            "desearch/ai/search",
+            payload,
+            expect_data=False,
+            requested_timeout=requested_timeout,
+        )
         if data is None:
             raise ToolProviderError("tool provider failed")
         return data
@@ -590,7 +608,12 @@ class DeSearchClient:
         expect_data: bool = True,
         allow_not_found: bool = False,
         response_format: str = "json",
+        requested_timeout: float | None = None,
     ) -> _DeSearchRequestData | None:
+        provider_timeout = platform_tool_proxy_effective_provider_timeout_seconds(
+            self._timeout,
+            requested_timeout,
+        )
         if self._semaphore is None:
             return await self._request_with_retries(
                 method,
@@ -601,6 +624,7 @@ class DeSearchClient:
                 allow_not_found=allow_not_found,
                 wait_ms=0.0,
                 response_format=response_format,
+                timeout=provider_timeout,
             )
 
         wait_start = time.perf_counter()
@@ -615,6 +639,7 @@ class DeSearchClient:
                 allow_not_found=allow_not_found,
                 wait_ms=wait_ms,
                 response_format=response_format,
+                timeout=provider_timeout,
             )
 
     async def _request_with_retries(
@@ -628,6 +653,7 @@ class DeSearchClient:
         allow_not_found: bool,
         wait_ms: float,
         response_format: str,
+        timeout: float,
     ) -> _DeSearchRequestData | None:
         reasons: list[str] = []
         total_latency_ms = 0.0
@@ -648,7 +674,13 @@ class DeSearchClient:
                     attempts_made = attempt + 1
                     attempt_start = time.perf_counter()
                     try:
-                        resp = await self._send(method, path, json_payload=json_payload, params=params)
+                        resp = await self._send(
+                            method,
+                            path,
+                            json_payload=json_payload,
+                            params=params,
+                            timeout=timeout,
+                        )
                         raw_response, data, billing = await self._parse_response(
                             resp,
                             response_format=response_format,
@@ -783,12 +815,13 @@ class DeSearchClient:
         *,
         json_payload: dict[str, Any] | None,
         params: dict[str, Any] | None,
+        timeout: float,
     ) -> httpx.Response:
         headers = {"Authorization": self._api_key}
         if method == "post":
             headers["content-type"] = "application/json"
-            return await self._client.post(path, headers=headers, json=json_payload)
-        return await self._client.get(path, headers=headers, params=params)
+            return await self._client.post(path, headers=headers, json=json_payload, timeout=timeout)
+        return await self._client.get(path, headers=headers, params=params, timeout=timeout)
 
     @staticmethod
     async def _parse_response(

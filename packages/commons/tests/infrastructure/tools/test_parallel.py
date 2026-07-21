@@ -99,6 +99,39 @@ async def test_parallel_client_search_web_posts_keyword_list() -> None:
     }
 
 
+async def test_parallel_client_search_web_applies_request_timeout_to_provider_call() -> None:
+    captured: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["timeout"] = request.extensions["timeout"]
+        return httpx.Response(200, json={"search_id": "search-1", "results": []})
+
+    adapter = ParallelClient(
+        base_url="https://api.parallel.ai",
+        api_key="parallel-key",
+        timeout=60.0,
+        client=httpx.AsyncClient(
+            base_url="https://api.parallel.ai",
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+
+    await adapter.search_web(
+        SearchWebSearchRequest(
+            provider="parallel",
+            search_queries=("timeout parity",),
+            timeout=180.0,
+        )
+    )
+
+    assert captured["timeout"] == {
+        "connect": 190.0,
+        "read": 190.0,
+        "write": 190.0,
+        "pool": 190.0,
+    }
+
+
 async def test_parallel_client_search_ai_uses_objective() -> None:
     captured: dict[str, Any] = {}
 

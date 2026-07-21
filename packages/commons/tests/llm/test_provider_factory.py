@@ -8,7 +8,9 @@ from pydantic import SecretStr
 from harnyx_commons.config.bedrock import BedrockSettings
 from harnyx_commons.config.llm import LlmSettings, OpenAiCompatibleEndpointConfig
 from harnyx_commons.config.vertex import VertexSettings
+from harnyx_commons.errors import ProviderCredentialUnavailableError
 from harnyx_commons.llm import provider_factory
+from harnyx_commons.llm.provider_types import AI_GATEWAY_PROVIDER, CHUTES_PROVIDER, OPENROUTER_PROVIDER
 from harnyx_commons.llm.retry_utils import RetryPolicy
 
 
@@ -56,6 +58,30 @@ def test_default_similarity_llm_retry_policy_is_single_attempt() -> None:
         max_ms=0,
         jitter=0.0,
     )
+
+
+@pytest.mark.parametrize(
+    ("provider", "credential_setting"),
+    [
+        (CHUTES_PROVIDER, "CHUTES_API_KEY"),
+        (OPENROUTER_PROVIDER, "OPENROUTER_API_KEY"),
+        (AI_GATEWAY_PROVIDER, "AI_GATEWAY_API_KEY"),
+    ],
+)
+def test_cached_llm_provider_registry_reports_missing_platform_credential(
+    provider: str,
+    credential_setting: str,
+) -> None:
+    registry = provider_factory.build_cached_llm_provider_registry(
+        llm_settings=LlmSettings(**{credential_setting: ""}, _env_file=None),
+        bedrock_settings=BedrockSettings(_env_file=None),
+        vertex_settings=VertexSettings(_env_file=None),
+    )
+
+    with pytest.raises(ProviderCredentialUnavailableError) as exc_info:
+        registry.resolve(provider)
+
+    assert exc_info.value.provider == provider
 
 
 def test_similarity_llm_retry_policy_uses_similarity_env_aliases() -> None:
@@ -541,7 +567,7 @@ def test_build_cached_llm_provider_registry_does_not_treat_openrouter_as_configu
     monkeypatch.setattr(provider_factory, "OpenRouterLlmProvider", _FakeOpenRouterProvider)
 
     registry = provider_factory.build_cached_llm_provider_registry(
-        llm_settings=LlmSettings(),
+        llm_settings=LlmSettings(OPENROUTER_API_KEY="operator-openrouter-key"),
         bedrock_settings=BedrockSettings.model_construct(region="us-east-1"),
         vertex_settings=VertexSettings.model_construct(
             gcp_project_id="project",

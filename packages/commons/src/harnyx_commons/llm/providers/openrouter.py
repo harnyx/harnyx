@@ -120,6 +120,7 @@ class OpenRouterEmbeddingClient:
         texts: Sequence[str],
         *,
         extra: Mapping[str, Any] | None = None,
+        timeout_seconds: float | None = None,
     ) -> OpenRouterEmbeddingResponse:
         normalized = tuple(text.strip() for text in texts)
         if not normalized or any(not text for text in normalized):
@@ -127,6 +128,7 @@ class OpenRouterEmbeddingClient:
         response = await self._require_client().post(
             "embeddings",
             json=self._request_body(normalized, extra=extra),
+            timeout=self.timeout_seconds if timeout_seconds is None else timeout_seconds,
         )
         response.raise_for_status()
         payload = _OpenRouterEmbeddingResponse.model_validate(response.json())

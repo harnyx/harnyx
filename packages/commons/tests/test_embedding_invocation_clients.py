@@ -38,7 +38,7 @@ async def test_chutes_embedding_provider_formats_query_instruction(monkeypatch: 
     captured: dict[str, object] = {}
 
     class _FakeClient:
-        async def embed_many(self, texts: tuple[str, ...]) -> ChutesTextEmbeddingResponse:
+        async def embed_many(self, texts: tuple[str, ...], **_: object) -> ChutesTextEmbeddingResponse:
             captured["texts"] = texts
             return ChutesTextEmbeddingResponse(
                 vectors=((0.1, 0.2, 0.3),),
@@ -67,11 +67,53 @@ async def test_chutes_embedding_provider_formats_query_instruction(monkeypatch: 
     assert result.actual_cost_evidence["usd_per_second"] == pytest.approx(0.0005)
 
 
+@pytest.mark.parametrize(
+    ("requested_timeout", "expected_provider_timeout"),
+    [(400.0, 410.0), (5.0, 300.0)],
+)
+async def test_chutes_embedding_provider_applies_effective_request_timeout_to_model_client(
+    monkeypatch: pytest.MonkeyPatch,
+    requested_timeout: float,
+    expected_provider_timeout: float,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeClient:
+        async def embed_many(
+            self,
+            texts: tuple[str, ...],
+            **kwargs: object,
+        ) -> ChutesTextEmbeddingResponse:
+            _ = texts
+            captured.update(kwargs)
+            return ChutesTextEmbeddingResponse(vectors=((0.1, 0.2, 0.3),))
+
+    provider = ChutesEmbeddingProvider(api_key="test-key", timeout_seconds=300.0)
+
+    def client_for(**kwargs: object) -> _FakeClient:
+        _ = kwargs
+        return _FakeClient()
+
+    monkeypatch.setattr(provider, "_client_for", client_for)
+
+    await provider.embed_text(
+        EmbedTextRequest(
+            provider="chutes",
+            model=QWEN3_CHUTES_EMBEDDING_MODEL,
+            texts=("timeout parity",),
+            input_type="document",
+            timeout=requested_timeout,
+        )
+    )
+
+    assert captured["timeout_seconds"] == expected_provider_timeout
+
+
 async def test_chutes_embedding_provider_leaves_document_text_unformatted(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
     class _FakeClient:
-        async def embed_many(self, texts: tuple[str, ...]) -> ChutesTextEmbeddingResponse:
+        async def embed_many(self, texts: tuple[str, ...], **_: object) -> ChutesTextEmbeddingResponse:
             captured["texts"] = texts
             return ChutesTextEmbeddingResponse(
                 vectors=((0.4, 0.5, 0.6),),
@@ -97,7 +139,7 @@ async def test_chutes_embedding_provider_allows_missing_usage_tokens_when_elapse
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _FakeClient:
-        async def embed_many(self, texts: tuple[str, ...]) -> ChutesTextEmbeddingResponse:
+        async def embed_many(self, texts: tuple[str, ...], **_: object) -> ChutesTextEmbeddingResponse:
             _ = texts
             return ChutesTextEmbeddingResponse(vectors=((0.4, 0.5, 0.6),))
 
@@ -124,7 +166,7 @@ async def test_openrouter_embedding_provider_posts_native_model_and_settles_stat
     captured: dict[str, object] = {}
 
     class _FakeClient:
-        async def embed_many(self, texts: tuple[str, ...]) -> OpenRouterEmbeddingResponse:
+        async def embed_many(self, texts: tuple[str, ...], **_: object) -> OpenRouterEmbeddingResponse:
             captured["texts"] = texts
             return OpenRouterEmbeddingResponse(
                 vectors=((0.7, 0.8, 0.9),),
@@ -154,11 +196,45 @@ async def test_openrouter_embedding_provider_posts_native_model_and_settles_stat
     assert result.actual_cost_evidence["provider_cost_status"] == "missing"
 
 
+async def test_openrouter_embedding_provider_applies_request_timeout_to_model_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeClient:
+        async def embed_many(
+            self,
+            texts: tuple[str, ...],
+            **kwargs: object,
+        ) -> OpenRouterEmbeddingResponse:
+            _ = texts
+            captured.update(kwargs)
+            return OpenRouterEmbeddingResponse(
+                vectors=((0.7, 0.8, 0.9),),
+                model=QWEN3_OPENROUTER_EMBEDDING_MODEL,
+            )
+
+    provider = OpenRouterEmbeddingProvider(api_key="test-key", timeout_seconds=300.0)
+    monkeypatch.setattr(provider, "_client_for", lambda **_: _FakeClient())
+
+    await provider.embed_text(
+        EmbedTextRequest(
+            provider="openrouter",
+            model=QWEN3_OPENROUTER_EMBEDDING_MODEL,
+            texts=("timeout parity",),
+            input_type="document",
+            timeout=400.0,
+        )
+    )
+
+    assert captured["timeout_seconds"] == 410.0
+
+
 async def test_openrouter_embedding_provider_prefers_provider_returned_cost_and_attribution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _FakeClient:
-        async def embed_many(self, texts: tuple[str, ...]) -> OpenRouterEmbeddingResponse:
+        async def embed_many(self, texts: tuple[str, ...], **_: object) -> OpenRouterEmbeddingResponse:
             _ = texts
             return OpenRouterEmbeddingResponse(
                 vectors=((0.7, 0.8, 0.9),),
@@ -203,7 +279,7 @@ async def test_openrouter_embedding_provider_falls_back_for_malformed_provider_c
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _FakeClient:
-        async def embed_many(self, texts: tuple[str, ...]) -> OpenRouterEmbeddingResponse:
+        async def embed_many(self, texts: tuple[str, ...], **_: object) -> OpenRouterEmbeddingResponse:
             _ = texts
             return OpenRouterEmbeddingResponse(
                 vectors=((0.7, 0.8, 0.9),),
@@ -239,6 +315,7 @@ async def test_openrouter_embedding_provider_forwards_provider_extra(
             texts: tuple[str, ...],
             *,
             extra: dict[str, object] | None = None,
+            **_: object,
         ) -> OpenRouterEmbeddingResponse:
             captured["texts"] = texts
             captured["extra"] = extra
@@ -273,7 +350,7 @@ async def test_openrouter_embedding_provider_settles_zero_token_cache_hit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _FakeClient:
-        async def embed_many(self, texts: tuple[str, ...]) -> OpenRouterEmbeddingResponse:
+        async def embed_many(self, texts: tuple[str, ...], **_: object) -> OpenRouterEmbeddingResponse:
             _ = texts
             return OpenRouterEmbeddingResponse(
                 vectors=((0.7, 0.8, 0.9),),
@@ -305,7 +382,7 @@ async def test_openrouter_embedding_provider_returns_vectors_when_usage_is_unava
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _FakeClient:
-        async def embed_many(self, texts: tuple[str, ...]) -> OpenRouterEmbeddingResponse:
+        async def embed_many(self, texts: tuple[str, ...], **_: object) -> OpenRouterEmbeddingResponse:
             _ = texts
             return OpenRouterEmbeddingResponse(
                 vectors=((0.7, 0.8, 0.9),),
@@ -347,7 +424,7 @@ async def test_openrouter_embedding_provider_uses_provider_cost_without_usage_to
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _FakeClient:
-        async def embed_many(self, texts: tuple[str, ...]) -> OpenRouterEmbeddingResponse:
+        async def embed_many(self, texts: tuple[str, ...], **_: object) -> OpenRouterEmbeddingResponse:
             _ = texts
             return OpenRouterEmbeddingResponse(
                 vectors=((0.7, 0.8, 0.9),),
@@ -377,7 +454,7 @@ async def test_openrouter_embedding_provider_marks_cost_unavailable_without_usab
     provider_cost: float | str | None,
 ) -> None:
     class _FakeClient:
-        async def embed_many(self, texts: tuple[str, ...]) -> OpenRouterEmbeddingResponse:
+        async def embed_many(self, texts: tuple[str, ...], **_: object) -> OpenRouterEmbeddingResponse:
             _ = texts
             return OpenRouterEmbeddingResponse(
                 vectors=((0.7, 0.8, 0.9),),

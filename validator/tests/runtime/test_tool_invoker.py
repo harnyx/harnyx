@@ -530,7 +530,15 @@ async def test_runtime_invoker_routes_search_payload() -> None:
     assert result.public_payload == {"data": []}
     assert result.actual_cost_usd == pytest.approx(0.005)
     assert result.actual_cost_provider == "parallel"
-    assert stub_desearch.calls == [("web", {"search_queries": ("harnyx", "subnet")})]
+    assert stub_desearch.calls == [
+        (
+            "web",
+            {
+                "search_queries": ("harnyx", "subnet"),
+                "timeout": DEFAULT_SEARCH_TOOL_TIMEOUT_SECONDS,
+            },
+        )
+    ]
 
 
 async def test_runtime_invoker_uses_search_provider_resolver_for_requested_provider() -> None:
@@ -566,7 +574,15 @@ async def test_runtime_invoker_uses_search_provider_resolver_for_requested_provi
     assert isinstance(result, ToolInvocationOutput)
     assert resolved_providers == ["parallel"]
     assert resolved_contexts == [context]
-    assert parallel_client.calls == [("web", {"search_queries": ("harnyx",)})]
+    assert parallel_client.calls == [
+        (
+            "web",
+            {
+                "search_queries": ("harnyx",),
+                "timeout": DEFAULT_SEARCH_TOOL_TIMEOUT_SECONDS,
+            },
+        )
+    ]
     assert configured_client.calls == []
 
 
@@ -828,7 +844,10 @@ async def test_runtime_invoker_routes_fetch_page() -> None:
 
     assert isinstance(result, ToolInvocationOutput)
     assert result.public_payload["data"][0]["content"] == "page text"
-    assert stub_desearch.calls[-1] == ("fetch_page", {"url": "https://example.com"})
+    assert stub_desearch.calls[-1] == (
+        "fetch_page",
+        {"url": "https://example.com", "timeout": DEFAULT_SEARCH_TOOL_TIMEOUT_SECONDS},
+    )
 
 
 async def test_runtime_invoker_routes_fetch_page_timeout() -> None:
@@ -868,7 +887,10 @@ async def test_runtime_invoker_maps_provider_response_validation_to_tool_provide
         )
 
     assert isinstance(excinfo.value.__cause__, ValidationError)
-    assert client.calls[-1] == ("fetch_page", {"url": "https://example.com"})
+    assert client.calls[-1] == (
+        "fetch_page",
+        {"url": "https://example.com", "timeout": DEFAULT_SEARCH_TOOL_TIMEOUT_SECONDS},
+    )
 
 
 async def test_runtime_invoker_maps_timed_provider_response_validation_to_tool_provider_error() -> None:
@@ -941,7 +963,14 @@ async def test_runtime_invoker_routes_search_ai() -> None:
     assert result.public_payload["data"][0]["title"] == "Example"
     assert result.public_payload["data"][0]["note"] == "Summary"
 
-    assert stub_desearch.calls[-1] == ("search_ai", {"prompt": "harnyx subnet", "count": 10})
+    assert stub_desearch.calls[-1] == (
+        "search_ai",
+        {
+            "prompt": "harnyx subnet",
+            "count": 10,
+            "timeout": DEFAULT_SEARCH_TOOL_TIMEOUT_SECONDS,
+        },
+    )
 
 
 async def test_runtime_invoker_routes_search_ai_timeout() -> None:
@@ -1081,7 +1110,9 @@ async def test_runtime_invoker_routes_llm_chat(model: str) -> None:
     assert recorded.messages[0].content[0].type == "input_text"
     assert recorded.messages[0].content[0].text == "hi"
     assert recorded.provider == "openrouter"
-    assert recorded.timeout_seconds == pytest.approx(120.0)
+    assert recorded.timeout_seconds == pytest.approx(
+        platform_tool_proxy_provider_timeout_seconds(DEFAULT_TOOL_LLM_TIMEOUT_SECONDS)
+    )
 
 
 async def test_runtime_invoker_uses_llm_provider_resolver_for_requested_provider() -> None:

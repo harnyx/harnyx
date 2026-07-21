@@ -15,6 +15,7 @@ from harnyx_commons.config.external_client import ExternalClientRetrySettings
 from harnyx_commons.errors import ToolProviderError, ToolProviderFailureCode
 from harnyx_commons.llm.pricing import price_parallel_extract, price_parallel_search
 from harnyx_commons.llm.retry_utils import RetryPolicy, backoff_ms
+from harnyx_commons.platform_tool_proxy import platform_tool_proxy_effective_provider_timeout_seconds
 from harnyx_commons.tools.provider_billing import ProviderBillingMetadata, SearchProviderResult
 from harnyx_commons.tools.search_models import (
     FetchPageRequest,
@@ -128,6 +129,7 @@ class ParallelClient:
             raise ValueError("Parallel API key must be provided")
         normalized_base = base_url.rstrip("/")
         self._owns_client = client is None
+        self._timeout = timeout
         self._client: httpx.AsyncClient = client or httpx.AsyncClient(
             base_url=normalized_base,
             timeout=timeout,
@@ -148,7 +150,9 @@ class ParallelClient:
         }
         if request.num is not None:
             payload["max_results"] = request.num
-        data = _ParallelSearchResponsePayload.model_validate(await self._post("/v1beta/search", payload))
+        data = _ParallelSearchResponsePayload.model_validate(
+            await self._post("/v1beta/search", payload, requested_timeout=request.timeout)
+        )
         response = SearchWebSearchResponse(
             data=[
                 SearchWebResult(
@@ -177,7 +181,9 @@ class ParallelClient:
             "objective": request.prompt,
             "max_results": request.count,
         }
-        data = _ParallelSearchResponsePayload.model_validate(await self._post("/v1beta/search", payload))
+        data = _ParallelSearchResponsePayload.model_validate(
+            await self._post("/v1beta/search", payload, requested_timeout=request.timeout)
+        )
         response = SearchAiSearchResponse(
             data=[
                 SearchAiResult(
@@ -207,7 +213,9 @@ class ParallelClient:
             "full_content": True,
             "excerpts": False,
         }
-        data = _ParallelExtractResponsePayload.model_validate(await self._post("/v1beta/extract", payload))
+        data = _ParallelExtractResponsePayload.model_validate(
+            await self._post("/v1beta/extract", payload, requested_timeout=request.timeout)
+        )
         if len(data.results) != 1:
             raise ToolProviderError("tool provider failed")
         result = data.results[0]
@@ -234,14 +242,24 @@ class ParallelClient:
         if self._owns_client:
             await self._client.aclose()
 
-    async def _post(self, path: str, payload: Mapping[str, object]) -> dict[str, Any]:
+    async def _post(
+        self,
+        path: str,
+        payload: Mapping[str, object],
+        *,
+        requested_timeout: float | None,
+    ) -> dict[str, Any]:
+        provider_timeout = platform_tool_proxy_effective_provider_timeout_seconds(
+            self._timeout,
+            requested_timeout,
+        )
         if self._semaphore is None:
-            return await self._post_with_retries(path, payload, wait_ms=0.0)
+            return await self._post_with_retries(path, payload, wait_ms=0.0, timeout=provider_timeout)
 
         wait_start = time.perf_counter()
         async with self._semaphore:
             wait_ms = (time.perf_counter() - wait_start) * 1000
-            return await self._post_with_retries(path, payload, wait_ms=wait_ms)
+            return await self._post_with_retries(path, payload, wait_ms=wait_ms, timeout=provider_timeout)
 
     async def _post_with_retries(
         self,
@@ -249,6 +267,7 @@ class ParallelClient:
         payload: Mapping[str, object],
         *,
         wait_ms: float,
+        timeout: float,
     ) -> dict[str, Any]:
         reasons: list[str] = []
         total_latency_ms = 0.0
@@ -262,6 +281,7 @@ class ParallelClient:
                         "content-type": "application/json",
                     },
                     json=dict(payload),
+                    timeout=timeout,
                 )
                 response.raise_for_status()
                 data = response.json()

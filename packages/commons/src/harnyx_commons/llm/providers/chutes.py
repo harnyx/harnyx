@@ -282,7 +282,12 @@ class ChutesTextEmbeddingClient:
         response = await self.embed_many((normalized,))
         return response.vectors[0]
 
-    async def embed_many(self, texts: Sequence[str]) -> ChutesTextEmbeddingResponse:
+    async def embed_many(
+        self,
+        texts: Sequence[str],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> ChutesTextEmbeddingResponse:
         normalized = tuple(text.strip() for text in texts)
         if not normalized or any(not text for text in normalized):
             raise ValueError("embedding input texts must contain non-empty strings")
@@ -296,6 +301,7 @@ class ChutesTextEmbeddingClient:
                 "v1/embeddings",
                 json=self._request_body(text),
                 headers={"Authorization": f"Bearer {self.api_key}"},
+                timeout=self.timeout_seconds if timeout_seconds is None else timeout_seconds,
             )
             response.raise_for_status()
             payload = _EmbeddingResponse.model_validate(response.json())

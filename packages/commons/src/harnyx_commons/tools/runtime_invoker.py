@@ -18,7 +18,12 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.domain.session import ProviderCredentialSource
 from harnyx_commons.domain.tool_call import ToolExecutionFacts
-from harnyx_commons.errors import ToolInvocationTimeoutError, ToolProviderError, ToolProviderFailureCode
+from harnyx_commons.errors import (
+    ProviderCredentialUnavailableError,
+    ToolInvocationTimeoutError,
+    ToolProviderError,
+    ToolProviderFailureCode,
+)
 from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.llm.cost_settlement import settled_cost_from_metadata
 from harnyx_commons.llm.pricing import (
@@ -141,12 +146,15 @@ def build_miner_sandbox_tool_invoker(
     web_search_client: WebSearchProviderPort | None = None,
     web_search_provider_name: str | None = None,
     web_search_provider_resolver: SearchProviderResolver | None = None,
+    platform_web_search_provider_resolver: SearchProviderResolver | None = None,
     llm_provider: LlmProviderPort | None = None,
     llm_provider_name: str | None = None,
     llm_provider_resolver: LlmProviderResolver | None = None,
+    platform_llm_provider_resolver: LlmProviderResolver | None = None,
     embedding_provider: EmbeddingProviderPort | None = None,
     embedding_provider_name: str | None = None,
     embedding_provider_resolver: EmbeddingProviderResolver | None = None,
+    platform_embedding_provider_resolver: EmbeddingProviderResolver | None = None,
     allowed_models: tuple[ToolModelName, ...] = ALLOWED_TOOL_MODELS,
 ) -> RuntimeToolInvoker:
     return RuntimeToolInvoker(
@@ -154,12 +162,15 @@ def build_miner_sandbox_tool_invoker(
         web_search_client=web_search_client,
         web_search_provider_name=web_search_provider_name,
         web_search_provider_resolver=web_search_provider_resolver,
+        platform_web_search_provider_resolver=platform_web_search_provider_resolver,
         llm_provider=llm_provider,
         llm_provider_name=llm_provider_name,
         llm_provider_resolver=llm_provider_resolver,
+        platform_llm_provider_resolver=platform_llm_provider_resolver,
         embedding_provider=embedding_provider,
         embedding_provider_name=embedding_provider_name,
         embedding_provider_resolver=embedding_provider_resolver,
+        platform_embedding_provider_resolver=platform_embedding_provider_resolver,
         advertised_tool_names=MINER_SANDBOX_TOOL_NAMES,
         allowed_models=allowed_models,
     )
@@ -179,6 +190,25 @@ def effective_tool_timeout_seconds(
     if tool_name == "embed_text":
         return _effective_timeout_from_payload(payload, default=DEFAULT_EMBEDDING_TOOL_TIMEOUT_SECONDS)
     raise LookupError(f"tool {tool_name!r} does not have a provider timeout")
+
+
+def _with_default_tool_timeout(
+    tool_name: ToolName,
+    *,
+    args: Sequence[JsonValue],
+    kwargs: Mapping[str, JsonValue],
+) -> tuple[tuple[JsonValue, ...], dict[str, JsonValue]]:
+    payload = tool_payload_from_args_kwargs(args, kwargs)
+    if payload.get("timeout") is not None:
+        return tuple(args), dict(kwargs)
+
+    normalized_payload = dict(payload)
+    normalized_payload["timeout"] = effective_tool_timeout_seconds(tool_name, args=args, kwargs=kwargs)
+    if kwargs:
+        return tuple(args), normalized_payload
+    if args:
+        return (normalized_payload, *tuple(args[1:])), {}
+    return (), normalized_payload
 
 
 def _effective_timeout_from_payload(payload: JsonObject, *, default: float) -> float:
@@ -252,12 +282,15 @@ class RuntimeToolInvoker(ToolInvoker):
         web_search_client: WebSearchProviderPort | None = None,
         web_search_provider_name: str | None = None,
         web_search_provider_resolver: SearchProviderResolver | None = None,
+        platform_web_search_provider_resolver: SearchProviderResolver | None = None,
         llm_provider: LlmProviderPort | None = None,
         llm_provider_name: str | None = None,
         llm_provider_resolver: LlmProviderResolver | None = None,
+        platform_llm_provider_resolver: LlmProviderResolver | None = None,
         embedding_provider: EmbeddingProviderPort | None = None,
         embedding_provider_name: str | None = None,
         embedding_provider_resolver: EmbeddingProviderResolver | None = None,
+        platform_embedding_provider_resolver: EmbeddingProviderResolver | None = None,
         advertised_tool_names: tuple[ToolName, ...] | None = None,
         allowed_models: tuple[ToolModelName, ...] = ALLOWED_TOOL_MODELS,
     ) -> None:
@@ -266,12 +299,15 @@ class RuntimeToolInvoker(ToolInvoker):
         self._web_search = web_search_client
         self._web_search_provider_name = web_search_provider_name
         self._web_search_provider_resolver = web_search_provider_resolver
+        self._platform_web_search_provider_resolver = platform_web_search_provider_resolver
         self._llm_provider = llm_provider
         self._llm_provider_name = llm_provider_name
         self._llm_provider_resolver = llm_provider_resolver
+        self._platform_llm_provider_resolver = platform_llm_provider_resolver
         self._embedding_provider = embedding_provider
         self._embedding_provider_name = embedding_provider_name
         self._embedding_provider_resolver = embedding_provider_resolver
+        self._platform_embedding_provider_resolver = platform_embedding_provider_resolver
         self._advertised_tool_names = tuple(sorted(advertised_tool_names or TOOL_NAMES))
         _ = allowed_models
 
@@ -289,10 +325,13 @@ class RuntimeToolInvoker(ToolInvoker):
             if tool_name == "tooling_info":
                 return self._invoke_tooling_info(args, kwargs)
             if is_search_tool(tool_name):
+                args, kwargs = _with_default_tool_timeout(tool_name, args=args, kwargs=kwargs)
                 return await self._dispatch_search(tool_name, args, kwargs, context=context)
             if is_embedding_tool(tool_name):
+                args, kwargs = _with_default_tool_timeout(tool_name, args=args, kwargs=kwargs)
                 return await self._dispatch_embedding(args, kwargs, context=context)
             if tool_name == "llm_chat":
+                args, kwargs = _with_default_tool_timeout(tool_name, args=args, kwargs=kwargs)
                 return await self._dispatch_llm(args, kwargs, context=context)
             self._log_unhandled(tool_name, args, kwargs)
             raise LookupError(f"tool {tool_name!r} is not registered")
@@ -424,7 +463,11 @@ class RuntimeToolInvoker(ToolInvoker):
         *,
         context: ToolInvocationContext | None,
     ) -> ToolInvocationOutput:
-        if self._web_search is None and self._web_search_provider_resolver is None:
+        if (
+            self._web_search is None
+            and self._web_search_provider_resolver is None
+            and self._platform_web_search_provider_resolver is None
+        ):
             if _uses_platform_credentials(context):
                 raise _credential_unavailable(self._web_search_provider_name or "search")
             raise LookupError("search client is not configured")
@@ -495,7 +538,11 @@ class RuntimeToolInvoker(ToolInvoker):
         *,
         context: ToolInvocationContext | None,
     ) -> ToolInvocationOutput:
-        if self._llm_provider is None and self._llm_provider_resolver is None:
+        if (
+            self._llm_provider is None
+            and self._llm_provider_resolver is None
+            and self._platform_llm_provider_resolver is None
+        ):
             if _uses_platform_credentials(context):
                 raise _credential_unavailable(self._llm_provider_name or "llm")
             raise LookupError("llm provider is not configured")
@@ -547,7 +594,11 @@ class RuntimeToolInvoker(ToolInvoker):
         *,
         context: ToolInvocationContext | None,
     ) -> ToolInvocationOutput:
-        if self._embedding_provider is None and self._embedding_provider_resolver is None:
+        if (
+            self._embedding_provider is None
+            and self._embedding_provider_resolver is None
+            and self._platform_embedding_provider_resolver is None
+        ):
             if _uses_platform_credentials(context):
                 raise _credential_unavailable(self._embedding_provider_name or "embedding")
             raise LookupError("embedding provider is not configured")
@@ -623,12 +674,18 @@ class RuntimeToolInvoker(ToolInvoker):
         context: ToolInvocationContext | None,
     ) -> tuple[WebSearchProviderPort, SearchProviderName]:
         if _uses_platform_credentials(context):
-            web_search = self._web_search
-            if web_search is None:
+            resolver = self._platform_web_search_provider_resolver
+            if resolver is None:
                 raise _credential_unavailable(requested_provider)
-            return web_search, self._require_search_provider(requested_provider)
-        resolver = self._web_search_provider_resolver
-        if resolver is not None:
+            try:
+                provider = await _resolve_maybe_awaitable(resolver(requested_provider, context))
+            except ProviderCredentialUnavailableError as exc:
+                raise _credential_unavailable(exc.provider) from exc
+            return provider, requested_provider
+        if context is not None:
+            resolver = self._web_search_provider_resolver
+            if resolver is None:
+                raise LookupError("miner search provider resolver is not configured")
             return await _resolve_maybe_awaitable(resolver(requested_provider, context)), requested_provider
         web_search = self._web_search
         if web_search is None:
@@ -652,13 +709,17 @@ class RuntimeToolInvoker(ToolInvoker):
         context: ToolInvocationContext | None,
     ) -> LlmProviderPort:
         if _uses_platform_credentials(context):
-            llm_provider = self._llm_provider
-            if llm_provider is None:
+            resolver = self._platform_llm_provider_resolver
+            if resolver is None:
                 raise _credential_unavailable(requested_provider)
-            self._require_llm_provider(requested_provider)
-            return llm_provider
-        resolver = self._llm_provider_resolver
-        if resolver is not None:
+            try:
+                return await _resolve_maybe_awaitable(resolver(requested_provider, context))
+            except ProviderCredentialUnavailableError as exc:
+                raise _credential_unavailable(exc.provider) from exc
+        if context is not None:
+            resolver = self._llm_provider_resolver
+            if resolver is None:
+                raise LookupError("miner llm provider resolver is not configured")
             return await _resolve_maybe_awaitable(resolver(requested_provider, context))
         llm_provider = self._llm_provider
         if llm_provider is None:
@@ -683,13 +744,17 @@ class RuntimeToolInvoker(ToolInvoker):
         context: ToolInvocationContext | None,
     ) -> EmbeddingProviderPort:
         if _uses_platform_credentials(context):
-            embedding_provider = self._embedding_provider
-            if embedding_provider is None:
+            resolver = self._platform_embedding_provider_resolver
+            if resolver is None:
                 raise _credential_unavailable(requested_provider)
-            self._require_embedding_provider(requested_provider)
-            return embedding_provider
-        resolver = self._embedding_provider_resolver
-        if resolver is not None:
+            try:
+                return await _resolve_maybe_awaitable(resolver(requested_provider, context))
+            except ProviderCredentialUnavailableError as exc:
+                raise _credential_unavailable(exc.provider) from exc
+        if context is not None:
+            resolver = self._embedding_provider_resolver
+            if resolver is None:
+                raise LookupError("miner embedding provider resolver is not configured")
             return await _resolve_maybe_awaitable(resolver(requested_provider, context))
         embedding_provider = self._embedding_provider
         if embedding_provider is None:

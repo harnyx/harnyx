@@ -35,6 +35,14 @@ class ToolProviderFailureCode(StrEnum):
     PROVIDER_FAILED = "provider_failed"
 
 
+class ProviderCredentialUnavailableError(RuntimeError):
+    """Raised when a configured provider has no usable credential."""
+
+    def __init__(self, provider: str) -> None:
+        super().__init__("configured provider credential unavailable")
+        self.provider = provider
+
+
 class ToolProviderError(RuntimeError):
     """Raised when a tool's backing provider fails after retry exhaustion."""
 
@@ -59,6 +67,7 @@ __all__ = [
     "SessionBudgetExhaustedError",
     "ConcurrencyLimitError",
     "ToolInvocationTimeoutError",
+    "ProviderCredentialUnavailableError",
     "ToolProviderFailureCode",
     "ToolProviderError",
 ]

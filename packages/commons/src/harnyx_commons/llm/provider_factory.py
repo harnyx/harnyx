@@ -10,6 +10,7 @@ from harnyx_commons.clients import CHUTES
 from harnyx_commons.config.bedrock import BedrockSettings
 from harnyx_commons.config.llm import LlmSettings
 from harnyx_commons.config.vertex import VertexSettings
+from harnyx_commons.errors import ProviderCredentialUnavailableError
 from harnyx_commons.llm.adapter import LlmProviderAdapter
 from harnyx_commons.llm.provider import LlmProviderName, LlmProviderPort
 from harnyx_commons.llm.provider_types import (
@@ -160,6 +161,7 @@ def _build_provider(
     vertex_settings: VertexSettings,
 ) -> LlmProviderPort:
     if route_target == OPENROUTER_PROVIDER:
+        _require_configured_credential(route_target, llm_settings.openrouter_api_key_value)
         return LlmProviderAdapter(
             provider_name=route_target,
             delegate=OpenRouterLlmProvider(
@@ -168,6 +170,7 @@ def _build_provider(
         )
 
     if route_target == AI_GATEWAY_PROVIDER:
+        _require_configured_credential(route_target, llm_settings.ai_gateway_api_key_value)
         return LlmProviderAdapter(
             provider_name=route_target,
             delegate=AiGatewayLlmProvider(
@@ -201,11 +204,13 @@ def _build_provider(
         )
 
     if provider_name == "chutes":
+        api_key = llm_settings.chutes_api_key_value.strip()
+        _require_configured_credential(provider_name, api_key)
         return LlmProviderAdapter(
             provider_name=provider_name,
             delegate=ChutesLlmProvider(
                 base_url=CHUTES.base_url,
-                api_key=llm_settings.chutes_api_key_value,
+                api_key=api_key,
                 timeout=CHUTES.timeout_seconds,
                 max_concurrent=max_concurrent,
             ),
@@ -239,6 +244,11 @@ def _explicit_api_key_value(api_key: SecretStr | str, *, provider: str) -> str:
     if not normalized:
         raise ValueError(f"{provider} miner-paid API key must be provided")
     return normalized
+
+
+def _require_configured_credential(provider: str, api_key: str) -> None:
+    if not api_key.strip():
+        raise ProviderCredentialUnavailableError(provider)
 
 
 def _max_concurrent_for_provider(

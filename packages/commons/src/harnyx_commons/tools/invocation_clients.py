@@ -13,6 +13,7 @@ from harnyx_commons.clients import DESEARCH, PARALLEL
 from harnyx_commons.config.bedrock import BedrockSettings
 from harnyx_commons.config.llm import LlmSettings, SearchProviderName, parse_search_provider_name
 from harnyx_commons.config.vertex import VertexSettings
+from harnyx_commons.errors import ProviderCredentialUnavailableError
 from harnyx_commons.llm.cost_settlement import normalized_provider_cost
 from harnyx_commons.llm.pricing import MINER_TOOL_EMBEDDING_PRICING, price_embedding
 from harnyx_commons.llm.provider import LlmProviderPort
@@ -25,7 +26,7 @@ from harnyx_commons.llm.provider_types import BEDROCK_PROVIDER
 from harnyx_commons.llm.providers.chutes import ChutesTextEmbeddingClient
 from harnyx_commons.llm.providers.openrouter import OpenRouterEmbeddingClient
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
-from harnyx_commons.platform_tool_proxy import platform_tool_proxy_provider_timeout_seconds
+from harnyx_commons.platform_tool_proxy import platform_tool_proxy_effective_provider_timeout_seconds
 from harnyx_commons.tools.desearch import DeSearchClient
 from harnyx_commons.tools.embedding_models import (
     QWEN3_DEFAULT_QUERY_INSTRUCTION,
@@ -155,15 +156,21 @@ def build_miner_paid_embedding_provider(
 
 
 class CachedWebSearchProviderRegistry:
-    def __init__(self, *, llm_settings: LlmSettings) -> None:
+    def __init__(self, *, llm_settings: LlmSettings, include_payloads_in_logs: bool = True) -> None:
         self._llm_settings = llm_settings
+        self._include_payloads_in_logs = include_payloads_in_logs
         self._cache: dict[SearchProviderName, WebSearchProviderPort] = {}
 
     def resolve(self, provider: SearchProviderName | str) -> WebSearchProviderPort:
         provider_name = parse_search_provider_name(provider)
         search_provider = self._cache.get(provider_name)
         if search_provider is None:
-            search_provider = build_web_search_provider_for_name(self._llm_settings, provider_name)
+            _require_configured_search_credential(provider=provider_name, llm_settings=self._llm_settings)
+            search_provider = build_web_search_provider_for_name(
+                self._llm_settings,
+                provider_name,
+                include_payloads_in_logs=self._include_payloads_in_logs,
+            )
             self._cache[provider_name] = search_provider
         return search_provider
 
@@ -189,6 +196,8 @@ class CachedEmbeddingProviderRegistry:
         embedding_provider = self._cache.get(provider_name)
         if embedding_provider is None:
             api_key = _embedding_api_key_value(provider=provider_name, llm_settings=self._llm_settings)
+            if not api_key.strip():
+                raise ProviderCredentialUnavailableError(provider_name)
             embedding_provider = build_miner_paid_embedding_provider(
                 provider=provider_name,
                 api_key=api_key,
@@ -218,6 +227,8 @@ def build_web_search_provider(llm_settings: LlmSettings) -> WebSearchProviderPor
 def build_web_search_provider_for_name(
     llm_settings: LlmSettings,
     provider: SearchProviderName | str,
+    *,
+    include_payloads_in_logs: bool = True,
 ) -> WebSearchProviderPort:
     provider_name = parse_search_provider_name(provider)
     if provider_name == "desearch":
@@ -226,6 +237,7 @@ def build_web_search_provider_for_name(
             api_key=llm_settings.desearch_api_key_value,
             timeout=DESEARCH.timeout_seconds,
             max_concurrent=llm_settings.desearch_max_concurrent,
+            include_payloads_in_logs=include_payloads_in_logs,
         )
     if provider_name == "parallel":
         return ParallelClient(
@@ -233,6 +245,7 @@ def build_web_search_provider_for_name(
             api_key=llm_settings.parallel_api_key_value,
             timeout=PARALLEL.timeout_seconds,
             max_concurrent=llm_settings.parallel_max_concurrent,
+            include_payloads_in_logs=include_payloads_in_logs,
         )
     raise AssertionError(f"unsupported parsed search provider: {provider_name}")
 
@@ -297,10 +310,16 @@ def _embedding_api_key_value(*, provider: EmbeddingProviderName, llm_settings: L
     raise AssertionError(f"unsupported parsed embedding provider: {provider}")
 
 
+def _require_configured_search_credential(*, provider: SearchProviderName, llm_settings: LlmSettings) -> None:
+    api_key = (
+        llm_settings.desearch_api_key_value if provider == "desearch" else llm_settings.parallel_api_key_value
+    )
+    if not api_key.strip():
+        raise ProviderCredentialUnavailableError(provider)
+
+
 def _effective_client_timeout(default_timeout: float, requested_timeout: float | None) -> float:
-    if requested_timeout is None:
-        return default_timeout
-    return max(default_timeout, platform_tool_proxy_provider_timeout_seconds(requested_timeout))
+    return platform_tool_proxy_effective_provider_timeout_seconds(default_timeout, requested_timeout)
 
 
 class LazyLlmProvider(LlmProviderPort):
@@ -388,7 +407,10 @@ class ChutesEmbeddingProvider(EmbeddingProviderPort):
             raise ValueError(f"embedding provider {request.provider!r} is not supported")
         client = self._client_for(model=request.model, dimensions=request.dimensions)
         started_at = time.perf_counter()
-        provider_response = await client.embed_many(_format_embedding_texts(request))
+        provider_response = await client.embed_many(
+            _format_embedding_texts(request),
+            timeout_seconds=_effective_client_timeout(self._timeout_seconds, request.timeout),
+        )
         elapsed_seconds = time.perf_counter() - started_at
         if len(provider_response.vectors) != len(request.texts):
             raise RuntimeError("embedding response count does not match request text count")
@@ -470,10 +492,15 @@ class OpenRouterEmbeddingProvider(EmbeddingProviderPort):
         client = self._client_for(model=request.model, dimensions=request.dimensions)
         formatted_texts = _format_embedding_texts(request)
         request_extra = request.provider_extra.to_request_extra() if request.provider_extra is not None else None
+        timeout_seconds = _effective_client_timeout(self._timeout_seconds, request.timeout)
         if request_extra is None:
-            provider_response = await client.embed_many(formatted_texts)
+            provider_response = await client.embed_many(formatted_texts, timeout_seconds=timeout_seconds)
         else:
-            provider_response = await client.embed_many(formatted_texts, extra=request_extra)
+            provider_response = await client.embed_many(
+                formatted_texts,
+                extra=request_extra,
+                timeout_seconds=timeout_seconds,
+            )
         if len(provider_response.vectors) != len(request.texts):
             raise RuntimeError("embedding response count does not match request text count")
 

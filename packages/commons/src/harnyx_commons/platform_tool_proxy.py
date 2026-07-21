@@ -33,6 +33,18 @@ def platform_tool_proxy_provider_timeout_seconds(effective_tool_timeout_seconds:
     return effective_tool_timeout_seconds + PLATFORM_TOOL_PROXY_PROVIDER_TIMEOUT_HEADROOM_SECONDS
 
 
+def platform_tool_proxy_effective_provider_timeout_seconds(
+    configured_provider_timeout_seconds: float,
+    requested_tool_timeout_seconds: float | None,
+) -> float:
+    if requested_tool_timeout_seconds is None:
+        return configured_provider_timeout_seconds
+    return max(
+        configured_provider_timeout_seconds,
+        platform_tool_proxy_provider_timeout_seconds(requested_tool_timeout_seconds),
+    )
+
+
 def platform_tool_proxy_live_call_outer_envelope_seconds(max_execution_timeout_seconds: float) -> float:
     return max(
         platform_tool_proxy_provider_timeout_seconds(max_execution_timeout_seconds),
@@ -62,6 +74,7 @@ __all__ = [
     "PLATFORM_TOOL_PROXY_SEARCH_TOOL_DEFAULT_TIMEOUT_SECONDS",
     "PLATFORM_TOOL_PROXY_STALE_CALL_TIMEOUT_MARGIN_SECONDS",
     "platform_tool_proxy_default_timeout_seconds",
+    "platform_tool_proxy_effective_provider_timeout_seconds",
     "platform_tool_proxy_live_call_outer_envelope_seconds",
     "platform_tool_proxy_minimum_stale_call_timeout_seconds",
     "platform_tool_proxy_provider_timeout_seconds",

@@ -510,6 +510,7 @@ async def test_openrouter_embedding_client_posts_embeddings_request() -> None:
         captured["method"] = request.method
         captured["path"] = request.url.path
         captured["json"] = json.loads(request.read().decode())
+        captured["timeout"] = request.extensions["timeout"]
         return httpx.Response(
             200,
             json={
@@ -535,6 +536,7 @@ async def test_openrouter_embedding_client_posts_embeddings_request() -> None:
     response = await client.embed_many(
         ("hello",),
         extra={"provider": {"only": ["nebius"], "allow_fallbacks": False}},
+        timeout_seconds=190.0,
     )
 
     assert captured["method"] == "POST"
@@ -544,6 +546,12 @@ async def test_openrouter_embedding_client_posts_embeddings_request() -> None:
         "input": "hello",
         "dimensions": 3,
         "provider": {"only": ["nebius"], "allow_fallbacks": False},
+    }
+    assert captured["timeout"] == {
+        "connect": 190.0,
+        "read": 190.0,
+        "write": 190.0,
+        "pool": 190.0,
     }
     assert response.vectors == ((0.1, 0.2, 0.3),)
     assert response.usage is not None

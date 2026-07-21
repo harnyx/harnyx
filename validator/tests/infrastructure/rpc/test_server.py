@@ -290,14 +290,22 @@ class TrackingDependencyProvider:
         )
 
         usage_tracker = UsageTracker()
+        resolved_llm_provider = llm_provider or _NoopLlmProvider()
         tool_invoker = RuntimeToolInvoker(
             FakeReceiptLog(),
             web_search_client=web_search_client,
             web_search_provider_name="desearch",
-            llm_provider=llm_provider or _NoopLlmProvider(),
+            web_search_provider_resolver=(
+                (lambda _provider, _context: web_search_client) if web_search_client is not None else None
+            ),
+            llm_provider=resolved_llm_provider,
             llm_provider_name=llm_provider_name,
+            llm_provider_resolver=lambda _provider, _context: resolved_llm_provider,
             embedding_provider=embedding_provider,
             embedding_provider_name="chutes" if embedding_provider is not None else None,
+            embedding_provider_resolver=(
+                (lambda _provider, _context: embedding_provider) if embedding_provider is not None else None
+            ),
             allowed_models=ALLOWED_TOOL_MODELS,
         )
 

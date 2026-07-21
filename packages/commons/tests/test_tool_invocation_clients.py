@@ -8,6 +8,7 @@ from pydantic import SecretStr
 from harnyx_commons.config.bedrock import BedrockSettings
 from harnyx_commons.config.llm import LlmSettings
 from harnyx_commons.config.vertex import VertexSettings
+from harnyx_commons.errors import ProviderCredentialUnavailableError
 from harnyx_commons.llm.schema import (
     LlmChoice,
     LlmChoiceMessage,
@@ -276,6 +277,7 @@ def test_internal_search_provider_keeps_configured_desearch_concurrency(
             "api_key": "operator-desearch-key",
             "timeout": invocation_clients.DESEARCH.timeout_seconds,
             "max_concurrent": 7,
+            "include_payloads_in_logs": True,
         }
     ]
 
@@ -307,11 +309,12 @@ def test_internal_search_provider_keeps_configured_parallel_concurrency(
             "api_key": "operator-parallel-key",
             "timeout": invocation_clients.PARALLEL.timeout_seconds,
             "max_concurrent": 11,
+            "include_payloads_in_logs": True,
         }
     ]
 
 
-def test_cached_web_search_provider_registry_resolves_requested_provider(
+def test_cached_web_search_provider_registry_resolves_requested_provider_without_payload_logging(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: list[tuple[str, dict[str, object]]] = []
@@ -333,7 +336,8 @@ def test_cached_web_search_provider_registry_resolves_requested_provider(
             parallel_api_key=SecretStr("operator-parallel-key"),
             parallel_base_url="https://parallel.example",
             parallel_max_concurrent=11,
-        )
+        ),
+        include_payloads_in_logs=False,
     )
 
     parallel = registry.resolve("parallel")
@@ -350,6 +354,7 @@ def test_cached_web_search_provider_registry_resolves_requested_provider(
                 "api_key": "operator-parallel-key",
                 "timeout": invocation_clients.PARALLEL.timeout_seconds,
                 "max_concurrent": 11,
+                "include_payloads_in_logs": False,
             },
         ),
         (
@@ -359,9 +364,30 @@ def test_cached_web_search_provider_registry_resolves_requested_provider(
                 "api_key": "operator-desearch-key",
                 "timeout": invocation_clients.DESEARCH.timeout_seconds,
                 "max_concurrent": 7,
+                "include_payloads_in_logs": False,
             },
         ),
     ]
+
+
+@pytest.mark.parametrize("provider", ["desearch", "parallel"])
+def test_cached_web_search_provider_registry_reports_missing_platform_credential(provider: str) -> None:
+    registry = invocation_clients.CachedWebSearchProviderRegistry(llm_settings=LlmSettings.model_construct())
+
+    with pytest.raises(ProviderCredentialUnavailableError) as exc_info:
+        registry.resolve(provider)
+
+    assert exc_info.value.provider == provider
+
+
+@pytest.mark.parametrize("provider", ["chutes", "openrouter"])
+def test_cached_embedding_provider_registry_reports_missing_platform_credential(provider: str) -> None:
+    registry = invocation_clients.CachedEmbeddingProviderRegistry(llm_settings=LlmSettings.model_construct())
+
+    with pytest.raises(ProviderCredentialUnavailableError) as exc_info:
+        registry.resolve(provider)
+
+    assert exc_info.value.provider == provider
 
 
 def test_miner_paid_desearch_provider_uses_explicit_key_without_shared_concurrency(

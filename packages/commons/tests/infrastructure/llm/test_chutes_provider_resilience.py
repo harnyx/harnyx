@@ -920,10 +920,12 @@ async def test_chutes_text_embedding_client_posts_openai_compatible_embeddings_r
 
 async def test_chutes_text_embedding_client_splits_multi_text_requests() -> None:
     requests: list[dict[str, object]] = []
+    timeouts: list[object] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.read().decode())
         requests.append(payload)
+        timeouts.append(request.extensions["timeout"])
         index = len(requests)
         return httpx.Response(
             200,
@@ -950,10 +952,14 @@ async def test_chutes_text_embedding_client_splits_multi_text_requests() -> None
         dimensions=2,
     )
 
-    response = await client.embed_many(("first", "second"))
+    response = await client.embed_many(("first", "second"), timeout_seconds=190.0)
 
     assert [request["input"] for request in requests] == ["first", "second"]
     assert all(isinstance(request["input"], str) for request in requests)
+    assert timeouts == [
+        {"connect": 190.0, "read": 190.0, "write": 190.0, "pool": 190.0},
+        {"connect": 190.0, "read": 190.0, "write": 190.0, "pool": 190.0},
+    ]
     assert response.vectors == ((1.0, 2.0), (2.0, 3.0))
     assert response.usage is not None
     assert response.usage.prompt_tokens == 3
