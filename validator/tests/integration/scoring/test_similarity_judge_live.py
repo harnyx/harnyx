@@ -114,7 +114,7 @@ async def test_similarity_judge_live_uses_real_structured_runtime_flow() -> None
     finally:
         await registry.aclose()
 
-    assert result.verdict in {"not_duplicate", "duplicate"}
+    assert result.classification in {"duplicate", "near_duplicate", "novel"}
     assert result.model == similarity_route.model
     assert result.provider == similarity_route.provider
     assert len(llm_provider.requests) == 1

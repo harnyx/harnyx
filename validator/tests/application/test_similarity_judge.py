@@ -42,7 +42,7 @@ class StubLlmProvider:
             ),
             usage=LlmUsage(reasoning_tokens=17),
             postprocessed={
-                "verdict": "not_duplicate",
+                "classification": "novel",
                 "reasoning": (
                     "The candidate changes the retrieval strategy by adding a cross-source "
                     "verification step before synthesis."
@@ -82,7 +82,7 @@ def _similarity_payload(request: AbstractLlmRequest) -> dict[str, object]:
 
 def _similarity_response(
     *,
-    verdict: str = "not_duplicate",
+    classification: str = "novel",
     reasoning: str = "The candidate changes retrieval strategy.",
     mechanism_change: str | None = "retrieval strategy change",
     reasoning_text: str | None = "candidate changes retrieval strategy",
@@ -112,7 +112,7 @@ def _similarity_response(
             reasoning_tokens=reasoning_tokens,
         ),
         postprocessed=_similarity_postprocessed(
-            verdict=verdict,
+            classification=classification,
             reasoning=reasoning,
             mechanism_change=mechanism_change,
         ),
@@ -123,11 +123,11 @@ def _similarity_response(
 
 def _similarity_postprocessed(
     *,
-    verdict: str,
+    classification: str,
     reasoning: str | None,
     mechanism_change: str | None,
 ) -> dict[str, str | None]:
-    postprocessed: dict[str, str | None] = {"verdict": verdict}
+    postprocessed: dict[str, str | None] = {"classification": classification}
     if reasoning is not None:
         postprocessed["reasoning"] = reasoning
     if mechanism_change is not None:
@@ -152,7 +152,7 @@ def _raw_similarity_response(text: str) -> LlmResponse:
     )
 
 
-async def test_similarity_judge_returns_verdict_and_validator_reasoning() -> None:
+async def test_similarity_judge_returns_classification_and_validator_reasoning() -> None:
     llm = StubLlmProvider()
     service = SimilarityJudge(
         llm_provider=llm,
@@ -177,7 +177,7 @@ async def test_similarity_judge_returns_verdict_and_validator_reasoning() -> Non
 
     result = await service.judge(request)
 
-    assert result.verdict == "not_duplicate"
+    assert result.classification == "novel"
     assert (
         result.reasoning
         == "The candidate changes the retrieval strategy by adding a cross-source verification step before synthesis.\n"
@@ -199,7 +199,7 @@ async def test_similarity_judge_returns_verdict_and_validator_reasoning() -> Non
     payload = _similarity_payload(llm_request)
     assert payload["reference"]["script"] == "def answer(): return 'old'"
     assert payload["candidate"]["diff_against_reference"] == "+ def answer(): return 'new'"
-    assert llm_request.output_schema.__name__ == "_SimilarityVerdictModel"
+    assert llm_request.output_schema.__name__ == "_SimilarityClassificationModel"
     assert llm_request.postprocessor is not None
 
 
@@ -225,25 +225,34 @@ async def test_similarity_judge_structured_output_contract_rejects_invalid_shape
     postprocessor = llm.requests[0].postprocessor
     assert postprocessor is not None
 
-    missing_reasoning = postprocessor(_raw_similarity_response('{"verdict":"duplicate"}'))
+    missing_reasoning = postprocessor(_raw_similarity_response('{"classification":"duplicate"}'))
     assert missing_reasoning.ok is False
     assert missing_reasoning.retryable is True
 
-    blank_reasoning = postprocessor(_raw_similarity_response('{"verdict":"duplicate","reasoning":"   "}'))
+    blank_reasoning = postprocessor(_raw_similarity_response('{"classification":"duplicate","reasoning":"   "}'))
     assert blank_reasoning.ok is False
     assert blank_reasoning.retryable is True
 
     extra_field = postprocessor(
-        _raw_similarity_response('{"verdict":"duplicate","reasoning":"same mechanism","extra":"no"}')
+        _raw_similarity_response('{"classification":"duplicate","reasoning":"same mechanism","extra":"no"}')
     )
     assert extra_field.ok is False
     assert extra_field.retryable is True
 
     missing_mechanism = postprocessor(
-        _raw_similarity_response('{"verdict":"not_duplicate","reasoning":"adds a verifier"}')
+        _raw_similarity_response('{"classification":"novel","reasoning":"adds a verifier"}')
     )
     assert missing_mechanism.ok is False
     assert missing_mechanism.retryable is True
+
+    contradictory_duplicate = postprocessor(
+        _raw_similarity_response(
+            '{"classification":"duplicate","reasoning":"same mechanism",'
+            '"mechanism_change":"iterative retrieval"}'
+        )
+    )
+    assert contradictory_duplicate.ok is False
+    assert contradictory_duplicate.retryable is True
 
 
 async def test_similarity_judge_postprocessor_accepts_duplicate_with_reasoning() -> None:
@@ -269,14 +278,15 @@ async def test_similarity_judge_postprocessor_accepts_duplicate_with_reasoning()
     assert postprocessor is not None
     result = postprocessor(
         _raw_similarity_response(
-            '{"verdict":"duplicate","reasoning":"Only token budget changed; no mechanism-level behavior changed."}'
+            '{"classification":"duplicate","reasoning":"Only token budget changed; '
+            'no mechanism-level behavior changed."}'
         )
     )
 
     assert result.ok is True
 
 
-async def test_similarity_judge_postprocessor_accepts_not_duplicate_with_mechanism_reasoning() -> None:
+async def test_similarity_judge_postprocessor_accepts_novel_with_mechanism_reasoning() -> None:
     llm = StubLlmProvider()
     service = SimilarityJudge(
         llm_provider=llm,
@@ -299,7 +309,7 @@ async def test_similarity_judge_postprocessor_accepts_not_duplicate_with_mechani
     assert postprocessor is not None
     result = postprocessor(
         _raw_similarity_response(
-            '{"verdict":"not_duplicate","reasoning":"Adds verification before synthesis.",'
+            '{"classification":"novel","reasoning":"Adds verification before synthesis.",'
             '"mechanism_change":"verification before synthesis"}'
         )
     )
@@ -307,11 +317,11 @@ async def test_similarity_judge_postprocessor_accepts_not_duplicate_with_mechani
     assert result.ok is True
 
 
-async def test_similarity_judge_rejects_postprocessed_not_duplicate_without_mechanism_change() -> None:
+async def test_similarity_judge_rejects_postprocessed_novel_without_mechanism_change() -> None:
     llm = SequenceLlmProvider(
         [
             _similarity_response(
-                verdict="not_duplicate",
+                classification="novel",
                 reasoning="Adds verification.",
                 mechanism_change="",
             )
@@ -424,7 +434,7 @@ async def test_similarity_judge_tries_next_candidate_after_true_retry_exhaustion
         )
     )
 
-    assert result.verdict == "not_duplicate"
+    assert result.classification == "novel"
     assert result.provider == "custom-openai-compatible:gemma4-cloud-run-turbo"
     assert result.model == "google/gemma-4-31B-turbo-TEE"
     assert result.judge_usage is not None

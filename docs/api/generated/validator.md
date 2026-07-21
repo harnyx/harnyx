@@ -48,6 +48,7 @@ Body: [SimilarityJudgeResponseModel](#model-similarityjudgeresponsemodel)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `classification` |  |  | req | `string` (enum: [duplicate, near_duplicate, novel]) |
 | `judge_usage` |  |  | opt | [JudgeUsageSummary](#model-judgeusagesummary) (nullable) |
 |  | `actual_cost_usd` |  | req | `number` (nullable) |
 |  | `call_count` |  | req | `integer` |
@@ -71,7 +72,6 @@ Body: [SimilarityJudgeResponseModel](#model-similarityjudgeresponsemodel)
 | `provider` |  |  | req | `string` |
 | `reasoning` |  |  | opt | `string` (nullable) |
 | `reasoning_tokens` |  |  | opt | `integer` (nullable) |
-| `verdict` |  |  | req | `string` (enum: [not_duplicate, duplicate]) |
 
 `422` Validation Error
 Content-Type: `application/json`
@@ -646,6 +646,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `classification` |  |  | req | `string` (enum: [duplicate, near_duplicate, novel]) |
 | `judge_usage` |  |  | opt | [JudgeUsageSummary](#model-judgeusagesummary) (nullable) |
 |  | `actual_cost_usd` |  | req | `number` (nullable) |
 |  | `call_count` |  | req | `integer` |
@@ -669,7 +670,6 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | `provider` |  |  | req | `string` |
 | `reasoning` |  |  | opt | `string` (nullable) |
 | `reasoning_tokens` |  |  | opt | `integer` (nullable) |
-| `verdict` |  |  | req | `string` (enum: [not_duplicate, duplicate]) |
 
 <details>
 <summary>JSON schema</summary>
@@ -678,6 +678,15 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 {
   "additionalProperties": false,
   "properties": {
+    "classification": {
+      "enum": [
+        "duplicate",
+        "near_duplicate",
+        "novel"
+      ],
+      "title": "Classification",
+      "type": "string"
+    },
     "judge_usage": {
       "anyOf": [
         {
@@ -720,18 +729,10 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
         }
       ],
       "title": "Reasoning Tokens"
-    },
-    "verdict": {
-      "enum": [
-        "not_duplicate",
-        "duplicate"
-      ],
-      "title": "Verdict",
-      "type": "string"
     }
   },
   "required": [
-    "verdict",
+    "classification",
     "model",
     "provider"
   ],

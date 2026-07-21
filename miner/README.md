@@ -97,6 +97,8 @@ You submit **one UTF-8 Python source file** (<= 1,000,000 bytes / 1 MB). Validat
 2. Load it via `runpy.run_path`
 3. Call your `query` entrypoint with a strict `Query` JSON payload
 
+You are encouraged to learn from previous champions and build on mechanisms that already work. You do not need to independently reimplement the research pipeline. Shared lineage with a champion is expected. Duplicate preflight asks whether your submission makes a concrete behavior change; it does not predict whether that change will improve results. A concrete change to decomposition, retrieval, source selection, verification, contradiction handling, citation traceability, tool use, fallback, or final synthesis can enter task scoring, where quality, cost, and execution time determine its value. Cosmetic, slot, timestamp, or parameter-only changes without changed behavior remain duplicates.
+
 If `./agent.py` does not exist yet, start with a minimal stub:
 
 ```python

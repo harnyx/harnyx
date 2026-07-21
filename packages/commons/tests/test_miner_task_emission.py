@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from math import fsum
+from uuid import UUID
 
 import pytest
 
@@ -14,6 +15,7 @@ from harnyx_commons.miner_task_emission import (
     compose_tiered_participant_emission_allocations,
     owner_fallback_weights,
     participant_emission_fraction,
+    select_participant_emission_scores,
 )
 
 
@@ -289,6 +291,50 @@ def test_tiered_participant_emission_deduplicates_participant_key_by_higher_scor
     )
 
     assert weights["hotkey-a"] == pytest.approx(0.02)
+
+
+def test_tiered_participant_emission_discounts_near_duplicate_within_earned_tier() -> None:
+    weights = compose_tiered_participant_emission_allocations(
+        (
+            ParticipantEmissionScore(
+                "hotkey-a",
+                1.0,
+                artifact_id=UUID(int=1),
+                classification="near_duplicate",
+            ),
+                ParticipantEmissionScore(
+                    "hotkey-b",
+                    1.0,
+                artifact_id=UUID(int=2),
+                classification="novel",
+            ),
+        ),
+        miner_participation_emission=0.01,
+    )
+
+    assert weights == {
+        "hotkey-a": pytest.approx(0.01),
+        "hotkey-b": pytest.approx(0.02),
+    }
+
+
+def test_participant_selection_keeps_score_and_classification_on_same_artifact() -> None:
+    higher_score_near_duplicate = ParticipantEmissionScore(
+        "hotkey-a",
+        0.9,
+        artifact_id=UUID(int=1),
+        classification="near_duplicate",
+    )
+    lower_score_novel = ParticipantEmissionScore(
+        "hotkey-a",
+        0.8,
+        artifact_id=UUID(int=2),
+        classification="novel",
+    )
+
+    selected = select_participant_emission_scores((lower_score_novel, higher_score_near_duplicate))
+
+    assert selected == (higher_score_near_duplicate,)
 
 
 @pytest.mark.parametrize("raw_score", [-0.1, 1.1, float("nan")])

@@ -19,7 +19,7 @@ class StubSimilarityJudge:
     async def judge(self, request: SimilarityJudgeRequest) -> SimilarityJudgeResult:
         self.requests.append(request)
         return SimilarityJudgeResult(
-            verdict="not_duplicate",
+            classification="novel",
             reasoning="provider reasoning trace",
             reasoning_tokens=19,
             model="google/gemma-4-31B-turbo-TEE",
@@ -139,7 +139,7 @@ def test_similarity_route_runs_validator_owned_judge() -> None:
 
     assert response.status_code == 200
     assert response.json() == {
-        "verdict": "not_duplicate",
+        "classification": "novel",
         "reasoning": "provider reasoning trace",
         "reasoning_tokens": 19,
         "model": "google/gemma-4-31B-turbo-TEE",

@@ -6,6 +6,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from math import ceil, floor, fsum, isfinite
 from typing import TypeVar
+from uuid import UUID
+
+from harnyx_commons.miner_task_similarity import EligibleSimilarityClassification
 
 OWNER_UID = 0
 DEFAULT_MINER_PARTICIPATION_EMISSION = 0.004
@@ -22,6 +25,12 @@ class ParticipantEmissionTotalWeightError(ValueError):
 class ParticipantEmissionScore:
     participant_key: str
     score: float
+    artifact_id: UUID | None = None
+    classification: EligibleSimilarityClassification | None = None
+
+    def __post_init__(self) -> None:
+        if (self.artifact_id is None) != (self.classification is None):
+            raise ValueError("participant artifact and classification must be set together")
 
 
 def compose_champion_weights(champion_uid: int | None) -> dict[int, float]:
@@ -53,9 +62,7 @@ def apply_miner_emission_cap(
         raise ValueError("miner weights must have positive miner total")
 
     miner_fraction = batch_score * max_miner_emission_fraction
-    scaled: dict[int, float] = {
-        uid: float(weight) / total * miner_fraction for uid, weight in base.items()
-    }
+    scaled: dict[int, float] = {uid: float(weight) / total * miner_fraction for uid, weight in base.items()}
     scaled[OWNER_UID] = 1.0 - miner_fraction
     return scaled
 
@@ -89,9 +96,7 @@ def compose_participant_emission_weights(
 ) -> dict[int, float]:
     _validate_miner_participation_emission(miner_participation_emission)
     distinct_uids = tuple(dict.fromkeys(uid for uid in registered_participant_uids if uid != OWNER_UID))
-    return _capped_allocations_in_order(
-        tuple((uid, miner_participation_emission) for uid in distinct_uids)
-    )
+    return _capped_allocations_in_order(tuple((uid, miner_participation_emission) for uid in distinct_uids))
 
 
 def compose_flat_participant_emission_allocations(
@@ -117,21 +122,10 @@ def compose_tiered_participant_emission_allocations(
 ) -> dict[str, float]:
     _validate_miner_participation_emission(miner_participation_emission)
 
-    distinct_scores: dict[str, float] = {}
-    for participant_score in participant_scores:
-        if not participant_score.participant_key:
-            raise ValueError("participant key must be non-empty")
-        score = participant_score.score
-        if not isfinite(score) or score < 0.0 or score > 1.0:
-            raise ValueError("participant score must be between 0.0 and 1.0")
-        existing = distinct_scores.get(participant_score.participant_key)
-        if existing is None or score > existing:
-            distinct_scores[participant_score.participant_key] = score
-
     ordered = tuple(
         sorted(
-            distinct_scores.items(),
-            key=lambda item: (-item[1], item[0]),
+            select_participant_emission_scores(participant_scores),
+            key=lambda participant: (-participant.score, participant.participant_key),
         )
     )
     if not ordered:
@@ -140,7 +134,9 @@ def compose_tiered_participant_emission_allocations(
     top_floor = _score_floor(ordered, fraction=0.10)
     middle_floor = _score_floor(ordered, fraction=0.50)
     ordered_allocations: list[tuple[str, float]] = []
-    for participant_key, score in ordered:
+    for participant in ordered:
+        participant_key = participant.participant_key
+        score = participant.score
         if score <= 0.0:
             continue
         if score >= top_floor:
@@ -149,7 +145,14 @@ def compose_tiered_participant_emission_allocations(
             multiplier = 1.0
         else:
             continue
-        ordered_allocations.append((participant_key, miner_participation_emission * multiplier))
+        ordered_allocations.append(
+            (
+                participant_key,
+                miner_participation_emission
+                * multiplier
+                * participant_emission_novelty_multiplier(participant.classification),
+            )
+        )
 
     return _capped_allocations_in_order(tuple(ordered_allocations))
 
@@ -170,14 +173,55 @@ def compose_emission_weights(*components: dict[int, float]) -> dict[int, float]:
     return weights
 
 
+def select_participant_emission_scores(
+    participant_scores: Sequence[ParticipantEmissionScore],
+) -> tuple[ParticipantEmissionScore, ...]:
+    selected: dict[str, ParticipantEmissionScore] = {}
+    for participant in participant_scores:
+        if not participant.participant_key:
+            raise ValueError("participant key must be non-empty")
+        if not isfinite(participant.score) or participant.score < 0.0 or participant.score > 1.0:
+            raise ValueError("participant score must be between 0.0 and 1.0")
+        existing = selected.get(participant.participant_key)
+        if existing is None or _participant_selection_key(participant) > _participant_selection_key(existing):
+            selected[participant.participant_key] = participant
+    return tuple(selected[participant_key] for participant_key in sorted(selected))
+
+
+def participant_emission_novelty_multiplier(
+    classification: EligibleSimilarityClassification | None,
+) -> float:
+    if classification is None or classification == "novel":
+        return 1.0
+    if classification == "near_duplicate":
+        return 0.5
+    raise ValueError(f"unsupported participant similarity classification: {classification}")
+
+
+def _participant_selection_key(
+    participant: ParticipantEmissionScore,
+) -> tuple[float, int, str]:
+    novelty_rank = {
+        None: 0,
+        "near_duplicate": 1,
+        "novel": 2,
+    }[participant.classification]
+    artifact_key = "" if participant.artifact_id is None else str(participant.artifact_id)
+    return participant.score, novelty_rank, artifact_key
+
+
 def owner_fallback_weights() -> dict[int, float]:
     return {OWNER_UID: 1.0}
 
 
-def _score_floor(ordered_scores: tuple[tuple[str, float], ...], *, fraction: float) -> float:
+def _score_floor(
+    ordered_scores: tuple[ParticipantEmissionScore, ...],
+    *,
+    fraction: float,
+) -> float:
     cutoff_count = ceil(len(ordered_scores) * fraction)
     index = max(0, cutoff_count - 1)
-    return ordered_scores[index][1]
+    return ordered_scores[index].score
 
 
 def _validate_miner_participation_emission(miner_participation_emission: float) -> None:
@@ -222,4 +266,6 @@ __all__ = [
     "compose_tiered_participant_emission_allocations",
     "owner_fallback_weights",
     "participant_emission_fraction",
+    "participant_emission_novelty_multiplier",
+    "select_participant_emission_scores",
 ]

@@ -54,7 +54,7 @@ class SimilarityJudgeRequestModel(BaseModel):
 class SimilarityJudgeResponseModel(BaseModel):
     model_config = VALIDATOR_STRICT_CONFIG
 
-    verdict: Literal["not_duplicate", "duplicate"]
+    classification: Literal["duplicate", "near_duplicate", "novel"]
     reasoning: str | None = None
     reasoning_tokens: int | None = Field(default=None, ge=0)
     model: str = Field(min_length=1)
@@ -64,7 +64,7 @@ class SimilarityJudgeResponseModel(BaseModel):
     @classmethod
     def from_domain(cls, result: SimilarityJudgeResult) -> SimilarityJudgeResponseModel:
         return cls(
-            verdict=result.verdict,
+            classification=result.classification,
             reasoning=result.reasoning,
             reasoning_tokens=result.reasoning_tokens,
             model=result.model,
