@@ -8,7 +8,9 @@ from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from typing import cast
 
-from harnyx_commons.json_types import JsonObject
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
+
+from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.llm.adapter import canonical_model_for_provider_model
 from harnyx_commons.llm.pricing import (
     MINER_TOOL_LLM_PRICING,
@@ -86,9 +88,7 @@ def settled_response_cost(
         return None
 
     if normalized_provider == OPENROUTER_PROVIDER:
-        openrouter_cost = _openrouter_provider_returned_cost(response=response, model=model)
-        if openrouter_cost is not None:
-            return openrouter_cost
+        return _settled_openrouter_response_cost(response=response, model=model)
     if normalized_provider == AI_GATEWAY_PROVIDER:
         ai_gateway_cost = _ai_gateway_provider_returned_cost(response=response, model=model)
         if ai_gateway_cost is not None:
@@ -106,20 +106,24 @@ def settled_static_llm_cost(
     provider: str,
     model: str,
     usage: LlmUsage,
+    additional_evidence: JsonObject | None = None,
 ) -> SettledLlmCost | None:
     if _has_miner_static_pricing(provider=provider, model=model):
+        evidence: JsonObject = {
+            "settlement_source": "static_pricing",
+            "pricing_origin": "miner_tool_llm_pricing",
+            "provider": provider,
+            "model": model,
+            "prompt_tokens": usage.prompt_tokens or 0,
+            "completion_tokens": usage.completion_tokens or 0,
+            "reasoning_tokens": usage.reasoning_tokens,
+        }
+        if additional_evidence is not None:
+            evidence.update(additional_evidence)
         return SettledLlmCost(
             cost_usd=price_miner_llm(provider, model, usage),
             provider=provider,
-            evidence={
-                "settlement_source": "static_pricing",
-                "pricing_origin": "miner_tool_llm_pricing",
-                "provider": provider,
-                "model": model,
-                "prompt_tokens": usage.prompt_tokens or 0,
-                "completion_tokens": usage.completion_tokens or 0,
-                "reasoning_tokens": usage.reasoning_tokens,
-            },
+            evidence=evidence,
         )
 
     canonical_model = canonical_model_for_provider_model(
@@ -129,51 +133,215 @@ def settled_static_llm_cost(
     cost_usd = price_static_llm_model(canonical_model, usage)
     if cost_usd is None:
         return None
+    evidence = {
+        "settlement_source": "static_pricing",
+        "pricing_origin": "static_llm_pricing",
+        "provider": provider,
+        "model": model,
+        "canonical_model": canonical_model,
+        "prompt_tokens": usage.prompt_tokens or 0,
+        "completion_tokens": usage.completion_tokens or 0,
+        "reasoning_tokens": usage.reasoning_tokens,
+    }
+    if additional_evidence is not None:
+        evidence.update(additional_evidence)
     return SettledLlmCost(
         cost_usd=cost_usd,
         provider=provider,
-        evidence={
-            "settlement_source": "static_pricing",
-            "pricing_origin": "static_llm_pricing",
-            "provider": provider,
-            "model": model,
-            "canonical_model": canonical_model,
-            "prompt_tokens": usage.prompt_tokens or 0,
-            "completion_tokens": usage.completion_tokens or 0,
-            "reasoning_tokens": usage.reasoning_tokens,
-        },
+        evidence=evidence,
     )
 
 
-def _openrouter_provider_returned_cost(
+@dataclass(frozen=True, slots=True)
+class _OpenRouterUsageBilling:
+    is_byok: bool | None
+    is_byok_status: str
+    cost_usd: float | None
+    cost_status: str
+    upstream_inference_cost_usd: float | None
+    upstream_inference_cost_status: str
+
+
+class _OpenRouterResponsePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    usage: JsonValue | None = None
+
+
+class _OpenRouterUsagePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    is_byok: JsonValue | None = None
+    cost: JsonValue | None = None
+    cost_details: JsonValue | None = None
+
+
+class _OpenRouterCostDetailsPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    upstream_inference_cost: JsonValue | None = None
+
+
+_STRICT_BOOL_ADAPTER = TypeAdapter(bool)
+
+
+def _settled_openrouter_response_cost(
     *,
     response: LlmResponse,
     model: str,
 ) -> SettledLlmCost | None:
-    raw_response = (response.metadata or {}).get("raw_response")
-    if not isinstance(raw_response, Mapping):
-        return None
-    raw_response_mapping = cast(Mapping[str, object], raw_response)
-    usage = raw_response_mapping.get("usage")
-    if not isinstance(usage, Mapping):
-        return None
-    usage_mapping = cast(Mapping[str, object], usage)
-    cost_usd = normalized_provider_cost(
-        usage_mapping.get("cost"),
-        field_name="OpenRouter usage.cost",
-        strict=False,
-    )
-    if cost_usd is None:
-        return None
-    return SettledLlmCost(
-        cost_usd=cost_usd,
-        provider=OPENROUTER_PROVIDER,
-        evidence={
+    billing = _openrouter_usage_billing(response)
+    if (
+        billing.is_byok is True
+        and billing.cost_usd is not None
+        and billing.upstream_inference_cost_usd is not None
+    ):
+        return SettledLlmCost(
+            cost_usd=billing.cost_usd + billing.upstream_inference_cost_usd,
+            provider=OPENROUTER_PROVIDER,
+            evidence={
+                "settlement_source": "provider_returned",
+                "pricing_origin": "openrouter_usage_cost_and_upstream_inference_cost",
+                "provider": OPENROUTER_PROVIDER,
+                "model": model,
+                "usage": _openrouter_usage_evidence(billing),
+            },
+        )
+    if (
+        billing.is_byok is False or billing.is_byok_status == "missing"
+    ) and billing.cost_usd is not None:
+        evidence: JsonObject = {
             "settlement_source": "provider_returned",
             "pricing_origin": "openrouter_usage_cost",
             "provider": OPENROUTER_PROVIDER,
             "model": model,
+            "usage": _openrouter_usage_evidence(billing),
+        }
+        if billing.is_byok_status == "missing":
+            evidence["is_byok_status"] = "missing"
+        return SettledLlmCost(
+            cost_usd=billing.cost_usd,
+            provider=OPENROUTER_PROVIDER,
+            evidence=evidence,
+        )
+    return settled_static_llm_cost(
+        provider=OPENROUTER_PROVIDER,
+        model=model,
+        usage=response.usage or LlmUsage(),
+        additional_evidence={
+            "is_byok_status": billing.is_byok_status,
+            "cost_status": billing.cost_status,
+            "upstream_inference_cost_status": billing.upstream_inference_cost_status,
         },
+    )
+
+
+def _openrouter_usage_billing(response: LlmResponse) -> _OpenRouterUsageBilling:
+    raw_response = (response.metadata or {}).get("raw_response")
+    if raw_response is None:
+        return _missing_openrouter_usage_billing()
+    try:
+        response_payload = _OpenRouterResponsePayload.model_validate(raw_response)
+    except ValidationError:
+        return _malformed_openrouter_usage_billing()
+    if response_payload.usage is None:
+        return _missing_openrouter_usage_billing()
+    try:
+        usage = _OpenRouterUsagePayload.model_validate(response_payload.usage)
+    except ValidationError:
+        return _malformed_openrouter_usage_billing()
+    is_byok, is_byok_status = _normalized_openrouter_is_byok(usage.is_byok)
+    cost_usd, cost_status = _normalized_openrouter_cost(
+        usage.cost,
+        field_name="OpenRouter usage.cost",
+    )
+    upstream_inference_cost_usd, upstream_inference_cost_status = (
+        _normalized_openrouter_upstream_inference_cost(usage.cost_details)
+    )
+    return _OpenRouterUsageBilling(
+        is_byok=is_byok,
+        is_byok_status=is_byok_status,
+        cost_usd=cost_usd,
+        cost_status=cost_status,
+        upstream_inference_cost_usd=upstream_inference_cost_usd,
+        upstream_inference_cost_status=upstream_inference_cost_status,
+    )
+
+
+def _normalized_openrouter_is_byok(value: JsonValue | None) -> tuple[bool | None, str]:
+    if value is None:
+        return None, "missing"
+    try:
+        is_byok = _STRICT_BOOL_ADAPTER.validate_python(value, strict=True)
+    except ValidationError:
+        return None, "malformed"
+    return is_byok, "valid"
+
+
+def _normalized_openrouter_cost(
+    value: JsonValue | None,
+    *,
+    field_name: str,
+) -> tuple[float | None, str]:
+    if value is None:
+        return None, "missing"
+    cost = normalized_provider_cost(
+        value,
+        field_name=field_name,
+        strict=False,
+    )
+    return (cost, "valid") if cost is not None else (None, "malformed")
+
+
+def _normalized_openrouter_upstream_inference_cost(
+    value: JsonValue | None,
+) -> tuple[float | None, str]:
+    if value is None:
+        return None, "missing"
+    try:
+        cost_details = _OpenRouterCostDetailsPayload.model_validate(value)
+    except ValidationError:
+        return None, "malformed"
+    return _normalized_openrouter_cost(
+        cost_details.upstream_inference_cost,
+        field_name="OpenRouter usage.cost_details.upstream_inference_cost",
+    )
+
+
+def _openrouter_usage_evidence(billing: _OpenRouterUsageBilling) -> JsonObject:
+    if billing.cost_usd is None:
+        raise ValueError("complete OpenRouter usage billing is required for provider-returned evidence")
+    usage: JsonObject = {
+        "cost": billing.cost_usd,
+    }
+    if billing.is_byok is not None:
+        usage["is_byok"] = billing.is_byok
+    if billing.upstream_inference_cost_usd is not None:
+        usage["cost_details"] = {
+            "upstream_inference_cost": billing.upstream_inference_cost_usd,
+        }
+    return usage
+
+
+def _missing_openrouter_usage_billing() -> _OpenRouterUsageBilling:
+    return _OpenRouterUsageBilling(
+        is_byok=None,
+        is_byok_status="missing",
+        cost_usd=None,
+        cost_status="missing",
+        upstream_inference_cost_usd=None,
+        upstream_inference_cost_status="missing",
+    )
+
+
+def _malformed_openrouter_usage_billing() -> _OpenRouterUsageBilling:
+    return _OpenRouterUsageBilling(
+        is_byok=None,
+        is_byok_status="malformed",
+        cost_usd=None,
+        cost_status="malformed",
+        upstream_inference_cost_usd=None,
+        upstream_inference_cost_status="malformed",
     )
 
 

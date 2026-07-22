@@ -356,6 +356,11 @@ class ToolExecutor:
             actual_cost_evidence=invocation_output.actual_cost_evidence,
         )
         cost_unavailable = settled_cost_usd is None and request.tool in _PROVIDER_BACKED_TOOL_NAMES
+        receipt_extra: JsonObject = {}
+        if invocation_output.actual_cost_evidence is not None:
+            receipt_extra["actual_cost_evidence"] = invocation_output.actual_cost_evidence
+        if cost_unavailable:
+            receipt_extra["actual_cost_settlement_source"] = "unavailable"
         receipt = started_call.materialize(
             outcome=ToolCallOutcome.OK,
             response_payload=invocation_output.public_payload,
@@ -364,11 +369,7 @@ class ToolExecutor:
             cost_usd=settled_cost_usd,
             actual_cost_usd=settled_cost_usd,
             actual_cost_provider=invocation_output.actual_cost_provider,
-            extra=(
-                {"actual_cost_settlement_source": "unavailable"}
-                if cost_unavailable
-                else None
-            ),
+            extra=receipt_extra or None,
             execution=_merge_execution_facts(
                 invocation_output.execution,
                 started_at=started_at,

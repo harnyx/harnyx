@@ -90,15 +90,23 @@ class _HookCostedSequencedProvider(_SequencedProvider):
         response: LlmResponse,
     ) -> LlmResponse:
         response_index = int(response.id.removeprefix("resp-"))
+        cost_usd = response_index / 100
         return LlmResponse(
             id=response.id,
             choices=response.choices,
             usage=response.usage,
             metadata={
                 **dict(response.metadata or {}),
-                "actual_cost_usd": response_index / 100,
+                "actual_cost_usd": cost_usd,
                 "actual_cost_provider": request.provider,
-                "actual_cost_evidence": {"settlement_source": "test_hook"},
+                "actual_cost_evidence": {
+                    "settlement_source": "provider_returned",
+                    "usage": {
+                        "is_byok": True,
+                        "cost": 0.0,
+                        "cost_details": {"upstream_inference_cost": cost_usd},
+                    },
+                },
             },
             finish_reason=response.finish_reason,
         )
@@ -275,7 +283,7 @@ async def test_provider_feedback_retry_accumulates_actual_cost_metadata_with_usa
     assert result.metadata["actual_cost_usd_total"] == pytest.approx(0.03)
 
 
-async def test_provider_cost_hook_runs_before_retry_records_billable_response() -> None:
+async def test_provider_retry_sums_each_already_settled_byok_response_once() -> None:
     first_response = _response(
         "not valid json",
         response_id="resp-1",
@@ -297,6 +305,14 @@ async def test_provider_cost_hook_runs_before_retry_records_billable_response() 
     assert result.metadata["billable_response_count"] == 2
     assert result.metadata["actual_cost_usd"] == pytest.approx(0.02)
     assert result.metadata["actual_cost_usd_total"] == pytest.approx(0.03)
+    assert result.metadata["actual_cost_evidence"] == {
+        "settlement_source": "provider_returned",
+        "usage": {
+            "is_byok": True,
+            "cost": 0.0,
+            "cost_details": {"upstream_inference_cost": 0.02},
+        },
+    }
 
 
 async def test_provider_feedback_retry_rejects_invalid_intermediate_actual_cost_metadata() -> None:

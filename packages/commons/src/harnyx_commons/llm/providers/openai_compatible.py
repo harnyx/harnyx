@@ -21,7 +21,7 @@ from harnyx_commons.config.llm import (
     OpenAiCompatibleGoogleIdTokenAuthConfig,
     OpenAiCompatibleNoAuthConfig,
 )
-from harnyx_commons.json_types import JsonObject
+from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.llm.adapter import canonical_model_for_provider_model
 from harnyx_commons.llm.cost_settlement import settled_response_cost, with_settled_llm_cost
 from harnyx_commons.llm.provider import BaseLlmProvider
@@ -300,7 +300,9 @@ class _OpenAiCompatibleUsagePayload(BaseModel):
     completion_tokens: int | None = None
     total_tokens: int | None = None
     reasoning_tokens: int | None = None
-    cost: float | None = Field(default=None, ge=0.0)
+    cost: JsonValue | None = None
+    is_byok: JsonValue | None = None
+    cost_details: JsonValue | None = None
     completion_tokens_details: _OpenAiCompatibleUsageDetails | None = None
 
     def to_usage(self) -> LlmUsage:

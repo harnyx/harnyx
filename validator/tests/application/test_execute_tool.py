@@ -43,6 +43,18 @@ pytestmark = pytest.mark.anyio("asyncio")
 
 TEST_SEARCH_COST_USD = 0.005
 TEST_LLM_COST_USD = 0.0042
+TEST_BYOK_COST_USD = 0.40935002
+TEST_BYOK_EVIDENCE = {
+    "settlement_source": "provider_returned",
+    "pricing_origin": "openrouter_usage_cost_and_upstream_inference_cost",
+    "provider": "openrouter",
+    "model": "openai/gpt-oss-120b",
+    "usage": {
+        "is_byok": True,
+        "cost": 0.29335727,
+        "cost_details": {"upstream_inference_cost": 0.11599275},
+    },
+}
 
 
 def generate_token() -> str:
@@ -164,6 +176,38 @@ class BlockingProviderErrorInvoker(ToolInvoker):
         self._release.set()
 
 
+class ByokLlmInvoker(ToolInvoker):
+    async def invoke(
+        self,
+        tool_name: str,
+        *,
+        args: tuple[object, ...],
+        kwargs: dict[str, object],
+        context: ToolInvocationContext | None = None,
+    ) -> ToolInvocationOutput:
+        _ = args, kwargs, context
+        assert tool_name == "llm_chat"
+        response = LlmResponse(
+            id="openrouter-byok",
+            choices=(
+                LlmChoice(
+                    index=0,
+                    message=LlmChoiceMessage(
+                        role="assistant",
+                        content=(LlmMessageContentPart(type="text", text="ok"),),
+                    ),
+                ),
+            ),
+            usage=LlmUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+        )
+        return ToolInvocationOutput(
+            public_payload=response.to_payload(),
+            actual_cost_usd=TEST_BYOK_COST_USD,
+            actual_cost_provider="openrouter",
+            actual_cost_evidence=TEST_BYOK_EVIDENCE,
+        )
+
+
 def make_session(
     *,
     budget_usd: float = 0.1,
@@ -191,6 +235,20 @@ def make_request(session: Session, *, token: str) -> ToolInvocationRequest:
         tool="search_web",
         args=(),
         kwargs={"search_queries": ["harnyx", "subnet"]},
+    )
+
+
+def make_llm_request(session: Session, *, token: str) -> ToolInvocationRequest:
+    return ToolInvocationRequest(
+        session_id=session.session_id,
+        token=token,
+        tool="llm_chat",
+        args=(),
+        kwargs={
+            "provider": "openrouter",
+            "model": "openai/gpt-oss-120b",
+            "messages": [{"role": "user", "content": "ping"}],
+        },
     )
 
 
@@ -1476,6 +1534,59 @@ async def test_execute_tool_returns_unknown_cost_embedding_and_allows_future_cal
     assert stored is not None
     assert stored.status is SessionStatus.ACTIVE
     assert stored.usage.actual_total_cost_usd is None
+
+
+async def test_openrouter_byok_cost_drives_receipt_session_budget_and_log(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session = make_session(budget_usd=1.0)
+    token = generate_token()
+    executor, _, session_registry = build_executor_with_invoker(
+        session,
+        token=token,
+        invoker=ByokLlmInvoker(),
+    )
+
+    with caplog.at_level(logging.DEBUG, logger=tool_executor_module.tool_logger.name):
+        result = await executor.execute(make_llm_request(session, token=token))
+
+    assert result.receipt.details.cost_usd == pytest.approx(TEST_BYOK_COST_USD)
+    assert result.receipt.details.reference_cost_usd == pytest.approx(TEST_BYOK_COST_USD)
+    assert result.receipt.details.actual_cost_usd == pytest.approx(TEST_BYOK_COST_USD)
+    assert result.receipt.details.extra is not None
+    assert result.receipt.details.extra["actual_cost_evidence"] == TEST_BYOK_EVIDENCE
+    stored = session_registry.get(session.session_id)
+    assert stored is not None
+    assert stored.usage.total_cost_usd == pytest.approx(TEST_BYOK_COST_USD)
+    assert stored.usage.reference_total_cost_usd == pytest.approx(TEST_BYOK_COST_USD)
+    assert stored.usage.actual_total_cost_usd == pytest.approx(TEST_BYOK_COST_USD)
+    assert result.budget.session_used_budget_usd == pytest.approx(TEST_BYOK_COST_USD)
+    completed = require_log_record(caplog, "miner_tool_call.completed")
+    assert completed.data["actual_cost_evidence"] == TEST_BYOK_EVIDENCE
+    assert "actual_cost_evidence" not in result.response_payload
+
+
+async def test_openrouter_byok_cost_can_exhaust_session_budget() -> None:
+    session = make_session(budget_usd=0.4, hard_limit_usd=0.4)
+    token = generate_token()
+    executor, receipt_log, session_registry = build_executor_with_invoker(
+        session,
+        token=token,
+        invoker=ByokLlmInvoker(),
+    )
+
+    with pytest.raises(BudgetExceededError):
+        await executor.execute(make_llm_request(session, token=token))
+
+    stored = session_registry.get(session.session_id)
+    assert stored is not None
+    assert stored.status is SessionStatus.EXHAUSTED
+    assert stored.usage.actual_total_cost_usd == pytest.approx(TEST_BYOK_COST_USD)
+    receipts = tuple(receipt_log.for_session(session.session_id))
+    assert len(receipts) == 1
+    assert receipts[0].outcome is ToolCallOutcome.OK
+    assert receipts[0].details.extra is not None
+    assert receipts[0].details.extra["actual_cost_evidence"] == TEST_BYOK_EVIDENCE
 
 
 async def test_execute_tool_rejects_expired_session() -> None:

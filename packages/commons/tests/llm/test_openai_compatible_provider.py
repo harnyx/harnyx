@@ -191,7 +191,11 @@ async def test_openai_compatible_provider_normalizes_streamed_chat_response() ->
 async def test_openai_compatible_provider_attaches_openrouter_usage_cost() -> None:
     provider = OpenAiCompatibleLlmProvider(
         endpoint=_endpoint(endpoint_id="openrouter", auth={"type": "none"}),
-        client=httpx.AsyncClient(transport=httpx.MockTransport(lambda _: _streaming_response())),
+        client=httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda _: _streaming_openrouter_response(is_byok=False, cost=0.00123)
+            )
+        ),
     )
 
     try:
@@ -203,6 +207,42 @@ async def test_openai_compatible_provider_attaches_openrouter_usage_cost() -> No
     assert response.metadata["actual_cost_usd"] == pytest.approx(0.00123)
     assert response.metadata["actual_cost_provider"] == "openrouter"
     assert response.metadata["actual_cost_evidence"]["settlement_source"] == "provider_returned"
+
+
+async def test_openai_compatible_provider_retains_and_settles_openrouter_byok_usage() -> None:
+    provider = OpenAiCompatibleLlmProvider(
+        endpoint=_endpoint(endpoint_id="openrouter", auth={"type": "none"}),
+        client=httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda _: _streaming_openrouter_response(
+                    is_byok=True,
+                    cost=0,
+                    upstream_inference_cost=0.11599275,
+                )
+            )
+        ),
+    )
+
+    try:
+        response = await provider.invoke(_request(provider="openrouter", model="deepseek/deepseek-v3.2"))
+    finally:
+        await provider.aclose()
+
+    assert response.metadata is not None
+    assert response.metadata["raw_response"]["usage"] == {
+        "prompt_tokens": 3,
+        "completion_tokens": 2,
+        "total_tokens": 5,
+        "cost": 0,
+        "is_byok": True,
+        "cost_details": {"upstream_inference_cost": 0.11599275},
+    }
+    assert response.metadata["actual_cost_usd"] == pytest.approx(0.11599275)
+    assert response.metadata["actual_cost_evidence"]["usage"] == {
+        "is_byok": True,
+        "cost": 0.0,
+        "cost_details": {"upstream_inference_cost": 0.11599275},
+    }
 
 
 async def test_openai_compatible_provider_attaches_openrouter_static_cost_when_usage_cost_missing() -> None:
@@ -641,6 +681,32 @@ def _streaming_response_without_usage_cost() -> httpx.Response:
             'data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":"ok"}}]}',
             'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],'
             '"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}',
+            "data: [DONE]",
+            "",
+        )
+    )
+    return httpx.Response(200, content=payload.encode("utf-8"))
+
+
+def _streaming_openrouter_response(
+    *,
+    is_byok: bool,
+    cost: float,
+    upstream_inference_cost: float | None = None,
+) -> httpx.Response:
+    usage: dict[str, object] = {
+        "prompt_tokens": 3,
+        "completion_tokens": 2,
+        "total_tokens": 5,
+        "cost": cost,
+        "is_byok": is_byok,
+    }
+    if upstream_inference_cost is not None:
+        usage["cost_details"] = {"upstream_inference_cost": upstream_inference_cost}
+    payload = "\n\n".join(
+        (
+            'data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":"ok"}}]}',
+            f'data: {json.dumps({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}], "usage": usage})}',
             "data: [DONE]",
             "",
         )
