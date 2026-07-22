@@ -143,6 +143,43 @@ def test_receipt_log_clear_session_removes_pending_receipts() -> None:
     )
 
 
+def test_receipt_log_finalizes_pending_receipts_for_failed_session() -> None:
+    receipt_log = InMemoryReceiptLog()
+    session = _session()
+    started_call = _started_call(session, receipt_id="receipt-1", active_attempt=1)
+    receipt_log.start_pending_receipt(started_call=started_call)
+    finished_at = _issued_at() + timedelta(seconds=2)
+
+    receipt_log.finalize_pending_receipts(
+        session_id=session.session_id,
+        outcome=ToolCallOutcome.TIMEOUT,
+        finished_at=finished_at,
+        error_type="SandboxInvokeError",
+        error_message="sandbox invocation timed out",
+    )
+
+    (receipt,) = receipt_log.for_session(session.session_id)
+    assert receipt.receipt_id == started_call.receipt_id
+    assert receipt.outcome is ToolCallOutcome.TIMEOUT
+    assert receipt.details.request_payload == started_call.request_payload
+    assert receipt.details.response_payload is None
+    assert receipt.details.execution == ToolExecutionFacts(
+        elapsed_ms=2000.0,
+        started_at=_issued_at(),
+        finished_at=finished_at,
+    )
+    assert receipt.details.extra is not None
+    assert receipt.details.extra["error_type"] == "SandboxInvokeError"
+    assert receipt.details.extra["error_message"] == "sandbox invocation timed out"
+    assert (
+        receipt_log.complete_pending_receipt(
+            _ok_receipt(started_call),
+            lambda: (session, False),
+        )
+        is None
+    )
+
+
 def _session() -> Session:
     issued_at = _issued_at()
     return Session(

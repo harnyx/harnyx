@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
 from harnyx_commons.domain.session import Session
-from harnyx_commons.domain.tool_call import StartedToolCall, ToolCall
+from harnyx_commons.domain.tool_call import StartedToolCall, ToolCall, ToolCallOutcome
 
 
 class ReceiptLogPort(Protocol):
@@ -32,6 +33,17 @@ class ReceiptLogPort(Protocol):
 
     def abandon_pending_receipt(self, receipt_id: str) -> None:
         """Remove a pending receipt that failed before final materialization."""
+
+    def finalize_pending_receipts(
+        self,
+        *,
+        session_id: UUID,
+        outcome: ToolCallOutcome,
+        finished_at: datetime,
+        error_type: str,
+        error_message: str,
+    ) -> None:
+        """Finalize every pending receipt for a failed session."""
 
     def lookup(self, receipt_id: str) -> ToolCall | None:
         """Return the receipt identified by ``receipt_id``."""

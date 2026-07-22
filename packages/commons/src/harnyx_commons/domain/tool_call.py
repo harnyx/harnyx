@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -133,6 +133,17 @@ class ToolCall:
     def is_successful(self) -> bool:
         """Return True when the tool invocation succeeded."""
         return self.outcome == ToolCallOutcome.OK
+
+
+def ordered_tool_calls(receipts: Iterable[ToolCall]) -> tuple[ToolCall, ...]:
+    """Return receipts in stable execution chronology."""
+    return tuple(sorted(receipts, key=_tool_call_chronology_key))
+
+
+def _tool_call_chronology_key(receipt: ToolCall) -> tuple[datetime, datetime, str]:
+    execution = receipt.details.execution
+    started_at = receipt.issued_at if execution is None or execution.started_at is None else execution.started_at
+    return started_at, receipt.issued_at, receipt.receipt_id
 
 
 @dataclass(frozen=True, slots=True)

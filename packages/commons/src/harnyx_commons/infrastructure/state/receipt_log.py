@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable
+from datetime import datetime
 from threading import Condition, Lock
 from uuid import UUID
 
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.domain.session import Session
-from harnyx_commons.domain.tool_call import StartedToolCall, ToolCall
+from harnyx_commons.domain.tool_call import StartedToolCall, ToolCall, ToolCallOutcome, ToolExecutionFacts
 
 
 class InMemoryReceiptLog(ReceiptLogPort):
@@ -69,6 +70,42 @@ class InMemoryReceiptLog(ReceiptLogPort):
     def abandon_pending_receipt(self, receipt_id: str) -> None:
         with self._condition:
             self._remove_pending_locked(receipt_id)
+            self._condition.notify_all()
+
+    def finalize_pending_receipts(
+        self,
+        *,
+        session_id: UUID,
+        outcome: ToolCallOutcome,
+        finished_at: datetime,
+        error_type: str,
+        error_message: str,
+    ) -> None:
+        with self._condition:
+            receipt_ids = tuple(self._pending_by_session.get(session_id, ()))
+            for receipt_id in receipt_ids:
+                started_call = self._pending[receipt_id]
+                started_at = started_call.execution.started_at
+                elapsed_ms = (
+                    max(0.0, (finished_at - started_at).total_seconds() * 1000.0)
+                    if started_at is not None
+                    else None
+                )
+                receipt = started_call.materialize(
+                    outcome=outcome,
+                    extra={
+                        "error_type": error_type,
+                        "error_message": error_message,
+                    },
+                    execution=ToolExecutionFacts(
+                        elapsed_ms=elapsed_ms,
+                        ttft_ms=started_call.execution.ttft_ms,
+                        started_at=started_at,
+                        finished_at=finished_at,
+                    ),
+                )
+                self._record_locked(receipt)
+                self._remove_pending_locked(receipt_id)
             self._condition.notify_all()
 
     def lookup(self, receipt_id: str) -> ToolCall | None:
