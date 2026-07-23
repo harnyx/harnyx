@@ -83,16 +83,26 @@ class RankingCascadeTrace:
     final_artifact_id: UUID | None
     steps: tuple[RankingCascadeStep, ...]
 
+    def champion_lineage_artifact_ids(self) -> tuple[UUID, ...]:
+        """Return champions in the order they entered the lineage."""
+
+        lineage = () if self.initial_artifact_id is None else (self.initial_artifact_id,)
+        selected_challengers = tuple(
+            step.challenger_artifact_id
+            for step in self.steps
+            if step.selected_artifact_id == step.challenger_artifact_id
+        )
+        return tuple(dict.fromkeys((*lineage, *selected_challengers)))
+
     def successful_dethroner_artifact_ids(self) -> tuple[UUID, ...]:
         return tuple(step.challenger_artifact_id for step in self.steps if step.dethroned)
 
     def reverse_champion_lineage(self) -> tuple[UUID, ...]:
         """Return final champion first, followed by the champions it superseded."""
 
-        lineage = (
-            () if self.initial_artifact_id is None else (self.initial_artifact_id,)
-        ) + self.successful_dethroner_artifact_ids()
-        return tuple(reversed(tuple(dict.fromkeys(lineage))))
+        if self.final_artifact_id is None:
+            return ()
+        return tuple(reversed(self.champion_lineage_artifact_ids()))
 
 
 def main_participant_priority(

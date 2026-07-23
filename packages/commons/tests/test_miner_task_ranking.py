@@ -185,6 +185,37 @@ def test_ranking_cascade_trace_records_successful_dethrone_sequence() -> None:
     assert trace.steps[2].evaluation.rules[1].observed_relative_improvement == pytest.approx(0.3)
 
 
+def test_ranking_cascade_trace_records_championless_champion_lineage() -> None:
+    provisional_champion = uuid4()
+    rejected = uuid4()
+    final_champion = uuid4()
+    trace = RankingCascadeTrace(
+        initial_artifact_id=None,
+        final_artifact_id=final_champion,
+        steps=(
+            RankingCascadeStep(None, provisional_champion, provisional_champion, False),
+            RankingCascadeStep(provisional_champion, rejected, provisional_champion, False),
+            RankingCascadeStep(provisional_champion, final_champion, final_champion, True),
+        ),
+    )
+
+    assert trace.champion_lineage_artifact_ids() == (
+        provisional_champion,
+        final_champion,
+    )
+    assert trace.reverse_champion_lineage() == (
+        final_champion,
+        provisional_champion,
+    )
+    assert main_participant_priority(
+        main_trace=trace,
+        qualifying_participant_order=(provisional_champion, final_champion),
+    ) == (
+        final_champion,
+        provisional_champion,
+    )
+
+
 def test_ranking_cascade_trace_treats_positive_replacement_of_zero_incumbent_as_dethrone() -> None:
     cascade = RankingCascade(CascadeConfig())
     incumbent = uuid4()
@@ -302,3 +333,24 @@ def test_main_participant_priority_uses_reverse_main_lineage_then_reverse_qualif
         main_trace=trace,
         qualifying_participant_order=(incumbent, dethroner_a, dethroner_b, non_dethroner),
     ) == (dethroner_b, dethroner_a, incumbent, non_dethroner)
+
+
+def test_main_participant_priority_uses_reverse_qualifying_order_without_final_champion() -> None:
+    incumbent = uuid4()
+    challenger_a = uuid4()
+    challenger_b = uuid4()
+    trace = RankingCascadeTrace(
+        initial_artifact_id=incumbent,
+        final_artifact_id=None,
+        steps=(
+            RankingCascadeStep(None, challenger_a, None, False),
+            RankingCascadeStep(None, challenger_b, None, False),
+        ),
+    )
+
+    assert trace.champion_lineage_artifact_ids() == (incumbent,)
+    assert trace.reverse_champion_lineage() == ()
+    assert main_participant_priority(
+        main_trace=trace,
+        qualifying_participant_order=(incumbent, challenger_a, challenger_b),
+    ) == (challenger_b, challenger_a, incumbent)
