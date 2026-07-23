@@ -137,20 +137,19 @@ def test_benchmark_registry_resolves_explicit_active_version_only(monkeypatch) -
     assert load_benchmark_snapshot("deepsearchqa") == current
 
 
-def test_sample_benchmark_items_is_deterministic_for_run_id() -> None:
+def test_deepsearchqa_sampling_uses_fixed_snapshot_panel() -> None:
     snapshot = load_deepsearchqa_snapshot()
-    run_id = UUID("00000000-0000-4000-8000-00000000b501")
 
     first = sample_benchmark_items(
         items=snapshot.items,
-        run_id=run_id,
+        run_id=UUID("00000000-0000-4000-8000-00000000b501"),
         dataset_version=snapshot.manifest.dataset_version,
         scoring_version=snapshot.manifest.scoring_version,
         sample_size=20,
     )
     second = sample_benchmark_items(
         items=snapshot.items,
-        run_id=run_id,
+        run_id=UUID("00000000-0000-4000-8000-00000000b502"),
         dataset_version=snapshot.manifest.dataset_version,
         scoring_version=snapshot.manifest.scoring_version,
         sample_size=20,
@@ -158,7 +157,28 @@ def test_sample_benchmark_items_is_deterministic_for_run_id() -> None:
 
     assert first == second
     assert len(first) == 20
-    assert [item.item_index for item in first] == sorted(item.item_index for item in first)
+    assert [item.item_index for item in first] == [
+        73,
+        222,
+        258,
+        328,
+        333,
+        347,
+        374,
+        400,
+        451,
+        458,
+        483,
+        489,
+        524,
+        526,
+        527,
+        624,
+        706,
+        785,
+        870,
+        896,
+    ]
 
 
 def test_benchmark_identity_helpers_match_existing_public_values() -> None:

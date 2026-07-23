@@ -173,7 +173,7 @@ def test_project_benchmark_run_state_marks_terminal_mixed_run_partial_success() 
     )
 
 
-def test_sample_benchmark_items_is_deterministic_and_sorted_by_item_index() -> None:
+def test_sample_benchmark_items_is_fixed_across_run_ids_and_sorted_by_item_index() -> None:
     items = tuple(_SampleItem(index) for index in range(BENCHMARK_SAMPLE_SIZE + 5))
 
     first = sample_benchmark_items(
@@ -184,7 +184,7 @@ def test_sample_benchmark_items_is_deterministic_and_sorted_by_item_index() -> N
     )
     second = sample_benchmark_items(
         items=items,
-        run_id=UUID("00000000-0000-4000-8000-000000000001"),
+        run_id=UUID("00000000-0000-4000-8000-000000000002"),
         dataset_version="dataset-v1",
         scoring_version="correctness-v1",
     )

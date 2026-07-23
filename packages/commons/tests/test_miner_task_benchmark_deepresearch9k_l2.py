@@ -59,7 +59,7 @@ def test_deepresearch9k_l2_loads_current_and_explicit_versions_through_registry(
     )
 
 
-def test_deepresearch9k_l2_sampling_uses_preserved_source_item_indices() -> None:
+def test_deepresearch9k_l2_sampling_uses_fixed_snapshot_panel() -> None:
     snapshot = load_deepresearch9k_l2_snapshot()
     run_id = UUID("00000000-0000-4000-8000-00000000d902")
 
@@ -72,26 +72,26 @@ def test_deepresearch9k_l2_sampling_uses_preserved_source_item_indices() -> None
     )
 
     assert [item.item_index for item in sampled] == [
-        1054,
-        1081,
-        1483,
-        1636,
-        2233,
-        2368,
-        3148,
-        3169,
+        250,
+        451,
+        1318,
+        1462,
+        1516,
+        1621,
+        1831,
+        1891,
+        2290,
+        2587,
         3445,
-        5380,
-        5647,
-        5761,
-        6283,
-        6754,
-        7894,
-        7963,
-        8221,
-        8593,
-        8737,
-        8953,
+        3892,
+        5032,
+        5791,
+        6181,
+        7258,
+        7918,
+        8326,
+        8527,
+        8686,
     ]
     assert str(
         benchmark_task_id_for_item(
@@ -99,4 +99,4 @@ def test_deepresearch9k_l2_sampling_uses_preserved_source_item_indices() -> None
             run_id=run_id,
             item_index=sampled[0].item_index,
         )
-    ) == "054d2331-688d-541a-9f6d-4b902b651603"
+    ) == "e63ca261-e261-507e-b9b6-138c0a90b627"

@@ -317,6 +317,8 @@ def sample_benchmark_items(
     scoring_version: str,
     sample_size: int = BENCHMARK_SAMPLE_SIZE,
 ) -> tuple[_SampleItemT, ...]:
+    """Select the snapshot-fixed panel while preserving the published run_id argument."""
+    del run_id
     if len(items) <= sample_size:
         return items
     sampled_items = sorted(
@@ -326,7 +328,6 @@ def sample_benchmark_items(
                 (
                     f"{dataset_version}:"
                     f"{scoring_version}:"
-                    f"{run_id}:"
                     f"{item.item_index}"
                 ).encode()
             ).digest(),

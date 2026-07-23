@@ -220,7 +220,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--agent-path", help="Path to the local miner agent file.")
     parser.add_argument(
         "--source-batch-id",
-        help="Pinned source batch id used to derive the deterministic benchmark sample.",
+        help="Pinned source batch id used to derive benchmark run, backing-batch, and task identities.",
     )
     parser.add_argument(
         "--suite",

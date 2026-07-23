@@ -3,18 +3,21 @@ from __future__ import annotations
 import json
 from hashlib import sha256
 from importlib.resources import files
+from uuid import UUID
 
 from harnyx_commons.miner_task_benchmark import (
     BENCHMARK_WEIGHTED_RUBRIC_SCORING_VERSION,
     DRACO_SUITE_NAME,
     DRACO_SUITE_SLUG,
     BenchmarkAnswerType,
+    benchmark_task_id_for_item,
     list_current_benchmark_suite_slugs,
     list_draco_snapshots,
     load_benchmark_snapshot,
     load_current_benchmark_snapshot,
     load_draco_snapshot,
     parse_weighted_rubric,
+    sample_benchmark_items,
 )
 
 DRACO_DATASET_VERSION = "2026-06-16-hf-ce076749"
@@ -131,3 +134,49 @@ def test_draco_snapshot_catalog_contains_only_pinned_snapshot() -> None:
             scoring_version=BENCHMARK_WEIGHTED_RUBRIC_SCORING_VERSION,
         ),
     )
+
+
+def test_draco_sampling_uses_fixed_snapshot_panel() -> None:
+    snapshot = load_draco_snapshot(
+        dataset_version=DRACO_DATASET_VERSION,
+        scoring_version=BENCHMARK_WEIGHTED_RUBRIC_SCORING_VERSION,
+    )
+    run_id = UUID("00000000-0000-4000-8000-00000000d905")
+
+    sampled = sample_benchmark_items(
+        items=snapshot.items,
+        run_id=run_id,
+        dataset_version=snapshot.manifest.dataset_version,
+        scoring_version=snapshot.manifest.scoring_version,
+        sample_size=20,
+    )
+
+    assert [item.item_index for item in sampled] == [
+        7,
+        17,
+        29,
+        30,
+        31,
+        35,
+        38,
+        45,
+        52,
+        54,
+        63,
+        68,
+        69,
+        76,
+        79,
+        83,
+        87,
+        91,
+        94,
+        95,
+    ]
+    assert str(
+        benchmark_task_id_for_item(
+            suite_slug=snapshot.manifest.suite_slug,
+            run_id=run_id,
+            item_index=sampled[0].item_index,
+        )
+    ) == "ef30afcd-a058-5500-8640-a9dc88a1eb3e"

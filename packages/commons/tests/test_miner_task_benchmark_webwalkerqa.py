@@ -169,7 +169,7 @@ def test_benchmark_registry_loads_webwalkerqa_current_and_explicit_snapshot() ->
     }
 
 
-def test_webwalkerqa_identity_and_sampling_match_recorded_local_run_anchor() -> None:
+def test_webwalkerqa_identity_and_sampling_use_fixed_snapshot_panel() -> None:
     snapshot = load_webwalkerqa_snapshot()
     source_batch_id = UUID("855ad3da-c8f2-4114-abab-50c0463c4814")
     run_id = benchmark_run_id_for_source_batch(
@@ -198,25 +198,25 @@ def test_webwalkerqa_identity_and_sampling_match_recorded_local_run_anchor() -> 
         "31e0c534-8de3-5563-9184-86f8f8293629"
     )
     assert [item.item_index for item in sampled_items] == [
-        41,
-        78,
-        120,
-        133,
-        136,
+        40,
+        122,
+        126,
+        128,
+        131,
+        132,
+        137,
+        139,
         140,
         141,
+        142,
         144,
+        145,
         147,
         148,
         150,
-        153,
-        154,
-        157,
-        168,
-        173,
-        177,
-        182,
-        187,
+        155,
+        172,
+        184,
         188,
     ]
 
@@ -262,19 +262,19 @@ def test_webwalkerqa_medium_snapshots_load_current_and_explicit_versions() -> No
         )
 
 
-def test_webwalkerqa_medium_sampling_preserves_source_indices() -> None:
+def test_webwalkerqa_medium_sampling_uses_fixed_snapshot_panels() -> None:
     expectations = (
         (
             load_webwalkerqa_single_source_medium_snapshot(),
             UUID("00000000-0000-4000-8000-00000000d903"),
-            [1, 207, 208, 213, 214, 227, 235, 238, 253, 259, 268, 279, 282, 287, 289, 303, 649, 650, 652, 653],
-            "d69b38ba-90cb-5955-a126-51961873e196",
+            [21, 38, 80, 81, 82, 201, 207, 219, 227, 233, 249, 252, 253, 257, 269, 284, 291, 295, 637, 648],
+            "e5eb6fcf-8577-59f6-bfde-715ae840f3ec",
         ),
         (
             load_webwalkerqa_multi_source_medium_snapshot(),
             UUID("00000000-0000-4000-8000-00000000d904"),
-            [5, 8, 15, 27, 52, 57, 61, 66, 70, 72, 74, 103, 112, 488, 491, 505, 511, 515, 525, 663],
-            "9bf88915-30fe-5353-bd91-954c5b44b63c",
+            [8, 11, 26, 32, 53, 56, 93, 106, 112, 484, 487, 492, 497, 503, 506, 515, 638, 660, 666, 675],
+            "78786263-1ab5-5dbb-9028-6ebac61dfe5a",
         ),
     )
 

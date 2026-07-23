@@ -54,7 +54,7 @@ def test_deepresearch9k_l1_loads_through_generic_registry() -> None:
     )
 
 
-def test_deepresearch9k_l1_sampling_uses_preserved_source_item_indices() -> None:
+def test_deepresearch9k_l1_sampling_uses_fixed_snapshot_panel() -> None:
     snapshot = load_deepresearch9k_l1_snapshot()
     run_id = UUID("00000000-0000-4000-8000-00000000d901")
 
@@ -68,26 +68,26 @@ def test_deepresearch9k_l1_sampling_uses_preserved_source_item_indices() -> None
 
     assert len(sampled) == 20
     assert [item.item_index for item in sampled] == [
-        933,
-        1029,
-        1278,
-        1965,
-        2850,
-        3147,
-        4686,
-        4974,
-        4977,
-        5319,
-        6207,
-        6387,
-        6564,
-        7011,
-        7119,
-        7647,
-        7764,
-        8922,
-        8973,
-        8979,
+        132,
+        351,
+        465,
+        1335,
+        1353,
+        1830,
+        1857,
+        2208,
+        2931,
+        2976,
+        3408,
+        3675,
+        4755,
+        5826,
+        6039,
+        6084,
+        6132,
+        6138,
+        6285,
+        8538,
     ]
     assert all(item.item_index % 3 == 0 for item in sampled)
     assert [item.item_index for item in sampled] == sorted(item.item_index for item in sampled)
@@ -97,4 +97,4 @@ def test_deepresearch9k_l1_sampling_uses_preserved_source_item_indices() -> None
             run_id=run_id,
             item_index=sampled[0].item_index,
         )
-    ) == "9c2e7286-0ed3-5d82-9fcc-58474d26f780"
+    ) == "73f844b6-5f73-5c37-a6cf-decf1a2580ed"
