@@ -52,20 +52,26 @@ def test_benchmark_registry_loads_deepsearchqa_snapshot_generically() -> None:
     assert load_current_benchmark_snapshot("deepsearchqa") == snapshot
 
 
-def test_benchmark_registry_has_four_current_suites_without_single_active_default() -> None:
+def test_benchmark_registry_has_seven_current_suites_without_single_active_default() -> None:
     snapshots = list_current_benchmark_snapshots()
 
     assert tuple(snapshot.manifest.suite_slug for snapshot in snapshots) == (
         "deepresearch9k-l1",
+        "deepresearch9k-l2",
         "deepsearchqa",
         "draco",
         "webwalkerqa",
+        "webwalkerqa-multi-source-medium",
+        "webwalkerqa-single-source-medium",
     )
     assert list_current_benchmark_suite_slugs() == (
         "deepresearch9k-l1",
+        "deepresearch9k-l2",
         "deepsearchqa",
         "draco",
         "webwalkerqa",
+        "webwalkerqa-multi-source-medium",
+        "webwalkerqa-single-source-medium",
     )
     assert load_current_benchmark_snapshot(DEEPRESEARCH9K_L1_SUITE_SLUG).manifest.row_count == 3000
     try:

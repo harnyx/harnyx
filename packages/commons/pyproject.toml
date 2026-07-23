@@ -1,6 +1,6 @@
 [project]
 name = "harnyx-commons"
-version = "0.1.8"
+version = "0.1.9"
 description = "Shared SDK utilities and sandbox harness for the Harnyx Subnet."
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
@@ -45,11 +45,17 @@ include = [
   "src/harnyx_commons/miner_task_benchmark/deepresearch9k_l1/data/current_version.json",
   "src/harnyx_commons/miner_task_benchmark/deepresearch9k_l1/data/versions/*/*.csv",
   "src/harnyx_commons/miner_task_benchmark/deepresearch9k_l1/data/versions/*/*.json",
+  "src/harnyx_commons/miner_task_benchmark/deepresearch9k_l2/data/current_version.json",
+  "src/harnyx_commons/miner_task_benchmark/deepresearch9k_l2/data/versions/*/*.csv",
+  "src/harnyx_commons/miner_task_benchmark/deepresearch9k_l2/data/versions/*/*.json",
   "src/harnyx_commons/miner_task_benchmark/draco/data/current_version.json",
   "src/harnyx_commons/miner_task_benchmark/draco/data/versions/*/*.json",
   "src/harnyx_commons/miner_task_benchmark/draco/data/versions/*/*.jsonl",
   "src/harnyx_commons/miner_task_benchmark/webwalkerqa/data/current_version.json",
+  "src/harnyx_commons/miner_task_benchmark/webwalkerqa/data/sources/*/*.json",
   "src/harnyx_commons/miner_task_benchmark/webwalkerqa/data/versions/*/*.json",
+  "src/harnyx_commons/miner_task_benchmark/webwalkerqa/data/*/current_version.json",
+  "src/harnyx_commons/miner_task_benchmark/webwalkerqa/data/*/versions/*/*.json",
 ]
 
 [tool.deptry.package_module_name_map]

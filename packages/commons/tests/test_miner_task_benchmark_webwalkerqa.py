@@ -3,20 +3,33 @@ from __future__ import annotations
 import json
 from hashlib import sha256
 from importlib.resources import files
+from pathlib import Path
 from uuid import UUID
 
+import harnyx_commons.miner_task_benchmark.webwalkerqa.loader as webwalkerqa_loader
 from harnyx_commons.miner_task_benchmark import (
+    WEBWALKERQA_MULTI_SOURCE_MEDIUM_SUITE_NAME,
+    WEBWALKERQA_MULTI_SOURCE_MEDIUM_SUITE_SLUG,
+    WEBWALKERQA_SINGLE_SOURCE_MEDIUM_SUITE_NAME,
+    WEBWALKERQA_SINGLE_SOURCE_MEDIUM_SUITE_SLUG,
     BenchmarkAnswerType,
     benchmark_backing_batch_id_for_run,
     benchmark_run_id_for_source_batch,
     benchmark_task_id_for_item,
     list_current_benchmark_snapshots,
     list_current_benchmark_suite_slugs,
+    list_webwalkerqa_multi_source_medium_snapshots,
+    list_webwalkerqa_single_source_medium_snapshots,
     list_webwalkerqa_snapshots,
     load_benchmark_snapshot,
+    load_webwalkerqa_multi_source_medium_snapshot,
+    load_webwalkerqa_single_source_medium_snapshot,
     load_webwalkerqa_snapshot,
     sample_benchmark_items,
 )
+
+_SINGLE_SOURCE_MEDIUM_VERSION = "2026-07-22-webwalkerqa-test-single-source-medium"
+_MULTI_SOURCE_MEDIUM_VERSION = "2026-07-22-webwalkerqa-test-multi-source-medium"
 
 
 def test_load_webwalkerqa_snapshot_reads_packaged_manifest_and_filters_easy_single_source_rows() -> None:
@@ -34,6 +47,57 @@ def test_load_webwalkerqa_snapshot_reads_packaged_manifest_and_filters_easy_sing
     assert {item.answer_type for item in snapshot.items} == {BenchmarkAnswerType.SINGLE_ANSWER}
 
 
+def test_webwalkerqa_easy_validates_task_fields_only_for_selected_rows(tmp_path: Path) -> None:
+    rows = [
+        {
+            "Question": "Selected question",
+            "answer": "Selected answer",
+            "root_url": "https://example.com/",
+            "source_website": ["https://example.com/answer"],
+            "type": "single_source",
+            "difficulty_level": "easy",
+        },
+        {
+            "type": "multi_source",
+            "difficulty_level": "medium",
+        },
+    ]
+    payload = json.dumps(rows).encode()
+    payload_hash = sha256(payload).hexdigest()
+    sources_dir = tmp_path.joinpath("sources")
+    source_dir = sources_dir.joinpath(payload_hash)
+    source_dir.mkdir(parents=True)
+    source_dir.joinpath("test.json").write_bytes(payload)
+    tmp_path.joinpath("manifest.json").write_text(
+        json.dumps(
+            {
+                "suite_slug": "webwalkerqa",
+                "suite_name": "WebWalkerQA Easy",
+                "dataset_version": "test-version",
+                "scoring_version": "correctness-v1",
+                "source_url": "https://example.com/test.json",
+                "source_page_url": "https://example.com/",
+                "license": "test",
+                "sha256": payload_hash,
+                "row_count": 1,
+                "file_name": "test.json",
+                "fetched_at": "2026-07-22",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    snapshot = webwalkerqa_loader._load_snapshot_from_dir(
+        snapshot_dir=tmp_path,
+        sources_dir=sources_dir,
+        spec=webwalkerqa_loader._WEBWALKERQA_EASY,
+    )
+
+    assert [item.problem for item in snapshot.items] == [
+        "Root URL: https://example.com/\nQuestion: Selected question"
+    ]
+
+
 def test_webwalkerqa_problem_uses_root_url_and_question_only() -> None:
     item = load_webwalkerqa_snapshot().items[0]
 
@@ -46,15 +110,16 @@ def test_webwalkerqa_problem_uses_root_url_and_question_only() -> None:
 
 def test_webwalkerqa_manifest_checksum_matches_upstream_raw_test_json() -> None:
     snapshot = load_webwalkerqa_snapshot()
-    version_dir = files("harnyx_commons.miner_task_benchmark.webwalkerqa.data").joinpath(
-        "versions",
-        f"{snapshot.manifest.dataset_version}__{snapshot.manifest.scoring_version}",
+    payload = files("harnyx_commons.miner_task_benchmark.webwalkerqa.data").joinpath(
+        "sources",
+        snapshot.manifest.sha256,
+        snapshot.manifest.file_name,
     )
-    payload = version_dir.joinpath(snapshot.manifest.file_name).read_bytes()
-    raw_rows = json.loads(payload.decode("utf-8"))
+    raw_bytes = payload.read_bytes()
+    raw_rows = json.loads(raw_bytes.decode("utf-8"))
 
     assert len(raw_rows) == 680
-    assert sha256(payload).hexdigest() == snapshot.manifest.sha256
+    assert sha256(raw_bytes).hexdigest() == snapshot.manifest.sha256
     assert snapshot.manifest.sha256 == "26743935e573cca30571793bc28f3798d2a7ce73c6c0981e1bd54a5fe476fe46"
 
 
@@ -86,15 +151,21 @@ def test_benchmark_registry_loads_webwalkerqa_current_and_explicit_snapshot() ->
     )
     assert list_current_benchmark_suite_slugs() == (
         "deepresearch9k-l1",
+        "deepresearch9k-l2",
         "deepsearchqa",
         "draco",
         "webwalkerqa",
+        "webwalkerqa-multi-source-medium",
+        "webwalkerqa-single-source-medium",
     )
     assert {item.manifest.suite_slug for item in list_current_benchmark_snapshots()} == {
         "deepresearch9k-l1",
+        "deepresearch9k-l2",
         "deepsearchqa",
         "draco",
         "webwalkerqa",
+        "webwalkerqa-multi-source-medium",
+        "webwalkerqa-single-source-medium",
     }
 
 
@@ -148,3 +219,79 @@ def test_webwalkerqa_identity_and_sampling_match_recorded_local_run_anchor() -> 
         187,
         188,
     ]
+
+
+def test_webwalkerqa_medium_snapshots_keep_populations_separate() -> None:
+    single = load_webwalkerqa_single_source_medium_snapshot()
+    multi = load_webwalkerqa_multi_source_medium_snapshot()
+
+    assert single.manifest.suite_slug == WEBWALKERQA_SINGLE_SOURCE_MEDIUM_SUITE_SLUG
+    assert single.manifest.suite_name == WEBWALKERQA_SINGLE_SOURCE_MEDIUM_SUITE_NAME
+    assert single.manifest.dataset_version == _SINGLE_SOURCE_MEDIUM_VERSION
+    assert single.manifest.row_count == 140
+    assert len(single.items) == 140
+    assert {item.problem_category for item in single.items} == {"single_source_medium"}
+    assert [item.item_index for item in single.items[:5]] == [0, 1, 2, 19, 20]
+    assert single.items[-1].item_index == 653
+
+    assert multi.manifest.suite_slug == WEBWALKERQA_MULTI_SOURCE_MEDIUM_SUITE_SLUG
+    assert multi.manifest.suite_name == WEBWALKERQA_MULTI_SOURCE_MEDIUM_SUITE_NAME
+    assert multi.manifest.dataset_version == _MULTI_SOURCE_MEDIUM_VERSION
+    assert multi.manifest.row_count == 140
+    assert len(multi.items) == 140
+    assert {item.problem_category for item in multi.items} == {"multi_source_medium"}
+    assert [item.item_index for item in multi.items[:5]] == [5, 6, 7, 8, 9]
+    assert multi.items[-1].item_index == 678
+
+
+def test_webwalkerqa_medium_snapshots_load_current_and_explicit_versions() -> None:
+    single = load_webwalkerqa_single_source_medium_snapshot()
+    multi = load_webwalkerqa_multi_source_medium_snapshot()
+
+    assert list_webwalkerqa_single_source_medium_snapshots() == (single,)
+    assert list_webwalkerqa_multi_source_medium_snapshots() == (multi,)
+    for snapshot in (single, multi):
+        assert load_benchmark_snapshot(snapshot.manifest.suite_slug) == snapshot
+        assert (
+            load_benchmark_snapshot(
+                snapshot.manifest.suite_slug,
+                dataset_version=snapshot.manifest.dataset_version,
+                scoring_version=snapshot.manifest.scoring_version,
+            )
+            == snapshot
+        )
+
+
+def test_webwalkerqa_medium_sampling_preserves_source_indices() -> None:
+    expectations = (
+        (
+            load_webwalkerqa_single_source_medium_snapshot(),
+            UUID("00000000-0000-4000-8000-00000000d903"),
+            [1, 207, 208, 213, 214, 227, 235, 238, 253, 259, 268, 279, 282, 287, 289, 303, 649, 650, 652, 653],
+            "d69b38ba-90cb-5955-a126-51961873e196",
+        ),
+        (
+            load_webwalkerqa_multi_source_medium_snapshot(),
+            UUID("00000000-0000-4000-8000-00000000d904"),
+            [5, 8, 15, 27, 52, 57, 61, 66, 70, 72, 74, 103, 112, 488, 491, 505, 511, 515, 525, 663],
+            "9bf88915-30fe-5353-bd91-954c5b44b63c",
+        ),
+    )
+
+    for snapshot, run_id, expected_indices, expected_first_task_id in expectations:
+        sampled = sample_benchmark_items(
+            items=snapshot.items,
+            run_id=run_id,
+            dataset_version=snapshot.manifest.dataset_version,
+            scoring_version=snapshot.manifest.scoring_version,
+            sample_size=20,
+        )
+
+        assert [item.item_index for item in sampled] == expected_indices
+        assert str(
+            benchmark_task_id_for_item(
+                suite_slug=snapshot.manifest.suite_slug,
+                run_id=run_id,
+                item_index=sampled[0].item_index,
+            )
+        ) == expected_first_task_id
