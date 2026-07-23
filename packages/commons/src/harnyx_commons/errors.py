@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from harnyx_commons.tools.provider_billing import ProviderBillingMetadata
 
 
 class SandboxError(Exception):
@@ -53,11 +57,20 @@ class ToolProviderError(RuntimeError):
         failure_code: ToolProviderFailureCode = ToolProviderFailureCode.PROVIDER_FAILED,
         provider: str | None = None,
         http_status: int | None = None,
+        billing: ProviderBillingMetadata | None = None,
     ) -> None:
         super().__init__(message)
         self.failure_code = failure_code
         self.provider = provider
         self.http_status = http_status
+        self.billing = billing
+
+
+def is_tool_provider_credential_failure(error: ToolProviderError) -> bool:
+    return error.failure_code in {
+        ToolProviderFailureCode.CREDENTIAL_UNAVAILABLE,
+        ToolProviderFailureCode.AUTHENTICATION_FAILED,
+    }
 
 
 __all__ = [
@@ -70,4 +83,5 @@ __all__ = [
     "ProviderCredentialUnavailableError",
     "ToolProviderFailureCode",
     "ToolProviderError",
+    "is_tool_provider_credential_failure",
 ]

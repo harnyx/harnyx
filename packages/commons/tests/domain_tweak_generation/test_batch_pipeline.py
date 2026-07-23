@@ -2,731 +2,444 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+from collections import Counter
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from uuid import UUID
 
 import pytest
 
-from harnyx_commons.domain_tweak_generation import (
-    DomainTweakAdkPhase,
-    DomainTweakAdkRunConfig,
+from harnyx_commons.domain_tweak_generation.adk_runner import (
     DomainTweakAdkRunner,
     DomainTweakAdkTurn,
-    DomainTweakBatchGenerationConfig,
-    DomainTweakBatchGenerationPipeline,
-    DomainTweakReferenceAnswerPhasePolicy,
+    DomainTweakAdkTurnExecutor,
 )
-from harnyx_commons.domain_tweak_generation.batch_pipeline import _question_attempt_windows
-from harnyx_commons.domain_tweak_generation.types import DomainTweakAdkEventSummary
-from harnyx_commons.llm.schema import LlmUsage
-from harnyx_commons.miner_task_generation import DomainTweakPairInput
+from harnyx_commons.domain_tweak_generation.batch_pipeline import (
+    DomainTweakBatchGenerationPipeline,
+    _question_attempt_windows,
+)
+from harnyx_commons.domain_tweak_generation.types import (
+    DomainTweakAdkRunConfig,
+    DomainTweakBatchGenerationConfig,
+    DomainTweakQuestionPhasePolicy,
+)
+from harnyx_commons.errors import ToolProviderError, ToolProviderFailureCode
+from harnyx_commons.miner_task_generation import (
+    DOMAIN_TWEAK_REQUIREMENT_CATEGORIES,
+    DomainTweakPairInput,
+)
+from harnyx_commons.tools.extraction_models import ExtractedPage, ExtractPagesRequest, ExtractPagesResponse
+from harnyx_commons.tools.provider_billing import ProviderBillingMetadata, SearchProviderResult
 
 pytestmark = pytest.mark.anyio("asyncio")
 
-_TASK_IDS = (
-    UUID("00000000-0000-0000-0000-000000000101"),
-    UUID("00000000-0000-0000-0000-000000000102"),
-)
 
+@dataclass
+class _ExtractionProvider:
+    requests: list[ExtractPagesRequest] = field(default_factory=list)
 
-async def test_batch_pipeline_selects_n_reviewed_questions_then_finalizes_only_selected() -> None:
-    executor = _FakeTurnExecutor(
-        responses=(
-            _question_payload(1),
-            _question_payload(2),
-            _review_payload(form_match=True),
-            _review_payload(form_match=True),
-            _answer_payload(1),
-            _answer_payload(2),
-        )
-    )
-    task_ids = iter(_TASK_IDS)
-    pipeline = DomainTweakBatchGenerationPipeline(
-        base_config=DomainTweakAdkRunConfig(model="gemini-3-pro-preview"),
-        runner=DomainTweakAdkRunner(turn_executor=executor),
-        task_id_factory=lambda: next(task_ids),
-    )
-
-    result = await pipeline.generate_batch(_pair_inputs(3), DomainTweakBatchGenerationConfig(target_count=2))
-
-    assert not result.underfilled
-    assert [item.pair_input.pair_id for item in result.selected_questions] == ["pair-001", "pair-002"]
-    assert [item.task.task_id for item in result.finalized_tasks] == list(_TASK_IDS)
-    assert result.rejected_attempts == ()
-    assert result.failed_finalizations == ()
-    assert executor.phases == [
-        "question_generation",
-        "question_generation",
-        "form_review",
-        "form_review",
-        "reference_answer",
-        "reference_answer",
-    ]
-    assert result.tool_usage.llm.call_count == 6
-    assert result.tool_usage.search_tool.call_count == 6
-
-
-async def test_batch_pipeline_skips_duplicate_reviewed_question_text_before_selection() -> None:
-    duplicate_question = "Which players meet all constraints in domain 1?"
-    executor = _FakeTurnExecutor(
-        responses=(
-            _question_payload(1),
-            _question_payload(99, question=f"  {duplicate_question.upper()}  "),
-            _review_payload(form_match=True),
-            _review_payload(form_match=True),
-            _question_payload(2),
-            _review_payload(form_match=True),
-            _answer_payload(1),
-            _answer_payload(2),
-        )
-    )
-    task_ids = iter(_TASK_IDS)
-    pipeline = DomainTweakBatchGenerationPipeline(
-        base_config=DomainTweakAdkRunConfig(model="gemini-3-pro-preview"),
-        runner=DomainTweakAdkRunner(turn_executor=executor),
-        task_id_factory=lambda: next(task_ids),
-    )
-
-    result = await pipeline.generate_batch(_pair_inputs(3), DomainTweakBatchGenerationConfig(target_count=2))
-
-    assert not result.underfilled
-    assert [item.pair_input.pair_id for item in result.selected_questions] == ["pair-001", "pair-003"]
-    assert [item.pair_input.pair_id for item in result.rejected_attempts] == ["pair-002"]
-    assert [item.task.query.text for item in result.finalized_tasks] == [
-        "Which players meet all constraints in domain 1?",
-        "Which players meet all constraints in domain 2?",
-    ]
-    assert executor.phases == [
-        "question_generation",
-        "question_generation",
-        "form_review",
-        "form_review",
-        "question_generation",
-        "form_review",
-        "reference_answer",
-        "reference_answer",
-    ]
-    assert result.tool_usage.llm.call_count == 8
-
-
-async def test_batch_pipeline_reports_underfill_after_hard_attempt_cap() -> None:
-    executor = _FakeTurnExecutor(responses=tuple(_no_generate_payload() for _ in range(12)))
-    pipeline = DomainTweakBatchGenerationPipeline(
-        base_config=DomainTweakAdkRunConfig(model="gemini-3-pro-preview"),
-        runner=DomainTweakAdkRunner(turn_executor=executor),
-    )
-
-    result = await pipeline.generate_batch(_pair_inputs(12), DomainTweakBatchGenerationConfig(target_count=3))
-
-    assert result.underfilled
-    assert result.selected_questions == ()
-    assert result.finalized_tasks == ()
-    assert len(result.rejected_attempts) == 12
-    assert result.failed_finalizations == ()
-    assert set(executor.phases) == {"question_generation"}
-    assert result.tool_usage.llm.call_count == 12
-
-
-async def test_batch_pipeline_finalizes_partial_question_supply_before_returning_underfill() -> None:
-    executor = _FakeTurnExecutor(
-        responses=(
-            _question_payload(1),
-            _no_generate_payload(),
-            _no_generate_payload(),
-            _review_payload(form_match=True),
-            _answer_payload(1),
-        )
-    )
-    pipeline = DomainTweakBatchGenerationPipeline(
-        base_config=DomainTweakAdkRunConfig(model="gemini-3-pro-preview"),
-        runner=DomainTweakAdkRunner(turn_executor=executor),
-    )
-
-    result = await pipeline.generate_batch(_pair_inputs(3), DomainTweakBatchGenerationConfig(target_count=3))
-
-    assert result.underfilled
-    assert [item.pair_input.pair_id for item in result.selected_questions] == ["pair-001"]
-    assert [item.reviewed_question.pair_input.pair_id for item in result.finalized_tasks] == ["pair-001"]
-    assert len(result.rejected_attempts) == 2
-    assert result.failed_finalizations == ()
-    assert executor.phases == [
-        "question_generation",
-        "question_generation",
-        "question_generation",
-        "form_review",
-        "reference_answer",
-    ]
-    assert result.tool_usage.llm.call_count == 5
-
-
-async def test_batch_pipeline_replaces_exhausted_a2_failure_from_unused_pair_input() -> None:
-    executor = _FakeTurnExecutor(
-        responses=(
-            _question_payload(1),
-            _question_payload(2),
-            _review_payload(form_match=True),
-            _review_payload(form_match=True),
-            _invalid_answer_payload(1),
-            _answer_payload(2),
-            _question_payload(
-                99,
-                question="  WHICH PLAYERS MEET ALL CONSTRAINTS IN DOMAIN 2?  ",
+    async def extract_pages(
+        self,
+        request: ExtractPagesRequest,
+    ) -> SearchProviderResult[ExtractPagesResponse]:
+        self.requests.append(request)
+        return SearchProviderResult(
+            response=ExtractPagesResponse(
+                pages=tuple(
+                    ExtractedPage(
+                        url=url,
+                        title="Official results",
+                        content=f"Official evidence for {url}: the candidate satisfies both predicates.",
+                    )
+                    for url in request.urls
+                )
             ),
-            _review_payload(form_match=True),
-            _question_payload(4),
-            _review_payload(form_match=True),
-            _answer_payload(4),
+            billing=ProviderBillingMetadata(
+                actual_cost_provider="parallel",
+                source="request_body",
+                billable_units=len(request.urls),
+                actual_cost_usd=0.001 * len(request.urls),
+                service="extract",
+            ),
+        )
+
+
+@dataclass
+class _Executor:
+    abandon_pairs: set[str] = field(default_factory=set)
+    rejected_form_pairs: set[str] = field(default_factory=set)
+    duplicate_question_pairs: dict[str, str] = field(default_factory=dict)
+    reference_delay_seconds: float = 0.0
+    reference_calls: Counter[str] = field(default_factory=Counter)
+    calls: list[tuple[str, str]] = field(default_factory=list)
+    active_reference_calls: int = 0
+    max_active_reference_calls: int = 0
+
+    async def __call__(self, **kwargs: object) -> DomainTweakAdkTurn:
+        phase = str(kwargs["phase"])
+        prompt = str(kwargs["prompt"])
+        pair_id = _pair_id_from_prompt(prompt)
+        self.calls.append((phase, pair_id))
+        if phase == "form_blueprint":
+            payload = _blueprint_payload()
+        elif phase == "question_generation":
+            payload = _question_payload(
+                pair_id,
+                question_pair_id=self.duplicate_question_pairs.get(pair_id, pair_id),
+            )
+        elif phase == "form_review":
+            payload = _form_review_payload(form_match=pair_id not in self.rejected_form_pairs)
+        elif phase == "reference_answer_generation":
+            self.reference_calls[pair_id] += 1
+            self.active_reference_calls += 1
+            self.max_active_reference_calls = max(
+                self.max_active_reference_calls,
+                self.active_reference_calls,
+            )
+            try:
+                if self.reference_delay_seconds:
+                    await asyncio.sleep(self.reference_delay_seconds)
+                payload = (
+                    _abandon_payload()
+                    if pair_id in self.abandon_pairs
+                    else _reference_payload(_window_id_from_prompt(prompt))
+                )
+            finally:
+                self.active_reference_calls -= 1
+        elif phase == "semantic_support_gate":
+            payload = _semantic_payload(_window_id_from_prompt(prompt))
+        else:
+            raise AssertionError(f"unexpected phase {phase}")
+        return DomainTweakAdkTurn(final_text=json.dumps(payload), events=())
+
+
+@dataclass
+class _TerminalFailureExecutor:
+    failure_phase: str
+    failure: ToolProviderError = field(
+        default_factory=lambda: ToolProviderError(
+            "credential rejected",
+            provider="google",
+            failure_code=ToolProviderFailureCode.AUTHENTICATION_FAILED,
         )
     )
-    task_ids = iter(_TASK_IDS)
-    pipeline = DomainTweakBatchGenerationPipeline(
-        base_config=DomainTweakAdkRunConfig(model="gemini-3-pro-preview"),
-        runner=DomainTweakAdkRunner(turn_executor=executor),
-        task_id_factory=lambda: next(task_ids),
-    )
-    config = DomainTweakBatchGenerationConfig(
-        target_count=2,
-        reference_answer_policy=DomainTweakReferenceAnswerPhasePolicy(
-            validation_retries_per_answer=0,
-            invocation_retries_per_answer=0,
-            failed_finalization_retries_per_batch_item=0,
-            answer_attempt_multiplier=1.5,
-            hard_answer_attempt_cap_multiplier=2,
-        ),
+    sibling_started: asyncio.Event = field(default_factory=asyncio.Event)
+    sibling_cancelled: asyncio.Event = field(default_factory=asyncio.Event)
+    sibling_completed: asyncio.Event = field(default_factory=asyncio.Event)
+    release_sibling: asyncio.Event = field(default_factory=asyncio.Event)
+    active_failure_phase_calls: int = 0
+
+    async def __call__(self, **kwargs: object) -> DomainTweakAdkTurn:
+        phase = str(kwargs["phase"])
+        prompt = str(kwargs["prompt"])
+        pair_id = _pair_id_from_prompt(prompt)
+        if phase == self.failure_phase:
+            self.active_failure_phase_calls += 1
+            try:
+                if pair_id == "PAIR-001":
+                    await self.sibling_started.wait()
+                    raise self.failure
+                if pair_id == "PAIR-002":
+                    self.sibling_started.set()
+                    try:
+                        await self.release_sibling.wait()
+                    except asyncio.CancelledError:
+                        self.sibling_cancelled.set()
+                        raise
+            finally:
+                self.active_failure_phase_calls -= 1
+
+        if phase == "form_blueprint":
+            payload = _blueprint_payload()
+        elif phase == "question_generation":
+            payload = _question_payload(pair_id, question_pair_id=pair_id)
+        elif phase == "form_review":
+            payload = _form_review_payload(form_match=True)
+        elif phase == "reference_answer_generation":
+            payload = _reference_payload(_window_id_from_prompt(prompt))
+        elif phase == "semantic_support_gate":
+            payload = _semantic_payload(_window_id_from_prompt(prompt))
+        else:
+            raise AssertionError(f"unexpected phase {phase}")
+
+        if pair_id == "PAIR-002" and (
+            (self.failure_phase == "form_blueprint" and phase == "form_review")
+            or (
+                self.failure_phase == "reference_answer_generation"
+                and phase == "semantic_support_gate"
+            )
+        ):
+            self.sibling_completed.set()
+        return DomainTweakAdkTurn(final_text=json.dumps(payload), events=())
+
+
+async def test_failed_candidate_is_replaced_from_unused_pair_without_same_pair_retry() -> None:
+    executor = _Executor(abandon_pairs={"PAIR-001"})
+    result = await _batch(executor).generate_batch(
+        _pairs(4),
+        DomainTweakBatchGenerationConfig(target_count=2),
     )
 
-    result = await pipeline.generate_batch(_pair_inputs(4), config)
-
-    assert not result.underfilled
-    assert [item.pair_input.pair_id for item in result.selected_questions] == [
-        "pair-001",
-        "pair-002",
-        "pair-004",
-    ]
     assert [item.reviewed_question.pair_input.pair_id for item in result.finalized_tasks] == [
-        "pair-002",
-        "pair-004",
+        "PAIR-002",
+        "PAIR-003",
     ]
-    assert [item.pair_input.pair_id for item in result.rejected_attempts] == ["pair-003"]
-    assert [item.reviewed_question.pair_input.pair_id for item in result.failed_finalizations] == ["pair-001"]
-    assert result.reference_answer_finalization_attempt_count == 3
-    assert result.reference_answer_retry_attempt_count == 0
-    assert result.reference_answer_retry_round_count == 0
-    assert executor.reference_answer_indexes == [1, 2, 4]
-    assert result.tool_usage.llm.call_count == 11
-
-
-async def test_batch_pipeline_does_not_reset_answer_budget_for_replacements() -> None:
-    executor = _FakeTurnExecutor(
-        responses=(
-            _question_payload(1),
-            _question_payload(2),
-            _review_payload(form_match=True),
-            _review_payload(form_match=True),
-            _invalid_answer_payload(1),
-            _answer_payload(2),
-            _question_payload(3),
-            _review_payload(form_match=True),
-            _invalid_answer_payload(3),
-        )
-    )
-    pipeline = DomainTweakBatchGenerationPipeline(
-        base_config=DomainTweakAdkRunConfig(model="gemini-3-pro-preview"),
-        runner=DomainTweakAdkRunner(turn_executor=executor),
-    )
-    config = DomainTweakBatchGenerationConfig(
-        target_count=2,
-        reference_answer_policy=DomainTweakReferenceAnswerPhasePolicy(
-            validation_retries_per_answer=0,
-            invocation_retries_per_answer=0,
-            failed_finalization_retries_per_batch_item=0,
-            answer_attempt_multiplier=1.5,
-            hard_answer_attempt_cap_multiplier=2,
-        ),
-    )
-
-    result = await pipeline.generate_batch(_pair_inputs(4), config)
-
-    assert result.underfilled
-    assert [item.pair_input.pair_id for item in result.selected_questions] == [
-        "pair-001",
-        "pair-002",
-        "pair-003",
-    ]
-    assert [item.reviewed_question.pair_input.pair_id for item in result.finalized_tasks] == ["pair-002"]
-    assert [item.reviewed_question.pair_input.pair_id for item in result.failed_finalizations] == [
-        "pair-001",
-        "pair-003",
-    ]
-    assert result.reference_answer_finalization_attempt_count == 3
-    assert executor.reference_answer_indexes == [1, 2, 3]
-    assert executor.phases == [
-        "question_generation",
-        "question_generation",
-        "form_review",
-        "form_review",
-        "reference_answer",
-        "reference_answer",
-        "question_generation",
-        "form_review",
-        "reference_answer",
-    ]
-
-
-async def test_batch_pipeline_does_not_reset_question_or_answer_caps_across_replacements() -> None:
-    executor = _FakeTurnExecutor(
-        responses=(
-            _question_payload(1),
-            _review_payload(form_match=True),
-            _invalid_answer_payload(1),
-            _question_payload(2),
-            _review_payload(form_match=True),
-            _invalid_answer_payload(2),
-            _question_payload(3),
-            _review_payload(form_match=True),
-            _invalid_answer_payload(3),
-            _question_payload(4),
-            _review_payload(form_match=True),
-            _invalid_answer_payload(4),
-        )
-    )
-    pipeline = DomainTweakBatchGenerationPipeline(
-        base_config=DomainTweakAdkRunConfig(model="gemini-3-pro-preview"),
-        runner=DomainTweakAdkRunner(turn_executor=executor),
-    )
-    config = DomainTweakBatchGenerationConfig(
-        target_count=1,
-        reference_answer_policy=DomainTweakReferenceAnswerPhasePolicy(
-            validation_retries_per_answer=0,
-            invocation_retries_per_answer=0,
-            failed_finalization_retries_per_batch_item=0,
-            answer_attempt_multiplier=4,
-            hard_answer_attempt_cap_multiplier=4,
-        ),
-    )
-
-    result = await pipeline.generate_batch(_pair_inputs(5), config)
-
-    assert result.underfilled
-    assert [item.pair_input.pair_id for item in result.selected_questions] == [
-        "pair-001",
-        "pair-002",
-        "pair-003",
-        "pair-004",
-    ]
-    assert result.finalized_tasks == ()
-    assert len(result.failed_finalizations) == 4
-    assert result.reference_answer_finalization_attempt_count == 4
-    assert executor.reference_answer_indexes == [1, 2, 3, 4]
-    assert result.tool_usage.llm.call_count == 12
-
-
-async def test_batch_pipeline_gives_each_selected_candidate_a_first_a2_attempt_before_fresh_retries() -> None:
-    executor = _FakeTurnExecutor(
-        responses=(
-            *(_question_payload(index) for index in range(1, 9)),
-            *(_review_payload(form_match=True) for _ in range(8)),
-            *(_question_payload(index) for index in range(9, 11)),
-            *(_review_payload(form_match=True) for _ in range(2)),
-            *(RuntimeError("transient ADK failure") for _ in range(10)),
-        )
-    )
-    pipeline = DomainTweakBatchGenerationPipeline(
-        base_config=DomainTweakAdkRunConfig(model="gemini-3-pro-preview"),
-        runner=DomainTweakAdkRunner(turn_executor=executor),
-    )
-    config = DomainTweakBatchGenerationConfig(
-        target_count=10,
-        reference_answer_policy=DomainTweakReferenceAnswerPhasePolicy(
-            validation_retries_per_answer=0,
-            invocation_retries_per_answer=1,
-            failed_finalization_retries_per_batch_item=0,
-            answer_attempt_multiplier=1,
-            hard_answer_attempt_cap_multiplier=1,
-        ),
-    )
-
-    result = await pipeline.generate_batch(_pair_inputs(10), config)
-
-    assert result.underfilled
-    assert len(result.selected_questions) == 10
-    assert len(result.failed_finalizations) == 10
-    assert set(executor.reference_answer_indexes) == set(range(1, 11))
-    assert len(executor.reference_answer_indexes) == 10
-
-
-async def test_batch_pipeline_applies_phase_specific_defaults() -> None:
-    executor = _FakeTurnExecutor(
-        responses=(
-            _question_payload(1),
-            _review_payload(form_match=True),
-            _answer_payload(1),
-        )
-    )
-    pipeline = DomainTweakBatchGenerationPipeline(
-        base_config=DomainTweakAdkRunConfig(model="gemini-3-pro-preview", max_retries=99),
-        runner=DomainTweakAdkRunner(turn_executor=executor),
-        task_id_factory=lambda: _TASK_IDS[0],
-    )
-
-    result = await pipeline.generate_batch(_pair_inputs(1), DomainTweakBatchGenerationConfig(target_count=1))
-
-    assert len(result.finalized_tasks) == 1
-    observed = list(zip(executor.phases, executor.configs, strict=True))
-    assert [
-        (
-            phase,
-            config.max_retries,
-            config.phase_timeout_seconds,
-            config.soft_timeout_seconds,
-            config.soft_timeout_interval_seconds,
-        )
-        for phase, config in observed
-    ] == [
-        ("question_generation", 2, 600.0, None, None),
-        ("form_review", 2, 600.0, None, None),
-        ("reference_answer", 1, 1800.0, 600.0, 300.0),
-    ]
-    assert DomainTweakReferenceAnswerPhasePolicy().invocation_attempt_cap(10) == 50
-
-
-async def test_batch_pipeline_retries_a2_invocation_error_with_fresh_answer_phase() -> None:
-    executor = _FakeTurnExecutor(
-        responses=(
-            _question_payload(1),
-            _review_payload(form_match=True),
-            RuntimeError("transient ADK failure"),
-            _answer_payload(1),
-        )
-    )
-    pipeline = DomainTweakBatchGenerationPipeline(
-        base_config=DomainTweakAdkRunConfig(model="gemini-3-pro-preview"),
-        runner=DomainTweakAdkRunner(turn_executor=executor),
-        task_id_factory=lambda: _TASK_IDS[0],
-    )
-
-    result = await pipeline.generate_batch(_pair_inputs(1), DomainTweakBatchGenerationConfig(target_count=1))
-
+    assert [item.reviewed_question.pair_input.pair_id for item in result.discarded_candidates] == ["PAIR-001"]
+    assert executor.reference_calls == Counter({"PAIR-001": 1, "PAIR-002": 1, "PAIR-003": 1})
+    assert result.candidate_finalization_attempt_count == 3
     assert not result.underfilled
-    assert len(result.finalized_tasks) == 1
-    assert result.failed_finalizations == ()
-    assert executor.phases == [
-        "question_generation",
-        "form_review",
-        "reference_answer",
-        "reference_answer",
-    ]
-    assert result.tool_usage.llm.call_count == 3
 
 
-async def test_batch_pipeline_retries_only_failed_a2_finalizations_until_n_tasks_are_finalized() -> None:
-    executor = _FakeTurnExecutor(
-        responses=(
-            _question_payload(1),
-            _question_payload(2),
-            _review_payload(form_match=True),
-            _review_payload(form_match=True),
-            _invalid_answer_payload(1),
-            _answer_payload(2),
-            _answer_payload(1),
-        )
+async def test_all_discards_stop_at_existing_four_times_global_pair_cap() -> None:
+    executor = _Executor(abandon_pairs={f"PAIR-{index:03d}" for index in range(1, 9)})
+    result = await _batch(executor).generate_batch(
+        _pairs(8),
+        DomainTweakBatchGenerationConfig(target_count=1),
     )
-    task_ids = iter(_TASK_IDS)
-    pipeline = DomainTweakBatchGenerationPipeline(
-        base_config=DomainTweakAdkRunConfig(model="gemini-3-pro-preview"),
-        runner=DomainTweakAdkRunner(turn_executor=executor),
-        task_id_factory=lambda: next(task_ids),
-    )
-
-    config = DomainTweakBatchGenerationConfig(
-        target_count=2,
-        reference_answer_policy=DomainTweakReferenceAnswerPhasePolicy(invocation_retries_per_answer=0),
-    )
-
-    result = await pipeline.generate_batch(_pair_inputs(2), config)
-
-    assert not result.underfilled
-    assert result.failed_finalizations == ()
-    assert [item.task.query.text for item in result.finalized_tasks] == [
-        "Which players meet all constraints in domain 1?",
-        "Which players meet all constraints in domain 2?",
-    ]
-    assert result.reference_answer_finalization_attempt_count == 3
-    assert result.reference_answer_retry_attempt_count == 1
-    assert result.reference_answer_retry_round_count == 1
-    assert executor.reference_answer_indexes == [1, 2, 1]
-
-
-async def test_batch_pipeline_reports_underfill_after_failed_a2_retry_bound() -> None:
-    executor = _FakeTurnExecutor(
-        responses=(
-            _question_payload(1),
-            _review_payload(form_match=True),
-            _invalid_answer_payload(1),
-            _invalid_answer_payload(1),
-            _invalid_answer_payload(1),
-            _invalid_answer_payload(1),
-        )
-    )
-    pipeline = DomainTweakBatchGenerationPipeline(
-        base_config=DomainTweakAdkRunConfig(model="gemini-3-pro-preview"),
-        runner=DomainTweakAdkRunner(turn_executor=executor),
-    )
-    config = DomainTweakBatchGenerationConfig(
-        target_count=1,
-        reference_answer_policy=DomainTweakReferenceAnswerPhasePolicy(
-            failed_finalization_retries_per_batch_item=3,
-            invocation_retries_per_answer=0,
-            hard_answer_attempt_cap_multiplier=4,
-        ),
-    )
-
-    result = await pipeline.generate_batch(_pair_inputs(1), config)
 
     assert result.underfilled
-    assert len(result.failed_finalizations) == 1
-    failed_finalization = result.failed_finalizations[0]
-    assert len(failed_finalization.reference_answer_results) == 4
-    assert sum(len(item.attempts) for item in failed_finalization.reference_answer_results) == 8
-    assert failed_finalization.tool_usage.llm.call_count == 4
-    assert result.reference_answer_finalization_attempt_count == 4
-    assert result.reference_answer_retry_attempt_count == 3
-    assert result.reference_answer_retry_round_count == 3
+    assert result.candidate_finalization_attempt_count == 4
+    assert len(result.discarded_candidates) == 4
+    assert set(executor.reference_calls.values()) == {1}
+    assert set(executor.reference_calls) == {"PAIR-001", "PAIR-002", "PAIR-003", "PAIR-004"}
 
 
-async def test_batch_pipeline_stops_failed_a2_retries_when_invocation_budget_is_exhausted() -> None:
-    executor = _FakeTurnExecutor(
-        responses=(
-            _question_payload(1),
-            _review_payload(form_match=True),
-            _invalid_answer_payload(1),
-        )
-    )
-    pipeline = DomainTweakBatchGenerationPipeline(
-        base_config=DomainTweakAdkRunConfig(model="gemini-3-pro-preview"),
-        runner=DomainTweakAdkRunner(turn_executor=executor),
-    )
-    config = DomainTweakBatchGenerationConfig(
-        target_count=1,
-        reference_answer_policy=DomainTweakReferenceAnswerPhasePolicy(
-            failed_finalization_retries_per_batch_item=3,
-            invocation_retries_per_answer=0,
-            hard_answer_attempt_cap_multiplier=1,
-        ),
+async def test_form_rejection_uses_fresh_pair_and_never_repair_turns_same_pair() -> None:
+    executor = _Executor(rejected_form_pairs={"PAIR-001"})
+    result = await _batch(executor).generate_batch(
+        _pairs(3),
+        DomainTweakBatchGenerationConfig(target_count=1),
     )
 
-    result = await pipeline.generate_batch(_pair_inputs(1), config)
-
-    assert result.underfilled
-    assert len(result.failed_finalizations) == 1
-    assert result.reference_answer_finalization_attempt_count == 1
-    assert result.reference_answer_retry_attempt_count == 0
-    assert result.reference_answer_retry_round_count == 1
-
-
-async def test_batch_pipeline_runs_question_and_a2_with_fixed_bounded_concurrency() -> None:
-    executor = _ConcurrencyTrackingExecutor()
-    pipeline = DomainTweakBatchGenerationPipeline(
-        base_config=DomainTweakAdkRunConfig(model="gemini-3-pro-preview"),
-        runner=DomainTweakAdkRunner(turn_executor=executor),
+    assert result.finalized_tasks[0].reviewed_question.pair_input.pair_id == "PAIR-002"
+    assert result.rejected_attempts[0].pair_input.pair_id == "PAIR-001"
+    assert result.rejected_attempts[0].reason == "form_rejected"
+    assert executor.reference_calls == Counter({"PAIR-002": 1})
+    assert Counter(phase for phase, pair_id in executor.calls if pair_id == "PAIR-001") == Counter(
+        {"form_blueprint": 1, "question_generation": 1, "form_review": 1}
     )
 
-    result = await pipeline.generate_batch(_pair_inputs(9), DomainTweakBatchGenerationConfig(target_count=9))
 
-    assert not result.underfilled
+async def test_canonical_duplicate_question_is_rejected_before_finalization() -> None:
+    executor = _Executor(duplicate_question_pairs={"PAIR-002": "PAIR-001"})
+    result = await _batch(executor).generate_batch(
+        _pairs(4),
+        DomainTweakBatchGenerationConfig(target_count=2),
+    )
+
+    assert [item.reviewed_question.pair_input.pair_id for item in result.finalized_tasks] == [
+        "PAIR-001",
+        "PAIR-003",
+    ]
+    assert any(item.reason == "duplicate_question" for item in result.rejected_attempts)
+    assert "PAIR-002" not in executor.reference_calls
+
+
+async def test_question_and_reference_work_remain_bounded_to_eight_concurrent_calls() -> None:
+    executor = _Executor(reference_delay_seconds=0.01)
+    result = await _batch(executor).generate_batch(
+        _pairs(9),
+        DomainTweakBatchGenerationConfig(target_count=9),
+    )
+
     assert len(result.finalized_tasks) == 9
-    assert [item.pair_input.pair_id for item in result.selected_questions] == [
-        f"pair-{index:03d}" for index in range(1, 10)
-    ]
-    assert [item.task.query.text for item in result.finalized_tasks] == [
-        f"Which players meet all constraints in domain {index}?" for index in range(1, 10)
-    ]
-    assert executor.max_active["question_generation"] == 8
-    assert executor.max_active["reference_answer"] == 8
-    assert max(executor.max_active.values()) == 8
+    assert executor.max_active_reference_calls == 8
 
 
-def test_question_attempt_windows_are_deterministic_contiguous_passes() -> None:
-    windows = _question_attempt_windows(
-        _pair_inputs(40),
-        DomainTweakBatchGenerationConfig(target_count=10).question_policy,
-        target_count=10,
+@pytest.mark.parametrize(
+    "failure_phase",
+    ("form_blueprint", "reference_answer_generation"),
+)
+async def test_terminal_failure_cancels_and_drains_sibling_provider_work(
+    failure_phase: str,
+) -> None:
+    executor = _TerminalFailureExecutor(failure_phase=failure_phase)
+    try:
+        with pytest.raises(ToolProviderError) as exc_info:
+            await _batch(executor).generate_batch(
+                _pairs(2),
+                DomainTweakBatchGenerationConfig(target_count=2),
+            )
+
+        assert exc_info.value is executor.failure
+        await asyncio.wait_for(executor.sibling_cancelled.wait(), timeout=0.1)
+        assert executor.active_failure_phase_calls == 0
+    finally:
+        executor.release_sibling.set()
+        if not executor.sibling_cancelled.is_set():
+            await asyncio.wait_for(executor.sibling_completed.wait(), timeout=1)
+
+
+def test_question_attempt_windows_remain_deterministic_and_contiguous() -> None:
+    pairs = _pairs(12)
+    policy = DomainTweakQuestionPhasePolicy(
+        target_attempt_multiplier=3,
+        underfill_extra_passes=3,
+        hard_attempt_cap_multiplier=4,
     )
+
+    windows = _question_attempt_windows(pairs, policy, target_count=3)
 
     assert [[item.pair_id for item in window] for window in windows] == [
-        [f"pair-{index:03d}" for index in range(1, 31)],
-        [f"pair-{index:03d}" for index in range(31, 35)],
-        [f"pair-{index:03d}" for index in range(35, 38)],
-        [f"pair-{index:03d}" for index in range(38, 41)],
+        [f"PAIR-{index:03d}" for index in range(1, 10)],
+        ["PAIR-010"],
+        ["PAIR-011"],
+        ["PAIR-012"],
     ]
+    assert DomainTweakBatchGenerationConfig(target_count=3).candidate_attempt_cap == 12
 
 
-class _FakeTurnExecutor:
-    def __init__(self, *, responses: tuple[str | BaseException, ...]) -> None:
-        self._responses = list(responses)
-        self.phases: list[DomainTweakAdkPhase] = []
-        self.configs: list[DomainTweakAdkRunConfig] = []
-        self.reference_answer_indexes: list[int] = []
-
-    async def __call__(
-        self,
-        *,
-        phase: DomainTweakAdkPhase,
-        prompt: str,
-        attempt_index: int,
-        config: DomainTweakAdkRunConfig,
-        agent_instruction: str,
-    ) -> DomainTweakAdkTurn:
-        self.phases.append(phase)
-        self.configs.append(config)
-        if phase == "reference_answer":
-            self.reference_answer_indexes.append(_index_from_prompt(prompt))
-        response = self._responses.pop(0)
-        if isinstance(response, BaseException):
-            raise response
-        return DomainTweakAdkTurn(
-            final_text=response,
-            events=(
-                DomainTweakAdkEventSummary(
-                    is_final_response=True,
-                    usage=LlmUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
-                    function_call_names=("google_search_agent",),
-                ),
-            ),
-        )
+def _batch(executor: DomainTweakAdkTurnExecutor) -> DomainTweakBatchGenerationPipeline:
+    return DomainTweakBatchGenerationPipeline(
+        base_config=DomainTweakAdkRunConfig(model="gemini-test", max_retries=0),
+        source_provider=_ExtractionProvider(),
+        runner=DomainTweakAdkRunner(turn_executor=executor),
+    )
 
 
-class _ConcurrencyTrackingExecutor:
-    def __init__(self) -> None:
-        self.active: dict[DomainTweakAdkPhase, int] = {
-            "question_generation": 0,
-            "form_review": 0,
-            "reference_answer": 0,
-        }
-        self.max_active: dict[DomainTweakAdkPhase, int] = {
-            "question_generation": 0,
-            "form_review": 0,
-            "reference_answer": 0,
-        }
-        self._lock = asyncio.Lock()
-
-    async def __call__(
-        self,
-        *,
-        phase: DomainTweakAdkPhase,
-        prompt: str,
-        attempt_index: int,
-        config: DomainTweakAdkRunConfig,
-        agent_instruction: str,
-    ) -> DomainTweakAdkTurn:
-        _ = (attempt_index, config, agent_instruction)
-        async with self._lock:
-            self.active[phase] += 1
-            self.max_active[phase] = max(self.max_active[phase], self.active[phase])
-        try:
-            await asyncio.sleep(0.01)
-        finally:
-            async with self._lock:
-                self.active[phase] -= 1
-        return DomainTweakAdkTurn(
-            final_text=_payload_for_phase_prompt(phase, prompt),
-            events=(
-                DomainTweakAdkEventSummary(
-                    is_final_response=True,
-                    usage=LlmUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
-                    function_call_names=("google_search_agent",),
-                ),
-            ),
-        )
-
-
-def _payload_for_phase_prompt(phase: DomainTweakAdkPhase, prompt: str) -> str:
-    index = _index_from_prompt(prompt)
-    if phase == "question_generation":
-        return _question_payload(index)
-    if phase == "form_review":
-        return _review_payload(form_match=True)
-    return _answer_payload(index)
-
-
-def _index_from_prompt(prompt: str) -> int:
-    for line in prompt.splitlines():
-        if line.startswith("Pair id: pair-"):
-            return int(line.rsplit("-", maxsplit=1)[-1])
-    marker = "Which players meet all constraints in domain "
-    if marker in prompt:
-        suffix = prompt.split(marker, maxsplit=1)[1]
-        digits = []
-        for char in suffix:
-            if not char.isdigit():
-                break
-            digits.append(char)
-        if digits:
-            return int("".join(digits))
-    raise AssertionError(f"could not extract pair index from prompt: {prompt[:200]}")
-
-
-def _pair_inputs(count: int) -> tuple[DomainTweakPairInput, ...]:
+def _pairs(count: int) -> tuple[DomainTweakPairInput, ...]:
     return tuple(
         DomainTweakPairInput(
-            pair_id=f"pair-{index:03d}",
-            deepsearchqa_form_target="Which films meet all constraints?",
-            deepresearch9k_domain_target=f"Domain target {index}",
-            timestamp=datetime(2026, 6, 23, tzinfo=UTC),
+            pair_id=f"PAIR-{index:03d}",
+            deepsearchqa_form_target=f"FORM PAIR-{index:03d}: Which candidates satisfy both?",
+            deepresearch9k_domain_target=f"DOMAIN PAIR-{index:03d}",
+            timestamp=datetime(2026, 7, 21, tzinfo=UTC),
         )
         for index in range(1, count + 1)
     )
 
 
-def _question_payload(index: int, *, question: str | None = None) -> str:
-    return json.dumps(
-        {
-            "question": question or f"Which players meet all constraints in domain {index}?",
-            "short_answer": f"Ada Example {index}; Ben Example {index}",
-            "solution_plan": "- Find candidate pool\n- Intersect constraints",
-        }
-    )
+def _blueprint_payload() -> dict[str, object]:
+    return {
+        "status": "proceed",
+        "operation": "Filter a closed candidate set by two retrieved predicates.",
+        "load_bearing_invariants": ["closed universe", "two predicates"],
+        "non_load_bearing_surface_features": [],
+        "retrieval_boundary": "Sources supply predicate values.",
+        "answer_shape": "Exhaustive list.",
+        "semantic_ambiguities": [],
+        "no_generate_reason": None,
+    }
 
 
-def _review_payload(*, form_match: bool) -> str:
-    return json.dumps(
-        {
-            "form_match": form_match,
-            "false_premise_status": "none",
-            "reviewer_feedback": "Form preserved." if form_match else "Form drifted.",
-            "retry_recommended": not form_match,
-        }
-    )
+def _question_payload(pair_id: str, *, question_pair_id: str) -> dict[str, object]:
+    return {
+        "status": "ready",
+        "question": f"Question {question_pair_id}: which candidates satisfy both predicates?",
+        "short_answer": f"Answer {question_pair_id}",
+        "solution_steps": ["Read the table.", "Intersect the qualifying sets."],
+        "claims": [
+            {
+                "claim_id": "answer",
+                "claim": f"Answer {question_pair_id} satisfies both predicates.",
+                "role": "answer_determining",
+                "support_mode": "external_source",
+                "support_explanation": "The official table records both values.",
+            }
+        ],
+        "evidence_declarations": [
+            {
+                "evidence_id": "evidence-1",
+                "source_url": f"https://example.com/{pair_id.lower()}",
+                "source_title": "Official results",
+                "source_locator": "Results table",
+                "claimed_excerpt": "satisfies both predicates",
+                "supported_claim_ids": ["answer"],
+                "support_explanation": "The table records both predicate values.",
+            }
+        ],
+        "no_generate_reason": None,
+    }
 
 
-def _answer_payload(index: int) -> str:
-    return json.dumps(
-        {
-            "question": f"Which players meet all constraints in domain {index}?",
-            "premise_assessment": "The premise is supported by the cited table.",
-            "reference_answer": {
-                "text": f"Ada Example {index} and Ben Example {index} meet all constraints.",
-                "citations": [
-                    {
-                        "url": "https://example.com/table",
-                        "title": "Official table",
-                        "note": "Lists both qualifying players.",
-                    }
-                ],
-            },
-        }
-    )
+def _form_review_payload(*, form_match: bool) -> dict[str, object]:
+    return {
+        "form_match": form_match,
+        "reviewer_feedback": "The form is preserved." if form_match else "The form changed.",
+        "question_requirements": [
+            {
+                "requirement_id": "metric",
+                "category": "metric_or_field_relation",
+                "requirement": "Both predicates must hold.",
+                "required_relation": "derived_calculation",
+            }
+        ],
+        "requirement_category_audit": [
+            {
+                "category": category,
+                "present": category == "metric_or_field_relation",
+                "explanation": "Present." if category == "metric_or_field_relation" else "Absent.",
+            }
+            for category in DOMAIN_TWEAK_REQUIREMENT_CATEGORIES
+        ],
+    }
 
 
-def _invalid_answer_payload(index: int) -> str:
-    return f"reference answer for domain {index} without json"
+def _reference_payload(window_id: str) -> dict[str, object]:
+    return {
+        "status": "finalized",
+        "answer_disposition": "unchanged",
+        "proposed_short_answer": "Answer",
+        "reference_answer_text": "The candidate satisfies both predicates.",
+        "claims": [
+            {
+                "claim_id": "answer",
+                "claim": "The candidate satisfies both predicates.",
+                "role": "answer_determining",
+                "evidence_window_ids": [window_id],
+                "support_explanation": "The acquired official table supports the claim.",
+            }
+        ],
+        "citation_window_ids": [window_id],
+        "abandon_reason": None,
+    }
 
 
-def _no_generate_payload() -> str:
-    return json.dumps(
-        {
-            "no_generate": True,
-            "reason": "No grounded domain evidence supports the original form.",
-            "retry_recommended": False,
-        }
-    )
+def _abandon_payload() -> dict[str, object]:
+    return {
+        "status": "abandon",
+        "answer_disposition": None,
+        "proposed_short_answer": None,
+        "reference_answer_text": None,
+        "claims": [],
+        "citation_window_ids": [],
+        "abandon_reason": "The proposed path requires a materially new metric.",
+    }
+
+
+def _semantic_payload(window_id: str) -> dict[str, object]:
+    return {
+        "status": "pass",
+        "requirement_findings": [
+            {
+                "requirement_id": "metric",
+                "support_status": "supported",
+                "evidence_window_ids": [window_id],
+                "explanation": "The table supports both predicates.",
+            }
+        ],
+        "claim_findings": [
+            {
+                "claim_id": "answer",
+                "support_status": "supported",
+                "evidence_window_ids": [window_id],
+                "explanation": "The table supports the answer claim.",
+            }
+        ],
+        "unmanifested_material_claims": [],
+        "abandon_reason": None,
+    }
+
+
+def _pair_id_from_prompt(prompt: str) -> str:
+    match = re.search(r"PAIR-\d{3}", prompt, flags=re.IGNORECASE)
+    if match is None:
+        raise AssertionError("prompt did not contain a pair marker")
+    return match.group(0).upper()
+
+
+def _window_id_from_prompt(prompt: str) -> str:
+    match = re.search(r'"window_id": "(window_[^"]+)"', prompt)
+    if match is None:
+        raise AssertionError("prompt did not contain an acquired window")
+    return match.group(1)

@@ -11,6 +11,7 @@ ProviderBillingSource = Literal[
     "response_body",
     "response_headers",
     "response_results",
+    "request_body",
     "missing_provider_metadata",
 ]
 

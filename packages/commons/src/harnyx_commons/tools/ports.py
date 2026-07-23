@@ -7,6 +7,7 @@ from typing import Protocol
 
 from harnyx_commons.json_types import JsonObject
 from harnyx_commons.tools.embedding_models import EmbedTextRequest, EmbedTextResponse
+from harnyx_commons.tools.extraction_models import ExtractPagesRequest, ExtractPagesResponse
 from harnyx_commons.tools.provider_billing import SearchProviderResult
 from harnyx_commons.tools.search_models import (
     FetchPageRequest,
@@ -42,6 +43,17 @@ class WebSearchProviderPort(Protocol):
     async def aclose(self) -> None: ...
 
 
+class PageExtractionProviderPort(Protocol):
+    """Provider seam for fetching content from a bounded set of known URLs."""
+
+    async def extract_pages(
+        self,
+        request: ExtractPagesRequest,
+    ) -> SearchProviderResult[ExtractPagesResponse]: ...
+
+    async def aclose(self) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class EmbeddingProviderResult:
     response: EmbedTextResponse
@@ -71,4 +83,10 @@ class DeSearchPort(Protocol):
 
     async def fetch_twitter_post(self, *, post_id: str) -> SearchXResult | None: ...
 
-__all__ = ["DeSearchPort", "EmbeddingProviderPort", "EmbeddingProviderResult", "WebSearchProviderPort"]
+__all__ = [
+    "DeSearchPort",
+    "EmbeddingProviderPort",
+    "EmbeddingProviderResult",
+    "PageExtractionProviderPort",
+    "WebSearchProviderPort",
+]

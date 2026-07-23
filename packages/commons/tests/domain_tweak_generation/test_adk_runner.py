@@ -1,655 +1,575 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
 
 import pytest
-from google.adk.agents import Agent
-from google.adk.tools.function_tool import FunctionTool
-from google.adk.tools.google_search_agent_tool import GoogleSearchAgentTool
-from google.adk.tools.google_search_tool import GoogleSearchTool
-from pydantic import ValidationError
+from google.genai.errors import ClientError
 
-import harnyx_commons.domain_tweak_generation.adk_runner as adk_runner_mod
-from harnyx_commons.domain_tweak_generation import (
+from harnyx_commons.domain_tweak_generation import adk_runner as runner_module
+from harnyx_commons.domain_tweak_generation.adk_runner import (
+    DomainTweakAdkRunner,
+    DomainTweakAdkTurn,
+    _LiveAdkContext,
+    _redact_source_tool_content,
+)
+from harnyx_commons.domain_tweak_generation.types import (
     DomainTweakAdkEventSummary,
     DomainTweakAdkRunConfig,
-    DomainTweakAdkRunner,
-    DomainTweakValidationOutcome,
 )
-from harnyx_commons.domain_tweak_generation.adk_runner import _adk_tools_for_phase
-from harnyx_commons.llm.schema import LlmUsage
+from harnyx_commons.domain_tweak_generation.validation import validate_form_blueprint_output
+from harnyx_commons.errors import ToolProviderError, ToolProviderFailureCode
+from harnyx_commons.miner_task_generation import DomainTweakFormBlueprint
 
 pytestmark = pytest.mark.anyio("asyncio")
 
 
-class _FakeTurnExecutor:
-    async def __call__(self, **kwargs: object) -> adk_runner_mod.DomainTweakAdkTurn:
+@dataclass
+class _Executor:
+    responses: list[str]
+    calls: list[dict[str, object]] = field(default_factory=list)
+
+    async def __call__(self, **kwargs: object) -> DomainTweakAdkTurn:
+        self.calls.append(kwargs)
+        return DomainTweakAdkTurn(final_text=self.responses.pop(0), events=())
+
+
+async def test_runner_passes_explicit_tools_search_flag_and_native_schema() -> None:
+    executor = _Executor([_blueprint_json()])
+    runner = DomainTweakAdkRunner(turn_executor=executor)
+
+    async def acquire_sources() -> dict[str, object]:
+        return {"status": "completed"}
+
+    result = await runner.run_phase(
+        phase="form_blueprint",
+        prompt="analyze",
+        config=DomainTweakAdkRunConfig(model="gemini-test", max_retries=0),
+        agent_instruction="instruction",
+        search_enabled=True,
+        function_tools=(acquire_sources,),
+        output_schema=DomainTweakFormBlueprint,
+        validate=validate_form_blueprint_output,
+    )
+
+    assert result.terminal_status == "validated"
+    assert executor.calls[0]["search_enabled"] is True
+    assert executor.calls[0]["function_tool_names"] == ("acquire_sources",)
+    assert executor.calls[0]["output_schema"] is DomainTweakFormBlueprint
+
+
+async def test_runner_retries_only_structural_validation_with_feedback() -> None:
+    executor = _Executor(["not-json", _blueprint_json()])
+    runner = DomainTweakAdkRunner(turn_executor=executor)
+
+    result = await runner.run_phase(
+        phase="form_blueprint",
+        prompt="original work order",
+        config=DomainTweakAdkRunConfig(model="gemini-test", max_retries=1),
+        agent_instruction="instruction",
+        search_enabled=False,
+        function_tools=(),
+        output_schema=DomainTweakFormBlueprint,
+        validate=validate_form_blueprint_output,
+    )
+
+    assert result.terminal_status == "validated"
+    assert [attempt.prompt_kind for attempt in result.attempts] == ["initial", "feedback"]
+    assert executor.calls[0]["prompt"] == "original work order"
+    assert "failed deterministic schema" in str(executor.calls[1]["prompt"])
+
+
+async def test_runner_uses_one_hard_stage_timeout_without_soft_timeout_turns() -> None:
+    async def blocked_executor(**kwargs: object) -> DomainTweakAdkTurn:
         _ = kwargs
-        return adk_runner_mod.DomainTweakAdkTurn(final_text="{}", events=())
-
-
-class _RecordingTurnExecutor:
-    def __init__(self, *, responses: tuple[str | BaseException, ...] | None = None) -> None:
-        self._responses = list(responses or ("{}",))
-        self.prompts: list[str] = []
-        self.attempt_indexes: list[int] = []
-
-    async def __call__(self, **kwargs: object) -> adk_runner_mod.DomainTweakAdkTurn:
-        self.prompts.append(str(kwargs["prompt"]))
-        self.attempt_indexes.append(int(kwargs["attempt_index"]))
-        response = self._responses.pop(0)
-        if isinstance(response, BaseException):
-            raise response
-        return adk_runner_mod.DomainTweakAdkTurn(
-            final_text=response,
-            events=(
-                DomainTweakAdkEventSummary(
-                    is_final_response=True,
-                    usage=LlmUsage(prompt_tokens=7, completion_tokens=2, total_tokens=9),
-                ),
-            ),
-        )
-
-
-class _PartialEventTimeoutContext:
-    closed = False
-
-    async def run_turn(
-        self,
-        prompt: str,
-        *,
-        event_summaries: list[DomainTweakAdkEventSummary],
-    ) -> adk_runner_mod.DomainTweakAdkTurn:
-        _ = prompt
-        event_summaries.append(_partial_event_summary())
         await asyncio.sleep(60)
-        return adk_runner_mod.DomainTweakAdkTurn(final_text="", events=tuple(event_summaries))
+        raise AssertionError("unreachable")
 
-    async def close(self) -> None:
-        self.closed = True
-
-
-class _NoEventRequestSetupErrorContext:
-    closed = False
-
-    async def run_turn(
-        self,
-        prompt: str,
-        *,
-        event_summaries: list[DomainTweakAdkEventSummary],
-    ) -> adk_runner_mod.DomainTweakAdkTurn:
-        _ = (prompt, event_summaries)
-        raise RuntimeError("missing ADC before request stream")
-
-    async def close(self) -> None:
-        self.closed = True
-
-
-class _PartialEventErrorContext:
-    closed = False
-
-    async def run_turn(
-        self,
-        prompt: str,
-        *,
-        event_summaries: list[DomainTweakAdkEventSummary],
-    ) -> adk_runner_mod.DomainTweakAdkTurn:
-        _ = prompt
-        event_summaries.append(_partial_event_summary())
-        raise RuntimeError("stream failed after search")
-
-    async def close(self) -> None:
-        self.closed = True
-
-
-async def test_live_adk_setup_errors_propagate_before_phase_retry_policy(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def fail_create(**kwargs: object) -> object:
-        _ = kwargs
-        raise RuntimeError("missing Vertex credentials")
-
-    monkeypatch.setattr(adk_runner_mod._LiveAdkContext, "create", fail_create)
-    runner = DomainTweakAdkRunner()
-
-    with pytest.raises(RuntimeError, match="missing Vertex credentials"):
-        await runner.run_phase(
-            phase="question_generation",
-            prompt="Generate one question.",
-            config=DomainTweakAdkRunConfig(model="gemini-3.1-pro-preview"),
-            validate=lambda text: DomainTweakValidationOutcome(
-                ok=True,
-                terminal_status="validated",
-                parsed_output=None,
-            ),
-        )
-
-
-async def test_phase_timeout_budget_is_shared_across_validation_retries(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    clock_values = iter((100.0, 100.0, 103.0, 104.0))
-    wait_for_timeouts: list[float | None] = []
-    validation_calls = 0
-
-    async def fake_wait_for(coro: object, *, timeout: float | None = None) -> object:
-        wait_for_timeouts.append(timeout)
-        return await coro
-
-    def validate(_: str) -> DomainTweakValidationOutcome:
-        nonlocal validation_calls
-        validation_calls += 1
-        if validation_calls == 1:
-            return DomainTweakValidationOutcome(
-                ok=False,
-                terminal_status="validation_failed",
-                feedback=("retry with a corrected response",),
-            )
-        return DomainTweakValidationOutcome(ok=True, terminal_status="validated")
-
-    monkeypatch.setattr(adk_runner_mod.time, "perf_counter", lambda: next(clock_values))
-    monkeypatch.setattr(adk_runner_mod.asyncio, "wait_for", fake_wait_for)
-
-    result = await DomainTweakAdkRunner(turn_executor=_FakeTurnExecutor()).run_phase(
-        phase="reference_answer",
-        prompt="Answer the question.",
+    runner = DomainTweakAdkRunner(turn_executor=blocked_executor)
+    result = await runner.run_phase(
+        phase="form_blueprint",
+        prompt="work order",
         config=DomainTweakAdkRunConfig(
-            model="gemini-3.1-pro-preview",
-            max_retries=1,
-            phase_timeout_seconds=5.0,
-        ),
-        validate=validate,
-    )
-
-    assert result.terminal_status == "validated"
-    assert wait_for_timeouts == [5.0, 2.0]
-
-
-async def test_soft_timeout_retries_with_time_pressure_feedback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    clock_values = iter((100.0, 100.0, 102.0, 102.0, 103.0))
-    wait_for_timeouts: list[float | None] = []
-    executor = _RecordingTurnExecutor()
-
-    async def fake_wait_for(coro: object, *, timeout: float | None = None) -> object:
-        wait_for_timeouts.append(timeout)
-        if len(wait_for_timeouts) == 1:
-            close = getattr(coro, "close", None)
-            if callable(close):
-                close()
-            raise TimeoutError("soft timeout elapsed")
-        return await coro
-
-    monkeypatch.setattr(adk_runner_mod.time, "perf_counter", lambda: next(clock_values))
-    monkeypatch.setattr(adk_runner_mod.asyncio, "wait_for", fake_wait_for)
-
-    result = await DomainTweakAdkRunner(turn_executor=executor).run_phase(
-        phase="reference_answer",
-        prompt="Answer the question.",
-        config=DomainTweakAdkRunConfig(
-            model="gemini-3.1-pro-preview",
-            max_retries=1,
-            phase_timeout_seconds=10.0,
-            soft_timeout_seconds=2.0,
-        ),
-        validate=lambda text: DomainTweakValidationOutcome(
-            ok=True,
-            terminal_status="validated",
-            parsed_output=None,
-        ),
-    )
-
-    assert result.terminal_status == "validated"
-    assert wait_for_timeouts[0] == pytest.approx(2.0, abs=0.01)
-    assert result.attempts[0].prompt_kind == "initial"
-    assert result.attempts[0].validation_ok is False
-    assert result.attempts[0].validation_feedback == adk_runner_mod.SOFT_TIMEOUT_FEEDBACK
-    assert result.attempts[1].prompt_kind == "soft_timeout_feedback"
-    assert executor.attempt_indexes == [1]
-    assert "Time is almost gone" in executor.prompts[0]
-    assert "Do not restart broad research" in executor.prompts[0]
-
-
-async def test_early_provider_timeout_does_not_trigger_soft_timeout_feedback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    clock_values = iter((100.0, 100.0, 101.0, 102.0))
-    wait_for_timeouts: list[float | None] = []
-    executor = _RecordingTurnExecutor(responses=(TimeoutError("provider early timeout"),))
-
-    async def fake_wait_for(coro: object, *, timeout: float | None = None) -> object:
-        wait_for_timeouts.append(timeout)
-        return await coro
-
-    monkeypatch.setattr(adk_runner_mod.time, "perf_counter", lambda: next(clock_values))
-    monkeypatch.setattr(adk_runner_mod.asyncio, "wait_for", fake_wait_for)
-
-    result = await DomainTweakAdkRunner(turn_executor=executor).run_phase(
-        phase="reference_answer",
-        prompt="Answer the question.",
-        config=DomainTweakAdkRunConfig(
-            model="gemini-3.1-pro-preview",
-            max_retries=1,
-            phase_timeout_seconds=1800.0,
-            soft_timeout_seconds=600.0,
-            soft_timeout_interval_seconds=300.0,
-        ),
-        validate=lambda text: DomainTweakValidationOutcome(ok=True, terminal_status="validated"),
-    )
-
-    assert result.terminal_status == "timeout"
-    assert wait_for_timeouts == [600.0]
-    assert executor.attempt_indexes == [0]
-    assert len(result.attempts) == 1
-    assert result.attempts[0].prompt_kind == "initial"
-    assert result.attempts[0].validation_feedback == ("provider early timeout",)
-
-
-async def test_soft_timeout_feedback_repeats_until_hard_timeout_with_elapsed_wall_time(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    clock_values = iter((1000.0, 1000.0, 1600.0, 1600.0, 1900.0, 1900.0, 1901.0))
-    wait_for_timeouts: list[float | None] = []
-    executor = _RecordingTurnExecutor(
-        responses=(
-            TimeoutError("first pressure point"),
-            TimeoutError("second pressure point"),
-            "{}",
-        )
-    )
-
-    async def fake_wait_for(coro: object, *, timeout: float | None = None) -> object:
-        wait_for_timeouts.append(timeout)
-        return await coro
-
-    monkeypatch.setattr(adk_runner_mod.time, "perf_counter", lambda: next(clock_values))
-    monkeypatch.setattr(adk_runner_mod.asyncio, "wait_for", fake_wait_for)
-
-    result = await DomainTweakAdkRunner(turn_executor=executor).run_phase(
-        phase="reference_answer",
-        prompt="Answer the question.",
-        config=DomainTweakAdkRunConfig(
-            model="gemini-3.1-pro-preview",
-            max_retries=1,
-            phase_timeout_seconds=1800.0,
-            soft_timeout_seconds=600.0,
-            soft_timeout_interval_seconds=300.0,
-        ),
-        validate=lambda text: DomainTweakValidationOutcome(
-            ok=True,
-            terminal_status="validated",
-            parsed_output=None,
-        ),
-    )
-
-    assert result.terminal_status == "validated"
-    assert wait_for_timeouts == [600.0, 300.0, 300.0]
-    assert executor.attempt_indexes == [0, 1, 2]
-    assert "Elapsed wall time: 10 minutes (600 seconds)." in executor.prompts[1]
-    assert "Elapsed wall time: 15 minutes (900 seconds)." in executor.prompts[2]
-    assert result.attempts[0].prompt_kind == "initial"
-    assert result.attempts[1].prompt_kind == "soft_timeout_feedback"
-    assert result.attempts[2].prompt_kind == "soft_timeout_feedback"
-
-
-async def test_soft_timeout_feedback_does_not_consume_validation_retry_budget(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    clock_values = iter((100.0, 100.0, 700.0, 700.0, 701.0, 702.0))
-    wait_for_timeouts: list[float | None] = []
-    executor = _RecordingTurnExecutor(
-        responses=(
-            TimeoutError("pressure point"),
-            '{"ok": false}',
-            '{"ok": true}',
-        )
-    )
-    validation_calls = 0
-
-    async def fake_wait_for(coro: object, *, timeout: float | None = None) -> object:
-        wait_for_timeouts.append(timeout)
-        return await coro
-
-    def validate(_: str) -> DomainTweakValidationOutcome:
-        nonlocal validation_calls
-        validation_calls += 1
-        if validation_calls == 1:
-            return DomainTweakValidationOutcome(
-                ok=False,
-                terminal_status="validation_failed",
-                feedback=("retry with deterministic validation feedback",),
-            )
-        return DomainTweakValidationOutcome(ok=True, terminal_status="validated")
-
-    monkeypatch.setattr(adk_runner_mod.time, "perf_counter", lambda: next(clock_values))
-    monkeypatch.setattr(adk_runner_mod.asyncio, "wait_for", fake_wait_for)
-
-    result = await DomainTweakAdkRunner(turn_executor=executor).run_phase(
-        phase="reference_answer",
-        prompt="Answer the question.",
-        config=DomainTweakAdkRunConfig(
-            model="gemini-3.1-pro-preview",
-            max_retries=1,
-            phase_timeout_seconds=1800.0,
-            soft_timeout_seconds=600.0,
-            soft_timeout_interval_seconds=300.0,
-        ),
-        validate=validate,
-    )
-
-    assert result.terminal_status == "validated"
-    assert wait_for_timeouts == [600.0, 300.0, 299.0]
-    assert validation_calls == 2
-    assert "Elapsed wall time: 10 minutes (600 seconds)." in executor.prompts[1]
-    assert "deterministic validation feedback" in executor.prompts[2]
-    assert result.attempts[0].prompt_kind == "initial"
-    assert result.attempts[1].prompt_kind == "soft_timeout_feedback"
-    assert result.attempts[2].prompt_kind == "feedback"
-
-
-async def test_soft_timeout_schedule_uses_phase_wall_time_after_validation_feedback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    clock_values = iter((100.0, 100.0, 400.0, 401.0))
-    wait_for_timeouts: list[float | None] = []
-    executor = _RecordingTurnExecutor(responses=('{"ok": false}', '{"ok": true}'))
-    validation_calls = 0
-
-    async def fake_wait_for(coro: object, *, timeout: float | None = None) -> object:
-        wait_for_timeouts.append(timeout)
-        return await coro
-
-    def validate(_: str) -> DomainTweakValidationOutcome:
-        nonlocal validation_calls
-        validation_calls += 1
-        if validation_calls == 1:
-            return DomainTweakValidationOutcome(
-                ok=False,
-                terminal_status="validation_failed",
-                feedback=("retry with deterministic validation feedback",),
-            )
-        return DomainTweakValidationOutcome(ok=True, terminal_status="validated")
-
-    monkeypatch.setattr(adk_runner_mod.time, "perf_counter", lambda: next(clock_values))
-    monkeypatch.setattr(adk_runner_mod.asyncio, "wait_for", fake_wait_for)
-
-    result = await DomainTweakAdkRunner(turn_executor=executor).run_phase(
-        phase="reference_answer",
-        prompt="Answer the question.",
-        config=DomainTweakAdkRunConfig(
-            model="gemini-3.1-pro-preview",
-            max_retries=1,
-            phase_timeout_seconds=1800.0,
-            soft_timeout_seconds=600.0,
-            soft_timeout_interval_seconds=300.0,
-        ),
-        validate=validate,
-    )
-
-    assert result.terminal_status == "validated"
-    assert wait_for_timeouts == [600.0, 300.0]
-    assert result.attempts[0].prompt_kind == "initial"
-    assert result.attempts[1].prompt_kind == "feedback"
-
-
-async def test_late_validation_feedback_uses_next_future_soft_timeout_boundary(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    clock_values = iter((100.0, 100.0, 710.0, 711.0))
-    wait_for_timeouts: list[float | None] = []
-    executor = _RecordingTurnExecutor(responses=('{"ok": false}', '{"ok": true}'))
-    validation_calls = 0
-
-    async def fake_wait_for(coro: object, *, timeout: float | None = None) -> object:
-        wait_for_timeouts.append(timeout)
-        return await coro
-
-    def validate(_: str) -> DomainTweakValidationOutcome:
-        nonlocal validation_calls
-        validation_calls += 1
-        if validation_calls == 1:
-            return DomainTweakValidationOutcome(
-                ok=False,
-                terminal_status="validation_failed",
-                feedback=("retry with deterministic validation feedback",),
-            )
-        return DomainTweakValidationOutcome(ok=True, terminal_status="validated")
-
-    monkeypatch.setattr(adk_runner_mod.time, "perf_counter", lambda: next(clock_values))
-    monkeypatch.setattr(adk_runner_mod.asyncio, "wait_for", fake_wait_for)
-
-    result = await DomainTweakAdkRunner(turn_executor=executor).run_phase(
-        phase="reference_answer",
-        prompt="Answer the question.",
-        config=DomainTweakAdkRunConfig(
-            model="gemini-3.1-pro-preview",
-            max_retries=1,
-            phase_timeout_seconds=1800.0,
-            soft_timeout_seconds=600.0,
-            soft_timeout_interval_seconds=300.0,
-        ),
-        validate=validate,
-    )
-
-    assert result.terminal_status == "validated"
-    assert wait_for_timeouts == [600.0, 290.0]
-    assert "deterministic validation feedback" in executor.prompts[1]
-    assert result.attempts[0].prompt_kind == "initial"
-    assert result.attempts[1].prompt_kind == "feedback"
-
-
-async def test_provider_timeout_before_next_future_boundary_stays_terminal(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    clock_values = iter((100.0, 100.0, 710.0, 720.0, 721.0))
-    wait_for_timeouts: list[float | None] = []
-    executor = _RecordingTurnExecutor(
-        responses=('{"ok": false}', TimeoutError("provider timeout before next pressure"))
-    )
-    validation_calls = 0
-
-    async def fake_wait_for(coro: object, *, timeout: float | None = None) -> object:
-        wait_for_timeouts.append(timeout)
-        return await coro
-
-    def validate(_: str) -> DomainTweakValidationOutcome:
-        nonlocal validation_calls
-        validation_calls += 1
-        return DomainTweakValidationOutcome(
-            ok=False,
-            terminal_status="validation_failed",
-            feedback=("retry with deterministic validation feedback",),
-        )
-
-    monkeypatch.setattr(adk_runner_mod.time, "perf_counter", lambda: next(clock_values))
-    monkeypatch.setattr(adk_runner_mod.asyncio, "wait_for", fake_wait_for)
-
-    result = await DomainTweakAdkRunner(turn_executor=executor).run_phase(
-        phase="reference_answer",
-        prompt="Answer the question.",
-        config=DomainTweakAdkRunConfig(
-            model="gemini-3.1-pro-preview",
-            max_retries=1,
-            phase_timeout_seconds=1800.0,
-            soft_timeout_seconds=600.0,
-            soft_timeout_interval_seconds=300.0,
-        ),
-        validate=validate,
-    )
-
-    assert result.terminal_status == "timeout"
-    assert wait_for_timeouts == [600.0, 290.0]
-    assert validation_calls == 1
-    assert result.attempts[0].prompt_kind == "initial"
-    assert result.attempts[1].prompt_kind == "feedback"
-    assert result.attempts[1].validation_feedback == ("provider timeout before next pressure",)
-
-
-def test_adk_run_config_rejects_soft_timeout_without_hard_timeout_budget() -> None:
-    with pytest.raises(ValidationError, match="soft_timeout_seconds must be lower"):
-        DomainTweakAdkRunConfig(
-            model="gemini-3.1-pro-preview",
-            phase_timeout_seconds=10.0,
-            soft_timeout_seconds=10.0,
-        )
-
-
-def test_adk_run_config_rejects_interval_without_soft_timeout() -> None:
-    with pytest.raises(ValidationError, match="soft_timeout_interval_seconds requires soft_timeout_seconds"):
-        DomainTweakAdkRunConfig(
-            model="gemini-3.1-pro-preview",
-            phase_timeout_seconds=1800.0,
-            soft_timeout_seconds=None,
-            soft_timeout_interval_seconds=300.0,
-        )
-
-
-async def test_live_adk_request_setup_errors_propagate_before_pair_retry_policy(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    context = _NoEventRequestSetupErrorContext()
-
-    async def create_context(**kwargs: object) -> _NoEventRequestSetupErrorContext:
-        _ = kwargs
-        return context
-
-    monkeypatch.setattr(adk_runner_mod._LiveAdkContext, "create", create_context)
-
-    with pytest.raises(RuntimeError, match="missing ADC before request stream"):
-        await DomainTweakAdkRunner().run_phase(
-            phase="question_generation",
-            prompt="Generate one question.",
-            config=DomainTweakAdkRunConfig(
-                model="gemini-3.1-pro-preview",
-                max_retries=0,
-                phase_timeout_seconds=10.0,
-            ),
-            validate=lambda text: DomainTweakValidationOutcome(ok=True, terminal_status="validated"),
-        )
-
-    assert context.closed is True
-
-
-async def test_timeout_preserves_partial_live_adk_event_usage(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    context = _PartialEventTimeoutContext()
-
-    async def create_context(**kwargs: object) -> _PartialEventTimeoutContext:
-        _ = kwargs
-        return context
-
-    monkeypatch.setattr(adk_runner_mod._LiveAdkContext, "create", create_context)
-
-    result = await DomainTweakAdkRunner().run_phase(
-        phase="question_generation",
-        prompt="Generate one question.",
-        config=DomainTweakAdkRunConfig(
-            model="gemini-3.1-pro-preview",
-            max_retries=0,
+            model="gemini-test",
+            max_retries=2,
             phase_timeout_seconds=0.01,
         ),
-        validate=lambda text: DomainTweakValidationOutcome(ok=True, terminal_status="validated"),
+        agent_instruction="instruction",
+        search_enabled=False,
+        function_tools=(),
+        output_schema=DomainTweakFormBlueprint,
+        validate=validate_form_blueprint_output,
     )
 
     assert result.terminal_status == "timeout"
     assert len(result.attempts) == 1
-    assert len(result.attempts[0].event_summaries) == 1
-    assert result.attempts[0].tool_usage.llm.call_count == 1
-    assert result.attempts[0].tool_usage.llm.prompt_tokens == 11
-    assert result.attempts[0].tool_usage.search_tool.call_count == 1
-    assert result.tool_usage.llm.call_count == 1
-    assert result.tool_usage.search_tool.call_count == 1
-    assert context.closed is True
+    assert result.attempts[0].prompt_kind == "initial"
+    assert DomainTweakAdkRunConfig(model="gemini-test").phase_timeout_seconds == 600.0
 
 
-async def test_invocation_error_preserves_partial_live_adk_event_usage(
+async def test_live_failure_before_first_event_returns_typed_invocation_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    context = _PartialEventErrorContext()
-
-    async def create_context(**kwargs: object) -> _PartialEventErrorContext:
-        _ = kwargs
-        return context
-
-    monkeypatch.setattr(adk_runner_mod._LiveAdkContext, "create", create_context)
+    context = _FailingLiveContext()
+    monkeypatch.setattr(
+        runner_module._LiveAdkContext,
+        "create",
+        _async_value(context),
+    )
 
     result = await DomainTweakAdkRunner().run_phase(
-        phase="question_generation",
-        prompt="Generate one question.",
-        config=DomainTweakAdkRunConfig(
-            model="gemini-3.1-pro-preview",
-            max_retries=0,
-            phase_timeout_seconds=10.0,
-        ),
-        validate=lambda text: DomainTweakValidationOutcome(ok=True, terminal_status="validated"),
+        phase="form_blueprint",
+        prompt="work order",
+        config=DomainTweakAdkRunConfig(model="gemini-test", max_retries=0),
+        agent_instruction="instruction",
+        search_enabled=False,
+        function_tools=(),
+        output_schema=DomainTweakFormBlueprint,
+        validate=validate_form_blueprint_output,
     )
 
     assert result.terminal_status == "invocation_error"
-    assert result.error == "stream failed after search"
-    assert len(result.attempts) == 1
-    assert len(result.attempts[0].event_summaries) == 1
-    assert result.attempts[0].tool_usage.llm.call_count == 1
-    assert result.attempts[0].tool_usage.llm.prompt_tokens == 11
-    assert result.attempts[0].tool_usage.search_tool.call_count == 1
-    assert result.tool_usage.llm.call_count == 1
-    assert result.tool_usage.search_tool.call_count == 1
-    assert context.closed is True
+    assert result.error_type == "RuntimeError"
+    assert context.closed
 
 
-async def test_live_adk_setup_does_not_apply_repo_owned_model_family_guard() -> None:
-    context = await adk_runner_mod._LiveAdkContext.create(
-        phase="question_generation",
-        config=DomainTweakAdkRunConfig(model="gemini-2.5-pro"),
-        agent_instruction="Generate one grounded question.",
+async def test_transient_live_provider_failure_remains_candidate_local(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _FailingLiveContext(
+        exc=ClientError(
+            429,
+            {"error": {"code": 429, "message": "rate limited", "status": "RESOURCE_EXHAUSTED"}},
+        )
+    )
+    monkeypatch.setattr(
+        runner_module._LiveAdkContext,
+        "create",
+        _async_value(context),
     )
 
-    await context.close()
-
-
-def test_adk_run_config_rejects_removed_formatter_tool_mode() -> None:
-    with pytest.raises(ValidationError):
-        DomainTweakAdkRunConfig(model="gemini-3.1-pro-preview", tool_mode="search_with_formatter")
-
-
-def test_adk_tools_for_question_generation_use_supported_google_search_workaround() -> None:
-    [search_tool] = _adk_tools_for_phase("question_generation")
-
-    assert isinstance(search_tool, GoogleSearchTool)
-    assert search_tool.bypass_multi_tools_limit is True
-
-
-def test_adk_tools_for_reference_answer_include_formatter_with_search_workaround() -> None:
-    tools = _adk_tools_for_phase("reference_answer")
-
-    assert any(isinstance(tool, GoogleSearchTool) and tool.bypass_multi_tools_limit for tool in tools)
-    assert any(isinstance(tool, FunctionTool) and tool.name == "citation_formatter" for tool in tools)
-
-
-def test_adk_tools_for_form_review_do_not_include_formatter() -> None:
-    tools = _adk_tools_for_phase("form_review")
-
-    assert any(isinstance(tool, GoogleSearchTool) and tool.bypass_multi_tools_limit for tool in tools)
-    assert not any(isinstance(tool, FunctionTool) for tool in tools)
-
-
-async def test_reference_answer_tools_resolve_through_adk_multi_tool_workaround() -> None:
-    agent = Agent(
-        name="domain_tweak_reference_answer",
-        model="gemini-3.1-pro-preview",
-        tools=_adk_tools_for_phase("reference_answer"),
+    result = await DomainTweakAdkRunner().run_phase(
+        phase="form_blueprint",
+        prompt="work order",
+        config=DomainTweakAdkRunConfig(model="gemini-test", max_retries=0),
+        agent_instruction="instruction",
+        search_enabled=False,
+        function_tools=(),
+        output_schema=DomainTweakFormBlueprint,
+        validate=validate_form_blueprint_output,
     )
 
-    canonical_tools = await agent.canonical_tools()
+    assert result.terminal_status == "invocation_error"
+    assert result.error_type == "ClientError"
+    assert context.closed
 
-    assert any(isinstance(tool, GoogleSearchAgentTool) for tool in canonical_tools)
-    assert any(isinstance(tool, FunctionTool) and tool.name == "citation_formatter" for tool in canonical_tools)
 
-
-def _partial_event_summary() -> DomainTweakAdkEventSummary:
-    return DomainTweakAdkEventSummary(
-        function_call_names=("google_search_agent",),
-        usage=LlmUsage(prompt_tokens=11, completion_tokens=3, total_tokens=14),
-        web_search_query_count=1,
+@pytest.mark.parametrize("status_code", (401, 403))
+async def test_live_authentication_failure_aborts_the_batch(
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+) -> None:
+    context = _FailingLiveContext(
+        exc=ClientError(
+            status_code,
+            {
+                "error": {
+                    "code": status_code,
+                    "message": "authentication failed",
+                    "status": "UNAUTHENTICATED",
+                }
+            },
+        )
     )
+    monkeypatch.setattr(
+        runner_module._LiveAdkContext,
+        "create",
+        _async_value(context),
+    )
+
+    with pytest.raises(ClientError) as exc_info:
+        await DomainTweakAdkRunner().run_phase(
+            phase="form_blueprint",
+            prompt="work order",
+            config=DomainTweakAdkRunConfig(model="gemini-test", max_retries=0),
+            agent_instruction="instruction",
+            search_enabled=False,
+            function_tools=(),
+            output_schema=DomainTweakFormBlueprint,
+            validate=validate_form_blueprint_output,
+        )
+
+    assert exc_info.value.code == status_code
+    assert context.closed
+
+
+@pytest.mark.parametrize(
+    "failure_code",
+    (
+        ToolProviderFailureCode.CREDENTIAL_UNAVAILABLE,
+        ToolProviderFailureCode.AUTHENTICATION_FAILED,
+    ),
+)
+async def test_source_tool_credential_failure_aborts_the_batch(
+    monkeypatch: pytest.MonkeyPatch,
+    failure_code: ToolProviderFailureCode,
+) -> None:
+    context = _FailingLiveContext(
+        exc=ToolProviderError(
+            "Parallel credential rejected",
+            provider="parallel",
+            failure_code=failure_code,
+        )
+    )
+    monkeypatch.setattr(
+        runner_module._LiveAdkContext,
+        "create",
+        _async_value(context),
+    )
+
+    with pytest.raises(ToolProviderError) as exc_info:
+        await DomainTweakAdkRunner().run_phase(
+            phase="reference_answer_generation",
+            prompt="work order",
+            config=DomainTweakAdkRunConfig(model="gemini-test", max_retries=0),
+            agent_instruction="instruction",
+            search_enabled=True,
+            function_tools=(),
+            output_schema=DomainTweakFormBlueprint,
+            validate=validate_form_blueprint_output,
+        )
+
+    assert exc_info.value.failure_code is failure_code
+    assert context.closed
+
+
+async def test_live_context_construction_failure_aborts_the_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def failing_create(**kwargs: object) -> _LiveAdkContext:
+        _ = kwargs
+        raise ValueError("unsupported ADK agent configuration")
+
+    monkeypatch.setattr(runner_module._LiveAdkContext, "create", failing_create)
+
+    with pytest.raises(ValueError, match="unsupported ADK agent configuration"):
+        await DomainTweakAdkRunner().run_phase(
+            phase="form_blueprint",
+            prompt="work order",
+            config=DomainTweakAdkRunConfig(model="gemini-test", max_retries=0),
+            agent_instruction="instruction",
+            search_enabled=False,
+            function_tools=(),
+            output_schema=DomainTweakFormBlueprint,
+            validate=validate_form_blueprint_output,
+        )
+
+
+async def test_live_context_setup_is_inside_the_hard_stage_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def blocked_create(**kwargs: object) -> _LiveAdkContext:
+        _ = kwargs
+        await asyncio.sleep(60)
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(runner_module._LiveAdkContext, "create", blocked_create)
+
+    result = await asyncio.wait_for(
+        DomainTweakAdkRunner().run_phase(
+            phase="form_blueprint",
+            prompt="work order",
+            config=DomainTweakAdkRunConfig(
+                model="gemini-test",
+                max_retries=0,
+                phase_timeout_seconds=0.01,
+            ),
+            agent_instruction="instruction",
+            search_enabled=False,
+            function_tools=(),
+            output_schema=DomainTweakFormBlueprint,
+            validate=validate_form_blueprint_output,
+        ),
+        timeout=0.2,
+    )
+
+    assert result.terminal_status == "timeout"
+    assert result.attempts == ()
+    assert result.error_type == "TimeoutError"
+
+
+async def test_live_context_cleanup_cannot_extend_the_hard_stage_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _SlowClosingLiveContext()
+    monkeypatch.setattr(
+        runner_module._LiveAdkContext,
+        "create",
+        _async_value(context),
+    )
+
+    result = await asyncio.wait_for(
+        DomainTweakAdkRunner().run_phase(
+            phase="form_blueprint",
+            prompt="work order",
+            config=DomainTweakAdkRunConfig(
+                model="gemini-test",
+                max_retries=0,
+                phase_timeout_seconds=0.01,
+            ),
+            agent_instruction="instruction",
+            search_enabled=False,
+            function_tools=(),
+            output_schema=DomainTweakFormBlueprint,
+            validate=validate_form_blueprint_output,
+        ),
+        timeout=0.2,
+    )
+
+    assert result.terminal_status == "validated"
+    assert context.close_cancelled
+
+
+async def test_live_context_closes_cancelled_event_iterator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    iterator = _BlockingIterator()
+    context = _LiveAdkContext(
+        runner=_FakeLiveRunner(iterator),
+        user_id="user",
+        session_id="session",
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "summarize_adk_event",
+        lambda event: DomainTweakAdkEventSummary(content_text_preview=str(event)),
+    )
+
+    task = asyncio.create_task(context.run_turn("prompt", event_summaries=[]))
+    await iterator.wait_until_blocked()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert iterator.closed
+
+
+async def test_event_iterator_cleanup_cannot_extend_the_hard_stage_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    iterator = _SlowClosingIterator()
+    context = _LiveAdkContext(
+        runner=_FakeLiveRunner(iterator),
+        user_id="user",
+        session_id="session",
+    )
+    monkeypatch.setattr(
+        runner_module._LiveAdkContext,
+        "create",
+        _async_value(context),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "summarize_adk_event",
+        lambda event: DomainTweakAdkEventSummary(content_text_preview=str(event)),
+    )
+
+    result = await asyncio.wait_for(
+        DomainTweakAdkRunner().run_phase(
+            phase="form_blueprint",
+            prompt="work order",
+            config=DomainTweakAdkRunConfig(
+                model="gemini-test",
+                max_retries=0,
+                phase_timeout_seconds=0.01,
+            ),
+            agent_instruction="instruction",
+            search_enabled=False,
+            function_tools=(),
+            output_schema=DomainTweakFormBlueprint,
+            validate=validate_form_blueprint_output,
+        ),
+        timeout=0.2,
+    )
+
+    assert result.terminal_status == "timeout"
+    await asyncio.sleep(0)
+    assert iterator.close_called
+    assert context._runner.close_called
+
+
+async def test_event_iterator_cleanup_failure_does_not_replace_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    iterator = _FailingCloseIterator()
+    context = _LiveAdkContext(
+        runner=_FakeLiveRunner(iterator),
+        user_id="user",
+        session_id="session",
+    )
+    monkeypatch.setattr(
+        runner_module._LiveAdkContext,
+        "create",
+        _async_value(context),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "summarize_adk_event",
+        lambda event: DomainTweakAdkEventSummary(content_text_preview=str(event)),
+    )
+
+    result = await asyncio.wait_for(
+        DomainTweakAdkRunner().run_phase(
+            phase="form_blueprint",
+            prompt="work order",
+            config=DomainTweakAdkRunConfig(
+                model="gemini-test",
+                max_retries=0,
+                phase_timeout_seconds=0.01,
+            ),
+            agent_instruction="instruction",
+            search_enabled=False,
+            function_tools=(),
+            output_schema=DomainTweakFormBlueprint,
+            validate=validate_form_blueprint_output,
+        ),
+        timeout=0.2,
+    )
+
+    assert iterator.close_called
+    assert result.terminal_status == "timeout"
+
+
+async def test_source_tool_event_preview_is_redacted() -> None:
+    summary = DomainTweakAdkEventSummary(
+        function_response_names=("read_cached_source",),
+        content_text_preview="private source body",
+        content_text_length=19,
+    )
+
+    redacted = _redact_source_tool_content(summary)
+
+    assert redacted.content_text_preview is None
+    assert redacted.content_text_length == 19
+
+
+class _BlockingIterator:
+    def __init__(self) -> None:
+        self._yielded = False
+        self._blocked = asyncio.Event()
+        self._release = asyncio.Event()
+        self.closed = False
+
+    def __aiter__(self) -> _BlockingIterator:
+        return self
+
+    async def __anext__(self) -> object:
+        if not self._yielded:
+            self._yielded = True
+            return "event"
+        self._blocked.set()
+        await self._release.wait()
+        raise StopAsyncIteration
+
+    async def aclose(self) -> None:
+        self.closed = True
+        self._release.set()
+
+    async def wait_until_blocked(self) -> None:
+        await asyncio.wait_for(self._blocked.wait(), timeout=1)
+
+
+class _SlowClosingIterator(_BlockingIterator):
+    def __init__(self) -> None:
+        super().__init__()
+        self.close_called = False
+
+    async def aclose(self) -> None:
+        self.close_called = True
+        await asyncio.sleep(60)
+
+
+class _FailingCloseIterator(_BlockingIterator):
+    def __init__(self) -> None:
+        super().__init__()
+        self.close_called = False
+
+    async def aclose(self) -> None:
+        self.close_called = True
+        raise RuntimeError("iterator cleanup failed")
+
+
+@dataclass
+class _FakeLiveRunner:
+    iterator: _BlockingIterator
+    close_called: bool = False
+
+    def run_async(self, **kwargs: object) -> _BlockingIterator:
+        _ = kwargs
+        return self.iterator
+
+    async def close(self) -> None:
+        self.close_called = True
+
+
+@dataclass
+class _FailingLiveContext:
+    exc: Exception = field(
+        default_factory=lambda: RuntimeError("provider failed before the first event")
+    )
+    closed: bool = False
+
+    async def run_turn(
+        self,
+        prompt: str,
+        *,
+        event_summaries: list[object],
+        deadline: float,
+    ) -> DomainTweakAdkTurn:
+        _ = prompt, event_summaries, deadline
+        raise self.exc
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _SlowClosingLiveContext:
+    close_cancelled = False
+
+    async def run_turn(
+        self,
+        prompt: str,
+        *,
+        event_summaries: list[object],
+        deadline: float,
+    ) -> DomainTweakAdkTurn:
+        _ = prompt, event_summaries, deadline
+        return DomainTweakAdkTurn(final_text=_blueprint_json(), events=())
+
+    async def close(self) -> None:
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            self.close_cancelled = True
+            raise
+
+
+def _async_value(value: object):
+    async def create(**kwargs: object) -> object:
+        _ = kwargs
+        return value
+
+    return create
+
+
+def _blueprint_json() -> str:
+    return DomainTweakFormBlueprint(
+        status="proceed",
+        operation="Filter a closed candidate set.",
+        load_bearing_invariants=("closed candidate set",),
+        non_load_bearing_surface_features=(),
+        retrieval_boundary="Sources supply predicate values.",
+        answer_shape="Exhaustive list.",
+        semantic_ambiguities=(),
+        no_generate_reason=None,
+    ).model_dump_json()

@@ -114,6 +114,36 @@ def test_generation_usage_cost_breakdown_prices_default_domain_tweak_model() -> 
     assert breakdown["usd_cost"] == pytest.approx(14.028)
 
 
+@pytest.mark.parametrize(
+    ("provider", "expected_grounded_cost", "expected_cost"),
+    (
+        ("vertex", 0.014, 1.764),
+        ("google", 0.0, 1.75),
+    ),
+)
+def test_generation_usage_cost_breakdown_prices_domain_tweak_flash_lite_model(
+    provider: str,
+    expected_grounded_cost: float,
+    expected_cost: float,
+) -> None:
+    usage = LlmUsage(
+        prompt_tokens=1_000_000,
+        completion_tokens=1_000_000,
+        total_tokens=2_000_000,
+        web_search_calls=1,
+    )
+
+    breakdown = generation_usage_cost_breakdown(
+        usage,
+        provider=provider,
+        model="gemini-3.1-flash-lite",
+    )
+
+    assert breakdown["pricing_missing"] is False
+    assert breakdown["usd_cost_grounded"] == pytest.approx(expected_grounded_cost)
+    assert breakdown["usd_cost"] == pytest.approx(expected_cost)
+
+
 def test_generation_usage_cost_breakdown_does_not_normalize_malformed_vertex_gemini_paths() -> None:
     usage = LlmUsage(
         prompt_tokens=1_000,

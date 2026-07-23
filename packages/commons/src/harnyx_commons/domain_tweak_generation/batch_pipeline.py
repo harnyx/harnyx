@@ -1,11 +1,12 @@
-"""Batch-level orchestration for domain-tweak generation."""
+"""Batch orchestration for source-aware domain-tweak generation."""
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from math import ceil
+from typing import Literal, TypeVar
 from uuid import UUID, uuid4
 
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
@@ -15,12 +16,14 @@ from harnyx_commons.domain_tweak_generation.pipeline import (
     DomainTweakGenerationPipeline,
     DomainTweakPairRunResult,
 )
+from harnyx_commons.domain_tweak_generation.source_evidence import BatchSourceEvidence
 from harnyx_commons.domain_tweak_generation.types import (
     DomainTweakAdkPhaseResult,
     DomainTweakAdkRunConfig,
     DomainTweakBatchGenerationConfig,
     DomainTweakBatchGenerationResult,
-    DomainTweakFailedFinalization,
+    DomainTweakDiscardedCandidate,
+    DomainTweakDiscardReason,
     DomainTweakFinalizedTask,
     DomainTweakQuestionPhasePolicy,
     DomainTweakReferenceAnswerPhasePolicy,
@@ -28,36 +31,37 @@ from harnyx_commons.domain_tweak_generation.types import (
     DomainTweakReviewedQuestion,
 )
 from harnyx_commons.miner_task_generation import (
+    DomainTweakFormBlueprint,
     DomainTweakFormReview,
     DomainTweakPairInput,
-    DomainTweakQuestionCandidate,
+    DomainTweakQuestionPacket,
 )
+from harnyx_commons.tools.ports import PageExtractionProviderPort
 
-_RETRYABLE_A2_INVOCATION_STATUSES = {"timeout", "invocation_error"}
 _MAX_DOMAIN_TWEAK_GENERATION_CONCURRENCY = 8
+_TResult = TypeVar("_TResult")
 
 
 @dataclass(frozen=True, slots=True)
 class _FinalizationGroupResult:
     finalized_tasks: tuple[DomainTweakFinalizedTask, ...]
-    failed_finalizations: tuple[DomainTweakFailedFinalization, ...]
-    finalization_attempt_count: int
-    retry_attempt_count: int
-    retry_round_count: int
+    discarded_candidates: tuple[DomainTweakDiscardedCandidate, ...]
     tool_usage: ToolUsageSummary
 
 
 class DomainTweakBatchGenerationPipeline:
-    """Fills to N finalized question/reference-answer tasks within fixed budgets."""
+    """Fills to N finalized tasks within one global fresh-pair budget."""
 
     def __init__(
         self,
         *,
         base_config: DomainTweakAdkRunConfig,
+        source_provider: PageExtractionProviderPort,
         runner: DomainTweakAdkRunner | None = None,
         task_id_factory: Callable[[], UUID] = uuid4,
     ) -> None:
         self._base_config = base_config
+        self._source_provider = source_provider
         self._runner = runner
         self._task_id_factory = task_id_factory
 
@@ -69,14 +73,15 @@ class DomainTweakBatchGenerationPipeline:
         selected: list[DomainTweakReviewedQuestion] = []
         selected_question_texts: set[str] = set()
         rejected: list[DomainTweakRejectedQuestionAttempt] = []
+        discarded: list[DomainTweakDiscardedCandidate] = []
         total_usage = ToolUsageSummary.zero()
         finalized_by_question: dict[str, DomainTweakFinalizedTask] = {}
-        failed_by_question: dict[str, DomainTweakFailedFinalization] = {}
-        finalization_attempt_count = 0
-        retry_attempt_count = 0
-        retry_round_count = 0
-        answer_invocation_budget = _InvocationBudget(
-            config.reference_answer_policy.invocation_attempt_cap(config.target_count)
+        candidate_finalization_attempt_count = 0
+        candidate_budget = _InvocationBudget(config.candidate_attempt_cap)
+        source_evidence = BatchSourceEvidence(
+            provider=self._source_provider,
+            policy=config.source_evidence_policy,
+            client_model=self._base_config.model,
         )
 
         for window in _question_attempt_windows(pair_inputs, config.question_policy, config.target_count):
@@ -86,16 +91,15 @@ class DomainTweakBatchGenerationPipeline:
             while window_index < len(window):
                 if len(finalized_by_question) >= config.target_count:
                     break
-                remaining_invocations = await answer_invocation_budget.remaining_count()
-                if remaining_invocations <= 0:
+                remaining_candidates = await candidate_budget.remaining_count()
+                if remaining_candidates <= 0:
                     break
                 candidate_target = min(
                     config.target_count - len(finalized_by_question),
-                    remaining_invocations,
+                    remaining_candidates,
                 )
                 candidate_group: list[DomainTweakReviewedQuestion] = []
 
-                # Use the current question window until this final-task shortfall is supplied.
                 while window_index < len(window) and len(candidate_group) < candidate_target:
                     chunk_size = min(
                         _MAX_DOMAIN_TWEAK_GENERATION_CONCURRENCY,
@@ -111,9 +115,18 @@ class DomainTweakBatchGenerationPipeline:
                         if reviewed_question is None:
                             rejected.append(_rejected_attempt_from_result(pair_input, pair_result))
                             continue
-                        question_text = _canonical_question_text(reviewed_question.question_candidate.question)
+                        question = reviewed_question.question_packet.question
+                        if question is None:
+                            raise ValueError("reviewed question packet must contain a question")
+                        question_text = _canonical_question_text(question)
                         if question_text in selected_question_texts:
-                            rejected.append(_rejected_attempt_from_result(pair_input, pair_result))
+                            rejected.append(
+                                _rejected_attempt_from_result(
+                                    pair_input,
+                                    pair_result,
+                                    reason="duplicate_question",
+                                )
+                            )
                             continue
                         selected_question_texts.add(question_text)
                         selected.append(reviewed_question)
@@ -122,175 +135,77 @@ class DomainTweakBatchGenerationPipeline:
                 if not candidate_group:
                     continue
 
-                group_result = await self._finalize_question_group(
+                group_result = await self._finalize_candidate_group_once(
                     tuple(candidate_group),
                     policy=config.reference_answer_policy,
-                    invocation_budget=answer_invocation_budget,
+                    source_evidence=source_evidence,
+                    invocation_budget=candidate_budget,
                 )
+                candidate_finalization_attempt_count += len(candidate_group)
                 total_usage = merge_tool_usage_summaries(total_usage, group_result.tool_usage)
-                finalization_attempt_count += group_result.finalization_attempt_count
-                retry_attempt_count += group_result.retry_attempt_count
-                retry_round_count += group_result.retry_round_count
                 for finalized_task in group_result.finalized_tasks:
-                    question_key = _canonical_question_text(
-                        finalized_task.reviewed_question.question_candidate.question
-                    )
-                    finalized_by_question[question_key] = finalized_task
-                    failed_by_question.pop(question_key, None)
-                for failed_finalization in group_result.failed_finalizations:
-                    question_key = _canonical_question_text(
-                        failed_finalization.reviewed_question.question_candidate.question
-                    )
-                    failed_by_question[question_key] = failed_finalization
+                    question = finalized_task.reviewed_question.question_packet.question
+                    if question is None:
+                        raise ValueError("finalized question packet must contain a question")
+                    finalized_by_question[_canonical_question_text(question)] = finalized_task
+                discarded.extend(group_result.discarded_candidates)
 
         finalized = tuple(
             finalized_by_question[question_key]
             for item in selected
-            if (question_key := _canonical_question_text(item.question_candidate.question)) in finalized_by_question
+            if item.question_packet.question is not None
+            and (
+                question_key := _canonical_question_text(item.question_packet.question)
+            ) in finalized_by_question
         )
-        failed_finalizations = tuple(
-            failed_by_question[question_key]
-            for item in selected
-            if (question_key := _canonical_question_text(item.question_candidate.question)) in failed_by_question
-        )
-
         return DomainTweakBatchGenerationResult(
             target_count=config.target_count,
             selected_questions=tuple(selected),
             finalized_tasks=finalized,
             rejected_attempts=tuple(rejected),
-            failed_finalizations=failed_finalizations,
-            reference_answer_finalization_attempt_count=finalization_attempt_count,
-            reference_answer_retry_attempt_count=retry_attempt_count,
-            reference_answer_retry_round_count=retry_round_count,
+            discarded_candidates=tuple(discarded),
+            candidate_finalization_attempt_count=candidate_finalization_attempt_count,
             underfilled=len(finalized) < config.target_count,
             tool_usage=total_usage,
         )
 
-    async def _finalize_question_group(
+    async def _finalize_candidate_group_once(
         self,
         reviewed_questions: tuple[DomainTweakReviewedQuestion, ...],
         *,
         policy: DomainTweakReferenceAnswerPhasePolicy,
+        source_evidence: BatchSourceEvidence,
         invocation_budget: _InvocationBudget,
     ) -> _FinalizationGroupResult:
         if not await invocation_budget.reserve(len(reviewed_questions)):
-            raise RuntimeError("answer invocation budget cannot cover selected candidates")
-        finalized_by_question: dict[str, DomainTweakFinalizedTask] = {}
-        failed_by_question: dict[str, DomainTweakFailedFinalization] = {}
-        total_usage = ToolUsageSummary.zero()
-        pending = reviewed_questions
-        finalization_attempt_count = 0
-        retry_attempt_count = 0
-        retry_round_count = 0
-
-        for round_index in range(policy.failed_finalization_retries_per_batch_item + 1):
-            if not pending:
-                break
-            if round_index > 0:
-                retry_round_count += 1
-            fresh_invocation_retries = policy.invocation_retries_per_answer if round_index == 0 else 0
-            next_pending: list[DomainTweakReviewedQuestion] = []
-            pending_index = 0
-            while pending_index < len(pending):
-                if round_index == 0:
-                    chunk_size = min(
-                        _MAX_DOMAIN_TWEAK_GENERATION_CONCURRENCY,
-                        len(pending) - pending_index,
-                    )
-                else:
-                    remaining_invocations = await invocation_budget.remaining_count()
-                    if remaining_invocations <= 0:
-                        break
-                    chunk_size = min(
-                        _MAX_DOMAIN_TWEAK_GENERATION_CONCURRENCY,
-                        remaining_invocations,
-                        len(pending) - pending_index,
-                    )
-                chunk = pending[pending_index : pending_index + chunk_size]
-                pending_index += chunk_size
-                chunk_finalizations = await asyncio.gather(
+            raise RuntimeError("candidate budget cannot cover the budget-aware finalization group")
+        outcomes: list[DomainTweakFinalizedTask | DomainTweakDiscardedCandidate] = []
+        for start in range(0, len(reviewed_questions), _MAX_DOMAIN_TWEAK_GENERATION_CONCURRENCY):
+            chunk = reviewed_questions[start : start + _MAX_DOMAIN_TWEAK_GENERATION_CONCURRENCY]
+            outcomes.extend(
+                await _gather_or_cancel_siblings(
                     *(
-                        self._finalize_with_retries(
+                        self._reference_pipeline(policy, source_evidence).finalize_task(
                             reviewed_question,
-                            policy=policy,
-                            invocation_budget=invocation_budget,
-                            invocation_retries=fresh_invocation_retries,
-                            first_invocation_reserved=round_index == 0,
+                            task_id_factory=self._task_id_factory,
                         )
                         for reviewed_question in chunk
                     )
                 )
-                finalization_attempt_count += len(chunk_finalizations)
-                if round_index > 0:
-                    retry_attempt_count += len(chunk_finalizations)
-                for reviewed_question, finalization in zip(chunk, chunk_finalizations, strict=True):
-                    total_usage = merge_tool_usage_summaries(total_usage, finalization.tool_usage)
-                    question_key = _canonical_question_text(reviewed_question.question_candidate.question)
-                    if isinstance(finalization, DomainTweakFinalizedTask):
-                        finalized_by_question[question_key] = finalization
-                        failed_by_question.pop(question_key, None)
-                        continue
-                    failed_by_question[question_key] = _merge_failed_finalization_attempts(
-                        failed_by_question.get(question_key),
-                        finalization,
-                    )
-                    next_pending.append(reviewed_question)
-            pending = tuple(next_pending)
-
-        return _FinalizationGroupResult(
-            finalized_tasks=tuple(
-                finalized_by_question[question_key]
-                for item in reviewed_questions
-                if (question_key := _canonical_question_text(item.question_candidate.question))
-                in finalized_by_question
-            ),
-            failed_finalizations=tuple(
-                failed_by_question[question_key]
-                for item in reviewed_questions
-                if (question_key := _canonical_question_text(item.question_candidate.question))
-                in failed_by_question
-            ),
-            finalization_attempt_count=finalization_attempt_count,
-            retry_attempt_count=retry_attempt_count,
-            retry_round_count=retry_round_count,
-            tool_usage=total_usage,
-        )
-
-    async def _finalize_with_retries(
-        self,
-        reviewed_question: DomainTweakReviewedQuestion,
-        *,
-        policy: DomainTweakReferenceAnswerPhasePolicy,
-        invocation_budget: _InvocationBudget,
-        invocation_retries: int,
-        first_invocation_reserved: bool = False,
-    ) -> DomainTweakFinalizedTask | DomainTweakFailedFinalization:
-        reference_results: list[DomainTweakAdkPhaseResult] = []
-        answer_usage = ToolUsageSummary.zero()
-        max_invocations = invocation_retries + 1
-        for invocation_index in range(max_invocations):
-            if not (first_invocation_reserved and invocation_index == 0) and not await invocation_budget.acquire():
-                break
-            finalization = await self._reference_pipeline(policy).finalize_task(
-                reviewed_question,
-                task_id_factory=self._task_id_factory,
             )
-            answer_usage = merge_tool_usage_summaries(answer_usage, finalization.tool_usage)
-            if isinstance(finalization, DomainTweakFinalizedTask):
-                return DomainTweakFinalizedTask(
-                    reviewed_question=finalization.reviewed_question,
-                    reference_answer_result=finalization.reference_answer_result,
-                    task=finalization.task,
-                    tool_usage=answer_usage,
-                )
-            reference_results += list(finalization.reference_answer_results)
-            if not _should_retry_a2_invocation(finalization.reference_answer_results):
-                break
-        return DomainTweakFailedFinalization(
-            reviewed_question=reviewed_question,
-            reference_answer_results=tuple(reference_results),
-            tool_usage=answer_usage,
+        usage = ToolUsageSummary.zero()
+        finalized: list[DomainTweakFinalizedTask] = []
+        discarded: list[DomainTweakDiscardedCandidate] = []
+        for outcome in outcomes:
+            usage = merge_tool_usage_summaries(usage, outcome.tool_usage)
+            if isinstance(outcome, DomainTweakFinalizedTask):
+                finalized.append(outcome)
+            else:
+                discarded.append(outcome)
+        return _FinalizationGroupResult(
+            finalized_tasks=tuple(finalized),
+            discarded_candidates=tuple(discarded),
+            tool_usage=usage,
         )
 
     async def _generate_question_chunk(
@@ -298,38 +213,36 @@ class DomainTweakBatchGenerationPipeline:
         pair_inputs: Sequence[DomainTweakPairInput],
         policy: DomainTweakQuestionPhasePolicy,
     ) -> tuple[DomainTweakPairRunResult, ...]:
-        return tuple(
-            await asyncio.gather(
-                *(
-                    self._question_pipeline(policy).generate_reviewed_question(pair_input)
-                    for pair_input in pair_inputs
-                )
-            )
+        pipeline = self._question_pipeline(policy)
+        return await _gather_or_cancel_siblings(
+            *(pipeline.generate_reviewed_question(pair_input) for pair_input in pair_inputs)
         )
 
     def _question_pipeline(self, policy: DomainTweakQuestionPhasePolicy) -> DomainTweakGenerationPipeline:
         return DomainTweakGenerationPipeline(
             config=self._base_config.model_copy(
                 update={
-                    "max_retries": policy.validation_retries_per_pair,
+                    "max_retries": policy.validation_retries_per_stage,
                     "phase_timeout_seconds": policy.timeout_seconds,
                 }
             ),
             runner=self._runner,
-            form_review_retries=policy.form_review_retries_per_pair,
         )
 
-    def _reference_pipeline(self, policy: DomainTweakReferenceAnswerPhasePolicy) -> DomainTweakGenerationPipeline:
+    def _reference_pipeline(
+        self,
+        policy: DomainTweakReferenceAnswerPhasePolicy,
+        source_evidence: BatchSourceEvidence,
+    ) -> DomainTweakGenerationPipeline:
         return DomainTweakGenerationPipeline(
             config=self._base_config.model_copy(
                 update={
-                    "max_retries": policy.validation_retries_per_answer,
+                    "max_retries": 0,
                     "phase_timeout_seconds": policy.timeout_seconds,
-                    "soft_timeout_seconds": policy.soft_timeout_seconds,
-                    "soft_timeout_interval_seconds": policy.soft_timeout_interval_seconds,
                 }
             ),
             runner=self._runner,
+            source_evidence=source_evidence,
         )
 
 
@@ -359,20 +272,30 @@ def _reviewed_question_from_result(
     pair_input: DomainTweakPairInput,
     result: DomainTweakPairRunResult,
 ) -> DomainTweakReviewedQuestion | None:
-    if not isinstance(result.question_generation.parsed_output, DomainTweakQuestionCandidate):
+    blueprint = result.form_blueprint.parsed_output
+    if not isinstance(blueprint, DomainTweakFormBlueprint) or blueprint.status != "proceed":
+        return None
+    if not isinstance(result.question_generation, DomainTweakAdkPhaseResult):
+        return None
+    packet = result.question_generation.parsed_output
+    if not isinstance(packet, DomainTweakQuestionPacket) or packet.status != "ready":
         return None
     if not isinstance(result.form_review, DomainTweakAdkPhaseResult):
         return None
     if result.form_review.terminal_status != "validated":
         return None
-    if not isinstance(result.form_review.parsed_output, DomainTweakFormReview):
+    review = result.form_review.parsed_output
+    if not isinstance(review, DomainTweakFormReview):
         return None
     return DomainTweakReviewedQuestion(
         pair_input=pair_input,
-        question_candidate=result.question_generation.parsed_output,
-        form_review=result.form_review.parsed_output,
+        form_blueprint=blueprint,
+        question_packet=packet,
+        form_review=review,
+        form_blueprint_result=result.form_blueprint,
         question_generation_result=result.question_generation,
         form_review_result=result.form_review,
+        stage_summaries=result.stage_summaries,
         tool_usage=result.tool_usage,
     )
 
@@ -380,47 +303,66 @@ def _reviewed_question_from_result(
 def _rejected_attempt_from_result(
     pair_input: DomainTweakPairInput,
     result: DomainTweakPairRunResult,
+    *,
+    reason: DomainTweakDiscardReason | None = None,
 ) -> DomainTweakRejectedQuestionAttempt:
+    terminal_stage: Literal["form_blueprint", "question_generation", "form_review"]
+    terminal_result: DomainTweakAdkPhaseResult
+    if result.question_generation is None:
+        terminal_stage = "form_blueprint"
+        terminal_result = result.form_blueprint
+    elif result.form_review is None:
+        terminal_stage = "question_generation"
+        terminal_result = result.question_generation
+    else:
+        terminal_stage = "form_review"
+        terminal_result = result.form_review
     return DomainTweakRejectedQuestionAttempt(
         pair_input=pair_input,
+        terminal_stage=terminal_stage,
+        reason=reason or _question_rejection_reason(terminal_result),
+        form_blueprint_result=result.form_blueprint,
         question_generation_result=result.question_generation,
         form_review_result=result.form_review,
+        stage_summaries=result.stage_summaries,
         tool_usage=result.tool_usage,
     )
 
 
-def _should_retry_a2_invocation(results: tuple[DomainTweakAdkPhaseResult, ...]) -> bool:
-    return bool(results and results[-1].terminal_status in _RETRYABLE_A2_INVOCATION_STATUSES)
-
-
-def _merge_failed_finalization_attempts(
-    existing: DomainTweakFailedFinalization | None,
-    current: DomainTweakFailedFinalization,
-) -> DomainTweakFailedFinalization:
-    if existing is None:
-        return current
-    return DomainTweakFailedFinalization(
-        reviewed_question=existing.reviewed_question,
-        reference_answer_results=(*existing.reference_answer_results, *current.reference_answer_results),
-        tool_usage=merge_tool_usage_summaries(existing.tool_usage, current.tool_usage),
-    )
+def _question_rejection_reason(result: DomainTweakAdkPhaseResult) -> DomainTweakDiscardReason:
+    if result.terminal_status == "no_generate":
+        return "no_generate"
+    if result.terminal_status == "form_rejected":
+        return "form_rejected"
+    if result.terminal_status == "timeout":
+        return "timeout"
+    if result.terminal_status == "invocation_error":
+        return "invocation_error"
+    return "validation_failed"
 
 
 def _canonical_question_text(question: str) -> str:
     return " ".join(question.split()).casefold()
 
 
+async def _gather_or_cancel_siblings(
+    *awaitables: Awaitable[_TResult],
+) -> tuple[_TResult, ...]:
+    tasks = tuple(asyncio.ensure_future(awaitable) for awaitable in awaitables)
+    try:
+        return tuple(await asyncio.gather(*tasks))
+    except BaseException:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
+
 class _InvocationBudget:
     def __init__(self, limit: int) -> None:
         self._remaining = limit
         self._lock = asyncio.Lock()
-
-    async def acquire(self) -> bool:
-        async with self._lock:
-            if self._remaining <= 0:
-                return False
-            self._remaining -= 1
-            return True
 
     async def reserve(self, count: int) -> bool:
         async with self._lock:

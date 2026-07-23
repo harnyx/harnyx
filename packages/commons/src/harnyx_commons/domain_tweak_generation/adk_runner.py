@@ -1,14 +1,19 @@
-"""Google ADK runner boundary for domain-tweak generation phases."""
+"""Google ADK execution boundary for source-aware domain-tweak stages."""
 
 from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
+
+from google.auth.exceptions import DefaultCredentialsError, RefreshError
+from google.genai.errors import ClientError
+from pydantic import BaseModel
 
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
 from harnyx_commons.domain.tool_usage_accounting import merge_tool_usage_summaries
@@ -17,12 +22,7 @@ from harnyx_commons.domain_tweak_generation.adk_events import (
     summarize_adk_event,
     tool_usage_from_adk_events,
 )
-from harnyx_commons.domain_tweak_generation.prompts import (
-    SOFT_TIMEOUT_FEEDBACK,
-    feedback_prompt,
-    phase_instruction,
-    soft_timeout_feedback_prompt,
-)
+from harnyx_commons.domain_tweak_generation.prompts import feedback_prompt
 from harnyx_commons.domain_tweak_generation.types import (
     DomainTweakAdkAttempt,
     DomainTweakAdkEventSummary,
@@ -33,8 +33,13 @@ from harnyx_commons.domain_tweak_generation.types import (
     DomainTweakAdkTerminalStatus,
     DomainTweakValidationOutcome,
 )
+from harnyx_commons.errors import ToolProviderError, is_tool_provider_credential_failure
 
 ValidationFunction = Callable[[str], DomainTweakValidationOutcome]
+FunctionToolCallable = Callable[..., object]
+_MAX_RETAINED_EVENT_SUMMARIES = 200
+_SOURCE_TOOL_NAMES = frozenset(("acquire_sources", "read_cached_source"))
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,12 +57,17 @@ class DomainTweakAdkTurnExecutor(Protocol):
         attempt_index: int,
         config: DomainTweakAdkRunConfig,
         agent_instruction: str,
+        search_enabled: bool,
+        function_tool_names: tuple[str, ...],
+        output_schema: type[BaseModel],
     ) -> DomainTweakAdkTurn:
         """Run one ADK turn. Tests use this to avoid live Google APIs."""
+        del function_tool_names
+        raise NotImplementedError
 
 
 class DomainTweakAdkRunner:
-    """Runs one ADK phase with retry feedback inside one session."""
+    """Runs one native-schema ADK stage inside one bounded session."""
 
     def __init__(self, *, turn_executor: DomainTweakAdkTurnExecutor | None = None) -> None:
         self._turn_executor = turn_executor
@@ -68,46 +78,52 @@ class DomainTweakAdkRunner:
         phase: DomainTweakAdkPhase,
         prompt: str,
         config: DomainTweakAdkRunConfig,
+        agent_instruction: str,
+        search_enabled: bool,
+        function_tools: Sequence[FunctionToolCallable],
+        output_schema: type[BaseModel],
         validate: ValidationFunction,
     ) -> DomainTweakAdkPhaseResult:
         started = time.perf_counter()
         deadline = started + config.phase_timeout_seconds
         attempts: list[DomainTweakAdkAttempt] = []
         total_usage = ToolUsageSummary.zero()
-        agent_instruction = phase_instruction(phase)
-        live_context = None
+        live_context: _LiveAdkContext | None = None
         if self._turn_executor is None:
-            live_context = await _LiveAdkContext.create(
-                phase=phase,
-                config=config,
-                agent_instruction=agent_instruction,
-            )
+            try:
+                live_context = await asyncio.wait_for(
+                    _LiveAdkContext.create(
+                        phase=phase,
+                        config=config,
+                        agent_instruction=agent_instruction,
+                        search_enabled=search_enabled,
+                        function_tools=function_tools,
+                        output_schema=output_schema,
+                    ),
+                    timeout=_remaining_timeout(deadline),
+                )
+            except TimeoutError as exc:
+                return DomainTweakAdkPhaseResult(
+                    phase=phase,
+                    terminal_status="timeout",
+                    attempts=(),
+                    tool_usage=total_usage,
+                    elapsed_ms=_elapsed_ms(started),
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
         try:
             attempt_index = 0
-            validation_failure_count = 0
             while True:
-                prompt_kind = _prompt_kind_for_attempt(attempt_index, attempts)
-                now = time.perf_counter()
-                turn_prompt = _prompt_for_attempt(
-                    prompt,
-                    prompt_kind,
-                    attempts,
-                    elapsed_seconds=now - started,
+                prompt_kind: DomainTweakAdkPromptKind = "initial" if attempt_index == 0 else "feedback"
+                turn_prompt = (
+                    prompt
+                    if prompt_kind == "initial"
+                    else feedback_prompt(attempts[-1].validation_feedback)
                 )
-                remaining_timeout = deadline - now
+                remaining_timeout = deadline - time.perf_counter()
                 if remaining_timeout <= 0:
-                    raise TimeoutError("ADK phase timeout exceeded before retry")
-                turn_elapsed_seconds = now - started
-                turn_soft_timeout_elapsed_seconds = _next_turn_soft_timeout_elapsed_seconds(
-                    config=config,
-                    attempts=attempts,
-                    elapsed_seconds=turn_elapsed_seconds,
-                )
-                turn_timeout = _turn_timeout_seconds(
-                    soft_timeout_elapsed_seconds=turn_soft_timeout_elapsed_seconds,
-                    elapsed_seconds=turn_elapsed_seconds,
-                    remaining_timeout=remaining_timeout,
-                )
+                    raise TimeoutError("ADK stage timeout exceeded before validation retry")
                 turn_events: list[DomainTweakAdkEventSummary] = []
                 try:
                     turn = await asyncio.wait_for(
@@ -117,30 +133,16 @@ class DomainTweakAdkRunner:
                             attempt_index=attempt_index,
                             config=config,
                             agent_instruction=agent_instruction,
+                            search_enabled=search_enabled,
+                            function_tools=function_tools,
+                            output_schema=output_schema,
                             live_context=live_context,
                             event_summaries=turn_events,
+                            deadline=deadline,
                         ),
-                        timeout=turn_timeout,
+                        timeout=remaining_timeout,
                     )
                 except TimeoutError as exc:
-                    timeout_elapsed_seconds = time.perf_counter() - started
-                    if _should_soft_timeout_retry(
-                        soft_timeout_elapsed_seconds=turn_soft_timeout_elapsed_seconds,
-                        elapsed_seconds=timeout_elapsed_seconds,
-                        deadline=deadline,
-                        started=started,
-                    ):
-                        total_usage = self._record_failed_attempt(
-                            attempts=attempts,
-                            total_usage=total_usage,
-                            attempt_index=attempt_index,
-                            prompt_kind=prompt_kind,
-                            event_summaries=turn_events,
-                            config=config,
-                            validation_feedback=SOFT_TIMEOUT_FEEDBACK,
-                        )
-                        attempt_index += 1
-                        continue
                     return self._failed_phase_result(
                         phase=phase,
                         attempts=attempts,
@@ -154,8 +156,8 @@ class DomainTweakAdkRunner:
                         terminal_status="timeout",
                     )
                 except Exception as exc:
-                    if live_context is not None and not turn_events:
-                        raise _FatalAdkRequestError(exc) from exc
+                    if _is_batch_terminal_adk_error(exc):
+                        raise
                     return self._failed_phase_result(
                         phase=phase,
                         attempts=attempts,
@@ -175,13 +177,11 @@ class DomainTweakAdkRunner:
                     model=config.model,
                 )
                 attempts.append(
-                    DomainTweakAdkAttempt(
+                    _attempt(
                         attempt_index=attempt_index,
                         prompt_kind=prompt_kind,
-                        final_text_preview=turn.final_text[:500],
-                        final_text_length=len(turn.final_text),
-                        validation_ok=validation.ok,
-                        validation_feedback=validation.feedback,
+                        final_text=turn.final_text,
+                        validation=validation,
                         event_summaries=turn.events,
                         tool_usage=attempt_usage,
                     )
@@ -196,19 +196,17 @@ class DomainTweakAdkRunner:
                         tool_usage=total_usage,
                         elapsed_ms=_elapsed_ms(started),
                     )
-                validation_failure_count += 1
-                if validation_failure_count > config.max_retries:
+                if attempt_index >= config.max_retries:
                     return DomainTweakAdkPhaseResult(
                         phase=phase,
                         terminal_status="validation_failed",
-                        parsed_output=None,
                         attempts=tuple(attempts),
                         tool_usage=total_usage,
                         elapsed_ms=_elapsed_ms(started),
+                        error_type=validation.error_type,
+                        error=validation.error,
                     )
                 attempt_index += 1
-        except _FatalAdkRequestError as exc:
-            raise exc.original from exc
         except TimeoutError as exc:
             return DomainTweakAdkPhaseResult(
                 phase=phase,
@@ -220,6 +218,8 @@ class DomainTweakAdkRunner:
                 error=str(exc),
             )
         except Exception as exc:
+            if _is_batch_terminal_adk_error(exc):
+                raise
             return DomainTweakAdkPhaseResult(
                 phase=phase,
                 terminal_status="invocation_error",
@@ -231,7 +231,7 @@ class DomainTweakAdkRunner:
             )
         finally:
             if live_context is not None:
-                await live_context.close()
+                await _close_live_context(live_context, deadline=deadline)
 
     async def _run_turn(
         self,
@@ -241,8 +241,12 @@ class DomainTweakAdkRunner:
         attempt_index: int,
         config: DomainTweakAdkRunConfig,
         agent_instruction: str,
+        search_enabled: bool,
+        function_tools: Sequence[FunctionToolCallable],
+        output_schema: type[BaseModel],
         live_context: _LiveAdkContext | None,
         event_summaries: list[DomainTweakAdkEventSummary],
+        deadline: float,
     ) -> DomainTweakAdkTurn:
         if self._turn_executor is not None:
             return await self._turn_executor(
@@ -251,10 +255,17 @@ class DomainTweakAdkRunner:
                 attempt_index=attempt_index,
                 config=config,
                 agent_instruction=agent_instruction,
+                search_enabled=search_enabled,
+                function_tool_names=tuple(_function_tool_name(tool) for tool in function_tools),
+                output_schema=output_schema,
             )
         if live_context is None:
             raise RuntimeError("live ADK context was not initialized")
-        return await live_context.run_turn(prompt, event_summaries=event_summaries)
+        return await live_context.run_turn(
+            prompt,
+            event_summaries=event_summaries,
+            deadline=deadline,
+        )
 
     def _failed_phase_result(
         self,
@@ -270,15 +281,28 @@ class DomainTweakAdkRunner:
         exc: BaseException,
         terminal_status: DomainTweakAdkTerminalStatus,
     ) -> DomainTweakAdkPhaseResult:
-        total_usage = self._record_failed_attempt(
-            attempts=attempts,
-            total_usage=total_usage,
-            attempt_index=attempt_index,
-            prompt_kind=prompt_kind,
-            event_summaries=event_summaries,
-            config=config,
-            validation_feedback=(str(exc),) if str(exc) else (),
+        attempt_usage = (
+            tool_usage_from_adk_events(event_summaries, provider=config.provider, model=config.model)
+            if event_summaries
+            else ToolUsageSummary.zero()
         )
+        attempts.append(
+            _attempt(
+                attempt_index=attempt_index,
+                prompt_kind=prompt_kind,
+                final_text="",
+                validation=DomainTweakValidationOutcome(
+                    ok=False,
+                    terminal_status=terminal_status,
+                    feedback=(str(exc),) if str(exc) else (),
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                ),
+                event_summaries=tuple(event_summaries),
+                tool_usage=attempt_usage,
+            )
+        )
+        total_usage = merge_tool_usage_summaries(total_usage, attempt_usage)
         return DomainTweakAdkPhaseResult(
             phase=phase,
             terminal_status=terminal_status,
@@ -288,155 +312,6 @@ class DomainTweakAdkRunner:
             error_type=type(exc).__name__,
             error=str(exc),
         )
-
-    def _record_failed_attempt(
-        self,
-        *,
-        attempts: list[DomainTweakAdkAttempt],
-        total_usage: ToolUsageSummary,
-        attempt_index: int,
-        prompt_kind: DomainTweakAdkPromptKind,
-        event_summaries: list[DomainTweakAdkEventSummary],
-        config: DomainTweakAdkRunConfig,
-        validation_feedback: tuple[str, ...],
-    ) -> ToolUsageSummary:
-        attempt_usage = (
-            tool_usage_from_adk_events(
-                event_summaries,
-                provider=config.provider,
-                model=config.model,
-            )
-            if event_summaries
-            else ToolUsageSummary.zero()
-        )
-        attempts.append(
-            DomainTweakAdkAttempt(
-                attempt_index=attempt_index,
-                prompt_kind=prompt_kind,
-                validation_ok=False,
-                validation_feedback=validation_feedback,
-                event_summaries=tuple(event_summaries),
-                tool_usage=attempt_usage,
-            )
-        )
-        return merge_tool_usage_summaries(total_usage, attempt_usage)
-
-
-class _FatalAdkRequestError(Exception):
-    def __init__(self, original: Exception) -> None:
-        super().__init__(str(original))
-        self.original = original
-
-
-def _prompt_kind_for_attempt(
-    attempt_index: int,
-    attempts: list[DomainTweakAdkAttempt],
-) -> DomainTweakAdkPromptKind:
-    if attempt_index == 0:
-        return "initial"
-    if attempts and attempts[-1].validation_feedback == SOFT_TIMEOUT_FEEDBACK:
-        return "soft_timeout_feedback"
-    return "feedback"
-
-
-def _prompt_for_attempt(
-    initial_prompt: str,
-    prompt_kind: DomainTweakAdkPromptKind,
-    attempts: list[DomainTweakAdkAttempt],
-    *,
-    elapsed_seconds: float | None = None,
-) -> str:
-    match prompt_kind:
-        case "initial":
-            return initial_prompt
-        case "soft_timeout_feedback":
-            return soft_timeout_feedback_prompt(
-                attempts[-1].validation_feedback,
-                elapsed_seconds=elapsed_seconds,
-            )
-        case "feedback":
-            return feedback_prompt(attempts[-1].validation_feedback)
-
-
-def _turn_timeout_seconds(
-    *,
-    soft_timeout_elapsed_seconds: float | None,
-    elapsed_seconds: float,
-    remaining_timeout: float,
-) -> float:
-    if soft_timeout_elapsed_seconds is None:
-        return remaining_timeout
-    return min(max(soft_timeout_elapsed_seconds - elapsed_seconds, 0.0), remaining_timeout)
-
-
-def _should_soft_timeout_retry(
-    *,
-    soft_timeout_elapsed_seconds: float | None,
-    elapsed_seconds: float,
-    deadline: float,
-    started: float,
-) -> bool:
-    if soft_timeout_elapsed_seconds is None:
-        return False
-    if elapsed_seconds < soft_timeout_elapsed_seconds:
-        return False
-    return started + elapsed_seconds < deadline
-
-
-def _next_turn_soft_timeout_elapsed_seconds(
-    *,
-    config: DomainTweakAdkRunConfig,
-    attempts: list[DomainTweakAdkAttempt],
-    elapsed_seconds: float,
-) -> float | None:
-    next_soft_timeout_seconds = _next_soft_timeout_elapsed_seconds(
-        config=config,
-        attempts=attempts,
-    )
-    if next_soft_timeout_seconds is None:
-        return None
-    return _next_future_soft_timeout_elapsed_seconds(
-        config=config,
-        next_soft_timeout_seconds=next_soft_timeout_seconds,
-        elapsed_seconds=elapsed_seconds,
-    )
-
-
-def _soft_timeout_feedback_count(attempts: list[DomainTweakAdkAttempt]) -> int:
-    return sum(1 for attempt in attempts if attempt.validation_feedback == SOFT_TIMEOUT_FEEDBACK)
-
-
-def _next_soft_timeout_elapsed_seconds(
-    *,
-    config: DomainTweakAdkRunConfig,
-    attempts: list[DomainTweakAdkAttempt],
-) -> float | None:
-    if config.soft_timeout_seconds is None:
-        return None
-    soft_timeout_count = _soft_timeout_feedback_count(attempts)
-    if soft_timeout_count > 0 and config.soft_timeout_interval_seconds is None:
-        return None
-    if soft_timeout_count == 0:
-        return config.soft_timeout_seconds
-    if config.soft_timeout_interval_seconds is None:
-        return None
-    return config.soft_timeout_seconds + soft_timeout_count * config.soft_timeout_interval_seconds
-
-
-def _next_future_soft_timeout_elapsed_seconds(
-    *,
-    config: DomainTweakAdkRunConfig,
-    next_soft_timeout_seconds: float,
-    elapsed_seconds: float,
-) -> float | None:
-    if elapsed_seconds < next_soft_timeout_seconds:
-        return next_soft_timeout_seconds
-    if config.soft_timeout_interval_seconds is None:
-        return None
-    missed_intervals = int(
-        (elapsed_seconds - next_soft_timeout_seconds) // config.soft_timeout_interval_seconds
-    ) + 1
-    return next_soft_timeout_seconds + missed_intervals * config.soft_timeout_interval_seconds
 
 
 class _LiveAdkContext:
@@ -452,6 +327,9 @@ class _LiveAdkContext:
         phase: DomainTweakAdkPhase,
         config: DomainTweakAdkRunConfig,
         agent_instruction: str,
+        search_enabled: bool,
+        function_tools: Sequence[FunctionToolCallable],
+        output_schema: type[BaseModel],
     ) -> _LiveAdkContext:
         from google.adk.agents import Agent
         from google.adk.runners import Runner
@@ -461,10 +339,11 @@ class _LiveAdkContext:
             name=_agent_name(phase),
             model=config.model,
             instruction=agent_instruction,
-            tools=_adk_tools_for_phase(phase),
+            tools=_adk_tools(search_enabled=search_enabled, function_tools=function_tools),
+            output_schema=output_schema,
         )
         session_service = InMemorySessionService()
-        session_id = f"{phase}-{int(time.time() * 1000)}"
+        session_id = f"{phase}-{time.time_ns()}"
         await session_service.create_session(
             app_name=config.app_name,
             user_id=config.user_id,
@@ -478,22 +357,35 @@ class _LiveAdkContext:
         prompt: str,
         *,
         event_summaries: list[DomainTweakAdkEventSummary],
+        deadline: float | None = None,
     ) -> DomainTweakAdkTurn:
         from google.genai import types
 
         content = types.Content(role="user", parts=[types.Part(text=prompt)])
         final_text = ""
         events: list[DomainTweakAdkEventSummary] = []
-        async for event in self._runner.run_async(
+        event_iterator = self._runner.run_async(
             user_id=self._user_id,
             session_id=self._session_id,
             new_message=content,
-        ):
-            summary = summarize_adk_event(event)
-            events.append(summary)
-            event_summaries.append(summary)
-            if summary.is_final_response:
-                final_text = final_text_from_event(event)
+        ).__aiter__()
+        try:
+            async for event in event_iterator:
+                summary = _redact_source_tool_content(summarize_adk_event(event))
+                events.append(summary)
+                event_summaries.append(summary)
+                if summary.is_final_response:
+                    final_text = final_text_from_event(event)
+        finally:
+            close_iterator = getattr(event_iterator, "aclose", None)
+            if callable(close_iterator):
+                try:
+                    if deadline is None:
+                        await close_iterator()
+                    else:
+                        await _run_cleanup_before_deadline(close_iterator, deadline=deadline)
+                except Exception:
+                    _LOGGER.warning("domain_tweak.adk_event_iterator_close_failed", exc_info=True)
         return DomainTweakAdkTurn(final_text=final_text, events=tuple(events))
 
     async def close(self) -> None:
@@ -505,27 +397,130 @@ class _LiveAdkContext:
             await result
 
 
-def _adk_tools_for_phase(phase: DomainTweakAdkPhase) -> list[Any]:
+def _adk_tools(
+    *,
+    search_enabled: bool,
+    function_tools: Sequence[FunctionToolCallable],
+) -> list[Any]:
     from google.adk.tools import FunctionTool
     from google.adk.tools.google_search_tool import GoogleSearchTool
 
-    tools: list[Any] = [GoogleSearchTool(bypass_multi_tools_limit=True)]
-    if phase == "reference_answer":
-        tools.append(FunctionTool(citation_formatter))
+    tools: list[Any] = []
+    if search_enabled:
+        tools.append(GoogleSearchTool(bypass_multi_tools_limit=True))
+    tools.extend(FunctionTool(tool) for tool in function_tools)
     return tools
 
 
-def citation_formatter(url: str, title: str, note: str) -> dict[str, str]:
-    """Return a normalized reference-answer citation object."""
-    return {"url": url.strip(), "title": title.strip(), "note": note.strip()}
+def _attempt(
+    *,
+    attempt_index: int,
+    prompt_kind: DomainTweakAdkPromptKind,
+    final_text: str,
+    validation: DomainTweakValidationOutcome,
+    event_summaries: Sequence[DomainTweakAdkEventSummary],
+    tool_usage: ToolUsageSummary,
+) -> DomainTweakAdkAttempt:
+    retained = _bounded_event_summaries(event_summaries)
+    return DomainTweakAdkAttempt(
+        attempt_index=attempt_index,
+        prompt_kind=prompt_kind,
+        final_text_preview=final_text[:500],
+        final_text_length=len(final_text),
+        validation_ok=validation.ok,
+        validation_feedback=validation.feedback,
+        event_summaries=retained,
+        event_summary_count=len(event_summaries),
+        event_summaries_truncated=len(retained) < len(event_summaries),
+        tool_usage=tool_usage,
+    )
+
+
+def _bounded_event_summaries(
+    events: Sequence[DomainTweakAdkEventSummary],
+) -> tuple[DomainTweakAdkEventSummary, ...]:
+    if len(events) <= _MAX_RETAINED_EVENT_SUMMARIES:
+        return tuple(events)
+    half = _MAX_RETAINED_EVENT_SUMMARIES // 2
+    return (*events[:half], *events[-half:])
+
+
+def _redact_source_tool_content(summary: DomainTweakAdkEventSummary) -> DomainTweakAdkEventSummary:
+    tool_names = {*summary.function_call_names, *summary.function_response_names}
+    if not tool_names.intersection(_SOURCE_TOOL_NAMES):
+        return summary
+    return summary.model_copy(update={"content_text_preview": None})
 
 
 def _agent_name(phase: DomainTweakAdkPhase) -> str:
-    return re.sub(r"[^a-zA-Z0-9_]", "_", f"domain_tweak_{phase}")
+    return re.sub(r"[^a-zA-Z0-9_]", "_", f"domain_tweak_{phase}")[:64]
+
+
+def _function_tool_name(tool: FunctionToolCallable) -> str:
+    return str(getattr(tool, "__name__", type(tool).__name__))
 
 
 def _elapsed_ms(started: float) -> float:
-    return round((time.perf_counter() - started) * 1000, 2)
+    return (time.perf_counter() - started) * 1000
+
+
+def _remaining_timeout(deadline: float) -> float:
+    remaining = deadline - time.perf_counter()
+    if remaining <= 0:
+        raise TimeoutError("ADK stage timeout exceeded before live context setup")
+    return remaining
+
+
+def _is_batch_terminal_adk_error(exc: BaseException) -> bool:
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, (DefaultCredentialsError, RefreshError)):
+            return True
+        if isinstance(current, ClientError) and current.code in {401, 403}:
+            return True
+        if isinstance(current, ToolProviderError) and is_tool_provider_credential_failure(current):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+async def _close_live_context(context: _LiveAdkContext, *, deadline: float) -> None:
+    try:
+        await _run_cleanup_before_deadline(context.close, deadline=deadline)
+    except Exception:
+        _LOGGER.warning("domain_tweak.adk_context_close_failed", exc_info=True)
+
+
+async def _run_cleanup_before_deadline(cleanup: Callable[[], Any], *, deadline: float) -> None:
+    remaining = deadline - time.perf_counter()
+    task = asyncio.ensure_future(cleanup())
+    try:
+        if remaining <= 0:
+            await asyncio.sleep(0)
+            done = {task} if task.done() else set()
+        else:
+            done, _pending = await asyncio.wait((task,), timeout=remaining)
+    except BaseException:
+        task.cancel()
+        task.add_done_callback(_consume_cleanup_result)
+        raise
+    if task in done:
+        await task
+        return
+    task.cancel()
+    task.add_done_callback(_consume_cleanup_result)
+    await asyncio.sleep(0)
+
+
+def _consume_cleanup_result(task: asyncio.Future[Any]) -> None:
+    if task.cancelled():
+        return
+    try:
+        task.exception()
+    except asyncio.CancelledError:
+        return
 
 
 __all__ = [
