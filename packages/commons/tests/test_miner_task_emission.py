@@ -12,6 +12,7 @@ from harnyx_commons.miner_task_emission import (
     compose_emission_weights,
     compose_flat_participant_emission_allocations,
     compose_participant_emission_weights,
+    compose_prioritized_emission,
     compose_tiered_participant_emission_allocations,
     owner_fallback_weights,
     participant_emission_fraction,
@@ -401,3 +402,22 @@ def test_compose_emission_weights_ignores_component_owner_remainders() -> None:
 def test_compose_emission_weights_rejects_combined_overflow() -> None:
     with pytest.raises(ValueError, match="emission exceeds total weight"):
         compose_emission_weights({10: 0.998}, {11: 0.004})
+
+
+def test_prioritized_emission_fills_champion_then_main_then_general_with_full_allocations() -> None:
+    composition = compose_prioritized_emission(
+        {10: 0.992},
+        {11: 0.004, 12: 0.004, 13: 0.004},
+        {14: 0.004},
+    )
+
+    assert composition.weights == {
+        OWNER_UID: pytest.approx(0.0),
+        10: pytest.approx(0.992),
+        11: pytest.approx(0.004),
+        12: pytest.approx(0.004),
+    }
+    assert composition.accepted_main_additions == {11: pytest.approx(0.004), 12: pytest.approx(0.004)}
+    assert composition.dropped_main_additions == {13: pytest.approx(0.004)}
+    assert composition.accepted_general_participation == {}
+    assert composition.dropped_general_participation == {14: pytest.approx(0.004)}

@@ -12,9 +12,12 @@ from harnyx_commons.miner_task_ranking import (
     ArtifactRankingRow,
     CascadeConfig,
     RankingCascade,
+    RankingCascadeStep,
+    RankingCascadeTrace,
     RankingDecisionRule,
     RankingRuleStatus,
     aggregate_ranking_rows,
+    main_participant_priority,
     ordered_challengers,
     run_ranking_cost_usd,
 )
@@ -278,3 +281,24 @@ def test_ordered_challengers_excludes_only_the_incumbent() -> None:
 def test_compose_champion_weights_returns_winner_take_all() -> None:
     assert compose_champion_weights(5) == {5: 1.0}
     assert compose_champion_weights(None) == {}
+
+
+def test_main_participant_priority_uses_reverse_main_lineage_then_reverse_qualifying_order() -> None:
+    incumbent = uuid4()
+    dethroner_a = uuid4()
+    dethroner_b = uuid4()
+    non_dethroner = uuid4()
+    trace = RankingCascadeTrace(
+        initial_artifact_id=incumbent,
+        final_artifact_id=dethroner_b,
+        steps=(
+            RankingCascadeStep(incumbent, dethroner_a, dethroner_a, True),
+            RankingCascadeStep(dethroner_a, non_dethroner, dethroner_a, False),
+            RankingCascadeStep(dethroner_a, dethroner_b, dethroner_b, True),
+        ),
+    )
+
+    assert main_participant_priority(
+        main_trace=trace,
+        qualifying_participant_order=(incumbent, dethroner_a, dethroner_b, non_dethroner),
+    ) == (dethroner_b, dethroner_a, incumbent, non_dethroner)

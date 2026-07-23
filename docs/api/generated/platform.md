@@ -846,7 +846,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 <a id="endpoint-post-v1-platform-tool-proxy-grants"></a>
 #### POST /v1/platform-tool-proxy/grants
 
-Create a short-lived platform-tool-proxy token for a validator-owned batch delivery.
+Create a short-lived platform-tool-proxy token for a validator-owned task attempt.
 
 **Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
 

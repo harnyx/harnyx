@@ -86,6 +86,25 @@ class RankingCascadeTrace:
     def successful_dethroner_artifact_ids(self) -> tuple[UUID, ...]:
         return tuple(step.challenger_artifact_id for step in self.steps if step.dethroned)
 
+    def reverse_champion_lineage(self) -> tuple[UUID, ...]:
+        """Return final champion first, followed by the champions it superseded."""
+
+        lineage = (
+            () if self.initial_artifact_id is None else (self.initial_artifact_id,)
+        ) + self.successful_dethroner_artifact_ids()
+        return tuple(reversed(tuple(dict.fromkeys(lineage))))
+
+
+def main_participant_priority(
+    *,
+    main_trace: RankingCascadeTrace,
+    qualifying_participant_order: Sequence[UUID],
+) -> tuple[UUID, ...]:
+    """Order main participants by final lineage, then reverse qualifying performance."""
+
+    ordered = main_trace.reverse_champion_lineage() + tuple(reversed(qualifying_participant_order))
+    return tuple(dict.fromkeys(ordered))
+
 
 @dataclass(frozen=True)
 class CascadeConfig:
@@ -543,6 +562,7 @@ __all__ = [
     "TIME_REDUCTION_MIN_MS",
     "TIME_REDUCTION_REQUIRED",
     "aggregate_ranking_rows",
+    "main_participant_priority",
     "ordered_challengers",
     "run_contribution_score",
     "run_ranking_cost_usd",
