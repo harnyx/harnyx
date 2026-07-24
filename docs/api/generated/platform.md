@@ -277,12 +277,6 @@ Body: [CreateBatchRequest](#model-createbatchrequest)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `champion_artifact_id` |  |  | opt | `string` (format: uuid; nullable) |
-| `override_task_dataset` |  |  | opt | [OverrideMinerTaskDatasetModel](#model-overrideminertaskdatasetmodel) (nullable) |
-|  | `tasks` |  | req | array[[MinerTaskInputModel](#model-minertaskinputmodel)] |
-|  |  | `budget_usd` | opt | `number` (default: 0.5) |
-|  |  | `query` | req | [Query](#model-query) |
-|  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
-|  |  | `task_id` | req | `string` (format: uuid) |
 | `use_previous_task_dataset` |  |  | opt | `boolean` (default: False) |
 
 **Responses**
@@ -1400,12 +1394,6 @@ Body: [WeightsResponse](#model-weightsresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `champion_artifact_id` |  |  | opt | `string` (format: uuid; nullable) |
-| `override_task_dataset` |  |  | opt | [OverrideMinerTaskDatasetModel](#model-overrideminertaskdatasetmodel) (nullable) |
-|  | `tasks` |  | req | array[[MinerTaskInputModel](#model-minertaskinputmodel)] |
-|  |  | `budget_usd` | opt | `number` (default: 0.5) |
-|  |  | `query` | req | [Query](#model-query) |
-|  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
-|  |  | `task_id` | req | `string` (format: uuid) |
 | `use_previous_task_dataset` |  |  | opt | `boolean` (default: False) |
 
 <details>
@@ -1426,16 +1414,6 @@ Body: [WeightsResponse](#model-weightsresponse)
         }
       ],
       "title": "Champion Artifact Id"
-    },
-    "override_task_dataset": {
-      "anyOf": [
-        {
-          "$ref": "#/components/schemas/OverrideMinerTaskDatasetModel"
-        },
-        {
-          "type": "null"
-        }
-      ]
     },
     "use_previous_task_dataset": {
       "default": false,
@@ -4081,60 +4059,6 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
-<a id="model-minertaskinputmodel"></a>
-### Model: MinerTaskInputModel
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `budget_usd` |  |  | opt | `number` (default: 0.5) |
-| `query` |  |  | req | [Query](#model-query) |
-|  | `output_schema` |  | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
-|  | `text` |  | req | `string` |
-| `reference_answer` |  |  | req | [ReferenceAnswer](#model-referenceanswer) |
-|  | `citations` |  | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
-|  |  | `note` | opt | `string` (nullable) |
-|  |  | `title` | opt | `string` (nullable) |
-|  |  | `url` | req | `string` |
-|  | `text` |  | req | `string` |
-| `task_id` |  |  | req | `string` (format: uuid) |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "additionalProperties": false,
-  "properties": {
-    "budget_usd": {
-      "default": 0.5,
-      "minimum": 0.0,
-      "title": "Budget Usd",
-      "type": "number"
-    },
-    "query": {
-      "$ref": "#/components/schemas/Query"
-    },
-    "reference_answer": {
-      "$ref": "#/components/schemas/ReferenceAnswer"
-    },
-    "task_id": {
-      "format": "uuid",
-      "title": "Task Id",
-      "type": "string"
-    }
-  },
-  "required": [
-    "task_id",
-    "query",
-    "reference_answer"
-  ],
-  "title": "MinerTaskInputModel",
-  "type": "object"
-}
-```
-
-</details>
-
 <a id="model-minertaskresultoutcome"></a>
 ### Model: MinerTaskResultOutcome
 
@@ -5745,47 +5669,6 @@ Body: [WeightsResponse](#model-weightsresponse)
     "server_time"
   ],
   "title": "MinerTaskWorkTasksResponse",
-  "type": "object"
-}
-```
-
-</details>
-
-<a id="model-overrideminertaskdatasetmodel"></a>
-### Model: OverrideMinerTaskDatasetModel
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `tasks` |  |  | req | array[[MinerTaskInputModel](#model-minertaskinputmodel)] |
-|  | `budget_usd` |  | opt | `number` (default: 0.5) |
-|  | `query` |  | req | [Query](#model-query) |
-|  |  | `output_schema` | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
-|  |  | `text` | req | `string` |
-|  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
-|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
-|  |  | `text` | req | `string` |
-|  | `task_id` |  | req | `string` (format: uuid) |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "additionalProperties": false,
-  "properties": {
-    "tasks": {
-      "items": {
-        "$ref": "#/components/schemas/MinerTaskInputModel"
-      },
-      "minItems": 1,
-      "title": "Tasks",
-      "type": "array"
-    }
-  },
-  "required": [
-    "tasks"
-  ],
-  "title": "OverrideMinerTaskDatasetModel",
   "type": "object"
 }
 ```
