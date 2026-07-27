@@ -69,6 +69,7 @@ Notes:
 
 **Validator flow + gating**
 - The platform owns the miner-task work ledger; validators poll for assigned task attempts, run script x task combinations, and submit task results.
+- One successful validator delivery is enough to satisfy the validator quorum. Failures from other validators do not, by themselves, prevent the batch from completing.
 - Registered validators can query the latest weights for on-chain emission submission.
 - Miner emission keeps champion emission active and adds the base participant-emission level per distinct miner hotkey whose artifact participated in the latest terminal source batch with artifacts; the final owner `uid=0` remainder, including unregistered participant shares, burns miner emission and is not paid to the owner.
 - The [live benchmark page](https://dashboard.harnyx.ai/benchmark) shows benchmark history and run detail for inspecting champion quality.
