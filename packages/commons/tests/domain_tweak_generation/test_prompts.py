@@ -9,6 +9,7 @@ from harnyx_commons.domain_tweak_generation.prompts import (
     question_generation_prompt,
     reference_answer_prompt,
     semantic_support_prompt,
+    structured_output_materialization_prompt,
 )
 from harnyx_commons.domain_tweak_generation.types import (
     DomainTweakAdkPhaseResult,
@@ -26,6 +27,8 @@ from harnyx_commons.miner_task_generation import (
     DomainTweakReferenceAnswerOutput,
     DomainTweakReferenceClaim,
     DomainTweakRequirementCategoryAudit,
+    DomainTweakStructuredFieldBinding,
+    DomainTweakStructuredOutputMaterialization,
 )
 
 
@@ -96,6 +99,60 @@ def test_semantic_gate_prompt_requires_exact_findings_without_rewriting() -> Non
     assert "Authority is not claim binding" in prompt
 
 
+def test_materialization_prompt_is_no_search_requested_output_only_and_fail_closed() -> None:
+    prompt = structured_output_materialization_prompt(
+        _reviewed(),
+        _reference_output(),
+    )
+
+    assert "Without searching, solving, or correcting facts" in prompt
+    assert "Filter operands" in prompt
+    assert "unless the question explicitly requests them" in prompt
+    assert "One meaningful field is valid" in prompt
+    assert "Every object property is required" in prompt
+    assert "Do not emit `$schema`" in prompt
+    assert "`not_materializable`" in prompt
+    assert "Extra top-level envelope fields are ignored" in prompt
+
+
+def test_structured_semantic_prompt_receives_exact_validated_materialization() -> None:
+    prompt = semantic_support_prompt(
+        _reviewed(),
+        _reference_output(),
+        evidence_windows=({"window_id": "window-1", "content": "A qualifies."},),
+        materialization=DomainTweakStructuredOutputMaterialization(
+            disposition="materialized",
+            rationale="One requested list is sufficient.",
+            output_schema={
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                    "candidates": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    }
+                },
+                "required": ["candidates"],
+                "additionalProperties": False,
+            },
+            structured_output={"candidates": ["A"]},
+            field_bindings=(
+                DomainTweakStructuredFieldBinding(
+                    schema_path="candidates[]",
+                    answer_evidence="The reference identifies A.",
+                    requirement_ids=("metric",),
+                    claim_ids=("answer",),
+                    evidence_window_ids=("window-1",),
+                ),
+            ),
+        ),
+    )
+
+    assert '"schema_path": "candidates[]"' in prompt
+    assert '"requirement_ids": [' in prompt
+    assert "exactly one `structured_field_finding`" in prompt
+
+
 def _pair() -> DomainTweakPairInput:
     return DomainTweakPairInput(
         pair_id="pair-001",
@@ -105,9 +162,7 @@ def _pair() -> DomainTweakPairInput:
     )
 
 
-def _blueprint(
-    *, semantic_ambiguities: tuple[str, ...] = ()
-) -> DomainTweakFormBlueprint:
+def _blueprint(*, semantic_ambiguities: tuple[str, ...] = ()) -> DomainTweakFormBlueprint:
     return DomainTweakFormBlueprint(
         status="proceed",
         operation="Filter a closed candidate set by two retrieved predicates.",

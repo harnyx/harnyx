@@ -12,12 +12,14 @@ from harnyx_commons.domain_tweak_generation.adk_runner import DomainTweakAdkRunn
 from harnyx_commons.domain_tweak_generation.pipeline import DomainTweakGenerationPipeline
 from harnyx_commons.domain_tweak_generation.source_evidence import BatchSourceEvidence
 from harnyx_commons.domain_tweak_generation.types import (
+    DomainTweakAdkEventSummary,
     DomainTweakAdkRunConfig,
     DomainTweakDiscardedCandidate,
     DomainTweakFinalizedTask,
     DomainTweakReviewedQuestion,
     DomainTweakSourceEvidencePolicy,
 )
+from harnyx_commons.llm.schema import LlmUsage
 from harnyx_commons.miner_task_generation import (
     DOMAIN_TWEAK_REQUIREMENT_CATEGORIES,
     DomainTweakClaim,
@@ -73,12 +75,14 @@ class _Executor:
     form_match: bool = True
     reference_mode: str = "finalized"
     semantic_mode: str = "pass"
+    materialization_usage: bool = False
     calls: list[dict[str, object]] = field(default_factory=list)
 
     async def __call__(self, **kwargs: object) -> DomainTweakAdkTurn:
         self.calls.append(kwargs)
         phase = str(kwargs["phase"])
         prompt = str(kwargs["prompt"])
+        attempt_index = int(kwargs["attempt_index"])
         if phase == "form_blueprint":
             payload = _blueprint().model_dump(mode="json")
         elif phase == "question_generation":
@@ -88,12 +92,40 @@ class _Executor:
         elif phase == "reference_answer_generation":
             window_id = _window_id_from_prompt(prompt)
             payload = self._reference_payload(window_id)
-        elif phase == "semantic_support_gate":
+        elif phase == "structured_output_materialization":
             window_id = _window_id_from_prompt(prompt)
-            payload = self._semantic_payload(window_id)
+            payload = _materialization_payload(window_id)
+        elif phase == "semantic_support_gate":
+            if attempt_index == 0:
+                window_id = _window_id_from_prompt(prompt)
+            else:
+                initial_prompt = next(
+                    str(call["prompt"])
+                    for call in reversed(self.calls)
+                    if call is not kwargs and call["phase"] == "semantic_support_gate" and call["attempt_index"] == 0
+                )
+                window_id = _window_id_from_prompt(initial_prompt)
+            payload = self._semantic_payload(
+                window_id,
+                structured=(self.semantic_mode == "coverage_then_repair" or '"disposition": "materialized"' in prompt),
+                attempt_index=attempt_index,
+            )
         else:
             raise AssertionError(f"unexpected phase {phase}")
-        return DomainTweakAdkTurn(final_text=json.dumps(payload), events=())
+        events = (
+            (
+                DomainTweakAdkEventSummary(
+                    usage=LlmUsage(
+                        prompt_tokens=6,
+                        completion_tokens=4,
+                        total_tokens=10,
+                    )
+                ),
+            )
+            if phase == "structured_output_materialization" and self.materialization_usage
+            else ()
+        )
+        return DomainTweakAdkTurn(final_text=json.dumps(payload), events=events)
 
     def _reference_payload(self, window_id: str) -> dict[str, object]:
         if self.reference_mode == "abandon":
@@ -125,8 +157,14 @@ class _Executor:
             "abandon_reason": None,
         }
 
-    def _semantic_payload(self, window_id: str) -> dict[str, object]:
-        supported = self.semantic_mode == "pass"
+    def _semantic_payload(
+        self,
+        window_id: str,
+        *,
+        structured: bool = False,
+        attempt_index: int = 0,
+    ) -> dict[str, object]:
+        supported = self.semantic_mode in {"pass", "coverage_then_repair"}
         return {
             "status": "pass" if supported or self.semantic_mode == "missing_requirement" else "abandon",
             "requirement_findings": (
@@ -149,6 +187,22 @@ class _Executor:
                     "explanation": "The window establishes the answer claim.",
                 }
             ],
+            "structured_field_findings": (
+                [
+                    {
+                        "schema_path": "candidates[]",
+                        "support_status": "supported" if supported else "unsupported",
+                        "requirement_ids": ["metric"],
+                        "claim_ids": ["answer"],
+                        "evidence_window_ids": (
+                            [] if self.semantic_mode == "coverage_then_repair" and attempt_index == 0 else [window_id]
+                        ),
+                        "explanation": "The requested list value is grounded by the answer claim.",
+                    }
+                ]
+                if structured
+                else []
+            ),
             "unmanifested_material_claims": [],
             "abandon_reason": (
                 None
@@ -204,6 +258,76 @@ async def test_finalize_hydrates_only_acquired_window_and_preserves_answer_text_
     assert gate_call["function_tool_names"] == ()
 
 
+async def test_structured_finalize_materializes_after_delivery_and_before_semantic_gate() -> None:
+    executor = _Executor(materialization_usage=True)
+    outcome = await _pipeline(
+        executor,
+        provider=_ExtractionProvider(),
+    ).finalize_task(
+        _reviewed(),
+        requested_response_mode="structured",
+    )
+
+    assert isinstance(outcome, DomainTweakFinalizedTask)
+    assert outcome.task.query.output_schema is not None
+    assert outcome.task.query.output_schema["properties"] == {
+        "candidates": {"type": "array", "items": {"type": "string"}}
+    }
+    assert outcome.task.reference_answer.text == '{"candidates":["A"]}'
+    finalization_phases = [
+        call["phase"]
+        for call in executor.calls
+        if call["phase"]
+        in {
+            "reference_answer_generation",
+            "structured_output_materialization",
+            "semantic_support_gate",
+        }
+    ]
+    assert finalization_phases == [
+        "reference_answer_generation",
+        "structured_output_materialization",
+        "semantic_support_gate",
+    ]
+    materialization_call = next(call for call in executor.calls if call["phase"] == "structured_output_materialization")
+    assert materialization_call["search_enabled"] is False
+    assert materialization_call["function_tool_names"] == ()
+    assert outcome.structured_materialization_result is not None
+    materialization_usage = outcome.structured_materialization_result.tool_usage
+    assert materialization_usage.llm.call_count == 1
+    assert materialization_usage.llm.prompt_tokens == 6
+    assert materialization_usage.llm.completion_tokens == 4
+    assert materialization_usage.llm.total_tokens == 10
+    assert materialization_usage.reference_total_cost_usd > 0
+    assert outcome.tool_usage.llm.prompt_tokens == 6
+    assert outcome.tool_usage.llm.completion_tokens == 4
+    assert outcome.tool_usage.llm.total_tokens == 10
+    assert outcome.tool_usage.llm.cost == materialization_usage.llm.cost
+    assert (
+        outcome.tool_usage.reference_cost_by_provider["vertex"]
+        == materialization_usage.reference_cost_by_provider["vertex"]
+    )
+
+
+async def test_structured_semantic_coverage_feedback_retries_before_discarding() -> None:
+    executor = _Executor(semantic_mode="coverage_then_repair")
+    outcome = await _pipeline(
+        executor,
+        provider=_ExtractionProvider(),
+        max_retries=1,
+    ).finalize_task(
+        _reviewed(),
+        requested_response_mode="structured",
+    )
+
+    assert isinstance(outcome, DomainTweakFinalizedTask)
+    assert outcome.semantic_support_result is not None
+    assert len(outcome.semantic_support_result.attempts) == 2
+    first_attempt, repaired_attempt = outcome.semantic_support_result.attempts
+    assert first_attempt.validation_feedback == ("candidates[] evidence windows must exactly match its binding",)
+    assert repaired_attempt.validation_feedback == ()
+
+
 async def test_unacquired_reference_window_is_discarded_before_semantic_gate() -> None:
     executor = _Executor(reference_mode="unknown_window")
     outcome = await _pipeline(executor, provider=_ExtractionProvider()).finalize_task(_reviewed())
@@ -253,6 +377,7 @@ def _pipeline(
     *,
     provider: _ExtractionProvider | None = None,
     timeout_seconds: float = 600,
+    max_retries: int = 0,
 ) -> DomainTweakGenerationPipeline:
     source_evidence = (
         BatchSourceEvidence(
@@ -265,8 +390,8 @@ def _pipeline(
     )
     return DomainTweakGenerationPipeline(
         config=DomainTweakAdkRunConfig(
-            model="gemini-test",
-            max_retries=0,
+            model="gemini-3.1-pro-preview",
+            max_retries=max_retries,
             phase_timeout_seconds=timeout_seconds,
         ),
         runner=DomainTweakAdkRunner(turn_executor=executor),
@@ -375,7 +500,40 @@ def _review(*, form_match: bool = True) -> DomainTweakFormReview:
 
 
 def _window_id_from_prompt(prompt: str) -> str:
-    match = re.search(r'"window_id": "(window_[^"]+)"', prompt)
+    match = re.search(
+        r'"(?:window_id|evidence_window_ids)"\s*:\s*(?:\[\s*)?"(window_[^"]+)"',
+        prompt,
+    )
     if match is None:
         raise AssertionError("prompt did not contain an acquired window")
     return match.group(1)
+
+
+def _materialization_payload(window_id: str) -> dict[str, object]:
+    return {
+        "disposition": "materialized",
+        "rationale": "The question requests one exhaustive candidate list.",
+        "output_schema_json": json.dumps(
+            {
+                "type": "object",
+                "properties": {
+                    "candidates": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    }
+                },
+                "required": ["candidates"],
+                "additionalProperties": False,
+            }
+        ),
+        "structured_output_json": json.dumps({"candidates": ["A"]}),
+        "field_bindings": [
+            {
+                "schema_path": "candidates[]",
+                "answer_evidence": "The grounded reference identifies A.",
+                "requirement_ids": ["metric"],
+                "claim_ids": ["answer"],
+                "evidence_window_ids": [window_id],
+            }
+        ],
+    }

@@ -40,7 +40,10 @@ class DomainTweakMinerTaskDatasetBuilder:
 
     async def build_with_result(self, request: MinerTaskDatasetRequest) -> DomainTweakBatchGenerationResult:
         target_count = request.minimum_task_total
-        config = DomainTweakBatchGenerationConfig(target_count=target_count)
+        config = DomainTweakBatchGenerationConfig(
+            target_count=target_count,
+            structured_target_count=target_count // 2,
+        )
         if request.created_at is None:
             raise ValueError("domain-tweak miner-task generation requires request.created_at")
         pair_inputs = await self._pair_source.load_pair_inputs(

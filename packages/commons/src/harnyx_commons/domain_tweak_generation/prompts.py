@@ -13,6 +13,7 @@ from harnyx_commons.miner_task_generation import (
     DomainTweakPairInput,
     DomainTweakQuestionPacket,
     DomainTweakReferenceAnswerOutput,
+    DomainTweakStructuredOutputMaterialization,
 )
 
 
@@ -37,6 +38,12 @@ def phase_instruction(phase: DomainTweakAdkPhase) -> str:
             return (
                 "You reconstruct a supplied question-generation proposal from acquired source content, "
                 "perform only bounded correction, and write a complete reader-facing reference answer."
+            )
+        case "structured_output_materialization":
+            return (
+                "You are a no-search output materializer. Convert only the requested values in a supplied "
+                "grounded question and reference answer into one bounded JSON schema and matching JSON value. "
+                "Do not solve, research, or correct facts."
             )
         case "semantic_support_gate":
             return (
@@ -307,12 +314,73 @@ Return every schema field. An abandon output must use null answer fields and emp
 only the native structured response; do not add prose or a Markdown fence."""
 
 
+def structured_output_materialization_prompt(
+    reviewed_question: DomainTweakReviewedQuestion,
+    reference_output: DomainTweakReferenceAnswerOutput,
+) -> str:
+    return f"""WORK ORDER
+Without searching, solving, or correcting facts, convert the supplied grounded question and reference answer
+into one bounded JSON output contract and one matching reference value. Return only values the question asks
+the respondent to provide. Filter operands, supporting context, dates, and explanations are not output fields
+unless the question explicitly requests them.
+
+QUESTION
+{reviewed_question.question_packet.question}
+
+CONCRETE QUESTION REQUIREMENTS
+{_json(reviewed_question.form_review.question_requirements)}
+
+GROUNDED REFERENCE ANSWER
+{_json(reference_output)}
+
+DECISION CRITERIA
+Return `materialized` when at least one meaningful fixed output field can represent the requested answer without
+changing its meaning. Return `not_materializable` when the requested answer cannot be represented inside the
+allowed schema subset. Do not weaken or reinterpret the question merely to make it materializable.
+
+ALLOWED SCHEMA SUBSET
+- The root must be an object with one or more fixed lowercase snake_case properties.
+- Property names must match `^[a-z][a-z0-9_]{{0,63}}$`.
+- Every object property is required and every object has `additionalProperties: false`.
+- Allowed types are object, array, string, integer, number, and boolean.
+- Arrays have exactly one `items` schema. Primitive leaves contain only `type`.
+- Use only `type`, `properties`, `required`, `additionalProperties`, and `items`.
+- Do not emit `$schema`, annotations, descriptions, titles, defaults, examples, references, formats, patterns,
+  numeric or length constraints, tuple arrays, composition, conditionals, or dynamic/unevaluated keywords.
+
+PROCEDURE
+1. Identify the exact values the question requests the respondent to return.
+2. Choose the smallest natural fixed structure. One meaningful field is valid.
+3. Encode the schema as strict JSON text in `output_schema_json`.
+4. Encode the matching reference value as strict JSON text in `structured_output_json`.
+5. Emit one `field_binding` for every primitive leaf path. Use `[]` after array segments, for example
+   `candidates[]` or `results[].name`.
+6. Bind each leaf to exact supplied requirement IDs, reference claim IDs, and acquired evidence window IDs.
+   `answer_evidence` briefly identifies the supplied answer material that fixes that value.
+
+GOOD EXAMPLE
+If the question asks only which candidates qualify, return one `candidates` string-array field. Do not also
+return the threshold, year, scores, or explanation used to determine qualification.
+
+BAD EXAMPLE
+Do not create a generic `answer` field containing prose, add a `release_year` field merely because the reference
+mentions it, or place instructions in property names or schema annotations.
+
+OUTPUT
+Return every native structured-response field. For `not_materializable`, use null JSON-string fields and an empty
+binding array. Extra top-level envelope fields are ignored, but required fields must be present."""
+
+
 def semantic_support_prompt(
     reviewed_question: DomainTweakReviewedQuestion,
     reference_output: DomainTweakReferenceAnswerOutput,
     *,
     evidence_windows: tuple[dict[str, object], ...],
+    materialization: DomainTweakStructuredOutputMaterialization | None = None,
 ) -> str:
+    structured_contract = (
+        _json(materialization) if materialization is not None else "No structured output materialization was requested."
+    )
     return f"""WORK ORDER
 Without searching or rewriting the answer, decide whether the supplied reference answer and acquired source
 windows would sufficiently persuade a careful judge. This is an evidence-quality gate, not an oracle-truth test:
@@ -327,6 +395,9 @@ CONCRETE QUESTION REQUIREMENTS
 
 REFERENCE ANSWER OUTPUT
 {_json(reference_output)}
+
+STRUCTURED OUTPUT MATERIALIZATION
+{structured_contract}
 
 ACQUIRED EVIDENCE WINDOWS
 {json.dumps(evidence_windows, ensure_ascii=False, indent=2)}
@@ -349,13 +420,18 @@ PROCEDURE
    derivation valid; an `other` relation remains subject to the full semantic decision criteria.
 5. List any answer-determining or explanatory factual assertion in the answer text that is absent from the claim
    manifest under `unmanifested_material_claims`.
-6. Do not improve, rewrite, or complete the answer. A pass preserves its text byte-for-byte downstream.
+6. When a structured materialization is supplied, emit exactly one `structured_field_finding` for every
+   primitive schema leaf path. Independently verify that each value is requested by its bound requirement IDs,
+   fixed by its bound reference claim IDs, and supported by the named acquired windows. Use the exact binding IDs.
+7. When no structured materialization is supplied, emit an empty `structured_field_findings` array.
+8. Do not improve, rewrite, or complete the answer. A pass preserves its text byte-for-byte downstream.
 
 FIELD INTERPRETATION
 - `support_status`: whether the exact requirement or claim is adequately defended, not merely topically related.
 - `evidence_window_ids`: acquired windows that carry the support; never use URLs or invented IDs.
 - `explanation`: concise claim-to-evidence or derivation analysis.
 - `unmanifested_material_claims`: material answer assertions with no claim ID; empty only when none exist.
+- `structured_field_findings`: exact per-leaf adjudication of a supplied structured value and its bindings.
 - `status`: `pass` only when all findings are supported and the unmanifested list is empty.
 - `abandon_reason`: concise combined reason for rejection; null on pass.
 
@@ -395,4 +471,5 @@ __all__ = [
     "question_generation_prompt",
     "reference_answer_prompt",
     "semantic_support_prompt",
+    "structured_output_materialization_prompt",
 ]

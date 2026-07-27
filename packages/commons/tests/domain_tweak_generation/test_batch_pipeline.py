@@ -69,16 +69,31 @@ class _Executor:
     abandon_pairs: set[str] = field(default_factory=set)
     rejected_form_pairs: set[str] = field(default_factory=set)
     duplicate_question_pairs: dict[str, str] = field(default_factory=dict)
+    not_materializable_pairs: set[str] = field(default_factory=set)
     reference_delay_seconds: float = 0.0
     reference_calls: Counter[str] = field(default_factory=Counter)
     calls: list[tuple[str, str]] = field(default_factory=list)
     active_reference_calls: int = 0
     max_active_reference_calls: int = 0
+    repair_structured_semantic_coverage: bool = False
+    semantic_pair_id: str | None = None
+    semantic_window_id: str | None = None
+    semantic_structured: bool = False
 
     async def __call__(self, **kwargs: object) -> DomainTweakAdkTurn:
         phase = str(kwargs["phase"])
         prompt = str(kwargs["prompt"])
-        pair_id = _pair_id_from_prompt(prompt)
+        attempt_index = int(kwargs["attempt_index"])
+        if (
+            phase == "semantic_support_gate"
+            and attempt_index > 0
+            and self.repair_structured_semantic_coverage
+        ):
+            if self.semantic_pair_id is None:
+                raise AssertionError("semantic retry did not retain its initial pair")
+            pair_id = self.semantic_pair_id
+        else:
+            pair_id = _pair_id_from_prompt(prompt)
         self.calls.append((phase, pair_id))
         if phase == "form_blueprint":
             payload = _blueprint_payload()
@@ -106,8 +121,26 @@ class _Executor:
                 )
             finally:
                 self.active_reference_calls -= 1
+        elif phase == "structured_output_materialization":
+            payload = (
+                _not_materializable_payload()
+                if pair_id in self.not_materializable_pairs
+                else _materialization_payload(_window_id_from_prompt(prompt))
+            )
         elif phase == "semantic_support_gate":
-            payload = _semantic_payload(_window_id_from_prompt(prompt))
+            if attempt_index == 0:
+                self.semantic_pair_id = pair_id
+                self.semantic_window_id = _window_id_from_prompt(prompt)
+                self.semantic_structured = '"disposition": "materialized"' in prompt
+            if self.semantic_window_id is None:
+                raise AssertionError("semantic phase did not retain its acquired window")
+            payload = _semantic_payload(
+                self.semantic_window_id,
+                structured=self.semantic_structured,
+                omit_structured_window=(
+                    self.repair_structured_semantic_coverage and attempt_index == 0
+                ),
+            )
         else:
             raise AssertionError(f"unexpected phase {phase}")
         return DomainTweakAdkTurn(final_text=json.dumps(payload), events=())
@@ -157,17 +190,19 @@ class _TerminalFailureExecutor:
             payload = _form_review_payload(form_match=True)
         elif phase == "reference_answer_generation":
             payload = _reference_payload(_window_id_from_prompt(prompt))
+        elif phase == "structured_output_materialization":
+            payload = _materialization_payload(_window_id_from_prompt(prompt))
         elif phase == "semantic_support_gate":
-            payload = _semantic_payload(_window_id_from_prompt(prompt))
+            payload = _semantic_payload(
+                _window_id_from_prompt(prompt),
+                structured='"disposition": "materialized"' in prompt,
+            )
         else:
             raise AssertionError(f"unexpected phase {phase}")
 
         if pair_id == "PAIR-002" and (
             (self.failure_phase == "form_blueprint" and phase == "form_review")
-            or (
-                self.failure_phase == "reference_answer_generation"
-                and phase == "semantic_support_gate"
-            )
+            or (self.failure_phase == "reference_answer_generation" and phase == "semantic_support_gate")
         ):
             self.sibling_completed.set()
         return DomainTweakAdkTurn(final_text=json.dumps(payload), events=())
@@ -188,6 +223,56 @@ async def test_failed_candidate_is_replaced_from_unused_pair_without_same_pair_r
     assert executor.reference_calls == Counter({"PAIR-001": 1, "PAIR-002": 1, "PAIR-003": 1})
     assert result.candidate_finalization_attempt_count == 3
     assert not result.underfilled
+
+
+async def test_failed_structured_slot_is_replaced_by_a_fresh_structured_candidate() -> None:
+    executor = _Executor(not_materializable_pairs={"PAIR-002"})
+    result = await _batch(executor).generate_batch(
+        _pairs(4),
+        DomainTweakBatchGenerationConfig(
+            target_count=2,
+            structured_target_count=1,
+        ),
+    )
+
+    assert [item.reviewed_question.pair_input.pair_id for item in result.finalized_tasks] == ["PAIR-001", "PAIR-003"]
+    assert result.finalized_tasks[0].task.query.output_schema is None
+    assert result.finalized_tasks[1].task.query.output_schema is not None
+    assert result.discarded_candidates[0].requested_response_mode == "structured"
+    assert result.discarded_candidates[0].reason == "structured_output_not_materializable"
+
+
+async def test_ten_task_generation_finalizes_five_plain_and_five_structured() -> None:
+    result = await _batch(_Executor()).generate_batch(
+        _pairs(10),
+        DomainTweakBatchGenerationConfig(
+            target_count=10,
+            structured_target_count=5,
+        ),
+    )
+
+    assert len(result.finalized_tasks) == 10
+    assert sum(item.task.query.output_schema is None for item in result.finalized_tasks) == 5
+    assert sum(item.task.query.output_schema is not None for item in result.finalized_tasks) == 5
+
+
+async def test_batch_wiring_retries_structured_semantic_coverage_feedback() -> None:
+    executor = _Executor(repair_structured_semantic_coverage=True)
+    result = await _batch(executor).generate_batch(
+        _pairs(1),
+        DomainTweakBatchGenerationConfig(
+            target_count=1,
+            structured_target_count=1,
+        ),
+    )
+
+    assert len(result.finalized_tasks) == 1
+    semantic_result = result.finalized_tasks[0].semantic_support_result
+    assert semantic_result is not None
+    assert len(semantic_result.attempts) == 2
+    assert semantic_result.attempts[0].validation_feedback == (
+        "candidates[] evidence windows must exactly match its binding",
+    )
 
 
 async def test_all_discards_stop_at_existing_four_times_global_pair_cap() -> None:
@@ -407,7 +492,12 @@ def _abandon_payload() -> dict[str, object]:
     }
 
 
-def _semantic_payload(window_id: str) -> dict[str, object]:
+def _semantic_payload(
+    window_id: str,
+    *,
+    structured: bool = False,
+    omit_structured_window: bool = False,
+) -> dict[str, object]:
     return {
         "status": "pass",
         "requirement_findings": [
@@ -426,8 +516,62 @@ def _semantic_payload(window_id: str) -> dict[str, object]:
                 "explanation": "The table supports the answer claim.",
             }
         ],
+        "structured_field_findings": (
+            [
+                {
+                    "schema_path": "candidates[]",
+                    "support_status": "supported",
+                    "requirement_ids": ["metric"],
+                    "claim_ids": ["answer"],
+                    "evidence_window_ids": [] if omit_structured_window else [window_id],
+                    "explanation": "The requested list value is grounded by the answer claim.",
+                }
+            ]
+            if structured
+            else []
+        ),
         "unmanifested_material_claims": [],
         "abandon_reason": None,
+    }
+
+
+def _materialization_payload(window_id: str) -> dict[str, object]:
+    return {
+        "disposition": "materialized",
+        "rationale": "The question requests one candidate list.",
+        "output_schema_json": json.dumps(
+            {
+                "type": "object",
+                "properties": {
+                    "candidates": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    }
+                },
+                "required": ["candidates"],
+                "additionalProperties": False,
+            }
+        ),
+        "structured_output_json": json.dumps({"candidates": ["Answer"]}),
+        "field_bindings": [
+            {
+                "schema_path": "candidates[]",
+                "answer_evidence": "The grounded reference identifies the candidate.",
+                "requirement_ids": ["metric"],
+                "claim_ids": ["answer"],
+                "evidence_window_ids": [window_id],
+            }
+        ],
+    }
+
+
+def _not_materializable_payload() -> dict[str, object]:
+    return {
+        "disposition": "not_materializable",
+        "rationale": "The requested value cannot fit the bounded subset.",
+        "output_schema_json": None,
+        "structured_output_json": None,
+        "field_bindings": [],
     }
 
 
@@ -439,7 +583,10 @@ def _pair_id_from_prompt(prompt: str) -> str:
 
 
 def _window_id_from_prompt(prompt: str) -> str:
-    match = re.search(r'"window_id": "(window_[^"]+)"', prompt)
+    match = re.search(
+        r'"(?:window_id|evidence_window_ids)"\s*:\s*(?:\[\s*)?"(window_[^"]+)"',
+        prompt,
+    )
     if match is None:
         raise AssertionError("prompt did not contain an acquired window")
     return match.group(1)

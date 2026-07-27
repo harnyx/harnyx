@@ -33,6 +33,7 @@ from harnyx_commons.domain_tweak_generation.prompts import (
     question_generation_prompt,
     reference_answer_prompt,
     semantic_support_prompt,
+    structured_output_materialization_prompt,
 )
 from harnyx_commons.domain_tweak_generation.source_evidence import (
     DOMAIN_TWEAK_ADDITIONAL_EXPLANATION_CLAIM_ID,
@@ -57,6 +58,7 @@ from harnyx_commons.domain_tweak_generation.types import (
     DomainTweakQuestionPhasePolicy,
     DomainTweakReferenceAnswerPhasePolicy,
     DomainTweakRejectedQuestionAttempt,
+    DomainTweakResponseMode,
     DomainTweakReviewedQuestion,
     DomainTweakSourceEvidencePolicy,
     DomainTweakSourceEvidenceSummary,
@@ -71,6 +73,7 @@ from harnyx_commons.domain_tweak_generation.validation import (
     validate_question_generation_output,
     validate_reference_answer_output,
     validate_semantic_support_output,
+    validate_structured_output_materialization,
 )
 
 __all__ = [
@@ -99,6 +102,7 @@ __all__ = [
     "DomainTweakPairInputSource",
     "DomainTweakPairRunResult",
     "DomainTweakQuestionPhasePolicy",
+    "DomainTweakResponseMode",
     "DomainTweakReferenceAnswerPhasePolicy",
     "DomainTweakRejectedQuestionAttempt",
     "DomainTweakReviewedQuestion",
@@ -120,6 +124,7 @@ __all__ = [
     "reference_delivery_feedback",
     "semantic_support_coverage_feedback",
     "semantic_support_prompt",
+    "structured_output_materialization_prompt",
     "summarize_adk_event",
     "tool_usage_from_adk_events",
     "validate_direct_public_url",
@@ -128,4 +133,5 @@ __all__ = [
     "validate_question_generation_output",
     "validate_reference_answer_output",
     "validate_semantic_support_output",
+    "validate_structured_output_materialization",
 ]
