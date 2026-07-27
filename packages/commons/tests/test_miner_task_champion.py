@@ -277,9 +277,9 @@ def test_select_champion_similarity_candidates_walk_backward_through_dethrone_se
             ChampionArtifactInput(artifact_id=challenger_b, uid=9, miner_hotkey_ss58="hotkey-9"),
         ),
         runs=(
-            ChampionRunInput(validator_id, incumbent, task_id, 0.50, 10.0),
-            ChampionRunInput(validator_id, challenger_a, task_id, 0.60, 10.0),
-            ChampionRunInput(validator_id, challenger_b, task_id, 0.60, 7.0),
+            ChampionRunInput(validator_id, incumbent, task_id, 0.50, 10.0, elapsed_ms=5_000.0),
+            ChampionRunInput(validator_id, challenger_a, task_id, 0.60, 10.0, elapsed_ms=5_000.0),
+            ChampionRunInput(validator_id, challenger_b, task_id, 0.60, 7.0, elapsed_ms=5_000.0),
         ),
         current_champion_artifact_id=incumbent,
         cascade=RankingCascade(CascadeConfig(score_margin_required=0.2)),

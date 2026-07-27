@@ -66,6 +66,8 @@ class RankingCascadeEvaluation:
     selected_rule: RankingDecisionRule | None
     score_non_regressing: bool | None
     rules: tuple[RankingRuleEvaluation, ...]
+    cost_non_regressing: bool | None = None
+    runtime_non_regressing: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,10 +270,21 @@ class RankingCascade:
 
         challenger_cost = aggregates.costs.get(challenger_artifact_id)
         incumbent_cost = aggregates.costs.get(incumbent_artifact_id)
+        challenger_runtime = aggregates.median_elapsed_ms.get(challenger_artifact_id)
+        incumbent_runtime = aggregates.median_elapsed_ms.get(incumbent_artifact_id)
+        cost_non_regressing = _lower_metric_non_regressing(
+            challenger_metric=challenger_cost,
+            incumbent_metric=incumbent_cost,
+        )
+        runtime_non_regressing = _lower_metric_non_regressing(
+            challenger_metric=challenger_runtime,
+            incumbent_metric=incumbent_runtime,
+        )
         cost_rule = RankingRuleEvaluation(
             rule=RankingDecisionRule.COST_REDUCTION,
             status=_efficiency_rule_status(
                 metric_available=challenger_cost is not None and incumbent_cost is not None,
+                other_dimension_non_regressing=runtime_non_regressing,
                 score_non_regressing=score_non_regressing,
                 metric_passed=_is_meaningfully_lower(
                     candidate_metric=challenger_cost,
@@ -291,12 +304,11 @@ class RankingCascade:
             ),
         )
 
-        challenger_runtime = aggregates.median_elapsed_ms.get(challenger_artifact_id)
-        incumbent_runtime = aggregates.median_elapsed_ms.get(incumbent_artifact_id)
         runtime_rule = RankingRuleEvaluation(
             rule=RankingDecisionRule.RUNTIME_REDUCTION,
             status=_efficiency_rule_status(
                 metric_available=challenger_runtime is not None and incumbent_runtime is not None,
+                other_dimension_non_regressing=cost_non_regressing,
                 score_non_regressing=score_non_regressing,
                 metric_passed=_is_meaningfully_faster(
                     candidate_metric=challenger_runtime,
@@ -327,6 +339,8 @@ class RankingCascade:
             selected_rule=selected_rule,
             score_non_regressing=score_non_regressing,
             rules=rules,
+            cost_non_regressing=cost_non_regressing,
+            runtime_non_regressing=runtime_non_regressing,
         )
 
     @staticmethod
@@ -501,14 +515,30 @@ def _is_meaningfully_lower(
 def _efficiency_rule_status(
     *,
     metric_available: bool,
+    other_dimension_non_regressing: bool | None,
     score_non_regressing: bool,
     metric_passed: bool,
 ) -> RankingRuleStatus:
-    if not metric_available:
+    if not metric_available or other_dimension_non_regressing is None:
         return RankingRuleStatus.UNAVAILABLE
-    if score_non_regressing and metric_passed:
+    if score_non_regressing and other_dimension_non_regressing and metric_passed:
         return RankingRuleStatus.PASSED
     return RankingRuleStatus.FAILED
+
+
+def _lower_metric_non_regressing(
+    *,
+    challenger_metric: float | None,
+    incumbent_metric: float | None,
+) -> bool | None:
+    if challenger_metric is None or incumbent_metric is None:
+        return None
+    return challenger_metric <= incumbent_metric or math.isclose(
+        challenger_metric,
+        incumbent_metric,
+        rel_tol=1e-9,
+        abs_tol=1e-9,
+    )
 
 
 def _relative_improvement(
