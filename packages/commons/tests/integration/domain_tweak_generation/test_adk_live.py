@@ -16,13 +16,20 @@ from harnyx_commons.domain_tweak_generation.validation import (
     validate_form_review_output,
     validate_reference_answer_output,
     validate_semantic_support_output,
+    validate_structured_output_materialization,
 )
 from harnyx_commons.llm.providers.vertex.credentials import cleanup_credentials_file, prepare_credentials
 from harnyx_commons.miner_task_generation import (
+    DOMAIN_TWEAK_REQUIREMENT_CATEGORIES,
     DomainTweakFormBlueprint,
     DomainTweakFormReview,
+    DomainTweakQuestionRequirement,
     DomainTweakReferenceAnswerOutput,
+    DomainTweakReferenceClaim,
+    DomainTweakRequirementCategoryAudit,
     DomainTweakSemanticSupportReview,
+    DomainTweakStructuredOutputMaterialization,
+    DomainTweakStructuredOutputMaterializationWire,
 )
 
 pytestmark = [
@@ -172,6 +179,87 @@ async def test_adk_live_reference_stage_combines_search_and_source_tools(
         "read_cached_source",
         "acquire_sources",
     }
+
+
+async def test_adk_live_materializes_json_string_schema_and_value_without_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    credentials_path = _configure_adk_vertex_environment(monkeypatch)
+    form_review = DomainTweakFormReview(
+        form_match=True,
+        reviewer_feedback="The exhaustive filtering form is preserved.",
+        question_requirements=(
+            DomainTweakQuestionRequirement(
+                requirement_id="metric",
+                category="metric_or_field_relation",
+                requirement="Return every candidate that satisfies both predicates.",
+                required_relation="derived_calculation",
+            ),
+        ),
+        requirement_category_audit=tuple(
+            DomainTweakRequirementCategoryAudit(
+                category=category,
+                present=category == "metric_or_field_relation",
+                explanation=(
+                    "The question filters by two predicates."
+                    if category == "metric_or_field_relation"
+                    else "This category is absent."
+                ),
+            )
+            for category in DOMAIN_TWEAK_REQUIREMENT_CATEGORIES
+        ),
+    )
+    reference_output = DomainTweakReferenceAnswerOutput(
+        status="finalized",
+        answer_disposition="unchanged",
+        proposed_short_answer="A",
+        reference_answer_text="A is the only candidate that satisfies both predicates.",
+        claims=(
+            DomainTweakReferenceClaim(
+                claim_id="answer",
+                claim="A is the complete qualifying candidate set.",
+                role="answer_determining",
+                evidence_window_ids=("window-1",),
+                support_explanation="The acquired table establishes both predicates.",
+            ),
+        ),
+        citation_window_ids=("window-1",),
+        abandon_reason=None,
+    )
+    try:
+        result = await DomainTweakAdkRunner().run_phase(
+            phase="structured_output_materialization",
+            prompt=(
+                "Return materialized. The question is: Which candidates satisfy both predicates? "
+                "Return only one candidates field as an array of strings containing A. Encode a fixed "
+                "closed object JSON Schema in output_schema_json and the matching value in "
+                "structured_output_json. Emit one field binding at candidates[] using requirement ID "
+                "metric, claim ID answer, and evidence window ID window-1. Every object must require all "
+                "properties and include additionalProperties false. Add no schema annotations."
+            ),
+            config=_config().model_copy(update={"max_retries": 0}),
+            agent_instruction=phase_instruction("structured_output_materialization"),
+            search_enabled=False,
+            function_tools=(),
+            output_schema=DomainTweakStructuredOutputMaterializationWire,
+            validate=lambda text: validate_structured_output_materialization(
+                text,
+                question="Which candidates satisfy both predicates?",
+                form_review=form_review,
+                reference_output=reference_output,
+            ),
+        )
+    finally:
+        cleanup_credentials_file(credentials_path)
+
+    assert result.terminal_status == "validated", _phase_result_debug(result)
+    assert isinstance(
+        result.parsed_output,
+        DomainTweakStructuredOutputMaterialization,
+    )
+    assert result.parsed_output.structured_output == {"candidates": ["A"]}
+    assert len(result.attempts) == 1
+    assert all(not _tool_names(attempt) for attempt in result.attempts)
 
 
 def _config() -> DomainTweakAdkRunConfig:

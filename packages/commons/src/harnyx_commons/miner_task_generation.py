@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Literal, cast
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from harnyx_commons.domain.miner_task import AnswerCitation, MinerTask, Query, ReferenceAnswer
 from harnyx_commons.domain.shared_config import COMMONS_STRICT_CONFIG
+from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.llm.json_utils import pydantic_postprocessor
 from harnyx_commons.llm.provider import LlmProviderPort
 from harnyx_commons.llm.provider_types import VERTEX_PROVIDER, LlmProviderName
@@ -29,6 +31,11 @@ from harnyx_commons.llm.schema import (
 logger = logging.getLogger("harnyx_commons.miner_task_generation")
 
 DOMAIN_TWEAK_MAX_DECLARED_EVIDENCE_URLS = 20
+DOMAIN_TWEAK_GENERATED_SCHEMA_MAX_DEPTH = 8
+DOMAIN_TWEAK_GENERATED_SCHEMA_MAX_NODES = 128
+DOMAIN_TWEAK_GENERATED_SCHEMA_MAX_LEAVES = 64
+_DOMAIN_TWEAK_SCHEMA_PROPERTY_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_DOMAIN_TWEAK_PRIMITIVE_SCHEMA_TYPES = frozenset({"string", "integer", "number", "boolean"})
 
 _TASK_GENERATION_SYSTEM_PROMPT = (
     "You generate evaluation tasks for a generic query-answering system.\n"
@@ -90,11 +97,11 @@ _TASK_GENERATION_SYSTEM_PROMPT = (
     '- "What is the difference between a supernova and a black hole?" because it is a timeless comparison.\n'
     '- "What are the health benefits of a Mediterranean diet?" because it is a generic wellness explainer.\n'
     '- "What are the latest developments in artificial intelligence?" because it '
-    'invites vague trend talk instead of exact retrieval.\n'
+    "invites vague trend talk instead of exact retrieval.\n"
     '- "What is the current population of the United States?" because it changes too '
-    'slowly and a memorized answer would often be close enough.\n'
+    "slowly and a memorized answer would often be close enough.\n"
     '- "What is the current price of Bitcoin?" because it changes too quickly and the '
-    'answer may be stale before evaluation.\n'
+    "answer may be stale before evaluation.\n"
     "\n"
     "Good query examples:\n"
     '- "Which two official filings report different period bases for the named companies, '
@@ -111,7 +118,7 @@ _TASK_GENERATION_SYSTEM_PROMPT = (
     "- The batch should span multiple query shapes and should not collapse into "
     "repeated versions of the same template.\n"
     '- For example, "Who is the current CEO of X?" and "Who currently leads Y?" are '
-    'the same underlying template with different nouns, so only one such structure '
+    "the same underlying template with different nouns, so only one such structure "
     "should appear in a batch.\n"
     "- In a 10-task batch, use several query families: cross-entity comparison, "
     "finalized official result, recent leadership or policy transition, and "
@@ -162,7 +169,7 @@ _TASK_GENERATION_USER_PROMPT = (
     "current timestamp.\n"
     "Remember: if the answer would be materially the same regardless of when the "
     "question is asked, the query is invalid even if it mentions a current entity.\n"
-    "Return JSON with shape: {{\"tasks\": [{{\"text\": \"...\"}}]}}.\n"
+    'Return JSON with shape: {{"tasks": [{{"text": "..."}}]}}.\n'
     "Keep each query concise, natural, distinct from the others, and realistic for an actual user."
 )
 
@@ -259,10 +266,10 @@ _REFERENCE_ANSWER_SYSTEM_PROMPT = (
     "actual prior successful commercial landing only if using it as the correction.\n"
     "\n"
     "Return exactly one JSON object with this shape:\n"
-    '{\n'
+    "{\n"
     '  "text": <string>,\n'
     '  "citations": [{"url": <string>, "title": <string>, "note": <string>}, ...]\n'
-    '}\n'
+    "}\n"
     "Rules:\n"
     "- Keep the answer concise but complete within the limits of verified evidence.\n"
     "- Only include citations that directly support specific claims in your answer. "
@@ -492,9 +499,7 @@ class DomainTweakQuestionPacket(BaseModel):
         if unknown_claim_ids:
             raise ValueError(f"evidence references unknown claim IDs: {unknown_claim_ids}")
         externally_supported = {
-            claim_id
-            for evidence in self.evidence_declarations
-            for claim_id in evidence.supported_claim_ids
+            claim_id for evidence in self.evidence_declarations for claim_id in evidence.supported_claim_ids
         }
         missing_external_support = sorted(
             claim.claim_id
@@ -502,9 +507,7 @@ class DomainTweakQuestionPacket(BaseModel):
             if claim.support_mode == "external_source" and claim.claim_id not in externally_supported
         )
         if missing_external_support:
-            raise ValueError(
-                f"external_source claims require evidence declarations: {missing_external_support}"
-            )
+            raise ValueError(f"external_source claims require evidence declarations: {missing_external_support}")
         return self
 
 
@@ -675,6 +678,108 @@ class DomainTweakReferenceAnswerOutput(BaseModel):
         return self
 
 
+class DomainTweakStructuredFieldBinding(BaseModel):
+    model_config = COMMONS_STRICT_CONFIG
+
+    schema_path: str = Field(min_length=1)
+    answer_evidence: str = Field(min_length=1)
+    requirement_ids: tuple[str, ...]
+    claim_ids: tuple[str, ...]
+    evidence_window_ids: tuple[str, ...]
+
+    @field_validator(
+        "requirement_ids",
+        "claim_ids",
+        "evidence_window_ids",
+        mode="before",
+    )
+    @classmethod
+    def _tuple_from_list(cls, value: object) -> object:
+        if isinstance(value, list):
+            return tuple(value)
+        return value
+
+    @model_validator(mode="after")
+    def _identifiers_are_unique(self) -> DomainTweakStructuredFieldBinding:
+        for field_name in ("requirement_ids", "claim_ids", "evidence_window_ids"):
+            values = getattr(self, field_name)
+            if len(values) != len(set(values)):
+                raise ValueError(f"{field_name} must contain unique IDs")
+        if not self.requirement_ids or not self.claim_ids:
+            raise ValueError("field bindings require requirement and claim IDs")
+        if not self.evidence_window_ids:
+            raise ValueError("field bindings require acquired evidence windows")
+        return self
+
+
+class DomainTweakStructuredOutputMaterializationWire(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    disposition: Literal["materialized", "not_materializable"]
+    rationale: str = Field(min_length=1)
+    output_schema_json: str | None
+    structured_output_json: str | None
+    field_bindings: tuple[DomainTweakStructuredFieldBinding, ...]
+
+    @field_validator("field_bindings", mode="before")
+    @classmethod
+    def _tuple_from_list(cls, value: object) -> object:
+        if isinstance(value, list):
+            return tuple(value)
+        return value
+
+    @model_validator(mode="after")
+    def _disposition_fields_are_consistent(
+        self,
+    ) -> DomainTweakStructuredOutputMaterializationWire:
+        if self.disposition == "not_materializable":
+            if self.output_schema_json is not None or self.structured_output_json is not None:
+                raise ValueError("not_materializable must not include schema or output JSON")
+            if self.field_bindings:
+                raise ValueError("not_materializable must not include field bindings")
+            return self
+        if not (self.output_schema_json or "").strip():
+            raise ValueError("materialized output requires output_schema_json")
+        if not (self.structured_output_json or "").strip():
+            raise ValueError("materialized output requires structured_output_json")
+        if not self.field_bindings:
+            raise ValueError("materialized output requires field bindings")
+        return self
+
+
+class DomainTweakStructuredOutputMaterialization(BaseModel):
+    model_config = COMMONS_STRICT_CONFIG
+
+    disposition: Literal["materialized", "not_materializable"]
+    rationale: str = Field(min_length=1)
+    output_schema: JsonObject | None
+    structured_output: JsonValue | None
+    field_bindings: tuple[DomainTweakStructuredFieldBinding, ...]
+
+    @field_validator("field_bindings", mode="before")
+    @classmethod
+    def _tuple_from_list(cls, value: object) -> object:
+        if isinstance(value, list):
+            return tuple(value)
+        return value
+
+    @model_validator(mode="after")
+    def _disposition_fields_are_consistent(
+        self,
+    ) -> DomainTweakStructuredOutputMaterialization:
+        if self.disposition == "not_materializable":
+            if self.output_schema is not None or self.structured_output is not None:
+                raise ValueError("not_materializable must not include schema or output")
+            if self.field_bindings:
+                raise ValueError("not_materializable must not include field bindings")
+            return self
+        if self.output_schema is None or self.structured_output is None:
+            raise ValueError("materialized output requires schema and output")
+        if not self.field_bindings:
+            raise ValueError("materialized output requires field bindings")
+        return self
+
+
 class DomainTweakRequirementFinding(BaseModel):
     model_config = COMMONS_STRICT_CONFIG
 
@@ -721,18 +826,51 @@ class DomainTweakClaimFinding(BaseModel):
         return value
 
 
+class DomainTweakStructuredFieldFinding(BaseModel):
+    model_config = COMMONS_STRICT_CONFIG
+
+    schema_path: str = Field(min_length=1)
+    support_status: Literal["supported", "unsupported"]
+    requirement_ids: tuple[str, ...]
+    claim_ids: tuple[str, ...]
+    evidence_window_ids: tuple[str, ...]
+    explanation: str = Field(min_length=1)
+
+    @field_validator(
+        "requirement_ids",
+        "claim_ids",
+        "evidence_window_ids",
+        mode="before",
+    )
+    @classmethod
+    def _tuple_from_list(cls, value: object) -> object:
+        if isinstance(value, list):
+            return tuple(value)
+        return value
+
+    @model_validator(mode="after")
+    def _identifiers_are_unique(self) -> DomainTweakStructuredFieldFinding:
+        for field_name in ("requirement_ids", "claim_ids", "evidence_window_ids"):
+            values = getattr(self, field_name)
+            if len(values) != len(set(values)):
+                raise ValueError(f"{field_name} must contain unique IDs")
+        return self
+
+
 class DomainTweakSemanticSupportReview(BaseModel):
     model_config = COMMONS_STRICT_CONFIG
 
     status: Literal["pass", "abandon"]
     requirement_findings: tuple[DomainTweakRequirementFinding, ...]
     claim_findings: tuple[DomainTweakClaimFinding, ...]
+    structured_field_findings: tuple[DomainTweakStructuredFieldFinding, ...] = ()
     unmanifested_material_claims: tuple[str, ...]
     abandon_reason: str | None
 
     @field_validator(
         "requirement_findings",
         "claim_findings",
+        "structured_field_findings",
         "unmanifested_material_claims",
         mode="before",
     )
@@ -746,7 +884,11 @@ class DomainTweakSemanticSupportReview(BaseModel):
     def _status_matches_findings(self) -> DomainTweakSemanticSupportReview:
         unsupported = any(
             finding.support_status == "unsupported"
-            for finding in (*self.requirement_findings, *self.claim_findings)
+            for finding in (
+                *self.requirement_findings,
+                *self.claim_findings,
+                *self.structured_field_findings,
+            )
         )
         if self.status == "pass":
             if unsupported or self.unmanifested_material_claims:
@@ -759,6 +901,132 @@ class DomainTweakSemanticSupportReview(BaseModel):
         if not (self.abandon_reason or "").strip():
             raise ValueError("abandon requires abandon_reason")
         return self
+
+
+def validate_generated_output_schema(schema: JsonObject) -> tuple[str, ...]:
+    """Validate and enumerate the bounded schema subset emitted by generation."""
+
+    node_count = 0
+    leaf_paths: list[str] = []
+
+    def visit(node: object, *, path: str, depth: int, is_root: bool) -> None:
+        nonlocal node_count
+        if not isinstance(node, dict):
+            raise ValueError(f"schema node at {path or '<root>'} must be an object")
+        node_object = cast(dict[str, object], node)
+        node_count += 1
+        if depth > DOMAIN_TWEAK_GENERATED_SCHEMA_MAX_DEPTH:
+            raise ValueError("generated output schema exceeds maximum depth")
+        if node_count > DOMAIN_TWEAK_GENERATED_SCHEMA_MAX_NODES:
+            raise ValueError("generated output schema exceeds maximum node count")
+
+        allowed_keys = {"type", "properties", "required", "additionalProperties", "items"}
+        if is_root:
+            allowed_keys.add("$schema")
+        unknown_keys = sorted(set(node_object) - allowed_keys)
+        if unknown_keys:
+            raise ValueError(f"generated output schema contains unsafe keywords: {unknown_keys}")
+
+        schema_type = node_object.get("type")
+        if schema_type == "object":
+            expected_object_keys = {
+                "type",
+                "properties",
+                "required",
+                "additionalProperties",
+            }
+            actual_object_keys = set(node_object) - ({"$schema"} if is_root else set())
+            if actual_object_keys != expected_object_keys:
+                missing_keys = sorted(expected_object_keys - actual_object_keys)
+                extra_keys = sorted(actual_object_keys - expected_object_keys)
+                raise ValueError(
+                    "object schemas require exactly type, properties, required, and "
+                    "additionalProperties; "
+                    f"missing={missing_keys}, extra={extra_keys}"
+                )
+            properties = node_object.get("properties")
+            required = node_object.get("required")
+            if not isinstance(properties, dict) or not properties:
+                raise ValueError("object schemas require non-empty properties")
+            properties_object = cast(dict[str, object], properties)
+            if not isinstance(required, list) or any(not isinstance(item, str) for item in required):
+                raise ValueError("object schemas require a string required list")
+            required_names = cast(list[str], required)
+            if len(required_names) != len(set(required_names)) or set(required_names) != set(properties_object):
+                raise ValueError("every object property must be required exactly once")
+            if node_object.get("additionalProperties") is not False:
+                raise ValueError("object schemas require additionalProperties=false")
+            for property_name, child in properties_object.items():
+                if not isinstance(property_name, str) or not _DOMAIN_TWEAK_SCHEMA_PROPERTY_NAME.fullmatch(
+                    property_name
+                ):
+                    raise ValueError(f"unsafe generated property name: {property_name!r}")
+                child_path = f"{path}.{property_name}" if path else property_name
+                visit(child, path=child_path, depth=depth + 1, is_root=False)
+            return
+
+        if is_root:
+            raise ValueError("generated output schema root must be an object")
+        if schema_type == "array":
+            if set(node_object) != {"type", "items"}:
+                missing_keys = sorted({"type", "items"} - set(node_object))
+                extra_keys = sorted(set(node_object) - {"type", "items"})
+                raise ValueError(
+                    f"array schemas require exactly type and items; missing={missing_keys}, extra={extra_keys}"
+                )
+            visit(
+                node_object.get("items"),
+                path=f"{path}[]",
+                depth=depth + 1,
+                is_root=False,
+            )
+            return
+        if schema_type not in _DOMAIN_TWEAK_PRIMITIVE_SCHEMA_TYPES:
+            raise ValueError(f"unsupported generated schema type: {schema_type!r}")
+        if set(node_object) != {"type"}:
+            raise ValueError("primitive schemas may contain only type")
+        leaf_paths.append(path)
+        if len(leaf_paths) > DOMAIN_TWEAK_GENERATED_SCHEMA_MAX_LEAVES:
+            raise ValueError("generated output schema exceeds maximum leaf count")
+
+    visit(schema, path="", depth=1, is_root=True)
+    return tuple(leaf_paths)
+
+
+def generated_output_contract_for_judge(schema: JsonObject) -> JsonObject | None:
+    """Return the annotation-free structural projection safe for a judge prompt."""
+
+    try:
+        validate_generated_output_schema(schema)
+    except ValueError:
+        return None
+
+    def project(node: JsonObject) -> JsonObject:
+        node_object = cast(dict[str, object], node)
+        node_type = node_object["type"]
+        assert isinstance(node_type, str)
+        projected: JsonObject = {"type": node_type}
+        if node_type == "object":
+            properties = node_object["properties"]
+            assert isinstance(properties, dict)
+            properties_object = cast(dict[str, object], properties)
+            projected["properties"] = {
+                name: project(cast(JsonObject, child))
+                for name, child in properties_object.items()
+                if isinstance(child, dict)
+            }
+            required = node_object["required"]
+            assert isinstance(required, list)
+            required_objects = cast(list[object], required)
+            projected["required"] = [item for item in required_objects if isinstance(item, str)]
+            projected["additionalProperties"] = False
+        elif node_type == "array":
+            items = node_object["items"]
+            assert isinstance(items, dict)
+            projected["items"] = project(cast(JsonObject, items))
+        return projected
+
+    return project(schema)
 
 
 class _GeneratedTaskPayload(BaseModel):
@@ -1083,8 +1351,14 @@ __all__ = [
     "DomainTweakRequiredRelation",
     "DomainTweakRequirementFinding",
     "DomainTweakSemanticSupportReview",
+    "DomainTweakStructuredFieldBinding",
+    "DomainTweakStructuredFieldFinding",
+    "DomainTweakStructuredOutputMaterialization",
+    "DomainTweakStructuredOutputMaterializationWire",
     "MinerTaskDatasetBuilder",
     "MinerTaskDatasetRequest",
     "MinerTaskModelSpec",
     "build_miner_task_model_request",
+    "generated_output_contract_for_judge",
+    "validate_generated_output_schema",
 ]

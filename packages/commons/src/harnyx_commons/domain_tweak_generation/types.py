@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from harnyx_commons.domain.miner_task import MinerTask
 from harnyx_commons.domain.shared_config import COMMONS_STRICT_CONFIG
@@ -17,13 +17,16 @@ from harnyx_commons.miner_task_generation import (
     DomainTweakQuestionPacket,
     DomainTweakReferenceAnswerOutput,
     DomainTweakSemanticSupportReview,
+    DomainTweakStructuredOutputMaterialization,
 )
 
+DomainTweakResponseMode = Literal["plain", "structured"]
 DomainTweakAdkPhase = Literal[
     "form_blueprint",
     "question_generation",
     "form_review",
     "reference_answer_generation",
+    "structured_output_materialization",
     "semantic_support_gate",
 ]
 DomainTweakPipelineStage = Literal[
@@ -33,6 +36,7 @@ DomainTweakPipelineStage = Literal[
     "initial_evidence_acquisition",
     "reference_answer_generation",
     "deterministic_evidence_delivery",
+    "structured_output_materialization",
     "semantic_support_gate",
     "citation_hydration",
 ]
@@ -40,6 +44,7 @@ DomainTweakFinalizationStage = Literal[
     "initial_evidence_acquisition",
     "reference_answer_generation",
     "deterministic_evidence_delivery",
+    "structured_output_materialization",
     "semantic_support_gate",
     "citation_hydration",
 ]
@@ -71,6 +76,7 @@ DomainTweakDiscardReason = Literal[
     "source_acquisition_round_limit",
     "reference_abandon",
     "delivery_validation_failed",
+    "structured_output_not_materializable",
     "semantic_support_abandon",
     "citation_hydration_failed",
 ]
@@ -79,6 +85,7 @@ DomainTweakParsedOutput = (
     | DomainTweakQuestionPacket
     | DomainTweakFormReview
     | DomainTweakReferenceAnswerOutput
+    | DomainTweakStructuredOutputMaterialization
     | DomainTweakSemanticSupportReview
     | None
 )
@@ -194,6 +201,7 @@ class DomainTweakReferenceAnswerPhasePolicy(BaseModel):
     model_config = COMMONS_STRICT_CONFIG
 
     timeout_seconds: float = Field(default=600.0, gt=0)
+    structured_semantic_validation_retries: int = Field(default=2, ge=0)
 
 
 class DomainTweakSourceEvidencePolicy(BaseModel):
@@ -211,13 +219,18 @@ class DomainTweakBatchGenerationConfig(BaseModel):
     model_config = COMMONS_STRICT_CONFIG
 
     target_count: int = Field(gt=0)
+    structured_target_count: int = Field(default=0, ge=0)
     question_policy: DomainTweakQuestionPhasePolicy = Field(default_factory=DomainTweakQuestionPhasePolicy)
     reference_answer_policy: DomainTweakReferenceAnswerPhasePolicy = Field(
         default_factory=DomainTweakReferenceAnswerPhasePolicy
     )
-    source_evidence_policy: DomainTweakSourceEvidencePolicy = Field(
-        default_factory=DomainTweakSourceEvidencePolicy
-    )
+    source_evidence_policy: DomainTweakSourceEvidencePolicy = Field(default_factory=DomainTweakSourceEvidencePolicy)
+
+    @model_validator(mode="after")
+    def _structured_target_fits_total(self) -> DomainTweakBatchGenerationConfig:
+        if self.structured_target_count > self.target_count:
+            raise ValueError("structured_target_count cannot exceed target_count")
+        return self
 
     @property
     def candidate_attempt_cap(self) -> int:
@@ -298,12 +311,11 @@ class DomainTweakFinalizedTask(BaseModel):
 
     reviewed_question: DomainTweakReviewedQuestion
     reference_answer_result: DomainTweakAdkPhaseResult
+    structured_materialization_result: DomainTweakAdkPhaseResult | None = None
     semantic_support_result: DomainTweakAdkPhaseResult
     task: MinerTask
     stage_summaries: tuple[DomainTweakStageSummary, ...] = ()
-    source_evidence: DomainTweakSourceEvidenceSummary = Field(
-        default_factory=DomainTweakSourceEvidenceSummary
-    )
+    source_evidence: DomainTweakSourceEvidenceSummary = Field(default_factory=DomainTweakSourceEvidenceSummary)
     tool_usage: ToolUsageSummary = Field(default_factory=ToolUsageSummary.zero)
 
     @field_validator("stage_summaries", mode="before")
@@ -320,12 +332,12 @@ class DomainTweakDiscardedCandidate(BaseModel):
     reviewed_question: DomainTweakReviewedQuestion
     terminal_stage: DomainTweakFinalizationStage
     reason: DomainTweakDiscardReason
+    requested_response_mode: DomainTweakResponseMode = "plain"
     reference_answer_result: DomainTweakAdkPhaseResult | None = None
+    structured_materialization_result: DomainTweakAdkPhaseResult | None = None
     semantic_support_result: DomainTweakAdkPhaseResult | None = None
     stage_summaries: tuple[DomainTweakStageSummary, ...] = ()
-    source_evidence: DomainTweakSourceEvidenceSummary = Field(
-        default_factory=DomainTweakSourceEvidenceSummary
-    )
+    source_evidence: DomainTweakSourceEvidenceSummary = Field(default_factory=DomainTweakSourceEvidenceSummary)
     tool_usage: ToolUsageSummary = Field(default_factory=ToolUsageSummary.zero)
 
     @field_validator("stage_summaries", mode="before")
@@ -379,6 +391,7 @@ __all__ = [
     "DomainTweakParsedOutput",
     "DomainTweakPipelineStage",
     "DomainTweakQuestionPhasePolicy",
+    "DomainTweakResponseMode",
     "DomainTweakReferenceAnswerPhasePolicy",
     "DomainTweakRejectedQuestionAttempt",
     "DomainTweakReviewedQuestion",
