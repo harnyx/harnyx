@@ -25,7 +25,15 @@ from harnyx_commons.miner_task_generation import (
     DomainTweakSemanticSupportReview,
 )
 
-pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.expensive,
+    pytest.mark.anyio("asyncio"),
+    pytest.mark.flaky(
+        reruns=1,
+        only_rerun=[r"terminal_status=(?:timeout|invocation_error)"],
+    ),
+]
 
 
 async def test_adk_live_native_schema_no_tool_stages(monkeypatch: pytest.MonkeyPatch) -> None:
