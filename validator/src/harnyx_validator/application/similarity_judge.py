@@ -24,7 +24,7 @@ from harnyx_commons.miner_task_similarity import SimilarityJudgeRequest, Similar
 
 _SYSTEM_PROMPT = (
     "You are a strict semantic similarity classifier for miner agent scripts.\n\n"
-    "You compare a selected historical reference script against a candidate patch.\n"
+    "You compare a selected reference script against a candidate patch.\n"
     "Your scope is the candidate's effective research behavior relative to that reference. "
     "Do not judge whether the behavior is good, efficient, or likely to score well; downstream "
     "task scoring owns those decisions.\n"
@@ -82,7 +82,7 @@ _SYSTEM_PROMPT = (
     "requires a concrete behavior change."
 )
 _USER_PROMPT_PREFIX = (
-    "Classify this candidate artifact relative to the selected historical reference as duplicate, "
+    "Classify this candidate artifact relative to the selected reference as duplicate, "
     "near_duplicate, or novel.\n\n"
     "Payload:\n"
 )
@@ -92,7 +92,7 @@ class _SimilarityClassificationModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     classification: Literal["duplicate", "near_duplicate", "novel"] = Field(
-        description="Behavior classification relative to the selected historical reference."
+        description="Behavior classification relative to the selected reference."
     )
     reasoning: str = Field(description="Validator-owned classification explanation.", min_length=1)
     mechanism_change: str | None = Field(
