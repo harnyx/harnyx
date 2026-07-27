@@ -89,30 +89,6 @@ async def test_builder_requests_existing_four_times_pair_cap_and_returns_exact_t
     assert pipeline.configs[0].target_count == 1
 
 
-@pytest.mark.parametrize(
-    ("target_count", "structured_target_count"),
-    ((10, 5), (5, 2)),
-)
-async def test_builder_targets_half_structured_and_gives_plain_the_odd_remainder(
-    target_count: int,
-    structured_target_count: int,
-) -> None:
-    pipeline = _BatchPipeline(
-        DomainTweakBatchGenerationResult(
-            target_count=target_count,
-            underfilled=True,
-        )
-    )
-    builder = DomainTweakMinerTaskDatasetBuilder(
-        pair_source=_PairSource((_pair(),) * (target_count * 4)),
-        batch_pipeline=pipeline,
-    )
-
-    await builder.build_with_result(_request(minimum_task_total=target_count))
-
-    assert pipeline.configs[0].structured_target_count == structured_target_count
-
-
 async def test_builder_reports_typed_discard_when_exact_target_is_underfilled() -> None:
     reviewed = _reviewed()
     pipeline = _BatchPipeline(

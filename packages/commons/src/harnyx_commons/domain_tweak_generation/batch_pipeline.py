@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from math import ceil
 from typing import Literal, TypeVar
@@ -28,7 +28,6 @@ from harnyx_commons.domain_tweak_generation.types import (
     DomainTweakQuestionPhasePolicy,
     DomainTweakReferenceAnswerPhasePolicy,
     DomainTweakRejectedQuestionAttempt,
-    DomainTweakResponseMode,
     DomainTweakReviewedQuestion,
 )
 from harnyx_commons.miner_task_generation import (
@@ -48,12 +47,6 @@ class _FinalizationGroupResult:
     finalized_tasks: tuple[DomainTweakFinalizedTask, ...]
     discarded_candidates: tuple[DomainTweakDiscardedCandidate, ...]
     tool_usage: ToolUsageSummary
-
-
-@dataclass(frozen=True, slots=True)
-class _FinalizationCandidate:
-    reviewed_question: DomainTweakReviewedQuestion
-    response_mode: DomainTweakResponseMode
 
 
 class DomainTweakBatchGenerationPipeline:
@@ -101,12 +94,8 @@ class DomainTweakBatchGenerationPipeline:
                 remaining_candidates = await candidate_budget.remaining_count()
                 if remaining_candidates <= 0:
                     break
-                missing_response_modes = _missing_response_modes(
-                    config,
-                    finalized_by_question.values(),
-                )
                 candidate_target = min(
-                    len(missing_response_modes),
+                    config.target_count - len(finalized_by_question),
                     remaining_candidates,
                 )
                 candidate_group: list[DomainTweakReviewedQuestion] = []
@@ -146,19 +135,8 @@ class DomainTweakBatchGenerationPipeline:
                 if not candidate_group:
                     continue
 
-                finalization_candidates = tuple(
-                    _FinalizationCandidate(
-                        reviewed_question=reviewed_question,
-                        response_mode=response_mode,
-                    )
-                    for reviewed_question, response_mode in zip(
-                        candidate_group,
-                        missing_response_modes,
-                        strict=False,
-                    )
-                )
                 group_result = await self._finalize_candidate_group_once(
-                    finalization_candidates,
+                    tuple(candidate_group),
                     policy=config.reference_answer_policy,
                     source_evidence=source_evidence,
                     invocation_budget=candidate_budget,
@@ -176,7 +154,9 @@ class DomainTweakBatchGenerationPipeline:
             finalized_by_question[question_key]
             for item in selected
             if item.question_packet.question is not None
-            and (question_key := _canonical_question_text(item.question_packet.question)) in finalized_by_question
+            and (
+                question_key := _canonical_question_text(item.question_packet.question)
+            ) in finalized_by_question
         )
         return DomainTweakBatchGenerationResult(
             target_count=config.target_count,
@@ -191,26 +171,25 @@ class DomainTweakBatchGenerationPipeline:
 
     async def _finalize_candidate_group_once(
         self,
-        candidates: tuple[_FinalizationCandidate, ...],
+        reviewed_questions: tuple[DomainTweakReviewedQuestion, ...],
         *,
         policy: DomainTweakReferenceAnswerPhasePolicy,
         source_evidence: BatchSourceEvidence,
         invocation_budget: _InvocationBudget,
     ) -> _FinalizationGroupResult:
-        if not await invocation_budget.reserve(len(candidates)):
+        if not await invocation_budget.reserve(len(reviewed_questions)):
             raise RuntimeError("candidate budget cannot cover the budget-aware finalization group")
         outcomes: list[DomainTweakFinalizedTask | DomainTweakDiscardedCandidate] = []
-        for start in range(0, len(candidates), _MAX_DOMAIN_TWEAK_GENERATION_CONCURRENCY):
-            chunk = candidates[start : start + _MAX_DOMAIN_TWEAK_GENERATION_CONCURRENCY]
+        for start in range(0, len(reviewed_questions), _MAX_DOMAIN_TWEAK_GENERATION_CONCURRENCY):
+            chunk = reviewed_questions[start : start + _MAX_DOMAIN_TWEAK_GENERATION_CONCURRENCY]
             outcomes.extend(
                 await _gather_or_cancel_siblings(
                     *(
                         self._reference_pipeline(policy, source_evidence).finalize_task(
-                            candidate.reviewed_question,
-                            requested_response_mode=candidate.response_mode,
+                            reviewed_question,
                             task_id_factory=self._task_id_factory,
                         )
-                        for candidate in chunk
+                        for reviewed_question in chunk
                     )
                 )
             )
@@ -264,25 +243,7 @@ class DomainTweakBatchGenerationPipeline:
             ),
             runner=self._runner,
             source_evidence=source_evidence,
-            structured_semantic_validation_retries=policy.structured_semantic_validation_retries,
         )
-
-
-def _missing_response_modes(
-    config: DomainTweakBatchGenerationConfig,
-    finalized_tasks: Iterable[DomainTweakFinalizedTask],
-) -> tuple[DomainTweakResponseMode, ...]:
-    structured_count = 0
-    plain_count = 0
-    for finalized in finalized_tasks:
-        if finalized.task.query.output_schema is None:
-            plain_count += 1
-        else:
-            structured_count += 1
-    plain_target_count = config.target_count - config.structured_target_count
-    return ("plain",) * max(plain_target_count - plain_count, 0) + ("structured",) * max(
-        config.structured_target_count - structured_count, 0
-    )
 
 
 def _question_attempt_windows(

@@ -108,22 +108,14 @@ async def test_evaluation_scoring_live_uses_real_structured_runtime_flow(
     )
     task = MinerTask(
         task_id=uuid4(),
-        query=Query(
-            text="Return the capital of France.",
-            output_schema={
-                "type": "object",
-                "properties": {"capital": {"type": "string"}},
-                "required": ["capital"],
-                "additionalProperties": False,
-            },
-        ),
-        reference_answer=ReferenceAnswer(text='{"capital":"Paris"}'),
+        query=Query(text="What is the capital of France?"),
+        reference_answer=ReferenceAnswer(text="Paris is the capital of France."),
     )
 
     try:
         score = await service.score(
             task=task,
-            response=Response(output={"capital": "Paris"}),
+            response=Response(text="Paris is the capital of France."),
         )
     finally:
         await registry.aclose()
@@ -132,7 +124,6 @@ async def test_evaluation_scoring_live_uses_real_structured_runtime_flow(
     assert all(request.output_mode == "structured" for request in llm_provider.requests)
     assert all(request.provider == settings.llm.scoring_llm_provider for request in llm_provider.requests)
     assert all(request.model == scoring_route.model for request in llm_provider.requests)
-    assert all('"output_contract"' in request.messages[1].content[0].text for request in llm_provider.requests)
     assert all(response.metadata is not None for response in llm_provider.responses)
     assert all(response.metadata["selected_provider"] == scoring_route.provider for response in llm_provider.responses)
     assert all(response.metadata["selected_model"] == scoring_route.model for response in llm_provider.responses)
@@ -241,7 +232,9 @@ def _build_live_scoring_settings(
     _require_mapping_env(environ, "GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64")
     settings = base_settings.model_copy(
         update={
-            "openai_compatible_endpoints_json": json.dumps([_cloud_run_endpoint_config(endpoint_id, service_url)]),
+            "openai_compatible_endpoints_json": json.dumps(
+                [_cloud_run_endpoint_config(endpoint_id, service_url)]
+            ),
             "llm_model_provider_overrides_json": json.dumps({"scoring": {model: route_target}}),
         }
     )
@@ -275,14 +268,17 @@ def _require_cloud_run_google_id_token_auth(
     if not isinstance(auth, OpenAiCompatibleGoogleIdTokenAuthConfig):
         raise RuntimeError(f"OpenAI-compatible endpoint {endpoint_id} must use google_id_token auth")
     if auth.audience != service_url:
-        raise RuntimeError(f"OpenAI-compatible endpoint {endpoint_id} google_id_token audience must be {service_url}")
+        raise RuntimeError(
+            f"OpenAI-compatible endpoint {endpoint_id} google_id_token audience must be {service_url}"
+        )
     if auth.credential_source != "service_account_json_b64_env":
         raise RuntimeError(
             f"OpenAI-compatible endpoint {endpoint_id} must use service_account_json_b64_env credentials"
         )
     if auth.credential_env != "GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64":
         raise RuntimeError(
-            f"OpenAI-compatible endpoint {endpoint_id} credential_env must be GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64"
+            f"OpenAI-compatible endpoint {endpoint_id} credential_env must be "
+            "GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64"
         )
 
 

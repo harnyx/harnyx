@@ -21,7 +21,6 @@ from harnyx_commons.domain_tweak_generation.prompts import (
     question_generation_prompt,
     reference_answer_prompt,
     semantic_support_prompt,
-    structured_output_materialization_prompt,
 )
 from harnyx_commons.domain_tweak_generation.source_evidence import (
     BatchSourceEvidence,
@@ -37,7 +36,6 @@ from harnyx_commons.domain_tweak_generation.types import (
     DomainTweakFinalizationStage,
     DomainTweakFinalizedTask,
     DomainTweakPipelineStage,
-    DomainTweakResponseMode,
     DomainTweakReviewedQuestion,
     DomainTweakSourceEvidenceSummary,
     DomainTweakStageSummary,
@@ -51,8 +49,6 @@ from harnyx_commons.domain_tweak_generation.validation import (
     validate_question_generation_output,
     validate_reference_answer_output,
     validate_semantic_support_output,
-    validate_structured_output_materialization,
-    validate_structured_semantic_support_output,
 )
 from harnyx_commons.miner_task_generation import (
     DomainTweakFormBlueprint,
@@ -61,10 +57,7 @@ from harnyx_commons.miner_task_generation import (
     DomainTweakQuestionPacket,
     DomainTweakReferenceAnswerOutput,
     DomainTweakSemanticSupportReview,
-    DomainTweakStructuredOutputMaterialization,
-    DomainTweakStructuredOutputMaterializationWire,
 )
-from harnyx_miner_sdk.structured_output import compact_json
 
 
 class DomainTweakPairRunResult(BaseModel):
@@ -86,16 +79,10 @@ class DomainTweakGenerationPipeline:
         config: DomainTweakAdkRunConfig,
         runner: DomainTweakAdkRunner | None = None,
         source_evidence: BatchSourceEvidence | None = None,
-        structured_semantic_validation_retries: int | None = None,
     ) -> None:
         self._config = config
         self._runner = runner or DomainTweakAdkRunner()
         self._source_evidence = source_evidence
-        self._structured_semantic_validation_retries = (
-            config.max_retries
-            if structured_semantic_validation_retries is None
-            else structured_semantic_validation_retries
-        )
 
     async def generate_reviewed_question(self, pair_input: DomainTweakPairInput) -> DomainTweakPairRunResult:
         blueprint_result = await self._run_phase(
@@ -154,7 +141,6 @@ class DomainTweakGenerationPipeline:
         self,
         reviewed_question: DomainTweakReviewedQuestion,
         *,
-        requested_response_mode: DomainTweakResponseMode = "plain",
         task_id_factory: Callable[[], UUID] = uuid4,
     ) -> DomainTweakFinalizedTask | DomainTweakDiscardedCandidate:
         if self._source_evidence is None:
@@ -188,7 +174,6 @@ class DomainTweakGenerationPipeline:
                 ),
                 source_evidence=session.summary(),
                 tool_usage=session.tool_usage,
-                requested_response_mode=requested_response_mode,
             )
         except SourceEvidenceLimitError as exc:
             return _discarded_candidate(
@@ -204,7 +189,6 @@ class DomainTweakGenerationPipeline:
                 ),
                 source_evidence=session.summary(),
                 tool_usage=session.tool_usage,
-                requested_response_mode=requested_response_mode,
             )
         source_summary = session.summary()
         acquisition_outcome = session.terminal_reason or (
@@ -225,7 +209,6 @@ class DomainTweakGenerationPipeline:
                 stage_summaries=tuple(stage_summaries),
                 source_evidence=session.summary(),
                 tool_usage=session.tool_usage,
-                requested_response_mode=requested_response_mode,
             )
 
         reference_result = await self._run_reference_stage(reviewed_question, session)
@@ -240,7 +223,6 @@ class DomainTweakGenerationPipeline:
                 stage_summaries=tuple(stage_summaries),
                 source_evidence=session.summary(),
                 tool_usage=total_usage,
-                requested_response_mode=requested_response_mode,
             )
         reference_output = reference_result.parsed_output
         if not isinstance(reference_output, DomainTweakReferenceAnswerOutput):
@@ -252,7 +234,6 @@ class DomainTweakGenerationPipeline:
                 stage_summaries=tuple(stage_summaries),
                 source_evidence=session.summary(),
                 tool_usage=total_usage,
-                requested_response_mode=requested_response_mode,
             )
         if reference_output.status == "abandon":
             return _discarded_candidate(
@@ -263,7 +244,6 @@ class DomainTweakGenerationPipeline:
                 stage_summaries=tuple(stage_summaries),
                 source_evidence=session.summary(),
                 tool_usage=total_usage,
-                requested_response_mode=requested_response_mode,
             )
 
         delivery_started = time.perf_counter()
@@ -290,61 +270,7 @@ class DomainTweakGenerationPipeline:
                 stage_summaries=tuple(stage_summaries),
                 source_evidence=session.summary(),
                 tool_usage=total_usage,
-                requested_response_mode=requested_response_mode,
             )
-
-        materialization_result: DomainTweakAdkPhaseResult | None = None
-        materialization: DomainTweakStructuredOutputMaterialization | None = None
-        if requested_response_mode == "structured":
-            materialization_result = await self._run_phase(
-                phase="structured_output_materialization",
-                prompt=structured_output_materialization_prompt(
-                    reviewed_question,
-                    reference_output,
-                ),
-                search_enabled=False,
-                output_schema=DomainTweakStructuredOutputMaterializationWire,
-                validate=lambda text: validate_structured_output_materialization(
-                    text,
-                    question=question,
-                    form_review=reviewed_question.form_review,
-                    reference_output=reference_output,
-                ),
-            )
-            stage_summaries.append(_agent_stage_summary(materialization_result))
-            total_usage = merge_tool_usage_summaries(
-                total_usage,
-                materialization_result.tool_usage,
-            )
-            parsed_materialization = materialization_result.parsed_output
-            if not isinstance(
-                parsed_materialization,
-                DomainTweakStructuredOutputMaterialization,
-            ):
-                return _discarded_candidate(
-                    reviewed_question,
-                    terminal_stage="structured_output_materialization",
-                    reason=_phase_failure_reason(materialization_result),
-                    requested_response_mode=requested_response_mode,
-                    reference_answer_result=reference_result,
-                    structured_materialization_result=materialization_result,
-                    stage_summaries=tuple(stage_summaries),
-                    source_evidence=session.summary(),
-                    tool_usage=total_usage,
-                )
-            if parsed_materialization.disposition == "not_materializable":
-                return _discarded_candidate(
-                    reviewed_question,
-                    terminal_stage="structured_output_materialization",
-                    reason="structured_output_not_materializable",
-                    requested_response_mode=requested_response_mode,
-                    reference_answer_result=reference_result,
-                    structured_materialization_result=materialization_result,
-                    stage_summaries=tuple(stage_summaries),
-                    source_evidence=session.summary(),
-                    tool_usage=total_usage,
-                )
-            materialization = parsed_materialization
 
         evidence_window_ids = tuple(
             dict.fromkeys(
@@ -354,33 +280,16 @@ class DomainTweakGenerationPipeline:
                 )
             )
         )
-        if materialization is None:
-            semantic_validator = validate_semantic_support_output
-        else:
-
-            def semantic_validator(text: str) -> DomainTweakValidationOutcome:
-                return validate_structured_semantic_support_output(
-                    text,
-                    form_review=reviewed_question.form_review,
-                    reference_output=reference_output,
-                    allowed_window_ids=frozenset(evidence_window_ids),
-                    materialization=materialization,
-                )
-
         semantic_result = await self._run_phase(
             phase="semantic_support_gate",
             prompt=semantic_support_prompt(
                 reviewed_question,
                 reference_output,
                 evidence_windows=session.gate_windows(evidence_window_ids),
-                materialization=materialization,
             ),
             search_enabled=False,
             output_schema=DomainTweakSemanticSupportReview,
-            validate=semantic_validator,
-            max_retries=(
-                self._structured_semantic_validation_retries if materialization is not None else None
-            ),
+            validate=validate_semantic_support_output,
         )
         stage_summaries.append(_agent_stage_summary(semantic_result))
         total_usage = merge_tool_usage_summaries(total_usage, semantic_result.tool_usage)
@@ -391,19 +300,16 @@ class DomainTweakGenerationPipeline:
                 terminal_stage="semantic_support_gate",
                 reason=_phase_failure_reason(semantic_result),
                 reference_answer_result=reference_result,
-                structured_materialization_result=materialization_result,
                 semantic_support_result=semantic_result,
                 stage_summaries=tuple(stage_summaries),
                 source_evidence=session.summary(),
                 tool_usage=total_usage,
-                requested_response_mode=requested_response_mode,
             )
         coverage_feedback = semantic_support_coverage_feedback(
             semantic_review,
             form_review=reviewed_question.form_review,
             reference_output=reference_output,
             allowed_window_ids=frozenset(evidence_window_ids),
-            materialization=materialization,
         )
         if coverage_feedback:
             stage_summaries[-1] = stage_summaries[-1].model_copy(update={"outcome": "validation_failed"})
@@ -413,12 +319,10 @@ class DomainTweakGenerationPipeline:
                 terminal_stage="semantic_support_gate",
                 reason=("validation_failed" if coverage_feedback else "semantic_support_abandon"),
                 reference_answer_result=reference_result,
-                structured_materialization_result=materialization_result,
                 semantic_support_result=semantic_result,
                 stage_summaries=tuple(stage_summaries),
                 source_evidence=session.summary(),
                 tool_usage=total_usage,
-                requested_response_mode=requested_response_mode,
             )
 
         hydration_started = time.perf_counter()
@@ -429,13 +333,8 @@ class DomainTweakGenerationPipeline:
                 reference_output.citation_window_ids,
                 reference_output.claims,
             )
-            reference_text = (
-                compact_json(materialization.structured_output)
-                if materialization is not None
-                else reference_output.reference_answer_text
-            )
             reference_answer = ReferenceAnswer(
-                text=reference_text,
+                text=reference_output.reference_answer_text,
                 citations=citations,
             )
         except ValueError:
@@ -451,25 +350,19 @@ class DomainTweakGenerationPipeline:
                 terminal_stage="citation_hydration",
                 reason="citation_hydration_failed",
                 reference_answer_result=reference_result,
-                structured_materialization_result=materialization_result,
                 semantic_support_result=semantic_result,
                 stage_summaries=tuple(stage_summaries),
                 source_evidence=session.summary(),
                 tool_usage=total_usage,
-                requested_response_mode=requested_response_mode,
             )
         stage_summaries.append(_deterministic_stage_summary("citation_hydration", "completed", hydration_started))
         return DomainTweakFinalizedTask(
             reviewed_question=reviewed_question,
             reference_answer_result=reference_result,
-            structured_materialization_result=materialization_result,
             semantic_support_result=semantic_result,
             task=MinerTask(
                 task_id=task_id_factory(),
-                query=Query(
-                    text=question,
-                    output_schema=(materialization.output_schema if materialization is not None else None),
-                ),
+                query=Query(text=question),
                 reference_answer=reference_answer,
             ),
             stage_summaries=tuple(stage_summaries),
@@ -512,16 +405,11 @@ class DomainTweakGenerationPipeline:
         output_schema: type[BaseModel],
         validate: Callable[[str], DomainTweakValidationOutcome],
         function_tools: tuple[Callable[..., object], ...] = (),
-        max_retries: int | None = None,
     ) -> DomainTweakAdkPhaseResult:
         return await self._runner.run_phase(
             phase=phase,
             prompt=prompt,
-            config=(
-                self._config
-                if max_retries is None
-                else self._config.model_copy(update={"max_retries": max_retries})
-            ),
+            config=self._config,
             agent_instruction=phase_instruction(phase),
             search_enabled=search_enabled,
             function_tools=function_tools,
@@ -584,18 +472,14 @@ def _discarded_candidate(
     stage_summaries: tuple[DomainTweakStageSummary, ...],
     source_evidence: DomainTweakSourceEvidenceSummary,
     tool_usage: ToolUsageSummary,
-    requested_response_mode: DomainTweakResponseMode,
     reference_answer_result: DomainTweakAdkPhaseResult | None = None,
-    structured_materialization_result: DomainTweakAdkPhaseResult | None = None,
     semantic_support_result: DomainTweakAdkPhaseResult | None = None,
 ) -> DomainTweakDiscardedCandidate:
     return DomainTweakDiscardedCandidate(
         reviewed_question=reviewed_question,
         terminal_stage=terminal_stage,
         reason=reason,
-        requested_response_mode=requested_response_mode,
         reference_answer_result=reference_answer_result,
-        structured_materialization_result=structured_materialization_result,
         semantic_support_result=semantic_support_result,
         stage_summaries=stage_summaries,
         source_evidence=source_evidence,
