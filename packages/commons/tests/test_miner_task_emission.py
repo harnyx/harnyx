@@ -375,7 +375,7 @@ def test_novelty_distribution_weights_use_exclusive_main_top_10_and_top_50_tiers
 
     weights = compose_novelty_distribution_weights(
         participant_scores,
-        main_participant_keys=("main-novel-outside-top-50",),
+        main_participant_artifact_ids=(UUID(int=4),),
     )
 
     assert weights == {
@@ -383,6 +383,62 @@ def test_novelty_distribution_weights_use_exclusive_main_top_10_and_top_50_tiers
         "middle-novel": pytest.approx(1.0),
         "main-novel-outside-top-50": pytest.approx(5.0),
     }
+
+
+def test_novelty_main_weight_requires_the_selected_artifact_to_have_participated_in_main() -> None:
+    shared_artifact_id = UUID(int=10)
+    participant_scores = (
+        *(
+            ParticipantEmissionScore(
+                f"higher-{index}",
+                1.0 - index / 10,
+                artifact_id=UUID(int=index),
+                classification="near_duplicate",
+            )
+            for index in range(1, 10)
+        ),
+        ParticipantEmissionScore(
+            "shared-hotkey",
+            0.05,
+            artifact_id=shared_artifact_id,
+            classification="novel",
+        ),
+    )
+
+    weights = compose_novelty_distribution_weights(
+        participant_scores,
+        main_participant_artifact_ids=(UUID(int=99),),
+    )
+
+    assert "shared-hotkey" not in weights
+
+
+def test_selected_main_artifact_receives_main_novelty_weight_outside_score_tiers() -> None:
+    shared_artifact_id = UUID(int=10)
+    participant_scores = (
+        *(
+            ParticipantEmissionScore(
+                f"higher-{index}",
+                1.0 - index / 10,
+                artifact_id=UUID(int=index),
+                classification="near_duplicate",
+            )
+            for index in range(1, 10)
+        ),
+        ParticipantEmissionScore(
+            "shared-hotkey",
+            0.05,
+            artifact_id=shared_artifact_id,
+            classification="novel",
+        ),
+    )
+
+    weights = compose_novelty_distribution_weights(
+        participant_scores,
+        main_participant_artifact_ids=(shared_artifact_id,),
+    )
+
+    assert weights == {"shared-hotkey": pytest.approx(5.0)}
 
 
 def test_novelty_emission_divides_entire_remaining_fraction_by_distribution_weight() -> None:

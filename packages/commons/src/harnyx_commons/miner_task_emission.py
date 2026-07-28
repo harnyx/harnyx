@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from math import ceil, floor, fsum, isfinite
 from typing import Generic, Literal, TypeVar
@@ -183,11 +183,11 @@ def compose_tiered_participant_emission_allocations(
 def compose_novelty_distribution_weights(
     participant_scores: Sequence[ParticipantEmissionScore],
     *,
-    main_participant_keys: Sequence[str] = (),
+    main_participant_artifact_ids: Collection[UUID] = (),
 ) -> dict[str, NoveltyDistributionWeight]:
     """Return exclusive main, top-10% or top-50% weights for novel participants."""
 
-    main_keys = set(main_participant_keys)
+    main_artifact_ids = set(main_participant_artifact_ids)
     selected = select_participant_emission_scores(participant_scores)
     weights: dict[str, NoveltyDistributionWeight] = {
         participant.participant_key: 3 if tier_weight == 2 else 1
@@ -195,7 +195,7 @@ def compose_novelty_distribution_weights(
         if participant.classification == "novel"
     }
     for participant in selected:
-        if participant.participant_key in main_keys and participant.classification == "novel":
+        if participant.artifact_id in main_artifact_ids and participant.classification == "novel":
             weights[participant.participant_key] = 5
     return weights
 
