@@ -36,7 +36,7 @@ class StubLlmProvider:
                     message=LlmChoiceMessage(
                         role="assistant",
                         content=(),
-                        reasoning="candidate changes retrieval strategy",
+                        reasoning="candidate replaces the research controller",
                     ),
                 ),
             ),
@@ -44,10 +44,10 @@ class StubLlmProvider:
             postprocessed={
                 "classification": "novel",
                 "reasoning": (
-                    "The candidate changes the retrieval strategy by adding a cross-source "
-                    "verification step before synthesis."
+                    "The candidate replaces one tool loop with explicit planning, retrieval, "
+                    "fact-table verification, and synthesis stages."
                 ),
-                "mechanism_change": "cross-source verification before synthesis",
+                "mechanism_change": "staged controller with verified fact-table evidence",
             },
             finish_reason="stop",
         )
@@ -180,8 +180,9 @@ async def test_similarity_judge_returns_classification_and_validator_reasoning()
     assert result.classification == "novel"
     assert (
         result.reasoning
-        == "The candidate changes the retrieval strategy by adding a cross-source verification step before synthesis.\n"
-        "Mechanism change: cross-source verification before synthesis"
+        == "The candidate replaces one tool loop with explicit planning, retrieval, fact-table verification, "
+        "and synthesis stages.\n"
+        "Mechanism change: staged controller with verified fact-table evidence"
     )
     assert result.reasoning_tokens == 17
     assert result.model == "moonshotai/Kimi-K2.5-TEE"
@@ -309,8 +310,9 @@ async def test_similarity_judge_postprocessor_accepts_novel_with_mechanism_reaso
     assert postprocessor is not None
     result = postprocessor(
         _raw_similarity_response(
-            '{"classification":"novel","reasoning":"Adds verification before synthesis.",'
-            '"mechanism_change":"verification before synthesis"}'
+            '{"classification":"novel","reasoning":"Replaces one tool loop with a staged '
+            'plan-retrieve-verify-synthesize controller.",'
+            '"mechanism_change":"staged controller and verified fact-table evidence"}'
         )
     )
 

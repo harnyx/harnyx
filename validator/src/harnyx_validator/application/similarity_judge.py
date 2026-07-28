@@ -38,11 +38,17 @@ _SYSTEM_PROMPT = (
     "same effective retrieval, source-selection, verification, tool-use, fallback, and synthesis "
     "behavior as the reference. An independent rewrite with unchanged behavior is still duplicate.\n"
     "- `near_duplicate`: the diff establishes a concrete but localized behavior change inside an "
-    "otherwise substantially shared pipeline. The changed branch, step, or policy can affect what "
-    "the agent does, but the core control and data flow remain the same.\n"
-    "- `novel`: one or more core retrieval, source-selection, verification, tool-use, fallback, or "
-    "synthesis mechanisms change with consequential control or data flow relative to the reference. "
-    "A derived artifact can be novel when its behavior meets this definition.\n\n"
+    "otherwise substantially shared pipeline. The changed branches, steps, or policies can affect "
+    "what the agent does, but the primary control and data flow used for ordinary cases remain the "
+    "same. Several localized changes together are still near_duplicate.\n"
+    "- `novel`: relative to the selected reference, the diff reorganizes or replaces the primary "
+    "control or data flow used for ordinary cases. It changes the primary controller, the order or "
+    "topology of major stages, the loop that coordinates research, or the intermediate "
+    "representation that carries evidence between major stages. A derived artifact can be novel "
+    "when its behavior meets this definition.\n\n"
+    "This is a pairwise classification against the one selected reference. `novel` means "
+    "architecturally different from that reference; it does not mean first-seen, independently "
+    "invented, or globally unique across the batch or historical corpus.\n\n"
     "Treat these as duplicate unless the diff also establishes a concrete behavior change: submission "
     "slots, salts, timestamps, comments, cosmetic constants, renamed variables, formatting-only "
     "edits, reordered equivalent code, small token/timeout/budget/temperature tweaks, and minor "
@@ -54,11 +60,33 @@ _SYSTEM_PROMPT = (
     "behavior.\n"
     "Prompt churn is duplicate: clearer wording, stronger wording, formatting instructions, "
     "style instructions, or restatements of the same policy do not count by themselves.\n"
-    "Parameter changes are duplicate by themselves: token, timeout, budget, temperature, model, "
-    "retry, or source-count changes need a separate concrete mechanism-level behavior change.\n"
+    "Parameter-only changes are duplicate: changing only a configured model or a scalar token, "
+    "timeout, budget, temperature, retry-count, or source-count value does not establish a new "
+    "research mechanism. A separate change to the control or data flow must establish the concrete "
+    "behavior change.\n"
+    "When they concretely change behavior but remain inside an existing stage or branch, changes "
+    "such as source-ranking policy, query wording, citation slicing or windowing, tools used by an "
+    "existing controller, new provider-selection or fallback control logic, new retry control logic, "
+    "caching, parallel execution inside an existing stage, validation or repair guards, output "
+    "shaping, and exceptional recovery are near_duplicate by default. Do not add up several such "
+    "changes and call them novel. They are novel only when the diff shows that they reorganize or "
+    "replace the primary ordinary-case control or data flow.\n"
+    "A removal or rollback does not establish novelty by itself. Classify it as near_duplicate when "
+    "it changes behavior but leaves the remaining primary pipeline intact.\n"
     "Choose `near_duplicate` or `novel` only when you can name the concrete behavior change. "
-    "The size of a diff is not the distinction: use whether core control or data flow changes.\n\n"
-    "When the evidence is borderline or the diff is mostly cosmetic, choose `duplicate`.\n\n"
+    "The size of a diff is not the distinction: a full rewrite can be duplicate or near_duplicate "
+    "when it preserves the same behavior or primary pipeline, while a small diff can be novel when "
+    "it replaces the primary controller or flow.\n\n"
+    "Apply this decision order:\n"
+    "1. If the diff does not establish a concrete behavior change, choose `duplicate`.\n"
+    "2. If it establishes changed behavior, identify the reference's primary ordinary-case control "
+    "and data flow.\n"
+    "3. Choose `novel` only if the candidate reorganizes or replaces that primary flow through a "
+    "changed controller, major-stage topology, coordinating loop, or evidence representation.\n"
+    "4. Otherwise choose `near_duplicate`, even when several mechanisms or policies changed.\n"
+    "When evidence of any behavior change is borderline or mostly cosmetic, choose `duplicate`. "
+    "When the behavior change is clear but the near_duplicate-versus-novel boundary is borderline, "
+    "choose `near_duplicate`.\n\n"
     "Return JSON only with keys `classification`, `reasoning`, and `mechanism_change`.\n"
     "`classification` is the single category selected by the rules above.\n"
     "`reasoning` must briefly explain why the evidence meets that category rather than an adjacent one.\n"
@@ -69,17 +97,20 @@ _SYSTEM_PROMPT = (
     '{"classification":"duplicate","reasoning":"Only the model and timeout changed.",'
     '"mechanism_change":null}\n'
     "Valid near_duplicate output:\n"
-    '{"classification":"near_duplicate","reasoning":"A new contradiction check changes one '
-    'verification branch while the surrounding pipeline is unchanged.",'
-    '"mechanism_change":"localized contradiction check before synthesis"}\n'
+    '{"classification":"near_duplicate","reasoning":"Authority ranking, focused citation windows, '
+    'and a contradiction guard change several policies, but the existing controller still runs the '
+    'same research loop and evidence path.",'
+    '"mechanism_change":"localized ranking, citation-window, and contradiction policies"}\n'
     "Valid novel output:\n"
-    '{"classification":"novel","reasoning":"The candidate replaces single-pass retrieval with '
-    'an iterative claim-driven retrieval and verification loop.",'
-    '"mechanism_change":"iterative claim-driven retrieval and verification"}\n'
+    '{"classification":"novel","reasoning":"The candidate replaces one LLM-controlled tool loop '
+    'with explicit planning, parallel retrieval, deterministic fact-table verification, and '
+    'synthesis stages, changing the primary controller and evidence path.",'
+    '"mechanism_change":"staged controller with a verified fact-table representation"}\n'
     "Invalid output:\n"
-    '{"classification":"novel","reasoning":"The temperature changed.","mechanism_change":null}\n'
-    "This is invalid because a parameter-only change is duplicate and an eligible classification "
-    "requires a concrete behavior change."
+    '{"classification":"novel","reasoning":"The candidate adds source ranking and a retry fallback.",'
+    '"mechanism_change":"source ranking and retries"}\n'
+    "This is invalid because localized ranking and retry changes do not reorganize the primary "
+    "ordinary-case control or data flow; the correct classification is near_duplicate."
 )
 _USER_PROMPT_PREFIX = (
     "Classify this candidate artifact relative to the selected reference as duplicate, "
