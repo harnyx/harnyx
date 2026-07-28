@@ -127,8 +127,8 @@ def build_tool_llm_provider(
 
 def build_optional_tool_embedding_provider(llm_settings: LlmSettings) -> EmbeddingProviderPort | None:
     provider = parse_miner_selected_embedding_provider(llm_settings.tool_embedding_provider)
-    api_key = _embedding_api_key_value(provider=provider, llm_settings=llm_settings)
-    if not api_key:
+    api_key = _embedding_api_key(provider=provider, llm_settings=llm_settings)
+    if not api_key.get_secret_value().strip():
         return None
     return build_miner_paid_embedding_provider(
         provider=provider,
@@ -145,11 +145,14 @@ def build_miner_paid_embedding_provider(
     timeout: float | None = None,
 ) -> EmbeddingProviderPort:
     provider_name = _parse_embedding_provider(provider)
-    explicit_key = _explicit_api_key_value(api_key, provider=provider_name)
+    explicit_key = _validated_api_key(api_key, provider=provider_name)
     timeout_seconds = _effective_client_timeout(llm_settings.llm_timeout_seconds, timeout)
     match provider_name:
         case "chutes":
-            return ChutesEmbeddingProvider(api_key=explicit_key, timeout_seconds=timeout_seconds)
+            return ChutesEmbeddingProvider(
+                api_key=explicit_key.get_secret_value(),
+                timeout_seconds=timeout_seconds,
+            )
         case "openrouter":
             return OpenRouterEmbeddingProvider(api_key=explicit_key, timeout_seconds=timeout_seconds)
     raise AssertionError(f"unsupported parsed embedding provider: {provider_name}")
@@ -195,8 +198,8 @@ class CachedEmbeddingProviderRegistry:
         provider_name = parse_miner_selected_embedding_provider(provider)
         embedding_provider = self._cache.get(provider_name)
         if embedding_provider is None:
-            api_key = _embedding_api_key_value(provider=provider_name, llm_settings=self._llm_settings)
-            if not api_key.strip():
+            api_key = _embedding_api_key(provider=provider_name, llm_settings=self._llm_settings)
+            if not api_key.get_secret_value().strip():
                 raise ProviderCredentialUnavailableError(provider_name)
             embedding_provider = build_miner_paid_embedding_provider(
                 provider=provider_name,
@@ -294,19 +297,23 @@ def _build_optional_search_client(
 
 
 def _explicit_api_key_value(api_key: SecretStr | str, *, provider: str) -> str:
+    return _validated_api_key(api_key, provider=provider).get_secret_value()
+
+
+def _validated_api_key(api_key: SecretStr | str, *, provider: str) -> SecretStr:
     value = api_key.get_secret_value() if isinstance(api_key, SecretStr) else api_key
     normalized = value.strip()
     if not normalized:
         raise ValueError(f"{provider} miner-paid API key must be provided")
-    return normalized
+    return SecretStr(normalized)
 
 
-def _embedding_api_key_value(*, provider: EmbeddingProviderName, llm_settings: LlmSettings) -> str:
+def _embedding_api_key(*, provider: EmbeddingProviderName, llm_settings: LlmSettings) -> SecretStr:
     match provider:
         case "chutes":
-            return llm_settings.chutes_api_key_value
+            return llm_settings.chutes_api_key
         case "openrouter":
-            return llm_settings.openrouter_api_key_value
+            return llm_settings.openrouter_api_key
     raise AssertionError(f"unsupported parsed embedding provider: {provider}")
 
 
@@ -478,7 +485,7 @@ class ChutesEmbeddingProvider(EmbeddingProviderPort):
 
 
 class OpenRouterEmbeddingProvider(EmbeddingProviderPort):
-    def __init__(self, *, api_key: str, timeout_seconds: float) -> None:
+    def __init__(self, *, api_key: SecretStr, timeout_seconds: float) -> None:
         self._api_key = api_key
         self._timeout_seconds = timeout_seconds
         self._clients: dict[tuple[str, int | None], OpenRouterEmbeddingClient] = {}

@@ -82,7 +82,7 @@ class OpenRouterEmbeddingResponse:
 @dataclass(slots=True)
 class OpenRouterEmbeddingClient:
     model: str
-    api_key: str
+    api_key: SecretStr = field(repr=False)
     base_url: str = OPENROUTER_BASE_URL
     timeout_seconds: float = 30.0
     dimensions: int | None = None
@@ -93,9 +93,11 @@ class OpenRouterEmbeddingClient:
         normalized_model = self.model.strip()
         if normalized_model not in OPENROUTER_EMBEDDING_SUPPORTED_MODELS:
             raise ValueError(f"OpenRouter embedding provider does not support model {self.model!r}")
-        if not self.api_key:
+        api_key_value = self.api_key.get_secret_value().strip()
+        if not api_key_value:
             raise ValueError("OpenRouter API key must be provided for embeddings")
         self.model = normalized_model
+        self.api_key = SecretStr(api_key_value)
         self.base_url = self.base_url.rstrip("/")
         if not self.base_url:
             raise ValueError("OpenRouter embedding base_url must not be empty")
@@ -103,7 +105,7 @@ class OpenRouterEmbeddingClient:
             self.client = httpx.AsyncClient(
                 base_url=self.base_url,
                 timeout=self.timeout_seconds,
-                headers={"Authorization": f"Bearer {self.api_key}"},
+                headers={"Authorization": f"Bearer {api_key_value}"},
             )
             self._owns_client = True
         else:

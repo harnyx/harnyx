@@ -230,8 +230,8 @@ async def test_openrouter_embedding_client_invokes_qwen3_8b_live() -> None:
 
     client = OpenRouterEmbeddingClient(
         model=QWEN3_OPENROUTER_EMBEDDING_MODEL,
-        api_key=settings.openrouter_api_key_value,
-        dimensions=8,
+        api_key=settings.openrouter_api_key,
+        dimensions=32,
         timeout_seconds=180.0,
     )
     try:
@@ -240,7 +240,7 @@ async def test_openrouter_embedding_client_invokes_qwen3_8b_live() -> None:
         await client.aclose()
 
     assert len(response.vectors) == 1
-    assert len(response.vectors[0]) == 8
+    assert len(response.vectors[0]) == 32
     assert response.usage is not None
     assert response.usage.prompt_tokens is not None
     assert response.usage.prompt_tokens > 0

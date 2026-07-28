@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import SecretStr
 
 from harnyx_commons.llm.providers.chutes import ChutesEmbeddingUsage, ChutesTextEmbeddingResponse
 from harnyx_commons.llm.providers.openrouter import OpenRouterEmbeddingResponse, OpenRouterEmbeddingUsage
@@ -174,7 +175,7 @@ async def test_openrouter_embedding_provider_posts_native_model_and_settles_stat
                 usage=OpenRouterEmbeddingUsage(prompt_tokens=12, total_tokens=12),
             )
 
-    provider = OpenRouterEmbeddingProvider(api_key="test-key", timeout_seconds=1.0)
+    provider = OpenRouterEmbeddingProvider(api_key=SecretStr("test-key"), timeout_seconds=1.0)
     monkeypatch.setattr(provider, "_client_for", lambda **_: _FakeClient())
 
     result = await provider.embed_text(
@@ -214,7 +215,7 @@ async def test_openrouter_embedding_provider_applies_request_timeout_to_model_cl
                 model=QWEN3_OPENROUTER_EMBEDDING_MODEL,
             )
 
-    provider = OpenRouterEmbeddingProvider(api_key="test-key", timeout_seconds=300.0)
+    provider = OpenRouterEmbeddingProvider(api_key=SecretStr("test-key"), timeout_seconds=300.0)
     monkeypatch.setattr(provider, "_client_for", lambda **_: _FakeClient())
 
     await provider.embed_text(
@@ -248,7 +249,7 @@ async def test_openrouter_embedding_provider_prefers_provider_returned_cost_and_
                 model="Qwen/Qwen3-Embedding-8B",
             )
 
-    provider = OpenRouterEmbeddingProvider(api_key="test-key", timeout_seconds=1.0)
+    provider = OpenRouterEmbeddingProvider(api_key=SecretStr("test-key"), timeout_seconds=1.0)
     monkeypatch.setattr(provider, "_client_for", lambda **_: _FakeClient())
 
     result = await provider.embed_text(
@@ -287,7 +288,7 @@ async def test_openrouter_embedding_provider_falls_back_for_malformed_provider_c
                 usage=OpenRouterEmbeddingUsage(prompt_tokens=12, total_tokens=12, cost="invalid"),
             )
 
-    provider = OpenRouterEmbeddingProvider(api_key="test-key", timeout_seconds=1.0)
+    provider = OpenRouterEmbeddingProvider(api_key=SecretStr("test-key"), timeout_seconds=1.0)
     monkeypatch.setattr(provider, "_client_for", lambda **_: _FakeClient())
 
     result = await provider.embed_text(
@@ -325,7 +326,7 @@ async def test_openrouter_embedding_provider_forwards_provider_extra(
                 usage=OpenRouterEmbeddingUsage(prompt_tokens=12, total_tokens=12),
             )
 
-    provider = OpenRouterEmbeddingProvider(api_key="test-key", timeout_seconds=1.0)
+    provider = OpenRouterEmbeddingProvider(api_key=SecretStr("test-key"), timeout_seconds=1.0)
     monkeypatch.setattr(provider, "_client_for", lambda **_: _FakeClient())
 
     result = await provider.embed_text(
@@ -358,7 +359,7 @@ async def test_openrouter_embedding_provider_settles_zero_token_cache_hit(
                 usage=OpenRouterEmbeddingUsage(prompt_tokens=0, total_tokens=0),
             )
 
-    provider = OpenRouterEmbeddingProvider(api_key="test-key", timeout_seconds=1.0)
+    provider = OpenRouterEmbeddingProvider(api_key=SecretStr("test-key"), timeout_seconds=1.0)
     monkeypatch.setattr(provider, "_client_for", lambda **_: _FakeClient())
 
     result = await provider.embed_text(
@@ -390,7 +391,7 @@ async def test_openrouter_embedding_provider_returns_vectors_when_usage_is_unava
                 id="gen-emb-unavailable",
             )
 
-    provider = OpenRouterEmbeddingProvider(api_key="test-key", timeout_seconds=1.0)
+    provider = OpenRouterEmbeddingProvider(api_key=SecretStr("test-key"), timeout_seconds=1.0)
     monkeypatch.setattr(provider, "_client_for", lambda **_: _FakeClient())
 
     result = await provider.embed_text(
@@ -432,7 +433,7 @@ async def test_openrouter_embedding_provider_uses_provider_cost_without_usage_to
                 usage=OpenRouterEmbeddingUsage(cost=0.0042),
             )
 
-    provider = OpenRouterEmbeddingProvider(api_key="test-key", timeout_seconds=1.0)
+    provider = OpenRouterEmbeddingProvider(api_key=SecretStr("test-key"), timeout_seconds=1.0)
     monkeypatch.setattr(provider, "_client_for", lambda **_: _FakeClient())
 
     result = await provider.embed_text(
@@ -462,7 +463,7 @@ async def test_openrouter_embedding_provider_marks_cost_unavailable_without_usab
                 usage=OpenRouterEmbeddingUsage(cost=provider_cost),
             )
 
-    provider = OpenRouterEmbeddingProvider(api_key="test-key", timeout_seconds=1.0)
+    provider = OpenRouterEmbeddingProvider(api_key=SecretStr("test-key"), timeout_seconds=1.0)
     monkeypatch.setattr(provider, "_client_for", lambda **_: _FakeClient())
 
     result = await provider.embed_text(

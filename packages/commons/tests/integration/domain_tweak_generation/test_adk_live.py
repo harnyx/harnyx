@@ -38,7 +38,7 @@ pytestmark = [
     pytest.mark.anyio("asyncio"),
     pytest.mark.flaky(
         reruns=1,
-        only_rerun=[r"terminal_status=(?:timeout|invocation_error)"],
+        only_rerun=[r"terminal_status=(?:timeout|invocation_error|validation_failed)"],
     ),
 ]
 

@@ -528,10 +528,11 @@ async def test_openrouter_embedding_client_posts_embeddings_request() -> None:
 
     client = OpenRouterEmbeddingClient(
         model="qwen/qwen3-embedding-8b",
-        api_key="test-key",
+        api_key=SecretStr("test-key"),
         client=httpx.AsyncClient(base_url=OPENROUTER_BASE_URL, transport=httpx.MockTransport(handler)),
         dimensions=3,
     )
+    assert "test-key" not in repr(client)
 
     response = await client.embed_many(
         ("hello",),
@@ -564,7 +565,7 @@ async def test_openrouter_embedding_client_posts_embeddings_request() -> None:
 
 async def test_openrouter_embedding_client_rejects_unsupported_model() -> None:
     with pytest.raises(ValueError, match="does not support model"):
-        OpenRouterEmbeddingClient(model="unsupported", api_key="test-key")
+        OpenRouterEmbeddingClient(model="unsupported", api_key=SecretStr("test-key"))
 
 
 def _fake_factory(
