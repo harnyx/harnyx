@@ -10,7 +10,10 @@ from harnyx_commons.miner_task_emission import (
     ParticipantEmissionScore,
     apply_miner_emission_cap,
     compose_emission_weights,
+    compose_equal_participant_emission_allocations,
     compose_flat_participant_emission_allocations,
+    compose_novelty_distribution_weights,
+    compose_novelty_emission_allocations,
     compose_participant_emission_weights,
     compose_prioritized_emission,
     compose_tiered_participant_emission_allocations,
@@ -294,7 +297,7 @@ def test_tiered_participant_emission_deduplicates_participant_key_by_higher_scor
     assert weights["hotkey-a"] == pytest.approx(0.02)
 
 
-def test_tiered_participant_emission_preserves_near_duplicate_and_increases_novel() -> None:
+def test_tiered_participant_emission_assigns_same_fixed_reward_to_near_duplicate_and_novel() -> None:
     weights = compose_tiered_participant_emission_allocations(
         (
             ParticipantEmissionScore(
@@ -332,9 +335,86 @@ def test_tiered_participant_emission_preserves_near_duplicate_and_increases_nove
     )
 
     assert weights["top-near"] == pytest.approx(0.004)
-    assert weights["top-novel"] == pytest.approx(0.016)
+    assert weights["top-novel"] == pytest.approx(0.004)
     assert weights["middle-near"] == pytest.approx(0.002)
-    assert weights["middle-novel"] == pytest.approx(0.008)
+    assert weights["middle-novel"] == pytest.approx(0.002)
+
+
+def test_novelty_distribution_weights_use_exclusive_main_top_10_and_top_50_tiers() -> None:
+    participant_scores = (
+        ParticipantEmissionScore(
+            "top-novel",
+            1.0,
+            artifact_id=UUID(int=1),
+            classification="novel",
+        ),
+        ParticipantEmissionScore(
+            "top-near",
+            1.0,
+            artifact_id=UUID(int=2),
+            classification="near_duplicate",
+        ),
+        ParticipantEmissionScore(
+            "middle-novel",
+            0.9,
+            artifact_id=UUID(int=3),
+            classification="novel",
+        ),
+        ParticipantEmissionScore("filler-1", 0.8),
+        ParticipantEmissionScore("filler-2", 0.7),
+        ParticipantEmissionScore("filler-3", 0.6),
+        ParticipantEmissionScore("filler-4", 0.5),
+        ParticipantEmissionScore("filler-5", 0.4),
+        ParticipantEmissionScore(
+            "main-novel-outside-top-50",
+            0.3,
+            artifact_id=UUID(int=4),
+            classification="novel",
+        ),
+    )
+
+    weights = compose_novelty_distribution_weights(
+        participant_scores,
+        main_participant_keys=("main-novel-outside-top-50",),
+    )
+
+    assert weights == {
+        "top-novel": pytest.approx(3.0),
+        "middle-novel": pytest.approx(1.0),
+        "main-novel-outside-top-50": pytest.approx(5.0),
+    }
+
+
+def test_novelty_emission_divides_entire_remaining_fraction_by_distribution_weight() -> None:
+    allocations = compose_novelty_emission_allocations(
+        {
+            "main": 5.0,
+            "top": 3.0,
+            "middle": 1.0,
+        },
+        remaining_emission_fraction=0.7,
+    )
+
+    assert allocations == {
+        "main": pytest.approx(0.7 * 5.0 / 9.0),
+        "top": pytest.approx(0.7 / 3.0),
+        "middle": pytest.approx(0.7 / 9.0),
+    }
+    assert fsum(allocations.values()) == pytest.approx(0.7)
+
+
+def test_equal_participant_emission_divides_entire_remaining_fraction() -> None:
+    allocations = compose_equal_participant_emission_allocations(
+        ("hotkey-a", "hotkey-b", "hotkey-a", "hotkey-c"),
+        remaining_emission_fraction=0.7,
+    )
+
+    assert allocations == {
+        "hotkey-a": pytest.approx(0.7 / 3.0),
+        "hotkey-b": pytest.approx(0.7 / 3.0),
+        "hotkey-c": pytest.approx(0.7 / 3.0),
+    }
+    assert fsum(allocations.values()) == pytest.approx(0.7)
 
 
 def test_participant_selection_keeps_score_and_classification_on_same_artifact() -> None:

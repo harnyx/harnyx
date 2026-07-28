@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from math import ceil, floor, fsum, isfinite
-from typing import Generic, TypeVar
+from typing import Generic, Literal, TypeVar
 from uuid import UUID
 
 from harnyx_commons.miner_task_similarity import EligibleSimilarityClassification
@@ -13,10 +13,11 @@ from harnyx_commons.miner_task_similarity import EligibleSimilarityClassificatio
 OWNER_UID = 0
 DEFAULT_MINER_PARTICIPATION_EMISSION = 0.004
 DEFAULT_SUCCESSFUL_MINER_PARTICIPATION_EMISSION = 0.008
-FAILED_BATCH_PARTICIPATION_EMISSION = 0.004
 TOTAL_EMISSION_FRACTION = 1.0
 _TOTAL_WEIGHT_EPSILON = 1e-12
 _ParticipantKey = TypeVar("_ParticipantKey")
+NoveltyDistributionWeight = Literal[1, 3, 5]
+_ParticipantTierWeight = Literal[1, 2]
 
 
 class ParticipantEmissionTotalWeightError(ValueError):
@@ -31,8 +32,8 @@ class ParticipantEmissionScore:
     classification: EligibleSimilarityClassification | None = None
 
     def __post_init__(self) -> None:
-        if (self.artifact_id is None) != (self.classification is None):
-            raise ValueError("participant artifact and classification must be set together")
+        if self.classification is not None and self.artifact_id is None:
+            raise ValueError("participant classification requires an artifact")
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,39 +168,100 @@ def compose_tiered_participant_emission_allocations(
 ) -> dict[str, float]:
     _validate_miner_participation_emission(miner_participation_emission)
 
-    ordered = tuple(
-        sorted(
-            select_participant_emission_scores(participant_scores),
-            key=lambda participant: (-participant.score, participant.participant_key),
+    ordered_allocations = tuple(
+        (
+            participant.participant_key,
+            miner_participation_emission
+            * tier_weight
+            * _participant_fixed_reward_ratio(participant.classification),
         )
+        for participant, tier_weight in _tiered_participant_weights(participant_scores)
     )
-    if not ordered:
+    return _capped_allocations_in_order(ordered_allocations)
+
+
+def compose_novelty_distribution_weights(
+    participant_scores: Sequence[ParticipantEmissionScore],
+    *,
+    main_participant_keys: Sequence[str] = (),
+) -> dict[str, NoveltyDistributionWeight]:
+    """Return exclusive main, top-10% or top-50% weights for novel participants."""
+
+    main_keys = set(main_participant_keys)
+    selected = select_participant_emission_scores(participant_scores)
+    weights: dict[str, NoveltyDistributionWeight] = {
+        participant.participant_key: 3 if tier_weight == 2 else 1
+        for participant, tier_weight in _tiered_participant_weights(participant_scores)
+        if participant.classification == "novel"
+    }
+    for participant in selected:
+        if participant.participant_key in main_keys and participant.classification == "novel":
+            weights[participant.participant_key] = 5
+    return weights
+
+
+def compose_novelty_emission_allocations(
+    novelty_distribution_weights: Mapping[_ParticipantKey, float],
+    *,
+    remaining_emission_fraction: float,
+) -> dict[_ParticipantKey, float]:
+    """Divide the post-assignment emission remainder in proportion to novelty weights."""
+
+    return _compose_proportional_emission_allocations(
+        novelty_distribution_weights,
+        emission_fraction=remaining_emission_fraction,
+    )
+
+
+def compose_equal_participant_emission_allocations(
+    participant_keys: Sequence[_ParticipantKey],
+    *,
+    remaining_emission_fraction: float,
+) -> dict[_ParticipantKey, float]:
+    """Divide the available emission equally among distinct participants."""
+
+    distinct_keys: dict[_ParticipantKey, float] = {}
+    for participant_key in participant_keys:
+        if not participant_key:
+            raise ValueError("participant key must be non-empty")
+        distinct_keys.setdefault(participant_key, 1.0)
+    return _compose_proportional_emission_allocations(
+        distinct_keys,
+        emission_fraction=remaining_emission_fraction,
+    )
+
+
+def _compose_proportional_emission_allocations(
+    distribution_weights: Mapping[_ParticipantKey, float],
+    *,
+    emission_fraction: float,
+) -> dict[_ParticipantKey, float]:
+    if (
+        not isfinite(emission_fraction)
+        or emission_fraction < 0.0
+        or _exceeds_total_emission(emission_fraction)
+    ):
+        raise ValueError("emission fraction must be between 0.0 and 1.0")
+    for participant_key, weight in distribution_weights.items():
+        if not participant_key:
+            raise ValueError("participant key must be non-empty")
+        if not isfinite(weight) or weight <= 0.0:
+            raise ValueError("distribution weight must be positive")
+    total_weight = fsum(distribution_weights.values())
+    if emission_fraction == 0.0 or total_weight == 0.0:
         return {}
 
-    top_floor = _score_floor(ordered, fraction=0.10)
-    middle_floor = _score_floor(ordered, fraction=0.50)
-    ordered_allocations: list[tuple[str, float]] = []
-    for participant in ordered:
-        participant_key = participant.participant_key
-        score = participant.score
-        if score <= 0.0:
-            continue
-        if score >= top_floor:
-            multiplier = 2.0
-        elif score >= middle_floor:
-            multiplier = 1.0
+    allocations: dict[_ParticipantKey, float] = {}
+    allocated = 0.0
+    final_index = len(distribution_weights) - 1
+    for index, (participant_key, weight) in enumerate(distribution_weights.items()):
+        if index == final_index:
+            allocation = emission_fraction - allocated
         else:
-            continue
-        ordered_allocations.append(
-            (
-                participant_key,
-                miner_participation_emission
-                * multiplier
-                * participant_emission_novelty_multiplier(participant.classification),
-            )
-        )
-
-    return _capped_allocations_in_order(tuple(ordered_allocations))
+            allocation = emission_fraction * weight / total_weight
+            allocated += allocation
+        allocations[participant_key] = allocation
+    return allocations
 
 
 def compose_emission_weights(*components: dict[int, float]) -> dict[int, float]:
@@ -294,12 +356,12 @@ def select_participant_emission_scores(
     return tuple(selected[participant_key] for participant_key in sorted(selected))
 
 
-def participant_emission_novelty_multiplier(
+def _participant_fixed_reward_ratio(
     classification: EligibleSimilarityClassification | None,
 ) -> float:
-    if classification is None or classification == "novel":
+    if classification is None:
         return 1.0
-    if classification == "near_duplicate":
+    if classification in {"near_duplicate", "novel"}:
         return 0.25
     raise ValueError(f"unsupported participant similarity classification: {classification}")
 
@@ -328,6 +390,34 @@ def _score_floor(
     cutoff_count = ceil(len(ordered_scores) * fraction)
     index = max(0, cutoff_count - 1)
     return ordered_scores[index].score
+
+
+def _tiered_participant_weights(
+    participant_scores: Sequence[ParticipantEmissionScore],
+) -> tuple[tuple[ParticipantEmissionScore, _ParticipantTierWeight], ...]:
+    ordered = tuple(
+        sorted(
+            select_participant_emission_scores(participant_scores),
+            key=lambda participant: (-participant.score, participant.participant_key),
+        )
+    )
+    if not ordered:
+        return ()
+
+    top_floor = _score_floor(ordered, fraction=0.10)
+    middle_floor = _score_floor(ordered, fraction=0.50)
+    weighted: list[tuple[ParticipantEmissionScore, _ParticipantTierWeight]] = []
+    for participant in ordered:
+        if participant.score <= 0.0:
+            continue
+        if participant.score >= top_floor:
+            tier_weight = 2
+        elif participant.score >= middle_floor:
+            tier_weight = 1
+        else:
+            continue
+        weighted.append((participant, tier_weight))
+    return tuple(weighted)
 
 
 def _validate_miner_participation_emission(miner_participation_emission: float) -> None:
@@ -382,7 +472,7 @@ def _admit_prioritized_component(
 __all__ = [
     "DEFAULT_MINER_PARTICIPATION_EMISSION",
     "DEFAULT_SUCCESSFUL_MINER_PARTICIPATION_EMISSION",
-    "FAILED_BATCH_PARTICIPATION_EMISSION",
+    "NoveltyDistributionWeight",
     "OWNER_UID",
     "ParticipantEmissionScore",
     "ParticipantEmissionTotalWeightError",
@@ -394,12 +484,14 @@ __all__ = [
     "compose_champion_weights",
     "compose_base_participant_emission_allocations",
     "compose_emission_weights",
+    "compose_equal_participant_emission_allocations",
     "compose_flat_participant_emission_allocations",
+    "compose_novelty_distribution_weights",
+    "compose_novelty_emission_allocations",
     "compose_participant_emission_weights",
     "compose_prioritized_emission",
     "compose_tiered_participant_emission_allocations",
     "owner_fallback_weights",
     "participant_emission_fraction",
-    "participant_emission_novelty_multiplier",
     "select_participant_emission_scores",
 ]
