@@ -15,7 +15,12 @@ from harnyx_commons.llm.schema import (
     LlmTool,
 )
 
-pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.expensive,
+    pytest.mark.anyio("asyncio"),
+    pytest.mark.flaky(reruns=1),
+]
 
 NEW_AI_GATEWAY_MODELS = (
     "deepseek/deepseek-v4-flash",

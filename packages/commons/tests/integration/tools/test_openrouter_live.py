@@ -23,7 +23,12 @@ from harnyx_commons.llm.schema import (
 )
 from harnyx_commons.tools.embedding_models import QWEN3_OPENROUTER_EMBEDDING_MODEL
 
-pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.expensive,
+    pytest.mark.anyio("asyncio"),
+    pytest.mark.flaky(reruns=1),
+]
 
 OPENROUTER_LIVE_CHAT_MODEL = "openai/gpt-oss-20b"
 OPENROUTER_BYOK_LIVE_CHAT_MODEL = "openai/gpt-oss-120b"
@@ -224,7 +229,6 @@ async def test_miner_paid_openrouter_helper_completion_live() -> None:
     assert response.metadata["effective_model"] == model
 
 
-@pytest.mark.flaky(reruns=1)
 async def test_openrouter_embedding_client_invokes_qwen3_8b_live() -> None:
     settings = LlmSettings()
     assert settings.openrouter_api_key_value, "OPENROUTER_API_KEY must be configured"
