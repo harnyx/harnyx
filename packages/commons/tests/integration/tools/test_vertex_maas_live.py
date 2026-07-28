@@ -11,7 +11,11 @@ from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_commons.llm.providers.vertex.provider import VertexLlmProvider
 from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest
 
-pytestmark = [pytest.mark.integration, pytest.mark.anyio("asyncio")]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.anyio("asyncio"),
+    pytest.mark.flaky(reruns=1),
+]
 
 VERTEX_MAAS_LIVE_MODEL = "openai/gpt-oss-120b"
 

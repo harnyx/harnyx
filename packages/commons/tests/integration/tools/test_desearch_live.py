@@ -9,7 +9,11 @@ from harnyx_commons.config.llm import LlmSettings
 from harnyx_commons.tools.desearch import DeSearchClient
 from harnyx_commons.tools.search_models import FetchPageRequest, SearchWebSearchRequest, SearchXSearchRequest
 
-pytestmark = [pytest.mark.integration, pytest.mark.anyio("asyncio")]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.anyio("asyncio"),
+    pytest.mark.flaky(reruns=1),
+]
 
 
 async def test_search_web_live() -> None:

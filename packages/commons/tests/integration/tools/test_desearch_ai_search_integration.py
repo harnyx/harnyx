@@ -9,7 +9,11 @@ from harnyx_commons.tools.desearch_ai_protocol import DeSearchAiDocsResponse
 from harnyx_commons.tools.invocation_clients import build_miner_paid_web_search_provider
 from harnyx_commons.tools.search_models import SearchAiSearchRequest
 
-pytestmark = [pytest.mark.anyio("asyncio"), pytest.mark.integration]
+pytestmark = [
+    pytest.mark.anyio("asyncio"),
+    pytest.mark.integration,
+    pytest.mark.flaky(reruns=1),
+]
 
 
 async def test_desearch_ai_search_live() -> None:

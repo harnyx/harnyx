@@ -16,7 +16,12 @@ from harnyx_commons.llm.schema import (
 )
 from harnyx_commons.llm.tool_models import MINER_SELECTED_LLM_PROVIDER_MODELS
 
-pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.expensive,
+    pytest.mark.anyio("asyncio"),
+    pytest.mark.flaky(reruns=1),
+]
 
 CHUTES_TOOL_MODELS = MINER_SELECTED_LLM_PROVIDER_MODELS["chutes"]
 NEW_CHUTES_MODELS = (
