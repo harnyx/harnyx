@@ -294,29 +294,47 @@ def test_tiered_participant_emission_deduplicates_participant_key_by_higher_scor
     assert weights["hotkey-a"] == pytest.approx(0.02)
 
 
-def test_tiered_participant_emission_discounts_near_duplicate_within_earned_tier() -> None:
+def test_tiered_participant_emission_preserves_near_duplicate_and_increases_novel() -> None:
     weights = compose_tiered_participant_emission_allocations(
         (
             ParticipantEmissionScore(
-                "hotkey-a",
+                "top-near",
                 1.0,
                 artifact_id=UUID(int=1),
                 classification="near_duplicate",
             ),
-                ParticipantEmissionScore(
-                    "hotkey-b",
-                    1.0,
+            ParticipantEmissionScore(
+                "top-novel",
+                1.0,
                 artifact_id=UUID(int=2),
                 classification="novel",
             ),
+            ParticipantEmissionScore(
+                "middle-near",
+                0.9,
+                artifact_id=UUID(int=3),
+                classification="near_duplicate",
+            ),
+            ParticipantEmissionScore(
+                "middle-novel",
+                0.9,
+                artifact_id=UUID(int=4),
+                classification="novel",
+            ),
+            ParticipantEmissionScore("filler-1", 0.8),
+            ParticipantEmissionScore("filler-2", 0.7),
+            ParticipantEmissionScore("filler-3", 0.6),
+            ParticipantEmissionScore("filler-4", 0.5),
+            ParticipantEmissionScore("filler-5", 0.4),
+            ParticipantEmissionScore("filler-6", 0.3),
         ),
-        miner_participation_emission=0.01,
+        miner_participation_emission=0.008,
     )
 
-    assert weights == {
-        "hotkey-a": pytest.approx(0.01),
-        "hotkey-b": pytest.approx(0.02),
-    }
+    assert weights["top-near"] == pytest.approx(0.004)
+    assert weights["top-novel"] == pytest.approx(0.016)
+    assert weights["middle-near"] == pytest.approx(0.002)
+    assert weights["middle-novel"] == pytest.approx(0.008)
 
 
 def test_participant_selection_keeps_score_and_classification_on_same_artifact() -> None:

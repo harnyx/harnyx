@@ -12,6 +12,8 @@ from harnyx_commons.miner_task_similarity import EligibleSimilarityClassificatio
 
 OWNER_UID = 0
 DEFAULT_MINER_PARTICIPATION_EMISSION = 0.004
+DEFAULT_SUCCESSFUL_MINER_PARTICIPATION_EMISSION = 0.008
+FAILED_BATCH_PARTICIPATION_EMISSION = 0.004
 TOTAL_EMISSION_FRACTION = 1.0
 _TOTAL_WEIGHT_EPSILON = 1e-12
 _ParticipantKey = TypeVar("_ParticipantKey")
@@ -161,7 +163,7 @@ def compose_base_participant_emission_allocations(
 def compose_tiered_participant_emission_allocations(
     participant_scores: Sequence[ParticipantEmissionScore],
     *,
-    miner_participation_emission: float = DEFAULT_MINER_PARTICIPATION_EMISSION,
+    miner_participation_emission: float = DEFAULT_SUCCESSFUL_MINER_PARTICIPATION_EMISSION,
 ) -> dict[str, float]:
     _validate_miner_participation_emission(miner_participation_emission)
 
@@ -298,7 +300,7 @@ def participant_emission_novelty_multiplier(
     if classification is None or classification == "novel":
         return 1.0
     if classification == "near_duplicate":
-        return 0.5
+        return 0.25
     raise ValueError(f"unsupported participant similarity classification: {classification}")
 
 
@@ -379,6 +381,8 @@ def _admit_prioritized_component(
 
 __all__ = [
     "DEFAULT_MINER_PARTICIPATION_EMISSION",
+    "DEFAULT_SUCCESSFUL_MINER_PARTICIPATION_EMISSION",
+    "FAILED_BATCH_PARTICIPATION_EMISSION",
     "OWNER_UID",
     "ParticipantEmissionScore",
     "ParticipantEmissionTotalWeightError",
