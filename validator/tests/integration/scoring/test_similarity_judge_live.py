@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from harnyx_commons.llm.provider import LlmProviderPort
+from harnyx_commons.llm.provider import LlmProviderPort, LlmRetryExhaustedError
 from harnyx_commons.llm.provider_factory import build_cached_llm_provider_registry, build_routed_llm_provider
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
 from harnyx_commons.miner_task_similarity import SimilarityJudgeRequest
@@ -14,7 +14,12 @@ from harnyx_validator.application.similarity_judge import SimilarityJudge, Simil
 from harnyx_validator.runtime import bootstrap
 from harnyx_validator.runtime.settings import Settings
 
-pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.expensive,
+    pytest.mark.anyio("asyncio"),
+    pytest.mark.flaky(reruns=1, only_rerun=[LlmRetryExhaustedError]),
+]
 _CALIBRATION_SAMPLE_COUNT = 2
 _GEMMA_MODEL = "google/gemma-4-31B-turbo-TEE"
 _GEMMA_ENDPOINT_ID = "gemma4-cloud-run-turbo"
