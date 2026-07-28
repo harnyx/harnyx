@@ -224,6 +224,7 @@ async def test_miner_paid_openrouter_helper_completion_live() -> None:
     assert response.metadata["effective_model"] == model
 
 
+@pytest.mark.flaky(reruns=1)
 async def test_openrouter_embedding_client_invokes_qwen3_8b_live() -> None:
     settings = LlmSettings()
     assert settings.openrouter_api_key_value, "OPENROUTER_API_KEY must be configured"
