@@ -140,7 +140,16 @@ async def test_ai_gateway_provider_preserves_nested_reasoning_usage() -> None:
         (LlmThinkingConfig(enabled=True, budget=256), {"enabled": True, "max_tokens": 256}),
     ),
 )
+@pytest.mark.parametrize(
+    "model",
+    (
+        "openai/gpt-oss-120b",
+        "deepseek/deepseek-v4-flash",
+        "deepseek/deepseek-v4-pro",
+    ),
+)
 async def test_ai_gateway_provider_serializes_typed_thinking_to_reasoning(
+    model: str,
     thinking: LlmThinkingConfig,
     expected_reasoning: dict[str, Any],
 ) -> None:
@@ -158,7 +167,7 @@ async def test_ai_gateway_provider_serializes_typed_thinking_to_reasoning(
     provider = AiGatewayLlmProvider(ai_gateway_api_key=SecretStr("test-ai-gateway-key"), client=client)
 
     try:
-        await provider.invoke(_request(model="openai/gpt-oss-120b", thinking=thinking))
+        await provider.invoke(_request(model=model, thinking=thinking))
     finally:
         await provider.aclose()
         await client.aclose()

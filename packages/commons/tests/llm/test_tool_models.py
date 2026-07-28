@@ -3,8 +3,10 @@ from __future__ import annotations
 import pytest
 
 from harnyx_commons.llm.tool_models import (
+    ALLOWED_TOOL_MODELS,
     MINER_SELECTED_LLM_PROVIDER_MODELS,
     parse_miner_selected_llm_provider_model,
+    parse_tool_model,
     resolve_tool_model,
     tool_model_thinking_capability,
 )
@@ -83,6 +85,11 @@ def test_miner_selected_chutes_rejects_openrouter_only_models() -> None:
         "z-ai/glm-5",
         "qwen/qwen3.6-27b",
         "google/gemma-4-31b-it",
+        "deepseek/deepseek-v4-flash",
+        "deepseek/deepseek-v4-pro",
+        "z-ai/glm-5.2",
+        "thinkingmachines/inkling",
+        "qwen/qwen3.5-397b-a17b",
     ),
 )
 def test_miner_selected_openrouter_uses_native_model_ids_without_translation(
@@ -105,6 +112,8 @@ def test_miner_selected_openrouter_uses_native_model_ids_without_translation(
         "openai/gpt-oss-120b",
         "minimax/minimax-m2.7",
         "zai/glm-4.7-flash",
+        "deepseek/deepseek-v4-flash",
+        "deepseek/deepseek-v4-pro",
     ),
 )
 def test_miner_selected_ai_gateway_uses_native_model_ids_without_translation(model: str) -> None:
@@ -112,6 +121,17 @@ def test_miner_selected_ai_gateway_uses_native_model_ids_without_translation(mod
 
     assert resolved.provider == "ai_gateway"
     assert resolved.model == model
+
+
+def test_new_chutes_provider_models_are_not_internal_canonical_models() -> None:
+    for model in ("zai-org/GLM-5.2-TEE", "Qwen/Qwen3.5-397B-A17B-TEE"):
+        assert model in MINER_SELECTED_LLM_PROVIDER_MODELS["chutes"]
+        assert model not in ALLOWED_TOOL_MODELS
+        with pytest.raises(ValueError, match="not allowed for validator tools"):
+            parse_tool_model(model)
+        assert tool_model_thinking_capability(model, provider_name="chutes") is None
+        assert tool_model_thinking_capability(model, provider_name="vertex") is None
+        assert tool_model_thinking_capability(model, provider_name="custom-openai-compatible") is None
 
 
 def test_miner_selected_ai_gateway_rejects_retired_qwen37_plus() -> None:

@@ -19,6 +19,11 @@ from harnyx_commons.llm.tool_models import MINER_SELECTED_LLM_PROVIDER_MODELS
 pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
 
 CHUTES_TOOL_MODELS = MINER_SELECTED_LLM_PROVIDER_MODELS["chutes"]
+NEW_CHUTES_MODELS = (
+    "zai-org/GLM-5.2-TEE",
+    "Qwen/Qwen3.5-397B-A17B-TEE",
+)
+CHUTES_TOOL_LOOP_MODELS = (CHUTES_TOOL_MODELS[0], *NEW_CHUTES_MODELS)
 
 
 def _provider_settings() -> tuple[str, float]:
@@ -89,6 +94,9 @@ async def test_chutes_tool_model_completion_live(model: str) -> None:
         "chutes_live_snapshot",
         "chutes_repo_rates",
     }
+    assert response.metadata["actual_cost_evidence"]["model"] == model
+    assert response.usage.total_tokens is not None
+    assert response.usage.total_tokens > 0
 
 
 @pytest.mark.parametrize("model", CHUTES_TOOL_MODELS)
@@ -108,6 +116,9 @@ async def test_chutes_supported_model_reasoning_usage_live(model: str) -> None:
 
     assert response.raw_text
     assert response.choices[0].message.reasoning
+    assert response.metadata is not None
+    assert response.metadata["actual_cost_provider"] == "chutes"
+    assert response.metadata["actual_cost_evidence"]["model"] == model
     assert response.usage.completion_tokens > 0
     if response.usage.reasoning_tokens is None:
         assert response.usage.completion_tokens > 1
@@ -131,10 +142,10 @@ async def test_miner_paid_chutes_helper_completion_live() -> None:
     assert response.raw_text
 
 
-async def test_chutes_two_turn_function_tool_loop_live() -> None:
+@pytest.mark.parametrize("model", CHUTES_TOOL_LOOP_MODELS)
+async def test_chutes_two_turn_function_tool_loop_live(model: str) -> None:
     api_key, timeout = _provider_settings()
     provider = ChutesLlmProvider(base_url=CHUTES.base_url, api_key=api_key, timeout=timeout)
-    model = CHUTES_TOOL_MODELS[0]
     tool = LlmTool(
         type="function",
         function={
@@ -198,4 +209,11 @@ async def test_chutes_two_turn_function_tool_loop_live() -> None:
     finally:
         await provider.aclose()
 
+    for response in (first, second):
+        assert response.metadata is not None
+        assert response.metadata["actual_cost_provider"] == "chutes"
+        assert response.metadata["actual_cost_usd"] >= 0.0
+        assert response.metadata["actual_cost_evidence"]["model"] == model
+        assert response.usage.total_tokens is not None
+        assert response.usage.total_tokens > 0
     assert second.raw_text

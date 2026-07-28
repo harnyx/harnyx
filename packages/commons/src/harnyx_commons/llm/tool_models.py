@@ -55,6 +55,8 @@ MINER_SELECTED_LLM_PROVIDER_MODELS: Mapping[
         "zai-org/GLM-5-TEE",
         "Qwen/Qwen3.6-27B-TEE",
         "google/gemma-4-31B-turbo-TEE",
+        "zai-org/GLM-5.2-TEE",
+        "Qwen/Qwen3.5-397B-A17B-TEE",
     ),
     OPENROUTER_PROVIDER: (
         "openai/gpt-oss-20b",
@@ -63,6 +65,11 @@ MINER_SELECTED_LLM_PROVIDER_MODELS: Mapping[
         "z-ai/glm-5",
         "qwen/qwen3.6-27b",
         "google/gemma-4-31b-it",
+        "deepseek/deepseek-v4-flash",
+        "deepseek/deepseek-v4-pro",
+        "z-ai/glm-5.2",
+        "thinkingmachines/inkling",
+        "qwen/qwen3.5-397b-a17b",
     ),
     AI_GATEWAY_PROVIDER: (
         "thinkingmachines/inkling",
@@ -73,6 +80,8 @@ MINER_SELECTED_LLM_PROVIDER_MODELS: Mapping[
         "openai/gpt-oss-120b",
         "minimax/minimax-m2.7",
         "zai/glm-4.7-flash",
+        "deepseek/deepseek-v4-flash",
+        "deepseek/deepseek-v4-pro",
     ),
 }
 

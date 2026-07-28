@@ -16,18 +16,12 @@ from harnyx_commons.llm.provider import LlmProviderConfigurationError, LlmProvid
 from harnyx_commons.llm.provider_types import OPENROUTER_PROVIDER
 from harnyx_commons.llm.providers.openai_compatible import OpenAiCompatibleLlmProvider
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse, LlmThinkingConfig
+from harnyx_commons.llm.tool_models import MINER_SELECTED_LLM_PROVIDER_MODELS
 
 OPENROUTER_ENDPOINT_ID = "openrouter"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 logger = logging.getLogger(__name__)
-OPENROUTER_NATIVE_SUPPORTED_MODELS = (
-    "openai/gpt-oss-20b",
-    "openai/gpt-oss-120b",
-    "deepseek/deepseek-v3.2",
-    "z-ai/glm-5",
-    "qwen/qwen3.6-27b",
-    "google/gemma-4-31b-it",
-)
+OPENROUTER_NATIVE_SUPPORTED_MODELS = MINER_SELECTED_LLM_PROVIDER_MODELS[OPENROUTER_PROVIDER]
 OPENROUTER_EMBEDDING_SUPPORTED_MODELS = ("qwen/qwen3-embedding-8b",)
 OPENROUTER_INTERNAL_TO_NATIVE_MODEL: Mapping[str, str] = {
     "deepseek-ai/DeepSeek-V3.2-TEE": "deepseek/deepseek-v3.2",

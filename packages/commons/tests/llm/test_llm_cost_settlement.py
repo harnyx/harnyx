@@ -110,7 +110,7 @@ def test_openrouter_missing_usage_cost_uses_static_pricing() -> None:
     )
 
     assert cost is not None
-    assert cost.cost_usd == pytest.approx(0.00112)
+    assert cost.cost_usd == pytest.approx(0.001069)
     assert cost.provider == "openrouter"
     assert cost.evidence["settlement_source"] == "static_pricing"
     assert cost.evidence["pricing_origin"] == "miner_tool_llm_pricing"

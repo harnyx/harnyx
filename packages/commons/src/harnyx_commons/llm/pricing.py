@@ -24,7 +24,6 @@ from harnyx_commons.llm.provider_types import (
 from harnyx_commons.llm.providers.vertex.anthropic import is_claude_model, normalize_claude_model
 from harnyx_commons.llm.schema import LlmUsage, extract_vertex_gemini_model_id
 from harnyx_commons.llm.tool_models import (
-    MINER_SELECTED_LLM_PROVIDER_MODELS,
     MinerSelectedLlmProviderName,
     ToolModelName,
 )
@@ -89,26 +88,37 @@ STATIC_LLM_PRICING: Mapping[str, ModelPricing] = {
 
 MINER_TOOL_LLM_PRICING: Mapping[MinerSelectedLlmProviderName, Mapping[str, ModelPricing]] = {
     CHUTES_PROVIDER: {
-        model: MODEL_PRICING[cast(ToolModelName, model)]
-        for model in MINER_SELECTED_LLM_PROVIDER_MODELS[CHUTES_PROVIDER]
+        "deepseek-ai/DeepSeek-V3.2-TEE": ModelPricing(1.00, 1.00, 0.0),
+        "zai-org/GLM-5-TEE": ModelPricing(0.95, 2.55, 0.0),
+        "Qwen/Qwen3.6-27B-TEE": ModelPricing(0.30, 2.00, 0.0),
+        "google/gemma-4-31B-turbo-TEE": ModelPricing(0.12, 0.37, 0.0),
+        "zai-org/GLM-5.2-TEE": ModelPricing(1.40, 4.40, 0.0),
+        "Qwen/Qwen3.5-397B-A17B-TEE": ModelPricing(0.45, 3.00, 0.0),
     },
     OPENROUTER_PROVIDER: {
-        "openai/gpt-oss-20b": MODEL_PRICING["openai/gpt-oss-20b"],
-        "openai/gpt-oss-120b": MODEL_PRICING["openai/gpt-oss-120b"],
-        "deepseek/deepseek-v3.2": MODEL_PRICING["deepseek-ai/DeepSeek-V3.2-TEE"],
-        "z-ai/glm-5": MODEL_PRICING["zai-org/GLM-5-TEE"],
-        "qwen/qwen3.6-27b": MODEL_PRICING["Qwen/Qwen3.6-27B-TEE"],
-        "google/gemma-4-31b-it": MODEL_PRICING["google/gemma-4-31B-turbo-TEE"],
+        "openai/gpt-oss-20b": ModelPricing(0.03, 0.14, 0.0),
+        "openai/gpt-oss-120b": ModelPricing(0.037, 0.17, 0.0),
+        "deepseek/deepseek-v3.2": ModelPricing(0.269, 0.40, 0.0),
+        "z-ai/glm-5": ModelPricing(0.95, 2.55, 0.0),
+        "qwen/qwen3.6-27b": ModelPricing(0.30, 2.00, 0.0),
+        "google/gemma-4-31b-it": ModelPricing(0.14, 0.40, 0.0),
+        "deepseek/deepseek-v4-flash": ModelPricing(0.14, 0.28, 0.0),
+        "deepseek/deepseek-v4-pro": ModelPricing(0.435, 0.87, 0.0),
+        "z-ai/glm-5.2": ModelPricing(0.8008, 2.5168, 0.0),
+        "thinkingmachines/inkling": ModelPricing(1.00, 4.05, 0.0),
+        "qwen/qwen3.5-397b-a17b": ModelPricing(0.39, 2.34, 0.0),
     },
     AI_GATEWAY_PROVIDER: {
         "thinkingmachines/inkling": ModelPricing(1.00, 4.05, 0.0),
         "zai/glm-5.2-fast": ModelPricing(2.10, 6.60, 0.0),
-        "openai/gpt-oss-20b": ModelPricing(0.03, 0.14, 0.0),
-        "zai/glm-4.7": ModelPricing(0.43, 1.75, 0.0),
+        "openai/gpt-oss-20b": ModelPricing(0.05, 0.20, 0.0),
+        "zai/glm-4.7": ModelPricing(0.60, 2.20, 0.0),
         "google/gemma-4-31b-it": ModelPricing(0.14, 0.40, 0.0),
         "openai/gpt-oss-120b": ModelPricing(0.10, 0.50, 0.0),
         "minimax/minimax-m2.7": ModelPricing(0.30, 1.20, 0.0),
         "zai/glm-4.7-flash": ModelPricing(0.07, 0.40, 0.0),
+        "deepseek/deepseek-v4-flash": ModelPricing(0.14, 0.28, 0.0),
+        "deepseek/deepseek-v4-pro": ModelPricing(0.435, 0.87, 0.0),
     },
 }
 

@@ -435,6 +435,23 @@ def test_chutes_unsupported_reasoning_effort_capability_serializes_nothing() -> 
     assert "reasoning_effort" not in payload
 
 
+@pytest.mark.parametrize(
+    "model",
+    ("zai-org/GLM-5.2-TEE", "Qwen/Qwen3.5-397B-A17B-TEE"),
+)
+@pytest.mark.parametrize("enabled", (True, False))
+def test_new_chutes_models_do_not_guess_thinking_template_fields(model: str, enabled: bool) -> None:
+    payload = _ChutesChatRequest.from_request(
+        _basic_chutes_request(
+            model=model,
+            thinking=LlmThinkingConfig(enabled=enabled),
+        )
+    ).model_dump(mode="python", exclude_none=True)
+
+    assert "chat_template_kwargs" not in payload
+    assert "reasoning_effort" not in payload
+
+
 def test_parse_payload_preserves_reasoning_usage_without_double_counting_completion_tokens() -> None:
     payload = {
         "id": "resp_reasoning_usage",
@@ -707,7 +724,7 @@ async def test_chutes_provider_attaches_actual_cost_from_static_pricing() -> Non
 
     assert response.metadata is not None
     assert response.metadata["actual_cost_provider"] == "chutes"
-    assert response.metadata["actual_cost_usd"] == pytest.approx(0.0045)
+    assert response.metadata["actual_cost_usd"] == pytest.approx(0.0043)
     assert response.metadata["actual_cost_evidence"]["settlement_source"] == "static_pricing"
     assert response.metadata["actual_cost_evidence"]["pricing_origin"] == "chutes_repo_rates"
 

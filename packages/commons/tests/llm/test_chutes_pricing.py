@@ -33,7 +33,7 @@ async def test_chutes_pricing_cache_falls_back_to_hard_coded_rates_when_cache_un
 
     actual_cost = await cache.price(model="Qwen/Qwen3.6-27B-TEE", usage=usage)
 
-    assert actual_cost.cost_usd == pytest.approx(0.0045)
+    assert actual_cost.cost_usd == pytest.approx(0.0043)
     assert actual_cost.provider == "chutes"
     assert actual_cost.evidence["settlement_source"] == "static_pricing"
     assert actual_cost.evidence["pricing_origin"] == "chutes_repo_rates"
@@ -95,7 +95,7 @@ async def test_chutes_pricing_cache_falls_back_to_hard_coded_rates_when_model_mi
 
     actual_cost = await cache.price(model="google/gemma-4-31B-turbo-TEE", usage=usage)
 
-    assert actual_cost.cost_usd == pytest.approx(0.00089)
+    assert actual_cost.cost_usd == pytest.approx(0.00086)
     assert actual_cost.evidence["settlement_source"] == "static_pricing"
     assert actual_cost.evidence["pricing_origin"] == "chutes_repo_rates"
 
@@ -107,6 +107,28 @@ async def test_chutes_pricing_cache_updated_empty_snapshot_uses_fallback_without
 
     actual_cost = await cache.price(model="google/gemma-4-31B-turbo-TEE", usage=usage)
 
-    assert actual_cost.cost_usd == pytest.approx(0.00089)
+    assert actual_cost.cost_usd == pytest.approx(0.00086)
+
+
+@pytest.mark.parametrize(
+    ("model", "input_rate", "output_rate"),
+    (
+        ("zai-org/GLM-5.2-TEE", 1.40, 4.40),
+        ("Qwen/Qwen3.5-397B-A17B-TEE", 0.45, 3.00),
+    ),
+)
+async def test_new_chutes_models_settle_from_approved_static_rates(
+    model: str,
+    input_rate: float,
+    output_rate: float,
+) -> None:
+    usage = LlmUsage(prompt_tokens=1_000_000, completion_tokens=1_000_000, total_tokens=2_000_000)
+
+    actual_cost = await ChutesModelPricingCache().price(model=model, usage=usage)
+
+    assert actual_cost.cost_usd == pytest.approx(input_rate + output_rate)
+    assert actual_cost.evidence["model"] == model
+    assert actual_cost.evidence["input_per_million"] == pytest.approx(input_rate)
+    assert actual_cost.evidence["output_per_million"] == pytest.approx(output_rate)
     assert actual_cost.evidence["settlement_source"] == "static_pricing"
     assert actual_cost.evidence["pricing_origin"] == "chutes_repo_rates"

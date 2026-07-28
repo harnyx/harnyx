@@ -257,7 +257,7 @@ async def test_openai_compatible_provider_attaches_openrouter_static_cost_when_u
         await provider.aclose()
 
     assert response.metadata is not None
-    assert response.metadata["actual_cost_usd"] == pytest.approx(0.00000168)
+    assert response.metadata["actual_cost_usd"] == pytest.approx(0.000001607)
     assert response.metadata["actual_cost_provider"] == "openrouter"
     assert response.metadata["actual_cost_evidence"]["settlement_source"] == "static_pricing"
 

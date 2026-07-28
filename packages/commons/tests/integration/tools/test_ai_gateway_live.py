@@ -17,6 +17,11 @@ from harnyx_commons.llm.schema import (
 
 pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
 
+NEW_AI_GATEWAY_MODELS = (
+    "deepseek/deepseek-v4-flash",
+    "deepseek/deepseek-v4-pro",
+)
+
 
 def _api_key() -> str:
     api_key = os.environ.get("AI_GATEWAY_API_KEY", "").strip()
@@ -222,3 +227,95 @@ async def test_ai_gateway_two_turn_function_tool_loop_live() -> None:
     assert second.raw_text
     assert second.metadata is not None
     assert second.metadata["actual_cost_provider"] == "ai_gateway"
+
+
+@pytest.mark.parametrize("model", NEW_AI_GATEWAY_MODELS)
+async def test_new_ai_gateway_model_exact_route_contract_live(model: str) -> None:
+    settings = LlmSettings()
+    provider = build_miner_paid_llm_provider(
+        provider="ai_gateway",
+        api_key=_api_key(),
+        llm_settings=settings,
+    )
+    tool = LlmTool(
+        type="function",
+        function={
+            "name": "lookup_weather",
+            "description": "Return weather for a city.",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+        },
+    )
+    direct_messages = (
+        LlmMessage(
+            role="user",
+            content=(LlmMessageContentPart.input_text('Think briefly, then reply with only "ok".'),),
+        ),
+    )
+    user_message = LlmMessage(
+        role="user",
+        content=(LlmMessageContentPart.input_text("Use lookup_weather for Paris."),),
+    )
+    common = {
+        "provider": "ai_gateway",
+        "model": model,
+        "temperature": 0.0,
+        "max_output_tokens": 256,
+        "thinking": LlmThinkingConfig(enabled=True),
+        "timeout_seconds": 180.0,
+    }
+
+    try:
+        direct = await provider.invoke(LlmRequest(messages=direct_messages, **common))
+        first = await provider.invoke(
+            LlmRequest(
+                messages=(user_message,),
+                tools=(tool,),
+                tool_choice={"type": "function", "function": {"name": "lookup_weather"}},
+                **common,
+            )
+        )
+        calls = first.choices[0].message.tool_calls
+        assert calls and calls[0].id
+        second = await provider.invoke(
+            LlmRequest(
+                messages=(
+                    user_message,
+                    first.choices[0].message.to_input_message(),
+                    *(
+                        LlmMessage(
+                            role="tool",
+                            content=(
+                                LlmInputToolResultPart(
+                                    tool_call_id=call.id,
+                                    name=None,
+                                    output_json='{"temperature_c":19}',
+                                ),
+                            ),
+                        )
+                        for call in calls
+                    ),
+                ),
+                tools=(tool,),
+                tool_choice="none",
+                **common,
+            )
+        )
+    finally:
+        await provider.aclose()
+
+    assert direct.raw_text
+    assert direct.choices[0].message.reasoning or (
+        direct.usage.reasoning_tokens is not None and direct.usage.reasoning_tokens > 0
+    )
+    for response in (direct, first, second):
+        assert response.metadata is not None
+        assert response.metadata["actual_cost_provider"] == "ai_gateway"
+        assert response.metadata["actual_cost_usd"] >= 0.0
+        assert response.metadata["actual_cost_evidence"]["model"] == model
+        assert response.usage.total_tokens is not None
+        assert response.usage.total_tokens > 0
+    assert second.raw_text
