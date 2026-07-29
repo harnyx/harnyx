@@ -33,7 +33,11 @@ the next workflow action.
    - use `get_miner_task_batch_results(batch_id, artifact_id, ...)` to find the
      affected `task_id`
    - call `get_task_results(batch_id, artifact_id, task_id)` for full task
-     result detail
+     result detail and ordered execution-log summaries
+   - when a summary entry needs payload inspection, call
+     `get_task_execution_log_entry` with its `validator_hotkey`, `entry_index`,
+     and attempt number when the summary belongs to an attempt; omit the attempt
+     number only for the historical top-level fallback
 6. If the answer is weak:
    - read `reference_answer` from `get_miner_task_batch(batch_id).batch.tasks[]`
    - read `response`, `citations`, and `specifics.score_breakdown` from

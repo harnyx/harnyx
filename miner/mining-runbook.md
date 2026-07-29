@@ -222,7 +222,11 @@ Use completed-batch tools by purpose:
   artifact-scoped result rows in `results[]`. Add `task_id`, `validator_hotkey`, or
   `miner_uid` only when narrowing the query.
 - `get_task_results(batch_id, artifact_id, task_id)` for full result detail,
-  attempts, and `execution_log` evidence for one task in `results[]`.
+  attempts, and ordered `execution_log` summaries for one task in `results[]`.
+- `get_task_execution_log_entry(batch_id, artifact_id, task_id,
+  validator_hotkey, entry_index, attempt_number?)` for one selected summary
+  entry’s redacted request and response. Supply `attempt_number` for an
+  attempt-owned entry; omit it for the historical top-level fallback.
 
 ## Diagnose Bad Or Weird Scores
 
@@ -246,8 +250,12 @@ For weak answers, join the data like this:
 2. Use artifact-scoped result rows for `response`, `citations`, and
    `specifics.score_breakdown`.
 3. Join task metadata and result rows by `task_id`.
-4. When you need full attempts or execution logs, call
+4. When you need attempts or execution-log summaries, call
    `get_task_results(batch_id, artifact_id, task_id)` for that one task.
+5. When one summary needs payload inspection, call
+   `get_task_execution_log_entry` with its `validator_hotkey`, `entry_index`,
+   and attempt number when the summary belongs to an attempt. Do not fetch
+   sibling entry detail.
 
 Then choose the next action:
 

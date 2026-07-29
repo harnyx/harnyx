@@ -22,6 +22,7 @@ Collect completed-batch evidence for one submitted artifact.
   - `get_miner_task_batch_similarity_round`
   - `get_miner_task_batch_results`
   - `get_task_results`
+  - `get_task_execution_log_entry`
 
 ## Steps
 
@@ -37,9 +38,13 @@ Collect completed-batch evidence for one submitted artifact.
 6. Call `get_miner_task_batch_results(batch_id, artifact_id, ...)` for
    artifact-scoped result rows, then read those rows from `results[]`.
 7. Call `get_task_results(batch_id, artifact_id, task_id)` when attempts or
-   `execution_log` detail are needed for one task, then read those rows from
-   `results[]`.
-8. Join task metadata and result rows by `task_id`.
+   ordered `execution_log` summaries are needed for one task, then read those
+   rows from `results[]`.
+8. When one execution-log summary needs payload inspection, call
+   `get_task_execution_log_entry` with its `validator_hotkey`, `entry_index`,
+   and `attempt_number` when it belongs to an attempt. Omit `attempt_number`
+   only for the historical top-level fallback.
+9. Join task metadata and result rows by `task_id`.
 
 ## Stop Conditions
 
@@ -53,4 +58,4 @@ Collect completed-batch evidence for one submitted artifact.
 - compact batch comparison and selected artifact comparison
 - selected challenger-step or similarity-round evidence when needed
 - artifact-scoped result rows
-- attempt and execution-log evidence when needed
+- attempt and execution-log summary evidence, plus selected entry detail when needed
