@@ -28,7 +28,7 @@ _GEMMA_SERVICE_URL = "https://gemma-4-31b-turbo-obbrpx3ppa-uc.a.run.app"
 _KIMI_MODEL = "moonshotai/Kimi-K2.5-TEE"
 _KIMI_ROUTE_TARGET = "bedrock"
 _GLM_MODEL = "zai-org/GLM-5-TEE"
-_GLM_ROUTE_TARGET = "bedrock"
+_GLM_ROUTE_TARGET = "vertex"
 
 
 def _gemma_cloud_run_endpoint_config() -> dict[str, object]:
