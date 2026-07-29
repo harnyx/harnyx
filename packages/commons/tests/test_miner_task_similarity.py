@@ -57,3 +57,29 @@ def test_similarity_vote_tally_preserves_legacy_binary_votes_without_inventing_n
     assert tally.passes is True
     assert tally.not_duplicate_votes == 1
     assert tally.eligible_classification is None
+
+
+def test_similarity_vote_tally_uses_explicit_four_outcome_order() -> None:
+    tally = tally_similarity_votes(
+        (
+            SimilarityVoteInput(status="responded", classification="duplicate"),
+            SimilarityVoteInput(status="responded", classification="near_duplicate"),
+            SimilarityVoteInput(status="responded", classification="notable_change"),
+            SimilarityVoteInput(status="responded", classification="novel"),
+        )
+    )
+
+    assert tally.notable_change_votes == 1
+    assert tally.passes is True
+    assert tally.eligible_classification == "near_duplicate"
+
+
+def test_similarity_vote_tally_even_boundary_prefers_notable_change_over_novel() -> None:
+    tally = tally_similarity_votes(
+        (
+            SimilarityVoteInput(status="responded", classification="notable_change"),
+            SimilarityVoteInput(status="responded", classification="novel"),
+        )
+    )
+
+    assert tally.eligible_classification == "notable_change"

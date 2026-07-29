@@ -347,6 +347,38 @@ async def test_similarity_judge_postprocessor_accepts_novel_with_mechanism_reaso
     assert result.ok is True
 
 
+async def test_similarity_judge_postprocessor_accepts_notable_change_with_same_architectural_root() -> None:
+    llm = StubLlmProvider()
+    service = SimilarityJudge(
+        llm_provider=llm,
+        config=SimilarityJudgeConfig(provider="chutes", model="google/gemma-4-31B-turbo-TEE"),
+    )
+
+    await service.judge(
+        SimilarityJudgeRequest(
+            batch_id=uuid4(),
+            candidate_artifact_id=uuid4(),
+            reference_artifact_id=uuid4(),
+            candidate_miner_uid=20,
+            reference_miner_uid=10,
+            reference_script="def answer(): return 'old'",
+            candidate_diff="+ def answer(): return 'new'",
+        )
+    )
+
+    postprocessor = llm.requests[0].postprocessor
+    assert postprocessor is not None
+    result = postprocessor(
+        _raw_similarity_response(
+            '{"classification":"notable_change","reasoning":"Adds planning and verification '
+            'stages while retaining the same controller and evidence path.",'
+            '"mechanism_change":"substantial planning and verification stages within the same architecture"}'
+        )
+    )
+
+    assert result.ok is True
+
+
 async def test_similarity_judge_rejects_postprocessed_novel_without_mechanism_change() -> None:
     llm = SequenceLlmProvider(
         [

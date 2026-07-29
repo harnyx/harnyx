@@ -9,15 +9,22 @@ from uuid import UUID
 from harnyx_commons.domain.judge_usage import JudgeUsageSummary
 from harnyx_commons.llm.provider_types import LlmRouteTarget
 
-SimilarityClassification = Literal["duplicate", "near_duplicate", "novel"]
+SimilarityClassification = Literal["duplicate", "near_duplicate", "notable_change", "novel"]
 StoredSimilarityClassification = Literal[
     "not_duplicate",
     "duplicate",
     "near_duplicate",
+    "notable_change",
     "novel",
 ]
-EligibleSimilarityClassification = Literal["near_duplicate", "novel"]
+EligibleSimilarityClassification = Literal["near_duplicate", "notable_change", "novel"]
 SimilarityVoteStatus = Literal["responded", "disqualified"]
+
+_ELIGIBLE_CLASSIFICATION_RANK: dict[EligibleSimilarityClassification, int] = {
+    "near_duplicate": 0,
+    "notable_change": 1,
+    "novel": 2,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +61,7 @@ class SimilarityVoteTally:
     not_duplicate_votes: int
     duplicate_votes: int
     near_duplicate_votes: int
+    notable_change_votes: int
     novel_votes: int
     disqualified_count: int
     passes: bool | None
@@ -66,6 +74,7 @@ def tally_similarity_votes(votes: tuple[SimilarityVoteInput, ...]) -> Similarity
     not_duplicate_votes = 0
     duplicate_votes = 0
     near_duplicate_votes = 0
+    notable_change_votes = 0
     novel_votes = 0
     disqualified_count = 0
     classifications: list[StoredSimilarityClassification] = []
@@ -87,6 +96,9 @@ def tally_similarity_votes(votes: tuple[SimilarityVoteInput, ...]) -> Similarity
         elif vote.classification == "near_duplicate":
             near_duplicate_votes += 1
             eligible_votes += 1
+        elif vote.classification == "notable_change":
+            notable_change_votes += 1
+            eligible_votes += 1
         elif vote.classification == "novel":
             novel_votes += 1
             eligible_votes += 1
@@ -101,6 +113,7 @@ def tally_similarity_votes(votes: tuple[SimilarityVoteInput, ...]) -> Similarity
         not_duplicate_votes=not_duplicate_votes,
         duplicate_votes=duplicate_votes,
         near_duplicate_votes=near_duplicate_votes,
+        notable_change_votes=notable_change_votes,
         novel_votes=novel_votes,
         disqualified_count=disqualified_count,
         passes=passes,
@@ -113,16 +126,15 @@ def _aggregate_eligible_classification(
 ) -> EligibleSimilarityClassification | None:
     if not classifications or "not_duplicate" in classifications:
         return None
-    ordered = sorted(
-        "near_duplicate" if classification == "duplicate" else classification
-        for classification in classifications
-    )
+    normalized: list[EligibleSimilarityClassification] = []
+    for classification in classifications:
+        if classification == "duplicate":
+            normalized.append("near_duplicate")
+        elif classification != "not_duplicate":
+            normalized.append(classification)
+    ordered = sorted(normalized, key=_ELIGIBLE_CLASSIFICATION_RANK.__getitem__)
     lower_median = ordered[(len(ordered) - 1) // 2]
-    if lower_median == "near_duplicate":
-        return "near_duplicate"
-    if lower_median == "novel":
-        return "novel"
-    raise ValueError(f"unsupported eligible classification: {lower_median}")
+    return lower_median
 
 
 __all__ = [

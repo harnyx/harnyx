@@ -17,6 +17,9 @@ TOTAL_EMISSION_FRACTION = 1.0
 _TOTAL_WEIGHT_EPSILON = 1e-12
 _ParticipantKey = TypeVar("_ParticipantKey")
 NoveltyDistributionWeight = Literal[1, 3, 5]
+ParticipationStageMultiplier = Literal[1, 2, 5]
+NoveltyMultiplier = Literal[1, 3, 5]
+ParticipantDistributionWeight = Literal[1, 2, 3, 5, 6, 10, 15, 25]
 _ParticipantTierWeight = Literal[1, 2]
 
 
@@ -34,6 +37,13 @@ class ParticipantEmissionScore:
     def __post_init__(self) -> None:
         if self.classification is not None and self.artifact_id is None:
             raise ValueError("participant classification requires an artifact")
+
+
+@dataclass(frozen=True, slots=True)
+class ParticipantEmissionArtifactWeight:
+    participation_stage_multiplier: ParticipationStageMultiplier
+    novelty_multiplier: NoveltyMultiplier
+    participant_distribution_weight: ParticipantDistributionWeight
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,6 +223,60 @@ def compose_novelty_emission_allocations(
     )
 
 
+def compose_artifact_participant_distribution_weights(
+    participant_scores: Sequence[ParticipantEmissionScore],
+    *,
+    main_participant_artifact_ids: Collection[UUID] = (),
+) -> dict[UUID, ParticipantEmissionArtifactWeight]:
+    """Return v7 participant distribution weights keyed by eligible artifact."""
+
+    main_artifact_ids = set(main_participant_artifact_ids)
+    selected_by_artifact: dict[UUID, ParticipantEmissionScore] = {}
+    for participant in participant_scores:
+        if not participant.participant_key:
+            raise ValueError("participant key must be non-empty")
+        if participant.artifact_id is None:
+            raise ValueError("artifact-weighted participant emission requires an artifact")
+        if participant.classification is None:
+            raise ValueError("artifact-weighted participant emission requires a classification")
+        if not isfinite(participant.score) or participant.score < 0.0 or participant.score > 1.0:
+            raise ValueError("participant score must be between 0.0 and 1.0")
+        if participant.artifact_id in selected_by_artifact:
+            raise ValueError("participant artifact ids must be unique")
+        selected_by_artifact[participant.artifact_id] = participant
+
+    stage_multipliers = _artifact_participation_stage_multipliers(
+        tuple(selected_by_artifact.values()),
+        main_participant_artifact_ids=main_artifact_ids,
+    )
+    weights: dict[UUID, ParticipantEmissionArtifactWeight] = {}
+    for artifact_id, stage_multiplier in stage_multipliers.items():
+        participant = selected_by_artifact[artifact_id]
+        classification = participant.classification
+        if classification is None:
+            raise ValueError("artifact-weighted participant emission requires a classification")
+        novelty_multiplier = _novelty_multiplier(classification)
+        weights[artifact_id] = ParticipantEmissionArtifactWeight(
+            participation_stage_multiplier=stage_multiplier,
+            novelty_multiplier=novelty_multiplier,
+            participant_distribution_weight=stage_multiplier * novelty_multiplier,
+        )
+    return weights
+
+
+def compose_weighted_participant_emission_allocations(
+    participant_distribution_weights: Mapping[_ParticipantKey, float],
+    *,
+    emission_fraction: float,
+) -> dict[_ParticipantKey, float]:
+    """Divide an emission pool in proportion to participant distribution weights."""
+
+    return _compose_proportional_emission_allocations(
+        participant_distribution_weights,
+        emission_fraction=emission_fraction,
+    )
+
+
 def compose_equal_participant_emission_allocations(
     participant_keys: Sequence[_ParticipantKey],
     *,
@@ -372,7 +436,8 @@ def _participant_selection_key(
     novelty_rank = {
         None: 0,
         "near_duplicate": 1,
-        "novel": 2,
+        "notable_change": 2,
+        "novel": 3,
     }[participant.classification]
     artifact_key = "" if participant.artifact_id is None else str(participant.artifact_id)
     return participant.score, novelty_rank, artifact_key
@@ -418,6 +483,51 @@ def _tiered_participant_weights(
             continue
         weighted.append((participant, tier_weight))
     return tuple(weighted)
+
+
+def _artifact_participation_stage_multipliers(
+    participant_scores: Sequence[ParticipantEmissionScore],
+    *,
+    main_participant_artifact_ids: set[UUID],
+) -> dict[UUID, ParticipationStageMultiplier]:
+    ordered = tuple(
+        sorted(
+            participant_scores,
+            key=lambda participant: (
+                -participant.score,
+                str(participant.artifact_id),
+            ),
+        )
+    )
+    if not ordered:
+        return {}
+
+    top_floor = _score_floor(ordered, fraction=0.10)
+    middle_floor = _score_floor(ordered, fraction=0.50)
+    multipliers: dict[UUID, ParticipationStageMultiplier] = {}
+    for participant in ordered:
+        artifact_id = participant.artifact_id
+        if artifact_id is None:
+            raise ValueError("artifact-weighted participant emission requires an artifact")
+        if artifact_id in main_participant_artifact_ids:
+            multipliers[artifact_id] = 5
+        elif participant.score <= 0.0:
+            continue
+        elif participant.score >= top_floor:
+            multipliers[artifact_id] = 2
+        elif participant.score >= middle_floor:
+            multipliers[artifact_id] = 1
+    return multipliers
+
+
+def _novelty_multiplier(
+    classification: EligibleSimilarityClassification,
+) -> NoveltyMultiplier:
+    if classification == "near_duplicate":
+        return 1
+    if classification == "notable_change":
+        return 3
+    return 5
 
 
 def _validate_miner_participation_emission(miner_participation_emission: float) -> None:
@@ -473,14 +583,19 @@ __all__ = [
     "DEFAULT_MINER_PARTICIPATION_EMISSION",
     "DEFAULT_SUCCESSFUL_MINER_PARTICIPATION_EMISSION",
     "NoveltyDistributionWeight",
+    "NoveltyMultiplier",
     "OWNER_UID",
+    "ParticipantEmissionArtifactWeight",
+    "ParticipantDistributionWeight",
     "ParticipantEmissionScore",
     "ParticipantEmissionTotalWeightError",
+    "ParticipationStageMultiplier",
     "PrioritizedEmissionComposition",
     "PrioritizedEmissionAdmission",
     "apply_miner_emission_cap",
     "admit_prioritized_emission",
     "champion_emission_fraction",
+    "compose_artifact_participant_distribution_weights",
     "compose_champion_weights",
     "compose_base_participant_emission_allocations",
     "compose_emission_weights",
@@ -491,6 +606,7 @@ __all__ = [
     "compose_participant_emission_weights",
     "compose_prioritized_emission",
     "compose_tiered_participant_emission_allocations",
+    "compose_weighted_participant_emission_allocations",
     "owner_fallback_weights",
     "participant_emission_fraction",
     "select_participant_emission_scores",

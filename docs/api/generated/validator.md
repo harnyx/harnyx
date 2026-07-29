@@ -48,7 +48,7 @@ Body: [SimilarityJudgeResponseModel](#model-similarityjudgeresponsemodel)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `classification` |  |  | req | `string` (enum: [duplicate, near_duplicate, novel]) |
+| `classification` |  |  | req | `string` (enum: [duplicate, near_duplicate, notable_change, novel]) |
 | `judge_usage` |  |  | opt | [JudgeUsageSummary](#model-judgeusagesummary) (nullable) |
 |  | `actual_cost_usd` |  | req | `number` (nullable) |
 |  | `call_count` |  | req | `integer` |
@@ -646,7 +646,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `classification` |  |  | req | `string` (enum: [duplicate, near_duplicate, novel]) |
+| `classification` |  |  | req | `string` (enum: [duplicate, near_duplicate, notable_change, novel]) |
 | `judge_usage` |  |  | opt | [JudgeUsageSummary](#model-judgeusagesummary) (nullable) |
 |  | `actual_cost_usd` |  | req | `number` (nullable) |
 |  | `call_count` |  | req | `integer` |
@@ -682,6 +682,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "enum": [
         "duplicate",
         "near_duplicate",
+        "notable_change",
         "novel"
       ],
       "title": "Classification",

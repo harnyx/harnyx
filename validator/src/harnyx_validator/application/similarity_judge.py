@@ -41,11 +41,14 @@ _SYSTEM_PROMPT = (
     "otherwise substantially shared pipeline. The changed branches, steps, or policies can affect "
     "what the agent does, but the primary control and data flow used for ordinary cases remain the "
     "same. Several localized changes together are still near_duplicate.\n"
-    "- `novel`: relative to the selected reference, the diff reorganizes or replaces the primary "
-    "control or data flow used for ordinary cases. It changes the primary controller, the order or "
-    "topology of major stages, the loop that coordinates research, or the intermediate "
-    "representation that carries evidence between major stages. A derived artifact can be novel "
-    "when its behavior meets this definition.\n\n"
+    "- `notable_change`: the diff substantially reorganizes or extends behavior, but the same main "
+    "architecture remains. Major policies or stages may be added, reordered, or strengthened, yet "
+    "the primary controller, coordinating loop, major-stage topology, and evidence path still have "
+    "the same architectural root.\n"
+    "- `novel`: relative to the selected reference, the candidate has a fundamentally different "
+    "main architecture. It replaces the primary controller, major-stage topology, coordinating "
+    "loop, or evidence path with a different root. It may reuse ideas or components from the "
+    "reference, but substantial improvement inside the same main architecture is not novel.\n\n"
     "This is a pairwise classification against the one selected reference. `novel` means "
     "architecturally different from that reference; it does not mean first-seen, independently "
     "invented, or globally unique across the batch or historical corpus.\n\n"
@@ -68,32 +71,35 @@ _SYSTEM_PROMPT = (
     "such as source-ranking policy, query wording, citation slicing or windowing, tools used by an "
     "existing controller, new provider-selection or fallback control logic, new retry control logic, "
     "caching, parallel execution inside an existing stage, validation or repair guards, output "
-    "shaping, and exceptional recovery are near_duplicate by default. Do not add up several such "
-    "changes and call them novel. They are novel only when the diff shows that they reorganize or "
-    "replace the primary ordinary-case control or data flow.\n"
+    "shaping, and exceptional recovery are near_duplicate by default. Substantial extensions that "
+    "keep the same main architecture are notable_change, not novel.\n"
     "A removal or rollback does not establish novelty by itself. Classify it as near_duplicate when "
     "it changes behavior but leaves the remaining primary pipeline intact.\n"
-    "Choose `near_duplicate` or `novel` only when you can name the concrete behavior change. "
+    "Choose `near_duplicate`, `notable_change`, or `novel` only when you can name the concrete "
+    "behavior change. "
     "The size of a diff is not the distinction: a full rewrite can be duplicate or near_duplicate "
     "when it preserves the same behavior or primary pipeline, while a small diff can be novel when "
-    "it replaces the primary controller or flow.\n\n"
+    "it replaces the main architectural root.\n\n"
     "Apply this decision order:\n"
     "1. If the diff does not establish a concrete behavior change, choose `duplicate`.\n"
     "2. If it establishes changed behavior, identify the reference's primary ordinary-case control "
     "and data flow.\n"
-    "3. Choose `novel` only if the candidate reorganizes or replaces that primary flow through a "
-    "changed controller, major-stage topology, coordinating loop, or evidence representation.\n"
-    "4. Otherwise choose `near_duplicate`, even when several mechanisms or policies changed.\n"
+    "3. Choose `novel` only if the candidate replaces the main architectural root through a "
+    "fundamentally different controller, major-stage topology, coordinating loop, or evidence path.\n"
+    "4. Choose `notable_change` when behavior is substantially reorganized or extended but the same "
+    "main architecture remains.\n"
+    "5. Otherwise choose `near_duplicate`, even when several localized mechanisms or policies changed.\n"
     "When evidence of any behavior change is borderline or mostly cosmetic, choose `duplicate`. "
-    "When the behavior change is clear but the near_duplicate-versus-novel boundary is borderline, "
-    "choose `near_duplicate`.\n\n"
+    "When the behavior change is clear but the near_duplicate-versus-notable_change boundary is "
+    "borderline, choose `near_duplicate`. When the notable_change-versus-novel boundary is "
+    "borderline, choose `notable_change`.\n\n"
     "Before returning, verify all of these output requirements:\n"
     "- Return exactly one JSON object with exactly the keys `classification`, `reasoning`, "
     "and `mechanism_change`; do not include analysis or prose outside that object.\n"
     "- `classification` is the single category selected by the rules above.\n"
     "- `reasoning` briefly explains why the evidence meets that category rather than an adjacent one.\n"
     "- For `duplicate`, `mechanism_change` is JSON null.\n"
-    "- For `near_duplicate` and `novel`, `mechanism_change` is a non-empty string that briefly "
+    "- For `near_duplicate`, `notable_change`, and `novel`, `mechanism_change` is a non-empty string that briefly "
     "names the concrete behavior change.\n\n"
     "Valid duplicate output:\n"
     '{"classification":"duplicate","reasoning":"Only the model and timeout changed.",'
@@ -103,6 +109,10 @@ _SYSTEM_PROMPT = (
     'and a contradiction guard change several policies, but the existing controller still runs the '
     'same research loop and evidence path.",'
     '"mechanism_change":"localized ranking, citation-window, and contradiction policies"}\n'
+    "Valid notable_change output:\n"
+    '{"classification":"notable_change","reasoning":"The candidate adds planning and verification '
+    'stages, but the same controller and evidence path still coordinate the research pipeline.",'
+    '"mechanism_change":"substantial planning and verification stages within the same architecture"}\n'
     "Valid novel output:\n"
     '{"classification":"novel","reasoning":"The candidate replaces one LLM-controlled tool loop '
     'with explicit planning, parallel retrieval, deterministic fact-table verification, and '
@@ -116,7 +126,7 @@ _SYSTEM_PROMPT = (
 )
 _USER_PROMPT_PREFIX = (
     "Classify this candidate artifact relative to the selected reference as duplicate, "
-    "near_duplicate, or novel.\n\n"
+    "near_duplicate, notable_change, or novel.\n\n"
     "Payload:\n"
 )
 
@@ -124,12 +134,12 @@ _USER_PROMPT_PREFIX = (
 class _SimilarityClassificationModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    classification: Literal["duplicate", "near_duplicate", "novel"] = Field(
+    classification: Literal["duplicate", "near_duplicate", "notable_change", "novel"] = Field(
         description="Behavior classification relative to the selected reference."
     )
     reasoning: str = Field(description="Validator-owned classification explanation.", min_length=1)
     mechanism_change: str | None = Field(
-        description="Concrete behavior change required for near_duplicate and novel.",
+        description="Concrete behavior change required for near_duplicate, notable_change, and novel.",
     )
 
     @model_validator(mode="after")

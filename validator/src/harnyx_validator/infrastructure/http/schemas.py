@@ -54,7 +54,7 @@ class SimilarityJudgeRequestModel(BaseModel):
 class SimilarityJudgeResponseModel(BaseModel):
     model_config = VALIDATOR_STRICT_CONFIG
 
-    classification: Literal["duplicate", "near_duplicate", "novel"]
+    classification: Literal["duplicate", "near_duplicate", "notable_change", "novel"]
     reasoning: str | None = None
     reasoning_tokens: int | None = Field(default=None, ge=0)
     model: str = Field(min_length=1)

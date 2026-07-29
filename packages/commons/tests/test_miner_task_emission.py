@@ -9,6 +9,7 @@ from harnyx_commons.miner_task_emission import (
     OWNER_UID,
     ParticipantEmissionScore,
     apply_miner_emission_cap,
+    compose_artifact_participant_distribution_weights,
     compose_emission_weights,
     compose_equal_participant_emission_allocations,
     compose_flat_participant_emission_allocations,
@@ -17,6 +18,7 @@ from harnyx_commons.miner_task_emission import (
     compose_participant_emission_weights,
     compose_prioritized_emission,
     compose_tiered_participant_emission_allocations,
+    compose_weighted_participant_emission_allocations,
     owner_fallback_weights,
     participant_emission_fraction,
     select_participant_emission_scores,
@@ -457,6 +459,85 @@ def test_novelty_emission_divides_entire_remaining_fraction_by_distribution_weig
         "middle": pytest.approx(0.7 / 9.0),
     }
     assert fsum(allocations.values()) == pytest.approx(0.7)
+
+
+def test_artifact_participant_weights_multiply_stage_and_novelty_per_artifact() -> None:
+    scores = tuple(
+        ParticipantEmissionScore(
+            f"hotkey-{index % 3}",
+            1.0 - index / 10,
+            artifact_id=UUID(int=index + 1),
+            classification=classification,
+        )
+        for index, classification in enumerate(
+            (
+                "novel",
+                "notable_change",
+                "near_duplicate",
+                "near_duplicate",
+                "near_duplicate",
+                "near_duplicate",
+                "near_duplicate",
+                "near_duplicate",
+                "near_duplicate",
+                "novel",
+            )
+        )
+    )
+
+    weights = compose_artifact_participant_distribution_weights(
+        scores,
+        main_participant_artifact_ids=(UUID(int=10),),
+    )
+
+    assert weights[UUID(int=1)].participation_stage_multiplier == 2
+    assert weights[UUID(int=1)].novelty_multiplier == 5
+    assert weights[UUID(int=1)].participant_distribution_weight == 10
+    assert weights[UUID(int=2)].participation_stage_multiplier == 1
+    assert weights[UUID(int=2)].novelty_multiplier == 3
+    assert weights[UUID(int=2)].participant_distribution_weight == 3
+    assert weights[UUID(int=10)].participation_stage_multiplier == 5
+    assert weights[UUID(int=10)].novelty_multiplier == 5
+    assert weights[UUID(int=10)].participant_distribution_weight == 25
+
+
+def test_artifact_participant_weights_preserve_multiple_artifacts_for_one_hotkey() -> None:
+    artifact_a = UUID(int=1)
+    artifact_b = UUID(int=2)
+
+    weights = compose_artifact_participant_distribution_weights(
+        (
+            ParticipantEmissionScore(
+                "shared-hotkey",
+                1.0,
+                artifact_id=artifact_a,
+                classification="near_duplicate",
+            ),
+            ParticipantEmissionScore(
+                "shared-hotkey",
+                0.9,
+                artifact_id=artifact_b,
+                classification="novel",
+            ),
+        ),
+        main_participant_artifact_ids=(artifact_b,),
+    )
+
+    assert set(weights) == {artifact_a, artifact_b}
+    assert weights[artifact_a].participant_distribution_weight == 2
+    assert weights[artifact_b].participant_distribution_weight == 25
+
+
+def test_weighted_participant_allocations_divide_the_entire_pool() -> None:
+    allocations = compose_weighted_participant_emission_allocations(
+        {UUID(int=1): 1, UUID(int=2): 3, UUID(int=3): 25},
+        emission_fraction=0.8,
+    )
+
+    assert allocations[UUID(int=1)] == pytest.approx(0.8 / 29)
+    assert allocations[UUID(int=2)] == pytest.approx(0.8 * 3 / 29)
+    assert allocations[UUID(int=3)] == pytest.approx(0.8 * 25 / 29)
+    assert fsum(allocations.values()) == pytest.approx(0.8)
 
 
 def test_equal_participant_emission_divides_entire_remaining_fraction() -> None:
