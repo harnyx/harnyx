@@ -8,7 +8,7 @@ from uuid import uuid4
 import pytest
 
 from harnyx_commons.domain.tool_call import ToolExecutionFacts
-from harnyx_commons.tools.executor import ToolInvocationContext
+from harnyx_commons.tools.executor import ToolInvocationContext as _ToolInvocationContext
 from harnyx_validator.application.platform_tool_proxy import (
     PLATFORM_TOOL_PROXY_EXECUTE_TRANSPORT_TIMEOUT_SECONDS,
     PlatformToolProxyProxyToolInvoker,
@@ -25,6 +25,15 @@ pytestmark = pytest.mark.anyio("asyncio")
 
 _GRANT_VALUE = "platform-tool-proxy-grant"
 _ASSIGNMENT_TOKEN = "assignment-token"  # noqa: S105 - fixed test-only assignment token
+
+
+def ToolInvocationContext(**kwargs: object) -> _ToolInvocationContext:  # noqa: N802
+    started_at = datetime.now(UTC)
+    return _ToolInvocationContext(
+        **kwargs,  # type: ignore[arg-type]
+        receipt_started_at=started_at,
+        receipt_issued_at=started_at,
+    )
 
 
 class _RecordingLocalInvoker:
@@ -89,6 +98,8 @@ class _RecordingPlatformToolProxyPlatform:
         validator_session_id,
         attempt_number: int,
         receipt_id: str,
+        receipt_started_at: datetime,
+        receipt_issued_at: datetime,
         tool: str,
         args: tuple[object, ...],
         kwargs: dict[str, object],
@@ -103,6 +114,8 @@ class _RecordingPlatformToolProxyPlatform:
                 "validator_session_id": validator_session_id,
                 "attempt_number": attempt_number,
                 "receipt_id": receipt_id,
+                "receipt_started_at": receipt_started_at,
+                "receipt_issued_at": receipt_issued_at,
                 "tool": tool,
                 "args": args,
                 "kwargs": kwargs,
@@ -165,6 +178,8 @@ async def test_platform_tool_proxy_proxy_forwards_provider_tool_with_session_sco
         ]
     call = platform.calls[0]
     receipt_id = call["receipt_id"]
+    receipt_started_at = call["receipt_started_at"]
+    receipt_issued_at = call["receipt_issued_at"]
     assert platform.calls == [
         {
             "token": f"{_GRANT_VALUE}-2",
@@ -174,6 +189,8 @@ async def test_platform_tool_proxy_proxy_forwards_provider_tool_with_session_sco
             "validator_session_id": session_id,
             "attempt_number": 2,
             "receipt_id": receipt_id,
+            "receipt_started_at": receipt_started_at,
+            "receipt_issued_at": receipt_issued_at,
             "tool": "search_web",
             "args": (),
             "kwargs": {"provider": "parallel", "search_queries": ["harnyx"]},

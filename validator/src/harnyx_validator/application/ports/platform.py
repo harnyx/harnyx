@@ -89,6 +89,8 @@ class PlatformToolProxyPlatformPort(Protocol):
         validator_session_id: UUID,
         attempt_number: int,
         receipt_id: str,
+        receipt_started_at: datetime,
+        receipt_issued_at: datetime,
         tool: ToolName,
         args: tuple[JsonValue, ...],
         kwargs: dict[str, JsonValue],

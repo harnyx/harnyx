@@ -650,14 +650,6 @@ Body: [MinerTaskWorkScoreableExecutionsResponse](#model-minertaskworkscoreableex
 |  | `attempt_number` |  | req | `integer` |
 |  | `batch_id` |  | req | `string` (format: uuid) |
 |  | `execution_completed_at` |  | req | `string` (format: date-time) |
-|  | `execution_log` |  | opt | array[[ToolCall-Output](#model-toolcall-output)] (default: []) |
-|  |  | `details` | req | [ToolCallDetails-Output](#model-toolcalldetails-output) |
-|  |  | `issued_at` | req | `string` (format: date-time) |
-|  |  | `outcome` | req | [ToolCallOutcome](#model-toolcalloutcome) |
-|  |  | `receipt_id` | req | `string` |
-|  |  | `session_id` | req | `string` (format: uuid) |
-|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
-|  |  | `uid` | req | `integer` |
 |  | `max_attempts` |  | req | `integer` |
 |  | `miner_hotkey_ss58` |  | req | `string` |
 |  | `response` |  | req | [Response](#model-response) (nullable) |
@@ -2668,50 +2660,6 @@ Body: [WeightsResponse](#model-weightsresponse)
     {
       "additionalProperties": {
         "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Input"
-      },
-      "type": "object"
-    },
-    {
-      "type": "null"
-    }
-  ]
-}
-```
-
-</details>
-
-<a id="model-harnyx_miner_sdk__json_types__jsonvalue-output"></a>
-### Model: harnyx_miner_sdk__json_types__JsonValue-Output
-
-(no documented fields)
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "anyOf": [
-    {
-      "type": "string"
-    },
-    {
-      "type": "integer"
-    },
-    {
-      "type": "number"
-    },
-    {
-      "type": "boolean"
-    },
-    {
-      "items": {
-        "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Output"
-      },
-      "type": "array"
-    },
-    {
-      "additionalProperties": {
-        "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Output"
       },
       "type": "object"
     },
@@ -5214,26 +5162,6 @@ Body: [WeightsResponse](#model-weightsresponse)
 | `attempt_number` |  |  | req | `integer` |
 | `batch_id` |  |  | req | `string` (format: uuid) |
 | `execution_completed_at` |  |  | req | `string` (format: date-time) |
-| `execution_log` |  |  | opt | array[[ToolCall-Output](#model-toolcall-output)] (default: []) |
-|  | `details` |  | req | [ToolCallDetails-Output](#model-toolcalldetails-output) |
-|  |  | `actual_cost_provider` | opt | `string` (nullable) |
-|  |  | `actual_cost_usd` | opt | `number` (nullable) |
-|  |  | `cost_usd` | opt | `number` (nullable) |
-|  |  | `execution` | opt | [ToolExecutionFacts](#model-toolexecutionfacts) (nullable) |
-|  |  | `extra` | opt | `object` (nullable) |
-|  |  | `reference_cost_usd` | opt | `number` (nullable) |
-|  |  | `request_hash` | req | `string` |
-|  |  | `request_payload` | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
-|  |  | `response_hash` | opt | `string` (nullable) |
-|  |  | `response_payload` | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
-|  |  | `result_policy` | opt | [ToolResultPolicy](#model-toolresultpolicy) (default: log_only) |
-|  |  | `results` | opt | array[[ToolResult-Output](#model-toolresult-output)] (default: []) |
-|  | `issued_at` |  | req | `string` (format: date-time) |
-|  | `outcome` |  | req | [ToolCallOutcome](#model-toolcalloutcome) |
-|  | `receipt_id` |  | req | `string` |
-|  | `session_id` |  | req | `string` (format: uuid) |
-|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
-|  | `uid` |  | req | `integer` |
 | `max_attempts` |  |  | req | `integer` |
 | `miner_hotkey_ss58` |  |  | req | `string` |
 | `response` |  |  | req | [Response](#model-response) (nullable) |
@@ -5330,14 +5258,6 @@ Body: [WeightsResponse](#model-weightsresponse)
       "format": "date-time",
       "title": "Execution Completed At",
       "type": "string"
-    },
-    "execution_log": {
-      "default": [],
-      "items": {
-        "$ref": "#/components/schemas/ToolCall-Output"
-      },
-      "title": "Execution Log",
-      "type": "array"
     },
     "max_attempts": {
       "minimum": 1.0,
@@ -5480,14 +5400,6 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  | `attempt_number` |  | req | `integer` |
 |  | `batch_id` |  | req | `string` (format: uuid) |
 |  | `execution_completed_at` |  | req | `string` (format: date-time) |
-|  | `execution_log` |  | opt | array[[ToolCall-Output](#model-toolcall-output)] (default: []) |
-|  |  | `details` | req | [ToolCallDetails-Output](#model-toolcalldetails-output) |
-|  |  | `issued_at` | req | `string` (format: date-time) |
-|  |  | `outcome` | req | [ToolCallOutcome](#model-toolcalloutcome) |
-|  |  | `receipt_id` | req | `string` |
-|  |  | `session_id` | req | `string` (format: uuid) |
-|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
-|  |  | `uid` | req | `integer` |
 |  | `max_attempts` |  | req | `integer` |
 |  | `miner_hotkey_ss58` |  | req | `string` |
 |  | `response` |  | req | [Response](#model-response) (nullable) |
@@ -6893,99 +6805,6 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
-<a id="model-toolcall-output"></a>
-### Model: ToolCall-Output
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `details` |  |  | req | [ToolCallDetails-Output](#model-toolcalldetails-output) |
-|  | `actual_cost_provider` |  | opt | `string` (nullable) |
-|  | `actual_cost_usd` |  | opt | `number` (nullable) |
-|  | `cost_usd` |  | opt | `number` (nullable) |
-|  | `execution` |  | opt | [ToolExecutionFacts](#model-toolexecutionfacts) (nullable) |
-|  |  | `elapsed_ms` | opt | `number` (nullable) |
-|  |  | `finished_at` | opt | `string` (format: date-time; nullable) |
-|  |  | `started_at` | opt | `string` (format: date-time; nullable) |
-|  |  | `ttft_ms` | opt | `number` (nullable) |
-|  | `extra` |  | opt | `object` (nullable) |
-|  | `reference_cost_usd` |  | opt | `number` (nullable) |
-|  | `request_hash` |  | req | `string` |
-|  | `request_payload` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
-|  | `response_hash` |  | opt | `string` (nullable) |
-|  | `response_payload` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
-|  | `result_policy` |  | opt | [ToolResultPolicy](#model-toolresultpolicy) (default: log_only) |
-|  | `results` |  | opt | array[[ToolResult-Output](#model-toolresult-output)] (default: []) |
-|  |  | `index` | req | `integer` |
-|  |  | `raw` | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
-|  |  | `result_id` | req | `string` |
-| `issued_at` |  |  | req | `string` (format: date-time) |
-| `outcome` |  |  | req | [ToolCallOutcome](#model-toolcalloutcome) |
-| `receipt_id` |  |  | req | `string` |
-| `session_id` |  |  | req | `string` (format: uuid) |
-| `tool` |  |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
-| `uid` |  |  | req | `integer` |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "description": "Immutable audit trail for a tool invocation.",
-  "properties": {
-    "details": {
-      "$ref": "#/components/schemas/ToolCallDetails-Output"
-    },
-    "issued_at": {
-      "format": "date-time",
-      "title": "Issued At",
-      "type": "string"
-    },
-    "outcome": {
-      "$ref": "#/components/schemas/ToolCallOutcome"
-    },
-    "receipt_id": {
-      "title": "Receipt Id",
-      "type": "string"
-    },
-    "session_id": {
-      "format": "uuid",
-      "title": "Session Id",
-      "type": "string"
-    },
-    "tool": {
-      "enum": [
-        "search_web",
-        "search_ai",
-        "fetch_page",
-        "embed_text",
-        "llm_chat",
-        "test_tool",
-        "tooling_info"
-      ],
-      "title": "Tool",
-      "type": "string"
-    },
-    "uid": {
-      "title": "Uid",
-      "type": "integer"
-    }
-  },
-  "required": [
-    "receipt_id",
-    "session_id",
-    "uid",
-    "tool",
-    "issued_at",
-    "outcome",
-    "details"
-  ],
-  "title": "ToolCall",
-  "type": "object"
-}
-```
-
-</details>
-
 <a id="model-toolcalldetails-input"></a>
 ### Model: ToolCallDetails-Input
 
@@ -7144,164 +6963,6 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
-<a id="model-toolcalldetails-output"></a>
-### Model: ToolCallDetails-Output
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `actual_cost_provider` |  |  | opt | `string` (nullable) |
-| `actual_cost_usd` |  |  | opt | `number` (nullable) |
-| `cost_usd` |  |  | opt | `number` (nullable) |
-| `execution` |  |  | opt | [ToolExecutionFacts](#model-toolexecutionfacts) (nullable) |
-|  | `elapsed_ms` |  | opt | `number` (nullable) |
-|  | `finished_at` |  | opt | `string` (format: date-time; nullable) |
-|  | `started_at` |  | opt | `string` (format: date-time; nullable) |
-|  | `ttft_ms` |  | opt | `number` (nullable) |
-| `extra` |  |  | opt | `object` (nullable) |
-| `reference_cost_usd` |  |  | opt | `number` (nullable) |
-| `request_hash` |  |  | req | `string` |
-| `request_payload` |  |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
-| `response_hash` |  |  | opt | `string` (nullable) |
-| `response_payload` |  |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
-| `result_policy` |  |  | opt | [ToolResultPolicy](#model-toolresultpolicy) (default: log_only) |
-| `results` |  |  | opt | array[[ToolResult-Output](#model-toolresult-output)] (default: []) |
-|  | `index` |  | req | `integer` |
-|  | `raw` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
-|  | `result_id` |  | req | `string` |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "description": "Supplemental details stored alongside a tool call receipt.",
-  "properties": {
-    "actual_cost_provider": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Actual Cost Provider"
-    },
-    "actual_cost_usd": {
-      "anyOf": [
-        {
-          "type": "number"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Actual Cost Usd"
-    },
-    "cost_usd": {
-      "anyOf": [
-        {
-          "type": "number"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Cost Usd"
-    },
-    "execution": {
-      "anyOf": [
-        {
-          "$ref": "#/components/schemas/ToolExecutionFacts"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "extra": {
-      "anyOf": [
-        {
-          "additionalProperties": {
-            "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Output"
-          },
-          "type": "object"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Extra"
-    },
-    "reference_cost_usd": {
-      "anyOf": [
-        {
-          "type": "number"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Reference Cost Usd"
-    },
-    "request_hash": {
-      "title": "Request Hash",
-      "type": "string"
-    },
-    "request_payload": {
-      "anyOf": [
-        {
-          "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Output"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "response_hash": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Response Hash"
-    },
-    "response_payload": {
-      "anyOf": [
-        {
-          "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Output"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "result_policy": {
-      "$ref": "#/components/schemas/ToolResultPolicy",
-      "default": "log_only"
-    },
-    "results": {
-      "default": [],
-      "items": {
-        "$ref": "#/components/schemas/ToolResult-Output"
-      },
-      "title": "Results",
-      "type": "array"
-    }
-  },
-  "required": [
-    "request_hash"
-  ],
-  "title": "ToolCallDetails",
-  "type": "object"
-}
-```
-
-</details>
-
 <a id="model-toolcalloutcome"></a>
 ### Model: ToolCallOutcome
 
@@ -7422,52 +7083,6 @@ Body: [WeightsResponse](#model-weightsresponse)
       "anyOf": [
         {
           "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Input"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "result_id": {
-      "title": "Result Id",
-      "type": "string"
-    }
-  },
-  "required": [
-    "index",
-    "result_id"
-  ],
-  "title": "ToolResult",
-  "type": "object"
-}
-```
-
-</details>
-
-<a id="model-toolresult-output"></a>
-### Model: ToolResult-Output
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `index` |  |  | req | `integer` |
-| `raw` |  |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Output](#model-harnyx_miner_sdk__json_types__jsonvalue-output) (nullable) |
-| `result_id` |  |  | req | `string` |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "description": "Structured representation of a tool result for auditing.",
-  "properties": {
-    "index": {
-      "title": "Index",
-      "type": "integer"
-    },
-    "raw": {
-      "anyOf": [
-        {
-          "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Output"
         },
         {
           "type": "null"

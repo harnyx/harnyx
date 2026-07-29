@@ -189,6 +189,8 @@ class PlatformToolProxyProxyToolInvoker(ToolInvoker):
             raise PlatformToolProxyControlError("platform tool proxy token is not registered for session")
         if _grant_expired(attempt_grant.expires_at):
             raise PlatformToolProxyTokenExpiredError("platform tool proxy token expired for session")
+        if context.receipt_started_at is None or context.receipt_issued_at is None:
+            raise PlatformToolProxyControlError("platform tool proxy receipt chronology is missing")
         previous_phase = None
         if scope.phase_recorder is not None:
             previous_phase = scope.phase_recorder.mark("platform_tool_proxy_execute")
@@ -200,6 +202,8 @@ class PlatformToolProxyProxyToolInvoker(ToolInvoker):
             validator_session_id=context.session_id,
             attempt_number=attempt_number,
             receipt_id=context.receipt_id,
+            receipt_started_at=context.receipt_started_at,
+            receipt_issued_at=context.receipt_issued_at,
             tool=tool_name,
             args=tuple(args),
             kwargs=dict(kwargs),

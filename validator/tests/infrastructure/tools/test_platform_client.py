@@ -380,13 +380,7 @@ def test_submit_miner_task_work_results_posts_audit_only_retry_attempt() -> None
     assert item["terminal_attempt"]["validator_session_id"] == str(session_id)
     assert item["terminal_attempt"]["retry_decision"] == "will_retry"
     assert item["terminal_attempt"]["terminal_effect"] is None
-    execution_log = item["terminal_attempt"]["execution_log"]
-    assert len(execution_log) == 1
-    assert execution_log[0]["receipt_id"] == "receipt-1"
-    assert execution_log[0]["session_id"] == str(session_id)
-    assert execution_log[0]["tool"] == "search_web"
-    assert execution_log[0]["outcome"] == "ok"
-    assert execution_log[0]["details"]["response_payload"] == {"ok": True}
+    assert "execution_log" not in item["terminal_attempt"]
     assert acknowledgements[0].outcome == "accepted"
     assert acknowledgements[0].canonical is False
     assert acknowledgements[0].reason_code is None
@@ -485,7 +479,7 @@ def test_submit_miner_task_work_results_posts_delivery_failure_detail() -> None:
     )
 
 
-def test_submit_miner_task_work_results_serializes_run_execution_log() -> None:
+def test_submit_miner_task_work_results_omits_run_execution_log() -> None:
     keypair = _keypair()
     batch_id = uuid4()
     artifact_id = uuid4()
@@ -585,13 +579,8 @@ def test_submit_miner_task_work_results_serializes_run_execution_log() -> None:
     assert seen_body is not None
     item = seen_body["results"][0]  # type: ignore[index]
     assert "validator" not in item["result"]
-    execution_log = item["result"]["execution_log"]
-    assert len(execution_log) == 1
-    assert execution_log[0]["receipt_id"] == "receipt-1"
-    assert execution_log[0]["session_id"] == str(session_id)
-    assert execution_log[0]["tool"] == "search_web"
-    assert execution_log[0]["outcome"] == "ok"
-    assert execution_log[0]["details"]["request_payload"] == {"query": "smoke"}
+    assert "execution_log" not in item["result"]
+    assert "execution_log" not in item["terminal_attempt"]
     assert acknowledgements[0].outcome == "accepted"
     assert acknowledgements[0].canonical is True
 
@@ -672,6 +661,7 @@ def test_submit_miner_task_work_executions_does_not_send_platform_owned_attempt_
     assert "max_attempts" not in item
     assert item["response"]["text"] == "answer"
     assert item["session"]["status"] == "completed"
+    assert "execution_log" not in item
     assert acknowledgements[0].outcome == "accepted"
     assert acknowledgements[0].canonical is True
 
@@ -882,8 +872,7 @@ def test_request_scoreable_miner_task_work_executions_parses_wire_payload() -> N
     assert execution.usage.by_provider["chutes"]["model-a"].total_tokens == 12
     assert execution.total_tool_usage.search_tool.call_count == 1
     assert execution.total_tool_usage.llm.providers["chutes"]["model-a"].usage.total_tokens == 12
-    assert execution.execution_log[0].session_id == validator_session_id
-    assert execution.execution_log[0].issued_at == started_at
+    assert execution.execution_log == ()
     assert execution.trace is not None
     assert execution.trace.scoring_judge_selected_routes == ("primary",)
 
@@ -1220,8 +1209,12 @@ async def test_platform_tool_proxy_grant_invalid_success_response_preserves_gran
 
 @pytest.mark.anyio("asyncio")
 async def test_platform_tool_proxy_execute_preserves_actual_cost_evidence() -> None:
+    seen_body: dict[str, object] | None = None
+
     async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal seen_body
         if request.method == "POST" and request.url.path == "/v1/platform-tool-proxy/tools/execute":
+            seen_body = json.loads(request.content)
             return httpx.Response(
                 status_code=200,
                 json={
@@ -1243,6 +1236,8 @@ async def test_platform_tool_proxy_execute_preserves_actual_cost_evidence() -> N
         transport=httpx.MockTransport(handler),
     )
 
+    receipt_started_at = datetime(2026, 7, 29, 6, 0, tzinfo=UTC)
+    receipt_issued_at = receipt_started_at + timedelta(milliseconds=5)
     result = await client.execute_platform_tool_proxy_tool(
         token="proxy-token",  # noqa: S106 - fixed test-only proxy token
         uid=7,
@@ -1251,6 +1246,8 @@ async def test_platform_tool_proxy_execute_preserves_actual_cost_evidence() -> N
         validator_session_id=uuid4(),
         attempt_number=1,
         receipt_id=str(uuid4()),
+        receipt_started_at=receipt_started_at,
+        receipt_issued_at=receipt_issued_at,
         tool="llm_chat",
         args=(),
         kwargs={"provider": "openrouter", "model": "openai/gpt-oss-20b", "messages": []},
@@ -1261,6 +1258,9 @@ async def test_platform_tool_proxy_execute_preserves_actual_cost_evidence() -> N
         "settlement_source": "provider_returned",
         "upstream_provider": "Nebius",
     }
+    assert seen_body is not None
+    assert seen_body["receipt_started_at"] == receipt_started_at.isoformat()
+    assert seen_body["receipt_issued_at"] == receipt_issued_at.isoformat()
 
 
 @pytest.mark.anyio("asyncio")

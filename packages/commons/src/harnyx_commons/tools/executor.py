@@ -115,6 +115,8 @@ class ToolInvocationContext:
     session_id: UUID
     active_attempt: int
     uid: int
+    receipt_started_at: datetime | None = None
+    receipt_issued_at: datetime | None = None
     miner_hotkey_ss58: str | None = None
     provider_credential_source: ProviderCredentialSource = ProviderCredentialSource.MINER
 
@@ -299,6 +301,8 @@ class ToolExecutor:
             session_id=session.session_id,
             active_attempt=session.active_attempt,
             uid=session.uid,
+            receipt_started_at=started_at,
+            receipt_issued_at=issued_at,
             miner_hotkey_ss58=session.miner_hotkey_ss58,
             provider_credential_source=session.provider_credential_source,
         )

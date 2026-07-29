@@ -17,7 +17,7 @@ from pydantic import BaseModel, TypeAdapter
 from harnyx_commons.bittensor import build_canonical_request
 from harnyx_commons.domain.miner_task import EvaluationTrace, MinerTask, Response
 from harnyx_commons.domain.session import LlmUsageTotals, Session, SessionStatus
-from harnyx_commons.domain.tool_call import ToolCall, ToolExecutionFacts
+from harnyx_commons.domain.tool_call import ToolExecutionFacts
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
 from harnyx_commons.errors import BudgetExceededError, ToolInvocationTimeoutError, ToolProviderError
 from harnyx_commons.json_types import JsonObject, JsonValue
@@ -47,7 +47,6 @@ _PLATFORM_WORK_TASKS_READ_TIMEOUT_SECONDS = 300.0
 _PLATFORM_WORK_RESULT_TIMEOUT_SECONDS = 300.0
 _PLATFORM_TOOL_PROXY_GRANT_RETRY_DELAYS_SECONDS = (0.25, 1.0)
 _LLM_USAGE_TOTALS_ADAPTER = TypeAdapter(dict[str, dict[str, LlmUsageTotals]])
-_TOOL_CALLS_ADAPTER = TypeAdapter(tuple[ToolCall, ...])
 _TOOL_USAGE_ADAPTER = TypeAdapter(ToolUsageSummary)
 
 
@@ -519,6 +518,8 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
         validator_session_id: UUID,
         attempt_number: int,
         receipt_id: str,
+        receipt_started_at: datetime | None = None,
+        receipt_issued_at: datetime | None = None,
         tool: ToolName,
         args: tuple[JsonValue, ...],
         kwargs: dict[str, JsonValue],
@@ -533,6 +534,14 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
                 "validator_session_id": str(validator_session_id),
                 "attempt_number": attempt_number,
                 "receipt_id": receipt_id,
+                **(
+                    {}
+                    if receipt_started_at is None or receipt_issued_at is None
+                    else {
+                        "receipt_started_at": receipt_started_at.isoformat(),
+                        "receipt_issued_at": receipt_issued_at.isoformat(),
+                    }
+                ),
                 "tool": tool,
                 "args": list(args),
                 "kwargs": kwargs,
@@ -706,7 +715,6 @@ def _platform_task_execution_payload(execution: PlatformOwnedTaskExecution) -> J
         },
         "usage": _jsonable(execution.usage),
         "total_tool_usage": _jsonable(execution.total_tool_usage),
-        "execution_log": _execution_log_payload(execution.execution_log),
         "trace": _jsonable(execution.trace),
     }
 
@@ -771,7 +779,7 @@ def _platform_scoreable_execution(value: object) -> PlatformOwnedTaskExecution:
         ),
         usage=_scoreable_token_usage_summary(item["usage"]),
         total_tool_usage=_TOOL_USAGE_ADAPTER.validate_python(item["total_tool_usage"]),
-        execution_log=_TOOL_CALLS_ADAPTER.validate_python(item.get("execution_log", ())),
+        execution_log=(),
         trace=None if trace_payload is None else EvaluationTrace.model_validate(trace_payload),
     )
 
@@ -803,7 +811,6 @@ def _run_submission_payload(submission: Any) -> JsonObject:
             "response": _jsonable(submission.run.response),
         },
         "score": submission.score,
-        "execution_log": _execution_log_payload(submission.execution_log),
         "usage": _jsonable(submission.usage),
         "session": {
             "session_id": str(submission.session.session_id),
@@ -833,7 +840,6 @@ def _attempt_payload(attempt: Any) -> JsonObject:
         "retry_decision": attempt.retry_decision.value,
         "terminal_effect": None if attempt.terminal_effect is None else attempt.terminal_effect.value,
         "max_attempts": attempt.max_attempts,
-        "execution_log": _execution_log_payload(attempt.execution_log),
     }
     if attempt.diagnostics is not None:
         payload["diagnostics"] = _jsonable(attempt.diagnostics)
@@ -848,10 +854,6 @@ def _parse_datetime(value: object) -> datetime:
     if not isinstance(value, str):
         raise PlatformClientError(status_code=None, message="platform datetime field is invalid")
     return datetime.fromisoformat(value)
-
-
-def _execution_log_payload(execution_log: tuple[ToolCall, ...]) -> list[JsonValue]:
-    return cast(list[JsonValue], _TOOL_CALLS_ADAPTER.dump_python(execution_log, mode="json"))
 
 
 def _platform_result_acknowledgement(value: object) -> PlatformTaskResultAcknowledgement:
