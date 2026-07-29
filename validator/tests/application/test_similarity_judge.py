@@ -200,7 +200,13 @@ async def test_similarity_judge_returns_classification_and_validator_reasoning()
     payload = _similarity_payload(llm_request)
     assert payload["reference"]["script"] == "def answer(): return 'old'"
     assert payload["candidate"]["diff_against_reference"] == "+ def answer(): return 'new'"
-    assert llm_request.output_schema.__name__ == "_SimilarityClassificationModel"
+    output_schema = llm_request.output_schema
+    assert output_schema.__name__ == "_SimilarityClassificationModel"
+    json_schema = output_schema.model_json_schema()
+    assert "mechanism_change" in json_schema["required"]
+    mechanism_change_schema = json_schema["properties"]["mechanism_change"]
+    assert {"type": "string"} in mechanism_change_schema["anyOf"]
+    assert {"type": "null"} in mechanism_change_schema["anyOf"]
     assert llm_request.postprocessor is not None
 
 
@@ -246,6 +252,12 @@ async def test_similarity_judge_structured_output_contract_rejects_invalid_shape
     assert missing_mechanism.ok is False
     assert missing_mechanism.retryable is True
 
+    missing_duplicate_mechanism = postprocessor(
+        _raw_similarity_response('{"classification":"duplicate","reasoning":"same mechanism"}')
+    )
+    assert missing_duplicate_mechanism.ok is False
+    assert missing_duplicate_mechanism.retryable is True
+
     contradictory_duplicate = postprocessor(
         _raw_similarity_response(
             '{"classification":"duplicate","reasoning":"same mechanism",'
@@ -255,8 +267,24 @@ async def test_similarity_judge_structured_output_contract_rejects_invalid_shape
     assert contradictory_duplicate.ok is False
     assert contradictory_duplicate.retryable is True
 
+    empty_duplicate_mechanism = postprocessor(
+        _raw_similarity_response(
+            '{"classification":"duplicate","reasoning":"same mechanism","mechanism_change":""}'
+        )
+    )
+    assert empty_duplicate_mechanism.ok is False
+    assert empty_duplicate_mechanism.retryable is True
 
-async def test_similarity_judge_postprocessor_accepts_duplicate_with_reasoning() -> None:
+    whitespace_duplicate_mechanism = postprocessor(
+        _raw_similarity_response(
+            '{"classification":"duplicate","reasoning":"same mechanism","mechanism_change":"   "}'
+        )
+    )
+    assert whitespace_duplicate_mechanism.ok is False
+    assert whitespace_duplicate_mechanism.retryable is True
+
+
+async def test_similarity_judge_postprocessor_accepts_duplicate_with_explicit_null_mechanism() -> None:
     llm = StubLlmProvider()
     service = SimilarityJudge(
         llm_provider=llm,
@@ -280,7 +308,7 @@ async def test_similarity_judge_postprocessor_accepts_duplicate_with_reasoning()
     result = postprocessor(
         _raw_similarity_response(
             '{"classification":"duplicate","reasoning":"Only token budget changed; '
-            'no mechanism-level behavior changed."}'
+            'no mechanism-level behavior changed.","mechanism_change":null}'
         )
     )
 

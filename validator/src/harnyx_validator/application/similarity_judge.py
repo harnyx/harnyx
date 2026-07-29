@@ -87,12 +87,14 @@ _SYSTEM_PROMPT = (
     "When evidence of any behavior change is borderline or mostly cosmetic, choose `duplicate`. "
     "When the behavior change is clear but the near_duplicate-versus-novel boundary is borderline, "
     "choose `near_duplicate`.\n\n"
-    "Return JSON only with keys `classification`, `reasoning`, and `mechanism_change`.\n"
-    "`classification` is the single category selected by the rules above.\n"
-    "`reasoning` must briefly explain why the evidence meets that category rather than an adjacent one.\n"
-    "`mechanism_change` may be null or empty for `duplicate`.\n"
-    "For `near_duplicate` and `novel`, `mechanism_change` must briefly name the concrete "
-    "behavior change.\n\n"
+    "Before returning, verify all of these output requirements:\n"
+    "- Return exactly one JSON object with exactly the keys `classification`, `reasoning`, "
+    "and `mechanism_change`; do not include analysis or prose outside that object.\n"
+    "- `classification` is the single category selected by the rules above.\n"
+    "- `reasoning` briefly explains why the evidence meets that category rather than an adjacent one.\n"
+    "- For `duplicate`, `mechanism_change` is JSON null.\n"
+    "- For `near_duplicate` and `novel`, `mechanism_change` is a non-empty string that briefly "
+    "names the concrete behavior change.\n\n"
     "Valid duplicate output:\n"
     '{"classification":"duplicate","reasoning":"Only the model and timeout changed.",'
     '"mechanism_change":null}\n'
@@ -127,13 +129,12 @@ class _SimilarityClassificationModel(BaseModel):
     )
     reasoning: str = Field(description="Validator-owned classification explanation.", min_length=1)
     mechanism_change: str | None = Field(
-        default=None,
         description="Concrete behavior change required for near_duplicate and novel.",
     )
 
     @model_validator(mode="after")
     def _reasoning_supports_classification(self) -> _SimilarityClassificationModel:
-        if self.classification == "duplicate" and self.mechanism_change:
+        if self.classification == "duplicate" and self.mechanism_change is not None:
             raise ValueError("duplicate must not claim a mechanism_change")
         if self.classification != "duplicate" and not self.mechanism_change:
             raise ValueError(f"{self.classification} requires mechanism_change")
