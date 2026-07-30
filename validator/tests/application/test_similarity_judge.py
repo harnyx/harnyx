@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import cast
 from uuid import uuid4
 
 import pytest
@@ -41,14 +42,14 @@ class StubLlmProvider:
                 ),
             ),
             usage=LlmUsage(reasoning_tokens=17),
-            postprocessed={
-                "classification": "novel",
-                "reasoning": (
+            postprocessed=_similarity_postprocessed(
+                classification="novel",
+                reasoning=(
                     "The candidate replaces one tool loop with explicit planning, retrieval, "
                     "fact-table verification, and synthesis stages."
                 ),
-                "mechanism_change": "staged controller with verified fact-table evidence",
-            },
+                mechanism_change="staged controller with verified fact-table evidence",
+            ),
             finish_reason="stop",
         )
 
@@ -126,12 +127,35 @@ def _similarity_postprocessed(
     classification: str,
     reasoning: str | None,
     mechanism_change: str | None,
-) -> dict[str, str | None]:
-    postprocessed: dict[str, str | None] = {"classification": classification}
+) -> dict[str, object]:
+    status_by_classification = {
+        "duplicate": "preserved",
+        "near_duplicate": "localized_change",
+        "notable_change": "substantial_same_root_change",
+        "novel": "replaced",
+    }
+    status = status_by_classification[classification]
+    postprocessed: dict[str, object] = {
+        "classification": classification,
+        "mechanism_change": mechanism_change,
+        "ordinary_case_path": "answer follows the reachable test path",
+        "architecture_assessment": {
+            "primary_controller": {
+                "status": status,
+                "evidence": "controller evidence",
+            },
+            "evidence_state_and_flow": {
+                "status": status,
+                "evidence": "evidence-flow evidence",
+            },
+            "answer_production_path": {
+                "status": status,
+                "evidence": "answer-path evidence",
+            },
+        },
+    }
     if reasoning is not None:
         postprocessed["reasoning"] = reasoning
-    if mechanism_change is not None:
-        postprocessed["mechanism_change"] = mechanism_change
     return postprocessed
 
 
@@ -182,6 +206,11 @@ async def test_similarity_judge_returns_classification_and_validator_reasoning()
         result.reasoning
         == "The candidate replaces one tool loop with explicit planning, retrieval, fact-table verification, "
         "and synthesis stages.\n"
+        "Ordinary successful path: answer follows the reachable test path\n"
+        "Architecture assessment:\n"
+        "- Primary controller [replaced]: controller evidence\n"
+        "- Evidence state and flow [replaced]: evidence-flow evidence\n"
+        "- Answer-production path [replaced]: answer-path evidence\n"
         "Mechanism change: staged controller with verified fact-table evidence"
     )
     assert result.reasoning_tokens == 17
@@ -204,6 +233,8 @@ async def test_similarity_judge_returns_classification_and_validator_reasoning()
     assert output_schema.__name__ == "_SimilarityClassificationModel"
     json_schema = output_schema.model_json_schema()
     assert "mechanism_change" in json_schema["required"]
+    assert "ordinary_case_path" in json_schema["required"]
+    assert "architecture_assessment" in json_schema["required"]
     mechanism_change_schema = json_schema["properties"]["mechanism_change"]
     assert {"type": "string"} in mechanism_change_schema["anyOf"]
     assert {"type": "null"} in mechanism_change_schema["anyOf"]
@@ -284,6 +315,52 @@ async def test_similarity_judge_structured_output_contract_rejects_invalid_shape
     assert whitespace_duplicate_mechanism.retryable is True
 
 
+@pytest.mark.parametrize(
+    ("classification", "invalid_status"),
+    [
+        ("duplicate", "localized_change"),
+        ("near_duplicate", "substantial_same_root_change"),
+        ("notable_change", "localized_change"),
+        ("novel", "substantial_same_root_change"),
+    ],
+)
+async def test_similarity_judge_rejects_classifications_above_declared_architectural_evidence(
+    classification: str,
+    invalid_status: str,
+) -> None:
+    llm = StubLlmProvider()
+    service = SimilarityJudge(
+        llm_provider=llm,
+        config=SimilarityJudgeConfig(provider="chutes", model="google/gemma-4-31B-turbo-TEE"),
+    )
+    await service.judge(
+        SimilarityJudgeRequest(
+            batch_id=uuid4(),
+            candidate_artifact_id=uuid4(),
+            reference_artifact_id=uuid4(),
+            candidate_miner_uid=20,
+            reference_miner_uid=10,
+            reference_script="def answer(): return 'old'",
+            candidate_diff="+ def answer(): return 'new'",
+        )
+    )
+    postprocessor = llm.requests[0].postprocessor
+    assert postprocessor is not None
+    payload = _similarity_postprocessed(
+        classification=classification,
+        reasoning="classification explanation",
+        mechanism_change=None if classification == "duplicate" else "reachable behavior change",
+    )
+    assessment = cast(dict[str, dict[str, str]], payload["architecture_assessment"])
+    for dimension in assessment.values():
+        dimension["status"] = invalid_status
+
+    result = postprocessor(_raw_similarity_response(json.dumps(payload)))
+
+    assert result.ok is False
+    assert result.retryable is True
+
+
 async def test_similarity_judge_postprocessor_accepts_duplicate_with_explicit_null_mechanism() -> None:
     llm = StubLlmProvider()
     service = SimilarityJudge(
@@ -307,8 +384,13 @@ async def test_similarity_judge_postprocessor_accepts_duplicate_with_explicit_nu
     assert postprocessor is not None
     result = postprocessor(
         _raw_similarity_response(
-            '{"classification":"duplicate","reasoning":"Only token budget changed; '
-            'no mechanism-level behavior changed.","mechanism_change":null}'
+            json.dumps(
+                _similarity_postprocessed(
+                    classification="duplicate",
+                    reasoning="Only token budget changed; no mechanism-level behavior changed.",
+                    mechanism_change=None,
+                )
+            )
         )
     )
 
@@ -338,9 +420,16 @@ async def test_similarity_judge_postprocessor_accepts_novel_with_mechanism_reaso
     assert postprocessor is not None
     result = postprocessor(
         _raw_similarity_response(
-            '{"classification":"novel","reasoning":"Replaces one tool loop with a staged '
-            'plan-retrieve-verify-synthesize controller.",'
-            '"mechanism_change":"staged controller and verified fact-table evidence"}'
+            json.dumps(
+                _similarity_postprocessed(
+                    classification="novel",
+                    reasoning=(
+                        "Replaces one tool loop with a staged "
+                        "plan-retrieve-verify-synthesize controller."
+                    ),
+                    mechanism_change="staged controller and verified fact-table evidence",
+                )
+            )
         )
     )
 
@@ -370,9 +459,18 @@ async def test_similarity_judge_postprocessor_accepts_notable_change_with_same_a
     assert postprocessor is not None
     result = postprocessor(
         _raw_similarity_response(
-            '{"classification":"notable_change","reasoning":"Adds planning and verification '
-            'stages while retaining the same controller and evidence path.",'
-            '"mechanism_change":"substantial planning and verification stages within the same architecture"}'
+            json.dumps(
+                _similarity_postprocessed(
+                    classification="notable_change",
+                    reasoning=(
+                        "Adds planning and verification stages while retaining the same controller "
+                        "and evidence path."
+                    ),
+                    mechanism_change=(
+                        "substantial planning and verification stages within the same architecture"
+                    ),
+                )
+            )
         )
     )
 

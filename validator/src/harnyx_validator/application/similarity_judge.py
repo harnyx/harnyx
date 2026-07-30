@@ -33,102 +33,122 @@ _SYSTEM_PROMPT = (
     "Miners are encouraged to learn from and derive their artifacts from previous champions. "
     "Shared code, structure, prompts, or lineage is not negative evidence by itself. Classify the "
     "behavior change, not how independently the code was written.\n\n"
+    "The labels are ordered: duplicate < near_duplicate < notable_change < novel. Use the lowest "
+    "classification fully supported by the code. Over-classification is more harmful than "
+    "under-classification. Do not choose a higher label because it is merely plausible. Each upward "
+    "classification requires affirmative evidence; when evidence is incomplete, ambiguous, or "
+    "borderline, choose the lower label.\n\n"
+    "Analyze only code reachable from the public entrypoint on an ordinary successful request. "
+    "Ignore dead or unreachable code, comments, names, architectural claims, fallback-only and "
+    "error-recovery paths, retries, provider changes, optional components that do not coordinate "
+    "ordinary execution, and diff size.\n\n"
+    "Trace these three architectural dimensions separately:\n"
+    "1. Primary controller: what decides the next action, coordinates major stages, and decides "
+    "when work is complete?\n"
+    "2. Evidence state and flow: what representation carries evidence between major stages, and "
+    "how is it updated and consumed?\n"
+    "3. Answer-production path: what ordinary successful path turns accumulated evidence into the "
+    "returned answer?\n\n"
     "Choose exactly one classification:\n"
-    "- `duplicate`: the diff establishes no concrete behavior change. The candidate keeps the "
-    "same effective retrieval, source-selection, verification, tool-use, fallback, and synthesis "
-    "behavior as the reference. An independent rewrite with unchanged behavior is still duplicate.\n"
-    "- `near_duplicate`: the diff establishes a concrete but localized behavior change inside an "
-    "otherwise substantially shared pipeline. The changed branches, steps, or policies can affect "
-    "what the agent does, but the primary control and data flow used for ordinary cases remain the "
-    "same. Several localized changes together are still near_duplicate.\n"
-    "- `notable_change`: the diff substantially reorganizes or extends behavior, but the same main "
-    "architecture remains. Major policies or stages may be added, reordered, or strengthened, yet "
-    "the primary controller, coordinating loop, major-stage topology, and evidence path still have "
-    "the same architectural root.\n"
-    "- `novel`: relative to the selected reference, the candidate has a fundamentally different "
-    "main architecture. It replaces the primary controller, major-stage topology, coordinating "
-    "loop, or evidence path with a different root. It may reuse ideas or components from the "
-    "reference, but substantial improvement inside the same main architecture is not novel.\n\n"
-    "This is a pairwise classification against the one selected reference. `novel` means "
-    "architecturally different from that reference; it does not mean first-seen, independently "
-    "invented, or globally unique across the batch or historical corpus.\n\n"
-    "Treat these as duplicate unless the diff also establishes a concrete behavior change: submission "
-    "slots, salts, timestamps, comments, cosmetic constants, renamed variables, formatting-only "
-    "edits, reordered equivalent code, small token/timeout/budget/temperature tweaks, and minor "
-    "prompt-wording edits that restate the same instructions. Do not credit a change as material "
-    "merely because it might perturb stochastic LLM output or slightly alter cost/latency.\n"
-    "Prompt improvements can count only when the diff shows that the agent will do materially "
-    "different work: new or changed decomposition, retrieval, source selection, verification, "
-    "contradiction handling, citation traceability, tool use, fallback, or final synthesis "
-    "behavior.\n"
-    "Prompt churn is duplicate: clearer wording, stronger wording, formatting instructions, "
-    "style instructions, or restatements of the same policy do not count by themselves.\n"
-    "Parameter-only changes are duplicate: changing only a configured model or a scalar token, "
-    "timeout, budget, temperature, retry-count, or source-count value does not establish a new "
-    "research mechanism. A separate change to the control or data flow must establish the concrete "
-    "behavior change.\n"
-    "When they concretely change behavior but remain inside an existing stage or branch, changes "
-    "such as source-ranking policy, query wording, citation slicing or windowing, tools used by an "
-    "existing controller, new provider-selection or fallback control logic, new retry control logic, "
-    "caching, parallel execution inside an existing stage, validation or repair guards, output "
-    "shaping, and exceptional recovery are near_duplicate by default. Substantial extensions that "
-    "keep the same main architecture are notable_change, not novel.\n"
-    "A removal or rollback does not establish novelty by itself. Classify it as near_duplicate when "
-    "it changes behavior but leaves the remaining primary pipeline intact.\n"
-    "Choose `near_duplicate`, `notable_change`, or `novel` only when you can name the concrete "
-    "behavior change. "
-    "The size of a diff is not the distinction: a full rewrite can be duplicate or near_duplicate "
-    "when it preserves the same behavior or primary pipeline, while a small diff can be novel when "
-    "it replaces the main architectural root.\n\n"
+    "- `duplicate`: no concrete reachable behavior change is established. Independent rewrites, "
+    "renames, comments, prompt restatements, parameter-only changes, and dead code remain duplicate "
+    "when effective behavior is unchanged. Mark all three architectural dimensions `preserved`.\n"
+    "- `near_duplicate`: concrete changes exist, but they are localized policies or mechanisms "
+    "inside the existing controller, evidence flow, or answer path. Several localized changes "
+    "together remain near_duplicate. Examples include ranking, targeted queries, constraint "
+    "ledgers, retries, fallback policy, validation and repair guards, caching, output shaping, and "
+    "parallelism inside an existing stage. Mark changed dimensions `localized_change`; do not use "
+    "`substantial_same_root_change` or `replaced`.\n"
+    "- `notable_change`: a major reachable subsystem or stage is substantially added, reorganized, "
+    "or replaced, but the reference's architectural root still coordinates ordinary successful "
+    "execution. Examples include a live evidence board around an existing research loop, a "
+    "substantial audit-and-repair stage, or conflict reconciliation inside an existing research, "
+    "evidence-corpus, and synthesis flow. Mark at least one dimension "
+    "`substantial_same_root_change` or `replaced`, but do not mark all three `replaced`.\n"
+    "- `novel`: the candidate completely replaces the reachable ordinary-case architectural root. "
+    "All three conditions are required: the primary controller is replaced; the evidence state and "
+    "flow are replaced; and the answer-production path is replaced. Mark all three dimensions "
+    "`replaced`. If any one dimension is preserved, localized, inherited, wrapped, extended, or "
+    "still coordinates ordinary execution, do not choose novel; the maximum label is "
+    "notable_change.\n\n"
+    "A new loop, ledger, stage, evidence representation, or answer step alone is not enough for "
+    "novel. A complete-looking replacement in dead code is not evidence. Reusing tools, libraries, "
+    "or ideas does not prevent novel when all three reachable architectural dimensions are actually "
+    "replaced.\n"
+    "This remains a pairwise classification against the selected reference. `novel` means a complete "
+    "architectural replacement relative to that reference; it does not mean first-seen, independently "
+    "invented, or globally unique.\n\n"
     "Apply this decision order:\n"
-    "1. If the diff does not establish a concrete behavior change, choose `duplicate`.\n"
-    "2. If it establishes changed behavior, identify the reference's primary ordinary-case control "
-    "and data flow.\n"
-    "3. Choose `novel` only if the candidate replaces the main architectural root through a "
-    "fundamentally different controller, major-stage topology, coordinating loop, or evidence path.\n"
-    "4. Choose `notable_change` when behavior is substantially reorganized or extended but the same "
-    "main architecture remains.\n"
-    "5. Otherwise choose `near_duplicate`, even when several localized mechanisms or policies changed.\n"
-    "When evidence of any behavior change is borderline or mostly cosmetic, choose `duplicate`. "
-    "When the behavior change is clear but the near_duplicate-versus-notable_change boundary is "
-    "borderline, choose `near_duplicate`. When the notable_change-versus-novel boundary is "
-    "borderline, choose `notable_change`.\n\n"
+    "1. Trace the reachable ordinary successful paths in both artifacts.\n"
+    "2. If no concrete behavior changed, choose duplicate.\n"
+    "3. If changes are localized inside the preserved architecture, choose near_duplicate.\n"
+    "4. If a major live subsystem changed but any architectural dimension remains rooted in the "
+    "reference, choose notable_change.\n"
+    "5. Choose novel only after affirmatively proving replacement of all three dimensions and "
+    "confirming that no preserved reference controller, evidence flow, or answer path still "
+    "coordinates ordinary execution.\n\n"
     "Before returning, verify all of these output requirements:\n"
     "- Return exactly one JSON object with exactly the keys `classification`, `reasoning`, "
-    "and `mechanism_change`; do not include analysis or prose outside that object.\n"
+    "`mechanism_change`, `ordinary_case_path`, and `architecture_assessment`; do not include "
+    "analysis or prose outside that object.\n"
     "- `classification` is the single category selected by the rules above.\n"
     "- `reasoning` briefly explains why the evidence meets that category rather than an adjacent one.\n"
     "- For `duplicate`, `mechanism_change` is JSON null.\n"
-    "- For `near_duplicate`, `notable_change`, and `novel`, `mechanism_change` is a non-empty string that briefly "
-    "names the concrete behavior change.\n\n"
-    "Valid duplicate output:\n"
-    '{"classification":"duplicate","reasoning":"Only the model and timeout changed.",'
-    '"mechanism_change":null}\n'
-    "Valid near_duplicate output:\n"
-    '{"classification":"near_duplicate","reasoning":"Authority ranking, focused citation windows, '
-    'and a contradiction guard change several policies, but the existing controller still runs the '
-    'same research loop and evidence path.",'
-    '"mechanism_change":"localized ranking, citation-window, and contradiction policies"}\n'
-    "Valid notable_change output:\n"
-    '{"classification":"notable_change","reasoning":"The candidate adds planning and verification '
-    'stages, but the same controller and evidence path still coordinate the research pipeline.",'
-    '"mechanism_change":"substantial planning and verification stages within the same architecture"}\n'
+    "- For every other label, `mechanism_change` briefly names the concrete reachable change.\n"
+    "- `ordinary_case_path` names the entrypoint-to-answer path actually used for the decision.\n"
+    "- Every architecture-assessment dimension contains a permitted `status` and concrete "
+    "code-path `evidence`; names or comments are not evidence.\n\n"
     "Valid novel output:\n"
-    '{"classification":"novel","reasoning":"The candidate replaces one LLM-controlled tool loop '
-    'with explicit planning, parallel retrieval, deterministic fact-table verification, and '
-    'synthesis stages, changing the primary controller and evidence path.",'
-    '"mechanism_change":"staged controller with a verified fact-table representation"}\n'
-    "Invalid output:\n"
-    '{"classification":"novel","reasoning":"The candidate adds source ranking and a retry fallback.",'
-    '"mechanism_change":"source ranking and retries"}\n'
-    "This is invalid because localized ranking and retry changes do not reorganize the primary "
-    "ordinary-case control or data flow; the correct classification is near_duplicate."
+    '{"classification":"novel","reasoning":"The ordinary tool loop is completely absent.",'
+    '"mechanism_change":"validated contract solver architecture",'
+    '"ordinary_case_path":"answer retrieves a fixed pool, emits and validates a contract, executes '
+    'it deterministically, then renders the solved records",'
+    '"architecture_assessment":{'
+    '"primary_controller":{"status":"replaced","evidence":"contract validation and deterministic '
+    'execution replace model-directed tool turns"},'
+    '"evidence_state_and_flow":{"status":"replaced","evidence":"source-indexed contract records '
+    'replace conversational tool history"},'
+    '"answer_production_path":{"status":"replaced","evidence":"a deterministic renderer replaces '
+    'the model-written loop answer"}}}\n'
+    "Invalid novel example: a conflict ledger performs targeted searches and reconciliation but the "
+    "existing research loop, evidence corpus, and synthesis path remain. That is notable_change.\n"
+    "Invalid novel example: a complete parallel controller exists but is unreachable, while the "
+    "ordinary loop gains an evidence board and commit rescue. Ignore the dead controller; the active "
+    "changes are at most notable_change."
 )
 _USER_PROMPT_PREFIX = (
     "Classify this candidate artifact relative to the selected reference as duplicate, "
     "near_duplicate, notable_change, or novel.\n\n"
     "Payload:\n"
 )
+
+
+_ArchitectureDimensionStatus = Literal[
+    "preserved",
+    "localized_change",
+    "substantial_same_root_change",
+    "replaced",
+]
+
+
+class _ArchitectureDimensionModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    status: _ArchitectureDimensionStatus = Field(
+        description="How this architectural dimension changed on the ordinary successful path."
+    )
+    evidence: str = Field(
+        description="Concrete code-path evidence supporting the status.",
+        min_length=1,
+    )
+
+
+class _ArchitectureAssessmentModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    primary_controller: _ArchitectureDimensionModel
+    evidence_state_and_flow: _ArchitectureDimensionModel
+    answer_production_path: _ArchitectureDimensionModel
 
 
 class _SimilarityClassificationModel(BaseModel):
@@ -141,6 +161,11 @@ class _SimilarityClassificationModel(BaseModel):
     mechanism_change: str | None = Field(
         description="Concrete behavior change required for near_duplicate, notable_change, and novel.",
     )
+    ordinary_case_path: str = Field(
+        description="Reachable ordinary successful path used for the classification.",
+        min_length=1,
+    )
+    architecture_assessment: _ArchitectureAssessmentModel
 
     @model_validator(mode="after")
     def _reasoning_supports_classification(self) -> _SimilarityClassificationModel:
@@ -148,6 +173,31 @@ class _SimilarityClassificationModel(BaseModel):
             raise ValueError("duplicate must not claim a mechanism_change")
         if self.classification != "duplicate" and not self.mechanism_change:
             raise ValueError(f"{self.classification} requires mechanism_change")
+        statuses = {
+            dimension.status
+            for dimension in (
+                self.architecture_assessment.primary_controller,
+                self.architecture_assessment.evidence_state_and_flow,
+                self.architecture_assessment.answer_production_path,
+            )
+        }
+        if self.classification == "duplicate" and statuses != {"preserved"}:
+            raise ValueError("duplicate requires every architectural dimension to be preserved")
+        if self.classification == "near_duplicate" and (
+            "localized_change" not in statuses
+            or not statuses <= {"preserved", "localized_change"}
+        ):
+            raise ValueError(
+                "near_duplicate requires a localized change and permits no higher dimension status"
+            )
+        if self.classification == "notable_change" and (
+            statuses <= {"preserved", "localized_change"} or statuses == {"replaced"}
+        ):
+            raise ValueError(
+                "notable_change requires a substantial same-root change or a partial replacement"
+            )
+        if self.classification == "novel" and statuses != {"replaced"}:
+            raise ValueError("novel requires all three architectural dimensions to be replaced")
         return self
 
 
@@ -279,9 +329,27 @@ def _build_similarity_payload(request: SimilarityJudgeRequest) -> dict[str, obje
 
 
 def _similarity_reasoning_text(classification_model: _SimilarityClassificationModel) -> str:
+    assessment = classification_model.architecture_assessment
+    lines = [
+        classification_model.reasoning,
+        f"Ordinary successful path: {classification_model.ordinary_case_path}",
+        "Architecture assessment:",
+        (
+            f"- Primary controller [{assessment.primary_controller.status}]: "
+            f"{assessment.primary_controller.evidence}"
+        ),
+        (
+            f"- Evidence state and flow [{assessment.evidence_state_and_flow.status}]: "
+            f"{assessment.evidence_state_and_flow.evidence}"
+        ),
+        (
+            f"- Answer-production path [{assessment.answer_production_path.status}]: "
+            f"{assessment.answer_production_path.evidence}"
+        ),
+    ]
     if classification_model.classification != "duplicate":
-        return f"{classification_model.reasoning}\nMechanism change: {classification_model.mechanism_change}"
-    return classification_model.reasoning
+        lines.append(f"Mechanism change: {classification_model.mechanism_change}")
+    return "\n".join(lines)
 
 
 def _selected_route_metadata(
