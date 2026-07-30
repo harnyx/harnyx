@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from collections import Counter
 from uuid import uuid4
 
 import pytest
@@ -20,7 +19,6 @@ pytestmark = [
     pytest.mark.anyio("asyncio"),
     pytest.mark.flaky(reruns=1, only_rerun=[LlmRetryExhaustedError]),
 ]
-_CALIBRATION_SAMPLE_COUNT = 2
 _GEMMA_MODEL = "google/gemma-4-31B-turbo-TEE"
 _GEMMA_ENDPOINT_ID = "gemma4-cloud-run-turbo"
 _GEMMA_ROUTE_TARGET = f"custom-openai-compatible:{_GEMMA_ENDPOINT_ID}"
@@ -29,6 +27,32 @@ _KIMI_MODEL = "moonshotai/Kimi-K2.5-TEE"
 _KIMI_ROUTE_TARGET = "bedrock"
 _GLM_MODEL = "zai-org/GLM-5-TEE"
 _GLM_ROUTE_TARGET = "vertex"
+_REFERENCE_SCRIPT = (
+    "def query(agent, question):\n"
+    "    messages = [question]\n"
+    "    while True:\n"
+    "        response = agent.run(messages)\n"
+    "        if response.final_answer:\n"
+    "            return response.final_answer\n"
+    "        messages.extend(agent.execute_tools(response.tool_calls))\n"
+)
+_CANDIDATE_DIFF = (
+    "--- incumbent\n"
+    "+++ candidate\n"
+    "@@\n"
+    "-def query(agent, question):\n"
+    "-    messages = [question]\n"
+    "-    while True:\n"
+    "-        response = agent.run(messages)\n"
+    "-        if response.final_answer:\n"
+    "-            return response.final_answer\n"
+    "-        messages.extend(agent.execute_tools(response.tool_calls))\n"
+    "+def query(pipeline, question):\n"
+    "+    plan = pipeline.plan_claims(question)\n"
+    "+    retrieved = pipeline.retrieve_claims_in_parallel(plan)\n"
+    "+    fact_table = pipeline.verify_into_fact_table(retrieved)\n"
+    "+    return pipeline.synthesize_from_verified_facts(question, fact_table)\n"
+)
 
 
 def _gemma_cloud_run_endpoint_config() -> dict[str, object]:
@@ -61,117 +85,6 @@ class RecordingProvider(LlmProviderPort):
 
 
 @pytest.mark.parametrize(
-    ("reference_script", "candidate_diff", "expected_classification"),
-    (
-        pytest.param(
-            (
-                "MAX_RETRIES = 1\n\n"
-                "def query(client, question):\n"
-                "    for _ in range(MAX_RETRIES):\n"
-                "        try:\n"
-                "            return client.search(question)\n"
-                "        except TimeoutError:\n"
-                "            pass\n"
-                "    return []\n"
-            ),
-            (
-                "--- incumbent\n"
-                "+++ candidate\n"
-                "@@\n"
-                "-MAX_RETRIES = 1\n"
-                "+MAX_RETRIES = 5\n"
-            ),
-            "duplicate",
-            id="parameter-only-duplicate",
-        ),
-        pytest.param(
-            (
-                "def query(client, question):\n"
-                "    sources = client.search(question)\n"
-                "    return client.synthesize(question, sources)\n"
-            ),
-            (
-                "--- incumbent\n"
-                "+++ candidate\n"
-                "@@\n"
-                "+def rank_by_authority(sources):\n"
-                "+    return sorted(sources, key=lambda source: source.authority, reverse=True)\n"
-                "+\n"
-                "+def keep_current_sources(sources):\n"
-                "+    return [source for source in sources if source.is_current]\n"
-                "+\n"
-                "+def remove_contradictions(sources):\n"
-                "+    return [source for source in sources if not source.contradicted]\n"
-                "+\n"
-                " def query(client, question):\n"
-                "-    sources = client.search(question)\n"
-                "-    return client.synthesize(question, sources)\n"
-                "+    sources = rank_by_authority(client.search(question))\n"
-                "+    sources = keep_current_sources(sources)\n"
-                "+    sources = remove_contradictions(sources)\n"
-                "+    return client.synthesize(question, sources)\n"
-            ),
-            "near_duplicate",
-            id="localized-multi-change-near-duplicate",
-        ),
-        pytest.param(
-            (
-                "def remove_contradictions(sources):\n"
-                "    return [source for source in sources if not source.contradicted]\n"
-                "\n"
-                "def query(client, question):\n"
-                "    sources = client.search(question)\n"
-                "    sources = remove_contradictions(sources)\n"
-                "    return client.synthesize(question, sources)\n"
-            ),
-            (
-                "--- incumbent\n"
-                "+++ candidate\n"
-                "@@\n"
-                "-def remove_contradictions(sources):\n"
-                "-    return [source for source in sources if not source.contradicted]\n"
-                "-\n"
-                " def query(client, question):\n"
-                "     sources = client.search(question)\n"
-                "-    sources = remove_contradictions(sources)\n"
-                "     return client.synthesize(question, sources)\n"
-            ),
-            "near_duplicate",
-            id="removed-verification-policy-near-duplicate",
-        ),
-        pytest.param(
-            (
-                "def query(agent, question):\n"
-                "    messages = [question]\n"
-                "    while True:\n"
-                "        response = agent.run(messages)\n"
-                "        if response.final_answer:\n"
-                "            return response.final_answer\n"
-                "        messages.extend(agent.execute_tools(response.tool_calls))\n"
-            ),
-            (
-                "--- incumbent\n"
-                "+++ candidate\n"
-                "@@\n"
-                "-def query(agent, question):\n"
-                "-    messages = [question]\n"
-                "-    while True:\n"
-                "-        response = agent.run(messages)\n"
-                "-        if response.final_answer:\n"
-                "-            return response.final_answer\n"
-                "-        messages.extend(agent.execute_tools(response.tool_calls))\n"
-                "+def query(pipeline, question):\n"
-                "+    plan = pipeline.plan_claims(question)\n"
-                "+    retrieved = pipeline.retrieve_claims_in_parallel(plan)\n"
-                "+    fact_table = pipeline.verify_into_fact_table(retrieved)\n"
-                "+    return pipeline.synthesize_from_verified_facts(question, fact_table)\n"
-            ),
-            "novel",
-            id="primary-flow-replacement-novel",
-        ),
-    ),
-)
-@pytest.mark.parametrize(
     ("model", "route_target"),
     (
         (_GEMMA_MODEL, _GEMMA_ROUTE_TARGET),
@@ -179,10 +92,7 @@ class RecordingProvider(LlmProviderPort):
         (_GLM_MODEL, _GLM_ROUTE_TARGET),
     ),
 )
-async def test_similarity_judge_live_reports_pairwise_classification_calibration(
-    reference_script: str,
-    candidate_diff: str,
-    expected_classification: str,
+async def test_similarity_judge_live_supports_production_provider_contract(
     model: str,
     route_target: str,
 ) -> None:
@@ -242,68 +152,44 @@ async def test_similarity_judge_live_reports_pairwise_classification_calibration
         reference_artifact_id=uuid4(),
         candidate_miner_uid=2,
         reference_miner_uid=1,
-        reference_script=reference_script,
-        candidate_diff=candidate_diff,
+        reference_script=_REFERENCE_SCRIPT,
+        candidate_diff=_CANDIDATE_DIFF,
     )
 
     try:
-        results = [await service.judge(request) for _ in range(_CALIBRATION_SAMPLE_COUNT)]
+        result = await service.judge(request)
     finally:
         await registry.aclose()
 
-    observed_counts = Counter(result.classification for result in results)
     print(
         json.dumps(
             {
-                "event": "similarity_judge.calibration",
+                "event": "similarity_judge.provider_contract",
                 "model": model,
                 "provider": route_target,
-                "expected_classification": expected_classification,
-                "observed_classifications": dict(sorted(observed_counts.items())),
-                "sample_count": _CALIBRATION_SAMPLE_COUNT,
+                "classification": result.classification,
             },
             sort_keys=True,
         )
     )
 
-    assert len(llm_provider.requests) == _CALIBRATION_SAMPLE_COUNT
-    assert all(result.model == similarity_route.model for result in results)
-    assert all(result.provider == similarity_route.provider for result in results)
-    assert all(result.reasoning and result.reasoning.strip() for result in results)
-    assert all(
-        result.reasoning_tokens is None or result.reasoning_tokens >= 0
-        for result in results
-    )
-    assert all(llm_request.output_mode == "structured" for llm_request in llm_provider.requests)
-    assert all(
-        llm_request.provider == settings.llm.similarity_llm_provider
-        for llm_request in llm_provider.requests
-    )
-    assert all(llm_request.model == similarity_route.model for llm_request in llm_provider.requests)
-    assert all(llm_request.reasoning_effort == "high" for llm_request in llm_provider.requests)
-    assert all(
-        llm_request.max_output_tokens == settings.llm.similarity_llm_max_output_tokens
-        for llm_request in llm_provider.requests
-    )
-    assert all(
-        llm_request.timeout_seconds == settings.llm.similarity_llm_timeout_seconds
-        for llm_request in llm_provider.requests
-    )
-    assert all(
-        llm_request.retry_policy == settings.llm.similarity_llm_retry_policy
-        for llm_request in llm_provider.requests
-    )
-    assert all(llm_request.thinking is None for llm_request in llm_provider.requests)
-    assert all(
-        llm_request.use_case == "miner_task_similarity_judge"
-        for llm_request in llm_provider.requests
-    )
-    assert all(response.metadata is not None for response in llm_provider.responses)
-    assert all(
-        response.metadata["selected_provider"] == similarity_route.provider
-        for response in llm_provider.responses
-    )
-    assert all(
-        response.metadata["selected_model"] == similarity_route.model
-        for response in llm_provider.responses
-    )
+    assert len(llm_provider.requests) == 1
+    assert len(llm_provider.responses) == 1
+    llm_request = llm_provider.requests[0]
+    response = llm_provider.responses[0]
+    assert result.model == similarity_route.model
+    assert result.provider == similarity_route.provider
+    assert result.reasoning and result.reasoning.strip()
+    assert result.reasoning_tokens is None or result.reasoning_tokens >= 0
+    assert llm_request.output_mode == "structured"
+    assert llm_request.provider == settings.llm.similarity_llm_provider
+    assert llm_request.model == similarity_route.model
+    assert llm_request.reasoning_effort == "high"
+    assert llm_request.max_output_tokens == settings.llm.similarity_llm_max_output_tokens
+    assert llm_request.timeout_seconds == settings.llm.similarity_llm_timeout_seconds
+    assert llm_request.retry_policy == settings.llm.similarity_llm_retry_policy
+    assert llm_request.thinking is None
+    assert llm_request.use_case == "miner_task_similarity_judge"
+    assert response.metadata is not None
+    assert response.metadata["selected_provider"] == similarity_route.provider
+    assert response.metadata["selected_model"] == similarity_route.model
