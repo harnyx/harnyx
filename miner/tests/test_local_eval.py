@@ -405,11 +405,16 @@ def _recorded_results_snapshot(
     batch_id: UUID,
     champion_artifact_id: UUID,
     rows: tuple[dict[str, object], ...],
+    task_id: UUID | None = None,
 ) -> RecordedBatchResultsSnapshot:
     return RecordedBatchResultsSnapshot(
         rows=rows,
         error=None,
-        scope=RecordedResultsScope(batch_id=batch_id, artifact_id=champion_artifact_id),
+        scope=RecordedResultsScope(
+            batch_id=batch_id,
+            artifact_id=champion_artifact_id,
+            task_id=task_id,
+        ),
     )
 
 
@@ -460,12 +465,12 @@ class _FakeMonitoringClient:
     def __init__(self, *, batch_context: SelectedBatchContext, champion_script: dict[str, object]) -> None:
         self.batch_context = batch_context
         self.champion_script = champion_script
-        self.resolve_calls: list[object] = []
+        self.resolve_calls: list[tuple[object, object]] = []
         self.script_calls = 0
         self.closed = False
 
-    def resolve_batch_context(self, batch_id) -> SelectedBatchContext:
-        self.resolve_calls.append(batch_id)
+    def resolve_batch_context(self, batch_id, *, task_id=None) -> SelectedBatchContext:
+        self.resolve_calls.append((batch_id, task_id))
         return self.batch_context
 
     def get_script(self, artifact_id) -> dict[str, object]:
@@ -482,8 +487,8 @@ class _RaisingMonitoringClient:
         self.error = error
         self.closed = False
 
-    def resolve_batch_context(self, batch_id) -> SelectedBatchContext:
-        del batch_id
+    def resolve_batch_context(self, batch_id, *, task_id=None) -> SelectedBatchContext:
+        del batch_id, task_id
         raise self.error
 
     def get_script(self, artifact_id) -> dict[str, object]:
@@ -1114,7 +1119,7 @@ def test_local_eval_writes_default_reports_for_latest_completed_vs_champion(
     assert markdown_path.exists()
     report = json.loads(json_path.read_text(encoding="utf-8"))
 
-    assert monitoring.resolve_calls == [None]
+    assert monitoring.resolve_calls == [(None, None)]
     assert monitoring.script_calls == 1
     assert report["mode"] == "vs-champion"
     assert report["batch_metadata"]["selection_source"] == "latest-completed"
@@ -1317,7 +1322,7 @@ def test_local_eval_target_only_skips_champion_fetch_and_keeps_recorded_context(
     json_path = tmp_path / f"local-eval-report-{batch_id}-target-only.json"
     report = json.loads(json_path.read_text(encoding="utf-8"))
 
-    assert monitoring.resolve_calls == [batch_id]
+    assert monitoring.resolve_calls == [(batch_id, None)]
     assert monitoring.script_calls == 0
     assert report["mode"] == "target-only"
     assert report["local_result_summary"]["head_to_head"] is None
@@ -1331,6 +1336,87 @@ def test_local_eval_target_only_skips_champion_fetch_and_keeps_recorded_context(
     }
     assert len(report["recorded_platform_context"]["results"]) == 1
     assert len(runtime.calls) == 1
+
+
+def test_local_eval_task_id_runs_only_the_selected_task_and_uses_a_task_specific_report_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch_id = uuid4()
+    champion_artifact_id = uuid4()
+    selected_task = _task(uuid4(), "selected task")
+    other_task = _task(uuid4(), "other task")
+    all_tasks = (selected_task, other_task)
+    monitoring = _FakeMonitoringClient(
+        batch_context=_selected_batch_context(
+            batch_id=batch_id,
+            source="explicit",
+            detail=_batch_detail(
+                batch_id=batch_id,
+                champion_artifact_id=champion_artifact_id,
+                tasks=all_tasks,
+            ),
+            recorded_results=_recorded_results_snapshot(
+                batch_id=batch_id,
+                champion_artifact_id=champion_artifact_id,
+                rows=_recorded_rows(
+                    batch_id=batch_id,
+                    champion_artifact_id=champion_artifact_id,
+                    tasks=all_tasks,
+                ),
+                task_id=selected_task.task_id,
+            ),
+        ),
+        champion_script={},
+    )
+    runtime = _FakeRuntime(
+        batch_id=batch_id,
+        champion_artifact_id=champion_artifact_id,
+        tasks=(selected_task,),
+    )
+    agent_path = tmp_path / "agent.py"
+    _write_agent(agent_path)
+
+    monkeypatch.setattr(local_eval.PlatformMonitoringClient, "from_env", staticmethod(lambda: monitoring))
+    monkeypatch.setattr(
+        local_eval.LocalEvaluationRuntime,
+        "create",
+        staticmethod(
+            lambda *, progress_reporter=None, run_progress_root=None: _bind_progress(runtime, progress_reporter)
+        ),
+    )
+    monkeypatch.setattr(local_eval, "platform_base_url_from_env", lambda: "https://platform.example.com")
+
+    local_eval.main(
+        [
+            "--agent-path",
+            str(agent_path),
+            "--batch-id",
+            str(batch_id),
+            "--task-id",
+            str(selected_task.task_id),
+            "--mode",
+            "target-only",
+            "--output-dir",
+            str(tmp_path),
+        ]
+    )
+
+    report_path = tmp_path / f"local-eval-report-{batch_id}-{selected_task.task_id}-target-only.json"
+    markdown_path = tmp_path / f"local-eval-report-{batch_id}-{selected_task.task_id}-target-only.md"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+
+    assert monitoring.resolve_calls == [(batch_id, selected_task.task_id)]
+    assert markdown_path.exists()
+    assert not (tmp_path / f"local-eval-report-{batch_id}-target-only.json").exists()
+    assert report["evaluation_config"]["selected_task_ids"] == [str(selected_task.task_id)]
+    assert [task["task_id"] for task in report["tasks"]] == [str(selected_task.task_id)]
+    assert report["recorded_platform_context"]["results_scope"] == {
+        "kind": "task",
+        "batch_id": str(batch_id),
+        "artifact_id": str(champion_artifact_id),
+        "task_id": str(selected_task.task_id),
+    }
 
 
 def test_local_eval_target_only_continues_when_recorded_results_fetch_fails(
@@ -2922,4 +3008,61 @@ def test_get_recorded_results_uses_task_index_and_detail_routes() -> None:
         (task_index_path, None),
         (task_a_path, None),
         (task_b_path, None),
+    ]
+
+
+def test_resolve_batch_context_focused_fetch_uses_only_selected_task_results() -> None:
+    batch_id = uuid4()
+    champion_artifact_id = uuid4()
+    selected_task_id = uuid4()
+    unrelated_task_id = uuid4()
+    selected_task_path = _task_results_path(batch_id, champion_artifact_id, selected_task_id)
+    selected_row = {"task_id": str(selected_task_id), "score": 1.0}
+
+    class _StubClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, object]] = []
+
+        def get(self, path: str, params=None):
+            self.calls.append((path, params))
+            request = httpx.Request("GET", f"https://platform.example.com{path}")
+            if path == f"/v1/monitoring/miner-task-batches/{batch_id}":
+                return httpx.Response(
+                    200,
+                    json={
+                        "summary": {
+                            "batch_id": str(batch_id),
+                            "status": "completed",
+                            "champion_artifact_id": str(champion_artifact_id),
+                        },
+                        "tasks": [
+                            {"task_id": str(selected_task_id)},
+                            {"task_id": str(unrelated_task_id)},
+                        ],
+                    },
+                    request=request,
+                )
+            if path == selected_task_path:
+                return httpx.Response(200, json=[selected_row], request=request)
+            pytest.fail(f"focused recorded-result fetch requested unrelated path: {path}")
+
+        def close(self) -> None:
+            return None
+
+    client = PlatformMonitoringClient(base_url="https://platform.example.com")
+    client._client.close()
+    client._client = _StubClient()
+
+    context = client.resolve_batch_context(batch_id, task_id=selected_task_id)
+
+    assert context.recorded_results.rows == (selected_row,)
+    assert context.recorded_results.error is None
+    assert context.recorded_results.scope == RecordedResultsScope(
+        batch_id=batch_id,
+        artifact_id=champion_artifact_id,
+        task_id=selected_task_id,
+    )
+    assert client._client.calls == [
+        (f"/v1/monitoring/miner-task-batches/{batch_id}", None),
+        (selected_task_path, None),
     ]

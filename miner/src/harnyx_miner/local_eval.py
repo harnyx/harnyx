@@ -841,6 +841,10 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         help="Specific public batch to use. Defaults to the latest completed public miner-task batch.",
     )
     parser.add_argument(
+        "--task-id",
+        help="Evaluate only the task with this UUID from the selected batch.",
+    )
+    parser.add_argument(
         "--mode",
         choices=("vs-champion", "target-only"),
         default="vs-champion",
@@ -867,9 +871,16 @@ async def _amain(argv: Sequence[str] | None) -> None:
     try:
         progress.log("resolving batch context")
         requested_batch_id = UUID(args.batch_id) if args.batch_id else None
-        batch_context = monitoring.resolve_batch_context(requested_batch_id)
+        requested_task_id = UUID(args.task_id) if args.task_id else None
+        batch_context = monitoring.resolve_batch_context(
+            requested_batch_id,
+            task_id=requested_task_id,
+        )
         _log_recorded_results_status(progress=progress, batch_context=batch_context)
-        tasks = _load_batch_tasks(batch_context.detail)
+        tasks = _select_batch_tasks(
+            _load_batch_tasks(batch_context.detail),
+            task_id=requested_task_id,
+        )
         progress.log(
             f"selected batch: batch_id={batch_context.batch_id} source={batch_context.source} tasks={len(tasks)}"
         )
@@ -958,6 +969,7 @@ async def _amain(argv: Sequence[str] | None) -> None:
             target_bytes=target_bytes,
             target_artifact=target_artifact,
             target_submissions=target_submissions,
+            tasks=tasks,
             champion_artifact=champion_artifact,
             champion_submissions=champion_submissions,
             mode=args.mode,
@@ -973,6 +985,7 @@ async def _amain(argv: Sequence[str] | None) -> None:
             output_dir=output_dir,
             batch_id=batch_context.batch_id,
             mode=args.mode,
+            task_id=requested_task_id,
         )
         progress.log(f"reports written: json={json_path} markdown={markdown_path}")
     finally:
@@ -1083,6 +1096,15 @@ def _load_batch_tasks(detail: Mapping[str, object]) -> tuple[MinerTask, ...]:
     return tuple(parsed)
 
 
+def _select_batch_tasks(tasks: tuple[MinerTask, ...], *, task_id: UUID | None) -> tuple[MinerTask, ...]:
+    if task_id is None:
+        return tasks
+    selected = tuple(task for task in tasks if task.task_id == task_id)
+    if not selected:
+        raise RuntimeError(f"task {task_id} is not present in the selected batch")
+    return selected
+
+
 def _build_target_artifact_spec(
     *,
     batch_context: SelectedBatchContext,
@@ -1136,6 +1158,7 @@ def _build_report(
     target_bytes: bytes,
     target_artifact: ScriptArtifactSpec,
     target_submissions: Sequence[MinerTaskRunSubmission],
+    tasks: Sequence[MinerTask],
     champion_artifact: ScriptArtifactSpec | None,
     champion_submissions: Sequence[MinerTaskRunSubmission] | None,
     mode: str,
@@ -1146,7 +1169,6 @@ def _build_report(
     scoring_config: EvaluationScoringConfig,
     validator_version: str,
 ) -> dict[str, object]:
-    tasks = _load_batch_tasks(batch_context.detail)
     target_by_task = {submission.run.task_id: submission for submission in target_submissions}
     champion_by_task = (
         {submission.run.task_id: submission for submission in champion_submissions}
@@ -1201,6 +1223,7 @@ def _build_report(
             "sandbox_pull_policy": sandbox_pull_policy,
             "session_ttl_seconds": int(_LOCAL_SESSION_TTL.total_seconds()),
             "local_validator_uid": _LOCAL_VALIDATOR_UID,
+            "selected_task_ids": [str(task.task_id) for task in tasks],
         },
         "scoring_context": {
             "provider": scoring_config.provider,
@@ -1311,11 +1334,14 @@ def _serialize_recorded_results_status(batch_results: RecordedBatchResultsSnapsh
 def _serialize_recorded_results_scope(batch_results: RecordedBatchResultsSnapshot) -> dict[str, object] | None:
     if batch_results.scope is None:
         return None
-    return {
+    scope: dict[str, object] = {
         "kind": batch_results.scope.kind,
         "batch_id": str(batch_results.scope.batch_id),
         "artifact_id": str(batch_results.scope.artifact_id),
     }
+    if batch_results.scope.task_id is not None:
+        scope["task_id"] = str(batch_results.scope.task_id)
+    return scope
 
 
 def _log_recorded_results_status(
@@ -1551,9 +1577,12 @@ def _write_reports(
     output_dir: Path,
     batch_id: UUID,
     mode: str,
+    task_id: UUID | None,
 ) -> tuple[Path, Path]:
-    json_path = output_dir / f"{_DEFAULT_OUTPUT_PREFIX}-{batch_id}-{mode}.json"
-    markdown_path = output_dir / f"{_DEFAULT_OUTPUT_PREFIX}-{batch_id}-{mode}.md"
+    task_suffix = f"-{task_id}" if task_id is not None else ""
+    output_stem = f"{_DEFAULT_OUTPUT_PREFIX}-{batch_id}{task_suffix}-{mode}"
+    json_path = output_dir / f"{output_stem}.json"
+    markdown_path = output_dir / f"{output_stem}.md"
     json_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     markdown_path.write_text(_render_markdown_report(report), encoding="utf-8")
     return json_path, markdown_path

@@ -31,7 +31,11 @@ class PlatformMonitoringRequestError(RuntimeError):
 class RecordedResultsScope:
     batch_id: UUID
     artifact_id: UUID
-    kind: str = "artifact"
+    task_id: UUID | None = None
+
+    @property
+    def kind(self) -> str:
+        return "task" if self.task_id is not None else "artifact"
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,15 +130,19 @@ class PlatformMonitoringClient:
         *,
         batch_id: UUID,
         artifact_id: UUID,
+        task_id: UUID | None = None,
     ) -> tuple[dict[str, object], ...]:
-        task_index = self._request_json(
-            f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/{artifact_id}/tasks",
-        )
-        task_ids = _completed_task_ids_from_index_payload(task_index)
+        if task_id is None:
+            task_index = self._request_json(
+                f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/{artifact_id}/tasks",
+            )
+            task_ids = _completed_task_ids_from_index_payload(task_index)
+        else:
+            task_ids = (task_id,)
         rows: list[dict[str, object]] = []
-        for task_id in task_ids:
+        for result_task_id in task_ids:
             payload = self._request_json(
-                f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/{artifact_id}/tasks/{task_id}/results",
+                f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/{artifact_id}/tasks/{result_task_id}/results",
             )
             if not isinstance(payload, list):
                 raise RuntimeError("monitoring task results response must be a JSON array")
@@ -150,10 +158,19 @@ class PlatformMonitoringClient:
         *,
         batch_id: UUID,
         artifact_id: UUID,
+        task_id: UUID | None = None,
     ) -> RecordedBatchResultsSnapshot:
-        scope = RecordedResultsScope(batch_id=batch_id, artifact_id=artifact_id)
+        scope = RecordedResultsScope(
+            batch_id=batch_id,
+            artifact_id=artifact_id,
+            task_id=task_id,
+        )
         try:
-            rows = self.get_recorded_results(batch_id=batch_id, artifact_id=artifact_id)
+            rows = self.get_recorded_results(
+                batch_id=batch_id,
+                artifact_id=artifact_id,
+                task_id=task_id,
+            )
         except PlatformMonitoringRequestError as exc:
             return RecordedBatchResultsSnapshot(
                 rows=None,
@@ -168,7 +185,12 @@ class PlatformMonitoringClient:
             params={"include_content": "true"},
         )
 
-    def resolve_batch_context(self, batch_id: UUID | None) -> SelectedBatchContext:
+    def resolve_batch_context(
+        self,
+        batch_id: UUID | None,
+        *,
+        task_id: UUID | None = None,
+    ) -> SelectedBatchContext:
         source = "explicit"
         resolved_batch_id = batch_id
         if resolved_batch_id is None:
@@ -182,6 +204,7 @@ class PlatformMonitoringClient:
             self.get_recorded_results_snapshot(
                 batch_id=resolved_batch_id,
                 artifact_id=recorded_artifact_id,
+                task_id=task_id,
             )
             if recorded_artifact_id is not None
             else RecordedBatchResultsSnapshot.unavailable_without_baseline(resolved_batch_id)

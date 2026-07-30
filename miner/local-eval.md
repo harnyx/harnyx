@@ -34,6 +34,16 @@ uv run --package harnyx-miner harnyx-miner-local-eval \
   --batch-id <batch-id>
 ```
 
+One task from a specific batch:
+
+```bash
+uv run --package harnyx-miner harnyx-miner-local-eval \
+  --agent-path ./agent.py \
+  --batch-id <batch-id> \
+  --task-id <task-id> \
+  --mode target-only
+```
+
 Target only:
 
 ```bash
@@ -66,6 +76,7 @@ The command can:
 - fetch a specific public batch by id
 - fetch the recorded batch detail, artifact metadata, and champion-artifact recorded result rows needed for comparison
 - continue with degraded recorded-platform context when batch detail succeeds but the public artifact-results endpoint is temporarily unavailable
+- select one exact task by UUID from the selected batch for a focused experiment
 
 ## Execution Boundary
 
@@ -78,10 +89,15 @@ The command can:
 
 ## Output
 
-By default, the command writes both reports to the current working directory:
+By default, whole-batch runs write both reports to the current working directory:
 
 - `local-eval-report-<batch-id>-<mode>.json`
 - `local-eval-report-<batch-id>-<mode>.md`
+
+Focused `--task-id` runs include the task ID so separate tasks from the same batch do not overwrite each other:
+
+- `local-eval-report-<batch-id>-<task-id>-<mode>.json`
+- `local-eval-report-<batch-id>-<task-id>-<mode>.md`
 
 During the run, the CLI prints human progress logs to `stderr` so you can see batch selection, runtime startup, and task completion progress. The final report-path summary remains machine-readable JSON on `stdout`.
 
