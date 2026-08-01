@@ -142,16 +142,12 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
     assert model_prices["openrouter"]["openai/gpt-oss-120b"]["input_per_million"] == pytest.approx(0.037)
     assert model_prices["openrouter"]["openai/gpt-oss-120b"]["output_per_million"] == pytest.approx(0.17)
     assert model_prices["openrouter"]["openai/gpt-oss-120b"]["reasoning_per_million"] == pytest.approx(0.17)
-    assert "zai-org/GLM-5-TEE" in provider_models["chutes"]
-    assert model_prices["chutes"]["zai-org/GLM-5-TEE"]["input_per_million"] == pytest.approx(
-        MODEL_PRICING["zai-org/GLM-5-TEE"].input_per_million
-    )
-    assert model_prices["chutes"]["zai-org/GLM-5-TEE"]["output_per_million"] == pytest.approx(
-        MODEL_PRICING["zai-org/GLM-5-TEE"].output_per_million
-    )
-    assert model_prices["chutes"]["zai-org/GLM-5-TEE"]["reasoning_per_million"] == pytest.approx(
-        MODEL_PRICING["zai-org/GLM-5-TEE"].billable_reasoning_per_million
-    )
+    assert "zai-org/GLM-5-TEE" not in provider_models["chutes"]
+    assert "zai-org/GLM-5-TEE" not in model_prices["chutes"]
+    assert "moonshotai/Kimi-K2.6-TEE" in provider_models["chutes"]
+    assert model_prices["chutes"]["moonshotai/Kimi-K2.6-TEE"]["input_per_million"] == pytest.approx(0.66)
+    assert model_prices["chutes"]["moonshotai/Kimi-K2.6-TEE"]["output_per_million"] == pytest.approx(3.50)
+    assert model_prices["chutes"]["moonshotai/Kimi-K2.6-TEE"]["reasoning_per_million"] == pytest.approx(3.50)
     assert "Qwen/Qwen3-Next-80B-A3B-Instruct" not in provider_models["chutes"]
     assert "Qwen/Qwen3-Next-80B-A3B-Instruct" not in model_prices["chutes"]
     assert "Qwen/Qwen3.6-27B-TEE" in provider_models["chutes"]

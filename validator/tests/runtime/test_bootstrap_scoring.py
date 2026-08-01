@@ -791,10 +791,10 @@ def test_create_scoring_service_uses_explicit_fallback_models() -> None:
             provider="chutes",
             model=bootstrap._DIRECT_SCORING_LLM_MODEL,
         ),
-        fallback_models=("zai-org/GLM-5-TEE", "moonshotai/Kimi-K2.5-TEE"),
+        fallback_models=("zai-org/GLM-5.2-TEE", "moonshotai/Kimi-K2.6-TEE"),
     )
 
-    assert service._config.fallback_models == ("zai-org/GLM-5-TEE", "moonshotai/Kimi-K2.5-TEE")
+    assert service._config.fallback_models == ("zai-org/GLM-5.2-TEE", "moonshotai/Kimi-K2.6-TEE")
 
 
 def test_scoring_slot_config_entries_are_hard_coded() -> None:
@@ -802,12 +802,12 @@ def test_scoring_slot_config_entries_are_hard_coded() -> None:
         bootstrap.ScoringSlotConfigEntry(
             model="google/gemma-4-31B-turbo-TEE",
             slot_limit=10,
-            fallback_models=("zai-org/GLM-5-TEE", "moonshotai/Kimi-K2.5-TEE"),
+            fallback_models=("zai-org/GLM-5.2-TEE", "moonshotai/Kimi-K2.6-TEE"),
         ),
         bootstrap.ScoringSlotConfigEntry(
             model="Qwen/Qwen3.6-27B-TEE",
             slot_limit=10,
-            fallback_models=("zai-org/GLM-5-TEE", "moonshotai/Kimi-K2.5-TEE"),
+            fallback_models=("zai-org/GLM-5.2-TEE", "moonshotai/Kimi-K2.6-TEE"),
         ),
     )
 
@@ -853,12 +853,12 @@ def test_build_services_passes_slot_fallback_models_to_scoring_services() -> Non
     )
 
     assert scoring_services["google/gemma-4-31B-turbo-TEE"]._config.fallback_models == (
-        "zai-org/GLM-5-TEE",
-        "moonshotai/Kimi-K2.5-TEE",
+        "zai-org/GLM-5.2-TEE",
+        "moonshotai/Kimi-K2.6-TEE",
     )
     assert scoring_services["Qwen/Qwen3.6-27B-TEE"]._config.fallback_models == (
-        "zai-org/GLM-5-TEE",
-        "moonshotai/Kimi-K2.5-TEE",
+        "zai-org/GLM-5.2-TEE",
+        "moonshotai/Kimi-K2.6-TEE",
     )
 
 
@@ -893,7 +893,7 @@ def test_direct_scoring_service_inherits_configured_fallback_models() -> None:
             provider="chutes",
             model=bootstrap._DIRECT_SCORING_LLM_MODEL,
         ),
-        fallback_models=("zai-org/GLM-5-TEE", "moonshotai/Kimi-K2.5-TEE"),
+        fallback_models=("zai-org/GLM-5.2-TEE", "moonshotai/Kimi-K2.6-TEE"),
     )
 
     selected = bootstrap._direct_scoring_service(
@@ -903,7 +903,7 @@ def test_direct_scoring_service_inherits_configured_fallback_models() -> None:
         }
     )
 
-    assert selected._config.fallback_models == ("zai-org/GLM-5-TEE", "moonshotai/Kimi-K2.5-TEE")
+    assert selected._config.fallback_models == ("zai-org/GLM-5.2-TEE", "moonshotai/Kimi-K2.6-TEE")
 
 
 @pytest.mark.anyio("asyncio")
@@ -970,8 +970,8 @@ def test_create_similarity_judge_uses_similarity_llm_config() -> None:
     assert judge._config.provider == "vertex"
     assert judge._config.model == "google/gemma-4-31B-turbo-TEE"
     assert judge._config.fallback_models == (
-        "moonshotai/Kimi-K2.5-TEE",
-        "zai-org/GLM-5-TEE",
+        "moonshotai/Kimi-K2.6-TEE",
+        "zai-org/GLM-5.2-TEE",
     )
     assert judge._config.temperature == 0.0
     assert judge._config.max_output_tokens == 4096
@@ -983,11 +983,11 @@ def test_create_similarity_judge_uses_similarity_llm_config() -> None:
 def test_similarity_fallback_tail_only_uses_candidates_after_primary_override() -> None:
     settings = Settings.model_construct(
         llm=LlmSettings.model_construct(
-            similarity_llm_model_override="moonshotai/Kimi-K2.5-TEE",
+            similarity_llm_model_override="moonshotai/Kimi-K2.6-TEE",
         ),
     )
 
-    assert bootstrap._similarity_judge_fallback_models(settings) == ("zai-org/GLM-5-TEE",)
+    assert bootstrap._similarity_judge_fallback_models(settings) == ("zai-org/GLM-5.2-TEE",)
 
 
 def test_similarity_model_override_participates_in_duplication_detection_route_override() -> None:

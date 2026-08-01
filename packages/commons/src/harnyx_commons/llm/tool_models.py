@@ -52,7 +52,7 @@ MINER_SELECTED_LLM_PROVIDER_MODELS: Mapping[
 ] = {
     CHUTES_PROVIDER: (
         "deepseek-ai/DeepSeek-V3.2-TEE",
-        "zai-org/GLM-5-TEE",
+        "moonshotai/Kimi-K2.6-TEE",
         "Qwen/Qwen3.6-27B-TEE",
         "google/gemma-4-31B-turbo-TEE",
         "zai-org/GLM-5.2-TEE",

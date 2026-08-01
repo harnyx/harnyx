@@ -16,7 +16,6 @@ _DEFAULT_TTL_SECONDS = 3600.0
 
 CHUTES_STATIC_PRICING: Mapping[str, ModelPricing] = {
     **MINER_TOOL_LLM_PRICING[CHUTES_PROVIDER],
-    "moonshotai/Kimi-K2.5-TEE": ModelPricing(0.44, 2.00, 0.0),
 }
 
 

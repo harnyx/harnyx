@@ -271,7 +271,7 @@ Current allowed `llm_chat` provider/model ids in this repo:
 
 | Provider | Model ids |
 |----------|-----------|
-| `chutes` | `deepseek-ai/DeepSeek-V3.2-TEE`, `zai-org/GLM-5-TEE`, `Qwen/Qwen3.6-27B-TEE`, `google/gemma-4-31B-turbo-TEE`, `zai-org/GLM-5.2-TEE`, `Qwen/Qwen3.5-397B-A17B-TEE` |
+| `chutes` | `deepseek-ai/DeepSeek-V3.2-TEE`, `moonshotai/Kimi-K2.6-TEE`, `Qwen/Qwen3.6-27B-TEE`, `google/gemma-4-31B-turbo-TEE`, `zai-org/GLM-5.2-TEE`, `Qwen/Qwen3.5-397B-A17B-TEE` |
 | `openrouter` | `openai/gpt-oss-20b`, `openai/gpt-oss-120b`, `deepseek/deepseek-v3.2`, `z-ai/glm-5`, `qwen/qwen3.6-27b`, `google/gemma-4-31b-it`, `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-pro`, `z-ai/glm-5.2`, `thinkingmachines/inkling`, `qwen/qwen3.5-397b-a17b` |
 | `ai_gateway` | `thinkingmachines/inkling`, `zai/glm-5.2-fast`, `openai/gpt-oss-20b`, `zai/glm-4.7`, `google/gemma-4-31b-it`, `openai/gpt-oss-120b`, `minimax/minimax-m2.7`, `zai/glm-4.7-flash`, `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-pro` |
 
@@ -423,9 +423,8 @@ Thinking controls are provider/model specific:
 | `ai_gateway` | Allowed AI Gateway models except `google/gemma-4-31b-it` pinned to Cerebras | Supported via AI Gateway `reasoning.enabled` / `reasoning.effort="none"` | Supported via AI Gateway `reasoning.effort` | Supported via AI Gateway `reasoning.max_tokens` |
 | `ai_gateway` | `google/gemma-4-31b-it` pinned to Cerebras | Enable by supplying an explicit `effort`; disabling uses Gemma's disabled provider default | Supported via Cerebras `reasoningEffort` | Unsupported for this route; not serialized into a Cerebras provider option |
 | `chutes` | `deepseek-ai/DeepSeek-V3.2-TEE` | Supported via `chat_template_kwargs.thinking` | Unsupported for Chutes; not serialized | Unsupported for Chutes; not serialized |
-| `chutes` | `zai-org/GLM-5-TEE` | Supported via `chat_template_kwargs.enable_thinking` | Unsupported for Chutes; not serialized | Unsupported for Chutes; not serialized |
 | `chutes` | `Qwen/Qwen3.6-27B-TEE`, `google/gemma-4-31B-turbo-TEE` | Supported via `chat_template_kwargs.enable_thinking` | Unsupported for Chutes; not serialized | Unsupported for Chutes; not serialized |
-| `chutes` | `zai-org/GLM-5.2-TEE`, `Qwen/Qwen3.5-397B-A17B-TEE` | No verified Chutes toggle; typed hints are not serialized and provider defaults apply | Unsupported for Chutes; not serialized | Unsupported for Chutes; not serialized |
+| `chutes` | `moonshotai/Kimi-K2.6-TEE`, `zai-org/GLM-5.2-TEE`, `Qwen/Qwen3.5-397B-A17B-TEE` | No verified Chutes toggle; typed hints are not serialized and provider defaults apply | Unsupported for Chutes; not serialized | Unsupported for Chutes; not serialized |
 
 ```python
 from harnyx_miner_sdk.api import llm_chat
@@ -436,18 +435,6 @@ response = await llm_chat(
     messages=[{"role": "user", "content": "Solve 17 * 23. Return only the answer."}],
     temperature=0.0,
     thinking={"enabled": True},
-)
-```
-
-To explicitly disable thinking where the provider/model supports a disable control:
-
-```python
-response = await llm_chat(
-    provider="chutes",
-    model="zai-org/GLM-5-TEE",
-    messages=[{"role": "user", "content": "Reply with only ok."}],
-    temperature=0.0,
-    thinking={"enabled": False},
 )
 ```
 

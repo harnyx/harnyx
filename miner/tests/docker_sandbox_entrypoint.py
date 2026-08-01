@@ -9,7 +9,7 @@ from harnyx_miner_sdk.llm import LlmMessageContentPart
 from harnyx_miner_sdk.query import Query, Response
 
 MAX_EVIDENCE_RESULTS = 3
-CHUTES_MODEL = "zai-org/GLM-5-TEE"
+CHUTES_MODEL = "zai-org/GLM-5.2-TEE"
 CHUTES_TEMPERATURE = 0.2
 
 

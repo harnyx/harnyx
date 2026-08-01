@@ -84,12 +84,13 @@ STATIC_LLM_PRICING: Mapping[str, ModelPricing] = {
     "openai/gpt-oss-20b-TEE": MODEL_PRICING["openai/gpt-oss-20b"],
     "openai/gpt-oss-120b-TEE": MODEL_PRICING["openai/gpt-oss-120b"],
     "moonshotai/Kimi-K2.5-TEE": ModelPricing(0.44, 2.00, 0.0),
+    "moonshotai/Kimi-K2.6-TEE": ModelPricing(0.66, 3.50, 0.0),
 }
 
 MINER_TOOL_LLM_PRICING: Mapping[MinerSelectedLlmProviderName, Mapping[str, ModelPricing]] = {
     CHUTES_PROVIDER: {
         "deepseek-ai/DeepSeek-V3.2-TEE": ModelPricing(1.00, 1.00, 0.0),
-        "zai-org/GLM-5-TEE": ModelPricing(0.95, 2.55, 0.0),
+        "moonshotai/Kimi-K2.6-TEE": ModelPricing(0.66, 3.50, 0.0),
         "Qwen/Qwen3.6-27B-TEE": ModelPricing(0.30, 2.00, 0.0),
         "google/gemma-4-31B-turbo-TEE": ModelPricing(0.12, 0.37, 0.0),
         "zai-org/GLM-5.2-TEE": ModelPricing(1.40, 4.40, 0.0),

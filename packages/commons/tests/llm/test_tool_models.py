@@ -68,6 +68,13 @@ def test_miner_selected_chutes_supports_only_chutes_models() -> None:
         ).model
         == "Qwen/Qwen3.6-27B-TEE"
     )
+    assert (
+        parse_miner_selected_llm_provider_model(
+            provider="chutes",
+            model="moonshotai/Kimi-K2.6-TEE",
+        ).model
+        == "moonshotai/Kimi-K2.6-TEE"
+    )
 
 
 def test_miner_selected_chutes_rejects_openrouter_only_models() -> None:
@@ -124,7 +131,11 @@ def test_miner_selected_ai_gateway_uses_native_model_ids_without_translation(mod
 
 
 def test_new_chutes_provider_models_are_not_internal_canonical_models() -> None:
-    for model in ("zai-org/GLM-5.2-TEE", "Qwen/Qwen3.5-397B-A17B-TEE"):
+    for model in (
+        "moonshotai/Kimi-K2.6-TEE",
+        "zai-org/GLM-5.2-TEE",
+        "Qwen/Qwen3.5-397B-A17B-TEE",
+    ):
         assert model in MINER_SELECTED_LLM_PROVIDER_MODELS["chutes"]
         assert model not in ALLOWED_TOOL_MODELS
         with pytest.raises(ValueError, match="not allowed for validator tools"):
@@ -132,6 +143,10 @@ def test_new_chutes_provider_models_are_not_internal_canonical_models() -> None:
         assert tool_model_thinking_capability(model, provider_name="chutes") is None
         assert tool_model_thinking_capability(model, provider_name="vertex") is None
         assert tool_model_thinking_capability(model, provider_name="custom-openai-compatible") is None
+
+
+def test_retired_chutes_model_is_not_in_miner_selected_namespace() -> None:
+    assert "zai-org/GLM-5-TEE" not in MINER_SELECTED_LLM_PROVIDER_MODELS["chutes"]
 
 
 def test_miner_selected_ai_gateway_rejects_retired_qwen37_plus() -> None:

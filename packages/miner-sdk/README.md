@@ -367,9 +367,8 @@ Do not put common behavior in `provider_extra`. For example, reasoning controls 
 | `ai_gateway` | Allowed AI Gateway models except `google/gemma-4-31b-it` pinned to Cerebras | Supported via AI Gateway `reasoning.enabled` / `reasoning.effort="none"` | Supported via AI Gateway `reasoning.effort` | Supported via AI Gateway `reasoning.max_tokens` |
 | `ai_gateway` | `google/gemma-4-31b-it` pinned to Cerebras | Enable by supplying an explicit `effort`; disabling uses Gemma's disabled provider default | Supported via Cerebras `reasoningEffort` | Unsupported for this route; not serialized into a Cerebras provider option |
 | `chutes` | `deepseek-ai/DeepSeek-V3.2-TEE` | Supported via `chat_template_kwargs.thinking` | Unsupported for Chutes; not serialized | Unsupported for Chutes; not serialized |
-| `chutes` | `zai-org/GLM-5-TEE` | Supported via `chat_template_kwargs.enable_thinking` | Unsupported for Chutes; not serialized | Unsupported for Chutes; not serialized |
 | `chutes` | `Qwen/Qwen3.6-27B-TEE`, `google/gemma-4-31B-turbo-TEE` | Supported via `chat_template_kwargs.enable_thinking` | Unsupported for Chutes; not serialized | Unsupported for Chutes; not serialized |
-| `chutes` | `zai-org/GLM-5.2-TEE`, `Qwen/Qwen3.5-397B-A17B-TEE` | No verified Chutes toggle; typed hints are not serialized and provider defaults apply | Unsupported for Chutes; not serialized | Unsupported for Chutes; not serialized |
+| `chutes` | `moonshotai/Kimi-K2.6-TEE`, `zai-org/GLM-5.2-TEE`, `Qwen/Qwen3.5-397B-A17B-TEE` | No verified Chutes toggle; typed hints are not serialized and provider defaults apply | Unsupported for Chutes; not serialized | Unsupported for Chutes; not serialized |
 
 ```python
 await llm_chat(
@@ -378,14 +377,6 @@ await llm_chat(
     messages=[{"role": "user", "content": "Solve 17 * 23."}],
     temperature=0.0,
     thinking={"enabled": True},
-)
-
-await llm_chat(
-    provider="chutes",
-    model="zai-org/GLM-5-TEE",
-    messages=[{"role": "user", "content": "Reply with only ok."}],
-    temperature=0.0,
-    thinking={"enabled": False},
 )
 
 await llm_chat(

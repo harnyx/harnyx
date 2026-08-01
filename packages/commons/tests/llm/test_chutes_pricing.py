@@ -48,10 +48,10 @@ async def test_chutes_pricing_cache_prices_kimi_validator_judge_model() -> None:
         total_tokens=6_000,
     )
 
-    actual_cost = await cache.price(model="moonshotai/Kimi-K2.5-TEE", usage=usage)
+    actual_cost = await cache.price(model="moonshotai/Kimi-K2.6-TEE", usage=usage)
 
-    assert "moonshotai/Kimi-K2.5-TEE" in CHUTES_STATIC_PRICING
-    assert actual_cost.cost_usd == pytest.approx(0.01044)
+    assert "moonshotai/Kimi-K2.6-TEE" in CHUTES_STATIC_PRICING
+    assert actual_cost.cost_usd == pytest.approx(0.01816)
     assert actual_cost.provider == "chutes"
     assert actual_cost.evidence["settlement_source"] == "static_pricing"
     assert actual_cost.evidence["pricing_origin"] == "chutes_repo_rates"
@@ -67,9 +67,9 @@ async def test_chutes_pricing_cache_keeps_unavailable_reasoning_tokens_in_eviden
         total_tokens=3_000,
     )
 
-    actual_cost = await cache.price(model="moonshotai/Kimi-K2.5-TEE", usage=usage)
+    actual_cost = await cache.price(model="moonshotai/Kimi-K2.6-TEE", usage=usage)
 
-    assert actual_cost.cost_usd == pytest.approx(0.00444)
+    assert actual_cost.cost_usd == pytest.approx(0.00766)
     assert actual_cost.evidence["reasoning_tokens"] is None
 
 
@@ -82,6 +82,7 @@ def test_static_model_pricing_includes_kimi_validator_judge_model() -> None:
     )
 
     assert price_static_llm_model("moonshotai/Kimi-K2.5-TEE", usage) == pytest.approx(0.01044)
+    assert price_static_llm_model("moonshotai/Kimi-K2.6-TEE", usage) == pytest.approx(0.01816)
 
 
 def test_chutes_static_pricing_uses_miner_advertised_rates_for_allowed_models() -> None:
@@ -113,6 +114,7 @@ async def test_chutes_pricing_cache_updated_empty_snapshot_uses_fallback_without
 @pytest.mark.parametrize(
     ("model", "input_rate", "output_rate"),
     (
+        ("moonshotai/Kimi-K2.6-TEE", 0.66, 3.50),
         ("zai-org/GLM-5.2-TEE", 1.40, 4.40),
         ("Qwen/Qwen3.5-397B-A17B-TEE", 0.45, 3.00),
     ),

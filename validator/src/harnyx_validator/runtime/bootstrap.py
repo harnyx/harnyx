@@ -113,7 +113,7 @@ _SANDBOX_CPUSET_LABEL = "harnyx.sandbox.cpuset_cpus"
 _DIRECT_SCORING_LLM_MODEL = "google/gemma-4-31B-turbo-TEE"
 _SCORING_LLM_REASONING_EFFORT = "high"
 _DUPLICATION_DETECTION_LLM_MODEL = "google/gemma-4-31B-turbo-TEE"
-_SCORING_FALLBACK_MODELS = ("zai-org/GLM-5-TEE", "moonshotai/Kimi-K2.5-TEE")
+_SCORING_FALLBACK_MODELS = ("zai-org/GLM-5.2-TEE", "moonshotai/Kimi-K2.6-TEE")
 _SCORING_SLOT_CONFIG = ScoringSlotConfig(
     entries=(
         ScoringSlotConfigEntry(
@@ -129,8 +129,8 @@ _SCORING_SLOT_CONFIG = ScoringSlotConfig(
     )
 )
 _DUPLICATION_DETECTION_FALLBACK_MODELS = (
-    "moonshotai/Kimi-K2.5-TEE",
-    "zai-org/GLM-5-TEE",
+    "moonshotai/Kimi-K2.6-TEE",
+    "zai-org/GLM-5.2-TEE",
 )
 _SEARCH_PROVIDER_TOOLS = frozenset(("search_web", "search_ai", "fetch_page"))
 _MINER_SELECTED_SEARCH_PROVIDERS = frozenset(get_args(SearchProviderName))

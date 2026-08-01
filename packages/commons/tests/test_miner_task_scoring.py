@@ -1023,7 +1023,7 @@ async def test_scoring_service_preserves_selected_provider_model_routes_across_f
             total_tokens=16,
             metadata={
                 "selected_provider": "vertex",
-                "selected_model": "zai-org/GLM-5-TEE",
+                "selected_model": "zai-org/GLM-5.2-TEE",
                 "attempts": 2,
                 "retry_reasons": ("rate_limited: provider capacity exceeded",),
                 "latency_ms_total": 300.0,
@@ -1043,7 +1043,7 @@ async def test_scoring_service_preserves_selected_provider_model_routes_across_f
                 total_tokens=20,
                 metadata={
                     "selected_provider": "bedrock",
-                    "selected_model": "moonshotai/Kimi-K2.5-TEE",
+                    "selected_model": "moonshotai/Kimi-K2.6-TEE",
                     "attempts": 1,
                     "latency_ms_total": 100.0,
                 },
@@ -1069,7 +1069,7 @@ async def test_scoring_service_preserves_selected_provider_model_routes_across_f
         config=EvaluationScoringConfig(
             provider="chutes",
             model="primary-judge",
-            fallback_models=("zai-org/GLM-5-TEE", "moonshotai/Kimi-K2.5-TEE"),
+            fallback_models=("zai-org/GLM-5.2-TEE", "moonshotai/Kimi-K2.6-TEE"),
         ),
     )
 
@@ -1078,8 +1078,8 @@ async def test_scoring_service_preserves_selected_provider_model_routes_across_f
     assert result.evaluation_trace is not None
     assert result.evaluation_trace.scoring_judge_selected_routes == (
         "chutes/primary-judge",
-        "vertex/zai-org/GLM-5-TEE",
-        "bedrock/moonshotai/Kimi-K2.5-TEE",
+        "vertex/zai-org/GLM-5.2-TEE",
+        "bedrock/moonshotai/Kimi-K2.6-TEE",
     )
     assert result.evaluation_trace.scoring_judge_attempt_count == 6
     assert result.evaluation_trace.scoring_judge_retry_count == 2

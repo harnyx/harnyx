@@ -25,6 +25,7 @@ pytestmark = [
 
 CHUTES_TOOL_MODELS = MINER_SELECTED_LLM_PROVIDER_MODELS["chutes"]
 NEW_CHUTES_MODELS = (
+    "moonshotai/Kimi-K2.6-TEE",
     "zai-org/GLM-5.2-TEE",
     "Qwen/Qwen3.5-397B-A17B-TEE",
 )
@@ -140,7 +141,7 @@ async def test_miner_paid_chutes_helper_completion_live() -> None:
         llm_settings=settings,
     )
     try:
-        response = await provider.invoke(_completion_request(model="zai-org/GLM-5-TEE"))
+        response = await provider.invoke(_completion_request(model="zai-org/GLM-5.2-TEE"))
     finally:
         await provider.aclose()
 
