@@ -34,6 +34,7 @@ OPENROUTER_LIVE_CHAT_MODEL = "openai/gpt-oss-20b"
 OPENROUTER_BYOK_LIVE_CHAT_MODEL = "openai/gpt-oss-120b"
 NEW_OPENROUTER_MODELS = (
     "deepseek/deepseek-v4-flash",
+    "deepseek/deepseek-v4-flash-0731",
     "deepseek/deepseek-v4-pro",
     "z-ai/glm-5.2",
     "thinkingmachines/inkling",

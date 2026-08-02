@@ -104,6 +104,7 @@ MINER_TOOL_LLM_PRICING: Mapping[MinerSelectedLlmProviderName, Mapping[str, Model
         "qwen/qwen3.6-27b": ModelPricing(0.30, 2.00, 0.0),
         "google/gemma-4-31b-it": ModelPricing(0.14, 0.40, 0.0),
         "deepseek/deepseek-v4-flash": ModelPricing(0.14, 0.28, 0.0),
+        "deepseek/deepseek-v4-flash-0731": ModelPricing(0.09, 0.18, 0.0),
         "deepseek/deepseek-v4-pro": ModelPricing(0.435, 0.87, 0.0),
         "z-ai/glm-5.2": ModelPricing(0.8008, 2.5168, 0.0),
         "thinkingmachines/inkling": ModelPricing(1.00, 4.05, 0.0),
@@ -119,6 +120,7 @@ MINER_TOOL_LLM_PRICING: Mapping[MinerSelectedLlmProviderName, Mapping[str, Model
         "minimax/minimax-m2.7": ModelPricing(0.30, 1.20, 0.0),
         "zai/glm-4.7-flash": ModelPricing(0.07, 0.40, 0.0),
         "deepseek/deepseek-v4-flash": ModelPricing(0.14, 0.28, 0.0),
+        "deepseek/deepseek-v4-flash-0731": ModelPricing(0.13, 0.26, 0.0),
         "deepseek/deepseek-v4-pro": ModelPricing(0.435, 0.87, 0.0),
     },
 }

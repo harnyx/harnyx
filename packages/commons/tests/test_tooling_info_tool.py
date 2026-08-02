@@ -52,6 +52,7 @@ def test_tool_model_pricing_covers_every_allowed_tool_model() -> None:
         ("openrouter", "qwen/qwen3.6-27b", 0.30, 2.00),
         ("openrouter", "google/gemma-4-31b-it", 0.14, 0.40),
         ("openrouter", "deepseek/deepseek-v4-flash", 0.14, 0.28),
+        ("openrouter", "deepseek/deepseek-v4-flash-0731", 0.09, 0.18),
         ("openrouter", "deepseek/deepseek-v4-pro", 0.435, 0.87),
         ("openrouter", "z-ai/glm-5.2", 0.8008, 2.5168),
         ("openrouter", "thinkingmachines/inkling", 1.00, 4.05),
@@ -59,6 +60,7 @@ def test_tool_model_pricing_covers_every_allowed_tool_model() -> None:
         ("ai_gateway", "openai/gpt-oss-20b", 0.05, 0.20),
         ("ai_gateway", "zai/glm-4.7", 0.60, 2.20),
         ("ai_gateway", "deepseek/deepseek-v4-flash", 0.14, 0.28),
+        ("ai_gateway", "deepseek/deepseek-v4-flash-0731", 0.13, 0.26),
         ("ai_gateway", "deepseek/deepseek-v4-pro", 0.435, 0.87),
     ),
 )

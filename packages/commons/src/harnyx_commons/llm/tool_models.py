@@ -66,6 +66,7 @@ MINER_SELECTED_LLM_PROVIDER_MODELS: Mapping[
         "qwen/qwen3.6-27b",
         "google/gemma-4-31b-it",
         "deepseek/deepseek-v4-flash",
+        "deepseek/deepseek-v4-flash-0731",
         "deepseek/deepseek-v4-pro",
         "z-ai/glm-5.2",
         "thinkingmachines/inkling",
@@ -81,6 +82,7 @@ MINER_SELECTED_LLM_PROVIDER_MODELS: Mapping[
         "minimax/minimax-m2.7",
         "zai/glm-4.7-flash",
         "deepseek/deepseek-v4-flash",
+        "deepseek/deepseek-v4-flash-0731",
         "deepseek/deepseek-v4-pro",
     ),
 }

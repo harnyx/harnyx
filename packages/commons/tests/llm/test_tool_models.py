@@ -93,6 +93,7 @@ def test_miner_selected_chutes_rejects_openrouter_only_models() -> None:
         "qwen/qwen3.6-27b",
         "google/gemma-4-31b-it",
         "deepseek/deepseek-v4-flash",
+        "deepseek/deepseek-v4-flash-0731",
         "deepseek/deepseek-v4-pro",
         "z-ai/glm-5.2",
         "thinkingmachines/inkling",
@@ -120,6 +121,7 @@ def test_miner_selected_openrouter_uses_native_model_ids_without_translation(
         "minimax/minimax-m2.7",
         "zai/glm-4.7-flash",
         "deepseek/deepseek-v4-flash",
+        "deepseek/deepseek-v4-flash-0731",
         "deepseek/deepseek-v4-pro",
     ),
 )

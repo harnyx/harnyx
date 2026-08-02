@@ -145,6 +145,7 @@ async def test_ai_gateway_provider_preserves_nested_reasoning_usage() -> None:
     (
         "openai/gpt-oss-120b",
         "deepseek/deepseek-v4-flash",
+        "deepseek/deepseek-v4-flash-0731",
         "deepseek/deepseek-v4-pro",
     ),
 )
