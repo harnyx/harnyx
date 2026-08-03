@@ -117,6 +117,51 @@ async def test_context_free_search_uses_matching_direct_provider_without_resolve
     assert resolver_calls == []
 
 
+async def test_firecrawl_static_settlement_retains_provider_billing_evidence() -> None:
+    class _FirecrawlProvider(_CapturingSearchProvider):
+        async def search_web(
+            self,
+            request: SearchWebSearchRequest,
+        ) -> SearchProviderResult[SearchWebSearchResponse]:
+            self.requests.append(request)
+            return SearchProviderResult(
+                response=SearchWebSearchResponse(
+                    data=[SearchWebResult(link="https://example.com", title="Example")]
+                ),
+                billing=ProviderBillingMetadata(
+                    actual_cost_provider="firecrawl",
+                    source="response_body",
+                    provider_request_id="firecrawl-request-1",
+                    usage_count=2,
+                    service="search",
+                ),
+            )
+
+    provider = _FirecrawlProvider()
+    invoker = RuntimeToolInvoker(
+        InMemoryReceiptLog(),
+        web_search_client=provider,
+        web_search_provider_name="firecrawl",
+    )
+
+    result = await invoker.invoke(
+        "search_web",
+        args=(),
+        kwargs={"provider": "firecrawl", "search_queries": ["harnyx"]},
+    )
+
+    assert result.actual_cost_provider == "firecrawl"
+    assert result.actual_cost_evidence["settlement_source"] == "static_pricing"
+    assert result.actual_cost_evidence["referenceable_results"] == 1
+    assert result.actual_cost_evidence["provider_billing"] == {
+        "actual_cost_provider": "firecrawl",
+        "source": "response_body",
+        "provider_request_id": "firecrawl-request-1",
+        "usage_count": 2,
+        "service": "search",
+    }
+
+
 async def test_miner_credential_search_uses_miner_resolver_without_direct_fallback() -> None:
     direct_provider = _CapturingSearchProvider()
     miner_provider = _CapturingSearchProvider()

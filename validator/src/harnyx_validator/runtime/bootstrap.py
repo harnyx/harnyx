@@ -41,12 +41,13 @@ from harnyx_commons.tools.dto import ToolInvocationRequest, tool_payload_for_inv
 from harnyx_commons.tools.embedding_models import parse_miner_selected_embedding_provider_model
 from harnyx_commons.tools.executor import ToolExecutor, ToolInvocationContext, ToolInvocationOutput, ToolInvoker
 from harnyx_commons.tools.invocation_clients import build_optional_tool_embedding_provider
-from harnyx_commons.tools.ports import EmbeddingProviderPort, WebSearchProviderPort
+from harnyx_commons.tools.ports import AiSearchProviderPort, EmbeddingProviderPort, WebSearchProviderPort
 from harnyx_commons.tools.runtime_invoker import (
+    AiSearchProviderResolver,
     EmbeddingProviderResolver,
     LlmProviderResolver,
     RuntimeToolInvoker,
-    SearchProviderResolver,
+    WebSearchProviderResolver,
     build_miner_sandbox_tool_invoker,
 )
 from harnyx_commons.tools.search_models import SearchProviderName
@@ -683,17 +684,21 @@ def _build_local_provider_tooling(
     state: InMemoryState,
     resolved: Settings,
     search_client: WebSearchProviderPort | None,
+    ai_search_client: AiSearchProviderPort | None,
     tool_llm_provider: LlmProviderPort | None,
     tool_embedding_provider: EmbeddingProviderPort | None = None,
-    search_provider_resolver: SearchProviderResolver | None = None,
+    web_search_provider_resolver: WebSearchProviderResolver | None = None,
+    ai_search_provider_resolver: AiSearchProviderResolver | None = None,
     llm_provider_resolver: LlmProviderResolver | None = None,
     embedding_provider_resolver: EmbeddingProviderResolver | None = None,
 ) -> tuple[ToolInvoker, ToolExecutor]:
     local_invoker = build_miner_sandbox_tool_invoker(
         state.receipt_log,
         web_search_client=search_client,
+        ai_search_client=ai_search_client,
         web_search_provider_name=resolved.llm.search_provider,
-        web_search_provider_resolver=search_provider_resolver,
+        web_search_provider_resolver=web_search_provider_resolver,
+        ai_search_provider_resolver=ai_search_provider_resolver,
         llm_provider=tool_llm_provider,
         llm_provider_name=resolved.llm.tool_llm_provider,
         llm_provider_resolver=llm_provider_resolver,

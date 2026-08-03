@@ -62,6 +62,8 @@ Create a `.env` at the repo root (copy from `.env.example`) and fill:
 | `OPENROUTER_API_KEY` | Optional: required only for local tooling that calls OpenRouter with an operator-owned key; miner-paid `provider="openrouter"` calls use the OpenRouter credential stored in miner config |
 | `AI_GATEWAY_API_KEY` | Optional: required only for local tooling that calls AI Gateway with an operator-owned key; miner-paid `provider="ai_gateway"` calls use the AI Gateway credential stored in miner config |
 | `DESEARCH_API_KEY` | Optional: required if your agent uses search tools |
+| `FIRECRAWL_API_KEY` | Optional: required for local `search_web` and `fetch_page` calls with `SEARCH_PROVIDER=firecrawl`; miner-paid calls use the stored Firecrawl credential |
+| `FIRECRAWL_MAX_CONCURRENT` | Optional Firecrawl client concurrency limit; defaults to `100` |
 | `SEARCH_PROVIDER` | Optional: required if your agent uses search tools |
 | `PLATFORM_BASE_URL` | Public monitoring and script uploads |
 | `BENCHMARK_LLM_PROVIDER` | Optional `correctness-v1` benchmark judge provider; defaults to `chutes` |
@@ -69,7 +71,7 @@ Create a `.env` at the repo root (copy from `.env.example`) and fill:
 | `BENCHMARK_RUBRIC_JUDGE_LLM_PROVIDER` | Required with `BENCHMARK_RUBRIC_JUDGE_LLM_MODEL` for `weighted-rubric-v1` local benchmark scoring |
 | `BENCHMARK_RUBRIC_JUDGE_LLM_MODEL` | Required with `BENCHMARK_RUBRIC_JUDGE_LLM_PROVIDER` for `weighted-rubric-v1` local benchmark scoring |
 
-The checked-in default is `SEARCH_PROVIDER=desearch`. If you need a fallback search provider, miner tooling also supports `parallel`; set `SEARCH_PROVIDER=parallel` and `PARALLEL_API_KEY`.
+The checked-in default is `SEARCH_PROVIDER=desearch`. Ordinary `search_web` and `fetch_page` calls also support `parallel` and `firecrawl`; set the matching provider and API key. `search_ai` supports only `desearch` and `parallel`.
 If you set either benchmark judge provider to `vertex`, also configure Vertex credentials such as `GCP_PROJECT_ID` and `GCP_LOCATION`. For DRACO with Gemini 3.1 Pro Preview, use `BENCHMARK_RUBRIC_JUDGE_LLM_PROVIDER=vertex`, `BENCHMARK_RUBRIC_JUDGE_LLM_MODEL=gemini-3.1-pro-preview`, and `GCP_LOCATION=global`. `BENCHMARK_LLM_*` settings do not enable `weighted-rubric-v1` by fallback; rubric scoring uses only the dedicated `BENCHMARK_RUBRIC_JUDGE_LLM_*` settings.
 
 #### Provider credentials on the platform
@@ -82,7 +84,7 @@ harnyx-miner-config --wallet-name <wallet> --hotkey-name <hotkey> --provider chu
 harnyx-miner-config --wallet-name <wallet> --hotkey-name <hotkey> --delete-provider chutes
 ```
 
-Supported providers are `chutes`, `openrouter`, `ai_gateway`, `desearch`, and `parallel`.
+Supported stored-credential providers are `chutes`, `openrouter`, `ai_gateway`, `desearch`, `parallel`, and `firecrawl`. Firecrawl credentials apply only to `search_web` and `fetch_page`; `search_ai` requires DeSearch or Parallel.
 Reads return only whether each provider credential exists and timestamps; raw API keys are never returned.
 Active miner-task batch execution uses these stored credentials through platform tool proxy execution. Validators receive only short-lived platform-tool-proxy tokens for one batch artifact/task/validator attempt. Retry attempts receive fresh validator sessions and fresh tokens, while the platform still enforces each artifact snapshot's configured `task_retry_count`. Raw provider API keys stay inside the platform boundary.
 When your artifact becomes the active champion and receives champion emission, the platform also uses those stored provider API keys to run benchmark suites for that champion artifact.

@@ -6,12 +6,19 @@ import asyncio
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import cast
 
 from pydantic import SecretStr
 
-from harnyx_commons.clients import DESEARCH, PARALLEL
+from harnyx_commons.clients import DESEARCH, FIRECRAWL, PARALLEL
 from harnyx_commons.config.bedrock import BedrockSettings
-from harnyx_commons.config.llm import LlmSettings, SearchProviderName, parse_search_provider_name
+from harnyx_commons.config.llm import (
+    AiSearchProviderName,
+    LlmSettings,
+    SearchProviderName,
+    parse_ai_search_provider_name,
+    parse_search_provider_name,
+)
 from harnyx_commons.config.vertex import VertexSettings
 from harnyx_commons.errors import ProviderCredentialUnavailableError
 from harnyx_commons.llm.cost_settlement import normalized_provider_cost
@@ -37,8 +44,14 @@ from harnyx_commons.tools.embedding_models import (
     TextEmbeddingResult,
     parse_miner_selected_embedding_provider,
 )
+from harnyx_commons.tools.firecrawl import FirecrawlClient
 from harnyx_commons.tools.parallel import ParallelClient
-from harnyx_commons.tools.ports import EmbeddingProviderPort, EmbeddingProviderResult, WebSearchProviderPort
+from harnyx_commons.tools.ports import (
+    AiSearchProviderPort,
+    EmbeddingProviderPort,
+    EmbeddingProviderResult,
+    WebSearchProviderPort,
+)
 from harnyx_commons.tools.provider_billing import SearchProviderResult
 from harnyx_commons.tools.search_models import (
     FetchPageRequest,
@@ -53,6 +66,7 @@ from harnyx_commons.tools.search_models import (
 @dataclass(frozen=True, slots=True)
 class ToolInvocationClients:
     search_client: WebSearchProviderPort | None
+    ai_search_client: AiSearchProviderPort | None
     search_provider_registry: CachedWebSearchProviderRegistry
     llm_provider_registry: CachedLlmProviderRegistry
     tool_llm_provider: LlmProviderPort | None
@@ -76,12 +90,14 @@ def build_tool_invocation_clients(
         bedrock_settings=bedrock_settings,
         vertex_settings=vertex_settings,
     )
+    search_client, ai_search_client = _build_optional_search_clients(
+        llm_settings,
+        lazy=lazy_search,
+        required=require_search,
+    )
     return ToolInvocationClients(
-        search_client=_build_optional_search_client(
-            llm_settings,
-            lazy=lazy_search,
-            required=require_search,
-        ),
+        search_client=search_client,
+        ai_search_client=ai_search_client,
         search_provider_registry=CachedWebSearchProviderRegistry(llm_settings=llm_settings),
         llm_provider_registry=provider_registry,
         tool_llm_provider=(
@@ -164,7 +180,7 @@ class CachedWebSearchProviderRegistry:
         self._include_payloads_in_logs = include_payloads_in_logs
         self._cache: dict[SearchProviderName, WebSearchProviderPort] = {}
 
-    def resolve(self, provider: SearchProviderName | str) -> WebSearchProviderPort:
+    def resolve_web(self, provider: SearchProviderName | str) -> WebSearchProviderPort:
         provider_name = parse_search_provider_name(provider)
         search_provider = self._cache.get(provider_name)
         if search_provider is None:
@@ -176,6 +192,15 @@ class CachedWebSearchProviderRegistry:
             )
             self._cache[provider_name] = search_provider
         return search_provider
+
+    def resolve_ai(self, provider: AiSearchProviderName | str) -> AiSearchProviderPort:
+        provider_name = parse_ai_search_provider_name(provider)
+        return cast(AiSearchProviderPort, self.resolve_web(provider_name))
+
+    def resolve(self, provider: SearchProviderName | str) -> WebSearchProviderPort:
+        """Resolve an ordinary web provider."""
+
+        return self.resolve_web(provider)
 
     async def aclose(self) -> None:
         errors: list[Exception] = []
@@ -250,6 +275,14 @@ def build_web_search_provider_for_name(
             max_concurrent=llm_settings.parallel_max_concurrent,
             include_payloads_in_logs=include_payloads_in_logs,
         )
+    if provider_name == "firecrawl":
+        return FirecrawlClient(
+            base_url=FIRECRAWL.base_url,
+            api_key=llm_settings.firecrawl_api_key_value,
+            timeout=FIRECRAWL.timeout_seconds,
+            max_concurrent=llm_settings.firecrawl_max_concurrent,
+            include_payloads_in_logs=include_payloads_in_logs,
+        )
     raise AssertionError(f"unsupported parsed search provider: {provider_name}")
 
 
@@ -278,22 +311,55 @@ def build_miner_paid_web_search_provider(
             timeout=_effective_client_timeout(PARALLEL.timeout_seconds, timeout),
             max_concurrent=None,
         )
+    if provider_name == "firecrawl":
+        return FirecrawlClient(
+            base_url=FIRECRAWL.base_url,
+            api_key=explicit_key,
+            timeout=_effective_client_timeout(FIRECRAWL.timeout_seconds, timeout),
+            max_concurrent=None,
+        )
     raise AssertionError(f"unsupported parsed miner-paid search provider: {provider_name}")
 
 
-def _build_optional_search_client(
+def build_miner_paid_ai_search_provider(
+    *,
+    provider: AiSearchProviderName | str,
+    api_key: SecretStr | str,
+    llm_settings: LlmSettings,
+    timeout: float | None = None,
+) -> AiSearchProviderPort:
+    """Build an uncached miner-paid AI-search provider from an explicit credential."""
+
+    provider_name = parse_ai_search_provider_name(provider)
+    return cast(
+        AiSearchProviderPort,
+        build_miner_paid_web_search_provider(
+            provider=provider_name,
+            api_key=api_key,
+            llm_settings=llm_settings,
+            timeout=timeout,
+        ),
+    )
+
+
+def _build_optional_search_clients(
     llm_settings: LlmSettings,
     *,
     lazy: bool,
     required: bool,
-) -> WebSearchProviderPort | None:
+) -> tuple[WebSearchProviderPort | None, AiSearchProviderPort | None]:
     if llm_settings.search_provider is None:
         if required:
             raise RuntimeError("SEARCH_PROVIDER must be configured")
-        return None
+        return None, None
     if not lazy:
-        return build_web_search_provider(llm_settings)
-    return LazySearchProvider(lambda: build_web_search_provider(llm_settings))
+        client = build_web_search_provider(llm_settings)
+        ai_client = cast(AiSearchProviderPort, client) if llm_settings.search_provider != "firecrawl" else None
+        return client, ai_client
+    if llm_settings.search_provider == "firecrawl":
+        return LazyWebSearchProvider(lambda: build_web_search_provider(llm_settings)), None
+    client = LazySearchProvider(lambda: build_web_search_provider(llm_settings))
+    return client, client
 
 
 def _explicit_api_key_value(api_key: SecretStr | str, *, provider: str) -> str:
@@ -318,9 +384,11 @@ def _embedding_api_key(*, provider: EmbeddingProviderName, llm_settings: LlmSett
 
 
 def _require_configured_search_credential(*, provider: SearchProviderName, llm_settings: LlmSettings) -> None:
-    api_key = (
-        llm_settings.desearch_api_key_value if provider == "desearch" else llm_settings.parallel_api_key_value
-    )
+    api_key = {
+        "desearch": llm_settings.desearch_api_key_value,
+        "parallel": llm_settings.parallel_api_key_value,
+        "firecrawl": llm_settings.firecrawl_api_key_value,
+    }[provider]
     if not api_key.strip():
         raise ProviderCredentialUnavailableError(provider)
 
@@ -356,7 +424,7 @@ class LazyLlmProvider(LlmProviderPort):
         return provider
 
 
-class LazySearchProvider(WebSearchProviderPort):
+class LazyWebSearchProvider(WebSearchProviderPort):
     def __init__(self, factory: Callable[[], WebSearchProviderPort]) -> None:
         self._factory = factory
         self._provider: WebSearchProviderPort | None = None
@@ -368,13 +436,6 @@ class LazySearchProvider(WebSearchProviderPort):
     ) -> SearchProviderResult[SearchWebSearchResponse]:
         provider = await self._get_provider()
         return await provider.search_web(request)
-
-    async def search_ai(
-        self,
-        request: SearchAiSearchRequest,
-    ) -> SearchProviderResult[SearchAiSearchResponse]:
-        provider = await self._get_provider()
-        return await provider.search_ai(request)
 
     async def fetch_page(
         self,
@@ -398,6 +459,15 @@ class LazySearchProvider(WebSearchProviderPort):
                 provider = self._factory()
                 self._provider = provider
         return provider
+
+
+class LazySearchProvider(LazyWebSearchProvider, AiSearchProviderPort):
+    async def search_ai(
+        self,
+        request: SearchAiSearchRequest,
+    ) -> SearchProviderResult[SearchAiSearchResponse]:
+        provider = cast(AiSearchProviderPort, await self._get_provider())
+        return await provider.search_ai(request)
 
 
 class ChutesEmbeddingProvider(EmbeddingProviderPort):

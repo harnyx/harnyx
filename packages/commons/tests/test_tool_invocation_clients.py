@@ -314,6 +314,36 @@ def test_internal_search_provider_keeps_configured_parallel_concurrency(
     ]
 
 
+def test_internal_search_provider_builds_firecrawl_with_fixed_endpoint_and_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, object]] = []
+
+    class _FakeFirecrawlClient:
+        def __init__(self, **kwargs: object) -> None:
+            captured.append(kwargs)
+
+    monkeypatch.setattr(invocation_clients, "FirecrawlClient", _FakeFirecrawlClient)
+
+    invocation_clients.build_web_search_provider(
+        LlmSettings.model_construct(
+            search_provider="firecrawl",
+            firecrawl_api_key=SecretStr("operator-firecrawl-key"),
+            firecrawl_max_concurrent=13,
+        )
+    )
+
+    assert captured == [
+        {
+            "base_url": invocation_clients.FIRECRAWL.base_url,
+            "api_key": "operator-firecrawl-key",
+            "timeout": invocation_clients.FIRECRAWL.timeout_seconds,
+            "max_concurrent": 13,
+            "include_payloads_in_logs": True,
+        }
+    ]
+
+
 def test_cached_web_search_provider_registry_resolves_requested_provider_without_payload_logging(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -368,6 +398,49 @@ def test_cached_web_search_provider_registry_resolves_requested_provider_without
             },
         ),
     ]
+
+
+def test_cached_search_registry_shares_ai_and_web_clients_but_rejects_firecrawl_for_ai(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parallel = object()
+    firecrawl = object()
+    monkeypatch.setattr(invocation_clients, "ParallelClient", lambda **_kwargs: parallel)
+    monkeypatch.setattr(invocation_clients, "FirecrawlClient", lambda **_kwargs: firecrawl)
+    registry = invocation_clients.CachedWebSearchProviderRegistry(
+        llm_settings=LlmSettings.model_construct(
+            parallel_api_key=SecretStr("parallel-key"),
+            parallel_base_url="https://parallel.example",
+            parallel_max_concurrent=2,
+            firecrawl_api_key=SecretStr("firecrawl-key"),
+            firecrawl_max_concurrent=3,
+        )
+    )
+
+    assert registry.resolve_web("parallel") is parallel
+    assert registry.resolve_ai("parallel") is parallel
+    assert registry.resolve_web("firecrawl") is firecrawl
+    with pytest.raises(ValueError, match="AI search provider 'firecrawl' is not supported"):
+        registry.resolve_ai("firecrawl")  # type: ignore[arg-type]
+
+
+def test_fixed_parallel_client_is_shared_between_web_and_ai_roles() -> None:
+    clients = build_tool_invocation_clients(
+        llm_settings=LlmSettings.model_construct(
+            search_provider="parallel",
+            parallel_api_key=SecretStr("parallel-key"),
+            parallel_base_url="https://parallel.example",
+            parallel_max_concurrent=2,
+            tool_llm_provider=None,
+            tool_embedding_provider="chutes",
+            chutes_api_key=SecretStr(""),
+        ),
+        bedrock_settings=BedrockSettings.model_construct(),
+        vertex_settings=VertexSettings.model_construct(),
+        build_routed_tool_llm_provider=False,
+    )
+
+    assert clients.search_client is clients.ai_search_client
 
 
 @pytest.mark.parametrize("provider", ["desearch", "parallel"])

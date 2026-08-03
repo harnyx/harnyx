@@ -383,6 +383,7 @@ class LocalEvaluationRuntime:
             settings=settings,
             state=state,
             search_client=invocation_clients.search_client,
+            ai_search_client=invocation_clients.ai_search_client,
             search_provider_registry=invocation_clients.search_provider_registry,
             llm_provider_registry=invocation_clients.llm_provider_registry,
             tool_llm_provider=invocation_clients.tool_llm_provider,
@@ -415,6 +416,7 @@ class LocalEvaluationRuntime:
             settings=settings,
             state=state,
             search_client=invocation_clients.search_client,
+            ai_search_client=invocation_clients.ai_search_client,
             search_provider_registry=invocation_clients.search_provider_registry,
             llm_provider_registry=invocation_clients.llm_provider_registry,
             tool_llm_provider=invocation_clients.tool_llm_provider,
@@ -433,6 +435,7 @@ class LocalEvaluationRuntime:
         settings: Settings,
         state: Any,
         search_client: Any,
+        ai_search_client: Any,
         search_provider_registry: Any,
         llm_provider_registry: Any,
         tool_llm_provider: Any,
@@ -447,8 +450,12 @@ class LocalEvaluationRuntime:
             state=state,
             resolved=settings,
             search_client=search_client,
+            ai_search_client=ai_search_client,
             tool_llm_provider=tool_llm_provider,
-            search_provider_resolver=lambda requested_provider, _context: search_provider_registry.resolve(
+            web_search_provider_resolver=lambda requested_provider, _context: search_provider_registry.resolve_web(
+                requested_provider
+            ),
+            ai_search_provider_resolver=lambda requested_provider, _context: search_provider_registry.resolve_ai(
                 requested_provider
             ),
             llm_provider_resolver=lambda requested_provider, _context: llm_provider_registry.resolve(

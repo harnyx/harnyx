@@ -7,6 +7,7 @@ the exact same schema and typing.
 from __future__ import annotations
 
 from harnyx_miner_sdk.tools.search_models import (
+    AiSearchProviderName,
     FetchPageRequest,
     FetchPageResponse,
     FetchPageResult,
@@ -29,6 +30,7 @@ from harnyx_miner_sdk.tools.search_models import (
 )
 
 __all__ = [
+    "AiSearchProviderName",
     "SearchAiTool",
     "SearchProviderName",
     "SearchAiDateFilter",

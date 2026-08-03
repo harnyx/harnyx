@@ -11,7 +11,7 @@ import httpx
 from harnyx_miner.submit import _authorization_header, _platform_base_url
 
 _CONFIG_PATH = "/v1/miner-config"
-_SUPPORTED_PROVIDERS = frozenset({"chutes", "openrouter", "ai_gateway", "desearch", "parallel"})
+_SUPPORTED_PROVIDERS = frozenset({"chutes", "openrouter", "ai_gateway", "desearch", "parallel", "firecrawl"})
 _MIN_TASK_RETRY_COUNT = 0
 _MAX_TASK_RETRY_COUNT = 3
 

@@ -23,22 +23,28 @@ from harnyx_commons.tools.search_models import (
 
 
 class WebSearchProviderPort(Protocol):
-    """Shared provider seam for miner-facing web tools."""
+    """Provider seam for miner-facing web search and page fetching."""
 
     async def search_web(
         self,
         request: SearchWebSearchRequest,
     ) -> SearchProviderResult[SearchWebSearchResponse]: ...
 
-    async def search_ai(
-        self,
-        request: SearchAiSearchRequest,
-    ) -> SearchProviderResult[SearchAiSearchResponse]: ...
-
     async def fetch_page(
         self,
         request: FetchPageRequest,
     ) -> SearchProviderResult[FetchPageResponse]: ...
+
+    async def aclose(self) -> None: ...
+
+
+class AiSearchProviderPort(Protocol):
+    """Provider seam for miner-facing AI search."""
+
+    async def search_ai(
+        self,
+        request: SearchAiSearchRequest,
+    ) -> SearchProviderResult[SearchAiSearchResponse]: ...
 
     async def aclose(self) -> None: ...
 
@@ -84,6 +90,7 @@ class DeSearchPort(Protocol):
     async def fetch_twitter_post(self, *, post_id: str) -> SearchXResult | None: ...
 
 __all__ = [
+    "AiSearchProviderPort",
     "DeSearchPort",
     "EmbeddingProviderPort",
     "EmbeddingProviderResult",

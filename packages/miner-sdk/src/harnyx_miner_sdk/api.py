@@ -39,6 +39,7 @@ from harnyx_miner_sdk.tools.llm_provider_extra import (
     ProviderExtra,
 )
 from harnyx_miner_sdk.tools.search_models import (
+    AiSearchProviderName,
     FetchPageRequest,
     FetchPageResponse,
     SearchAiSearchRequest,
@@ -192,7 +193,7 @@ async def search_ai(
     prompt: str,
     /,
     *,
-    provider: SearchProviderName,
+    provider: AiSearchProviderName,
     timeout: float | None = None,
     **kwargs: Any,
 ) -> ToolCallResponse[SearchAiSearchResponse]:

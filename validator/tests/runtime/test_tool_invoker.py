@@ -647,6 +647,7 @@ async def test_runtime_invoker_desearch_actual_cost_uses_provider_billing_metada
     invoker = RuntimeToolInvoker(
         FakeReceiptLog(),
         web_search_client=client,
+        ai_search_client=client,
         web_search_provider_name="desearch",
         allowed_models=ALLOWED_TOOL_MODELS,
     )
@@ -673,6 +674,7 @@ async def test_runtime_invoker_desearch_missing_provider_actual_cost_uses_static
     invoker = RuntimeToolInvoker(
         FakeReceiptLog(),
         web_search_client=client,
+        ai_search_client=client,
         web_search_provider_name="desearch",
         allowed_models=ALLOWED_TOOL_MODELS,
     )
@@ -719,6 +721,7 @@ async def test_runtime_invoker_routes_search_web_timeout() -> None:
     invoker = RuntimeToolInvoker(
         FakeReceiptLog(),
         web_search_client=stub_desearch,
+        ai_search_client=stub_desearch,
         web_search_provider_name="desearch",
         allowed_models=ALLOWED_TOOL_MODELS,
     )
@@ -755,6 +758,7 @@ async def test_runtime_invoker_cancels_timed_search_web_provider_when_parent_can
     invoker = RuntimeToolInvoker(
         FakeReceiptLog(),
         web_search_client=stub_desearch,
+        ai_search_client=stub_desearch,
         web_search_provider_name="desearch",
         allowed_models=ALLOWED_TOOL_MODELS,
     )
@@ -948,6 +952,7 @@ async def test_runtime_invoker_routes_search_ai() -> None:
     invoker = RuntimeToolInvoker(
         FakeReceiptLog(),
         web_search_client=stub_desearch,
+        ai_search_client=stub_desearch,
         web_search_provider_name="desearch",
         allowed_models=ALLOWED_TOOL_MODELS,
     )
@@ -978,6 +983,7 @@ async def test_runtime_invoker_routes_search_ai_timeout() -> None:
     invoker = RuntimeToolInvoker(
         FakeReceiptLog(),
         web_search_client=stub_desearch,
+        ai_search_client=stub_desearch,
         web_search_provider_name="desearch",
         allowed_models=ALLOWED_TOOL_MODELS,
     )
@@ -994,9 +1000,11 @@ async def test_runtime_invoker_routes_search_ai_timeout() -> None:
 
 
 async def test_runtime_invoker_enforces_search_ai_timeout() -> None:
+    search_client = SlowSearchAiClient()
     invoker = RuntimeToolInvoker(
         FakeReceiptLog(),
-        web_search_client=SlowSearchAiClient(),
+        web_search_client=search_client,
+        ai_search_client=search_client,
         web_search_provider_name="desearch",
         allowed_models=ALLOWED_TOOL_MODELS,
     )
@@ -1895,6 +1903,7 @@ async def test_runtime_invoker_rejects_blank_search_ai_prompt() -> None:
     invoker = RuntimeToolInvoker(
         FakeReceiptLog(),
         web_search_client=stub_desearch,
+        ai_search_client=stub_desearch,
         web_search_provider_name="desearch",
         allowed_models=ALLOWED_TOOL_MODELS,
     )

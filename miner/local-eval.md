@@ -12,11 +12,11 @@ This is the detailed local-eval guide linked from [`README.md`](README.md).
 - `CHUTES_API_KEY` must be configured for evaluation scoring and for agents that call `llm_chat`.
 - Search-tool configuration is only required if your agent uses search tools:
   - `SEARCH_PROVIDER`
-  - `DESEARCH_API_KEY`
+  - the selected provider key: `DESEARCH_API_KEY`, `PARALLEL_API_KEY`, or `FIRECRAWL_API_KEY`
 
 Tool-free agents can create the local-eval runtime without search configuration.
 
-The checked-in default is `SEARCH_PROVIDER=desearch`. If you need a fallback search provider, miner tooling also supports `parallel`; set `SEARCH_PROVIDER=parallel` and `PARALLEL_API_KEY`.
+The checked-in default is `SEARCH_PROVIDER=desearch`. Ordinary `search_web` and `fetch_page` calls also support `parallel` and `firecrawl`; set the matching API key. Choose DeSearch or Parallel when local code calls `search_ai`.
 
 ## Quick Start
 

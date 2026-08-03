@@ -126,8 +126,10 @@ class OpenAiCompatibleEndpointConfig(BaseModel):
 
 _OPENAI_COMPATIBLE_ENDPOINTS_ADAPTER = TypeAdapter(list[OpenAiCompatibleEndpointConfig])
 
-SearchProviderName = Literal["desearch", "parallel"]
-SEARCH_PROVIDER_NAMES: tuple[SearchProviderName, ...] = ("desearch", "parallel")
+SearchProviderName = Literal["desearch", "parallel", "firecrawl"]
+SEARCH_PROVIDER_NAMES: tuple[SearchProviderName, ...] = ("desearch", "parallel", "firecrawl")
+AiSearchProviderName = Literal["desearch", "parallel"]
+AI_SEARCH_PROVIDER_NAMES: tuple[AiSearchProviderName, ...] = ("desearch", "parallel")
 
 
 def parse_search_provider_name(raw: str | None) -> SearchProviderName:
@@ -137,6 +139,15 @@ def parse_search_provider_name(raw: str | None) -> SearchProviderName:
     if value not in SEARCH_PROVIDER_NAMES:
         raise ValueError(f"search provider {value!r} is not supported")
     return cast(SearchProviderName, value)
+
+
+def parse_ai_search_provider_name(raw: str | None) -> AiSearchProviderName:
+    if raw is None:
+        raise ValueError("AI search provider must be specified")
+    value = raw.strip().lower()
+    if value not in AI_SEARCH_PROVIDER_NAMES:
+        raise ValueError(f"AI search provider {value!r} is not supported")
+    return cast(AiSearchProviderName, value)
 
 
 class LlmSettings(BaseSettings):
@@ -268,9 +279,10 @@ class LlmSettings(BaseSettings):
     )
     content_review_llm_timeout_seconds: float | None = Field(default=None, alias="CONTENT_REVIEW_LLM_TIMEOUT_SECONDS")
 
-    # --- Chutes / DeSearch / Parallel ---
+    # --- Chutes / DeSearch / Parallel / Firecrawl ---
     desearch_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="DESEARCH_API_KEY")
     parallel_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="PARALLEL_API_KEY")
+    firecrawl_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="FIRECRAWL_API_KEY")
     parallel_base_url: str = Field(default="https://api.parallel.ai", alias="PARALLEL_BASE_URL")
 
     chutes_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="CHUTES_API_KEY")
@@ -281,6 +293,7 @@ class LlmSettings(BaseSettings):
     chutes_max_concurrent: int = Field(default=100, alias="CHUTES_MAX_CONCURRENT")
     desearch_max_concurrent: int = Field(default=100, alias="DESEARCH_MAX_CONCURRENT")
     parallel_max_concurrent: int = Field(default=100, alias="PARALLEL_MAX_CONCURRENT")
+    firecrawl_max_concurrent: int = Field(default=100, alias="FIRECRAWL_MAX_CONCURRENT")
 
     # --- Validators ---
     @field_validator("desearch_api_key", mode="before")
@@ -298,6 +311,10 @@ class LlmSettings(BaseSettings):
     @property
     def parallel_api_key_value(self) -> str:
         return self.parallel_api_key.get_secret_value()
+
+    @property
+    def firecrawl_api_key_value(self) -> str:
+        return self.firecrawl_api_key.get_secret_value()
 
     @property
     def chutes_api_key_value(self) -> str:

@@ -43,14 +43,15 @@ What each value is for:
 | `PLATFORM_BASE_URL` | `uv run prepare.py --benchmark-suite <suite>` batch discovery, local eval context, and later manual submit commands |
 | `CHUTES_API_KEY` | local-eval judging and miner `llm_chat` calls when Chutes is the tool/scoring provider |
 | `TOOL_LLM_PROVIDER` | provider used for miner `llm_chat` tool calls; the public example defaults to `chutes` |
-| `SEARCH_PROVIDER` | provider used for miner `search_web` calls |
+| `SEARCH_PROVIDER` | default provider used for miner `search_web` and `fetch_page` calls |
 | `DESEARCH_API_KEY` | required when `SEARCH_PROVIDER=desearch` |
+| `FIRECRAWL_API_KEY` | required when `SEARCH_PROVIDER=firecrawl`; Firecrawl does not support `search_ai` |
 | `BENCHMARK_LLM_PROVIDER` | provider for benchmark correctness judging |
 | `BENCHMARK_LLM_MODEL` | model for benchmark correctness judging |
 | `BENCHMARK_RUBRIC_JUDGE_LLM_PROVIDER` | provider for DRACO / `weighted-rubric-v1` benchmark judging |
 | `BENCHMARK_RUBRIC_JUDGE_LLM_MODEL` | model for DRACO / `weighted-rubric-v1` benchmark judging |
 
-If using `SEARCH_PROVIDER=parallel`, set `PARALLEL_API_KEY` instead of `DESEARCH_API_KEY`.
+If using `SEARCH_PROVIDER=parallel`, set `PARALLEL_API_KEY` instead of `DESEARCH_API_KEY`. If using `SEARCH_PROVIDER=firecrawl`, set `FIRECRAWL_API_KEY`; choose DeSearch or Parallel if the harness needs `search_ai`.
 
 If using either benchmark judge provider with `vertex`, also configure Vertex credentials such as `GCP_PROJECT_ID`, `GCP_LOCATION`, and the usual Google application credentials for your machine. For DRACO with Gemini 3.1 Pro Preview, use `BENCHMARK_RUBRIC_JUDGE_LLM_PROVIDER=vertex`, `BENCHMARK_RUBRIC_JUDGE_LLM_MODEL=gemini-3.1-pro-preview`, and `GCP_LOCATION=global`. `BENCHMARK_LLM_*` settings do not enable DRACO by fallback; DRACO uses only the dedicated `BENCHMARK_RUBRIC_JUDGE_LLM_*` settings.
 

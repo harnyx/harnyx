@@ -63,17 +63,17 @@ from harnyx_commons.platform_tool_proxy import (
 from harnyx_commons.tools.dto import tool_payload_from_args_kwargs
 from harnyx_commons.tools.embedding_models import MINER_SELECTED_EMBEDDING_PROVIDER_MODELS, EmbedTextRequest
 from harnyx_commons.tools.executor import ToolInvocationContext, ToolInvocationOutput, ToolInvoker
-from harnyx_commons.tools.ports import EmbeddingProviderPort, WebSearchProviderPort
+from harnyx_commons.tools.ports import AiSearchProviderPort, EmbeddingProviderPort, WebSearchProviderPort
 from harnyx_commons.tools.provider_billing import (
     ProviderBillingMetadata,
     SearchProviderResult,
     billing_evidence_payload,
 )
 from harnyx_commons.tools.search_models import (
+    AiSearchProviderName,
     FetchPageRequest,
     FetchPageResponse,
     SearchAiSearchRequest,
-    SearchAiSearchResponse,
     SearchProviderName,
     SearchWebSearchRequest,
     SearchWebSearchResponse,
@@ -100,11 +100,16 @@ _AUTHENTICATION_STATUSES_BY_PROVIDER: Mapping[str, frozenset[int]] = {
     "desearch": frozenset({403}),
     "openrouter": frozenset({401}),
     "parallel": frozenset({401}),
+    "firecrawl": frozenset({401}),
     "vertex": frozenset({401}),
 }
-SearchProviderResolver = Callable[
+WebSearchProviderResolver = Callable[
     [SearchProviderName, ToolInvocationContext | None],
     WebSearchProviderPort | Awaitable[WebSearchProviderPort],
+]
+AiSearchProviderResolver = Callable[
+    [AiSearchProviderName, ToolInvocationContext | None],
+    AiSearchProviderPort | Awaitable[AiSearchProviderPort],
 ]
 LlmProviderResolver = Callable[
     [str, ToolInvocationContext | None],
@@ -144,9 +149,12 @@ def build_miner_sandbox_tool_invoker(
     receipt_log: ReceiptLogPort,
     *,
     web_search_client: WebSearchProviderPort | None = None,
+    ai_search_client: AiSearchProviderPort | None = None,
     web_search_provider_name: str | None = None,
-    web_search_provider_resolver: SearchProviderResolver | None = None,
-    platform_web_search_provider_resolver: SearchProviderResolver | None = None,
+    web_search_provider_resolver: WebSearchProviderResolver | None = None,
+    ai_search_provider_resolver: AiSearchProviderResolver | None = None,
+    platform_web_search_provider_resolver: WebSearchProviderResolver | None = None,
+    platform_ai_search_provider_resolver: AiSearchProviderResolver | None = None,
     llm_provider: LlmProviderPort | None = None,
     llm_provider_name: str | None = None,
     llm_provider_resolver: LlmProviderResolver | None = None,
@@ -160,9 +168,12 @@ def build_miner_sandbox_tool_invoker(
     return RuntimeToolInvoker(
         receipt_log,
         web_search_client=web_search_client,
+        ai_search_client=ai_search_client,
         web_search_provider_name=web_search_provider_name,
         web_search_provider_resolver=web_search_provider_resolver,
+        ai_search_provider_resolver=ai_search_provider_resolver,
         platform_web_search_provider_resolver=platform_web_search_provider_resolver,
+        platform_ai_search_provider_resolver=platform_ai_search_provider_resolver,
         llm_provider=llm_provider,
         llm_provider_name=llm_provider_name,
         llm_provider_resolver=llm_provider_resolver,
@@ -280,9 +291,12 @@ class RuntimeToolInvoker(ToolInvoker):
         receipt_log: ReceiptLogPort,
         *,
         web_search_client: WebSearchProviderPort | None = None,
+        ai_search_client: AiSearchProviderPort | None = None,
         web_search_provider_name: str | None = None,
-        web_search_provider_resolver: SearchProviderResolver | None = None,
-        platform_web_search_provider_resolver: SearchProviderResolver | None = None,
+        web_search_provider_resolver: WebSearchProviderResolver | None = None,
+        ai_search_provider_resolver: AiSearchProviderResolver | None = None,
+        platform_web_search_provider_resolver: WebSearchProviderResolver | None = None,
+        platform_ai_search_provider_resolver: AiSearchProviderResolver | None = None,
         llm_provider: LlmProviderPort | None = None,
         llm_provider_name: str | None = None,
         llm_provider_resolver: LlmProviderResolver | None = None,
@@ -297,9 +311,12 @@ class RuntimeToolInvoker(ToolInvoker):
         self._receipts = receipt_log
         self._logger = logging.getLogger("harnyx_commons.tools.runtime_invoker")
         self._web_search = web_search_client
+        self._ai_search = ai_search_client
         self._web_search_provider_name = web_search_provider_name
         self._web_search_provider_resolver = web_search_provider_resolver
+        self._ai_search_provider_resolver = ai_search_provider_resolver
         self._platform_web_search_provider_resolver = platform_web_search_provider_resolver
+        self._platform_ai_search_provider_resolver = platform_ai_search_provider_resolver
         self._llm_provider = llm_provider
         self._llm_provider_name = llm_provider_name
         self._llm_provider_resolver = llm_provider_resolver
@@ -463,18 +480,27 @@ class RuntimeToolInvoker(ToolInvoker):
         *,
         context: ToolInvocationContext | None,
     ) -> ToolInvocationOutput:
-        if (
-            self._web_search is None
-            and self._web_search_provider_resolver is None
-            and self._platform_web_search_provider_resolver is None
+        if tool_name in {"search_web", "fetch_page"}:
+            if (
+                self._web_search is None
+                and self._web_search_provider_resolver is None
+                and self._platform_web_search_provider_resolver is None
+            ):
+                if _uses_platform_credentials(context):
+                    raise _credential_unavailable(self._web_search_provider_name or "search")
+                raise LookupError("web search client is not configured")
+        elif (
+            self._ai_search is None
+            and self._ai_search_provider_resolver is None
+            and self._platform_ai_search_provider_resolver is None
         ):
             if _uses_platform_credentials(context):
                 raise _credential_unavailable(self._web_search_provider_name or "search")
-            raise LookupError("search client is not configured")
+            raise LookupError("AI search client is not configured")
         payload = tool_payload_from_args_kwargs(args, kwargs)
         if tool_name == "search_web":
             request_model_web = SearchWebSearchRequest.model_validate(payload)
-            web_search, provider_name = await self._resolve_search_provider(request_model_web.provider, context)
+            web_search, provider_name = await self._resolve_web_search_provider(request_model_web.provider, context)
             response_web = await _invoke_with_optional_timeout(
                 "search_web",
                 request_model_web.timeout,
@@ -493,15 +519,11 @@ class RuntimeToolInvoker(ToolInvoker):
             )
         elif tool_name == "search_ai":
             request_ai = SearchAiSearchRequest.model_validate(payload)
-            web_search, provider_name = await self._resolve_search_provider(request_ai.provider, context)
+            ai_search, provider_name = await self._resolve_ai_search_provider(request_ai.provider, context)
             response = await _invoke_with_optional_timeout(
                 "search_ai",
                 request_ai.timeout,
-                lambda: _invoke_search_provider(
-                    web_search,
-                    request_ai,
-                    tool_name=tool_name,
-                ),
+                lambda: ai_search.search_ai(request_ai),
             )
             as_mapping = response.response.model_dump(exclude_none=True, mode="json")
             return _search_invocation_output(
@@ -512,7 +534,7 @@ class RuntimeToolInvoker(ToolInvoker):
             )
         elif tool_name == "fetch_page":
             request_page = FetchPageRequest.model_validate(payload)
-            web_search, provider_name = await self._resolve_search_provider(request_page.provider, context)
+            web_search, provider_name = await self._resolve_web_search_provider(request_page.provider, context)
             response_page = await _invoke_with_optional_timeout(
                 "fetch_page",
                 request_page.timeout,
@@ -668,7 +690,7 @@ class RuntimeToolInvoker(ToolInvoker):
             )
         return requested_provider
 
-    async def _resolve_search_provider(
+    async def _resolve_web_search_provider(
         self,
         requested_provider: SearchProviderName,
         context: ToolInvocationContext | None,
@@ -691,6 +713,30 @@ class RuntimeToolInvoker(ToolInvoker):
         if web_search is None:
             raise LookupError("search client is not configured")
         return web_search, self._require_search_provider(requested_provider)
+
+    async def _resolve_ai_search_provider(
+        self,
+        requested_provider: AiSearchProviderName,
+        context: ToolInvocationContext | None,
+    ) -> tuple[AiSearchProviderPort, AiSearchProviderName]:
+        if _uses_platform_credentials(context):
+            resolver = self._platform_ai_search_provider_resolver
+            if resolver is None:
+                raise _credential_unavailable(requested_provider)
+            try:
+                provider = await _resolve_maybe_awaitable(resolver(requested_provider, context))
+            except ProviderCredentialUnavailableError as exc:
+                raise _credential_unavailable(exc.provider) from exc
+            return provider, requested_provider
+        if context is not None:
+            resolver = self._ai_search_provider_resolver
+            if resolver is None:
+                raise LookupError("miner AI search provider resolver is not configured")
+            return await _resolve_maybe_awaitable(resolver(requested_provider, context)), requested_provider
+        ai_search = self._ai_search
+        if ai_search is None:
+            raise LookupError("AI search client is not configured")
+        return ai_search, cast(AiSearchProviderName, self._require_search_provider(requested_provider))
 
     def _require_llm_provider(self, requested_provider: str) -> str:
         configured_provider = self._llm_provider_name
@@ -797,18 +843,14 @@ def _uses_platform_credentials(context: ToolInvocationContext | None) -> bool:
 
 async def _invoke_search_provider(
     web_search: WebSearchProviderPort,
-    request: SearchWebSearchRequest | SearchAiSearchRequest | FetchPageRequest,
+    request: SearchWebSearchRequest | FetchPageRequest,
     *,
     tool_name: SearchToolName,
-) -> SearchProviderResult[SearchWebSearchResponse | SearchAiSearchResponse | FetchPageResponse]:
+) -> SearchProviderResult[SearchWebSearchResponse | FetchPageResponse]:
     if tool_name == "search_web":
         if not isinstance(request, SearchWebSearchRequest):
             raise TypeError("search_web requires SearchWebSearchRequest")
         return await web_search.search_web(request)
-    if tool_name == "search_ai":
-        if not isinstance(request, SearchAiSearchRequest):
-            raise TypeError("search_ai requires SearchAiSearchRequest")
-        return await web_search.search_ai(request)
     if tool_name == "fetch_page":
         if not isinstance(request, FetchPageRequest):
             raise TypeError("fetch_page requires FetchPageRequest")
@@ -976,19 +1018,23 @@ def _settle_search_cost(
         )
 
     provider = billing.actual_cost_provider if billing is not None else str(request_provider)
-    if provider not in {"desearch", "parallel"}:
+    if provider not in {"desearch", "parallel", "firecrawl"}:
         raise ValueError(f"{tool_name} provider-backed success missing supported provider cost evidence")
     referenceable_results = _referenceable_result_count(tool_name, public_payload)
     if referenceable_results is None:
         raise ValueError(f"{tool_name} provider-backed success missing settled cost")
+    evidence: JsonObject = {
+        "settlement_source": "static_pricing",
+        "provider": provider,
+        "referenceable_results": referenceable_results,
+    }
+    provider_billing = billing_evidence_payload(billing)
+    if provider_billing is not None:
+        evidence["provider_billing"] = provider_billing
     return _ActualCost(
         price_search(tool_name, referenceable_results=referenceable_results),
         provider,
-        {
-            "settlement_source": "static_pricing",
-            "provider": provider,
-            "referenceable_results": referenceable_results,
-        },
+        evidence,
     )
 
 

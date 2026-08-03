@@ -667,8 +667,9 @@ def test_local_eval_runtime_create_binds_sandbox_publish_to_loopback(
     monkeypatch.setattr(
         local_eval,
         "build_tool_invocation_clients",
-        lambda **_kwargs: SimpleNamespace(
-            search_client=_FakeAsyncResource(),
+            lambda **_kwargs: SimpleNamespace(
+                search_client=_FakeAsyncResource(),
+                ai_search_client=_FakeAsyncResource(),
             search_provider_registry=_FakeRegistry(),
             llm_provider_registry=_FakeRegistry(),
             tool_llm_provider=_FakeAsyncResource(),
@@ -1223,7 +1224,11 @@ def test_invocation_only_runtime_factory_skips_default_scoring_provider(
         "build_tool_invocation_clients",
         lambda **_kwargs: SimpleNamespace(
             search_client=None,
-            search_provider_registry=SimpleNamespace(resolve=lambda _name: object()),
+            ai_search_client=None,
+            search_provider_registry=SimpleNamespace(
+                resolve_web=lambda _name: object(),
+                resolve_ai=lambda _name: object(),
+            ),
             llm_provider_registry=SimpleNamespace(resolve=lambda _name: object()),
             tool_llm_provider=None,
             embedding_provider=object(),
@@ -1250,7 +1255,8 @@ def test_invocation_only_runtime_factory_skips_default_scoring_provider(
     assert runtime.scoring_config is scoring_config
     assert runtime._scoring_llm_provider is None
     assert captured_tooling_kwargs
-    assert captured_tooling_kwargs[0]["search_provider_resolver"]("parallel", object()) is not None
+    assert captured_tooling_kwargs[0]["web_search_provider_resolver"]("parallel", object()) is not None
+    assert captured_tooling_kwargs[0]["ai_search_provider_resolver"]("parallel", object()) is not None
     assert captured_tooling_kwargs[0]["llm_provider_resolver"]("openrouter", object()) is not None
     assert captured_tooling_kwargs[0]["llm_provider_resolver"]("ai_gateway", object()) is not None
     assert captured_tooling_kwargs[0]["tool_embedding_provider"] is not None

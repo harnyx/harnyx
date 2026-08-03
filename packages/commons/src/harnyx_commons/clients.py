@@ -18,6 +18,12 @@ class ParallelDefaults:
 
 
 @dataclass(frozen=True, slots=True)
+class FirecrawlDefaults:
+    base_url: str = "https://api.firecrawl.dev"
+    timeout_seconds: float = 60.0
+
+
+@dataclass(frozen=True, slots=True)
 class ChutesDefaults:
     base_url: str = "https://llm.chutes.ai"
     timeout_seconds: float = 300.0
@@ -31,16 +37,19 @@ class PlatformDefaults:
 # Instances
 DESEARCH = DeSearchDefaults()
 PARALLEL = ParallelDefaults()
+FIRECRAWL = FirecrawlDefaults()
 CHUTES = ChutesDefaults()
 PLATFORM = PlatformDefaults()
 
 __all__ = [
     "CHUTES",
     "DESEARCH",
+    "FIRECRAWL",
     "PARALLEL",
     "PLATFORM",
     "ChutesDefaults",
     "DeSearchDefaults",
+    "FirecrawlDefaults",
     "ParallelDefaults",
     "PlatformDefaults",
 ]

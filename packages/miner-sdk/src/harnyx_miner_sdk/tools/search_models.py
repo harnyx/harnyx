@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from harnyx_miner_sdk.tools.types import ToolInvocationTimeout
 
-SearchProviderName = Literal["desearch", "parallel"]
+SearchProviderName = Literal["desearch", "parallel", "firecrawl"]
+AiSearchProviderName = Literal["desearch", "parallel"]
 
 
 class SearchWebSearchRequest(BaseModel):
@@ -35,6 +36,14 @@ class SearchWebSearchRequest(BaseModel):
         if not normalized or any(not item for item in normalized):
             raise ValueError("search_queries must contain non-empty keywords")
         return normalized
+
+    @model_validator(mode="after")
+    def _validate_firecrawl_query_length(self) -> SearchWebSearchRequest:
+        if self.provider == "firecrawl":
+            query = " OR ".join(f"({term})" for term in self.search_queries)
+            if len(query) > 500:
+                raise ValueError("Firecrawl search query must not exceed 500 characters")
+        return self
 
     def to_query_params(self) -> dict[str, Any]:
         return self.model_dump(exclude_none=True, exclude={"provider", "timeout"})
@@ -178,7 +187,7 @@ class SearchAiSearchRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    provider: SearchProviderName
+    provider: AiSearchProviderName
     prompt: str = Field(min_length=1)
     count: int = Field(default=10, ge=10, le=200)
     timeout: ToolInvocationTimeout | None = None
@@ -228,6 +237,7 @@ class FetchPageResponse(BaseModel):
 
 __all__ = [
     "ToolInvocationTimeout",
+    "AiSearchProviderName",
     "SearchProviderName",
     "SearchWebSearchRequest",
     "SearchWebSearchResponse",

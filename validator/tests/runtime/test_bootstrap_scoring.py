@@ -138,6 +138,39 @@ def test_llm_settings_default_scoring_timeout_is_300_seconds() -> None:
     assert LlmSettings(_env_file=None).scoring_llm_timeout_seconds == pytest.approx(300.0)
 
 
+def test_local_provider_tooling_forwards_separate_search_role_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    state = bootstrap._build_state(_settings_for_tooling(), progress_storage_root=tmp_path / "run-progress")
+    captured: dict[str, object] = {}
+    web_client = object()
+    ai_client = object()
+    web_resolver = object()
+    ai_resolver = object()
+
+    def build_invoker(*_args: object, **kwargs: object) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(bootstrap, "build_miner_sandbox_tool_invoker", build_invoker)
+
+    bootstrap._build_local_provider_tooling(
+        state=state,
+        resolved=_settings_for_tooling(),
+        search_client=web_client,  # type: ignore[arg-type]
+        ai_search_client=ai_client,  # type: ignore[arg-type]
+        tool_llm_provider=None,
+        web_search_provider_resolver=web_resolver,  # type: ignore[arg-type]
+        ai_search_provider_resolver=ai_resolver,  # type: ignore[arg-type]
+    )
+
+    assert captured["web_search_client"] is web_client
+    assert captured["ai_search_client"] is ai_client
+    assert captured["web_search_provider_resolver"] is web_resolver
+    assert captured["ai_search_provider_resolver"] is ai_resolver
+
+
 def test_build_llm_clients_uses_shared_provider_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = Settings.model_construct(
         llm=LlmSettings.model_construct(

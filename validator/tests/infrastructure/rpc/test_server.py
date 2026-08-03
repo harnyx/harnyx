@@ -294,8 +294,12 @@ class TrackingDependencyProvider:
         tool_invoker = RuntimeToolInvoker(
             FakeReceiptLog(),
             web_search_client=web_search_client,
+            ai_search_client=web_search_client,
             web_search_provider_name="desearch",
             web_search_provider_resolver=(
+                (lambda _provider, _context: web_search_client) if web_search_client is not None else None
+            ),
+            ai_search_provider_resolver=(
                 (lambda _provider, _context: web_search_client) if web_search_client is not None else None
             ),
             llm_provider=resolved_llm_provider,
