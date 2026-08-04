@@ -41,11 +41,13 @@ from harnyx_commons.tools.ports import PageExtractionProviderPort
 
 _MAX_DOMAIN_TWEAK_GENERATION_CONCURRENCY = 8
 _TResult = TypeVar("_TResult")
+DomainTweakFinalizedTaskCallback = Callable[[int, DomainTweakFinalizedTask], Awaitable[None]]
 
 
 @dataclass(frozen=True, slots=True)
 class _FinalizationGroupResult:
     finalized_tasks: tuple[DomainTweakFinalizedTask, ...]
+    finalized_output_slots: tuple[int, ...]
     discarded_candidates: tuple[DomainTweakDiscardedCandidate, ...]
     tool_usage: ToolUsageSummary
 
@@ -54,6 +56,13 @@ class _FinalizationGroupResult:
 class _FinalizationCandidate:
     reviewed_question: DomainTweakReviewedQuestion
     response_mode: DomainTweakResponseMode
+    output_slot: int
+
+
+@dataclass(frozen=True, slots=True)
+class _FinalizationOutcome:
+    output_slot: int
+    result: DomainTweakFinalizedTask | DomainTweakDiscardedCandidate
 
 
 class DomainTweakBatchGenerationPipeline:
@@ -76,6 +85,8 @@ class DomainTweakBatchGenerationPipeline:
         self,
         pair_inputs: Sequence[DomainTweakPairInput],
         config: DomainTweakBatchGenerationConfig,
+        *,
+        on_finalized_task: DomainTweakFinalizedTaskCallback | None = None,
     ) -> DomainTweakBatchGenerationResult:
         selected: list[DomainTweakReviewedQuestion] = []
         selected_question_texts: set[str] = set()
@@ -83,6 +94,7 @@ class DomainTweakBatchGenerationPipeline:
         discarded: list[DomainTweakDiscardedCandidate] = []
         total_usage = ToolUsageSummary.zero()
         finalized_by_question: dict[str, DomainTweakFinalizedTask] = {}
+        finalized_output_slots: set[int] = set()
         candidate_finalization_attempt_count = 0
         candidate_budget = _InvocationBudget(config.candidate_attempt_cap)
         source_evidence = BatchSourceEvidence(
@@ -150,10 +162,16 @@ class DomainTweakBatchGenerationPipeline:
                     _FinalizationCandidate(
                         reviewed_question=reviewed_question,
                         response_mode=response_mode,
+                        output_slot=output_slot,
                     )
-                    for reviewed_question, response_mode in zip(
+                    for reviewed_question, response_mode, output_slot in zip(
                         candidate_group,
                         missing_response_modes,
+                        (
+                            slot
+                            for slot in range(config.target_count)
+                            if slot not in finalized_output_slots
+                        ),
                         strict=False,
                     )
                 )
@@ -162,6 +180,7 @@ class DomainTweakBatchGenerationPipeline:
                     policy=config.reference_answer_policy,
                     source_evidence=source_evidence,
                     invocation_budget=candidate_budget,
+                    on_finalized_task=on_finalized_task,
                 )
                 candidate_finalization_attempt_count += len(candidate_group)
                 total_usage = merge_tool_usage_summaries(total_usage, group_result.tool_usage)
@@ -170,6 +189,7 @@ class DomainTweakBatchGenerationPipeline:
                     if question is None:
                         raise ValueError("finalized question packet must contain a question")
                     finalized_by_question[_canonical_question_text(question)] = finalized_task
+                finalized_output_slots.update(group_result.finalized_output_slots)
                 discarded.extend(group_result.discarded_candidates)
 
         finalized = tuple(
@@ -196,19 +216,21 @@ class DomainTweakBatchGenerationPipeline:
         policy: DomainTweakReferenceAnswerPhasePolicy,
         source_evidence: BatchSourceEvidence,
         invocation_budget: _InvocationBudget,
+        on_finalized_task: DomainTweakFinalizedTaskCallback | None,
     ) -> _FinalizationGroupResult:
         if not await invocation_budget.reserve(len(candidates)):
             raise RuntimeError("candidate budget cannot cover the budget-aware finalization group")
-        outcomes: list[DomainTweakFinalizedTask | DomainTweakDiscardedCandidate] = []
+        outcomes: list[_FinalizationOutcome] = []
         for start in range(0, len(candidates), _MAX_DOMAIN_TWEAK_GENERATION_CONCURRENCY):
             chunk = candidates[start : start + _MAX_DOMAIN_TWEAK_GENERATION_CONCURRENCY]
             outcomes.extend(
                 await _gather_or_cancel_siblings(
                     *(
-                        self._reference_pipeline(policy, source_evidence).finalize_task(
-                            candidate.reviewed_question,
-                            requested_response_mode=candidate.response_mode,
-                            task_id_factory=self._task_id_factory,
+                        self._finalize_candidate(
+                            candidate,
+                            policy=policy,
+                            source_evidence=source_evidence,
+                            on_finalized_task=on_finalized_task,
                         )
                         for candidate in chunk
                     )
@@ -216,18 +238,38 @@ class DomainTweakBatchGenerationPipeline:
             )
         usage = ToolUsageSummary.zero()
         finalized: list[DomainTweakFinalizedTask] = []
+        finalized_output_slots: list[int] = []
         discarded: list[DomainTweakDiscardedCandidate] = []
         for outcome in outcomes:
-            usage = merge_tool_usage_summaries(usage, outcome.tool_usage)
-            if isinstance(outcome, DomainTweakFinalizedTask):
-                finalized.append(outcome)
+            usage = merge_tool_usage_summaries(usage, outcome.result.tool_usage)
+            if isinstance(outcome.result, DomainTweakFinalizedTask):
+                finalized.append(outcome.result)
+                finalized_output_slots.append(outcome.output_slot)
             else:
-                discarded.append(outcome)
+                discarded.append(outcome.result)
         return _FinalizationGroupResult(
             finalized_tasks=tuple(finalized),
+            finalized_output_slots=tuple(finalized_output_slots),
             discarded_candidates=tuple(discarded),
             tool_usage=usage,
         )
+
+    async def _finalize_candidate(
+        self,
+        candidate: _FinalizationCandidate,
+        *,
+        policy: DomainTweakReferenceAnswerPhasePolicy,
+        source_evidence: BatchSourceEvidence,
+        on_finalized_task: DomainTweakFinalizedTaskCallback | None,
+    ) -> _FinalizationOutcome:
+        result = await self._reference_pipeline(policy, source_evidence).finalize_task(
+            candidate.reviewed_question,
+            requested_response_mode=candidate.response_mode,
+            task_id_factory=self._task_id_factory,
+        )
+        if isinstance(result, DomainTweakFinalizedTask) and on_finalized_task is not None:
+            await on_finalized_task(candidate.output_slot, result)
+        return _FinalizationOutcome(output_slot=candidate.output_slot, result=result)
 
     async def _generate_question_chunk(
         self,

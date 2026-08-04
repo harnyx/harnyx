@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from typing import Protocol
 
 from harnyx_commons.domain.miner_task import MinerTask
+from harnyx_commons.domain_tweak_generation.batch_pipeline import DomainTweakFinalizedTaskCallback
 from harnyx_commons.domain_tweak_generation.pair_source import DomainTweakPairInputSource
 from harnyx_commons.domain_tweak_generation.types import (
     DomainTweakBatchGenerationConfig,
@@ -19,6 +20,8 @@ class DomainTweakBatchPipelinePort(Protocol):
         self,
         pair_inputs: Sequence[DomainTweakPairInput],
         config: DomainTweakBatchGenerationConfig,
+        *,
+        on_finalized_task: DomainTweakFinalizedTaskCallback | None = None,
     ) -> DomainTweakBatchGenerationResult: ...
 
 
@@ -38,7 +41,12 @@ class DomainTweakMinerTaskDatasetBuilder:
         result = await self.build_with_result(request)
         return finalized_tasks_from_domain_tweak_result(result, target_count=request.minimum_task_total)
 
-    async def build_with_result(self, request: MinerTaskDatasetRequest) -> DomainTweakBatchGenerationResult:
+    async def build_with_result(
+        self,
+        request: MinerTaskDatasetRequest,
+        *,
+        on_finalized_task: DomainTweakFinalizedTaskCallback | None = None,
+    ) -> DomainTweakBatchGenerationResult:
         target_count = request.minimum_task_total
         config = DomainTweakBatchGenerationConfig(
             target_count=target_count,
@@ -51,7 +59,13 @@ class DomainTweakMinerTaskDatasetBuilder:
             timestamp=request.created_at,
             requested_count=config.question_policy.hard_attempt_cap(target_count),
         )
-        return await self._batch_pipeline.generate_batch(pair_inputs, config)
+        if on_finalized_task is None:
+            return await self._batch_pipeline.generate_batch(pair_inputs, config)
+        return await self._batch_pipeline.generate_batch(
+            pair_inputs,
+            config,
+            on_finalized_task=on_finalized_task,
+        )
 
 
 def finalized_tasks_from_domain_tweak_result(

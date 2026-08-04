@@ -79,6 +79,9 @@ class _Executor:
     semantic_pair_id: str | None = None
     semantic_window_id: str | None = None
     semantic_structured: bool = False
+    blocked_reference_pair: str | None = None
+    blocked_reference_started: asyncio.Event = field(default_factory=asyncio.Event)
+    release_blocked_reference: asyncio.Event = field(default_factory=asyncio.Event)
 
     async def __call__(self, **kwargs: object) -> DomainTweakAdkTurn:
         phase = str(kwargs["phase"])
@@ -112,6 +115,9 @@ class _Executor:
                 self.active_reference_calls,
             )
             try:
+                if pair_id == self.blocked_reference_pair:
+                    self.blocked_reference_started.set()
+                    await self.release_blocked_reference.wait()
                 if self.reference_delay_seconds:
                     await asyncio.sleep(self.reference_delay_seconds)
                 payload = (
@@ -240,6 +246,50 @@ async def test_failed_structured_slot_is_replaced_by_a_fresh_structured_candidat
     assert result.finalized_tasks[1].task.query.output_schema is not None
     assert result.discarded_candidates[0].requested_response_mode == "structured"
     assert result.discarded_candidates[0].reason == "structured_output_not_materializable"
+
+
+async def test_finalized_callback_uses_distinct_slots_and_reuses_only_discarded_slots() -> None:
+    executor = _Executor(abandon_pairs={"PAIR-001"})
+    callbacks: list[tuple[int, str]] = []
+
+    async def record(output_slot: int, finalized) -> None:
+        callbacks.append((output_slot, finalized.reviewed_question.pair_input.pair_id))
+
+    result = await _batch(executor).generate_batch(
+        _pairs(3),
+        DomainTweakBatchGenerationConfig(target_count=2),
+        on_finalized_task=record,
+    )
+
+    assert len(result.finalized_tasks) == 2
+    assert callbacks == [(1, "PAIR-002"), (0, "PAIR-003")]
+
+
+async def test_fast_finalized_candidate_callback_completes_before_slow_sibling_is_released() -> None:
+    executor = _Executor(blocked_reference_pair="PAIR-002")
+    fast_persisted = asyncio.Event()
+
+    async def persist(output_slot: int, finalized) -> None:
+        if finalized.reviewed_question.pair_input.pair_id == "PAIR-001":
+            assert output_slot == 0
+            fast_persisted.set()
+
+    generation = asyncio.create_task(
+        _batch(executor).generate_batch(
+            _pairs(2),
+            DomainTweakBatchGenerationConfig(target_count=2),
+            on_finalized_task=persist,
+        )
+    )
+    try:
+        await asyncio.wait_for(executor.blocked_reference_started.wait(), timeout=2.0)
+        await asyncio.wait_for(fast_persisted.wait(), timeout=2.0)
+        assert not generation.done()
+    finally:
+        executor.release_blocked_reference.set()
+
+    result = await generation
+    assert len(result.finalized_tasks) == 2
 
 
 async def test_ten_task_generation_finalizes_five_plain_and_five_structured() -> None:

@@ -11,7 +11,10 @@ from harnyx_commons.domain_tweak_generation.adk_runner import (
     DomainTweakAdkTurn,
     DomainTweakAdkTurnExecutor,
 )
-from harnyx_commons.domain_tweak_generation.batch_pipeline import DomainTweakBatchGenerationPipeline
+from harnyx_commons.domain_tweak_generation.batch_pipeline import (
+    DomainTweakBatchGenerationPipeline,
+    DomainTweakFinalizedTaskCallback,
+)
 from harnyx_commons.domain_tweak_generation.dataset_builder import (
     DomainTweakBatchPipelinePort,
     DomainTweakMinerTaskDatasetBuilder,
@@ -97,6 +100,7 @@ __all__ = [
     "DomainTweakDiscardReason",
     "DomainTweakDiscardedCandidate",
     "DomainTweakFinalizedTask",
+    "DomainTweakFinalizedTaskCallback",
     "DomainTweakGenerationPipeline",
     "DomainTweakMinerTaskDatasetBuilder",
     "DomainTweakPairInputSource",
