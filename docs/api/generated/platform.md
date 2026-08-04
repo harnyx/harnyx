@@ -458,7 +458,7 @@ Body: [MinerTaskWorkExecutionsRequest](#model-minertaskworkexecutionsrequest)
 |  | `miner_hotkey_ss58` |  | req | `string` |
 |  | `response` |  | req | [Response](#model-response) |
 |  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
-|  |  | `output` | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+|  |  | `output` | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  |  | `text` | opt | `string` (nullable) |
 |  | `session` |  | req | [SessionModel](#model-sessionmodel) |
 |  |  | `expires_at` | req | `string` |
@@ -654,7 +654,7 @@ Body: [MinerTaskWorkScoreableExecutionsResponse](#model-minertaskworkscoreableex
 |  | `miner_hotkey_ss58` |  | req | `string` |
 |  | `response` |  | req | [Response](#model-response) (nullable) |
 |  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
-|  |  | `output` | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+|  |  | `output` | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  |  | `text` | opt | `string` (nullable) |
 |  | `session` |  | req | [SessionModel](#model-sessionmodel) |
 |  |  | `expires_at` | req | `string` |
@@ -2628,50 +2628,6 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
-<a id="model-harnyx_miner_sdk__json_types__jsonvalue-input"></a>
-### Model: harnyx_miner_sdk__json_types__JsonValue-Input
-
-(no documented fields)
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "anyOf": [
-    {
-      "type": "string"
-    },
-    {
-      "type": "integer"
-    },
-    {
-      "type": "number"
-    },
-    {
-      "type": "boolean"
-    },
-    {
-      "items": {
-        "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Input"
-      },
-      "type": "array"
-    },
-    {
-      "additionalProperties": {
-        "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Input"
-      },
-      "type": "object"
-    },
-    {
-      "type": "null"
-    }
-  ]
-}
-```
-
-</details>
-
 <a id="model-httpvalidationerror"></a>
 ### Model: HTTPValidationError
 
@@ -2716,9 +2672,53 @@ Body: [WeightsResponse](#model-weightsresponse)
 ```json
 {
   "additionalProperties": {
-    "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Input"
+    "$ref": "#/components/schemas/JsonValue-Input"
   },
   "type": "object"
+}
+```
+
+</details>
+
+<a id="model-jsonvalue-input"></a>
+### Model: JsonValue-Input
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "anyOf": [
+    {
+      "type": "string"
+    },
+    {
+      "type": "integer"
+    },
+    {
+      "type": "number"
+    },
+    {
+      "type": "boolean"
+    },
+    {
+      "items": {
+        "$ref": "#/components/schemas/JsonValue-Input"
+      },
+      "type": "array"
+    },
+    {
+      "additionalProperties": {
+        "$ref": "#/components/schemas/JsonValue-Input"
+      },
+      "type": "object"
+    },
+    {
+      "type": "null"
+    }
+  ]
 }
 ```
 
@@ -3407,9 +3407,9 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  |  | `extra` | opt | `object` (nullable) |
 |  |  | `reference_cost_usd` | opt | `number` (nullable) |
 |  |  | `request_hash` | req | `string` |
-|  |  | `request_payload` | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+|  |  | `request_payload` | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  |  | `response_hash` | opt | `string` (nullable) |
-|  |  | `response_payload` | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+|  |  | `response_payload` | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  |  | `result_policy` | opt | [ToolResultPolicy](#model-toolresultpolicy) (default: log_only) |
 |  |  | `results` | opt | array[[ToolResult-Input](#model-toolresult-input)] (default: []) |
 |  | `issued_at` |  | req | `string` (format: date-time) |
@@ -4067,9 +4067,9 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  |  | `extra` | opt | `object` (nullable) |
 |  |  | `reference_cost_usd` | opt | `number` (nullable) |
 |  |  | `request_hash` | req | `string` |
-|  |  | `request_payload` | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+|  |  | `request_payload` | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  |  | `response_hash` | opt | `string` (nullable) |
-|  |  | `response_payload` | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+|  |  | `response_payload` | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  |  | `result_policy` | opt | [ToolResultPolicy](#model-toolresultpolicy) (default: log_only) |
 |  |  | `results` | opt | array[[ToolResult-Input](#model-toolresult-input)] (default: []) |
 |  | `issued_at` |  | req | `string` (format: date-time) |
@@ -4083,7 +4083,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  | `completed_at` |  | opt | `string` (format: date-time; nullable) |
 |  | `response` |  | opt | [Response](#model-response) (nullable) |
 |  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
-|  |  | `output` | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+|  |  | `output` | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  |  | `text` | opt | `string` (nullable) |
 |  | `task_id` |  | req | `string` (format: uuid) |
 | `score` |  |  | opt | `number` (nullable) |
@@ -4211,7 +4211,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `title` | opt | `string` (nullable) |
 |  |  | `url` | req | `string` |
-|  | `output` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+|  | `output` |  | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  | `text` |  | opt | `string` (nullable) |
 | `task_id` |  |  | req | `string` (format: uuid) |
 
@@ -4420,9 +4420,9 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  |  | `extra` | opt | `object` (nullable) |
 |  |  | `reference_cost_usd` | opt | `number` (nullable) |
 |  |  | `request_hash` | req | `string` |
-|  |  | `request_payload` | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+|  |  | `request_payload` | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  |  | `response_hash` | opt | `string` (nullable) |
-|  |  | `response_payload` | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+|  |  | `response_payload` | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  |  | `result_policy` | opt | [ToolResultPolicy](#model-toolresultpolicy) (default: log_only) |
 |  |  | `results` | opt | array[[ToolResult-Input](#model-toolresult-input)] (default: []) |
 |  | `issued_at` |  | req | `string` (format: date-time) |
@@ -4437,7 +4437,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `title` | opt | `string` (nullable) |
 |  |  | `url` | req | `string` |
-|  | `output` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+|  | `output` |  | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  | `text` |  | opt | `string` (nullable) |
 | `session` |  |  | req | [SessionModel](#model-sessionmodel) |
 |  | `expires_at` |  | req | `string` |
@@ -4705,7 +4705,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  | `miner_hotkey_ss58` |  | req | `string` |
 |  | `response` |  | req | [Response](#model-response) |
 |  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
-|  |  | `output` | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+|  |  | `output` | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  |  | `text` | opt | `string` (nullable) |
 |  | `session` |  | req | [SessionModel](#model-sessionmodel) |
 |  |  | `expires_at` | req | `string` |
@@ -5169,7 +5169,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `title` | opt | `string` (nullable) |
 |  |  | `url` | req | `string` |
-|  | `output` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+|  | `output` |  | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  | `text` |  | opt | `string` (nullable) |
 | `session` |  |  | req | [SessionModel](#model-sessionmodel) |
 |  | `expires_at` |  | req | `string` |
@@ -5404,7 +5404,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  | `miner_hotkey_ss58` |  | req | `string` |
 |  | `response` |  | req | [Response](#model-response) (nullable) |
 |  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
-|  |  | `output` | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+|  |  | `output` | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  |  | `text` | opt | `string` (nullable) |
 |  | `session` |  | req | [SessionModel](#model-sessionmodel) |
 |  |  | `expires_at` | req | `string` |
@@ -5904,7 +5904,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  | `note` |  | opt | `string` (nullable) |
 |  | `title` |  | opt | `string` (nullable) |
 |  | `url` |  | req | `string` |
-| `output` |  |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+| `output` |  |  | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 | `text` |  |  | opt | `string` (nullable) |
 
 <details>
@@ -5931,7 +5931,7 @@ Body: [WeightsResponse](#model-weightsresponse)
     "output": {
       "anyOf": [
         {
-          "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Input"
+          "$ref": "#/components/schemas/JsonValue-Input"
         },
         {
           "type": "null"
@@ -6729,13 +6729,13 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  | `extra` |  | opt | `object` (nullable) |
 |  | `reference_cost_usd` |  | opt | `number` (nullable) |
 |  | `request_hash` |  | req | `string` |
-|  | `request_payload` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+|  | `request_payload` |  | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  | `response_hash` |  | opt | `string` (nullable) |
-|  | `response_payload` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+|  | `response_payload` |  | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  | `result_policy` |  | opt | [ToolResultPolicy](#model-toolresultpolicy) (default: log_only) |
 |  | `results` |  | opt | array[[ToolResult-Input](#model-toolresult-input)] (default: []) |
 |  |  | `index` | req | `integer` |
-|  |  | `raw` | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+|  |  | `raw` | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  |  | `result_id` | req | `string` |
 | `issued_at` |  |  | req | `string` (format: date-time) |
 | `outcome` |  |  | req | [ToolCallOutcome](#model-toolcalloutcome) |
@@ -6821,13 +6821,13 @@ Body: [WeightsResponse](#model-weightsresponse)
 | `extra` |  |  | opt | `object` (nullable) |
 | `reference_cost_usd` |  |  | opt | `number` (nullable) |
 | `request_hash` |  |  | req | `string` |
-| `request_payload` |  |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+| `request_payload` |  |  | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 | `response_hash` |  |  | opt | `string` (nullable) |
-| `response_payload` |  |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+| `response_payload` |  |  | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 | `result_policy` |  |  | opt | [ToolResultPolicy](#model-toolresultpolicy) (default: log_only) |
 | `results` |  |  | opt | array[[ToolResult-Input](#model-toolresult-input)] (default: []) |
 |  | `index` |  | req | `integer` |
-|  | `raw` |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+|  | `raw` |  | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  | `result_id` |  | req | `string` |
 
 <details>
@@ -6884,7 +6884,7 @@ Body: [WeightsResponse](#model-weightsresponse)
       "anyOf": [
         {
           "additionalProperties": {
-            "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Input"
+            "$ref": "#/components/schemas/JsonValue-Input"
           },
           "type": "object"
         },
@@ -6912,7 +6912,7 @@ Body: [WeightsResponse](#model-weightsresponse)
     "request_payload": {
       "anyOf": [
         {
-          "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Input"
+          "$ref": "#/components/schemas/JsonValue-Input"
         },
         {
           "type": "null"
@@ -6933,7 +6933,7 @@ Body: [WeightsResponse](#model-weightsresponse)
     "response_payload": {
       "anyOf": [
         {
-          "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Input"
+          "$ref": "#/components/schemas/JsonValue-Input"
         },
         {
           "type": "null"
@@ -7065,7 +7065,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `index` |  |  | req | `integer` |
-| `raw` |  |  | opt | [harnyx_miner_sdk__json_types__JsonValue-Input](#model-harnyx_miner_sdk__json_types__jsonvalue-input) (nullable) |
+| `raw` |  |  | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 | `result_id` |  |  | req | `string` |
 
 <details>
@@ -7082,7 +7082,7 @@ Body: [WeightsResponse](#model-weightsresponse)
     "raw": {
       "anyOf": [
         {
-          "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue-Input"
+          "$ref": "#/components/schemas/JsonValue-Input"
         },
         {
           "type": "null"
