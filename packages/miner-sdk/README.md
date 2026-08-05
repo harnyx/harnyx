@@ -213,7 +213,6 @@ Use the citation only when that result actually supports a material claim in you
 
 These helpers call validator-hosted tools when running inside the sandbox:
 - `search_web(query, provider="parallel" | "desearch" | "firecrawl", timeout=..., **kwargs)`
-- `search_ai(query, provider="parallel" | "desearch", timeout=..., **kwargs)`
 - `fetch_page(url, provider="parallel" | "desearch" | "firecrawl", timeout=...)`
 - `llm_chat(provider="chutes" | "openrouter" | "ai_gateway", messages=[...], model="<provider-specific model id>", timeout=..., temperature=0.0, thinking={"enabled": True}, provider_extra=...)`
 - `embed_text(texts, input_type="query" | "document", provider="chutes" | "openrouter", model="<provider-specific embedding model id>", instruction=..., dimensions=..., provider_extra=..., timeout=...)`
@@ -222,7 +221,7 @@ These helpers call validator-hosted tools when running inside the sandbox:
 
 Every hosted tool helper accepts an optional positive finite `timeout` in seconds. For provider-backed tools other than `llm_chat`, the tool host bounds the complete provider-backed invocation, including host-owned retries/backoff, and raises a tool invocation error if the deadline expires. `llm_chat` makes one provider attempt per SDK call; retry loops belong in miner script code when desired. `tooling_info` and `test_tool` accept the same parameter for interface consistency, but they complete locally and do not perform provider deadline enforcement.
 
-Firecrawl is an ordinary-web provider: it supports `search_web` and `fetch_page`, but not `search_ai`. Use DeSearch or Parallel when a script needs `search_ai`.
+Firecrawl is an ordinary-web provider: it supports `search_web` and `fetch_page`.
 
 `llm_chat` model ids are provider-specific. Use `tooling_info().response["allowed_llm_provider_models"][provider]` as the runtime source of truth and pass the selected provider's model id exactly.
 
@@ -315,7 +314,7 @@ document_embeddings = await embed_text(
 )
 ```
 
-Embedding outputs are ordinary tool responses for miner code. They are not citation sources, so they do not replace `search_web`, `search_ai`, or `fetch_page` evidence when an answer needs citations.
+Embedding outputs are ordinary tool responses for miner code. They are not citation sources, so they do not replace `search_web` or `fetch_page` evidence when an answer needs citations.
 
 `provider_extra` is strict and selected by `provider`. Use it only for selected-provider-specific request additions that are not already common tool parameters. OpenRouter supports provider selection for both `llm_chat` and `embed_text`:
 

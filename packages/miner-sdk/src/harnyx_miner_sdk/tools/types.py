@@ -8,29 +8,29 @@ from pydantic import Field, StrictFloat
 
 ToolInvocationTimeout = Annotated[StrictFloat, Field(gt=0, allow_inf_nan=False)]
 
-ToolName = Literal[
+MinerToolName = Literal[
     "search_web",
-    "search_ai",
     "fetch_page",
     "embed_text",
     "llm_chat",
     "test_tool",
     "tooling_info",
 ]
-SearchToolName = Literal["search_web", "search_ai", "fetch_page"]
+ToolName = MinerToolName
+SearchToolName = Literal["search_web", "fetch_page"]
 EmbeddingToolName = Literal["embed_text"]
 LlmToolName = Literal["llm_chat"]
 
-TOOL_NAMES: set[ToolName] = {
+MINER_TOOL_NAMES: set[MinerToolName] = {
     "search_web",
-    "search_ai",
     "fetch_page",
     "embed_text",
     "llm_chat",
     "test_tool",
     "tooling_info",
 }
-SEARCH_TOOLS: set[SearchToolName] = {"search_web", "search_ai", "fetch_page"}
+TOOL_NAMES: set[ToolName] = set(MINER_TOOL_NAMES)
+SEARCH_TOOLS: set[SearchToolName] = {"search_web", "fetch_page"}
 EMBEDDING_TOOLS: set[EmbeddingToolName] = {"embed_text"}
 LLM_TOOLS: set[LlmToolName] = {"llm_chat"}
 
@@ -58,10 +58,12 @@ def is_citation_source(name: str) -> bool:
 
 __all__ = [
     "ToolInvocationTimeout",
+    "MinerToolName",
     "ToolName",
     "SearchToolName",
     "EmbeddingToolName",
     "LlmToolName",
+    "MINER_TOOL_NAMES",
     "TOOL_NAMES",
     "SEARCH_TOOLS",
     "EMBEDDING_TOOLS",

@@ -50,7 +50,7 @@ def _invocation(token: str, tool: ToolName = "search_web", *, model: str = DEFAU
 
 
 def _mixed_invocations(count: int, *, token: str = TEST_TOKEN) -> list[ToolInvocationRequest]:
-    tools: tuple[ToolName, ...] = ("search_web", "search_ai", "fetch_page", "tooling_info", "test_tool", "llm_chat")
+    tools: tuple[ToolName, ...] = ("search_web", "fetch_page", "tooling_info", "test_tool", "llm_chat")
     return [_invocation(token, tools[index % len(tools)], model=f"model-{index}") for index in range(count)]
 
 

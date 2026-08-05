@@ -311,7 +311,7 @@ def test_build_state_uses_single_tool_concurrency_cap(tmp_path: Path) -> None:
     state = bootstrap._build_state(Settings(), progress_storage_root=tmp_path / "run-progress")
     session_id = uuid4()
     token = "token"  # noqa: S105
-    tools: tuple[ToolName, ...] = ("search_web", "search_ai", "fetch_page", "tooling_info", "test_tool", "llm_chat")
+    tools: tuple[ToolName, ...] = ("search_web", "fetch_page", "tooling_info", "test_tool", "llm_chat")
     held = [
         ToolInvocationRequest(
             session_id=session_id,

@@ -71,7 +71,7 @@ Create a `.env` at the repo root (copy from `.env.example`) and fill:
 | `BENCHMARK_RUBRIC_JUDGE_LLM_PROVIDER` | Required with `BENCHMARK_RUBRIC_JUDGE_LLM_MODEL` for `weighted-rubric-v1` local benchmark scoring |
 | `BENCHMARK_RUBRIC_JUDGE_LLM_MODEL` | Required with `BENCHMARK_RUBRIC_JUDGE_LLM_PROVIDER` for `weighted-rubric-v1` local benchmark scoring |
 
-The checked-in default is `SEARCH_PROVIDER=desearch`. Ordinary `search_web` and `fetch_page` calls also support `parallel` and `firecrawl`; set the matching provider and API key. `search_ai` supports only `desearch` and `parallel`.
+The checked-in default is `SEARCH_PROVIDER=desearch`. `search_web` and `fetch_page` calls also support `parallel` and `firecrawl`; set the matching provider and API key.
 If you set either benchmark judge provider to `vertex`, also configure Vertex credentials such as `GCP_PROJECT_ID` and `GCP_LOCATION`. For DRACO with Gemini 3.1 Pro Preview, use `BENCHMARK_RUBRIC_JUDGE_LLM_PROVIDER=vertex`, `BENCHMARK_RUBRIC_JUDGE_LLM_MODEL=gemini-3.1-pro-preview`, and `GCP_LOCATION=global`. `BENCHMARK_LLM_*` settings do not enable `weighted-rubric-v1` by fallback; rubric scoring uses only the dedicated `BENCHMARK_RUBRIC_JUDGE_LLM_*` settings.
 
 #### Provider credentials on the platform
@@ -84,7 +84,7 @@ harnyx-miner-config --wallet-name <wallet> --hotkey-name <hotkey> --provider chu
 harnyx-miner-config --wallet-name <wallet> --hotkey-name <hotkey> --delete-provider chutes
 ```
 
-Supported stored-credential providers are `chutes`, `openrouter`, `ai_gateway`, `desearch`, `parallel`, and `firecrawl`. Firecrawl credentials apply only to `search_web` and `fetch_page`; `search_ai` requires DeSearch or Parallel.
+Supported stored-credential providers are `chutes`, `openrouter`, `ai_gateway`, `desearch`, `parallel`, and `firecrawl`. Firecrawl credentials apply only to `search_web` and `fetch_page`.
 Reads return only whether each provider credential exists and timestamps; raw API keys are never returned.
 Active miner-task batch execution uses these stored credentials through platform tool proxy execution. Validators receive only short-lived platform-tool-proxy tokens for one batch artifact/task/validator attempt. Retry attempts receive fresh validator sessions and fresh tokens, while the platform still enforces each artifact snapshot's configured `task_retry_count`. Raw provider API keys stay inside the platform boundary.
 When your artifact becomes the active champion and receives champion emission, the platform also uses those stored provider API keys to run benchmark suites for that champion artifact.
@@ -369,7 +369,7 @@ document_embeddings = await embed_text(
 )
 ```
 
-Query embeddings use Qwen's retrieval instruction by default and accept an optional `instruction` override. Document embeddings are sent as raw text and reject `instruction`. Embedding outputs are not citation sources; keep using `search_web`, `search_ai`, or `fetch_page` for cited evidence.
+Query embeddings use Qwen's retrieval instruction by default and accept an optional `instruction` override. Document embeddings are sent as raw text and reject `instruction`. Embedding outputs are not citation sources; keep using `search_web` or `fetch_page` for cited evidence.
 
 Use `provider_extra` only for selected-provider-specific request additions that do not already have common tool parameters. The schema is selected by the sibling `provider` value and is strict. OpenRouter supports provider selection for both `llm_chat` and `embed_text`:
 
@@ -444,7 +444,6 @@ response = await llm_chat(
 
 Core subnet-facing tools today:
 - `search_web`: web search results; pass `timeout=<seconds>` to bound the full search call
-- `search_ai`: AI search results; pass `timeout=<seconds>` to bound the full AI search call
 - `fetch_page`: fetched page content; pass `timeout=<seconds>` to bound slow page fetches
 - `llm_chat`: hosted LLM chat; pass `timeout=<seconds>` to bound the full hosted chat call
 - `embed_text`: hosted text embeddings; pass `provider`, `model`, `input_type="query"` or `"document"`, optional query-only `instruction`, `dimensions`, and `timeout=<seconds>`

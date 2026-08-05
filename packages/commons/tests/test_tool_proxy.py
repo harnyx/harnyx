@@ -12,7 +12,6 @@ from harnyx_commons.tools.api import (
     embed_text,
     fetch_page,
     llm_chat,
-    search_ai,
     search_web,
     tooling_info,
 )
@@ -629,49 +628,8 @@ async def test_fetch_page_helper_invokes_tool_proxy_with_timeout() -> None:
     assert payload["kwargs"] == {"provider": "parallel", "url": "https://example.com", "timeout": 5.0}
 
 
-async def test_search_ai_helper_invokes_tool_proxy_with_timeout() -> None:
-    captured: dict[str, dict[str, object]] = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["payload"] = json.loads(request.content)
-        return httpx.Response(
-            200,
-            json=_tool_response_payload(
-                receipt_id="ai-1",
-                response={"data": []},
-                result_policy="referenceable",
-            ),
-        )
-
-    proxy = ToolProxy(
-        base_url="http://validator",
-        token=TEST_TOKEN,
-        session_id=SESSION_ID,
-        client=httpx.AsyncClient(base_url="http://validator", transport=httpx.MockTransport(handler)),
-    )
-    try:
-        with bind_tool_invoker(proxy):
-            result = await search_ai("harnyx subnet", provider="parallel", count=10, timeout=5)
-    finally:
-        await proxy.aclose()
-
-    assert result.receipt_id == "ai-1"
-    payload = captured["payload"]
-    assert payload["tool"] == "search_ai"
-    assert payload["kwargs"] == {
-        "provider": "parallel",
-        "prompt": "harnyx subnet",
-        "count": 10,
-        "timeout": 5.0,
-    }
-
-
 async def _call_search_web_with_timeout(timeout: object) -> object:
     return await search_web("harnyx subnet", provider="parallel", timeout=timeout)
-
-
-async def _call_search_ai_with_timeout(timeout: object) -> object:
-    return await search_ai("harnyx subnet", provider="parallel", timeout=timeout)
 
 
 async def _call_fetch_page_with_timeout(timeout: object) -> object:
@@ -699,7 +657,6 @@ async def _call_test_tool_with_timeout(timeout: object) -> object:
     "invoke_helper",
     [
         _call_search_web_with_timeout,
-        _call_search_ai_with_timeout,
         _call_fetch_page_with_timeout,
         _call_llm_chat_with_timeout,
         _call_tooling_info_with_timeout,

@@ -207,7 +207,7 @@ Body: [ToolExecuteRequestDTO](#model-toolexecuterequestdto)
 | --- | --- | --- | --- | --- |
 | `args` |  |  | opt | array[[JsonValue](#model-jsonvalue)] (default: []) |
 | `kwargs` |  |  | opt | `object` (default: {}) |
-| `tool` |  |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+| `tool` |  |  | req | `string` (enum: [search_web, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
 
 **Responses**
 `200` Successful Response
@@ -801,7 +801,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | --- | --- | --- | --- | --- |
 | `args` |  |  | opt | array[[JsonValue](#model-jsonvalue)] (default: []) |
 | `kwargs` |  |  | opt | `object` (default: {}) |
-| `tool` |  |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+| `tool` |  |  | req | `string` (enum: [search_web, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
 
 <details>
 <summary>JSON schema</summary>
@@ -829,7 +829,6 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     "tool": {
       "enum": [
         "search_web",
-        "search_ai",
         "fetch_page",
         "embed_text",
         "llm_chat",

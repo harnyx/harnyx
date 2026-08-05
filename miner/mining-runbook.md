@@ -121,7 +121,7 @@ uv run --package harnyx-miner harnyx-miner-config \
   --api-key <provider-api-key>
 ```
 
-Supported credential providers are `chutes`, `openrouter`, `ai_gateway`, `desearch`, `parallel`, and `firecrawl`. Firecrawl is valid for `search_web` and `fetch_page`; `search_ai` requires DeSearch or Parallel.
+Supported credential providers are `chutes`, `openrouter`, `ai_gateway`, `desearch`, `parallel`, and `firecrawl`. Firecrawl is valid for `search_web` and `fetch_page`.
 
 If repeated `429` errors or provider instability are isolated to an upstream
 provider selected through OpenRouter, consider using an OpenRouter API key from

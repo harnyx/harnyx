@@ -79,6 +79,7 @@ from harnyx_commons.tools.search_models import (
     SearchWebSearchResponse,
 )
 from harnyx_commons.tools.types import (
+    MINER_TOOL_NAMES,
     TOOL_NAMES,
     SearchToolName,
     ToolInvocationTimeout,
@@ -89,7 +90,7 @@ from harnyx_commons.tools.types import (
 from harnyx_commons.tools.usage_tracker import ToolCallUsage  # noqa: F401 - compatibility
 from harnyx_miner_sdk.tools.llm_chat_models import LlmChatRequest
 
-MINER_SANDBOX_TOOL_NAMES: tuple[ToolName, ...] = tuple(sorted(TOOL_NAMES))
+MINER_SANDBOX_TOOL_NAMES: tuple[ToolName, ...] = tuple(sorted(MINER_TOOL_NAMES))
 DEFAULT_TOOL_LLM_TIMEOUT_SECONDS = PLATFORM_TOOL_PROXY_LLM_CHAT_DEFAULT_TIMEOUT_SECONDS
 DEFAULT_SEARCH_TOOL_TIMEOUT_SECONDS = PLATFORM_TOOL_PROXY_SEARCH_TOOL_DEFAULT_TIMEOUT_SECONDS
 DEFAULT_EMBEDDING_TOOL_TIMEOUT_SECONDS = PLATFORM_TOOL_PROXY_EMBEDDING_TOOL_DEFAULT_TIMEOUT_SECONDS
@@ -337,6 +338,8 @@ class RuntimeToolInvoker(ToolInvoker):
         context: ToolInvocationContext | None = None,
     ) -> JsonObject | ToolInvocationOutput:
         try:
+            if tool_name not in self._advertised_tool_names:
+                raise LookupError(f"tool {tool_name!r} is not registered")
             if tool_name == "test_tool":
                 return self._invoke_test_tool(args, kwargs)
             if tool_name == "tooling_info":

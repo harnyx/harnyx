@@ -5,13 +5,13 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic import JsonValue as PydanticJsonValue
 
-from harnyx_miner_sdk.tools.types import ToolName
+from harnyx_miner_sdk.tools.types import MinerToolName
 
 
 class ToolExecuteRequestDTO(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    tool: ToolName
+    tool: MinerToolName
     args: tuple[PydanticJsonValue, ...] = ()
     kwargs: dict[str, PydanticJsonValue] = {}
 

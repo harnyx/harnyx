@@ -39,11 +39,8 @@ from harnyx_miner_sdk.tools.llm_provider_extra import (
     ProviderExtra,
 )
 from harnyx_miner_sdk.tools.search_models import (
-    AiSearchProviderName,
     FetchPageRequest,
     FetchPageResponse,
-    SearchAiSearchRequest,
-    SearchAiSearchResponse,
     SearchProviderName,
     SearchWebSearchRequest,
     SearchWebSearchResponse,
@@ -178,35 +175,6 @@ async def search_web(
     dto = _parse_execute_response(raw_response)
     response_payload = _require_response_mapping(dto.response, label="search_web response payload must be a mapping")
     response = SearchWebSearchResponse.model_validate(response_payload)
-    return ToolCallResponse(
-        receipt_id=dto.receipt_id,
-        response=response,
-        results=dto.results,
-        result_policy=dto.result_policy,
-        cost_usd=dto.cost_usd,
-        usage=dto.usage,
-        budget=dto.budget,
-    )
-
-
-async def search_ai(
-    prompt: str,
-    /,
-    *,
-    provider: AiSearchProviderName,
-    timeout: float | None = None,
-    **kwargs: Any,
-) -> ToolCallResponse[SearchAiSearchResponse]:
-    """Execute the validator-hosted AI search tool and return its response payload."""
-
-    raw_payload = {"provider": provider, "prompt": prompt, **kwargs}
-    if timeout is not None:
-        raw_payload["timeout"] = timeout
-    payload = SearchAiSearchRequest.model_validate(raw_payload).model_dump(exclude_none=True, mode="json")
-    raw_response = await _current_tool_invoker().invoke("search_ai", args=(), kwargs=payload)
-    dto = _parse_execute_response(raw_response)
-    response_payload = _require_response_mapping(dto.response, label="search_ai response payload must be a mapping")
-    response = SearchAiSearchResponse.model_validate(response_payload)
     return ToolCallResponse(
         receipt_id=dto.receipt_id,
         response=response,
@@ -481,7 +449,6 @@ __all__ = [
     "fetch_page",
     "llm_chat",
     "search_web",
-    "search_ai",
     "test_tool",
     "tooling_info",
     "ToolCallResponse",

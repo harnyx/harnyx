@@ -68,7 +68,7 @@ def _invocation(tool: ToolName = "search_web") -> ToolInvocationRequest:
 
 
 def _mixed_invocations(count: int) -> list[ToolInvocationRequest]:
-    tools: tuple[ToolName, ...] = ("search_web", "search_ai", "fetch_page", "tooling_info", "test_tool", "llm_chat")
+    tools: tuple[ToolName, ...] = ("search_web", "fetch_page", "tooling_info", "test_tool", "llm_chat")
     return [_invocation(tools[index % len(tools)]) for index in range(count)]
 
 
@@ -768,11 +768,10 @@ def test_execute_tool_endpoint_does_not_record_provider_failure_for_fetch_page_t
 
 
 @pytest.mark.parametrize(
-    ("tool", "kwargs"),
-    [
-        ("search_web", {"provider": "desearch", "search_queries": ["harnyx"], "timeout": 0.01}),
-        ("search_ai", {"provider": "desearch", "prompt": "harnyx", "count": 10, "timeout": 0.01}),
-        (
+        ("tool", "kwargs"),
+        [
+            ("search_web", {"provider": "desearch", "search_queries": ["harnyx"], "timeout": 0.01}),
+            (
             "llm_chat",
             {
                 "provider": "openrouter",
@@ -816,9 +815,18 @@ def test_execute_tool_endpoint_does_not_record_provider_failure_for_tool_timeout
 @pytest.mark.parametrize(
     ("tool", "kwargs", "expected_provider", "expected_model"),
     [
-        ("search_web", {"provider": "desearch", "search_queries": ["harnyx"], "timeout": 5}, "desearch", "search_web"),
-        ("search_ai", {"provider": "desearch", "prompt": "harnyx", "count": 10, "timeout": 5}, "desearch", "search_ai"),
-        ("fetch_page", {"provider": "desearch", "url": "https://example.com", "timeout": 5}, "desearch", "fetch_page"),
+        (
+            "search_web",
+            {"provider": "desearch", "search_queries": ["harnyx"], "timeout": 5},
+            "desearch",
+            "search_web",
+        ),
+        (
+            "fetch_page",
+            {"provider": "desearch", "url": "https://example.com", "timeout": 5},
+            "desearch",
+            "fetch_page",
+        ),
         (
             "llm_chat",
             {

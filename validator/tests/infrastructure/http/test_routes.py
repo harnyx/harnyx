@@ -47,7 +47,7 @@ def _invocation(tool: ToolName = "search_web") -> ToolInvocationRequest:
 
 
 def _mixed_invocations(count: int) -> list[ToolInvocationRequest]:
-    tools: tuple[ToolName, ...] = ("search_web", "search_ai", "fetch_page", "tooling_info", "test_tool", "llm_chat")
+    tools: tuple[ToolName, ...] = ("search_web", "fetch_page", "tooling_info", "test_tool", "llm_chat")
     return [_invocation(tools[index % len(tools)]) for index in range(count)]
 
 
@@ -760,3 +760,4 @@ def test_execute_tool_openapi_excludes_repo_tools() -> None:
 
     assert "search_repo" not in tool_enum
     assert "get_repo_file" not in tool_enum
+    assert "search_ai" not in tool_enum

@@ -83,18 +83,14 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
 
     assert "search_repo" not in payload["tool_names"]
     assert "get_repo_file" not in payload["tool_names"]
+    assert "search_ai" not in payload["tool_names"]
     assert payload["pricing"]["search_web"]["kind"] == "per_referenceable_result"
     assert payload["pricing"]["fetch_page"]["kind"] == "per_referenceable_result"
-    assert payload["pricing"]["search_ai"]["kind"] == "per_referenceable_result"
     assert payload["pricing"]["search_web"]["settlement_order"] == [
         "provider_returned",
         "static_pricing",
     ]
     assert payload["pricing"]["fetch_page"]["settlement_order"] == [
-        "provider_returned",
-        "static_pricing",
-    ]
-    assert payload["pricing"]["search_ai"]["settlement_order"] == [
         "provider_returned",
         "static_pricing",
     ]
@@ -106,11 +102,12 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
     )
     assert "search_repo" not in payload["pricing"]
     assert "get_repo_file" not in payload["pricing"]
-    assert payload["pricing"]["search_ai"]["usd_per_referenceable_result"] == pytest.approx(
-        SEARCH_PRICING_PER_REFERENCEABLE_RESULT["search_ai"]
-    )
+    assert "search_ai" not in payload["pricing"]
     assert "search_items" not in payload["tool_names"]
     assert "search_items" not in payload["pricing"]
+
+    with pytest.raises(LookupError, match="search_ai.*not registered"):
+        await invoker.invoke("search_ai", args=(), kwargs={})
 
     assert "allowed_tool_models" not in payload
     assert "models" not in payload["pricing"]["llm_chat"]
