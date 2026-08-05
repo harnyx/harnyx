@@ -16,7 +16,7 @@ This is the detailed local-eval guide linked from [`README.md`](README.md).
 
 Tool-free agents can create the local-eval runtime without search configuration.
 
-The checked-in default is `SEARCH_PROVIDER=desearch`. `search_web` and `fetch_page` calls also support `parallel` and `firecrawl`; set the matching API key.
+The checked-in default is `SEARCH_PROVIDER=desearch`. `search_web` and `fetch_page` calls also support `parallel`, `firecrawl`, `exa`, and `tavily`; set the matching API key. Provider-specific `provider_extra` values are strictly limited to retrieval and extraction controls.
 
 ## Quick Start
 

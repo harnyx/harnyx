@@ -234,6 +234,65 @@ async def test_search_web_helper_invokes_tool_proxy_with_timeout() -> None:
     }
 
 
+async def test_search_web_helper_forwards_validated_provider_extra() -> None:
+    captured: dict[str, dict[str, object]] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json=_tool_response_payload(
+                receipt_id="search-extra-1",
+                response={"data": []},
+                result_policy="referenceable",
+            ),
+        )
+
+    proxy = ToolProxy(
+        base_url="http://validator",
+        token=TEST_TOKEN,
+        session_id=SESSION_ID,
+        client=httpx.AsyncClient(base_url="http://validator", transport=httpx.MockTransport(handler)),
+    )
+    try:
+        with bind_tool_invoker(proxy):
+            await search_web(
+                "harnyx subnet",
+                provider="exa",
+                provider_extra={"type": "instant", "moderation": True},
+            )
+    finally:
+        await proxy.aclose()
+
+    assert captured["payload"]["kwargs"] == {
+        "provider": "exa",
+        "search_queries": ["harnyx subnet"],
+        "provider_extra": {"type": "instant", "moderation": True},
+    }
+
+
+async def test_search_web_helper_rejects_generated_provider_output_before_proxy_call() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("invalid provider_extra must fail before transport")
+
+    proxy = ToolProxy(
+        base_url="http://validator",
+        token=TEST_TOKEN,
+        session_id=SESSION_ID,
+        client=httpx.AsyncClient(base_url="http://validator", transport=httpx.MockTransport(handler)),
+    )
+    try:
+        with bind_tool_invoker(proxy):
+            with pytest.raises(ValidationError):
+                await search_web(
+                    "harnyx subnet",
+                    provider="tavily",
+                    provider_extra={"include_answer": True},
+                )
+    finally:
+        await proxy.aclose()
+
+
 async def test_embed_text_helper_invokes_tool_proxy() -> None:
     captured: dict[str, dict[str, object]] = {}
 

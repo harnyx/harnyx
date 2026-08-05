@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import cast
+from typing import Literal, cast
 
 from harnyx_commons.json_types import JsonObject
 from harnyx_commons.llm.provider_types import (
@@ -43,6 +43,7 @@ SEARCH_PRICING_PER_REFERENCEABLE_RESULT: dict[SearchToolName, float] = {
 
 PARALLEL_SEARCH_BASE_RESULTS = 10
 PARALLEL_SEARCH_BASE_COST_USD = 0.005
+PARALLEL_SEARCH_TURBO_BASE_COST_USD = 0.001
 PARALLEL_SEARCH_ADDITIONAL_RESULT_COST_USD = 0.001
 PARALLEL_EXTRACT_URL_COST_USD = 0.001
 VERTEX_GROUNDED_PER_1K = 35.0
@@ -326,12 +327,21 @@ def price_embedding(
     raise ValueError(f"embedding pricing is not configured for provider={provider!r} model={model!r}")
 
 
-def price_parallel_search(*, billable_results: int) -> float:
+def price_parallel_search(
+    *,
+    billable_results: int,
+    mode: Literal["turbo", "basic", "advanced"] | None = None,
+) -> float:
     """Return provider-billed USD cost for one Parallel Search request."""
     if billable_results < 0:
         raise ValueError("billable_results must be non-negative")
+    base_cost_usd = (
+        PARALLEL_SEARCH_TURBO_BASE_COST_USD
+        if mode == "turbo"
+        else PARALLEL_SEARCH_BASE_COST_USD
+    )
     extra_results = max(0, billable_results - PARALLEL_SEARCH_BASE_RESULTS)
-    return PARALLEL_SEARCH_BASE_COST_USD + (
+    return base_cost_usd + (
         float(extra_results) * PARALLEL_SEARCH_ADDITIONAL_RESULT_COST_USD
     )
 
@@ -348,6 +358,7 @@ __all__ = [
     "PARALLEL_SEARCH_ADDITIONAL_RESULT_COST_USD",
     "PARALLEL_SEARCH_BASE_COST_USD",
     "PARALLEL_SEARCH_BASE_RESULTS",
+    "PARALLEL_SEARCH_TURBO_BASE_COST_USD",
     "GENERATION_MODEL_PRICING",
     "VERTEX_CLAUDE_WEB_SEARCH_PER_1K",
     "VERTEX_GEMINI3_GROUNDED_PER_1K",

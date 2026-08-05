@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from harnyx_miner_sdk.tools.search_provider_extra import (
+    FetchPageProviderExtra,
+    SearchWebProviderExtra,
+    validate_search_provider_extra,
+)
 from harnyx_miner_sdk.tools.types import ToolInvocationTimeout
 
-SearchProviderName = Literal["desearch", "parallel", "firecrawl"]
+SearchProviderName = Literal["desearch", "parallel", "firecrawl", "exa", "tavily"]
 AiSearchProviderName = Literal["desearch", "parallel"]
 
 
@@ -20,6 +25,7 @@ class SearchWebSearchRequest(BaseModel):
     provider: SearchProviderName
     search_queries: tuple[str, ...] = Field(min_length=1)
     num: int | None = Field(default=None, ge=0)
+    provider_extra: SearchWebProviderExtra | None = None
     timeout: ToolInvocationTimeout | None = None
 
     @field_validator("search_queries", mode="before")
@@ -37,6 +43,19 @@ class SearchWebSearchRequest(BaseModel):
             raise ValueError("search_queries must contain non-empty keywords")
         return normalized
 
+    @model_validator(mode="before")
+    @classmethod
+    def _parse_provider_extra(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        payload = cast(dict[str, object], value.copy())
+        provider = payload.get("provider")
+        if isinstance(provider, str) and "provider_extra" in payload:
+            payload["provider_extra"] = validate_search_provider_extra(
+                operation="search_web", provider=provider, provider_extra=payload["provider_extra"]
+            )
+        return payload
+
     @model_validator(mode="after")
     def _validate_firecrawl_query_length(self) -> SearchWebSearchRequest:
         if self.provider == "firecrawl":
@@ -46,7 +65,10 @@ class SearchWebSearchRequest(BaseModel):
         return self
 
     def to_query_params(self) -> dict[str, Any]:
-        return self.model_dump(exclude_none=True, exclude={"provider", "timeout"})
+        payload = self.model_dump(exclude_none=True, exclude={"provider", "timeout", "provider_extra"})
+        if self.provider_extra is not None:
+            payload.update(self.provider_extra.to_provider_payload())
+        return payload
 
 
 class SearchWebResult(BaseModel):
@@ -216,7 +238,21 @@ class FetchPageRequest(BaseModel):
 
     provider: SearchProviderName
     url: str = Field(min_length=1)
+    provider_extra: FetchPageProviderExtra | None = None
     timeout: ToolInvocationTimeout | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _parse_provider_extra(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        payload = cast(dict[str, object], value.copy())
+        provider = payload.get("provider")
+        if isinstance(provider, str) and "provider_extra" in payload:
+            payload["provider_extra"] = validate_search_provider_extra(
+                operation="fetch_page", provider=provider, provider_extra=payload["provider_extra"]
+            )
+        return payload
 
 
 class FetchPageResult(BaseModel):

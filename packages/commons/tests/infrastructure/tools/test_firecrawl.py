@@ -204,6 +204,44 @@ async def test_fetch_page_normalizes_documented_scrape_shape_without_billing_met
     assert result.billing.source == "missing_provider_metadata"
 
 
+async def test_fetch_page_maps_markdown_compatible_pdf_and_proxy_controls() -> None:
+    payloads: list[object] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {"markdown": "parsed content", "metadata": {}},
+            },
+        )
+
+    client, http_client = _client(handler)
+    try:
+        await client.fetch_page(
+            FetchPageRequest.model_validate(
+                {
+                    "provider": "firecrawl",
+                    "url": "https://example.com/document.pdf",
+                    "provider_extra": {"parse_pdf": True, "proxy": "enhanced"},
+                }
+            )
+        )
+    finally:
+        await http_client.aclose()
+
+    assert payloads == [
+        {
+            "url": "https://example.com/document.pdf",
+            "formats": ["markdown"],
+            "onlyMainContent": True,
+            "parsers": ["pdf"],
+            "proxy": "enhanced",
+        }
+    ]
+
+
 @pytest.mark.parametrize("markdown", [None, "", "   "])
 async def test_fetch_page_rejects_missing_or_blank_markdown(markdown: object) -> None:
     client, http_client = _client(

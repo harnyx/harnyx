@@ -59,7 +59,7 @@ def _context(source: ProviderCredentialSource) -> ToolInvocationContext:
     )
 
 
-@pytest.mark.parametrize("provider", ["desearch", "parallel"])
+@pytest.mark.parametrize("provider", ["desearch", "parallel", "firecrawl", "exa", "tavily"])
 async def test_platform_credential_session_resolves_requested_search_without_miner_fallback(provider: str) -> None:
     platform_provider = _CapturingSearchProvider()
     miner_resolver_calls: list[str] = []
@@ -160,6 +160,67 @@ async def test_firecrawl_static_settlement_retains_provider_billing_evidence() -
         "usage_count": 2,
         "service": "search",
     }
+
+
+async def test_exa_provider_returned_cost_is_settled_directly() -> None:
+    class _ExaProvider(_CapturingSearchProvider):
+        async def search_web(
+            self, request: SearchWebSearchRequest
+        ) -> SearchProviderResult[SearchWebSearchResponse]:
+            return SearchProviderResult(
+                response=SearchWebSearchResponse(
+                    data=[SearchWebResult(link="https://example.com", title="Example")]
+                ),
+                billing=ProviderBillingMetadata(
+                    actual_cost_provider="exa",
+                    actual_cost_usd=0.007,
+                    source="response_body",
+                    provider_request_id="exa-1",
+                    service="search",
+                    currency="USD",
+                ),
+            )
+
+    invoker = RuntimeToolInvoker(
+        InMemoryReceiptLog(), web_search_client=_ExaProvider(), web_search_provider_name="exa"
+    )
+    result = await invoker.invoke(
+        "search_web", args=(), kwargs={"provider": "exa", "search_queries": ["harnyx"]}
+    )
+
+    assert result.actual_cost_usd == pytest.approx(0.007)
+    assert result.actual_cost_provider == "exa"
+    assert result.actual_cost_evidence["settlement_source"] == "provider_returned"
+
+
+async def test_tavily_usage_evidence_is_retained_with_static_settlement() -> None:
+    class _TavilyProvider(_CapturingSearchProvider):
+        async def search_web(
+            self, request: SearchWebSearchRequest
+        ) -> SearchProviderResult[SearchWebSearchResponse]:
+            return SearchProviderResult(
+                response=SearchWebSearchResponse(
+                    data=[SearchWebResult(link="https://example.com", title="Example")]
+                ),
+                billing=ProviderBillingMetadata(
+                    actual_cost_provider="tavily",
+                    source="response_body",
+                    provider_request_id="tavily-1",
+                    usage_count=1,
+                    service="search",
+                ),
+            )
+
+    invoker = RuntimeToolInvoker(
+        InMemoryReceiptLog(), web_search_client=_TavilyProvider(), web_search_provider_name="tavily"
+    )
+    result = await invoker.invoke(
+        "search_web", args=(), kwargs={"provider": "tavily", "search_queries": ["harnyx"]}
+    )
+
+    assert result.actual_cost_provider == "tavily"
+    assert result.actual_cost_evidence["settlement_source"] == "static_pricing"
+    assert result.actual_cost_evidence["provider_billing"]["usage_count"] == 1
 
 
 async def test_miner_credential_search_uses_miner_resolver_without_direct_fallback() -> None:

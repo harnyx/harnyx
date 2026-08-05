@@ -40,6 +40,7 @@ from harnyx_commons.tools.search_models import (
     SearchXSearchRequest,
     SearchXSearchResponse,
 )
+from harnyx_miner_sdk.tools.search_provider_extra import DeSearchFetchExtra, DeSearchSearchExtra
 
 _LOGGER = logging.getLogger("harnyx_commons.tools.desearch.calls")
 _DESEARCH_AI_MIN_COUNT = 10
@@ -257,10 +258,15 @@ class DeSearchClient:
         self,
         request: SearchWebSearchRequest,
     ) -> SearchProviderResult[SearchWebSearchResponse]:
-        data = await self._search_links_web_page_with_billing(request, start=None)
+        extra = request.provider_extra or DeSearchSearchExtra()
+        if not isinstance(extra, DeSearchSearchExtra):
+            raise ValueError("DeSearch search requires DeSearchSearchExtra")
+        data = await self._search_links_web_page_with_billing(request, start=extra.start)
         if data is None:
             raise ToolProviderError("tool provider failed")
         response = SearchWebSearchResponse.model_validate(data.data)
+        if request.num is not None:
+            response.data = response.data[: request.num]
         return SearchProviderResult(
             response=response,
             billing=_require_provider_billing(
@@ -303,11 +309,14 @@ class DeSearchClient:
         self,
         request: FetchPageRequest,
     ) -> SearchProviderResult[FetchPageResponse]:
+        extra = request.provider_extra or DeSearchFetchExtra()
+        if not isinstance(extra, DeSearchFetchExtra):
+            raise ValueError("DeSearch fetch requires DeSearchFetchExtra")
         data = await self._get_with_billing(
             "web/crawl",
-            {"url": request.url, "format": "text"},
+            {"url": request.url, **extra.to_provider_payload()},
             expect_data=False,
-            response_format="text",
+            response_format=extra.format,
             requested_timeout=request.timeout,
         )
         if data is None:
@@ -351,8 +360,6 @@ class DeSearchClient:
         params: dict[str, Any] = {
             "query": _build_web_query(request.search_queries),
         }
-        if request.num is not None:
-            params["num"] = request.num
         if start is not None:
             params["start"] = start
         return await self._get_with_billing("web", params, requested_timeout=request.timeout)
@@ -831,7 +838,7 @@ class DeSearchClient:
     ) -> tuple[object, dict[str, Any], ProviderBillingMetadata | None]:
         resp.raise_for_status()
         billing = _billing_metadata_from_headers(resp.headers)
-        if response_format == "text":
+        if response_format in {"text", "html"}:
             raw = resp.text
             return raw, {"content": raw}, billing
         raw = resp.json()

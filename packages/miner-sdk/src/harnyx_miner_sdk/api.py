@@ -45,6 +45,10 @@ from harnyx_miner_sdk.tools.search_models import (
     SearchWebSearchRequest,
     SearchWebSearchResponse,
 )
+from harnyx_miner_sdk.tools.search_provider_extra import (
+    FetchPageProviderExtra,
+    SearchWebProviderExtra,
+)
 from harnyx_miner_sdk.tools.types import ToolInvocationTimeout
 
 TResponse = TypeVar("TResponse")
@@ -162,12 +166,20 @@ async def search_web(
     /,
     *,
     provider: SearchProviderName,
+    num: int | None = None,
+    provider_extra: Mapping[str, Any] | SearchWebProviderExtra | None = None,
     timeout: float | None = None,
     **kwargs: Any,
 ) -> ToolCallResponse[SearchWebSearchResponse]:
     """Execute the validator-hosted search tool and return its response payload."""
 
-    raw_payload = {"provider": provider, "search_queries": search_queries, **kwargs}
+    raw_payload = {
+        "provider": provider,
+        "search_queries": search_queries,
+        "num": num,
+        "provider_extra": provider_extra,
+        **kwargs,
+    }
     if timeout is not None:
         raw_payload["timeout"] = timeout
     payload = SearchWebSearchRequest.model_validate(raw_payload).model_dump(exclude_none=True, mode="json")
@@ -191,12 +203,13 @@ async def fetch_page(
     /,
     *,
     provider: SearchProviderName,
+    provider_extra: Mapping[str, Any] | FetchPageProviderExtra | None = None,
     timeout: float | None = None,
     **kwargs: Any,
 ) -> ToolCallResponse[FetchPageResponse]:
     """Execute the validator-hosted page fetch tool and return its response payload."""
 
-    raw_payload = {"provider": provider, "url": url, **kwargs}
+    raw_payload = {"provider": provider, "url": url, "provider_extra": provider_extra, **kwargs}
     if timeout is not None:
         raw_payload["timeout"] = timeout
     payload = FetchPageRequest.model_validate(raw_payload).model_dump(exclude_none=True, mode="json")

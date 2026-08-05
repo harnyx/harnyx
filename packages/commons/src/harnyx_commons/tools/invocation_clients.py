@@ -10,9 +10,10 @@ from typing import cast
 
 from pydantic import SecretStr
 
-from harnyx_commons.clients import DESEARCH, FIRECRAWL, PARALLEL
+from harnyx_commons.clients import DESEARCH, EXA, FIRECRAWL, PARALLEL, TAVILY
 from harnyx_commons.config.bedrock import BedrockSettings
 from harnyx_commons.config.llm import (
+    AI_SEARCH_PROVIDER_NAMES,
     AiSearchProviderName,
     LlmSettings,
     SearchProviderName,
@@ -44,6 +45,7 @@ from harnyx_commons.tools.embedding_models import (
     TextEmbeddingResult,
     parse_miner_selected_embedding_provider,
 )
+from harnyx_commons.tools.exa import ExaClient
 from harnyx_commons.tools.firecrawl import FirecrawlClient
 from harnyx_commons.tools.parallel import ParallelClient
 from harnyx_commons.tools.ports import (
@@ -61,6 +63,7 @@ from harnyx_commons.tools.search_models import (
     SearchWebSearchRequest,
     SearchWebSearchResponse,
 )
+from harnyx_commons.tools.tavily import TavilyClient
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,6 +286,22 @@ def build_web_search_provider_for_name(
             max_concurrent=llm_settings.firecrawl_max_concurrent,
             include_payloads_in_logs=include_payloads_in_logs,
         )
+    if provider_name == "exa":
+        return ExaClient(
+            base_url=EXA.base_url,
+            api_key=llm_settings.exa_api_key_value,
+            timeout=EXA.timeout_seconds,
+            max_concurrent=llm_settings.exa_max_concurrent,
+            include_payloads_in_logs=include_payloads_in_logs,
+        )
+    if provider_name == "tavily":
+        return TavilyClient(
+            base_url=TAVILY.base_url,
+            api_key=llm_settings.tavily_api_key_value,
+            timeout=TAVILY.timeout_seconds,
+            max_concurrent=llm_settings.tavily_max_concurrent,
+            include_payloads_in_logs=include_payloads_in_logs,
+        )
     raise AssertionError(f"unsupported parsed search provider: {provider_name}")
 
 
@@ -316,6 +335,20 @@ def build_miner_paid_web_search_provider(
             base_url=FIRECRAWL.base_url,
             api_key=explicit_key,
             timeout=_effective_client_timeout(FIRECRAWL.timeout_seconds, timeout),
+            max_concurrent=None,
+        )
+    if provider_name == "exa":
+        return ExaClient(
+            base_url=EXA.base_url,
+            api_key=explicit_key,
+            timeout=_effective_client_timeout(EXA.timeout_seconds, timeout),
+            max_concurrent=None,
+        )
+    if provider_name == "tavily":
+        return TavilyClient(
+            base_url=TAVILY.base_url,
+            api_key=explicit_key,
+            timeout=_effective_client_timeout(TAVILY.timeout_seconds, timeout),
             max_concurrent=None,
         )
     raise AssertionError(f"unsupported parsed miner-paid search provider: {provider_name}")
@@ -354,9 +387,13 @@ def _build_optional_search_clients(
         return None, None
     if not lazy:
         client = build_web_search_provider(llm_settings)
-        ai_client = cast(AiSearchProviderPort, client) if llm_settings.search_provider != "firecrawl" else None
+        ai_client = (
+            cast(AiSearchProviderPort, client)
+            if llm_settings.search_provider in AI_SEARCH_PROVIDER_NAMES
+            else None
+        )
         return client, ai_client
-    if llm_settings.search_provider == "firecrawl":
+    if llm_settings.search_provider not in AI_SEARCH_PROVIDER_NAMES:
         return LazyWebSearchProvider(lambda: build_web_search_provider(llm_settings)), None
     client = LazySearchProvider(lambda: build_web_search_provider(llm_settings))
     return client, client
@@ -388,6 +425,8 @@ def _require_configured_search_credential(*, provider: SearchProviderName, llm_s
         "desearch": llm_settings.desearch_api_key_value,
         "parallel": llm_settings.parallel_api_key_value,
         "firecrawl": llm_settings.firecrawl_api_key_value,
+        "exa": llm_settings.exa_api_key_value,
+        "tavily": llm_settings.tavily_api_key_value,
     }[provider]
     if not api_key.strip():
         raise ProviderCredentialUnavailableError(provider)

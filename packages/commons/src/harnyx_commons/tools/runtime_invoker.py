@@ -102,6 +102,8 @@ _AUTHENTICATION_STATUSES_BY_PROVIDER: Mapping[str, frozenset[int]] = {
     "openrouter": frozenset({401}),
     "parallel": frozenset({401}),
     "firecrawl": frozenset({401}),
+    "exa": frozenset({401}),
+    "tavily": frozenset({401}),
     "vertex": frozenset({401}),
 }
 WebSearchProviderResolver = Callable[
@@ -1009,7 +1011,7 @@ def _settle_search_cost(
     request_provider: SearchProviderName,
 ) -> _ActualCost:
     if billing is not None and billing.actual_cost_usd is not None:
-        if billing.actual_cost_provider not in {"desearch", "parallel"}:
+        if billing.actual_cost_provider not in {"desearch", "parallel", "exa"}:
             raise ValueError(f"{tool_name} provider-backed success missing supported provider cost evidence")
         return _ActualCost(
             billing.actual_cost_usd,
@@ -1021,7 +1023,7 @@ def _settle_search_cost(
         )
 
     provider = billing.actual_cost_provider if billing is not None else str(request_provider)
-    if provider not in {"desearch", "parallel", "firecrawl"}:
+    if provider not in {"desearch", "parallel", "firecrawl", "exa", "tavily"}:
         raise ValueError(f"{tool_name} provider-backed success missing supported provider cost evidence")
     referenceable_results = _referenceable_result_count(tool_name, public_payload)
     if referenceable_results is None:

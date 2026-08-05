@@ -26,6 +26,7 @@ from harnyx_commons.tools.search_models import (
     SearchWebSearchRequest,
     SearchWebSearchResponse,
 )
+from harnyx_miner_sdk.tools.search_provider_extra import FirecrawlFetchExtra, FirecrawlSearchExtra
 
 _LOGGER = logging.getLogger("harnyx_commons.tools.firecrawl.calls")
 _RETRYABLE_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
@@ -174,7 +175,14 @@ class FirecrawlClient:
         query = " OR ".join(f"({term.strip()})" for term in request.search_queries)
         if len(query) > 500:
             raise ValueError("Firecrawl search query must not exceed 500 characters")
-        payload: dict[str, object] = {"query": query, "sources": ["web"]}
+        extra = request.provider_extra or FirecrawlSearchExtra()
+        if not isinstance(extra, FirecrawlSearchExtra):
+            raise ValueError("Firecrawl search requires FirecrawlSearchExtra")
+        payload: dict[str, object] = {
+            "query": query,
+            "sources": ["web"],
+            **extra.to_provider_payload(),
+        }
         if request.num is not None:
             payload["limit"] = min(request.num, 100)
         raw = await self._post("/v2/search", payload, requested_timeout=request.timeout)
@@ -199,9 +207,17 @@ class FirecrawlClient:
         self,
         request: FetchPageRequest,
     ) -> SearchProviderResult[FetchPageResponse]:
+        extra = request.provider_extra or FirecrawlFetchExtra()
+        if not isinstance(extra, FirecrawlFetchExtra):
+            raise ValueError("Firecrawl fetch requires FirecrawlFetchExtra")
         raw = await self._post(
             "/v2/scrape",
-            {"url": request.url, "formats": ["markdown"], "onlyMainContent": True},
+            {
+                "url": request.url,
+                "formats": ["markdown"],
+                "onlyMainContent": True,
+                **extra.to_provider_payload(),
+            },
             requested_timeout=request.timeout,
         )
         billing = _billing_from_raw(raw, service="scrape")

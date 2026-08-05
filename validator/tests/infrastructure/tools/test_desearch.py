@@ -47,7 +47,7 @@ async def test_desearch_client_posts_payload() -> None:
 
     assert result.data == []
     assert captured["method"] == "GET"
-    assert captured["url"] == "https://api.desearch.ai/web?query=%28harnyx%29+OR+%28subnet%29&num=5"
+    assert captured["url"] == "https://api.desearch.ai/web?query=%28harnyx%29+OR+%28subnet%29"
     assert captured["headers"]["authorization"] == "test-key"
 
 
@@ -127,7 +127,7 @@ async def test_desearch_client_preserves_single_search_term() -> None:
 
     assert result.data == []
     assert captured["method"] == "GET"
-    assert captured["url"] == "https://api.desearch.ai/web?query=United+States&num=5"
+    assert captured["url"] == "https://api.desearch.ai/web?query=United+States"
     assert captured["headers"]["authorization"] == "test-key"
 
 

@@ -264,6 +264,19 @@ def test_parallel_search_actual_pricing_uses_base_price_for_up_to_ten_results(
 
 
 @pytest.mark.parametrize(
+    ("billable_results", "expected_cost"),
+    ((0, 0.001), (1, 0.001), (10, 0.001), (11, 0.002), (25, 0.016)),
+)
+def test_parallel_turbo_search_actual_pricing_uses_lower_base_price(
+    billable_results: int,
+    expected_cost: float,
+) -> None:
+    assert price_parallel_search(billable_results=billable_results, mode="turbo") == pytest.approx(
+        expected_cost
+    )
+
+
+@pytest.mark.parametrize(
     "model",
     (
         "openai/gpt-oss-20b-TEE",

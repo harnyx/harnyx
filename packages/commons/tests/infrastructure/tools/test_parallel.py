@@ -48,7 +48,7 @@ async def test_parallel_client_can_suppress_request_and_raw_response_logs(
     assert "raw-provider-envelope" not in str(record.__dict__)
 
 
-async def test_parallel_client_search_web_posts_keyword_list() -> None:
+async def test_parallel_client_search_web_posts_keyword_list_and_turbo_mode() -> None:
     captured: dict[str, Any] = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -78,7 +78,14 @@ async def test_parallel_client_search_web_posts_keyword_list() -> None:
     adapter = ParallelClient(base_url="https://api.parallel.ai", api_key="parallel-key", client=client)
 
     result = await adapter.search_web(
-        SearchWebSearchRequest(provider="parallel", search_queries=("alpha", "beta"), num=3)
+        SearchWebSearchRequest.model_validate(
+            {
+                "provider": "parallel",
+                "search_queries": ["alpha", "beta"],
+                "num": 3,
+                "provider_extra": {"mode": "turbo"},
+            }
+        )
     )
     response = result.response
 
@@ -86,15 +93,18 @@ async def test_parallel_client_search_web_posts_keyword_list() -> None:
     assert response.data[0].snippet == "alpha snippet"
     assert response.attempts == 1
     assert response.retry_reasons == ()
-    assert result.billing.actual_cost_usd == pytest.approx(price_parallel_search(billable_results=1))
+    assert result.billing.actual_cost_usd == pytest.approx(
+        price_parallel_search(billable_results=1, mode="turbo")
+    )
     assert result.billing.actual_cost_provider == "parallel"
     assert result.billing.billable_units == 1
     assert captured["method"] == "POST"
-    assert captured["url"] == "https://api.parallel.ai/v1beta/search"
+    assert captured["url"] == "https://api.parallel.ai/v1/search"
     assert captured["headers"]["x-api-key"] == "parallel-key"
     assert captured["json"] == {
         "search_queries": ["alpha", "beta"],
-        "max_results": 3,
+        "mode": "turbo",
+        "advanced_settings": {"max_results": 3},
     }
 
 
@@ -169,7 +179,7 @@ async def test_parallel_client_search_ai_uses_objective() -> None:
     }
 
 
-async def test_parallel_client_fetch_page_uses_extract() -> None:
+async def test_parallel_client_fetch_page_uses_extract_with_top_level_total_character_limit() -> None:
     captured: dict[str, Any] = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -196,7 +206,15 @@ async def test_parallel_client_fetch_page_uses_extract() -> None:
     )
     adapter = ParallelClient(base_url="https://api.parallel.ai", api_key="parallel-key", client=client)
 
-    result = await adapter.fetch_page(FetchPageRequest(provider="parallel", url="https://example.com"))
+    result = await adapter.fetch_page(
+        FetchPageRequest.model_validate(
+            {
+                "provider": "parallel",
+                "url": "https://example.com",
+                "provider_extra": {"max_chars_total": 12_000},
+            }
+        )
+    )
     response = result.response
 
     assert response.data[0].url == "https://example.com"
@@ -211,6 +229,54 @@ async def test_parallel_client_fetch_page_uses_extract() -> None:
         "advanced_settings": {
             "full_content": True,
         },
+        "max_chars_total": 12_000,
+    }
+
+
+async def test_parallel_client_fetch_page_returns_excerpts_when_full_content_is_disabled() -> None:
+    captured: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "extract_id": "extract-excerpts",
+                "session_id": "session-excerpts",
+                "results": [
+                    {
+                        "url": "https://example.com/",
+                        "title": "Example",
+                        "excerpts": ["first relevant excerpt", "second relevant excerpt"],
+                    }
+                ],
+                "errors": [],
+            },
+        )
+
+    adapter = ParallelClient(
+        base_url="https://api.parallel.ai",
+        api_key="parallel-key",
+        client=httpx.AsyncClient(
+            base_url="https://api.parallel.ai",
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+
+    result = await adapter.fetch_page(
+        FetchPageRequest.model_validate(
+            {
+                "provider": "parallel",
+                "url": "https://example.com",
+                "provider_extra": {"full_content": False},
+            }
+        )
+    )
+
+    assert result.response.data[0].content == "first relevant excerpt\n\nsecond relevant excerpt"
+    assert captured["json"] == {
+        "urls": ["https://example.com/"],
+        "advanced_settings": {"full_content": False},
     }
 
 

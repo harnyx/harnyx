@@ -126,8 +126,10 @@ class OpenAiCompatibleEndpointConfig(BaseModel):
 
 _OPENAI_COMPATIBLE_ENDPOINTS_ADAPTER = TypeAdapter(list[OpenAiCompatibleEndpointConfig])
 
-SearchProviderName = Literal["desearch", "parallel", "firecrawl"]
-SEARCH_PROVIDER_NAMES: tuple[SearchProviderName, ...] = ("desearch", "parallel", "firecrawl")
+SearchProviderName = Literal["desearch", "parallel", "firecrawl", "exa", "tavily"]
+SEARCH_PROVIDER_NAMES: tuple[SearchProviderName, ...] = (
+    "desearch", "parallel", "firecrawl", "exa", "tavily"
+)
 AiSearchProviderName = Literal["desearch", "parallel"]
 AI_SEARCH_PROVIDER_NAMES: tuple[AiSearchProviderName, ...] = ("desearch", "parallel")
 
@@ -279,10 +281,12 @@ class LlmSettings(BaseSettings):
     )
     content_review_llm_timeout_seconds: float | None = Field(default=None, alias="CONTENT_REVIEW_LLM_TIMEOUT_SECONDS")
 
-    # --- Chutes / DeSearch / Parallel / Firecrawl ---
+    # --- Chutes / web retrieval providers ---
     desearch_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="DESEARCH_API_KEY")
     parallel_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="PARALLEL_API_KEY")
     firecrawl_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="FIRECRAWL_API_KEY")
+    exa_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="EXA_API_KEY")
+    tavily_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="TAVILY_API_KEY")
     parallel_base_url: str = Field(default="https://api.parallel.ai", alias="PARALLEL_BASE_URL")
 
     chutes_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="CHUTES_API_KEY")
@@ -294,6 +298,8 @@ class LlmSettings(BaseSettings):
     desearch_max_concurrent: int = Field(default=100, alias="DESEARCH_MAX_CONCURRENT")
     parallel_max_concurrent: int = Field(default=100, alias="PARALLEL_MAX_CONCURRENT")
     firecrawl_max_concurrent: int = Field(default=100, alias="FIRECRAWL_MAX_CONCURRENT")
+    exa_max_concurrent: int = Field(default=100, alias="EXA_MAX_CONCURRENT")
+    tavily_max_concurrent: int = Field(default=100, alias="TAVILY_MAX_CONCURRENT")
 
     # --- Validators ---
     @field_validator("desearch_api_key", mode="before")
@@ -315,6 +321,14 @@ class LlmSettings(BaseSettings):
     @property
     def firecrawl_api_key_value(self) -> str:
         return self.firecrawl_api_key.get_secret_value()
+
+    @property
+    def exa_api_key_value(self) -> str:
+        return self.exa_api_key.get_secret_value()
+
+    @property
+    def tavily_api_key_value(self) -> str:
+        return self.tavily_api_key.get_secret_value()
 
     @property
     def chutes_api_key_value(self) -> str:

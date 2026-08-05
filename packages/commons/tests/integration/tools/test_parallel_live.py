@@ -26,7 +26,14 @@ def _build_parallel_client(settings: LlmSettings) -> ParallelClient:
 async def test_parallel_search_web_live() -> None:
     settings = LlmSettings()
     client = _build_parallel_client(settings)
-    request = SearchWebSearchRequest(provider="parallel", search_queries=("python", "documentation"), num=3)
+    request = SearchWebSearchRequest.model_validate(
+        {
+            "provider": "parallel",
+            "search_queries": ["python", "documentation"],
+            "num": 3,
+            "provider_extra": {"mode": "turbo"},
+        }
+    )
     try:
         billing_response = await client.search_web(request)
         assert isinstance(billing_response.response.data, list)
@@ -35,9 +42,18 @@ async def test_parallel_search_web_live() -> None:
         assert billing_response.billing.provider_request_id is not None
         assert billing_response.billing.source == "response_results"
         assert billing_response.billing.actual_cost_usd == pytest.approx(
-            price_parallel_search(billable_results=billing_response.billing.billable_units)
+            price_parallel_search(
+                billable_results=billing_response.billing.billable_units,
+                mode="turbo",
+            )
         )
-        assert price_parallel_search(billable_results=billing_response.billing.billable_units) >= 0.005
+        assert (
+            price_parallel_search(
+                billable_results=billing_response.billing.billable_units,
+                mode="turbo",
+            )
+            >= 0.001
+        )
     finally:
         await client.aclose()
 
@@ -104,7 +120,15 @@ async def test_parallel_fetch_page_live() -> None:
     settings = LlmSettings()
     client = _build_parallel_client(settings)
     try:
-        billing_response = await client.fetch_page(FetchPageRequest(provider="parallel", url="https://example.com"))
+        billing_response = await client.fetch_page(
+            FetchPageRequest.model_validate(
+                {
+                    "provider": "parallel",
+                    "url": "https://example.com",
+                    "provider_extra": {"max_chars_total": 20_000},
+                }
+            )
+        )
         response = billing_response.response
         assert len(response.data) == 1
         assert response.data[0].url.rstrip("/") == "https://example.com"

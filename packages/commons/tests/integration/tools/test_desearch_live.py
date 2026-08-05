@@ -45,14 +45,20 @@ async def test_fetch_page_live() -> None:
         api_key=settings.desearch_api_key_value,
         timeout=DESEARCH.timeout_seconds,
     )
-    request = FetchPageRequest(provider="desearch", url="https://example.com")
+    request = FetchPageRequest.model_validate(
+        {
+            "provider": "desearch",
+            "url": "https://www.iana.org/help/example-domains",
+            "provider_extra": {"format": "html"},
+        }
+    )
 
     billing_result = await client.fetch_page(request)
     await client.aclose()
 
     result = billing_result.response
     assert len(result.data) == 1
-    assert result.data[0].url == "https://example.com"
+    assert result.data[0].url == "https://www.iana.org/help/example-domains"
     assert result.data[0].content
     assert billing_result.billing is not None
     if billing_result.billing.actual_cost_usd is None:

@@ -344,6 +344,47 @@ def test_internal_search_provider_builds_firecrawl_with_fixed_endpoint_and_concu
     ]
 
 
+@pytest.mark.parametrize(
+    ("provider", "client_name", "key_field", "concurrency_field", "base_url"),
+    [
+        ("exa", "ExaClient", "exa_api_key", "exa_max_concurrent", "https://api.exa.ai"),
+        ("tavily", "TavilyClient", "tavily_api_key", "tavily_max_concurrent", "https://api.tavily.com"),
+    ],
+)
+def test_internal_new_search_providers_use_configured_credentials_and_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    client_name: str,
+    key_field: str,
+    concurrency_field: str,
+    base_url: str,
+) -> None:
+    captured: list[dict[str, object]] = []
+    sentinel = object()
+    monkeypatch.setattr(
+        invocation_clients,
+        client_name,
+        lambda **kwargs: captured.append(kwargs) or sentinel,
+    )
+    settings = LlmSettings.model_construct(
+        search_provider=provider,
+        **{key_field: SecretStr(f"operator-{provider}-key"), concurrency_field: 17},
+    )
+
+    resolved = invocation_clients.build_web_search_provider_for_name(settings, provider)
+
+    assert resolved is sentinel
+    assert captured == [
+        {
+            "base_url": base_url,
+            "api_key": f"operator-{provider}-key",
+            "timeout": 60.0,
+            "max_concurrent": 17,
+            "include_payloads_in_logs": True,
+        }
+    ]
+
+
 def test_cached_web_search_provider_registry_resolves_requested_provider_without_payload_logging(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -441,6 +482,26 @@ def test_fixed_parallel_client_is_shared_between_web_and_ai_roles() -> None:
     )
 
     assert clients.search_client is clients.ai_search_client
+
+
+@pytest.mark.parametrize("provider", ["firecrawl", "exa", "tavily"])
+@pytest.mark.parametrize("lazy_search", [False, True])
+def test_fixed_web_only_search_providers_do_not_build_ai_search_clients(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    lazy_search: bool,
+) -> None:
+    sentinel = object()
+    monkeypatch.setattr(invocation_clients, "build_web_search_provider", lambda _settings: sentinel)
+
+    search_client, ai_search_client = invocation_clients._build_optional_search_clients(
+        LlmSettings.model_construct(search_provider=provider),
+        lazy=lazy_search,
+        required=True,
+    )
+
+    assert search_client is not None
+    assert ai_search_client is None
 
 
 @pytest.mark.parametrize("provider", ["desearch", "parallel"])

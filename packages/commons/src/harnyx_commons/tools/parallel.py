@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -40,6 +40,7 @@ from harnyx_commons.tools.search_models import (
     SearchWebSearchRequest,
     SearchWebSearchResponse,
 )
+from harnyx_miner_sdk.tools.search_provider_extra import ParallelFetchExtra, ParallelSearchExtra
 
 _LOGGER = logging.getLogger("harnyx_commons.tools.parallel.calls")
 
@@ -198,13 +199,25 @@ class ParallelClient:
         self,
         request: SearchWebSearchRequest,
     ) -> SearchProviderResult[SearchWebSearchResponse]:
+        extra = request.provider_extra or ParallelSearchExtra()
+        if not isinstance(extra, ParallelSearchExtra):
+            raise ValueError("Parallel search requires ParallelSearchExtra")
         payload: dict[str, object] = {
             "search_queries": list(request.search_queries),
         }
+        extra_payload = extra.to_provider_payload()
+        advanced_settings = {
+            key: extra_payload.pop(key)
+            for key in ("source_policy", "fetch_policy", "excerpt_settings", "location")
+            if key in extra_payload
+        }
+        payload.update(extra_payload)
         if request.num is not None:
-            payload["max_results"] = request.num
+            advanced_settings["max_results"] = request.num
+        if advanced_settings:
+            payload["advanced_settings"] = advanced_settings
         data = _ParallelSearchResponsePayload.model_validate(
-            await self._post("/v1beta/search", payload, requested_timeout=request.timeout)
+            await self._post("/v1/search", payload, requested_timeout=request.timeout)
         )
         response = SearchWebSearchResponse(
             data=[
@@ -223,6 +236,7 @@ class ParallelClient:
             billing=_parallel_search_billing(
                 billable_units=len(data.results),
                 provider_request_id=data.search_id,
+                mode=extra.mode,
             ),
         )
 
@@ -261,9 +275,13 @@ class ParallelClient:
         self,
         request: FetchPageRequest,
     ) -> SearchProviderResult[FetchPageResponse]:
+        extra = request.provider_extra or ParallelFetchExtra()
+        if not isinstance(extra, ParallelFetchExtra):
+            raise ValueError("Parallel fetch requires ParallelFetchExtra")
         extraction = await self._extract_pages(
             ExtractPagesRequest(urls=(request.url,)),
             requested_timeout=request.timeout,
+            provider_extra=extra,
         )
         if extraction.response.errors:
             error = extraction.response.errors[0]
@@ -272,11 +290,11 @@ class ParallelClient:
                 provider="parallel",
                 http_status=error.http_status_code,
             )
-        if len(extraction.response.pages) != 1 or extraction.response.pages[0].content is None:
+        if len(extraction.response.pages) != 1:
             raise ToolProviderError("tool provider failed", provider="parallel")
         result = extraction.response.pages[0]
-        content = result.content
-        if content is None:
+        content = result.content or "\n\n".join(excerpt.strip() for excerpt in result.excerpts if excerpt.strip())
+        if not content:
             raise ToolProviderError("tool provider failed", provider="parallel")
         response = FetchPageResponse(
             data=[
@@ -298,13 +316,14 @@ class ParallelClient:
         self,
         request: ExtractPagesRequest,
     ) -> SearchProviderResult[ExtractPagesResponse]:
-        return await self._extract_pages(request, requested_timeout=None)
+        return await self._extract_pages(request, requested_timeout=None, provider_extra=None)
 
     async def _extract_pages(
         self,
         request: ExtractPagesRequest,
         *,
         requested_timeout: float | None,
+        provider_extra: ParallelFetchExtra | None,
     ) -> SearchProviderResult[ExtractPagesResponse]:
         advanced_settings: dict[str, object] = {
             "full_content": (
@@ -313,6 +332,13 @@ class ParallelClient:
                 else {"max_chars_per_result": request.max_chars_per_result}
             )
         }
+        if provider_extra is not None:
+            extra_payload = provider_extra.to_provider_payload()
+            if "full_content" in extra_payload:
+                advanced_settings["full_content"] = extra_payload.pop("full_content")
+            for key in ("fetch_policy", "excerpt_settings"):
+                if key in extra_payload:
+                    advanced_settings[key] = extra_payload.pop(key)
         fetch_policy: dict[str, object] = {}
         if request.max_age_seconds is not None:
             fetch_policy["max_age_seconds"] = request.max_age_seconds
@@ -324,8 +350,12 @@ class ParallelClient:
             "urls": list(request.urls),
             "advanced_settings": advanced_settings,
         }
+        if provider_extra is not None and provider_extra.max_chars_total is not None:
+            payload["max_chars_total"] = provider_extra.max_chars_total
         if request.objective is not None:
             payload["objective"] = request.objective
+        if provider_extra is not None and provider_extra.objective is not None:
+            payload["objective"] = provider_extra.objective
         if request.client_model is not None:
             payload["client_model"] = request.client_model
         try:
@@ -498,10 +528,11 @@ def _parallel_search_billing(
     *,
     billable_units: int,
     provider_request_id: str | None,
+    mode: Literal["turbo", "basic", "advanced"] | None = None,
 ) -> ProviderBillingMetadata:
     return _parallel_billing(
         billable_units=billable_units,
-        actual_cost_usd=price_parallel_search(billable_results=billable_units),
+        actual_cost_usd=price_parallel_search(billable_results=billable_units, mode=mode),
         provider_request_id=provider_request_id,
     )
 
