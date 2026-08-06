@@ -26,6 +26,7 @@ from harnyx_commons.llm.provider_types import (
     CHUTES_PROVIDER,
     VERTEX_PROVIDER,
     LlmProviderName,
+    LlmRouteTarget,
     normalize_reasoning_effort,
     parse_builtin_provider_name,
 )
@@ -120,9 +121,18 @@ def _actual_cost_usd_for_retry_total(response: LlmResponse) -> float | None:
 class LlmProviderError(RuntimeError):
     """Provider-owned failure before or during an LLM operation."""
 
-    def __init__(self, reason: str, *, response: LlmResponse | None = None) -> None:
+    def __init__(
+        self,
+        reason: str,
+        *,
+        response: LlmResponse | None = None,
+        effective_provider: LlmRouteTarget | None = None,
+        effective_model: str | None = None,
+    ) -> None:
         super().__init__(reason)
         self.response = response
+        self.effective_provider = effective_provider
+        self.effective_model = effective_model
 
 
 class LlmProviderConfigurationError(LlmProviderError):
@@ -140,12 +150,16 @@ class LlmRetryExhaustedError(RuntimeError):
         attempts: int | None = None,
         retry_reasons: tuple[str, ...] = (),
         latency_ms_total: float | None = None,
+        effective_provider: LlmRouteTarget | None = None,
+        effective_model: str | None = None,
     ) -> None:
         super().__init__(reason)
         self.response = response
         self.attempts = attempts
         self.retry_reasons = retry_reasons
         self.latency_ms_total = latency_ms_total
+        self.effective_provider = effective_provider
+        self.effective_model = effective_model
 
 
 @dataclass(frozen=True)

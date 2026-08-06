@@ -27,7 +27,11 @@ from harnyx_commons.llm.provider_factory import (
     build_cached_llm_provider_registry,
     build_routed_llm_provider,
 )
-from harnyx_commons.llm.provider_types import BEDROCK_PROVIDER
+from harnyx_commons.llm.provider_types import (
+    BEDROCK_PROVIDER,
+    CHUTES_PROVIDER,
+    parse_custom_openai_compatible_target,
+)
 from harnyx_commons.llm.routing import ResolvedLlmRoute, resolve_llm_route
 from harnyx_commons.llm.tool_models import ALLOWED_TOOL_MODELS, parse_miner_selected_llm_provider_model
 from harnyx_commons.miner_task_scoring import (
@@ -113,7 +117,7 @@ _SANDBOX_CPUSET_MAX_CPUS = 4
 _SANDBOX_CPUSET_LABEL = "harnyx.sandbox.cpuset_cpus"
 _DIRECT_SCORING_LLM_MODEL = "google/gemma-4-31B-turbo-TEE"
 _SCORING_LLM_REASONING_EFFORT = "high"
-_DUPLICATION_DETECTION_LLM_MODEL = "google/gemma-4-31B-turbo-TEE"
+_DUPLICATION_DETECTION_LLM_MODEL = "zai-org/GLM-5.2-TEE"
 _SCORING_FALLBACK_MODELS = ("zai-org/GLM-5.2-TEE", "moonshotai/Kimi-K2.6-TEE")
 _SCORING_SLOT_CONFIG = ScoringSlotConfig(
     entries=(
@@ -130,8 +134,10 @@ _SCORING_SLOT_CONFIG = ScoringSlotConfig(
     )
 )
 _DUPLICATION_DETECTION_FALLBACK_MODELS = (
-    "moonshotai/Kimi-K2.6-TEE",
-    "zai-org/GLM-5.2-TEE",
+    "moonshotai/Kimi-K3-TEE",
+)
+_DUPLICATION_DETECTION_CHUTES_CHAIN_MODELS = frozenset(
+    (_DUPLICATION_DETECTION_LLM_MODEL, *_DUPLICATION_DETECTION_FALLBACK_MODELS)
 )
 _SEARCH_PROVIDER_TOOLS = frozenset(("search_web", "search_ai", "fetch_page"))
 _MINER_SELECTED_SEARCH_PROVIDERS = frozenset(get_args(SearchProviderName))
@@ -561,6 +567,7 @@ def _build_external_clients(
 
 
 def _build_llm_clients(settings: Settings) -> RuntimeLlmClients:
+    similarity_routes = _resolve_similarity_judge_routes(settings)
     llm_provider_registry = build_cached_llm_provider_registry(
         llm_settings=settings.llm,
         bedrock_settings=settings.bedrock,
@@ -570,7 +577,7 @@ def _build_llm_clients(settings: Settings) -> RuntimeLlmClients:
         entry.model: _resolve_scoring_judge_route(settings, model=entry.model)
         for entry in _SCORING_SLOT_CONFIG.entries
     }
-    similarity_route = _resolve_similarity_judge_route(settings)
+    similarity_route = similarity_routes[0]
     scoring_provider = build_routed_llm_provider(
         surface="scoring",
         default_provider=settings.llm.scoring_llm_provider,
@@ -612,15 +619,39 @@ def _resolve_scoring_judge_route(settings: Settings, *, model: str) -> ResolvedL
     )
 
 
-def _resolve_similarity_judge_route(settings: Settings) -> ResolvedLlmRoute:
+def _resolve_similarity_judge_route(
+    settings: Settings,
+    *,
+    model: str | None = None,
+) -> ResolvedLlmRoute:
     return resolve_llm_route(
         surface="duplication_detection",
         default_provider=settings.llm.similarity_llm_provider,
-        model=_effective_similarity_llm_model(settings),
+        model=model or _effective_similarity_llm_model(settings),
         overrides=settings.llm.llm_model_provider_overrides,
         allowed_providers={"bedrock", "chutes", "vertex"},
         allow_custom_openai_compatible=True,
     )
+
+
+def _resolve_similarity_judge_routes(settings: Settings) -> tuple[ResolvedLlmRoute, ...]:
+    models = (
+        _effective_similarity_llm_model(settings),
+        *_similarity_judge_fallback_models(settings),
+    )
+    routes = tuple(_resolve_similarity_judge_route(settings, model=model) for model in models)
+    for route in routes:
+        if route.model not in _DUPLICATION_DETECTION_CHUTES_CHAIN_MODELS:
+            continue
+        if route.provider == CHUTES_PROVIDER:
+            continue
+        if parse_custom_openai_compatible_target(route.provider) is not None:
+            continue
+        raise ValueError(
+            f"duplicate-preflight similarity model {route.model!r} requires a Chutes or custom "
+            f"OpenAI-compatible route; resolved provider was {route.provider!r}"
+        )
+    return routes
 
 
 def _effective_similarity_llm_model(settings: Settings) -> str:

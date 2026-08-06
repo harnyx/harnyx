@@ -84,8 +84,10 @@ STATIC_LLM_PRICING: Mapping[str, ModelPricing] = {
     **MODEL_PRICING,
     "openai/gpt-oss-20b-TEE": MODEL_PRICING["openai/gpt-oss-20b"],
     "openai/gpt-oss-120b-TEE": MODEL_PRICING["openai/gpt-oss-120b"],
+    "deepseek-ai/DeepSeek-V4-Flash-0731-TEE": ModelPricing(0.14, 0.28, 0.0),
     "moonshotai/Kimi-K2.5-TEE": ModelPricing(0.44, 2.00, 0.0),
     "moonshotai/Kimi-K2.6-TEE": ModelPricing(0.66, 3.50, 0.0),
+    "moonshotai/Kimi-K3-TEE": ModelPricing(3.00, 15.00, 0.0),
 }
 
 MINER_TOOL_LLM_PRICING: Mapping[MinerSelectedLlmProviderName, Mapping[str, ModelPricing]] = {

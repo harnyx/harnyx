@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from harnyx_commons.llm.provider import LlmRetryExhaustedError
+from harnyx_commons.llm.provider import LlmProviderError, LlmRetryExhaustedError
 from harnyx_commons.llm.routing import (
     ResolvedLlmRoute,
     RoutedLlmProvider,
@@ -307,6 +307,18 @@ class _RetryExhaustingProvider:
         return None
 
 
+@dataclass(slots=True)
+class _FailingProvider:
+    seen_requests: list[LlmRequest]
+
+    async def invoke(self, request: LlmRequest) -> LlmResponse:
+        self.seen_requests.append(request)
+        raise LlmProviderError("provider rejected request")
+
+    async def aclose(self) -> None:
+        return None
+
+
 @pytest.mark.anyio("asyncio")
 async def test_routed_provider_rewrites_request_provider_before_delegating() -> None:
     delegate = _RecordingProvider(seen_requests=[])
@@ -362,10 +374,39 @@ async def test_routed_provider_attaches_route_metadata_to_retry_exhausted_respon
 
     assert delegate.seen_requests[0].provider == "bedrock"
     response = exc_info.value.response
+    assert exc_info.value.effective_provider == "bedrock"
+    assert exc_info.value.effective_model == "google/gemma-4-31B-turbo-TEE"
     assert response is not None
     assert response.metadata is not None
     assert response.metadata["selected_provider"] == "bedrock"
     assert response.metadata["selected_model"] == "google/gemma-4-31B-turbo-TEE"
+
+
+@pytest.mark.anyio("asyncio")
+async def test_routed_provider_attaches_effective_route_to_provider_failure_without_response() -> None:
+    delegate = _FailingProvider(seen_requests=[])
+    provider = RoutedLlmProvider(
+        surface="duplication_detection",
+        default_provider="chutes",
+        overrides={"duplication_detection": {"zai-org/GLM-5.2-TEE": "vertex"}},
+        allowed_providers={"chutes", "vertex"},
+        resolve_provider=lambda _: delegate,
+    )
+
+    with pytest.raises(LlmProviderError) as exc_info:
+        await provider.invoke(
+            LlmRequest(
+                provider="chutes",
+                model="zai-org/GLM-5.2-TEE",
+                messages=(),
+                temperature=None,
+                max_output_tokens=128,
+            )
+        )
+
+    assert delegate.seen_requests[0].provider == "vertex"
+    assert exc_info.value.effective_provider == "vertex"
+    assert exc_info.value.effective_model == "zai-org/GLM-5.2-TEE"
 
 
 @pytest.mark.anyio("asyncio")

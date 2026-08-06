@@ -995,17 +995,14 @@ def test_create_similarity_judge_uses_similarity_llm_config() -> None:
         provider=SimpleNamespace(),
         similarity_route=ResolvedLlmRoute(
             surface="duplication_detection",
-            provider="bedrock",
-            model="google/gemma-4-31B-turbo-TEE",
+            provider="chutes",
+            model="zai-org/GLM-5.2-TEE",
         ),
     )
 
     assert judge._config.provider == "vertex"
-    assert judge._config.model == "google/gemma-4-31B-turbo-TEE"
-    assert judge._config.fallback_models == (
-        "moonshotai/Kimi-K2.6-TEE",
-        "zai-org/GLM-5.2-TEE",
-    )
+    assert judge._config.model == "zai-org/GLM-5.2-TEE"
+    assert judge._config.fallback_models == ("moonshotai/Kimi-K3-TEE",)
     assert judge._config.temperature == 0.0
     assert judge._config.max_output_tokens == 4096
     assert judge._config.reasoning_effort == "high"
@@ -1016,11 +1013,11 @@ def test_create_similarity_judge_uses_similarity_llm_config() -> None:
 def test_similarity_fallback_tail_only_uses_candidates_after_primary_override() -> None:
     settings = Settings.model_construct(
         llm=LlmSettings.model_construct(
-            similarity_llm_model_override="moonshotai/Kimi-K2.6-TEE",
+            similarity_llm_model_override="zai-org/GLM-5.2-TEE",
         ),
     )
 
-    assert bootstrap._similarity_judge_fallback_models(settings) == ("zai-org/GLM-5.2-TEE",)
+    assert bootstrap._similarity_judge_fallback_models(settings) == ("moonshotai/Kimi-K3-TEE",)
 
 
 def test_similarity_model_override_participates_in_duplication_detection_route_override() -> None:
@@ -1041,6 +1038,64 @@ def test_similarity_model_override_participates_in_duplication_detection_route_o
         provider="bedrock",
         model="moonshotai/Kimi-K2.5-TEE",
     )
+
+
+@pytest.mark.parametrize("provider", ("bedrock", "vertex"))
+def test_default_similarity_chain_rejects_incompatible_builtin_provider(provider: str) -> None:
+    settings = Settings.model_construct(
+        llm=LlmSettings.model_construct(
+            similarity_llm_provider=provider,
+            similarity_llm_model_override=None,
+            llm_model_provider_overrides_json=None,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="zai-org/GLM-5.2-TEE.*requires a Chutes or custom"):
+        bootstrap._resolve_similarity_judge_routes(settings)
+
+
+def test_default_similarity_chain_allows_explicit_chutes_routes() -> None:
+    models = ("zai-org/GLM-5.2-TEE", "moonshotai/Kimi-K3-TEE")
+    settings = Settings.model_construct(
+        llm=LlmSettings.model_construct(
+            similarity_llm_provider="vertex",
+            similarity_llm_model_override=None,
+            llm_model_provider_overrides_json=json.dumps(
+                {"duplication_detection": {model: "chutes" for model in models}}
+            ),
+        ),
+    )
+
+    routes = bootstrap._resolve_similarity_judge_routes(settings)
+
+    assert tuple(route.provider for route in routes) == ("chutes", "chutes")
+
+
+def test_default_similarity_chain_allows_explicit_custom_routes() -> None:
+    models = ("zai-org/GLM-5.2-TEE", "moonshotai/Kimi-K3-TEE")
+    route_target = "custom-openai-compatible:wide-context"
+    settings = Settings.model_construct(
+        llm=LlmSettings.model_construct(
+            similarity_llm_provider="vertex",
+            similarity_llm_model_override=None,
+            llm_model_provider_overrides_json=json.dumps(
+                {"duplication_detection": {model: route_target for model in models}}
+            ),
+            openai_compatible_endpoints_json=json.dumps(
+                [
+                    {
+                        "id": "wide-context",
+                        "base_url": "https://wide-context.test/v1",
+                        "auth": {"type": "none"},
+                    }
+                ]
+            ),
+        ),
+    )
+
+    routes = bootstrap._resolve_similarity_judge_routes(settings)
+
+    assert tuple(route.provider for route in routes) == (route_target, route_target)
 
 
 def test_build_llm_clients_routes_configured_scoring_entries_to_custom_endpoints(

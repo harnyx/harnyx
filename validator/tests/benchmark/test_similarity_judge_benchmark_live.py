@@ -4,11 +4,13 @@ import hashlib
 import json
 import shutil
 import subprocess
+from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
 
 import pytest
 
+from harnyx_commons.clients import CHUTES
 from harnyx_commons.llm.provider_factory import (
     build_cached_llm_provider_registry,
     build_routed_llm_provider,
@@ -42,6 +44,24 @@ _GEMMA_MODEL = "google/gemma-4-31B-turbo-TEE"
 _GEMMA_ENDPOINT_ID = "gemma4-cloud-run-turbo"
 _GEMMA_ROUTE_TARGET = f"custom-openai-compatible:{_GEMMA_ENDPOINT_ID}"
 _GEMMA_SERVICE_URL = "https://gemma-4-31b-turbo-obbrpx3ppa-uc.a.run.app"
+_GLM_MODEL = "zai-org/GLM-5.2-TEE"
+_KIMI_MODEL = "moonshotai/Kimi-K3-TEE"
+
+
+@dataclass(frozen=True, slots=True)
+class BenchmarkTarget:
+    test_id: str
+    model: str
+    route_target: str
+    endpoint_id: str
+    normalized_base_url: str
+    endpoint_config: dict[str, object] | None = None
+
+    @property
+    def provider_overrides(self) -> dict[str, object]:
+        if self.route_target == "chutes":
+            return {}
+        return {"duplication_detection": {self.model: self.route_target}}
 
 
 def _gemma_cloud_run_endpoint_config() -> dict[str, object]:
@@ -55,6 +75,32 @@ def _gemma_cloud_run_endpoint_config() -> dict[str, object]:
             "credential_env": "GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64",
         },
     }
+
+
+_BENCHMARK_TARGETS = (
+    BenchmarkTarget(
+        test_id="gemma4-cloud-run",
+        model=_GEMMA_MODEL,
+        route_target=_GEMMA_ROUTE_TARGET,
+        endpoint_id=_GEMMA_ENDPOINT_ID,
+        normalized_base_url=f"{_GEMMA_SERVICE_URL}/v1",
+        endpoint_config=_gemma_cloud_run_endpoint_config(),
+    ),
+    BenchmarkTarget(
+        test_id="glm-5.2-chutes",
+        model=_GLM_MODEL,
+        route_target="chutes",
+        endpoint_id="chutes",
+        normalized_base_url=CHUTES.base_url,
+    ),
+    BenchmarkTarget(
+        test_id="kimi-k3-chutes",
+        model=_KIMI_MODEL,
+        route_target="chutes",
+        endpoint_id="chutes",
+        normalized_base_url=CHUTES.base_url,
+    ),
+)
 
 
 def _repository_sha() -> str:
@@ -93,30 +139,32 @@ def _benchmark_source_hashes() -> dict[str, str]:
     }
 
 
-async def test_fixed_dataset_gemma_novelty_benchmark() -> None:
+@pytest.mark.parametrize(
+    "target",
+    _BENCHMARK_TARGETS,
+    ids=lambda target: target.test_id,
+)
+async def test_fixed_dataset_similarity_benchmark(target: BenchmarkTarget) -> None:
     base_settings = Settings.load()
     settings = base_settings.model_copy(
         update={
             "llm": base_settings.llm.model_copy(
                 update={
                     "openai_compatible_endpoints_json": json.dumps(
-                        [_gemma_cloud_run_endpoint_config()]
+                        [] if target.endpoint_config is None else [target.endpoint_config]
                     ),
                     "llm_model_provider_overrides_json": json.dumps(
-                        {
-                            "duplication_detection": {
-                                _GEMMA_MODEL: _GEMMA_ROUTE_TARGET,
-                            }
-                        }
+                        target.provider_overrides
                     ),
-                    "similarity_llm_model_override": _GEMMA_MODEL,
+                    "similarity_llm_provider": "chutes",
+                    "similarity_llm_model_override": target.model,
                 }
             )
         }
     )
     similarity_route = bootstrap._resolve_similarity_judge_route(settings)
-    assert similarity_route.provider == _GEMMA_ROUTE_TARGET
-    assert similarity_route.model == _GEMMA_MODEL
+    assert similarity_route.provider == target.route_target
+    assert similarity_route.model == target.model
 
     registry = build_cached_llm_provider_registry(
         llm_settings=settings.llm,
@@ -153,10 +201,10 @@ async def test_fixed_dataset_gemma_novelty_benchmark() -> None:
     identity = BenchmarkIdentity(
         repository_sha=_repository_sha(),
         validator_package_version=version("harnyx-validator"),
-        requested_model=_GEMMA_MODEL,
-        route_target=_GEMMA_ROUTE_TARGET,
-        endpoint_id=_GEMMA_ENDPOINT_ID,
-        normalized_base_url=f"{_GEMMA_SERVICE_URL}/v1",
+        requested_model=target.model,
+        route_target=target.route_target,
+        endpoint_id=target.endpoint_id,
+        normalized_base_url=target.normalized_base_url,
         immutable_serving_revision=None,
         benchmark_source_sha256=_benchmark_source_hashes(),
         temperature=0.0,

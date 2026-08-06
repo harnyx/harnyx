@@ -58,6 +58,15 @@ async def test_chutes_pricing_cache_prices_kimi_validator_judge_model() -> None:
     assert actual_cost.evidence["reasoning_tokens"] == 3_000
 
 
+async def test_chutes_static_pricing_does_not_use_generic_reference_rates() -> None:
+    cache = ChutesModelPricingCache()
+    usage = LlmUsage(prompt_tokens=1_000, completion_tokens=2_000, total_tokens=3_000)
+
+    assert "moonshotai/Kimi-K3-TEE" in CHUTES_STATIC_PRICING
+    with pytest.raises(KeyError, match="moonshotai/Kimi-K2.5-TEE"):
+        await cache.price(model="moonshotai/Kimi-K2.5-TEE", usage=usage)
+
+
 async def test_chutes_pricing_cache_keeps_unavailable_reasoning_tokens_in_evidence() -> None:
     cache = ChutesModelPricingCache()
     usage = LlmUsage(
@@ -73,7 +82,7 @@ async def test_chutes_pricing_cache_keeps_unavailable_reasoning_tokens_in_eviden
     assert actual_cost.evidence["reasoning_tokens"] is None
 
 
-def test_static_model_pricing_includes_kimi_validator_judge_model() -> None:
+def test_static_model_pricing_includes_validator_judge_models() -> None:
     usage = LlmUsage(
         prompt_tokens=1_000,
         completion_tokens=2_000,
@@ -83,6 +92,10 @@ def test_static_model_pricing_includes_kimi_validator_judge_model() -> None:
 
     assert price_static_llm_model("moonshotai/Kimi-K2.5-TEE", usage) == pytest.approx(0.01044)
     assert price_static_llm_model("moonshotai/Kimi-K2.6-TEE", usage) == pytest.approx(0.01816)
+    assert price_static_llm_model(
+        "deepseek-ai/DeepSeek-V4-Flash-0731-TEE", usage
+    ) == pytest.approx(0.00154)
+    assert price_static_llm_model("moonshotai/Kimi-K3-TEE", usage) == pytest.approx(0.078)
 
 
 def test_chutes_static_pricing_uses_miner_advertised_rates_for_allowed_models() -> None:
@@ -114,6 +127,8 @@ async def test_chutes_pricing_cache_updated_empty_snapshot_uses_fallback_without
 @pytest.mark.parametrize(
     ("model", "input_rate", "output_rate"),
     (
+        ("deepseek-ai/DeepSeek-V4-Flash-0731-TEE", 0.14, 0.28),
+        ("moonshotai/Kimi-K3-TEE", 3.00, 15.00),
         ("moonshotai/Kimi-K2.6-TEE", 0.66, 3.50),
         ("zai-org/GLM-5.2-TEE", 1.40, 4.40),
         ("Qwen/Qwen3.5-397B-A17B-TEE", 0.45, 3.00),

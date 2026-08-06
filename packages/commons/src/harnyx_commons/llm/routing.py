@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Literal, cast
 
-from harnyx_commons.llm.provider import LlmProviderPort, LlmRetryExhaustedError
+from harnyx_commons.llm.provider import LlmProviderError, LlmProviderPort, LlmRetryExhaustedError
 from harnyx_commons.llm.provider_types import (
     LlmProviderName,
     LlmRouteTarget,
@@ -161,7 +161,9 @@ class RoutedLlmProvider(LlmProviderPort):
         routed_request = replace(request, provider=route.provider, model=route.model)
         try:
             response = await self._resolve_provider(route.provider).invoke(routed_request)
-        except LlmRetryExhaustedError as exc:
+        except (LlmProviderError, LlmRetryExhaustedError) as exc:
+            exc.effective_provider = route.provider
+            exc.effective_model = route.model
             if exc.response is not None:
                 exc.response = with_effective_route_metadata(exc.response, route)
             raise

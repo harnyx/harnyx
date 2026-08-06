@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import cast
 from uuid import uuid4
 
 import pytest
-from pydantic import ValidationError
 
-from harnyx_commons.llm.provider import LlmRetryExhaustedError
+from harnyx_commons.llm.provider import LlmProviderError, LlmRetryExhaustedError
 from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import (
     AbstractLlmRequest,
@@ -18,6 +18,8 @@ from harnyx_commons.llm.schema import (
     LlmUsage,
 )
 from harnyx_commons.miner_task_similarity import SimilarityJudgeRequest
+from harnyx_commons.observability.logging import ExtrasFormatter
+from harnyx_validator.application import similarity_judge as similarity_judge_module
 from harnyx_validator.application.similarity_judge import SimilarityJudge, SimilarityJudgeConfig
 
 pytestmark = pytest.mark.anyio("asyncio")
@@ -477,54 +479,189 @@ async def test_similarity_judge_postprocessor_accepts_notable_change_with_same_a
     assert result.ok is True
 
 
-async def test_similarity_judge_rejects_postprocessed_novel_without_mechanism_change() -> None:
+async def test_similarity_judge_tries_next_candidate_after_invalid_structured_response() -> None:
     llm = SequenceLlmProvider(
         [
             _similarity_response(
                 classification="novel",
                 reasoning="Adds verification.",
                 mechanism_change="",
-            )
+            ),
+            _similarity_response(),
         ]
     )
     service = SimilarityJudge(
         llm_provider=llm,
-        config=SimilarityJudgeConfig(provider="chutes", model="google/gemma-4-31B-turbo-TEE"),
+        config=SimilarityJudgeConfig(
+            provider="chutes",
+            model="google/gemma-4-31B-turbo-TEE",
+            fallback_models=("moonshotai/Kimi-K3-TEE",),
+        ),
     )
 
-    with pytest.raises(ValidationError):
-        await service.judge(
-            SimilarityJudgeRequest(
-                batch_id=uuid4(),
-                candidate_artifact_id=uuid4(),
-                reference_artifact_id=uuid4(),
-                candidate_miner_uid=20,
-                reference_miner_uid=10,
-                reference_script="def answer(): return 'old'",
-                candidate_diff="+ def answer(): return 'new'",
-            )
+    result = await service.judge(
+        SimilarityJudgeRequest(
+            batch_id=uuid4(),
+            candidate_artifact_id=uuid4(),
+            reference_artifact_id=uuid4(),
+            candidate_miner_uid=20,
+            reference_miner_uid=10,
+            reference_script="def answer(): return 'old'",
+            candidate_diff="+ def answer(): return 'new'",
         )
+    )
+
+    assert result.classification == "novel"
+    assert [request.model for request in llm.requests] == [
+        "google/gemma-4-31B-turbo-TEE",
+        "moonshotai/Kimi-K3-TEE",
+    ]
 
 
-async def test_similarity_judge_rejects_structured_output_truncated_by_the_provider_cap() -> None:
-    llm = SequenceLlmProvider([_similarity_response(finish_reason="length")])
+async def test_similarity_judge_tries_next_candidate_after_incomplete_response() -> None:
+    llm = SequenceLlmProvider(
+        [
+            _similarity_response(finish_reason="length"),
+            _similarity_response(),
+        ]
+    )
     service = SimilarityJudge(
         llm_provider=llm,
-        config=SimilarityJudgeConfig(provider="chutes", model="google/gemma-4-31B-turbo-TEE"),
+        config=SimilarityJudgeConfig(
+            provider="chutes",
+            model="google/gemma-4-31B-turbo-TEE",
+            fallback_models=("moonshotai/Kimi-K3-TEE",),
+        ),
     )
 
-    with pytest.raises(RuntimeError, match="incomplete response.*length"):
-        await service.judge(
-            SimilarityJudgeRequest(
-                batch_id=uuid4(),
-                candidate_artifact_id=uuid4(),
-                reference_artifact_id=uuid4(),
-                candidate_miner_uid=20,
-                reference_miner_uid=10,
-                reference_script="def answer(): return 'old'",
-                candidate_diff="+ def answer(): return 'new'",
-            )
+    result = await service.judge(
+        SimilarityJudgeRequest(
+            batch_id=uuid4(),
+            candidate_artifact_id=uuid4(),
+            reference_artifact_id=uuid4(),
+            candidate_miner_uid=20,
+            reference_miner_uid=10,
+            reference_script="def answer(): return 'old'",
+            candidate_diff="+ def answer(): return 'new'",
         )
+    )
+
+    assert result.classification == "novel"
+    assert [request.model for request in llm.requests] == [
+        "google/gemma-4-31B-turbo-TEE",
+        "moonshotai/Kimi-K3-TEE",
+    ]
+
+
+async def test_similarity_judge_retains_tokens_after_invalid_actual_cost_metadata(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="harnyx_validator.application.similarity_judge")
+    llm = SequenceLlmProvider(
+        [
+            _similarity_response(
+                reasoning_tokens=2,
+                prompt_tokens=7,
+                completion_tokens=4,
+                total_tokens=11,
+                metadata={"actual_cost_usd": True},
+            ),
+            _similarity_response(
+                reasoning_tokens=5,
+                prompt_tokens=31,
+                completion_tokens=13,
+                total_tokens=44,
+                metadata={"actual_cost_usd": 0.04},
+            ),
+        ]
+    )
+    service = SimilarityJudge(
+        llm_provider=llm,
+        config=SimilarityJudgeConfig(
+            provider="chutes",
+            model="google/gemma-4-31B-turbo-TEE",
+            fallback_models=("moonshotai/Kimi-K3-TEE",),
+        ),
+    )
+
+    result = await service.judge(
+        SimilarityJudgeRequest(
+            batch_id=uuid4(),
+            candidate_artifact_id=uuid4(),
+            reference_artifact_id=uuid4(),
+            candidate_miner_uid=20,
+            reference_miner_uid=10,
+            reference_script="def answer(): return 'old'",
+            candidate_diff="+ def answer(): return 'new'",
+        )
+    )
+
+    assert result.classification == "novel"
+    assert result.judge_usage is not None
+    assert result.judge_usage.call_count == 2
+    assert result.judge_usage.prompt_tokens == 38
+    assert result.judge_usage.completion_tokens == 17
+    assert result.judge_usage.total_tokens == 55
+    assert result.judge_usage.reasoning_tokens == 7
+    assert result.judge_usage.actual_cost_usd is None
+    assert [request.model for request in llm.requests] == [
+        "google/gemma-4-31B-turbo-TEE",
+        "moonshotai/Kimi-K3-TEE",
+    ]
+    degraded_record = next(
+        record
+        for record in caplog.records
+        if record.message == "similarity_judge.failed_candidate_actual_cost_unavailable"
+    )
+    assert degraded_record.data["model"] == "google/gemma-4-31B-turbo-TEE"
+    assert degraded_record.data["failure_reason"] == "actual_cost_usd must be numeric when supplied"
+
+
+async def test_similarity_judge_omits_unusable_failed_usage_and_still_advances() -> None:
+    llm = SequenceLlmProvider(
+        [
+            _similarity_response(
+                prompt_tokens=-1,
+                completion_tokens=4,
+                total_tokens=3,
+                metadata={"actual_cost_usd": True},
+            ),
+            _similarity_response(
+                prompt_tokens=31,
+                completion_tokens=13,
+                total_tokens=44,
+                metadata={"actual_cost_usd": 0.04},
+            ),
+        ]
+    )
+    service = SimilarityJudge(
+        llm_provider=llm,
+        config=SimilarityJudgeConfig(
+            provider="chutes",
+            model="google/gemma-4-31B-turbo-TEE",
+            fallback_models=("moonshotai/Kimi-K3-TEE",),
+        ),
+    )
+
+    result = await service.judge(
+        SimilarityJudgeRequest(
+            batch_id=uuid4(),
+            candidate_artifact_id=uuid4(),
+            reference_artifact_id=uuid4(),
+            candidate_miner_uid=20,
+            reference_miner_uid=10,
+            reference_script="def answer(): return 'old'",
+            candidate_diff="+ def answer(): return 'new'",
+        )
+    )
+
+    assert result.judge_usage is not None
+    assert result.judge_usage.call_count == 1
+    assert result.judge_usage.prompt_tokens == 31
+    assert result.judge_usage.completion_tokens == 13
+    assert result.judge_usage.total_tokens == 44
+    assert result.judge_usage.actual_cost_usd == pytest.approx(0.04)
+    assert len(llm.requests) == 2
 
 
 async def test_similarity_judge_keeps_reasoning_effort_on_request_without_typed_thinking() -> None:
@@ -785,8 +922,22 @@ async def test_similarity_judge_carries_failed_usage_when_final_fallback_has_no_
     assert raised.value.judge_usage.actual_cost_usd == pytest.approx(0.02)
 
 
-async def test_similarity_judge_does_not_advance_after_non_retryable_failure() -> None:
-    llm = SequenceLlmProvider([RuntimeError("provider rejected request")])
+async def test_similarity_judge_tries_next_candidate_after_non_retryable_provider_failure(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("K_SERVICE", "validator")
+    caplog.set_level(logging.WARNING, logger="harnyx_validator.application.similarity_judge")
+    llm = SequenceLlmProvider(
+        [
+            LlmProviderError(
+                "http_400: context length exceeded",
+                effective_provider="custom-openai-compatible:glm-cloud-run",
+                effective_model="zai-org/GLM-5.2-TEE",
+            ),
+            _similarity_response(),
+        ]
+    )
     service = SimilarityJudge(
         llm_provider=llm,
         config=SimilarityJudgeConfig(
@@ -796,7 +947,133 @@ async def test_similarity_judge_does_not_advance_after_non_retryable_failure() -
         ),
     )
 
-    with pytest.raises(RuntimeError, match="provider rejected request"):
+    result = await service.judge(
+        SimilarityJudgeRequest(
+            batch_id=uuid4(),
+            candidate_artifact_id=uuid4(),
+            reference_artifact_id=uuid4(),
+            candidate_miner_uid=20,
+            reference_miner_uid=10,
+            reference_script="def answer(): return 'old'",
+            candidate_diff="+ def answer(): return 'new'",
+        )
+    )
+
+    assert result.classification == "novel"
+    assert [request.model for request in llm.requests] == [
+        "moonshotai/Kimi-K2.5-TEE",
+        "google/gemma-4-31B-turbo-TEE",
+    ]
+    fallback_record = next(
+        record for record in caplog.records if record.message == "similarity_judge.candidate_failed"
+    )
+    assert fallback_record.data == {
+        "model": "zai-org/GLM-5.2-TEE",
+        "provider": "custom-openai-compatible:glm-cloud-run",
+        "exception_type": "LlmProviderError",
+        "failure_reason": "http_400: context length exceeded",
+    }
+    formatted_record = json.loads(ExtrasFormatter().format(fallback_record))
+    assert formatted_record["data"] == fallback_record.data
+
+
+@pytest.mark.parametrize(
+    "implementation_error",
+    [RuntimeError("unexpected accounting runtime error"), ValueError("unexpected accounting value error")],
+)
+async def test_similarity_judge_does_not_hide_accounting_implementation_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    implementation_error: Exception,
+) -> None:
+    def _raise_implementation_error(*args: object, **kwargs: object) -> None:
+        raise implementation_error
+
+    monkeypatch.setattr(
+        similarity_judge_module,
+        "judge_usage_from_response",
+        _raise_implementation_error,
+    )
+    llm = SequenceLlmProvider([_similarity_response(), _similarity_response()])
+    service = SimilarityJudge(
+        llm_provider=llm,
+        config=SimilarityJudgeConfig(
+            provider="chutes",
+            model="moonshotai/Kimi-K2.5-TEE",
+            fallback_models=("google/gemma-4-31B-turbo-TEE",),
+        ),
+    )
+
+    with pytest.raises(type(implementation_error), match=str(implementation_error)):
+        await service.judge(
+            SimilarityJudgeRequest(
+                batch_id=uuid4(),
+                candidate_artifact_id=uuid4(),
+                reference_artifact_id=uuid4(),
+                candidate_miner_uid=20,
+                reference_miner_uid=10,
+                reference_script="def answer(): return 'old'",
+                candidate_diff="+ def answer(): return 'new'",
+            )
+        )
+
+    assert len(llm.requests) == 1
+
+
+async def test_similarity_judge_does_not_hide_failed_usage_recovery_implementation_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _raise_implementation_error(*args: object, **kwargs: object) -> None:
+        raise ValueError("unexpected failed usage recovery error")
+
+    monkeypatch.setattr(
+        similarity_judge_module,
+        "judge_usage_without_actual_cost_from_response",
+        _raise_implementation_error,
+    )
+    primary_response = _similarity_response(metadata={"actual_cost_usd": True})
+    llm = SequenceLlmProvider(
+        [
+            LlmProviderError("primary response metadata failed", response=primary_response),
+            _similarity_response(),
+        ]
+    )
+    service = SimilarityJudge(
+        llm_provider=llm,
+        config=SimilarityJudgeConfig(
+            provider="chutes",
+            model="moonshotai/Kimi-K2.5-TEE",
+            fallback_models=("google/gemma-4-31B-turbo-TEE",),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="unexpected failed usage recovery error"):
+        await service.judge(
+            SimilarityJudgeRequest(
+                batch_id=uuid4(),
+                candidate_artifact_id=uuid4(),
+                reference_artifact_id=uuid4(),
+                candidate_miner_uid=20,
+                reference_miner_uid=10,
+                reference_script="def answer(): return 'old'",
+                candidate_diff="+ def answer(): return 'new'",
+            )
+        )
+
+    assert len(llm.requests) == 1
+
+
+async def test_similarity_judge_does_not_hide_programming_failures_with_model_fallback() -> None:
+    llm = SequenceLlmProvider([RuntimeError("unexpected implementation failure")])
+    service = SimilarityJudge(
+        llm_provider=llm,
+        config=SimilarityJudgeConfig(
+            provider="chutes",
+            model="moonshotai/Kimi-K2.5-TEE",
+            fallback_models=("google/gemma-4-31B-turbo-TEE",),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected implementation failure"):
         await service.judge(
             SimilarityJudgeRequest(
                 batch_id=uuid4(),

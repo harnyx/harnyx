@@ -3,15 +3,25 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from harnyx_commons.domain.judge_usage import JudgeUsageSummary
 from harnyx_commons.llm.json_utils import pydantic_postprocessor
-from harnyx_commons.llm.judge_usage import judge_usage_from_response, merge_judge_usage
-from harnyx_commons.llm.provider import LlmProviderPort, LlmRetryExhaustedError
+from harnyx_commons.llm.judge_usage import (
+    JudgeUsageMetadataError,
+    judge_usage_from_response,
+    judge_usage_without_actual_cost_from_response,
+    merge_judge_usage,
+)
+from harnyx_commons.llm.provider import (
+    LlmProviderError,
+    LlmProviderPort,
+    LlmRetryExhaustedError,
+)
 from harnyx_commons.llm.provider_types import LlmProviderName, LlmRouteTarget
 from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import (
@@ -21,6 +31,8 @@ from harnyx_commons.llm.schema import (
     LlmResponse,
 )
 from harnyx_commons.miner_task_similarity import SimilarityJudgeRequest, SimilarityJudgeResult
+
+logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = (
     "You are a strict semantic similarity classifier for miner agent scripts.\n\n"
@@ -224,14 +236,24 @@ class SimilarityJudge:
         self._config = config
 
     async def judge(self, request: SimilarityJudgeRequest) -> SimilarityJudgeResult:
-        last_error: LlmRetryExhaustedError | None = None
+        last_error: LlmProviderError | LlmRetryExhaustedError | None = None
         failed_candidate_usage: list[JudgeUsageSummary] = []
         for model in _judge_candidate_models(self._config):
             llm_request = self._build_request(request, model=model)
             try:
                 response = await self._llm.invoke(llm_request)
-            except LlmRetryExhaustedError as exc:
-                failed_usage = _judge_usage_from_retry_response(
+                (
+                    classification_model,
+                    selected_provider,
+                    selected_model,
+                    success_usage,
+                ) = _validated_similarity_candidate_response(
+                    response,
+                    default_provider=self._config.provider,
+                    default_model=model,
+                )
+            except (LlmProviderError, LlmRetryExhaustedError) as exc:
+                failed_usage = _judge_usage_from_failure_response(
                     exc.response,
                     default_provider=self._config.provider,
                     default_model=model,
@@ -240,23 +262,19 @@ class SimilarityJudge:
                     failed_candidate_usage.append(failed_usage)
                 if failed_candidate_usage:
                     _attach_similarity_judge_usage(exc, merge_judge_usage(failed_candidate_usage))
+                logger.warning(
+                    "similarity_judge.candidate_failed",
+                    extra={
+                        "data": _failure_log_data(
+                            model,
+                            self._config.provider,
+                            exc,
+                            response=exc.response,
+                        )
+                    },
+                )
                 last_error = exc
                 continue
-            _require_complete_response(response)
-            parsed = response.postprocessed
-            if parsed is None:
-                raise RuntimeError("similarity judge did not return structured output")
-            classification_model = _SimilarityClassificationModel.model_validate(parsed)
-            selected_provider, selected_model = _selected_route_metadata(
-                response,
-                default_provider=self._config.provider,
-                default_model=model,
-            )
-            success_usage = judge_usage_from_response(
-                response,
-                default_provider=self._config.provider,
-                default_model=model,
-            )
             return SimilarityJudgeResult(
                 classification=classification_model.classification,
                 reasoning=_similarity_reasoning_text(classification_model),
@@ -305,10 +323,43 @@ class SimilarityJudge:
         )
 
 
+def _validated_similarity_candidate_response(
+    response: LlmResponse,
+    *,
+    default_provider: LlmProviderName,
+    default_model: str,
+) -> tuple[_SimilarityClassificationModel, LlmRouteTarget, str, JudgeUsageSummary]:
+    _require_complete_response(response)
+    if response.postprocessed is None:
+        raise LlmProviderError(
+            "similarity judge did not return structured output",
+            response=response,
+        )
+    try:
+        classification = _SimilarityClassificationModel.model_validate(response.postprocessed)
+    except ValidationError as exc:
+        raise LlmProviderError(str(exc), response=response) from exc
+    selected_provider, selected_model = _selected_route_metadata(
+        response,
+        default_provider=default_provider,
+        default_model=default_model,
+    )
+    try:
+        usage = judge_usage_from_response(
+            response,
+            default_provider=default_provider,
+            default_model=default_model,
+        )
+    except JudgeUsageMetadataError as exc:
+        raise LlmProviderError(str(exc), response=response) from exc
+    return classification, selected_provider, selected_model, usage
+
+
 def _require_complete_response(response: LlmResponse) -> None:
     if response.finish_reason not in {"stop", "end_turn"}:
-        raise RuntimeError(
-            f"similarity judge returned an incomplete response: finish_reason={response.finish_reason!r}"
+        raise LlmProviderError(
+            f"similarity judge returned an incomplete response: finish_reason={response.finish_reason!r}",
+            response=response,
         )
 
 
@@ -366,7 +417,7 @@ def _selected_route_metadata(
     return provider, model
 
 
-def _judge_usage_from_retry_response(
+def _judge_usage_from_failure_response(
     response: LlmResponse | None,
     *,
     default_provider: LlmProviderName,
@@ -374,11 +425,69 @@ def _judge_usage_from_retry_response(
 ) -> JudgeUsageSummary | None:
     if response is None:
         return None
-    return judge_usage_from_response(
-        response,
-        default_provider=default_provider,
-        default_model=default_model,
-    )
+    try:
+        return judge_usage_from_response(
+            response,
+            default_provider=default_provider,
+            default_model=default_model,
+        )
+    except JudgeUsageMetadataError as exc:
+        try:
+            usage = judge_usage_without_actual_cost_from_response(
+                response,
+                default_provider=default_provider,
+                default_model=default_model,
+            )
+        except JudgeUsageMetadataError as usage_exc:
+            logger.warning(
+                "similarity_judge.failed_candidate_usage_unavailable",
+                extra={
+                    "data": _failure_log_data(
+                        default_model,
+                        default_provider,
+                        usage_exc,
+                        response=response,
+                    )
+                },
+            )
+            return None
+        logger.warning(
+            "similarity_judge.failed_candidate_actual_cost_unavailable",
+            extra={
+                "data": _failure_log_data(
+                    default_model,
+                    default_provider,
+                    exc,
+                    response=response,
+                )
+            },
+        )
+        return usage
+
+
+def _failure_log_data(
+    model: str,
+    provider: LlmProviderName,
+    exc: Exception,
+    *,
+    response: LlmResponse | None = None,
+) -> dict[str, object]:
+    effective_provider = getattr(exc, "effective_provider", None)
+    effective_model = getattr(exc, "effective_model", None)
+    if response is not None:
+        selected_provider, selected_model = _selected_route_metadata(
+            response,
+            default_provider=provider,
+            default_model=model,
+        )
+        effective_provider = effective_provider or selected_provider
+        effective_model = effective_model or selected_model
+    return {
+        "model": effective_model or model,
+        "provider": str(effective_provider or provider),
+        "exception_type": type(exc).__name__,
+        "failure_reason": str(exc),
+    }
 
 
 def _attach_similarity_judge_usage(exc: Exception, judge_usage: JudgeUsageSummary) -> Exception:

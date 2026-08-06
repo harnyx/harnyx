@@ -5,7 +5,12 @@ from typing import cast
 import pytest
 
 from harnyx_commons.domain.judge_usage import JudgeModelUsage, JudgeUsageSummary
-from harnyx_commons.llm.judge_usage import judge_usage_from_response, merge_judge_usage
+from harnyx_commons.llm.judge_usage import (
+    JudgeUsageMetadataError,
+    judge_usage_from_response,
+    judge_usage_without_actual_cost_from_response,
+    merge_judge_usage,
+)
 from harnyx_commons.llm.schema import LlmResponse, LlmUsage
 
 
@@ -162,9 +167,64 @@ def test_judge_usage_does_not_treat_raw_attempts_as_billable_calls() -> None:
 @pytest.mark.parametrize("metadata_key", ["actual_cost_usd", "actual_cost_usd_total"])
 @pytest.mark.parametrize("bad_cost", [True, float("nan"), float("inf"), float("-inf"), -0.01])
 def test_judge_usage_rejects_invalid_actual_cost(metadata_key: str, bad_cost: object) -> None:
-    with pytest.raises(ValueError, match="actual_cost_usd"):
+    with pytest.raises(JudgeUsageMetadataError, match="actual_cost_usd"):
         judge_usage_from_response(
             _response(metadata={metadata_key: bad_cost}),
+            default_provider="chutes",
+            default_model="judge",
+        )
+
+
+def test_judge_usage_without_actual_cost_retains_valid_tokens_and_call_count() -> None:
+    summary = judge_usage_without_actual_cost_from_response(
+        _response(
+            prompt_tokens=21,
+            completion_tokens=5,
+            total_tokens=26,
+            reasoning_tokens=3,
+            metadata={
+                "selected_provider": "chutes",
+                "selected_model": "judge",
+                "billable_response_count": 2,
+                "actual_cost_usd": True,
+            },
+        ),
+        default_provider="openrouter",
+        default_model="fallback-model",
+    )
+
+    assert summary.call_count == 2
+    assert summary.prompt_tokens == 21
+    assert summary.completion_tokens == 5
+    assert summary.total_tokens == 26
+    assert summary.reasoning_tokens == 3
+    assert summary.actual_cost_usd is None
+    assert summary.models[0].provider == "chutes"
+    assert summary.models[0].model == "judge"
+    assert summary.models[0].actual_cost_source == "unavailable"
+
+
+@pytest.mark.parametrize(
+    "usage_parser",
+    [judge_usage_from_response, judge_usage_without_actual_cost_from_response],
+)
+def test_judge_usage_parsers_reject_invalid_billable_response_count(usage_parser: object) -> None:
+    with pytest.raises(JudgeUsageMetadataError, match="billable_response_count"):
+        usage_parser(
+            _response(metadata={"billable_response_count": 0}),
+            default_provider="chutes",
+            default_model="judge",
+        )
+
+
+@pytest.mark.parametrize(
+    "usage_parser",
+    [judge_usage_from_response, judge_usage_without_actual_cost_from_response],
+)
+def test_judge_usage_parsers_reject_negative_token_values(usage_parser: object) -> None:
+    with pytest.raises(JudgeUsageMetadataError, match="prompt_tokens"):
+        usage_parser(
+            _response(prompt_tokens=-1),
             default_provider="chutes",
             default_model="judge",
         )

@@ -257,9 +257,10 @@ def test_validator_runtime_routes_configured_scoring_entries_to_custom_endpoints
 
 
 @pytest.mark.anyio("asyncio")
-async def test_validator_runtime_routes_primary_similarity_gemma_to_custom_endpoint(
+async def test_validator_runtime_routes_primary_similarity_model_to_custom_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    similarity_route_target = "custom-openai-compatible:similarity-private-route"
     settings = _settings()
     settings = settings.model_copy(
         update={
@@ -269,17 +270,18 @@ async def test_validator_runtime_routes_primary_similarity_gemma_to_custom_endpo
                     "llm_model_provider_overrides_json": json.dumps(
                         {
                             "duplication_detection": {
-                                bootstrap._DUPLICATION_DETECTION_LLM_MODEL: (
-                                    "custom-openai-compatible:gemma4-cloud-run-turbo"
-                                )
+                                bootstrap._DUPLICATION_DETECTION_LLM_MODEL: similarity_route_target,
+                                bootstrap._DUPLICATION_DETECTION_FALLBACK_MODELS[
+                                    0
+                                ]: similarity_route_target,
                             }
                         }
                     ),
                     "openai_compatible_endpoints_json": json.dumps(
                         [
                             {
-                                "id": "gemma4-cloud-run-turbo",
-                                "base_url": "https://gemma-4-31b-turbo-obbrpx3ppa-uc.a.run.app/v1",
+                                "id": "similarity-private-route",
+                                "base_url": "https://similarity-private.example/v1",
                                 "auth": {"type": "none"},
                             }
                         ]
@@ -304,12 +306,12 @@ async def test_validator_runtime_routes_primary_similarity_gemma_to_custom_endpo
     )
 
     assert _routed_surface(clients.similarity_llm_provider) == "duplication_detection"
-    assert clients.similarity_route.provider == "custom-openai-compatible:gemma4-cloud-run-turbo"
+    assert clients.similarity_route.provider == similarity_route_target
     assert clients.similarity_route.model == bootstrap._DUPLICATION_DETECTION_LLM_MODEL
-    assert registry.provider.requests[0].provider == "custom-openai-compatible:gemma4-cloud-run-turbo"
+    assert registry.provider.requests[0].provider == similarity_route_target
     assert registry.provider.requests[0].model == bootstrap._DUPLICATION_DETECTION_LLM_MODEL
     assert response.metadata is not None
-    assert response.metadata["selected_provider"] == "custom-openai-compatible:gemma4-cloud-run-turbo"
+    assert response.metadata["selected_provider"] == similarity_route_target
     assert response.metadata["selected_model"] == bootstrap._DUPLICATION_DETECTION_LLM_MODEL
 
 

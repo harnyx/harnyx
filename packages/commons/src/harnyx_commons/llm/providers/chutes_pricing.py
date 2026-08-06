@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Literal, cast
 
 from harnyx_commons.json_types import JsonObject
-from harnyx_commons.llm.pricing import MINER_TOOL_LLM_PRICING, ModelPricing
+from harnyx_commons.llm.pricing import MINER_TOOL_LLM_PRICING, STATIC_LLM_PRICING, ModelPricing
 from harnyx_commons.llm.provider_types import CHUTES_PROVIDER
 from harnyx_commons.llm.schema import LlmUsage
 
@@ -16,6 +16,10 @@ _DEFAULT_TTL_SECONDS = 3600.0
 
 CHUTES_STATIC_PRICING: Mapping[str, ModelPricing] = {
     **MINER_TOOL_LLM_PRICING[CHUTES_PROVIDER],
+    "deepseek-ai/DeepSeek-V4-Flash-0731-TEE": STATIC_LLM_PRICING[
+        "deepseek-ai/DeepSeek-V4-Flash-0731-TEE"
+    ],
+    "moonshotai/Kimi-K3-TEE": STATIC_LLM_PRICING["moonshotai/Kimi-K3-TEE"],
 }
 
 

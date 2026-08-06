@@ -11,26 +11,64 @@ from harnyx_commons.domain.judge_usage import JudgeModelUsage, JudgeUsageSummary
 from harnyx_commons.llm.schema import LlmResponse
 
 
+class JudgeUsageMetadataError(ValueError):
+    """Provider response metadata cannot produce trustworthy judge usage."""
+
+
 def judge_usage_from_response(
     response: LlmResponse,
     *,
     default_provider: str,
     default_model: str,
 ) -> JudgeUsageSummary:
-    provider = _metadata_string(response, "selected_provider", default_provider)
-    model = _metadata_string(response, "selected_model", default_model)
     call_count = _metadata_positive_int(response, "billable_response_count", fallback=1)
-    actual_cost = _actual_cost_for_judge(response, call_count=call_count)
-    actual_cost_provider = _metadata_optional_string(response, "actual_cost_provider")
-    actual_cost_evidence = _metadata_optional_string(response, "actual_cost_evidence")
-    model_usage = JudgeModelUsage(
-        provider=provider,
-        model=model,
+    return _build_judge_usage(
+        response,
+        default_provider=default_provider,
+        default_model=default_model,
         call_count=call_count,
-        prompt_tokens=response.usage.prompt_tokens or 0,
-        completion_tokens=response.usage.completion_tokens or 0,
-        total_tokens=response.usage.total_tokens or 0,
-        reasoning_tokens=response.usage.reasoning_tokens,
+        actual_cost=_actual_cost_for_judge(response, call_count=call_count),
+        actual_cost_provider=_metadata_optional_string(response, "actual_cost_provider"),
+        actual_cost_evidence=_metadata_optional_string(response, "actual_cost_evidence"),
+    )
+
+
+def judge_usage_without_actual_cost_from_response(
+    response: LlmResponse,
+    *,
+    default_provider: str,
+    default_model: str,
+) -> JudgeUsageSummary:
+    """Build judge usage while deliberately treating actual cost as unavailable."""
+    return _build_judge_usage(
+        response,
+        default_provider=default_provider,
+        default_model=default_model,
+        call_count=_metadata_positive_int(response, "billable_response_count", fallback=1),
+        actual_cost=None,
+        actual_cost_provider=None,
+        actual_cost_evidence=None,
+    )
+
+
+def _build_judge_usage(
+    response: LlmResponse,
+    *,
+    default_provider: str,
+    default_model: str,
+    call_count: int,
+    actual_cost: float | None,
+    actual_cost_provider: str | None,
+    actual_cost_evidence: str | None,
+) -> JudgeUsageSummary:
+    model_usage = JudgeModelUsage(
+        provider=_metadata_string(response, "selected_provider", default_provider),
+        model=_metadata_string(response, "selected_model", default_model),
+        call_count=call_count,
+        prompt_tokens=_usage_token(response.usage.prompt_tokens, "prompt_tokens"),
+        completion_tokens=_usage_token(response.usage.completion_tokens, "completion_tokens"),
+        total_tokens=_usage_token(response.usage.total_tokens, "total_tokens"),
+        reasoning_tokens=_optional_usage_token(response.usage.reasoning_tokens, "reasoning_tokens"),
         actual_cost_usd=actual_cost,
         actual_cost_source="provider_actual" if actual_cost is not None else "unavailable",
         actual_cost_provider=actual_cost_provider,
@@ -140,12 +178,12 @@ def _metadata_float(response: LlmResponse, key: str) -> float | None:
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, int | float):
-        raise ValueError(f"{key} must be numeric when supplied")
+        raise JudgeUsageMetadataError(f"{key} must be numeric when supplied")
     numeric = float(value)
     if not math.isfinite(numeric):
-        raise ValueError(f"{key} must be finite when supplied")
+        raise JudgeUsageMetadataError(f"{key} must be finite when supplied")
     if numeric < 0.0:
-        raise ValueError(f"{key} must be non-negative when supplied")
+        raise JudgeUsageMetadataError(f"{key} must be non-negative when supplied")
     return numeric
 
 
@@ -154,9 +192,29 @@ def _metadata_positive_int(response: LlmResponse, key: str, *, fallback: int) ->
     if value is None:
         return fallback
     if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"{key} must be an integer when supplied")
+        raise JudgeUsageMetadataError(f"{key} must be an integer when supplied")
     if value < 1:
-        raise ValueError(f"{key} must be positive when supplied")
+        raise JudgeUsageMetadataError(f"{key} must be positive when supplied")
+    return value
+
+
+def _usage_token(value: int | None, key: str) -> int:
+    if value is None:
+        return 0
+    return _non_negative_int(value, key)
+
+
+def _optional_usage_token(value: int | None, key: str) -> int | None:
+    if value is None:
+        return None
+    return _non_negative_int(value, key)
+
+
+def _non_negative_int(value: object, key: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise JudgeUsageMetadataError(f"{key} must be an integer when supplied")
+    if value < 0:
+        raise JudgeUsageMetadataError(f"{key} must be non-negative when supplied")
     return value
 
 
@@ -171,6 +229,8 @@ def _actual_cost_for_judge(response: LlmResponse, *, call_count: int) -> float |
 
 
 __all__ = [
+    "JudgeUsageMetadataError",
     "judge_usage_from_response",
+    "judge_usage_without_actual_cost_from_response",
     "merge_judge_usage",
 ]
