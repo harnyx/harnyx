@@ -996,13 +996,16 @@ def test_create_similarity_judge_uses_similarity_llm_config() -> None:
         similarity_route=ResolvedLlmRoute(
             surface="duplication_detection",
             provider="chutes",
-            model="zai-org/GLM-5.2-TEE",
+            model="google/gemma-4-31B-turbo-TEE",
         ),
     )
 
     assert judge._config.provider == "vertex"
-    assert judge._config.model == "zai-org/GLM-5.2-TEE"
-    assert judge._config.fallback_models == ("moonshotai/Kimi-K3-TEE",)
+    assert judge._config.model == "google/gemma-4-31B-turbo-TEE"
+    assert judge._config.fallback_models == (
+        "zai-org/GLM-5.2-TEE",
+        "moonshotai/Kimi-K3-TEE",
+    )
     assert judge._config.temperature == 0.0
     assert judge._config.max_output_tokens == 4096
     assert judge._config.reasoning_effort == "high"
@@ -1050,12 +1053,12 @@ def test_default_similarity_chain_rejects_incompatible_builtin_provider(provider
         ),
     )
 
-    with pytest.raises(ValueError, match="zai-org/GLM-5.2-TEE.*requires a Chutes or custom"):
+    with pytest.raises(ValueError, match="google/gemma-4-31B-turbo-TEE.*requires a Chutes or custom"):
         bootstrap._resolve_similarity_judge_routes(settings)
 
 
 def test_default_similarity_chain_allows_explicit_chutes_routes() -> None:
-    models = ("zai-org/GLM-5.2-TEE", "moonshotai/Kimi-K3-TEE")
+    models = bootstrap._DUPLICATION_DETECTION_MODEL_CHAIN
     settings = Settings.model_construct(
         llm=LlmSettings.model_construct(
             similarity_llm_provider="vertex",
@@ -1068,11 +1071,11 @@ def test_default_similarity_chain_allows_explicit_chutes_routes() -> None:
 
     routes = bootstrap._resolve_similarity_judge_routes(settings)
 
-    assert tuple(route.provider for route in routes) == ("chutes", "chutes")
+    assert tuple(route.provider for route in routes) == tuple("chutes" for _ in models)
 
 
 def test_default_similarity_chain_allows_explicit_custom_routes() -> None:
-    models = ("zai-org/GLM-5.2-TEE", "moonshotai/Kimi-K3-TEE")
+    models = bootstrap._DUPLICATION_DETECTION_MODEL_CHAIN
     route_target = "custom-openai-compatible:wide-context"
     settings = Settings.model_construct(
         llm=LlmSettings.model_construct(
@@ -1095,7 +1098,7 @@ def test_default_similarity_chain_allows_explicit_custom_routes() -> None:
 
     routes = bootstrap._resolve_similarity_judge_routes(settings)
 
-    assert tuple(route.provider for route in routes) == (route_target, route_target)
+    assert tuple(route.provider for route in routes) == tuple(route_target for _ in models)
 
 
 def test_build_llm_clients_routes_configured_scoring_entries_to_custom_endpoints(

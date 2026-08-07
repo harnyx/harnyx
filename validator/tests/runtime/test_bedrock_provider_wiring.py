@@ -270,10 +270,8 @@ async def test_validator_runtime_routes_primary_similarity_model_to_custom_endpo
                     "llm_model_provider_overrides_json": json.dumps(
                         {
                             "duplication_detection": {
-                                bootstrap._DUPLICATION_DETECTION_LLM_MODEL: similarity_route_target,
-                                bootstrap._DUPLICATION_DETECTION_FALLBACK_MODELS[
-                                    0
-                                ]: similarity_route_target,
+                                model: similarity_route_target
+                                for model in bootstrap._DUPLICATION_DETECTION_MODEL_CHAIN
                             }
                         }
                     ),
