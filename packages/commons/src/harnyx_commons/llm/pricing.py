@@ -88,6 +88,7 @@ STATIC_LLM_PRICING: Mapping[str, ModelPricing] = {
     "moonshotai/Kimi-K2.5-TEE": ModelPricing(0.44, 2.00, 0.0),
     "moonshotai/Kimi-K2.6-TEE": ModelPricing(0.66, 3.50, 0.0),
     "moonshotai/Kimi-K3-TEE": ModelPricing(3.00, 15.00, 0.0),
+    "zai-org/GLM-5.1-TEE": ModelPricing(0.98, 3.08, 0.0),
 }
 
 MINER_TOOL_LLM_PRICING: Mapping[MinerSelectedLlmProviderName, Mapping[str, ModelPricing]] = {

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from typing import Literal
+
 import pytest
+from pydantic import BaseModel
 
 from harnyx_commons.clients import CHUTES
 from harnyx_commons.config.llm import LlmSettings
+from harnyx_commons.llm.json_utils import pydantic_postprocessor
 from harnyx_commons.llm.provider_factory import build_miner_paid_llm_provider
 from harnyx_commons.llm.providers.chutes import ChutesLlmProvider
 from harnyx_commons.llm.schema import (
@@ -30,6 +34,16 @@ NEW_CHUTES_MODELS = (
     "Qwen/Qwen3.5-397B-A17B-TEE",
 )
 CHUTES_TOOL_LOOP_MODELS = (CHUTES_TOOL_MODELS[0], *NEW_CHUTES_MODELS)
+SCORING_FALLBACK_MODELS = (
+    "zai-org/GLM-5.2-TEE",
+    "zai-org/GLM-5.1-TEE",
+    "moonshotai/Kimi-K3-TEE",
+    "moonshotai/Kimi-K2.6-TEE",
+)
+
+
+class ScoringFallbackPreference(BaseModel):
+    preferred_position: Literal["first", "second"]
 
 
 def _provider_settings() -> tuple[str, float]:
@@ -53,6 +67,39 @@ def _completion_request(*, model: str) -> LlmRequest:
         temperature=0.0,
         max_output_tokens=32,
         timeout_seconds=180.0,
+    )
+
+
+def _scoring_fallback_request(*, model: str) -> LlmRequest:
+    return LlmRequest(
+        provider="chutes",
+        model=model,
+        messages=(
+            LlmMessage(
+                role="system",
+                content=(
+                    LlmMessageContentPart.input_text(
+                        "Return JSON only with exactly one key, preferred_position."
+                    ),
+                ),
+            ),
+            LlmMessage(
+                role="user",
+                content=(
+                    LlmMessageContentPart.input_text(
+                        'Set preferred_position to "first".'
+                    ),
+                ),
+            ),
+        ),
+        output_mode="structured",
+        output_schema=ScoringFallbackPreference,
+        postprocessor=pydantic_postprocessor(ScoringFallbackPreference),
+        temperature=0.0,
+        max_output_tokens=128,
+        reasoning_effort="high",
+        timeout_seconds=180.0,
+        use_case="miner_task_pairwise_judge",
     )
 
 
@@ -100,6 +147,29 @@ async def test_chutes_tool_model_completion_live(model: str) -> None:
         "chutes_live_snapshot",
         "chutes_repo_rates",
     }
+    assert response.metadata["actual_cost_evidence"]["model"] == model
+    assert response.usage.total_tokens is not None
+    assert response.usage.total_tokens > 0
+
+
+@pytest.mark.parametrize("model", SCORING_FALLBACK_MODELS)
+async def test_chutes_scoring_fallback_model_completion_live(model: str) -> None:
+    api_key, timeout = _provider_settings()
+    provider = ChutesLlmProvider(
+        base_url=CHUTES.base_url,
+        api_key=api_key,
+        timeout=timeout,
+    )
+
+    try:
+        response = await provider.invoke(_scoring_fallback_request(model=model))
+    finally:
+        await provider.aclose()
+
+    assert isinstance(response.postprocessed, ScoringFallbackPreference)
+    assert response.postprocessed.preferred_position == "first"
+    assert response.metadata is not None
+    assert response.metadata["actual_cost_provider"] == "chutes"
     assert response.metadata["actual_cost_evidence"]["model"] == model
     assert response.usage.total_tokens is not None
     assert response.usage.total_tokens > 0

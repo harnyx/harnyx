@@ -130,6 +130,7 @@ async def test_chutes_pricing_cache_updated_empty_snapshot_uses_fallback_without
         ("deepseek-ai/DeepSeek-V4-Flash-0731-TEE", 0.14, 0.28),
         ("moonshotai/Kimi-K3-TEE", 3.00, 15.00),
         ("moonshotai/Kimi-K2.6-TEE", 0.66, 3.50),
+        ("zai-org/GLM-5.1-TEE", 0.98, 3.08),
         ("zai-org/GLM-5.2-TEE", 1.40, 4.40),
         ("Qwen/Qwen3.5-397B-A17B-TEE", 0.45, 3.00),
     ),

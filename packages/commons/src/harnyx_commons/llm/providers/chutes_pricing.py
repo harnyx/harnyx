@@ -20,6 +20,7 @@ CHUTES_STATIC_PRICING: Mapping[str, ModelPricing] = {
         "deepseek-ai/DeepSeek-V4-Flash-0731-TEE"
     ],
     "moonshotai/Kimi-K3-TEE": STATIC_LLM_PRICING["moonshotai/Kimi-K3-TEE"],
+    "zai-org/GLM-5.1-TEE": STATIC_LLM_PRICING["zai-org/GLM-5.1-TEE"],
 }
 
 

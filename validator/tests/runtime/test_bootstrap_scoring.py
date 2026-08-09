@@ -835,12 +835,22 @@ def test_scoring_slot_config_entries_are_hard_coded() -> None:
         bootstrap.ScoringSlotConfigEntry(
             model="google/gemma-4-31B-turbo-TEE",
             slot_limit=10,
-            fallback_models=("zai-org/GLM-5.2-TEE", "moonshotai/Kimi-K2.6-TEE"),
+            fallback_models=(
+                "zai-org/GLM-5.2-TEE",
+                "zai-org/GLM-5.1-TEE",
+                "moonshotai/Kimi-K3-TEE",
+                "moonshotai/Kimi-K2.6-TEE",
+            ),
         ),
         bootstrap.ScoringSlotConfigEntry(
             model="Qwen/Qwen3.6-27B-TEE",
             slot_limit=10,
-            fallback_models=("zai-org/GLM-5.2-TEE", "moonshotai/Kimi-K2.6-TEE"),
+            fallback_models=(
+                "zai-org/GLM-5.2-TEE",
+                "zai-org/GLM-5.1-TEE",
+                "moonshotai/Kimi-K3-TEE",
+                "moonshotai/Kimi-K2.6-TEE",
+            ),
         ),
     )
 
@@ -887,10 +897,14 @@ def test_build_services_passes_slot_fallback_models_to_scoring_services() -> Non
 
     assert scoring_services["google/gemma-4-31B-turbo-TEE"]._config.fallback_models == (
         "zai-org/GLM-5.2-TEE",
+        "zai-org/GLM-5.1-TEE",
+        "moonshotai/Kimi-K3-TEE",
         "moonshotai/Kimi-K2.6-TEE",
     )
     assert scoring_services["Qwen/Qwen3.6-27B-TEE"]._config.fallback_models == (
         "zai-org/GLM-5.2-TEE",
+        "zai-org/GLM-5.1-TEE",
+        "moonshotai/Kimi-K3-TEE",
         "moonshotai/Kimi-K2.6-TEE",
     )
 
