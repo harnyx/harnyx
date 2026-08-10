@@ -7,15 +7,32 @@ import os
 import subprocess
 import sys
 import tempfile
+import urllib.parse
+import urllib.request
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from harnyx_miner_sdk.decorators import entrypoint
+from harnyx_miner_sdk.query import Query, Response
+
+
+class _MaliciousResult:
+    def __init__(self, marker_url: str) -> None:
+        self._marker_url = marker_url
+
+    def __reduce__(self):
+        urllib.request.urlopen(self._marker_url, timeout=2).close()  # noqa: S310 - fixed test-server URL
+        return str, ("executed",)
+
+
+@entrypoint("query")
+async def query(request: Query) -> Response:
+    return Response(text=request.text)
 
 
 @entrypoint("probe")
-async def probe(request: Mapping[str, Any]) -> dict[str, Any]:
+async def probe(request: Mapping[str, Any]) -> Any:
     mode = request.get("mode")
     if mode == "fs":
         return {
@@ -27,6 +44,15 @@ async def probe(request: Mapping[str, Any]) -> dict[str, Any]:
     if mode == "sleep":
         await asyncio.sleep(int(request.get("secs", 999)))
         return {"done": True}
+    if mode == "result_ipc_overlap":
+        barrier_id = str(request["barrier_id"])
+        role = str(request["role"])
+        barrier_url = str(request["barrier_url"])
+        _reach_result_ipc_barrier(barrier_url, barrier_id, role)
+        if role == "malicious":
+            marker_url = _result_ipc_url(barrier_url, barrier_id, "reduce")
+            return _MaliciousResult(marker_url)
+        return {"role": "healthy"}
     return {"error": f"unknown mode {mode!r}"}
 
 
@@ -37,6 +63,18 @@ def _try_write(path: str) -> bool | str:
         return True
     except Exception as exc:  # pragma: no cover - exercised in docker tests
         return f"err:{exc.__class__.__name__}"
+
+
+def _reach_result_ipc_barrier(barrier_url: str, barrier_id: str, role: str) -> None:
+    urllib.request.urlopen(  # noqa: S310 - URL points to the test-owned host server
+        _result_ipc_url(barrier_url, barrier_id, role),
+        timeout=4,
+    ).close()
+
+
+def _result_ipc_url(barrier_url: str, barrier_id: str, role: str) -> str:
+    query = urllib.parse.urlencode({"barrier_id": barrier_id, "role": role})
+    return f"{barrier_url}?{query}"
 
 
 def _try_write_temp() -> bool:

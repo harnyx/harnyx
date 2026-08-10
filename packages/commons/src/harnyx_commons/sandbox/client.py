@@ -9,6 +9,14 @@ from uuid import UUID
 from harnyx_commons.json_types import JsonValue
 
 
+class InvalidSandboxResponseError(ValueError):
+    """The sandbox returned an HTTP response that violates the response contract."""
+
+
+class SandboxResponseProcessingError(RuntimeError):
+    """A received sandbox response failed during unexpected local processing."""
+
+
 class SandboxInvokeError(RuntimeError):
     """Structured sandbox invocation failure surfaced by shared clients."""
 
@@ -20,12 +28,14 @@ class SandboxInvokeError(RuntimeError):
         detail_code: str | None,
         detail_exception: str | None,
         detail_error: str | None,
+        remote_state_uncertain: bool = False,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.detail_code = detail_code
         self.detail_exception = detail_exception
         self.detail_error = detail_error
+        self.remote_state_uncertain = remote_state_uncertain
 
 
 class SandboxClient(Protocol):
@@ -47,4 +57,4 @@ class SandboxClient(Protocol):
         """Release any client-side resources."""
 
 
-__all__ = ["SandboxClient", "SandboxInvokeError"]
+__all__ = ["InvalidSandboxResponseError", "SandboxClient", "SandboxInvokeError"]

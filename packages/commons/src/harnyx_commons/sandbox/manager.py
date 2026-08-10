@@ -20,17 +20,26 @@ class SandboxDeployment:
     stop_timeout_seconds: int | None = None
 
 
+class SandboxStartError(RuntimeError):
+    """Startup failed after launch and the physical sandbox may still exist."""
+
+    def __init__(self, message: str, *, unremoved_deployment: SandboxDeployment) -> None:
+        super().__init__(message)
+        self.unremoved_deployment = unremoved_deployment
+
+
 class SandboxManager(Protocol):
     """Lifecycle manager responsible for provisioning sandbox entrypoints."""
 
     def start(self, options: SandboxOptions) -> SandboxDeployment:
         """Start the sandbox and return a deployment descriptor."""
 
-    def stop(self, deployment: SandboxDeployment) -> None:
-        """Stop the sandbox instance described by the deployment."""
+    def stop(self, deployment: SandboxDeployment) -> bool:
+        """Stop the sandbox and report whether physical removal was confirmed."""
 
 
 __all__ = [
     "SandboxDeployment",
     "SandboxManager",
+    "SandboxStartError",
 ]

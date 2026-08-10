@@ -176,8 +176,9 @@ class DummySandboxManager(SandboxManager):
         self.starts.append(options)
         return SandboxDeployment(client=object())
 
-    def stop(self, deployment: SandboxDeployment) -> None:
+    def stop(self, deployment: SandboxDeployment) -> bool:
         self.stops.append(deployment)
+        return True
 
 
 class DummyEvaluationRecordStore:
@@ -876,7 +877,7 @@ async def test_scheduler_assigned_results_survive_teardown_and_activity_failures
     now = datetime(2025, 10, 27, tzinfo=UTC)
 
     class FailingStopSandboxManager(DummySandboxManager):
-        def stop(self, deployment: SandboxDeployment) -> None:
+        def stop(self, deployment: SandboxDeployment) -> bool:
             super().stop(deployment)
             raise RuntimeError("sandbox stop failed")
 

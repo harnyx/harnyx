@@ -14,6 +14,7 @@ import pytest
 from harnyx_commons.json_types import JsonValue
 from harnyx_commons.sandbox.client import SandboxClient
 from harnyx_commons.sandbox.docker import DockerSandboxManager
+from harnyx_commons.sandbox.manager import SandboxStartError
 from harnyx_commons.sandbox.options import SandboxOptions
 
 
@@ -97,16 +98,19 @@ def test_docker_sandbox_manager_times_out_docker_run(tmp_path: Path) -> None:
 
     def command_runner(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         nonlocal observed_timeout
+        if args[:3] == ["docker", "ps", "-aq"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
         observed_timeout = kwargs["timeout"]
         raise subprocess.TimeoutExpired(cmd=args, timeout=observed_timeout)
 
     options = _sandbox_options(tmp_path)
     manager = DockerSandboxManager(command_runner=command_runner, command_timeout_seconds=3.5)
 
-    with pytest.raises(RuntimeError, match="docker run timed out after 3.5s"):
+    with pytest.raises(SandboxStartError, match="remote creation remains uncertain") as raised:
         manager.start(options)
 
     assert observed_timeout == 3.5
+    assert raised.value.unremoved_deployment.identifier == options.container_name
     error_text = (tmp_path / "error.txt").read_text(encoding="utf-8")
     assert error_text.startswith("TimeoutExpired:")
 

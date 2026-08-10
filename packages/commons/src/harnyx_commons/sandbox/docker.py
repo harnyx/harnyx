@@ -24,20 +24,24 @@ from harnyx_commons.protocol_headers import (
     HOST_CONTAINER_URL_HEADER,
     SESSION_ID_HEADER,
 )
-from harnyx_commons.sandbox.client import SandboxClient, SandboxInvokeError
+from harnyx_commons.sandbox.client import (
+    InvalidSandboxResponseError,
+    SandboxClient,
+    SandboxInvokeError,
+    SandboxResponseProcessingError,
+)
 from harnyx_commons.sandbox.diagnostic_files import (
     ensure_private_diagnostic_dir,
     write_private_json,
     write_private_text,
 )
-from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager
+from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager, SandboxStartError
 from harnyx_commons.sandbox.options import DEFAULT_TOKEN_HEADER, SandboxOptions
 
 logger = logging.getLogger(__name__)
 
 _MOUNTINFO_CONTAINER_ID_PATTERN = re.compile(r"/containers/([0-9a-f]{12,64})/(?:hostname|hosts|resolv\.conf)(?:\s|$)")
 _NON_SENSITIVE_DIAGNOSTIC_ENV_KEYS = frozenset({"SANDBOX_HOST", "SANDBOX_PORT"})
-_STALE_LEGACY_CONTAINER_STATUSES = ("created", "exited", "dead")
 _SANDBOX_ENTRYPOINT_CONNECT_ATTEMPTS = 2
 _CONTAINER_IP_READY_TIMEOUT_SECONDS = 5.0
 _CONTAINER_IP_READY_POLL_INTERVAL_SECONDS = 0.1
@@ -48,6 +52,26 @@ _RETRYABLE_SANDBOX_ENTRYPOINT_CONNECTION_NOT_ESTABLISHED_ERRORS = (httpx.Connect
 
 class _ContainerIpNotReadyError(RuntimeError):
     """Docker has not published a usable container IP for the configured network yet."""
+
+
+class _UnreadySandboxClient(SandboxClient):
+    """Non-invokable client used only to retain an unremoved startup attempt."""
+
+    async def invoke(
+        self,
+        entrypoint: str,
+        *,
+        payload: Mapping[str, JsonValue],
+        context: Mapping[str, JsonValue],
+        token: str,
+        session_id: UUID,
+        include_failure_details: bool = True,
+    ) -> Mapping[str, JsonValue]:
+        del entrypoint, payload, context, token, session_id, include_failure_details
+        raise RuntimeError("unready sandbox cannot accept invocations")
+
+    def close(self) -> None:
+        return None
 
 
 class HttpSandboxClient(SandboxClient):
@@ -122,6 +146,7 @@ class HttpSandboxClient(SandboxClient):
                     "error": str(exc) if include_failure_details else None,
                 },
                 message=(f"sandbox entrypoint request timed out: entrypoint={entrypoint} session_id={session_id}"),
+                remote_state_uncertain=True,
             ) from (exc if include_failure_details else None)
         except httpx.RequestError as exc:  # pragma: no cover - network errors
             logger.error(
@@ -141,10 +166,23 @@ class HttpSandboxClient(SandboxClient):
                     "error": str(exc) if include_failure_details else None,
                 },
                 message=(f"sandbox entrypoint request failed: entrypoint={entrypoint} session_id={session_id}"),
+                remote_state_uncertain=True,
             ) from (exc if include_failure_details else None)
         except httpx.HTTPStatusError as exc:
-            detail_payload = _unwrap_response_detail(_response_json_or_text(exc.response))
-            detail = _parse_sandbox_response_detail(detail_payload)
+            try:
+                detail_payload = _unwrap_response_detail(_response_json_or_text(exc.response))
+                detail = _parse_sandbox_response_detail(detail_payload)
+            except Exception as processing_exc:
+                logger.error(
+                    "sandbox response processing failed after receipt: entrypoint=%s session_id=%s",
+                    entrypoint,
+                    session_id,
+                    exc_info=processing_exc if include_failure_details else None,
+                    extra={"entrypoint": entrypoint, "session_id": str(session_id)},
+                )
+                raise SandboxResponseProcessingError(
+                    f"sandbox response processing failed: entrypoint={entrypoint} session_id={session_id}"
+                ) from (processing_exc if include_failure_details else None)
             status = exc.response.status_code
             logger.error(
                 "sandbox entrypoint request failed: entrypoint=%s status=%s session_id=%s",
@@ -170,8 +208,31 @@ class HttpSandboxClient(SandboxClient):
                 detail_exception=detail.exception,
                 detail_error=detail.error if include_failure_details else None,
             ) from (exc if include_failure_details else None)
-        body = response.json()
-        return _parse_sandbox_invoke_result(body)
+        try:
+            body = response.json()
+            return _parse_sandbox_invoke_result(body)
+        except (TypeError, ValueError) as exc:
+            logger.error(
+                "sandbox entrypoint returned an invalid response: entrypoint=%s session_id=%s",
+                entrypoint,
+                session_id,
+                exc_info=exc if include_failure_details else None,
+                extra={"entrypoint": entrypoint, "session_id": str(session_id)},
+            )
+            raise InvalidSandboxResponseError(
+                f"sandbox entrypoint returned an invalid response: entrypoint={entrypoint} session_id={session_id}"
+            ) from (exc if include_failure_details else None)
+        except Exception as exc:
+            logger.error(
+                "sandbox response processing failed after receipt: entrypoint=%s session_id=%s",
+                entrypoint,
+                session_id,
+                exc_info=exc if include_failure_details else None,
+                extra={"entrypoint": entrypoint, "session_id": str(session_id)},
+            )
+            raise SandboxResponseProcessingError(
+                f"sandbox response processing failed: entrypoint={entrypoint} session_id={session_id}"
+            ) from (exc if include_failure_details else None)
 
     async def _post_entrypoint_with_connect_retry(
         self,
@@ -296,6 +357,7 @@ def _sandbox_invoke_error(
     status_code: int,
     detail: object,
     message: str,
+    remote_state_uncertain: bool = False,
 ) -> SandboxInvokeError:
     parsed = _parse_sandbox_response_detail(detail)
     return SandboxInvokeError(
@@ -304,6 +366,7 @@ def _sandbox_invoke_error(
         detail_code=parsed.code,
         detail_exception=parsed.exception,
         detail_error=parsed.error,
+        remote_state_uncertain=remote_state_uncertain,
     )
 
 
@@ -394,7 +457,21 @@ class DockerSandboxManager(SandboxManager):
             if client is not None:
                 client.close()
             self._stop_log_stream(container_id)
-            self._best_effort_stop_and_remove(container_id, stop_timeout_seconds=options.stop_timeout_seconds)
+            removed = self._best_effort_stop_and_remove(
+                container_id,
+                stop_timeout_seconds=options.stop_timeout_seconds,
+            )
+            if not removed:
+                deployment = SandboxDeployment(
+                    client=client or _UnreadySandboxClient(),
+                    identifier=container_id,
+                    base_url=base_url,
+                    stop_timeout_seconds=options.stop_timeout_seconds,
+                )
+                raise SandboxStartError(
+                    f"sandbox startup failed and removal could not be confirmed: {exc}",
+                    unremoved_deployment=deployment,
+                ) from exc
             raise
         assert base_url is not None
         assert client is not None
@@ -538,8 +615,15 @@ class DockerSandboxManager(SandboxManager):
                 docker_run_result=None,
             )
             redacted_command = _shell_join(_redact_docker_run_args(args))
-            raise RuntimeError(
-                f"docker run timed out after {self._command_timeout_seconds:g}s: {redacted_command}"
+            self._best_effort_remove(options.container_name)
+            deployment = SandboxDeployment(
+                client=_UnreadySandboxClient(),
+                identifier=options.container_name,
+                stop_timeout_seconds=options.stop_timeout_seconds,
+            )
+            raise SandboxStartError(
+                f"docker run timed out and remote creation remains uncertain: {redacted_command}",
+                unremoved_deployment=deployment,
             ) from exc
         container_id = result.stdout.strip()
         if not container_id:
@@ -906,70 +990,68 @@ class DockerSandboxManager(SandboxManager):
         if self._log_consumer:
             self._start_log_stream(container_id)
 
-    def stop(self, deployment: SandboxDeployment) -> None:
+    def stop(self, deployment: SandboxDeployment) -> bool:
         identifier = deployment.identifier
         if not identifier:
-            return
+            return True
         args = [self._docker, "stop"]
         if deployment.stop_timeout_seconds is not None:
             args.extend(["-t", str(deployment.stop_timeout_seconds)])
         args.append(identifier)
         logger.info("stopping sandbox container", extra={"container": identifier})
         try:
-            self._run_command(args, capture_output=True, text=True, check=True)
-        except subprocess.CalledProcessError as exc:  # pragma: no cover - exercised in integration
-            logger.warning(
-                "docker stop failed (ignored): returncode=%s stderr=%s",
-                exc.returncode,
-                exc.stderr,
-                extra={"container": identifier, "stderr": exc.stderr},
-            )
-        except subprocess.TimeoutExpired as exc:  # pragma: no cover - integration only
-            logger.warning(
-                "docker stop timed out (ignored): timeout=%s",
-                exc.timeout,
-                extra={"container": identifier, "timeout": exc.timeout},
-            )
-        self._best_effort_remove(identifier)
-        deployment.client.close()
-        self._stop_log_stream(identifier)
+            try:
+                self._run_command(args, capture_output=True, text=True, check=True)
+            except subprocess.CalledProcessError as exc:  # pragma: no cover - exercised in integration
+                logger.warning(
+                    "docker stop failed; forcing removal: returncode=%s stderr=%s",
+                    exc.returncode,
+                    exc.stderr,
+                    extra={"container": identifier, "stderr": exc.stderr},
+                )
+            except subprocess.TimeoutExpired as exc:  # pragma: no cover - integration only
+                logger.warning(
+                    "docker stop timed out; forcing removal: timeout=%s",
+                    exc.timeout,
+                    extra={"container": identifier, "timeout": exc.timeout},
+                )
+            return self._best_effort_remove(identifier)
+        finally:
+            deployment.client.close()
+            self._stop_log_stream(identifier)
 
     def cleanup_stale_sandbox_containers(
         self,
         *,
         labels: Mapping[str, str],
         name_prefix: str,
-    ) -> None:
-        """Best-effort remove stale sandbox containers selected by labels or name prefix."""
+    ) -> bool:
+        """Best-effort remove stale sandboxes and report whether none remain."""
         if not name_prefix:
             logger.warning("skipping stale sandbox cleanup because name_prefix is empty")
-            return
+            return False
         try:
-            labeled_ids: tuple[str, ...] = ()
-            if labels:
-                labeled_ids = self._list_container_ids_all_states(
-                    tuple(("label", f"{key}={value}") for key, value in sorted(labels.items()))
-                )
-            prefixed_ids = tuple(
-                container_id
-                for status in _STALE_LEGACY_CONTAINER_STATUSES
-                for container_id in self._list_container_ids_all_states(
-                    (("name", f"^/{name_prefix}"), ("status", status))
-                )
-            )
-            container_ids = sorted(set(labeled_ids) | set(prefixed_ids))
+            container_ids = self._stale_sandbox_container_ids(labels=labels, name_prefix=name_prefix)
             if not container_ids:
-                return
+                return True
             self._run_command(
                 [self._docker, "rm", "-f", *container_ids],
                 capture_output=True,
                 text=True,
                 check=True,
             )
+            remaining_ids = self._stale_sandbox_container_ids(labels=labels, name_prefix=name_prefix)
+            if remaining_ids:
+                logger.warning(
+                    "stale sandbox containers remain after cleanup",
+                    extra={"container_count": len(remaining_ids), "name_prefix": name_prefix},
+                )
+                return False
             logger.info(
                 "removed stale sandbox containers",
                 extra={"container_count": len(container_ids), "name_prefix": name_prefix},
             )
+            return True
         except subprocess.CalledProcessError as exc:
             logger.warning(
                 "failed to remove stale sandbox containers",
@@ -988,6 +1070,23 @@ class DockerSandboxManager(SandboxManager):
                 extra={"name_prefix": name_prefix},
                 exc_info=exc,
             )
+        return False
+
+    def _stale_sandbox_container_ids(
+        self,
+        *,
+        labels: Mapping[str, str],
+        name_prefix: str,
+    ) -> list[str]:
+        labeled_ids: set[str] | None = None
+        # Docker combines repeated label filters as alternatives, so require ownership by intersecting lookups.
+        for key, value in sorted(labels.items()):
+            matching_ids = set(
+                self._list_container_ids_all_states((("label", f"{key}={value}"),))
+            )
+            labeled_ids = matching_ids if labeled_ids is None else labeled_ids & matching_ids
+        prefixed_ids = self._list_container_ids_all_states((("name", f"^/{name_prefix}"),))
+        return sorted((labeled_ids or set()) | set(prefixed_ids))
 
     def _list_container_ids_all_states(
         self,
@@ -999,7 +1098,7 @@ class DockerSandboxManager(SandboxManager):
         result = self._run_command(args, capture_output=True, text=True, check=True)
         return tuple(line.strip() for line in (result.stdout or "").splitlines() if line.strip())
 
-    def _best_effort_stop_and_remove(self, container_id: str, *, stop_timeout_seconds: int | None) -> None:
+    def _best_effort_stop_and_remove(self, container_id: str, *, stop_timeout_seconds: int | None) -> bool:
         args = [self._docker, "stop"]
         if stop_timeout_seconds is not None:
             args.extend(["-t", str(stop_timeout_seconds)])
@@ -1019,12 +1118,13 @@ class DockerSandboxManager(SandboxManager):
                 exc.timeout,
                 extra={"container": container_id, "timeout": exc.timeout},
             )
-        self._best_effort_remove(container_id)
+        return self._best_effort_remove(container_id)
 
-    def _best_effort_remove(self, container_id: str) -> None:
+    def _best_effort_remove(self, container_id: str) -> bool:
         args = [self._docker, "rm", "-f", container_id]
         try:
             self._run_command(args, capture_output=True, text=True, check=True)
+            return True
         except subprocess.CalledProcessError as exc:  # pragma: no cover - integration only
             logger.warning(
                 "docker rm failed (ignored): returncode=%s stderr=%s",
@@ -1038,6 +1138,27 @@ class DockerSandboxManager(SandboxManager):
                 exc.timeout,
                 extra={"container": container_id, "timeout": exc.timeout},
             )
+        try:
+            matching_ids = self._list_container_ids_all_states((("id", container_id),))
+            if matching_ids:
+                return False
+            matching_names = self._list_container_ids_all_states(
+                (("name", f"^/{container_id}$"),)
+            )
+        except Exception:
+            logger.warning(
+                "could not confirm sandbox container absence after failed removal",
+                extra={"container": container_id},
+                exc_info=True,
+            )
+            return False
+        if matching_names:
+            return False
+        logger.info(
+            "sandbox container already absent after failed removal",
+            extra={"container": container_id},
+        )
+        return True
 
     def _wait_for_healthz(self, base_url: str, *, path: str, timeout_seconds: float) -> None:
         deadline = time.monotonic() + timeout_seconds

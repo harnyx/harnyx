@@ -837,8 +837,9 @@ class _FakeSandboxManager:
             base_url="http://127.0.0.1:38000",
         )
 
-    def stop(self, deployment: SandboxDeployment) -> None:
+    def stop(self, deployment: SandboxDeployment) -> bool:
         self.stopped_deployments.append(deployment)
+        return True
 
 
 class _FailingSandboxManager(_FakeSandboxManager):

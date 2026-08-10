@@ -5,7 +5,10 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, Literal
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from harnyx_commons.sandbox.docker import DockerSandboxManager, resolve_sandbox_host_container_url
 from harnyx_commons.sandbox.options import SandboxOptions
@@ -13,6 +16,16 @@ from harnyx_commons.sandbox.seccomp.paths import default_profile_path
 
 DOCKER_BINARY: Final[str] = "/usr/bin/docker"
 HOST_PROBE_ADDRESS: Final[str] = "host.docker.internal"
+SANDBOX_INVOCATION_OUTPUT_PREFIX: Final[str] = "HARNYX_SANDBOX_INVOCATION_OUTPUT "
+
+
+class _SandboxInvocationOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    session_id: UUID
+    entrypoint: str = Field(min_length=1)
+    stream: Literal["stdout", "stderr"]
+    message: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,8 +73,21 @@ def create_sandbox_manager(
         # Published-port health probes must use a service-reachable host address for this runtime.
         host=host,
         published_port_bind_host=published_port_bind_host,
-        log_consumer=lambda line: sandbox_log.info("%s", line),
+        log_consumer=lambda line: _consume_sandbox_log(sandbox_log, line),
     )
+
+
+def _consume_sandbox_log(sandbox_log: logging.Logger, line: str) -> None:
+    if not line.startswith(SANDBOX_INVOCATION_OUTPUT_PREFIX):
+        sandbox_log.info("%s", line)
+        return
+    raw_record = line.removeprefix(SANDBOX_INVOCATION_OUTPUT_PREFIX)
+    try:
+        record = _SandboxInvocationOutput.model_validate_json(raw_record)
+    except ValidationError:
+        sandbox_log.info("%s", line)
+        return
+    sandbox_log.info("sandbox_invocation.output", extra={"data": record.model_dump(mode="json")})
 
 
 def build_sandbox_options(

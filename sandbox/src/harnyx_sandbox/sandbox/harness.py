@@ -3,21 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import contextlib
 import errno
 import inspect
+import json
 import logging
+import math
 import multiprocessing
 import os
-import pickle
 import struct
-import traceback
+import sys
 from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 
 import pyseccomp as seccomp
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
 
 from harnyx_miner_sdk._internal.tool_invoker import bind_tool_invoker
 from harnyx_miner_sdk.decorators import (
@@ -62,6 +65,8 @@ WORKER_KILL_GRACE_SECONDS = 1.0
 WORKER_RESULT_HEADER_BYTES = 8
 WORKER_RESULT_READ_CHUNK_BYTES = 64 * 1024
 MAX_WORKER_RESULT_BYTES = 64 * 1024 * 1024
+MAX_WORKER_OUTPUT_MESSAGE_CHARACTERS = 64 * 1024
+MAX_WORKER_OUTPUT_RECORDS_PER_CALLBACK = 64
 
 
 class WorkerResultProtocolError(RuntimeError):
@@ -96,6 +101,33 @@ class WorkerResultPipe:
 
 
 @dataclass(frozen=True)
+class WorkerOutputPipe:
+    read_fd: int
+    write_fd: int
+
+    @classmethod
+    def open(cls) -> WorkerOutputPipe:
+        read_fd, write_fd = os.pipe()
+        try:
+            os.set_blocking(read_fd, False)
+        except BaseException:
+            _close_fd(read_fd)
+            _close_fd(write_fd)
+            raise
+        return cls(read_fd=read_fd, write_fd=write_fd)
+
+    def close_read(self) -> None:
+        _close_fd(self.read_fd)
+
+    def close_write(self) -> None:
+        _close_fd(self.write_fd)
+
+    def close(self) -> None:
+        self.close_read()
+        self.close_write()
+
+
+@dataclass(frozen=True)
 class WorkerResultFrame:
     payload: bytes | None = None
     oversized: bool = False
@@ -103,6 +135,7 @@ class WorkerResultFrame:
     @property
     def complete(self) -> bool:
         return self.payload is not None
+
 
 def _default_mp_context() -> multiprocessing.context.BaseContext:
     try:
@@ -200,12 +233,9 @@ class WorkerResultReader:
 
     async def _decode_complete_frame(self, payload: bytes) -> None:
         try:
-            envelope = await asyncio.to_thread(pickle.loads, payload)
+            envelope = await asyncio.to_thread(_decode_worker_result, payload)
         except Exception:
             self._set_exception(WorkerResultProtocolError("worker returned invalid result frame"))
-            return
-        if not _is_worker_result_envelope(envelope):
-            self._set_exception(WorkerResultProtocolError("worker returned invalid result envelope"))
             return
         self._set_result(envelope)
 
@@ -216,6 +246,124 @@ class WorkerResultReader:
     def _set_exception(self, exc: Exception) -> None:
         if self._future is not None and not self._future.done():
             self._future.set_exception(exc)
+
+
+class WorkerOutputReader:
+    """Forwards one worker output stream without occupying an executor thread."""
+
+    def __init__(
+        self,
+        *,
+        pipe: WorkerOutputPipe,
+        payload: Mapping[str, Any],
+        stream: str,
+    ) -> None:
+        self._pipe = pipe
+        self._session_id = str(read_session_id_header(payload["headers"]))
+        self._entrypoint = str(payload["entrypoint_name"])
+        self._stream = stream
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        self._buffer = ""
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._future: asyncio.Future[None] | None = None
+        self._closed = False
+        self._eof = False
+        self._continuation_scheduled = False
+
+    async def wait(self) -> None:
+        loop = asyncio.get_running_loop()
+        self._loop = loop
+        self._future = loop.create_future()
+        try:
+            loop.add_reader(self._pipe.read_fd, self._output_ready)
+            await self._future
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._loop is not None:
+            with contextlib.suppress(Exception):
+                self._loop.remove_reader(self._pipe.read_fd)
+        self._pipe.close_read()
+
+    def _output_ready(self) -> None:
+        if self._closed:
+            return
+        remaining_records = self._emit_available(MAX_WORKER_OUTPUT_RECORDS_PER_CALLBACK)
+        if remaining_records and not self._eof:
+            try:
+                chunk = os.read(self._pipe.read_fd, WORKER_RESULT_READ_CHUNK_BYTES)
+            except BlockingIOError:
+                chunk = None
+            except OSError:
+                chunk = b""
+            if chunk == b"":
+                self._eof = True
+                if self._loop is not None:
+                    self._loop.remove_reader(self._pipe.read_fd)
+                self._buffer += self._decoder.decode(b"", final=True)
+            elif chunk is not None:
+                self._buffer += self._decoder.decode(chunk)
+            remaining_records = self._emit_available(remaining_records)
+
+        if self._has_available_record():
+            self._schedule_continuation()
+        elif self._eof and self._future is not None and not self._future.done():
+            self._future.set_result(None)
+
+    def _emit_available(self, record_budget: int) -> int:
+        while record_budget and (message := self._take_next_message()) is not None:
+            self._emit(message)
+            record_budget -= 1
+        return record_budget
+
+    def _take_next_message(self) -> str | None:
+        newline_index = self._buffer.find("\n")
+        if 0 <= newline_index <= MAX_WORKER_OUTPUT_MESSAGE_CHARACTERS:
+            line = self._buffer[:newline_index]
+            self._buffer = self._buffer[newline_index + 1 :]
+            return line.rstrip("\r")
+        if len(self._buffer) >= MAX_WORKER_OUTPUT_MESSAGE_CHARACTERS:
+            line = self._buffer[:MAX_WORKER_OUTPUT_MESSAGE_CHARACTERS]
+            self._buffer = self._buffer[MAX_WORKER_OUTPUT_MESSAGE_CHARACTERS:]
+            return line
+        if self._eof and self._buffer:
+            line = self._buffer
+            self._buffer = ""
+            return line.rstrip("\r")
+        return None
+
+    def _has_available_record(self) -> bool:
+        return (
+            "\n" in self._buffer
+            or len(self._buffer) >= MAX_WORKER_OUTPUT_MESSAGE_CHARACTERS
+            or (self._eof and bool(self._buffer))
+        )
+
+    def _schedule_continuation(self) -> None:
+        if self._continuation_scheduled or self._loop is None:
+            return
+        self._continuation_scheduled = True
+        self._loop.call_soon(self._continue_output)
+
+    def _continue_output(self) -> None:
+        self._continuation_scheduled = False
+        self._output_ready()
+
+    def _emit(self, line: str) -> None:
+        record = {
+            "session_id": self._session_id,
+            "entrypoint": self._entrypoint,
+            "stream": self._stream,
+            "message": line,
+        }
+        print(
+            "HARNYX_SANDBOX_INVOCATION_OUTPUT " + json.dumps(record, separators=(",", ":")),
+            flush=True,
+        )
 
 
 class SandboxHarness:
@@ -307,36 +455,87 @@ class SandboxHarness:
         return {"request": request_payload}
 
     async def _invoke_with_worker(self, payload: Mapping[str, Any]) -> Any:
-        process, result_pipe = self._spawn_worker(payload)
+        process, result_pipe, stdout_pipe, stderr_pipe = self._spawn_worker(payload)
+        output_tasks = (
+            asyncio.create_task(WorkerOutputReader(pipe=stdout_pipe, payload=payload, stream="stdout").wait()),
+            asyncio.create_task(WorkerOutputReader(pipe=stderr_pipe, payload=payload, stream="stderr").wait()),
+        )
         try:
             result_kind, result_data = await self._await_worker_result(result_pipe, payload, process)
             return self._unwrap_worker_result(result_kind, result_data)
         finally:
-            self._join_process(process)
+            cleanup_task = asyncio.create_task(self._finish_worker(process, output_tasks))
+            await self._await_owned_cleanup(cleanup_task)
 
-    def _spawn_worker(self, payload: Mapping[str, Any]) -> tuple[multiprocessing.Process, WorkerResultPipe]:
-        result_pipe = WorkerResultPipe.open()
-        process = self._mp.Process(
-            target=_entrypoint_worker,
-            args=(
-                payload["entrypoint_name"],
-                payload["request_payload"],
-                payload["context"],
-                payload["tool_config"],
-                payload["headers"],
-                self._tool_factory,
-                payload["preload"],
-                result_pipe.read_fd,
-                result_pipe.write_fd,
-            ),
-        )
+    async def _finish_worker(
+        self,
+        process: multiprocessing.Process,
+        output_tasks: tuple[asyncio.Task[None], asyncio.Task[None]],
+    ) -> None:
+        join_task = asyncio.create_task(asyncio.to_thread(self._join_process, process))
+        await asyncio.gather(*output_tasks, return_exceptions=True)
+        await join_task
+
+    @staticmethod
+    async def _await_owned_cleanup(task: asyncio.Task[None]) -> None:
+        cancellation: asyncio.CancelledError | None = None
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError as exc:
+                if task.cancelled():
+                    break
+                cancellation = exc
+            except BaseException:
+                break
         try:
+            task.result()
+        except BaseException as exc:
+            if cancellation is not None:
+                raise cancellation from exc
+            raise
+        if cancellation is not None:
+            raise cancellation
+
+    def _spawn_worker(
+        self,
+        payload: Mapping[str, Any],
+    ) -> tuple[multiprocessing.Process, WorkerResultPipe, WorkerOutputPipe, WorkerOutputPipe]:
+        acquired_pipes: list[WorkerResultPipe | WorkerOutputPipe] = []
+        try:
+            result_pipe = WorkerResultPipe.open()
+            acquired_pipes.append(result_pipe)
+            stdout_pipe = WorkerOutputPipe.open()
+            acquired_pipes.append(stdout_pipe)
+            stderr_pipe = WorkerOutputPipe.open()
+            acquired_pipes.append(stderr_pipe)
+            process = self._mp.Process(
+                target=_entrypoint_worker,
+                args=(
+                    payload["entrypoint_name"],
+                    payload["request_payload"],
+                    payload["context"],
+                    payload["tool_config"],
+                    payload["headers"],
+                    self._tool_factory,
+                    payload["preload"],
+                    result_pipe.read_fd,
+                    result_pipe.write_fd,
+                    stdout_pipe.read_fd,
+                    stdout_pipe.write_fd,
+                    stderr_pipe.read_fd,
+                    stderr_pipe.write_fd,
+                ),
+            )
             process.start()
         except BaseException:
-            result_pipe.close()
+            for pipe in acquired_pipes:
+                pipe.close()
             raise
         result_pipe.close_write()
-        return process, result_pipe
+        stdout_pipe.close_write()
+        stderr_pipe.close_write()
+        return process, result_pipe, stdout_pipe, stderr_pipe
 
     def _unwrap_worker_result(self, kind: str, data: Any) -> Any:
         if kind == "ok":
@@ -358,9 +557,13 @@ class SandboxHarness:
         try:
             return await reader.wait(timeout=ENTRYPOINT_TIMEOUT_SECONDS)
         except TimeoutError as exc:  # pragma: no cover - integration timing
-            return self._handle_timeout(process, payload, exc)
+            terminate_task = asyncio.create_task(asyncio.to_thread(self._terminate_process, process))
+            await self._await_owned_cleanup(terminate_task)
+            return self._handle_timeout(payload, exc)
         except Exception as exc:  # pragma: no cover - unexpected worker failure
-            return self._handle_worker_failure(process, exc)
+            terminate_task = asyncio.create_task(asyncio.to_thread(self._terminate_process, process))
+            await self._await_owned_cleanup(terminate_task)
+            return self._handle_worker_failure(exc)
 
     def _terminate_process(self, process: multiprocessing.Process) -> None:
         if not process.is_alive():
@@ -372,11 +575,9 @@ class SandboxHarness:
 
     def _handle_timeout(
         self,
-        process: multiprocessing.Process,
         payload: Mapping[str, Any],
         exc: TimeoutError,
     ) -> tuple[str, Any]:
-        self._terminate_process(process)
         session_id = read_session_id_header(payload["headers"])
         logger.exception(
             "sandbox entrypoint timed out",
@@ -396,10 +597,8 @@ class SandboxHarness:
 
     def _handle_worker_failure(
         self,
-        process: multiprocessing.Process,
         exc: Exception,
     ) -> tuple[str, Any]:
-        self._terminate_process(process)
         raise HTTPException(
             status_code=500,
             detail={
@@ -424,11 +623,23 @@ def _entrypoint_worker(
     preload: Callable[[], SandboxPreloadFailure | None] | None,
     read_fd: int,
     result_fd: int,
+    stdout_read_fd: int,
+    stdout_write_fd: int,
+    stderr_read_fd: int,
+    stderr_write_fd: int,
 ) -> None:
     tool_proxy = None
     preload_completed = False
     try:
         _close_fd(read_fd)
+        _close_fd(stdout_read_fd)
+        _close_fd(stderr_read_fd)
+        os.dup2(stdout_write_fd, 1)
+        os.dup2(stderr_write_fd, 2)
+        _close_fd(stdout_write_fd)
+        _close_fd(stderr_write_fd)
+        sys.stdout = os.fdopen(1, "w", buffering=1, encoding="utf-8", errors="replace", closefd=False)
+        sys.stderr = os.fdopen(2, "w", buffering=1, encoding="utf-8", errors="replace", closefd=False)
         if tool_factory is not None:
             # Build the proxy before seccomp so hostname resolution/client setup
             # cannot trigger blocked task-creation syscalls inside the worker.
@@ -494,26 +705,124 @@ def _try_extract_worker_result_frame(buffer: bytearray) -> WorkerResultFrame:
     return WorkerResultFrame(payload=bytes(buffer[WORKER_RESULT_HEADER_BYTES:frame_size]))
 
 
-def _is_worker_result_envelope(value: object) -> bool:
-    return isinstance(value, tuple) and len(value) == 2 and isinstance(value[0], str)
-
-
 def _send_worker_result(result_fd: int, result: tuple[str, Any]) -> None:
-    payload = pickle.dumps(result, protocol=pickle.HIGHEST_PROTOCOL)
+    kind, data = result
+    if kind == "ok":
+        try:
+            normalized = data.model_dump(mode="json") if isinstance(data, BaseModel) else data
+            _validate_exact_json_value(normalized)
+            envelope: dict[str, object] = {"status": "ok", "result": normalized}
+            payload = _encode_worker_result(envelope)
+        except BaseException as exc:
+            payload = _encode_worker_error(
+                code="UnhandledException",
+                exception=exc.__class__.__name__,
+                message=str(exc),
+            )
+    elif kind == "error" and type(data) is dict:
+        payload = _encode_worker_error(
+            code=_required_error_string(data, "code"),
+            exception=_required_error_string(data, "exception"),
+            message=_required_error_string(data, "error"),
+        )
+    else:
+        payload = _encode_worker_error(
+            code="UnhandledException",
+            exception="WorkerResultProtocolError",
+            message="worker produced an invalid result envelope",
+        )
     if len(payload) > MAX_WORKER_RESULT_BYTES:
-        payload = pickle.dumps(
-            (
-                "error",
-                {
-                    "code": "ResultTooLarge",
-                    "error": "worker result exceeded maximum size",
-                    "exception": "ResultTooLarge",
-                    "traceback": None,
-                },
-            ),
-            protocol=pickle.HIGHEST_PROTOCOL,
+        payload = _encode_worker_error(
+            code="ResultTooLarge",
+            exception="ResultTooLarge",
+            message="worker result exceeded maximum size",
         )
     _write_all(result_fd, struct.pack(">Q", len(payload)) + payload)
+
+
+def _encode_worker_result(envelope: object) -> bytes:
+    return json.dumps(
+        envelope,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _encode_worker_error(*, code: str, exception: str, message: str) -> bytes:
+    return _encode_worker_result(
+        {
+            "status": "error",
+            "error": {
+                "code": code,
+                "exception": exception,
+                "message": message,
+            },
+        }
+    )
+
+
+def _required_error_string(data: dict[object, object], key: str) -> str:
+    value = data.get(key)
+    if type(value) is not str:
+        raise WorkerResultProtocolError(f"worker error {key} must be a string")
+    return value
+
+
+def _validate_exact_json_value(value: object) -> None:
+    value_type = type(value)
+    if value is None or value_type in {bool, str, int}:
+        return
+    if value_type is float:
+        if not math.isfinite(cast(float, value)):
+            raise TypeError("worker result contains a non-finite number")
+        return
+    if value_type is list:
+        for item in cast(list[object], value):
+            _validate_exact_json_value(item)
+        return
+    if value_type is dict:
+        for key, item in cast(dict[object, object], value).items():
+            if type(key) is not str:
+                raise TypeError("worker result object keys must be strings")
+            _validate_exact_json_value(item)
+        return
+    raise TypeError(f"worker result contains unsupported {value_type.__name__}")
+
+
+def _decode_worker_result(payload: bytes) -> tuple[str, Any]:
+    def reject_constant(value: str) -> object:
+        raise ValueError(f"invalid JSON constant: {value}")
+
+    def reject_duplicate_names(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON object name: {key}")
+            result[key] = value
+        return result
+
+    envelope = json.loads(
+        payload.decode("utf-8"),
+        parse_constant=reject_constant,
+        object_pairs_hook=reject_duplicate_names,
+    )
+    if type(envelope) is not dict:
+        raise WorkerResultProtocolError("worker result envelope must be an object")
+    status = envelope.get("status")
+    if status == "ok" and set(envelope) == {"status", "result"}:
+        result = envelope["result"]
+        _validate_exact_json_value(result)
+        return "ok", result
+    if status == "error" and set(envelope) == {"status", "error"}:
+        error = envelope["error"]
+        if type(error) is not dict or set(error) != {"code", "exception", "message"}:
+            raise WorkerResultProtocolError("worker error must match the result protocol")
+        code = _required_error_string(error, "code")
+        exception = _required_error_string(error, "exception")
+        message = _required_error_string(error, "message")
+        return "error", {"code": code, "exception": exception, "error": message}
+    raise WorkerResultProtocolError("worker returned invalid result envelope")
 
 
 def _send_worker_error(result_fd: int, code: str, exc: BaseException) -> None:
@@ -525,7 +834,6 @@ def _send_worker_error(result_fd: int, code: str, exc: BaseException) -> None:
                 "code": code,
                 "error": str(exc),
                 "exception": exc.__class__.__name__,
-                "traceback": traceback.format_exc(),
             },
         ),
     )
@@ -540,7 +848,6 @@ def _send_preload_failure(result_fd: int, failure: SandboxPreloadFailure) -> Non
                 "code": failure.code,
                 "error": failure.error,
                 "exception": failure.exception,
-                "traceback": None,
             },
         ),
     )

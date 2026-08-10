@@ -16,7 +16,7 @@ from harnyx_commons.sandbox.docker import (
     SandboxOptions,
     resolve_sandbox_host_container_url,
 )
-from harnyx_commons.sandbox.manager import SandboxDeployment
+from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxStartError
 
 _HOST_CONTAINER_URL = "http://127.0.0.1:1"
 
@@ -202,6 +202,48 @@ def test_docker_sandbox_manager_can_skip_container_log_stream(
     manager.stop(deployment)
 
 
+@pytest.mark.parametrize(
+    ("removal_failure", "existence", "expected_removal_confirmed"),
+    [
+        ("error", "absent", True),
+        ("timeout", "present", False),
+        ("error", "uncertain", False),
+    ],
+)
+def test_docker_sandbox_manager_confirms_disposition_after_failed_removal(
+    removal_failure: str,
+    existence: str,
+    expected_removal_confirmed: bool,
+) -> None:
+    client = DummyClient("http://sandbox", None)
+
+    def command_runner(args: list[str], **kwargs: object):
+        del kwargs
+        if args == ["docker", "stop", "container123"]:
+            return subprocess_completed(args, "")
+        if args == ["docker", "rm", "-f", "container123"]:
+            if removal_failure == "timeout":
+                raise subprocess.TimeoutExpired(cmd=args, timeout=120)
+            raise subprocess.CalledProcessError(returncode=1, cmd=args, stderr="No such container")
+        if args == ["docker", "ps", "-aq", "--filter", "id=container123"]:
+            if existence == "uncertain":
+                raise subprocess.TimeoutExpired(cmd=args, timeout=120)
+            return subprocess_completed(args, "container123\n" if existence == "present" else "")
+        if args == ["docker", "ps", "-aq", "--filter", "name=^/container123$"]:
+            return subprocess_completed(args, "")
+        raise AssertionError(f"unexpected command: {args}")
+
+    manager = DockerSandboxManager(
+        docker_binary="docker",
+        command_runner=command_runner,
+    )
+    deployment = SandboxDeployment(client=client, identifier="container123")
+
+    assert manager.stop(deployment) is expected_removal_confirmed
+
+    assert client.closed is True
+
+
 def test_pull_policy_always_retries_docker_pull_before_local_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -295,80 +337,104 @@ def test_docker_sandbox_manager_adds_labels_to_docker_run() -> None:
     manager.stop(deployment)
 
 
-def test_docker_sandbox_manager_removes_labeled_and_non_running_legacy_prefixed_containers() -> None:
+def test_docker_sandbox_manager_requires_every_label_and_removes_legacy_prefix_matches() -> None:
     commands: list[list[str]] = []
+    removed = False
 
     def command_runner(args: list[str], **kwargs: object):
+        nonlocal removed
         commands.append(list(args))
         assert kwargs["capture_output"] is True
         assert kwargs["text"] is True
         assert kwargs["check"] is True
+        if args == ["docker", "ps", "-aq", "--filter", "label=harnyx.sandbox.managed=true"]:
+            return subprocess_completed(args, "other-managed\n" if removed else "new-labeled\nother-managed\n")
+        if args == ["docker", "ps", "-aq", "--filter", "label=harnyx.sandbox.owner=validator"]:
+            return subprocess_completed(args, "" if removed else "new-labeled\n")
+        if args == ["docker", "ps", "-aq", "--filter", "name=^/harnyx-sandbox-"]:
+            return subprocess_completed(
+                args,
+                "" if removed else "old-created\nold-dead\nold-exited\nold-running\nnew-labeled\n",
+            )
         if args == [
             "docker",
-            "ps",
-            "-aq",
-            "--filter",
-            "label=harnyx.sandbox.managed=true",
-            "--filter",
-            "label=harnyx.sandbox.owner=validator",
+            "rm",
+            "-f",
+            "new-labeled",
+            "old-created",
+            "old-dead",
+            "old-exited",
+            "old-running",
         ]:
-            return subprocess_completed(args, "new-labeled\n")
-        if args == [
-            "docker",
-            "ps",
-            "-aq",
-            "--filter",
-            "name=^/harnyx-sandbox-",
-            "--filter",
-            "status=created",
-        ]:
-            return subprocess_completed(args, "old-created\n")
-        if args == [
-            "docker",
-            "ps",
-            "-aq",
-            "--filter",
-            "name=^/harnyx-sandbox-",
-            "--filter",
-            "status=exited",
-        ]:
-            return subprocess_completed(args, "old-exited\n")
-        if args == [
-            "docker",
-            "ps",
-            "-aq",
-            "--filter",
-            "name=^/harnyx-sandbox-",
-            "--filter",
-            "status=dead",
-        ]:
-            return subprocess_completed(args, "old-dead\nnew-labeled\n")
-        if args == ["docker", "rm", "-f", "new-labeled", "old-created", "old-dead", "old-exited"]:
+            removed = True
             return subprocess_completed(args, "")
         raise AssertionError(f"unexpected command: {args}")
 
     manager = DockerSandboxManager(docker_binary="docker", command_runner=command_runner)
 
-    manager.cleanup_stale_sandbox_containers(
+    removal_confirmed = manager.cleanup_stale_sandbox_containers(
         labels={"harnyx.sandbox.managed": "true", "harnyx.sandbox.owner": "validator"},
         name_prefix="harnyx-sandbox-",
     )
 
+    assert removal_confirmed is True
     assert commands == [
-        [
-            "docker",
-            "ps",
-            "-aq",
-            "--filter",
-            "label=harnyx.sandbox.managed=true",
-            "--filter",
-            "label=harnyx.sandbox.owner=validator",
-        ],
-        ["docker", "ps", "-aq", "--filter", "name=^/harnyx-sandbox-", "--filter", "status=created"],
-        ["docker", "ps", "-aq", "--filter", "name=^/harnyx-sandbox-", "--filter", "status=exited"],
-        ["docker", "ps", "-aq", "--filter", "name=^/harnyx-sandbox-", "--filter", "status=dead"],
-        ["docker", "rm", "-f", "new-labeled", "old-created", "old-dead", "old-exited"],
+        ["docker", "ps", "-aq", "--filter", "label=harnyx.sandbox.managed=true"],
+        ["docker", "ps", "-aq", "--filter", "label=harnyx.sandbox.owner=validator"],
+        ["docker", "ps", "-aq", "--filter", "name=^/harnyx-sandbox-"],
+        ["docker", "rm", "-f", "new-labeled", "old-created", "old-dead", "old-exited", "old-running"],
+        ["docker", "ps", "-aq", "--filter", "label=harnyx.sandbox.managed=true"],
+        ["docker", "ps", "-aq", "--filter", "label=harnyx.sandbox.owner=validator"],
+        ["docker", "ps", "-aq", "--filter", "name=^/harnyx-sandbox-"],
     ]
+
+
+@pytest.mark.parametrize(
+    ("disposition", "removal_confirmed"),
+    [
+        ("absent", False),
+        ("removed", True),
+        ("present", False),
+        ("uncertain", False),
+    ],
+)
+def test_docker_run_timeout_always_retains_uncertain_named_deployment(
+    monkeypatch: pytest.MonkeyPatch,
+    disposition: str,
+    removal_confirmed: bool,
+) -> None:
+    def command_runner(args: list[str], **kwargs: object):
+        del kwargs
+        if args[:2] == ["docker", "run"]:
+            raise subprocess.TimeoutExpired(cmd=args, timeout=120)
+        if args == ["docker", "ps", "-aq", "--filter", "name=^/sandbox-demo$"]:
+            return subprocess_completed(args, "container123\n" if disposition == "present" else "")
+        if args == ["docker", "rm", "-f", "sandbox-demo"]:
+            if removal_confirmed:
+                return subprocess_completed(args, "")
+            raise subprocess.CalledProcessError(returncode=1, cmd=args, stderr="docker unavailable")
+        if args == ["docker", "ps", "-aq", "--filter", "id=sandbox-demo"]:
+            if disposition == "uncertain":
+                raise subprocess.TimeoutExpired(cmd=args, timeout=120)
+            if disposition == "present":
+                return subprocess_completed(args, "container123\n")
+            return subprocess_completed(args, "")
+        raise AssertionError(f"unexpected command: {args}")
+
+    manager = DockerSandboxManager(docker_binary="docker", command_runner=command_runner)
+    monkeypatch.setattr(manager, "_write_failure_diagnostics", lambda **_kwargs: None)
+    options = SandboxOptions(
+        image="harnyx/sandbox:demo",
+        container_name="sandbox-demo",
+        pull_policy="missing",
+        host_port=9000,
+        host_container_url=_HOST_CONTAINER_URL,
+    )
+
+    with pytest.raises(SandboxStartError) as raised:
+        manager._run_container(["docker", "run", "--name", "sandbox-demo"], options)
+
+    assert raised.value.unremoved_deployment.identifier == "sandbox-demo"
 
 
 def test_docker_sandbox_manager_logs_and_continues_when_stale_list_fails(caplog: pytest.LogCaptureFixture) -> None:
@@ -379,11 +445,12 @@ def test_docker_sandbox_manager_logs_and_continues_when_stale_list_fails(caplog:
 
     manager = DockerSandboxManager(docker_binary="docker", command_runner=command_runner)
 
-    manager.cleanup_stale_sandbox_containers(
+    removal_confirmed = manager.cleanup_stale_sandbox_containers(
         labels={"harnyx.sandbox.managed": "true", "harnyx.sandbox.owner": "validator"},
         name_prefix="harnyx-sandbox-",
     )
 
+    assert removal_confirmed is False
     assert "failed to remove stale sandbox containers" in caplog.text
 
 
@@ -397,11 +464,12 @@ def test_docker_sandbox_manager_logs_and_continues_when_stale_cleanup_fails(capl
 
     manager = DockerSandboxManager(docker_binary="docker", command_runner=command_runner)
 
-    manager.cleanup_stale_sandbox_containers(
+    removal_confirmed = manager.cleanup_stale_sandbox_containers(
         labels={"harnyx.sandbox.managed": "true", "harnyx.sandbox.owner": "validator"},
         name_prefix="harnyx-sandbox-",
     )
 
+    assert removal_confirmed is False
     assert "failed to remove stale sandbox containers" in caplog.text
 
 

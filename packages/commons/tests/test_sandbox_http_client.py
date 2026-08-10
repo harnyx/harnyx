@@ -9,7 +9,11 @@ import pytest
 
 import harnyx_commons.sandbox.docker as docker_module
 from harnyx_commons.protocol_headers import SESSION_ID_HEADER
-from harnyx_commons.sandbox.client import SandboxInvokeError
+from harnyx_commons.sandbox.client import (
+    InvalidSandboxResponseError,
+    SandboxInvokeError,
+    SandboxResponseProcessingError,
+)
 from harnyx_commons.sandbox.docker import HttpSandboxClient
 
 
@@ -86,6 +90,7 @@ async def test_http_sandbox_client_does_not_retry_errors_that_may_have_reached_s
     assert len(requests) == 1
     assert exc_info.value.status_code == 0
     assert exc_info.value.detail_exception == type(exception_factory(requests[-1])).__name__
+    assert exc_info.value.remote_state_uncertain is True
 
 
 @pytest.mark.anyio("asyncio")
@@ -123,6 +128,7 @@ async def test_http_sandbox_client_does_not_retry_timeout_errors(
     assert len(requests) == 1
     assert exc_info.value.status_code == 504
     assert exc_info.value.detail_exception == "TimeoutException"
+    assert exc_info.value.remote_state_uncertain is True
 
 
 @pytest.mark.anyio("asyncio")
@@ -152,6 +158,84 @@ async def test_http_sandbox_client_does_not_retry_sandbox_http_status_error() ->
     assert len(requests) == 1
     assert exc_info.value.status_code == 500
     assert exc_info.value.detail_code == "UnhandledException"
+    assert exc_info.value.remote_state_uncertain is False
+
+
+@pytest.mark.anyio("asyncio")
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(status_code=200, content=b"{not-json", headers={"content-type": "application/json"}),
+        httpx.Response(status_code=200, json={"result": []}),
+    ],
+    ids=["malformed-json", "non-object-result"],
+)
+async def test_http_sandbox_client_reports_malformed_success_as_invalid_response(
+    response: httpx.Response,
+) -> None:
+    async with httpx.AsyncClient(
+        base_url="http://sandbox.local",
+        transport=httpx.MockTransport(lambda _request: response),
+    ) as http_client:
+        with pytest.raises(InvalidSandboxResponseError):
+            await HttpSandboxClient("http://sandbox.local", client=http_client).invoke(
+                "query",
+                payload={"question": "hello"},
+                context={},
+                token="session-token",  # noqa: S106 - fixed test-only sandbox token
+                session_id=uuid4(),
+            )
+
+
+@pytest.mark.anyio("asyncio")
+async def test_http_sandbox_client_distinguishes_unexpected_post_response_processing_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = httpx.Response(status_code=200, json={"result": {"answer": "ok"}})
+
+    def fail_after_response(_value: object) -> dict[str, object]:
+        raise RuntimeError("unexpected local parser failure")
+
+    monkeypatch.setattr(docker_module, "_parse_sandbox_invoke_result", fail_after_response)
+    async with httpx.AsyncClient(
+        base_url="http://sandbox.local",
+        transport=httpx.MockTransport(lambda _request: response),
+    ) as http_client:
+        with pytest.raises(SandboxResponseProcessingError, match="processing failed"):
+            await HttpSandboxClient("http://sandbox.local", client=http_client).invoke(
+                "query",
+                payload={"question": "hello"},
+                context={},
+                token="session-token",  # noqa: S106 - fixed test-only sandbox token
+                session_id=uuid4(),
+            )
+
+
+@pytest.mark.anyio("asyncio")
+async def test_http_sandbox_client_preserves_failed_response_settlement_on_processing_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = httpx.Response(
+        status_code=500,
+        json={"detail": {"code": "UnhandledException", "exception": "ValueError", "error": "boom"}},
+    )
+
+    def fail_after_response(_value: object) -> object:
+        raise RuntimeError("unexpected failed-response parser failure")
+
+    monkeypatch.setattr(docker_module, "_parse_sandbox_response_detail", fail_after_response)
+    async with httpx.AsyncClient(
+        base_url="http://sandbox.local",
+        transport=httpx.MockTransport(lambda _request: response),
+    ) as http_client:
+        with pytest.raises(SandboxResponseProcessingError, match="processing failed"):
+            await HttpSandboxClient("http://sandbox.local", client=http_client).invoke(
+                "query",
+                payload={"question": "hello"},
+                context={},
+                token="session-token",  # noqa: S106 - fixed test-only sandbox token
+                session_id=uuid4(),
+            )
 
 
 @pytest.mark.anyio("asyncio")
