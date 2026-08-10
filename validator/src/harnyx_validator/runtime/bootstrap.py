@@ -128,7 +128,6 @@ _SCORING_FALLBACK_MODELS = (
     "zai-org/GLM-5.2-TEE",
     "zai-org/GLM-5.1-TEE",
     "moonshotai/Kimi-K3-TEE",
-    "moonshotai/Kimi-K2.6-TEE",
 )
 _SCORING_SLOT_CONFIG = ScoringSlotConfig(
     entries=(
