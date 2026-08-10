@@ -793,3 +793,197 @@ def test_generation_scope_exit_path_swallows_propagate_cleanup_failure(
     assert result is True
     assert scope._propagate_cm is None
     assert "langfuse.generation.propagate_cleanup_failed" in [record.message for record in caplog.records]
+
+
+def test_metadata_only_root_observation_forces_fresh_trace_and_scrubs_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Future failure: ambient traces or exception text must not absorb private task-generation spans."""
+    observation_updates: list[dict[str, object]] = []
+    observation_starts: list[dict[str, object]] = []
+    exit_args: list[tuple[object, object, object]] = []
+    context_events: list[str] = []
+
+    class CaptureObservation:
+        def update(self, **kwargs: object) -> None:
+            observation_updates.append(kwargs)
+
+    class ObservationContextManager:
+        def __enter__(self) -> CaptureObservation:
+            return CaptureObservation()
+
+        def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> bool:
+            exit_args.append((exc_type, exc, exc_tb))
+            return False
+
+    class CaptureClient:
+        def start_as_current_observation(self, **kwargs: object) -> ObservationContextManager:
+            observation_starts.append(kwargs)
+            return ObservationContextManager()
+
+    for key in _LANGFUSE_ENV_VARS:
+        monkeypatch.setenv(key, f"test-{key.lower()}")
+    monkeypatch.setattr(langfuse, "get_client", lambda: CaptureClient())
+    monkeypatch.setattr(langfuse, "attach", lambda context: context_events.append("attach") or object())
+    monkeypatch.setattr(langfuse, "detach", lambda token: context_events.append("detach"))
+
+    with pytest.raises(RuntimeError, match="private-exception-sentinel"):
+        with langfuse.start_root_metadata_only_observation(
+            "miner_task_generation",
+            "agent",
+            metadata={"miner_task_generation_batch_id": "batch-42"},
+        ):
+            raise RuntimeError("private-exception-sentinel")
+
+    assert observation_starts == [
+        {
+            "name": "miner_task_generation",
+            "as_type": "agent",
+            "trace_context": None,
+        }
+    ]
+    assert observation_updates == [{"metadata": {"miner_task_generation_batch_id": "batch-42"}}]
+    assert exit_args == [(None, None, None)]
+    assert context_events == ["attach", "detach"]
+
+
+def test_metadata_only_generation_records_explicit_usage_cost_and_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Future failure: stage costs must remain explicit without capturing task or source payloads."""
+    observation_updates: list[dict[str, object]] = []
+    observation_starts: list[dict[str, object]] = []
+
+    class CaptureObservation:
+        def update(self, **kwargs: object) -> None:
+            observation_updates.append(kwargs)
+
+    class ObservationContextManager:
+        def __enter__(self) -> CaptureObservation:
+            return CaptureObservation()
+
+        def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> bool:
+            return False
+
+    class CaptureClient:
+        def start_as_current_observation(self, **kwargs: object) -> ObservationContextManager:
+            observation_starts.append(kwargs)
+            return ObservationContextManager()
+
+    for key in _LANGFUSE_ENV_VARS:
+        monkeypatch.setenv(key, f"test-{key.lower()}")
+    monkeypatch.setattr(langfuse, "get_client", lambda: CaptureClient())
+
+    with langfuse.start_metadata_only_observation(
+        "miner_task_generation.reference",
+        "generation",
+        model="claude-opus-5",
+        model_parameters={"provider": "vertex", "effort": "low"},
+        metadata={"stage": "reference"},
+    ) as generation:
+        langfuse.update_generation_best_effort(
+            generation,
+            usage_details={"input": 10, "output": 5, "total": 15},
+            cost_details={"total": 1.25},
+            metadata={"cost_status": "reported"},
+            level="ERROR",
+            status_message="provider_rejected",
+        )
+
+    assert observation_starts == [
+        {
+            "name": "miner_task_generation.reference",
+            "as_type": "generation",
+            "model": "claude-opus-5",
+            "model_parameters": {"provider": "vertex", "effort": "low"},
+            "trace_context": None,
+        }
+    ]
+    assert observation_updates == [
+        {"metadata": {"stage": "reference"}},
+        {
+            "usage_details": {"input": 10, "output": 5, "total": 15},
+            "cost_details": {"total": 1.25},
+            "metadata": {"cost_status": "reported"},
+            "level": "ERROR",
+            "status_message": "provider_rejected",
+        },
+    ]
+    assert all("input" not in update and "output" not in update for update in observation_updates)
+
+
+def test_metadata_only_observation_start_and_cleanup_failures_do_not_replace_application_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Future failure: optional Langfuse telemetry must never become the generation failure."""
+    class RaisingContextManager:
+        def __enter__(self) -> object:
+            raise RuntimeError("observation start failed")
+
+        def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> bool:
+            raise RuntimeError("observation cleanup failed")
+
+    class RaisingClient:
+        def start_as_current_observation(self, **kwargs: object) -> RaisingContextManager:
+            return RaisingContextManager()
+
+    for key in _LANGFUSE_ENV_VARS:
+        monkeypatch.setenv(key, f"test-{key.lower()}")
+    monkeypatch.setattr(langfuse, "get_client", lambda: RaisingClient())
+
+    with langfuse.start_metadata_only_observation("miner_task_generation.audit", "generation") as observation:
+        assert observation is None
+
+
+def test_metadata_only_generation_tracker_marks_missing_stage_start_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Future failure: a missing stage observation must not make visible cost look complete."""
+    starts = 0
+
+    class Observation:
+        def update(self, **kwargs: object) -> None:
+            pass
+
+    class ObservationContextManager:
+        def __enter__(self) -> Observation:
+            nonlocal starts
+            starts += 1
+            if starts == 2:
+                raise RuntimeError("stage observation unavailable")
+            return Observation()
+
+        def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> bool:
+            return False
+
+    class Client:
+        def start_as_current_observation(self, **kwargs: object) -> ObservationContextManager:
+            return ObservationContextManager()
+
+    for key in _LANGFUSE_ENV_VARS:
+        monkeypatch.setenv(key, f"test-{key.lower()}")
+    monkeypatch.setattr(langfuse, "get_client", lambda: Client())
+
+    with langfuse.track_metadata_only_generations() as tracker:
+        with langfuse.start_metadata_only_observation("miner_task_generation.question", "generation"):
+            pass
+        with langfuse.start_metadata_only_observation("miner_task_generation.audit", "generation") as observation:
+            assert observation is None
+
+    assert tracker.metadata() == {
+        "stage_observation_expected_count": 2,
+        "stage_observation_started_count": 1,
+        "stage_observation_start_complete": False,
+    }
+
+
+def test_metadata_only_observation_preserves_partial_configuration_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Future failure: an incomplete Langfuse deployment must still fail wiring explicitly."""
+    monkeypatch.setenv("LANGFUSE_HOST", "https://langfuse.example")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+
+    with pytest.raises(RuntimeError, match="Langfuse configuration is partial"):
+        langfuse.start_metadata_only_observation("miner_task_generation.audit", "generation")

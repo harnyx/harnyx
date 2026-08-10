@@ -1,266 +1,88 @@
-from __future__ import annotations
+import json
 
-from datetime import UTC, datetime
-
+from harnyx_commons.domain_tweak_generation import (
+    AcceptedRouteContext,
+    DossierAnswer,
+    DossierFact,
+    DossierRequirement,
+    GenerationForm,
+    PortfolioAllocation,
+    SourceDossier,
+)
 from harnyx_commons.domain_tweak_generation.prompts import (
-    form_blueprint_prompt,
-    form_review_prompt,
-    phase_instruction,
-    question_generation_prompt,
-    reference_answer_prompt,
-    semantic_support_prompt,
-    structured_output_materialization_prompt,
+    AUDIT_SYSTEM,
+    DOSSIER_SYSTEM,
+    PORTFOLIO_SYSTEM,
+    QUESTION_SYSTEM,
+    REFERENCE_SYSTEM,
+    audit_prompt,
+    dossier_prompt,
+    portfolio_prompt,
+    question_prompt,
 )
-from harnyx_commons.domain_tweak_generation.types import (
-    DomainTweakAdkPhaseResult,
-    DomainTweakReviewedQuestion,
-)
-from harnyx_commons.miner_task_generation import (
-    DOMAIN_TWEAK_REQUIREMENT_CATEGORIES,
-    DomainTweakClaim,
-    DomainTweakEvidenceDeclaration,
-    DomainTweakFormBlueprint,
-    DomainTweakFormReview,
-    DomainTweakPairInput,
-    DomainTweakQuestionPacket,
-    DomainTweakQuestionRequirement,
-    DomainTweakReferenceAnswerOutput,
-    DomainTweakReferenceClaim,
-    DomainTweakRequirementCategoryAudit,
-    DomainTweakStructuredFieldBinding,
-    DomainTweakStructuredOutputMaterialization,
-)
+from harnyx_commons.domain_tweak_generation.source_workspace import _serialize_audit_packet
 
 
-def test_stage_instructions_assign_search_and_judgment_boundaries() -> None:
-    assert "Do not search" in phase_instruction("form_blueprint")
-    assert "Do not assess truth" in phase_instruction("form_review")
-    assert "no-search evidence-quality gate" in phase_instruction("semantic_support_gate")
-    assert "bounded correction" in phase_instruction("reference_answer_generation")
-
-
-def test_question_prompt_requires_claim_bound_evidence_and_no_self_assessment() -> None:
-    prompt = question_generation_prompt(_pair(), _blueprint(semantic_ambiguities=("ambiguous term",)))
-
-    assert "Search queries are trajectory, not evidence" in prompt
-    assert "every answer-determining external claim" in prompt
-    assert "proxy" in prompt
-    assert "Do not emit a premise self-assessment" in prompt
-    assert "Do not reproduce a source-question ambiguity" in prompt
-
-
-def test_form_prompts_preserve_blueprint_and_audit_every_requirement_category() -> None:
-    blueprint_prompt = form_blueprint_prompt(_pair())
-    review_prompt = form_review_prompt(
-        _blueprint(semantic_ambiguities=("ambiguous term",)),
-        _packet(),
-    )
-
-    assert "do not solve it" in blueprint_prompt
-    assert "not features that the new question must reproduce" in blueprint_prompt
-    assert "Do not assess whether its facts" in review_prompt
-    assert "Do not reject a clearer generated question" in review_prompt
-    assert "Extra context is harmless" in review_prompt
-    for category in DOMAIN_TWEAK_REQUIREMENT_CATEGORIES:
-        assert category in review_prompt
-
-
-def test_reference_prompt_uses_acquired_content_and_forbids_workflow_narration() -> None:
-    prompt = reference_answer_prompt(
-        _reviewed(),
-        source_packet={"initial_evidence": [{"status": "acquired", "window_id": "window-1"}]},
-        question_generation_trajectory={"search_queries": ["query"]},
-    )
-
-    assert "QG-authored excerpts as locators, never as fetched evidence" in prompt
-    assert "read_cached_source" in prompt
-    assert "acquire_sources" in prompt
-    assert "claim-bound" in prompt
-    assert "call `acquire_sources` again with that claim ID" in prompt
-    assert "exact union" in prompt
-    assert "claim's `evidence_window_ids`" in prompt
-    assert "additional-explanation ID requires an acquired window" in prompt
-    assert "materially new metric" in prompt
-    assert "Never discuss the question generator" in prompt
-
-
-def test_semantic_gate_prompt_requires_exact_findings_without_rewriting() -> None:
-    prompt = semantic_support_prompt(
-        _reviewed(),
-        _reference_output(),
-        evidence_windows=({"window_id": "window-1", "content": "A satisfies both."},),
-    )
-
-    assert "exactly one `requirement_finding`" in prompt
-    assert "exactly one `claim_finding`" in prompt
-    assert "source-backed required relations require" in prompt
-    assert "at least one acquired window" in prompt
-    assert "Do not improve, rewrite, or complete the answer" in prompt
-    assert "Authority is not claim binding" in prompt
-
-
-def test_materialization_prompt_is_no_search_requested_output_only_and_fail_closed() -> None:
-    prompt = structured_output_materialization_prompt(
-        _reviewed(),
-        _reference_output(),
-    )
-
-    assert "Without searching, solving, or correcting facts" in prompt
-    assert "Filter operands" in prompt
-    assert "unless the question explicitly requests them" in prompt
-    assert "One meaningful field is valid" in prompt
-    assert "Every object property is required" in prompt
-    assert "Do not emit `$schema`" in prompt
-    assert "`not_materializable`" in prompt
-    assert "Extra top-level envelope fields are ignored" in prompt
-
-
-def test_structured_semantic_prompt_receives_exact_validated_materialization() -> None:
-    prompt = semantic_support_prompt(
-        _reviewed(),
-        _reference_output(),
-        evidence_windows=({"window_id": "window-1", "content": "A qualifies."},),
-        materialization=DomainTweakStructuredOutputMaterialization(
-            disposition="materialized",
-            rationale="One requested list is sufficient.",
-            output_schema={
-                "$schema": "https://json-schema.org/draft/2020-12/schema",
-                "type": "object",
-                "properties": {
-                    "candidates": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                    }
-                },
-                "required": ["candidates"],
-                "additionalProperties": False,
-            },
-            structured_output={"candidates": ["A"]},
-            field_bindings=(
-                DomainTweakStructuredFieldBinding(
-                    schema_path="candidates[]",
-                    answer_evidence="The reference identifies A.",
-                    requirement_ids=("metric",),
-                    claim_ids=("answer",),
-                    evidence_window_ids=("window-1",),
-                ),
-            ),
-        ),
-    )
-
-    assert '"schema_path": "candidates[]"' in prompt
-    assert '"requirement_ids": [' in prompt
-    assert "exactly one `structured_field_finding`" in prompt
-
-
-def _pair() -> DomainTweakPairInput:
-    return DomainTweakPairInput(
-        pair_id="pair-001",
-        deepsearchqa_form_target="Which candidates satisfy both predicates?",
-        deepresearch9k_domain_target="Public results tables",
-        timestamp=datetime(2026, 7, 21, tzinfo=UTC),
-    )
-
-
-def _blueprint(*, semantic_ambiguities: tuple[str, ...] = ()) -> DomainTweakFormBlueprint:
-    return DomainTweakFormBlueprint(
-        status="proceed",
-        operation="Filter a closed candidate set by two retrieved predicates.",
-        load_bearing_invariants=("closed candidate set", "two predicates"),
-        non_load_bearing_surface_features=("entity names",),
-        retrieval_boundary="The question states the set; sources provide predicate values.",
-        answer_shape="Exhaustive list.",
-        semantic_ambiguities=semantic_ambiguities,
-        no_generate_reason=None,
-    )
-
-
-def _packet() -> DomainTweakQuestionPacket:
-    return DomainTweakQuestionPacket(
+def test_portfolio_and_dossier_prompts_are_form_blind() -> None:
+    """Future failure: discovery must not regain source-form or benchmark-answer leakage."""
+    hidden_form = "SECRET FORM OPERATION"
+    form = GenerationForm(form_identity="f", source_index=1, form=hidden_form)
+    allocation = PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e"))
+    dossier = SourceDossier(
         status="ready",
-        question="Which candidates satisfy both predicates?",
-        short_answer="A",
-        solution_steps=("Read the values.", "Intersect the qualifying sets."),
-        claims=(
-            DomainTweakClaim(
-                claim_id="answer",
-                claim="A satisfies both predicates.",
-                role="answer_determining",
-                support_mode="external_source",
-                support_explanation="The declared page records both values.",
-            ),
-        ),
-        evidence_declarations=(
-            DomainTweakEvidenceDeclaration(
-                evidence_id="evidence-1",
-                source_url="https://example.com/source",
-                source_title="Source",
-                source_locator="Results table",
-                claimed_excerpt="A satisfies both predicates.",
-                supported_claim_ids=("answer",),
-                support_explanation="The table directly supports the answer.",
-            ),
-        ),
-        no_generate_reason=None,
+        subject="subject",
+        route_summary="route",
+        question_plan="plan",
+        answers=(DossierAnswer(answer_id="A1", value="x"), DossierAnswer(answer_id="A2", value="y")),
+        requirements=(DossierRequirement(description="requirement"),),
+        source_facts=(DossierFact(statement="fact", evidence_ids=("E1",)),),
+        derivation="derive",
     )
 
+    assert hidden_form not in portfolio_prompt((0,))
+    assert hidden_form not in dossier_prompt(allocation)
+    assert hidden_form in question_prompt(form, allocation, dossier, ())
 
-def _review() -> DomainTweakFormReview:
-    return DomainTweakFormReview(
-        form_match=True,
-        reviewer_feedback="The filtering operation is preserved.",
-        question_requirements=(
-            DomainTweakQuestionRequirement(
-                requirement_id="metric",
-                category="metric_or_field_relation",
-                requirement="Both predicates must hold.",
-                required_relation="derived_calculation",
+
+def test_portfolio_prompt_carries_only_bounded_prior_route_context() -> None:
+    """Future failure: refill diversity must remain request-local and payload bounded."""
+    prompt = portfolio_prompt(
+        (1,),
+        accepted_route_contexts=(
+            AcceptedRouteContext(
+                subject="Subject",
+                route_summary="Join the annual index to the published table",
+                source_urls=("https://example.com/a", "https://example.org/b"),
             ),
-        ),
-        requirement_category_audit=tuple(
-            DomainTweakRequirementCategoryAudit(
-                category=category,
-                present=category == "metric_or_field_relation",
-                explanation=("Present." if category == "metric_or_field_relation" else "Absent."),
-            )
-            for category in DOMAIN_TWEAK_REQUIREMENT_CATEGORIES
         ),
     )
 
-
-def _reviewed() -> DomainTweakReviewedQuestion:
-    return DomainTweakReviewedQuestion(
-        pair_input=_pair(),
-        form_blueprint=_blueprint(),
-        question_packet=_packet(),
-        form_review=_review(),
-        form_blueprint_result=DomainTweakAdkPhaseResult(
-            phase="form_blueprint", terminal_status="validated", parsed_output=_blueprint()
-        ),
-        question_generation_result=DomainTweakAdkPhaseResult(
-            phase="question_generation", terminal_status="validated", parsed_output=_packet()
-        ),
-        form_review_result=DomainTweakAdkPhaseResult(
-            phase="form_review", terminal_status="validated", parsed_output=_review()
-        ),
-    )
+    assert "Join the annual index" in prompt
+    assert "https://example.com/a" in prompt
+    assert "answer_id" not in prompt
 
 
-def _reference_output() -> DomainTweakReferenceAnswerOutput:
-    return DomainTweakReferenceAnswerOutput(
-        status="finalized",
-        answer_disposition="unchanged",
-        proposed_short_answer="A",
-        reference_answer_text="A satisfies both predicates.",
-        claims=(
-            DomainTweakReferenceClaim(
-                claim_id="answer",
-                claim="A satisfies both predicates.",
-                role="answer_determining",
-                evidence_window_ids=("window-1",),
-                support_explanation="The window records both values.",
-            ),
-        ),
-        citation_window_ids=("window-1",),
-        abandon_reason=None,
-    )
+def test_every_llm_work_order_interprets_its_output_contract_and_examples() -> None:
+    """Future failure: JSON Schema field names alone must not define stage semantics."""
+    for work_order in (PORTFOLIO_SYSTEM, DOSSIER_SYSTEM, QUESTION_SYSTEM, REFERENCE_SYSTEM, AUDIT_SYSTEM):
+        assert "OUTPUT CONTRACT:" in work_order
+        assert "GOOD:" in work_order
+        assert "BAD:" in work_order
+    assert "question itself reveals an answer" in " ".join(AUDIT_SYSTEM.split())
+
+
+def test_audit_prompt_reuses_the_bounded_packet_serializer_without_format_drift() -> None:
+    """Future failure: packet budgeting and the actual audit prompt must serialize identically."""
+    packet = {
+        "question": "Which value?",
+        "canonical_short_answers": ["Alpha"],
+        "proof_steps": [],
+        "selected_evidence": [],
+        "scan_certificates": [],
+    }
+    expected_json = json.dumps(packet, ensure_ascii=False, indent=2)
+
+    prompt = audit_prompt(packet)
+
+    assert _serialize_audit_packet(packet) == expected_json
+    assert prompt == "Audit this closed proof packet:\n" + expected_json

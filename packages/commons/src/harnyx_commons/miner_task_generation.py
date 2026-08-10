@@ -10,11 +10,11 @@ from datetime import UTC, datetime
 from typing import Literal, cast
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 
 from harnyx_commons.domain.miner_task import AnswerCitation, MinerTask, Query, ReferenceAnswer
 from harnyx_commons.domain.shared_config import COMMONS_STRICT_CONFIG
-from harnyx_commons.json_types import JsonObject, JsonValue
+from harnyx_commons.json_types import JsonObject
 from harnyx_commons.llm.json_utils import pydantic_postprocessor
 from harnyx_commons.llm.provider import LlmProviderPort
 from harnyx_commons.llm.provider_types import VERTEX_PROVIDER, LlmProviderName
@@ -30,12 +30,11 @@ from harnyx_commons.llm.schema import (
 
 logger = logging.getLogger("harnyx_commons.miner_task_generation")
 
-DOMAIN_TWEAK_MAX_DECLARED_EVIDENCE_URLS = 20
-DOMAIN_TWEAK_GENERATED_SCHEMA_MAX_DEPTH = 8
-DOMAIN_TWEAK_GENERATED_SCHEMA_MAX_NODES = 128
-DOMAIN_TWEAK_GENERATED_SCHEMA_MAX_LEAVES = 64
-_DOMAIN_TWEAK_SCHEMA_PROPERTY_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
-_DOMAIN_TWEAK_PRIMITIVE_SCHEMA_TYPES = frozenset({"string", "integer", "number", "boolean"})
+GENERATED_OUTPUT_SCHEMA_MAX_DEPTH = 8
+GENERATED_OUTPUT_SCHEMA_MAX_NODES = 128
+GENERATED_OUTPUT_SCHEMA_MAX_LEAVES = 64
+_GENERATED_OUTPUT_SCHEMA_PROPERTY_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_GENERATED_OUTPUT_PRIMITIVE_SCHEMA_TYPES = frozenset({"string", "integer", "number", "boolean"})
 
 _TASK_GENERATION_SYSTEM_PROMPT = (
     "You generate evaluation tasks for a generic query-answering system.\n"
@@ -342,567 +341,6 @@ class MinerTaskDatasetRequest(BaseModel):
         return self.minimum_task_total + self.generation_task_buffer
 
 
-class DomainTweakPairInput(BaseModel):
-    model_config = COMMONS_STRICT_CONFIG
-
-    pair_id: str = Field(min_length=1)
-    deepsearchqa_form_target: str = Field(min_length=1)
-    deepresearch9k_domain_target: str = Field(min_length=1)
-    timestamp: datetime
-
-
-class DomainTweakFormBlueprint(BaseModel):
-    model_config = COMMONS_STRICT_CONFIG
-
-    status: Literal["proceed", "no_generate"]
-    operation: str | None
-    load_bearing_invariants: tuple[str, ...]
-    non_load_bearing_surface_features: tuple[str, ...]
-    retrieval_boundary: str | None
-    answer_shape: str | None
-    semantic_ambiguities: tuple[str, ...]
-    no_generate_reason: str | None
-
-    @field_validator(
-        "load_bearing_invariants",
-        "non_load_bearing_surface_features",
-        "semantic_ambiguities",
-        mode="before",
-    )
-    @classmethod
-    def _tuple_from_list(cls, value: object) -> object:
-        if isinstance(value, list):
-            return tuple(value)
-        return value
-
-    @model_validator(mode="after")
-    def _status_fields_are_consistent(self) -> DomainTweakFormBlueprint:
-        if self.status == "no_generate":
-            if not (self.no_generate_reason or "").strip():
-                raise ValueError("no_generate blueprint requires no_generate_reason")
-            if any(
-                (
-                    self.operation is not None,
-                    self.load_bearing_invariants,
-                    self.non_load_bearing_surface_features,
-                    self.retrieval_boundary is not None,
-                    self.answer_shape is not None,
-                    self.semantic_ambiguities,
-                )
-            ):
-                raise ValueError("no_generate blueprint must not contain analysis fields")
-            return self
-        if not (self.operation or "").strip():
-            raise ValueError("proceed blueprint requires operation")
-        if not self.load_bearing_invariants:
-            raise ValueError("proceed blueprint requires load_bearing_invariants")
-        if not (self.retrieval_boundary or "").strip() or not (self.answer_shape or "").strip():
-            raise ValueError("proceed blueprint requires retrieval_boundary and answer_shape")
-        if self.no_generate_reason is not None:
-            raise ValueError("proceed blueprint must not contain no_generate_reason")
-        return self
-
-
-class DomainTweakClaim(BaseModel):
-    model_config = COMMONS_STRICT_CONFIG
-
-    claim_id: str = Field(min_length=1)
-    claim: str = Field(min_length=1)
-    role: Literal["answer_determining", "explanatory"]
-    support_mode: Literal["external_source", "logical_or_mathematical_derivation"]
-    support_explanation: str = Field(min_length=1)
-
-
-class DomainTweakEvidenceDeclaration(BaseModel):
-    model_config = COMMONS_STRICT_CONFIG
-
-    evidence_id: str = Field(min_length=1)
-    source_url: str = Field(min_length=1)
-    source_title: str | None
-    source_locator: str | None
-    claimed_excerpt: str = Field(min_length=1)
-    supported_claim_ids: tuple[str, ...] = Field(min_length=1)
-    support_explanation: str = Field(min_length=1)
-
-    @field_validator("supported_claim_ids", mode="before")
-    @classmethod
-    def _tuple_from_list(cls, value: object) -> object:
-        if isinstance(value, list):
-            return tuple(value)
-        return value
-
-    @model_validator(mode="after")
-    def _claim_ids_are_unique(self) -> DomainTweakEvidenceDeclaration:
-        if len(self.supported_claim_ids) != len(set(self.supported_claim_ids)):
-            raise ValueError("supported_claim_ids must be unique")
-        return self
-
-
-class DomainTweakQuestionPacket(BaseModel):
-    model_config = COMMONS_STRICT_CONFIG
-
-    status: Literal["ready", "no_generate"]
-    question: str | None
-    short_answer: str | None
-    solution_steps: tuple[str, ...]
-    claims: tuple[DomainTweakClaim, ...]
-    evidence_declarations: tuple[DomainTweakEvidenceDeclaration, ...] = Field(
-        max_length=DOMAIN_TWEAK_MAX_DECLARED_EVIDENCE_URLS
-    )
-    no_generate_reason: str | None
-
-    @field_validator("solution_steps", "claims", "evidence_declarations", mode="before")
-    @classmethod
-    def _tuple_from_list(cls, value: object) -> object:
-        if isinstance(value, list):
-            return tuple(value)
-        return value
-
-    @model_validator(mode="after")
-    def _status_and_references_are_consistent(self) -> DomainTweakQuestionPacket:
-        if self.status == "no_generate":
-            if not (self.no_generate_reason or "").strip():
-                raise ValueError("no_generate packet requires no_generate_reason")
-            if any(
-                (
-                    self.question is not None,
-                    self.short_answer is not None,
-                    self.solution_steps,
-                    self.claims,
-                    self.evidence_declarations,
-                )
-            ):
-                raise ValueError("no_generate packet must not contain question material")
-            return self
-        if not (self.question or "").strip() or not (self.short_answer or "").strip():
-            raise ValueError("ready packet requires question and short_answer")
-        if not self.solution_steps or not self.claims:
-            raise ValueError("ready packet requires solution_steps and claims")
-        if self.no_generate_reason is not None:
-            raise ValueError("ready packet must not contain no_generate_reason")
-        claim_ids = [claim.claim_id for claim in self.claims]
-        evidence_ids = [evidence.evidence_id for evidence in self.evidence_declarations]
-        if len(claim_ids) != len(set(claim_ids)):
-            raise ValueError("claim IDs must be unique")
-        if len(evidence_ids) != len(set(evidence_ids)):
-            raise ValueError("evidence IDs must be unique")
-        if not any(claim.role == "answer_determining" for claim in self.claims):
-            raise ValueError("ready packet requires an answer-determining claim")
-        unknown_claim_ids = sorted(
-            {
-                claim_id
-                for evidence in self.evidence_declarations
-                for claim_id in evidence.supported_claim_ids
-                if claim_id not in set(claim_ids)
-            }
-        )
-        if unknown_claim_ids:
-            raise ValueError(f"evidence references unknown claim IDs: {unknown_claim_ids}")
-        externally_supported = {
-            claim_id for evidence in self.evidence_declarations for claim_id in evidence.supported_claim_ids
-        }
-        missing_external_support = sorted(
-            claim.claim_id
-            for claim in self.claims
-            if claim.support_mode == "external_source" and claim.claim_id not in externally_supported
-        )
-        if missing_external_support:
-            raise ValueError(f"external_source claims require evidence declarations: {missing_external_support}")
-        return self
-
-
-DomainTweakRequirementCategory = Literal[
-    "candidate_universe",
-    "metric_or_field_relation",
-    "scope",
-    "time_qualifier",
-    "cardinality",
-    "completeness",
-    "ranking",
-    "absence",
-    "other",
-]
-DOMAIN_TWEAK_REQUIREMENT_CATEGORIES: tuple[DomainTweakRequirementCategory, ...] = (
-    "candidate_universe",
-    "metric_or_field_relation",
-    "scope",
-    "time_qualifier",
-    "cardinality",
-    "completeness",
-    "ranking",
-    "absence",
-    "other",
-)
-DomainTweakRequiredRelation = Literal[
-    "direct_fact",
-    "derived_calculation",
-    "field_equivalence",
-    "exhaustive_set",
-    "exact_cardinality",
-    "absence",
-    "upper_or_lower_bound",
-    "other",
-]
-
-
-class DomainTweakQuestionRequirement(BaseModel):
-    model_config = COMMONS_STRICT_CONFIG
-
-    requirement_id: str = Field(min_length=1)
-    category: DomainTweakRequirementCategory
-    requirement: str = Field(min_length=1)
-    required_relation: DomainTweakRequiredRelation
-
-
-class DomainTweakRequirementCategoryAudit(BaseModel):
-    model_config = COMMONS_STRICT_CONFIG
-
-    category: DomainTweakRequirementCategory
-    present: bool
-    explanation: str = Field(min_length=1)
-
-
-class DomainTweakFormReview(BaseModel):
-    model_config = COMMONS_STRICT_CONFIG
-
-    form_match: bool
-    reviewer_feedback: str = Field(min_length=1)
-    question_requirements: tuple[DomainTweakQuestionRequirement, ...]
-    requirement_category_audit: tuple[DomainTweakRequirementCategoryAudit, ...]
-
-    @field_validator("question_requirements", "requirement_category_audit", mode="before")
-    @classmethod
-    def _tuple_from_list(cls, value: object) -> object:
-        if isinstance(value, list):
-            return tuple(value)
-        return value
-
-    @model_validator(mode="after")
-    def _requirements_and_audit_are_complete(self) -> DomainTweakFormReview:
-        requirement_ids = [item.requirement_id for item in self.question_requirements]
-        if len(requirement_ids) != len(set(requirement_ids)):
-            raise ValueError("question requirement IDs must be unique")
-        audit_categories = [item.category for item in self.requirement_category_audit]
-        if len(audit_categories) != len(set(audit_categories)):
-            raise ValueError("requirement category audit entries must be unique")
-        if set(audit_categories) != set(DOMAIN_TWEAK_REQUIREMENT_CATEGORIES):
-            raise ValueError("requirement category audit must cover every category exactly once")
-        present_categories = {item.category for item in self.question_requirements}
-        mismatched = [
-            item.category
-            for item in self.requirement_category_audit
-            if item.present != (item.category in present_categories)
-        ]
-        if mismatched:
-            raise ValueError(f"requirement category audit disagrees with requirements: {mismatched}")
-        if self.form_match and not self.question_requirements:
-            raise ValueError("accepted form review requires question requirements")
-        return self
-
-
-class DomainTweakReferenceClaim(BaseModel):
-    model_config = COMMONS_STRICT_CONFIG
-
-    claim_id: str = Field(min_length=1)
-    claim: str = Field(min_length=1)
-    role: Literal["answer_determining", "explanatory"]
-    evidence_window_ids: tuple[str, ...]
-    support_explanation: str = Field(min_length=1)
-
-    @field_validator("evidence_window_ids", mode="before")
-    @classmethod
-    def _tuple_from_list(cls, value: object) -> object:
-        if isinstance(value, list):
-            return tuple(value)
-        return value
-
-    @field_validator("evidence_window_ids")
-    @classmethod
-    def _window_ids_are_unique(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if len(value) != len(set(value)):
-            raise ValueError("evidence window IDs must be unique")
-        return value
-
-
-class DomainTweakReferenceAnswerOutput(BaseModel):
-    model_config = COMMONS_STRICT_CONFIG
-
-    status: Literal["finalized", "abandon"]
-    answer_disposition: Literal["unchanged", "bounded_correction"] | None
-    proposed_short_answer: str | None
-    reference_answer_text: str | None
-    claims: tuple[DomainTweakReferenceClaim, ...]
-    citation_window_ids: tuple[str, ...]
-    abandon_reason: str | None
-
-    @field_validator("claims", "citation_window_ids", mode="before")
-    @classmethod
-    def _tuple_from_list(cls, value: object) -> object:
-        if isinstance(value, list):
-            return tuple(value)
-        return value
-
-    @model_validator(mode="after")
-    def _status_fields_are_consistent(self) -> DomainTweakReferenceAnswerOutput:
-        if self.status == "abandon":
-            if not (self.abandon_reason or "").strip():
-                raise ValueError("abandon requires abandon_reason")
-            if any(
-                (
-                    self.answer_disposition is not None,
-                    self.proposed_short_answer is not None,
-                    self.reference_answer_text is not None,
-                    self.claims,
-                    self.citation_window_ids,
-                )
-            ):
-                raise ValueError("abandon must not contain answer material")
-            return self
-        if not all(
-            (
-                self.answer_disposition,
-                (self.proposed_short_answer or "").strip(),
-                (self.reference_answer_text or "").strip(),
-            )
-        ):
-            raise ValueError("finalized output requires disposition, short answer, and answer text")
-        if not self.claims or not any(claim.role == "answer_determining" for claim in self.claims):
-            raise ValueError("finalized output requires an answer-determining claim")
-        if self.abandon_reason is not None:
-            raise ValueError("finalized output must not contain abandon_reason")
-        claim_ids = [claim.claim_id for claim in self.claims]
-        if len(claim_ids) != len(set(claim_ids)):
-            raise ValueError("reference claim IDs must be unique")
-        if len(self.citation_window_ids) != len(set(self.citation_window_ids)):
-            raise ValueError("citation window IDs must be unique")
-        return self
-
-
-class DomainTweakStructuredFieldBinding(BaseModel):
-    model_config = COMMONS_STRICT_CONFIG
-
-    schema_path: str = Field(min_length=1)
-    answer_evidence: str = Field(min_length=1)
-    requirement_ids: tuple[str, ...]
-    claim_ids: tuple[str, ...]
-    evidence_window_ids: tuple[str, ...]
-
-    @field_validator(
-        "requirement_ids",
-        "claim_ids",
-        "evidence_window_ids",
-        mode="before",
-    )
-    @classmethod
-    def _tuple_from_list(cls, value: object) -> object:
-        if isinstance(value, list):
-            return tuple(value)
-        return value
-
-    @model_validator(mode="after")
-    def _identifiers_are_unique(self) -> DomainTweakStructuredFieldBinding:
-        for field_name in ("requirement_ids", "claim_ids", "evidence_window_ids"):
-            values = getattr(self, field_name)
-            if len(values) != len(set(values)):
-                raise ValueError(f"{field_name} must contain unique IDs")
-        if not self.requirement_ids or not self.claim_ids:
-            raise ValueError("field bindings require requirement and claim IDs")
-        if not self.evidence_window_ids:
-            raise ValueError("field bindings require acquired evidence windows")
-        return self
-
-
-class DomainTweakStructuredOutputMaterializationWire(BaseModel):
-    model_config = ConfigDict(extra="ignore", strict=True)
-
-    disposition: Literal["materialized", "not_materializable"]
-    rationale: str = Field(min_length=1)
-    output_schema_json: str | None
-    structured_output_json: str | None
-    field_bindings: tuple[DomainTweakStructuredFieldBinding, ...]
-
-    @field_validator("field_bindings", mode="before")
-    @classmethod
-    def _tuple_from_list(cls, value: object) -> object:
-        if isinstance(value, list):
-            return tuple(value)
-        return value
-
-    @model_validator(mode="after")
-    def _disposition_fields_are_consistent(
-        self,
-    ) -> DomainTweakStructuredOutputMaterializationWire:
-        if self.disposition == "not_materializable":
-            if self.output_schema_json is not None or self.structured_output_json is not None:
-                raise ValueError("not_materializable must not include schema or output JSON")
-            if self.field_bindings:
-                raise ValueError("not_materializable must not include field bindings")
-            return self
-        if not (self.output_schema_json or "").strip():
-            raise ValueError("materialized output requires output_schema_json")
-        if not (self.structured_output_json or "").strip():
-            raise ValueError("materialized output requires structured_output_json")
-        if not self.field_bindings:
-            raise ValueError("materialized output requires field bindings")
-        return self
-
-
-class DomainTweakStructuredOutputMaterialization(BaseModel):
-    model_config = COMMONS_STRICT_CONFIG
-
-    disposition: Literal["materialized", "not_materializable"]
-    rationale: str = Field(min_length=1)
-    output_schema: JsonObject | None
-    structured_output: JsonValue | None
-    field_bindings: tuple[DomainTweakStructuredFieldBinding, ...]
-
-    @field_validator("field_bindings", mode="before")
-    @classmethod
-    def _tuple_from_list(cls, value: object) -> object:
-        if isinstance(value, list):
-            return tuple(value)
-        return value
-
-    @model_validator(mode="after")
-    def _disposition_fields_are_consistent(
-        self,
-    ) -> DomainTweakStructuredOutputMaterialization:
-        if self.disposition == "not_materializable":
-            if self.output_schema is not None or self.structured_output is not None:
-                raise ValueError("not_materializable must not include schema or output")
-            if self.field_bindings:
-                raise ValueError("not_materializable must not include field bindings")
-            return self
-        if self.output_schema is None or self.structured_output is None:
-            raise ValueError("materialized output requires schema and output")
-        if not self.field_bindings:
-            raise ValueError("materialized output requires field bindings")
-        return self
-
-
-class DomainTweakRequirementFinding(BaseModel):
-    model_config = COMMONS_STRICT_CONFIG
-
-    requirement_id: str = Field(min_length=1)
-    support_status: Literal["supported", "unsupported"]
-    evidence_window_ids: tuple[str, ...]
-    explanation: str = Field(min_length=1)
-
-    @field_validator("evidence_window_ids", mode="before")
-    @classmethod
-    def _tuple_from_list(cls, value: object) -> object:
-        if isinstance(value, list):
-            return tuple(value)
-        return value
-
-    @field_validator("evidence_window_ids")
-    @classmethod
-    def _window_ids_are_unique(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if len(value) != len(set(value)):
-            raise ValueError("evidence window IDs must be unique")
-        return value
-
-
-class DomainTweakClaimFinding(BaseModel):
-    model_config = COMMONS_STRICT_CONFIG
-
-    claim_id: str = Field(min_length=1)
-    support_status: Literal["supported", "unsupported"]
-    evidence_window_ids: tuple[str, ...]
-    explanation: str = Field(min_length=1)
-
-    @field_validator("evidence_window_ids", mode="before")
-    @classmethod
-    def _tuple_from_list(cls, value: object) -> object:
-        if isinstance(value, list):
-            return tuple(value)
-        return value
-
-    @field_validator("evidence_window_ids")
-    @classmethod
-    def _window_ids_are_unique(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if len(value) != len(set(value)):
-            raise ValueError("evidence window IDs must be unique")
-        return value
-
-
-class DomainTweakStructuredFieldFinding(BaseModel):
-    model_config = COMMONS_STRICT_CONFIG
-
-    schema_path: str = Field(min_length=1)
-    support_status: Literal["supported", "unsupported"]
-    requirement_ids: tuple[str, ...]
-    claim_ids: tuple[str, ...]
-    evidence_window_ids: tuple[str, ...]
-    explanation: str = Field(min_length=1)
-
-    @field_validator(
-        "requirement_ids",
-        "claim_ids",
-        "evidence_window_ids",
-        mode="before",
-    )
-    @classmethod
-    def _tuple_from_list(cls, value: object) -> object:
-        if isinstance(value, list):
-            return tuple(value)
-        return value
-
-    @model_validator(mode="after")
-    def _identifiers_are_unique(self) -> DomainTweakStructuredFieldFinding:
-        for field_name in ("requirement_ids", "claim_ids", "evidence_window_ids"):
-            values = getattr(self, field_name)
-            if len(values) != len(set(values)):
-                raise ValueError(f"{field_name} must contain unique IDs")
-        return self
-
-
-class DomainTweakSemanticSupportReview(BaseModel):
-    model_config = COMMONS_STRICT_CONFIG
-
-    status: Literal["pass", "abandon"]
-    requirement_findings: tuple[DomainTweakRequirementFinding, ...]
-    claim_findings: tuple[DomainTweakClaimFinding, ...]
-    structured_field_findings: tuple[DomainTweakStructuredFieldFinding, ...] = ()
-    unmanifested_material_claims: tuple[str, ...]
-    abandon_reason: str | None
-
-    @field_validator(
-        "requirement_findings",
-        "claim_findings",
-        "structured_field_findings",
-        "unmanifested_material_claims",
-        mode="before",
-    )
-    @classmethod
-    def _tuple_from_list(cls, value: object) -> object:
-        if isinstance(value, list):
-            return tuple(value)
-        return value
-
-    @model_validator(mode="after")
-    def _status_matches_findings(self) -> DomainTweakSemanticSupportReview:
-        unsupported = any(
-            finding.support_status == "unsupported"
-            for finding in (
-                *self.requirement_findings,
-                *self.claim_findings,
-                *self.structured_field_findings,
-            )
-        )
-        if self.status == "pass":
-            if unsupported or self.unmanifested_material_claims:
-                raise ValueError("pass requires supported findings and no unmanifested material claims")
-            if self.abandon_reason is not None:
-                raise ValueError("pass must not contain abandon_reason")
-            return self
-        if not unsupported and not self.unmanifested_material_claims:
-            raise ValueError("abandon requires an unsupported or unmanifested material claim")
-        if not (self.abandon_reason or "").strip():
-            raise ValueError("abandon requires abandon_reason")
-        return self
-
-
 def validate_generated_output_schema(schema: JsonObject) -> tuple[str, ...]:
     """Validate and enumerate the bounded schema subset emitted by generation."""
 
@@ -915,9 +353,9 @@ def validate_generated_output_schema(schema: JsonObject) -> tuple[str, ...]:
             raise ValueError(f"schema node at {path or '<root>'} must be an object")
         node_object = cast(dict[str, object], node)
         node_count += 1
-        if depth > DOMAIN_TWEAK_GENERATED_SCHEMA_MAX_DEPTH:
+        if depth > GENERATED_OUTPUT_SCHEMA_MAX_DEPTH:
             raise ValueError("generated output schema exceeds maximum depth")
-        if node_count > DOMAIN_TWEAK_GENERATED_SCHEMA_MAX_NODES:
+        if node_count > GENERATED_OUTPUT_SCHEMA_MAX_NODES:
             raise ValueError("generated output schema exceeds maximum node count")
 
         allowed_keys = {"type", "properties", "required", "additionalProperties", "items"}
@@ -957,7 +395,7 @@ def validate_generated_output_schema(schema: JsonObject) -> tuple[str, ...]:
             if node_object.get("additionalProperties") is not False:
                 raise ValueError("object schemas require additionalProperties=false")
             for property_name, child in properties_object.items():
-                if not isinstance(property_name, str) or not _DOMAIN_TWEAK_SCHEMA_PROPERTY_NAME.fullmatch(
+                if not isinstance(property_name, str) or not _GENERATED_OUTPUT_SCHEMA_PROPERTY_NAME.fullmatch(
                     property_name
                 ):
                     raise ValueError(f"unsafe generated property name: {property_name!r}")
@@ -981,12 +419,12 @@ def validate_generated_output_schema(schema: JsonObject) -> tuple[str, ...]:
                 is_root=False,
             )
             return
-        if schema_type not in _DOMAIN_TWEAK_PRIMITIVE_SCHEMA_TYPES:
+        if schema_type not in _GENERATED_OUTPUT_PRIMITIVE_SCHEMA_TYPES:
             raise ValueError(f"unsupported generated schema type: {schema_type!r}")
         if set(node_object) != {"type"}:
             raise ValueError("primitive schemas may contain only type")
         leaf_paths.append(path)
-        if len(leaf_paths) > DOMAIN_TWEAK_GENERATED_SCHEMA_MAX_LEAVES:
+        if len(leaf_paths) > GENERATED_OUTPUT_SCHEMA_MAX_LEAVES:
             raise ValueError("generated output schema exceeds maximum leaf count")
 
     visit(schema, path="", depth=1, is_root=True)
@@ -1334,27 +772,6 @@ class MinerTaskDatasetBuilder:
 
 
 __all__ = [
-    "DOMAIN_TWEAK_MAX_DECLARED_EVIDENCE_URLS",
-    "DOMAIN_TWEAK_REQUIREMENT_CATEGORIES",
-    "DomainTweakClaim",
-    "DomainTweakClaimFinding",
-    "DomainTweakEvidenceDeclaration",
-    "DomainTweakFormBlueprint",
-    "DomainTweakFormReview",
-    "DomainTweakPairInput",
-    "DomainTweakQuestionPacket",
-    "DomainTweakQuestionRequirement",
-    "DomainTweakReferenceAnswerOutput",
-    "DomainTweakReferenceClaim",
-    "DomainTweakRequirementCategory",
-    "DomainTweakRequirementCategoryAudit",
-    "DomainTweakRequiredRelation",
-    "DomainTweakRequirementFinding",
-    "DomainTweakSemanticSupportReview",
-    "DomainTweakStructuredFieldBinding",
-    "DomainTweakStructuredFieldFinding",
-    "DomainTweakStructuredOutputMaterialization",
-    "DomainTweakStructuredOutputMaterializationWire",
     "MinerTaskDatasetBuilder",
     "MinerTaskDatasetRequest",
     "MinerTaskModelSpec",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import replace
 
 from harnyx_commons.domain.session import LlmUsageTotals
 from harnyx_commons.domain.tool_usage import (
@@ -109,6 +110,36 @@ def merge_tool_usage_summaries(left: ToolUsageSummary, right: ToolUsageSummary) 
     )
 
 
+def known_zero_actual_cost_tool_usage() -> ToolUsageSummary:
+    """Return the identity for aggregation that requires complete actual provider cost."""
+    return ToolUsageSummary(
+        search_tool=SearchToolUsageSummary(actual_cost=0.0),
+        llm=LlmUsageSummary(actual_cost=0.0),
+        embedding=EmbeddingToolUsageSummary(actual_cost=0.0),
+        actual_total_cost_usd=0.0,
+    )
+
+
+def merge_complete_actual_cost_usage(left: ToolUsageSummary, right: ToolUsageSummary) -> ToolUsageSummary:
+    """Merge usage while requiring actual cost from every contained operation."""
+    merged = merge_tool_usage_summaries(left, right)
+    if left.actual_total_cost_usd is not None and right.actual_total_cost_usd is not None:
+        return merged
+    providers = {
+        provider: {
+            model: replace(model_usage, actual_cost=None)
+            for model, model_usage in model_usage_by_name.items()
+        }
+        for provider, model_usage_by_name in merged.llm.providers.items()
+    }
+    return replace(
+        merged,
+        llm=replace(merged.llm, actual_cost=None, providers=providers),
+        actual_total_cost_usd=None,
+        actual_cost_by_provider={},
+    )
+
+
 def _breakdown_float(value: object) -> float:
     if isinstance(value, int | float):
         return float(value)
@@ -177,6 +208,8 @@ def _merge_model_usage(
 
 
 __all__ = [
+    "known_zero_actual_cost_tool_usage",
+    "merge_complete_actual_cost_usage",
     "merge_tool_usage_summaries",
     "tool_usage_from_llm_usage",
 ]

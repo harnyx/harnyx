@@ -8,11 +8,12 @@ import os
 from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from contextvars import ContextVar, Token
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from types import TracebackType
 from typing import Literal, Protocol, cast
 
 from langfuse import Langfuse, propagate_attributes
+from opentelemetry.context import Context, attach, detach
 
 from harnyx_commons.llm.schema import (
     AbstractLlmRequest,
@@ -29,15 +30,162 @@ _REQUIRED_ENV_VARS = ("LANGFUSE_HOST", "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_K
 _SERVER_LABEL_ENV_VARS = ("OTEL_SERVICE_NAME", "K_SERVICE", "SERVICE_NAME")
 _LOW_CARDINALITY_TAG_KEYS = ("server", "use_case")
 _UNKNOWN_SERVER_LABEL = "unknown"
+_STATUS_MESSAGE_MAX_LENGTH = 128
 _LANGFUSE_CLIENT: Langfuse | None = None
 _ACTIVE_LANGFUSE_TRACE_NAME: ContextVar[str | None] = ContextVar(
     "harnyx_langfuse_trace_name",
     default=None,
 )
+_ACTIVE_METADATA_ONLY_GENERATION_TRACKER: ContextVar[MetadataOnlyGenerationTracker | None]
+_LangfuseModelParameter = str | None | int | list[str]
 
 
 class LangfuseGeneration(Protocol):
     def update(self, **kwargs: object) -> None: ...
+
+
+@dataclass(slots=True)
+class MetadataOnlyGenerationTracker:
+    """Count expected and locally started metadata-only generation observations."""
+
+    expected_count: int = 0
+    started_count: int = 0
+
+    @property
+    def complete(self) -> bool:
+        return self.expected_count == self.started_count
+
+    def metadata(self) -> dict[str, int | bool]:
+        return {
+            "stage_observation_expected_count": self.expected_count,
+            "stage_observation_started_count": self.started_count,
+            "stage_observation_start_complete": self.complete,
+        }
+
+
+_ACTIVE_METADATA_ONLY_GENERATION_TRACKER = ContextVar(
+    "harnyx_langfuse_metadata_only_generation_tracker",
+    default=None,
+)
+
+
+class _MetadataOnlyGenerationTrackerScope(AbstractContextManager[MetadataOnlyGenerationTracker]):
+    def __init__(self) -> None:
+        self._tracker = MetadataOnlyGenerationTracker()
+        self._token: Token[MetadataOnlyGenerationTracker | None] | None = None
+
+    def __enter__(self) -> MetadataOnlyGenerationTracker:
+        self._token = _ACTIVE_METADATA_ONLY_GENERATION_TRACKER.set(self._tracker)
+        return self._tracker
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool:
+        del exc_type, exc, exc_tb
+        if self._token is not None:
+            _ACTIVE_METADATA_ONLY_GENERATION_TRACKER.reset(self._token)
+            self._token = None
+        return False
+
+
+class _MetadataOnlyObservationScope(AbstractContextManager[LangfuseGeneration | None]):
+    """Keep task-generation hierarchy while suppressing content-bearing exception capture."""
+
+    def __init__(
+        self,
+        *,
+        client: Langfuse | None,
+        name: str,
+        as_type: Literal["agent", "generation"],
+        model: str | None = None,
+        model_parameters: Mapping[str, _LangfuseModelParameter] | None = None,
+        metadata: Mapping[str, object] | None = None,
+        force_root: bool = False,
+        generation_tracker: MetadataOnlyGenerationTracker | None = None,
+    ) -> None:
+        self._client = client
+        self._name = name
+        self._as_type = as_type
+        self._model = model
+        self._model_parameters = model_parameters
+        self._metadata = metadata
+        self._force_root = force_root
+        self._generation_tracker = generation_tracker
+        self._observation_cm: AbstractContextManager[object] | None = None
+        self._ambient_context_token: Token[Context] | None = None
+
+    def __enter__(self) -> LangfuseGeneration | None:
+        if self._client is None:
+            return None
+
+        try:
+            if self._force_root:
+                self._ambient_context_token = attach(Context())
+            model_parameters = None if self._model_parameters is None else dict(self._model_parameters)
+            if self._as_type == "generation":
+                observation_cm = self._client.start_as_current_observation(
+                    name=self._name,
+                    as_type="generation",
+                    model=self._model,
+                    model_parameters=model_parameters,
+                    trace_context=None,
+                )
+            else:
+                observation_cm = self._client.start_as_current_observation(
+                    name=self._name,
+                    as_type="agent",
+                    trace_context=None,
+                )
+            self._observation_cm = cast(AbstractContextManager[object], observation_cm)
+            observation = cast(LangfuseGeneration, self._observation_cm.__enter__())
+            if self._generation_tracker is not None:
+                self._generation_tracker.started_count += 1
+            update_observation_best_effort(observation, metadata=self._metadata)
+            return observation
+        except Exception:
+            _LOGGER.exception(
+                "langfuse.metadata_only_observation.start_failed",
+                extra={"data": {"name": self._name, "as_type": self._as_type}},
+            )
+            self._close_observation()
+            return None
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool:
+        del exc_type, exc, exc_tb
+        self._close_observation()
+        return False
+
+    def _close_observation(self) -> None:
+        try:
+            if self._observation_cm is not None:
+                observation_cm = self._observation_cm
+                self._observation_cm = None
+                try:
+                    observation_cm.__exit__(None, None, None)
+                except Exception:
+                    _LOGGER.exception(
+                        "langfuse.metadata_only_observation.finish_failed",
+                        extra={"data": {"name": self._name, "as_type": self._as_type}},
+                    )
+        finally:
+            if self._ambient_context_token is not None:
+                ambient_context_token = self._ambient_context_token
+                self._ambient_context_token = None
+                try:
+                    detach(ambient_context_token)
+                except Exception:
+                    _LOGGER.exception(
+                        "langfuse.metadata_only_observation.context_restore_failed",
+                        extra={"data": {"name": self._name, "as_type": self._as_type}},
+                    )
 
 
 class _LangfuseGenerationScope(AbstractContextManager[LangfuseGeneration | None]):
@@ -280,6 +428,61 @@ def start_llm_generation(
     )
 
 
+def start_metadata_only_observation(
+    name: str,
+    as_type: Literal["agent", "generation"],
+    *,
+    model: str | None = None,
+    model_parameters: Mapping[str, _LangfuseModelParameter] | None = None,
+    metadata: Mapping[str, object] | None = None,
+) -> AbstractContextManager[LangfuseGeneration | None]:
+    """Start a content-free observation without changing application outcomes."""
+
+    generation_tracker = None
+    if as_type == "generation":
+        generation_tracker = _ACTIVE_METADATA_ONLY_GENERATION_TRACKER.get()
+        if generation_tracker is not None:
+            generation_tracker.expected_count += 1
+    client = _get_observability_client_best_effort()
+    if client is None:
+        return nullcontext(None)
+    return _MetadataOnlyObservationScope(
+        client=client,
+        name=name,
+        as_type=as_type,
+        model=model,
+        model_parameters=model_parameters,
+        metadata=metadata,
+        generation_tracker=generation_tracker,
+    )
+
+
+def start_root_metadata_only_observation(
+    name: str,
+    as_type: Literal["agent", "generation"],
+    *,
+    metadata: Mapping[str, object] | None = None,
+) -> AbstractContextManager[LangfuseGeneration | None]:
+    """Start a content-free root on a new trace, independent of ambient OTel context."""
+
+    client = _get_observability_client_best_effort()
+    if client is None:
+        return nullcontext(None)
+    return _MetadataOnlyObservationScope(
+        client=client,
+        name=name,
+        as_type=as_type,
+        metadata=metadata,
+        force_root=True,
+    )
+
+
+def track_metadata_only_generations() -> AbstractContextManager[MetadataOnlyGenerationTracker]:
+    """Track whether every expected metadata-only generation started locally."""
+
+    return _MetadataOnlyGenerationTrackerScope()
+
+
 def derive_standalone_llm_trace_name(*, request: AbstractLlmRequest) -> str | None:
     if has_active_langfuse_trace_name():
         return None
@@ -304,7 +507,7 @@ def propagate_trace_attributes_best_effort(
     - Never raises when trace propagation enter/exit fails.
     """
 
-    client = get_client()
+    client = _get_observability_client_best_effort()
     if client is None:
         return nullcontext()
     return _LangfuseTraceAttributesScope(
@@ -313,6 +516,17 @@ def propagate_trace_attributes_best_effort(
         metadata=metadata,
         tags=tags,
     )
+
+
+def _get_observability_client_best_effort() -> Langfuse | None:
+    """Preserve partial-config failure while degrading SDK initialization to no-op telemetry."""
+
+    try:
+        return get_client()
+    except Exception:
+        _read_config()
+        _LOGGER.exception("langfuse.client.initialize_failed")
+        return None
 
 
 def build_generation_input_payload(request: AbstractLlmRequest) -> dict[str, object]:
@@ -365,7 +579,11 @@ def update_generation_best_effort(
     input_payload: object | None = None,
     output: object | None = None,
     usage: LlmUsage | None = None,
+    usage_details: Mapping[str, int | float] | None = None,
+    cost_details: Mapping[str, int | float] | None = None,
     metadata: Mapping[str, object] | None = None,
+    level: Literal["DEBUG", "DEFAULT", "WARNING", "ERROR"] | None = None,
+    status_message: str | None = None,
 ) -> None:
     """Best-effort generation update that never raises."""
 
@@ -377,10 +595,18 @@ def update_generation_best_effort(
         update_data["input"] = _sanitize_for_json(input_payload)
     if output is not None:
         update_data["output"] = _sanitize_for_json(output)
-    if usage is not None:
+    if usage_details is not None:
+        update_data["usage_details"] = _sanitize_for_json(dict(usage_details))
+    elif usage is not None:
         update_data["usage_details"] = _usage_details(usage)
+    if cost_details is not None:
+        update_data["cost_details"] = _sanitize_for_json(dict(cost_details))
     if metadata is not None:
         update_data["metadata"] = _sanitize_for_json(dict(metadata))
+    if level is not None:
+        update_data["level"] = level
+    if status_message is not None:
+        update_data["status_message"] = status_message[:_STATUS_MESSAGE_MAX_LENGTH]
     if not update_data:
         return
 
@@ -389,6 +615,35 @@ def update_generation_best_effort(
     except Exception:
         _LOGGER.exception(
             "langfuse.generation.update_failed",
+            extra={"data": {"fields": sorted(update_data.keys())}},
+        )
+
+
+def update_observation_best_effort(
+    observation: LangfuseGeneration | None,
+    *,
+    metadata: Mapping[str, object] | None = None,
+    level: Literal["DEBUG", "DEFAULT", "WARNING", "ERROR"] | None = None,
+    status_message: str | None = None,
+) -> None:
+    """Best-effort metadata/status update for non-generation observations."""
+
+    if observation is None:
+        return
+    update_data: dict[str, object] = {}
+    if metadata is not None:
+        update_data["metadata"] = _sanitize_for_json(dict(metadata))
+    if level is not None:
+        update_data["level"] = level
+    if status_message is not None:
+        update_data["status_message"] = status_message[:_STATUS_MESSAGE_MAX_LENGTH]
+    if not update_data:
+        return
+    try:
+        observation.update(**update_data)
+    except Exception:
+        _LOGGER.exception(
+            "langfuse.observation.update_failed",
             extra={"data": {"fields": sorted(update_data.keys())}},
         )
 
@@ -605,6 +860,7 @@ def _sanitize_for_json(value: object) -> object:
 
 
 __all__ = [
+    "MetadataOnlyGenerationTracker",
     "LangfuseGeneration",
     "build_generation_input_payload",
     "build_generation_metadata",
@@ -615,5 +871,9 @@ __all__ = [
     "propagate_trace_attributes_best_effort",
     "record_child_observation_best_effort",
     "start_llm_generation",
+    "start_metadata_only_observation",
+    "start_root_metadata_only_observation",
+    "track_metadata_only_generations",
     "update_generation_best_effort",
+    "update_observation_best_effort",
 ]

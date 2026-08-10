@@ -1,475 +1,243 @@
-"""Complete work orders for source-aware domain-tweak generation stages."""
+"""Complete work orders and explicit information boundaries for each stage."""
 
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 
-from pydantic import BaseModel
-
-from harnyx_commons.domain_tweak_generation.types import DomainTweakAdkPhase, DomainTweakReviewedQuestion
-from harnyx_commons.miner_task_generation import (
-    DOMAIN_TWEAK_REQUIREMENT_CATEGORIES,
-    DomainTweakFormBlueprint,
-    DomainTweakPairInput,
-    DomainTweakQuestionPacket,
-    DomainTweakReferenceAnswerOutput,
-    DomainTweakStructuredOutputMaterialization,
+from harnyx_commons.domain_tweak_generation.contracts import (
+    AcceptedRouteContext,
+    GenerationForm,
+    PortfolioAllocation,
+    ReferenceProof,
+    SourceDossier,
 )
+from harnyx_commons.domain_tweak_generation.source_workspace import _serialize_audit_packet
+
+PORTFOLIO_SYSTEM = """You allocate diverse public-document search spaces for independent benchmark-question authors.
+You do not receive a source form or benchmark answer and must not invent a question or answer. For every input slot,
+propose exactly five materially different ecosystem paragraphs. An ecosystem is a broad
+subject plus promising public document families, not a factual claim or required route. The downstream dossier agent
+may mix, discard, or replace all suggestions. Avoid any already accepted subject, route, or source URL supplied in the
+request. Do not use APIs, credentials, named answer candidates, exact lookup facts, or near-neighbor rewrites.
+
+OUTPUT CONTRACT:
+- allocations: every requested slot exactly once and no other slot.
+- slot: copy the input value exactly.
+- ecosystems: exactly five standalone, materially different optional search spaces.
+
+GOOD: {"allocations":[{"slot":0,"ecosystems":["Public collection catalogs with bounded
+accession tables.","Regulatory registers with annual tabulations.","Scientific inventories with labeled appendices.",
+"Competition archives with complete standings.","Legislative reports with enumerated exhibits."]}]}
+Why: it preserves slot identity while offering unrelated document families.
+BAD: {"allocations":[{"slot":0,"ecosystems":["Find the named 2024 report and answer Alpha."]}]}
+Why: it supplies too few ecosystems and invents a lookup and answer."""
+
+DOSSIER_SYSTEM = """You construct one question-ready source dossier from five optional ecosystem ideas. You never see
+the source form or benchmark answer. Search actively and stop at the first supported,
+interesting route; universal success is not required. Mix, discard, or replace ecosystems and sources whenever useful.
+WebSearch snippets are discovery context, never evidence. A PostToolUse message supplies opaque source_candidate_id
+values for URLs returned by WebSearch. Fetch only those IDs with fetch_source, declaring the document kind and why it is
+an ordinary public document. Never invent or copy a URL into fetch_source. Do not use undocumented APIs, credentials,
+reverse-engineered endpoints, Wikipedia, Reddit, or search snippets as evidence.
+
+Fetched HTML/text/static-JSON, PDF, and XLSX documents remain in a private VFS. Use list_sources, regex_search,
+similarity_search, read_lines, and register_evidence to locate exact support without requesting a whole source in the
+prompt. Retain as many independent sources as the route needs. A truncated search result cannot prove absence,
+uniqueness, or completeness. Return ready only when registered evidence supports the question material, every
+load-bearing requirement, the complete answer set implied by the proposed question, and the stated derivation with no
+answer-material gap. Choose a natural non-empty answer set whose values are established by that evidence. Otherwise
+return no_generate promptly. Do not write the final question or reference answer.
+
+OUTPUT CONTRACT:
+- status: ready only under the rule above; otherwise no_generate.
+- subject: concise subject identity for ready; null for no_generate.
+- route_summary: concise relation and source path for ready; null for no_generate.
+- question_plan: supported retrieval/filter/comparison operation, not final wording.
+- answers: one or more supported answers for ready. Each answer_id is unique and stable; value is the dossier
+  hypothesis.
+- requirements: every load-bearing condition as an operational description.
+- source_facts: atomic facts whose evidence_ids name already registered VFS spans.
+- derivation: reproducible operation from supported facts to answer IDs.
+- unresolved_gaps: empty for ready; concrete missing answer material for no_generate.
+- no_generate_reason: concrete blocker for no_generate; null for ready.
+- failure_class: reasoning_no_generate when the route itself is not viable; otherwise the exact source_fetch_rejected,
+  source_extraction_limit, or source_unavailable failure returned by the fetch_source attempt that prevents generation.
+  Required for no_generate and null for ready.
+- source_failure_id: for a source-related no_generate, copy the source_failure_id returned by the exact fetch_source
+  failure that prevents generation. Do not select an earlier incidental failure after another route remains viable. Use
+  null for reasoning_no_generate and ready.
+
+GOOD: {"status":"ready","subject":"Annual collection awards","route_summary":"Join the annual index to two award
+tables","question_plan":"Filter the complete nominees then compare reported totals","answers":[{"answer_id":"A1",
+"value":"Alpha"},{"answer_id":"A2","value":"Beta"}],"requirements":[{"description":"Use only the bounded
+nominee table"}],"source_facts":[{"statement":"Alpha has total 12","evidence_ids":["E1"]}],"derivation":
+"Apply the bounded-table requirement and select the two highest supported totals","unresolved_gaps":[],
+"no_generate_reason":null,"failure_class":null,"source_failure_id":null}
+Why: it uses stable IDs, registered evidence, and a reproducible supported path.
+GOOD no-generate: {"status":"no_generate","subject":null,"route_summary":null,"question_plan":null,"answers":[],
+"requirements":[],"source_facts":[],"derivation":null,"unresolved_gaps":["The public document omits the bounded
+candidate table"],"no_generate_reason":"The required table is absent from every retained source.","failure_class":
+"reasoning_no_generate","source_failure_id":null}
+Why: it states the actual terminal decision instead of attributing an unrelated earlier tool failure.
+GOOD source no-generate: {"status":"no_generate","subject":null,"route_summary":null,"question_plan":null,
+"answers":[],"requirements":[],"source_facts":[],"derivation":null,"unresolved_gaps":["The required report could not
+be fetched"],"no_generate_reason":"The only public report needed for the route was unavailable.","failure_class":
+"source_unavailable","source_failure_id":"source_failure:2"}
+Why: the class and ID identify the exact fetch failure that ended the route.
+BAD no-generate: {"status":"no_generate","failure_class":"source_unavailable","source_failure_id":
+"source_failure:1"}
+Why: a source failure ID is not a terminal cause merely because it occurred earlier; use reasoning_no_generate when the
+route ultimately fails for a different reason.
+BAD: {"status":"ready","answers":[{"answer_id":"A1","value":"Alpha"}],"unresolved_gaps":["Other candidates
+may exist"]}
+Why: it claims readiness while retaining an answer-determining gap."""
+
+QUESTION_SYSTEM = """You write one natural benchmark question from a verified dossier and a sampled source form. The
+form is structural and difficulty inspiration, not a template to compile literally. Preserve the useful character of
+its multi-step retrieval, filtering, comparison, ordering, or completeness challenge only where that fits the dossier
+naturally. Do not force relation-by-relation isomorphism. Use only supplied dossier facts. Do not include private answer
+values, answer IDs, evidence IDs, citation markers, grading language, or JSON instructions in the question or output.
+Prefer a connected route that cannot be solved from one supplied source alone. Return giveup when no natural,
+self-contained, supported question can be written.
+
+OUTPUT CONTRACT:
+- status: generated only for a fully supported natural question; otherwise giveup.
+- question: complete user-facing question for generated; null for giveup.
+- form_transfer_explanation: specifically explain which useful structural/difficulty properties transferred naturally;
+  required for both statuses and never user-facing.
+- giveup_reason: concrete unsupported or unnatural condition for giveup; null for generated.
+
+GOOD: {"status":"generated","question":"Which two entries meet both independently sourced conditions? Give them in
+the order established by the annual table.","form_transfer_explanation":"Transfers the source form's bounded filtering,
+cross-source comparison, and ordered-result requirement without copying its domain.","giveup_reason":null}
+BAD: {"status":"generated","question":"Why are Alpha and Beta the answers?","form_transfer_explanation":"Same
+topic.","giveup_reason":null}
+Why: it leaks answers and does not explain a meaningful form transfer."""
+
+REFERENCE_SYSTEM = """Independently answer the fixed generated question. Treat the dossier answer values and facts as
+hypotheses, not truth. Search and fetch additional ordinary public documents when the current VFS cannot establish a
+load-bearing claim or a stronger source is available. WebSearch results become opaque source_candidate_id values;
+fetch only those IDs. Navigate retained sources with VFS search/read tools, register exact evidence, and use regex
+certificates only for truly bounded complete scans. You may correct dossier answer values while preserving the fixed
+question's universe, metric, scope, and operation. Return giveup rather than change the question or fill a gap from
+memory. Do not author citation markers or copy excerpts into output.
+
+OUTPUT CONTRACT:
+- status: finalized only when VFS evidence establishes every answer and load-bearing inference; otherwise giveup.
+- answers: select every known answer_id exactly once and in dossier order. Set corrected_value to null when the dossier
+  value remains correct; author a non-empty corrected_value only when evidence changes that answer.
+- proof_steps: ordered atomic proof. Unique step_id values; kind=supported requires registered evidence_ids;
+  kind=derived requires only earlier depends_on_step_ids. scan_certificate_ids support only the bounded claim certified.
+- giveup_reason: concrete missing evidence or invalid inference for giveup; null for finalized.
+
+GOOD: {"status":"finalized","answers":[{"answer_id":"A1","corrected_value":null}],"proof_steps":[{"step_id":"S1",
+"statement":"The bounded row reports Alpha with value 12.","kind":"supported","evidence_ids":["E1"],
+"depends_on_step_ids":[],"scan_certificate_ids":[]},{"step_id":"S2","statement":"Alpha is the maximum among the
+established candidates.","kind":"derived","evidence_ids":[],"depends_on_step_ids":["S1"],
+"scan_certificate_ids":[]}],"giveup_reason":null}
+BAD: {"status":"finalized","answers":[{"answer_id":"new","corrected_value":"Alpha[[1]]"}],"proof_steps":[]}
+Why: it invents an ID, authors a citation marker, and supplies no proof."""
+
+AUDIT_SYSTEM = """Audit one proof packet independently. You receive only the question, final answer values, atomic
+proof steps, selected exact excerpts, scan certificates, and bounded context. You cannot browse and do not see
+unselected source bodies, the dossier trajectory, source form, or benchmark answer. Pass only when every answer and
+load-bearing inference is directly supported, derivations use established operands in order, the question's requested
+answer set and ordering are correct, and completeness or uniqueness claims have adequate bounded evidence. Reject if
+the question itself reveals an answer. Return concise, independently actionable defects; do not demand decorative facts.
+
+OUTPUT CONTRACT:
+- status: pass only when every criterion holds; otherwise reject.
+- defects: empty for pass; one concrete proof or question defect per item for reject.
+- explanation: brief reason grounded only in the packet.
+
+GOOD: {"status":"reject","defects":["Step S3 compares a value absent from selected evidence."],"explanation":"The
+maximum claim lacks one operand."}
+BAD: {"status":"pass","defects":[],"explanation":"The answer is plausible from general knowledge."}
+Why: outside plausibility is not evidence."""
 
 
-def phase_instruction(phase: DomainTweakAdkPhase) -> str:
-    match phase:
-        case "form_blueprint":
-            return (
-                "You analyze only the reusable information-acquisition form of a source question. "
-                "Do not search, solve it, choose a new domain, or invent evidence."
-            )
-        case "question_generation":
-            return (
-                "You research one supplied domain and build one simple, grounded question, proposed "
-                "short answer, claim manifest, and evidence declaration packet constrained by a form blueprint."
-            )
-        case "form_review":
-            return (
-                "You review only whether a generated question preserves an authoritative form blueprint "
-                "and enumerate every concrete requirement in that generated question. Do not assess truth."
-            )
-        case "reference_answer_generation":
-            return (
-                "You reconstruct a supplied question-generation proposal from acquired source content, "
-                "perform only bounded correction, and write a complete reader-facing reference answer."
-            )
-        case "structured_output_materialization":
-            return (
-                "You are a no-search output materializer. Convert only the requested values in a supplied "
-                "grounded question and reference answer into one bounded JSON schema and matching JSON value. "
-                "Do not solve, research, or correct facts."
-            )
-        case "semantic_support_gate":
-            return (
-                "You are a no-search evidence-quality gate. Decide whether the supplied answer and acquired "
-                "source windows support every declared question requirement and material answer claim."
-            )
-
-
-def form_blueprint_prompt(pair_input: DomainTweakPairInput) -> str:
-    return f"""WORK ORDER
-Extract a compact form blueprint from the source question. A later search-capable builder will use the
-blueprint to create a new question in another domain. Describe the source question's observable operation;
-do not solve it or pre-decide facts whose feasibility requires research.
-
-SOURCE QUESTION
-{pair_input.deepsearchqa_form_target}
-
-DECISION CRITERIA
-Return `proceed` when the answer operation and stated-versus-retrieved boundary can be described without
-solving the question. Return `no_generate` only when the source is malformed or lacks a coherent answer
-operation. Ambiguity is not a reason to reject; record it without strengthening it.
-
-PROCEDURE
-1. Describe the operation: retrieve, compare, filter, rank, aggregate, identify, or a combination.
-2. List properties whose removal would change that operation, answer cardinality, or retrieval boundary.
-3. Separate visible wording and instance details that may change without changing the operation.
-4. Describe which facts are stated and which must be retrieved, including source-attribution behavior.
-5. State the answer shape: one item, exhaustive list, number, ranking, comparison, or another literal shape.
-6. Record unresolved ordinary-language ambiguity. Do not convert a ranking into a threshold, a threshold
-   into a ranking, or `majority` into `more than 50 percent` unless the source question requires that.
-
-FIELD INTERPRETATION
-- `status`: `proceed` under DECISION CRITERIA; otherwise `no_generate`.
-- `operation`: literal information-acquisition and selection operation, with no new-domain mapping.
-- `load_bearing_invariants`: observable properties the later question must preserve.
-- `non_load_bearing_surface_features`: visible details that may vary without changing the operation.
-- `retrieval_boundary`: facts stated in the question versus facts retrieved from sources.
-- `answer_shape`: required output type and cardinality.
-- `semantic_ambiguities`: diagnostic ambiguities in the source question. They warn the later builder not to
-  silently strengthen the source operation; they are not features that the new question must reproduce.
-- `no_generate_reason`: source-form defect for `no_generate`; null for `proceed`.
-
-GOOD EXAMPLE
-A closed-list question asks which option ranks highest according to a named table. A good blueprint preserves
-closed-list selection, one retrieved measure per option, comparison, source attribution, and one-item output.
-It treats the option names and exact number of options as surface details unless their count is queried.
-
-BAD EXAMPLE
-A blueprint selects a specific new product, requires exactly seven options, changes `highest` to `over 50%`,
-and names a review site. This is invalid because it performs domain research and changes the operation.
-
-OUTPUT
-Return every schema field. For `no_generate`, use null analysis fields and empty arrays. Return only the
-native structured response; do not add prose or a Markdown fence."""
-
-
-def question_generation_prompt(
-    pair_input: DomainTweakPairInput,
-    blueprint: DomainTweakFormBlueprint,
-) -> str:
-    return f"""WORK ORDER
-Research the domain seed and return one complete question, proposed short answer, claim manifest, and
-evidence declaration packet that preserves the authoritative form blueprint. Search before committing to
-the concrete source, candidate universe, metric, question, or answer. Prefer the easiest well-supported
-instantiation; answer strength comes from support and explanation, not artificial difficulty.
-
-CURRENT TIMESTAMP
-{pair_input.timestamp.isoformat()}
-
-DOMAIN SEED
-{pair_input.deepresearch9k_domain_target}
-
-AUTHORITATIVE FORM BLUEPRINT
-{_json(blueprint)}
-
-DECISION CRITERIA
-Return `ready` only when the proposed short answer and every answer-determining external claim have direct
-public evidence declarations capable of supporting the question as written. A claim may have no external
-evidence only when it follows logically or mathematically from stated question facts or externally supported
-operands. Return `no_generate` when no simple grounded mapping preserves the blueprint. Make the generated
-question unambiguous where possible. Do not reproduce a source-question ambiguity merely because the blueprint
-records it, and do not resolve one by changing the operation, threshold relation, or retrieval boundary.
-
-PROCEDURE
-1. Search for direct, public, preferably primary or canonical sources that naturally support the blueprint.
-2. Fix the candidate universe, requested metric or field, scope, time basis, and answer before wording the question.
-3. Keep the question no harder than needed. Do not add extra predicates merely for novelty.
-4. State the complete proposed short answer and ordered `solution_steps` needed to reconstruct it.
-5. List free-form factual or derived claims. Split claims when different evidence would support them.
-6. For each external source, declare its direct URL, title if known, locator if useful, a relevant claimed
-   excerpt, the exact claim IDs it supports, and how it supports them. Search queries are trajectory, not evidence.
-7. Prefer direct measures. A proxy is permissible only when the packet includes evidence and reasoning that
-   make the mapping defensible for the question's exact metric, scope, and margin. Do not silently relabel a field.
-8. Construct a valid premise through the substantive packet. Do not emit a premise self-assessment, confidence,
-   gap assessment, or instructions to the next agent.
-
-FIELD INTERPRETATION
-- `status`: `ready` under DECISION CRITERIA; otherwise `no_generate`.
-- `question`: standalone benchmark question preserving the blueprint.
-- `short_answer`: the exact proposed answer, not a plan or qualification.
-- `solution_steps`: concise reconstruction path, including source operands and derivations.
-- `claims[].claim_id`: stable unique ID reused by reference generation.
-- `claims[].claim`: one material factual or derived assertion.
-- `claims[].role`: `answer_determining` if changing it can change the answer; otherwise `explanatory`.
-- `claims[].support_mode`: external source versus logical or mathematical derivation.
-- `claims[].support_explanation`: why the declared support mode establishes this claim.
-- `evidence_declarations[].evidence_id`: stable unique source declaration ID.
-- `source_url`: direct public page URL, not a search-results or temporary redirect URL.
-- `source_locator`: table, section, row, date, paragraph, or null.
-- `claimed_excerpt`: short source text expected to locate the relevant content after deterministic fetch.
-- `supported_claim_ids`: exact claim IDs this source supports.
-- `support_explanation`: claim-to-source binding, including field equivalence or proxy defense when applicable.
-- `no_generate_reason`: concrete form/domain obstacle; null for `ready`.
-
-GOOD EXAMPLE
-A packet uses an official table to define the candidate universe and values, gives each material assertion a
-stable claim ID, declares the table URL and relevant row excerpt, and leaves a simple subtraction claim without
-a direct source while explaining that it derives from two sourced operands.
-
-BAD EXAMPLE
-A packet cites a homepage, says a nearby field is "close enough" without equivalence evidence, declares that
-it could not find the exact measure, or asks the next agent to verify it. Those are not support for the claim.
-
-OUTPUT
-Return every schema field. For `no_generate`, use null question fields and empty arrays. Return only the native
-structured response; do not add prose or a Markdown fence."""
-
-
-def form_review_prompt(
-    blueprint: DomainTweakFormBlueprint,
-    packet: DomainTweakQuestionPacket,
-) -> str:
-    return f"""WORK ORDER
-Review the generated question only against the authoritative form blueprint, then enumerate every concrete,
-load-bearing requirement in the generated question. Do not search. Do not assess whether its facts, premise,
-answer, claims, or evidence are true; those belong to later source reconstruction and semantic support review.
-
-AUTHORITATIVE FORM BLUEPRINT
-{_json(blueprint)}
-
-GENERATED QUESTION PACKET
-{_json(packet)}
-
-DECISION CRITERIA
-Set `form_match` true only when the generated question preserves the blueprint's operation, retrieval boundary,
-load-bearing invariants, and answer shape. Topic, surface wording, and the presence or absence of the source
-question's recorded semantic ambiguities may differ. Do not reject a clearer generated question merely because
-it does not reproduce an ambiguity. Reject an ambiguity resolution only when it changes the operation,
-threshold relation, retrieval boundary, or answer shape. Extra context is harmless unless it adds a condition
-that can change the answer. Enumerate requirements from the generated question even when `form_match` is false
-so the rejection remains inspectable.
-
-REQUIREMENT PROCEDURE
-1. Give each independently adjudicable condition a stable unique `requirement_id`.
-2. Include the candidate universe, every metric or field relation, scope, time qualifier, cardinality,
-   completeness obligation, ranking operation, absence or universal-negative condition, and any other
-   condition that can change the answer.
-3. Choose `required_relation`: direct fact, derived calculation, field equivalence, exhaustive set, exact
-   cardinality, absence, upper or lower bound, or other.
-4. Emit exactly one audit row for every category in this list:
-   {json.dumps(DOMAIN_TWEAK_REQUIREMENT_CATEGORIES)}
-5. Set an audit row's `present` true exactly when at least one emitted requirement has that category. Explain
-   why the category is present or absent; do not omit temporal or scope categories merely because they are short.
-
-FIELD INTERPRETATION
-- `form_match`: blueprint-preservation verdict only.
-- `reviewer_feedback`: precise structural explanation; no premise or evidence verdict.
-- `question_requirements`: exhaustive, uniquely identified conditions imposed by the generated question.
-- `requirement_category_audit`: complete category-by-category omission check.
-
-GOOD EXAMPLE
-For "List every 2024 entry in table T whose value exceeds 10", separate requirements identify table T's
-candidate universe, the 2024 time qualifier, the greater-than relation, and exhaustive-list completeness.
-The audit marks those categories present and explains why ranking and absence are not present.
-
-BAD EXAMPLE
-The review says only "the form looks right", omits the year and completeness requirement, or rejects the
-question because its evidence seems weak. The first two lose load-bearing requirements; the last exceeds scope.
-
-OUTPUT
-Return every schema field through the native structured response. Do not add prose or a Markdown fence."""
-
-
-def reference_answer_prompt(
-    reviewed_question: DomainTweakReviewedQuestion,
+def portfolio_prompt(
+    slots: Sequence[int],
     *,
-    source_packet: dict[str, object],
-    question_generation_trajectory: dict[str, object],
+    accepted_route_contexts: Sequence[AcceptedRouteContext] = (),
 ) -> str:
-    return f"""WORK ORDER
-Reconstruct the question generator's proposed answer path from the supplied packet, observable search trajectory,
-and deterministically acquired source content. Then either produce a complete reader-facing reference answer or
-abandon this candidate. You may use Google Search for targeted checks and additional explanatory facts, but a
-search result becomes citable evidence only after `acquire_sources` returns an acquired source window.
-
-CURRENT TIMESTAMP
-{reviewed_question.pair_input.timestamp.isoformat()}
-
-QUESTION PACKET
-{_json(reviewed_question.question_packet)}
-
-FORM REVIEW AND CONCRETE QUESTION REQUIREMENTS
-{_json(reviewed_question.form_review)}
-
-OBSERVABLE QUESTION-GENERATION TRAJECTORY
-{json.dumps(question_generation_trajectory, ensure_ascii=False, indent=2)}
-
-DETERMINISTIC SOURCE ACQUISITION
-{json.dumps(source_packet, ensure_ascii=False, indent=2)}
-
-ROLE AND NON-SCOPE
-The packet is a proposal, not an oracle and not an opponent. Follow its solution path, inspect the actual acquired
-text, correct only bounded mistakes, strengthen weak support when possible, and write the best complete answer a
-strong deep-research agent would give the reader. Never discuss the question generator, packet, tools, missing
-access, your search effort, or any other internal circumstance in `reference_answer_text`.
-
-DECISION CRITERIA
-- `unchanged`: reconstruction supports the proposed short answer without changing its answer-determining path.
-- `bounded_correction`: the same candidate universe, operation, metric, scope, premise, proxy mapping, and solution
-  path survive, but a local value, calculation, entity inclusion, wording, or explanation requires correction.
-- `abandon`: a defensible answer would require a materially new metric, scope, candidate universe, premise, proxy,
-  operation, or solution path; required support remains unavailable; or a source/tool budget terminates the attempt.
-
-PROCEDURE
-1. Inspect every initial acquisition result. Treat QG-authored excerpts as locators, never as fetched evidence.
-2. Use `read_cached_source(source_id, offset, limit)` to paginate acquired sources when the initial window is
-   insufficient. Use offsets and at most the declared per-response limit.
-3. For an unresolved known QG claim, use one batched `acquire_sources(claim_id, urls, offset, limit)` call per
-   acquisition round. For new facts needed only to explain the answer, use the declared additional-explanation ID.
-   Source windows are claim-bound: initial windows inherit their declaration's `supported_claim_ids`, cached reads
-   retain those bindings, and supplemental windows bind to the `claim_id` passed to `acquire_sources`. To use an
-   already cached URL for another claim, call `acquire_sources` again with that claim ID before attaching its
-   returned window; a cache-only call establishes that binding without consuming another acquisition round.
-4. Prefer direct evidence. When any claim has weaker support, make the strongest defensible argument from the
-   available evidence: explain field equivalence, derivation, proxy validity, scope, and uncertainty that matter
-   to a reader. Do not substitute "I could not find" or another internal circumstance for an argument.
-5. A new answer-determining claim outside the QG claim IDs is material path drift and requires abandonment.
-6. Write the answer first. For list or set questions, state the complete set near the top and defend inclusion,
-   exclusion, time basis, calculations, and completeness required by the question.
-7. Manifest every material final-answer claim. Reuse every QG answer-determining claim ID. The system-provided
-   additional-explanation ID requires an acquired window and may be used only for sourced explanatory facts.
-8. Attach only returned `window_id` values to claims. `citation_window_ids` must be the exact union of every
-   claim's `evidence_window_ids`; do not omit a claim window or select an unattached window.
-
-FIELD INTERPRETATION
-- `status`: `finalized` only when the answer is defensible under DECISION CRITERIA; otherwise `abandon`.
-- `answer_disposition`: `unchanged` or `bounded_correction`; null on abandon.
-- `proposed_short_answer`: reconstructed final short answer after any bounded correction.
-- `reference_answer_text`: polished standalone answer for the reader, with no workflow narration.
-- `claims`: complete material claim manifest. `evidence_window_ids` names acquired windows supporting each claim;
-  it may be empty only for a QG claim that is a valid logical or mathematical derivation explained in
-  `support_explanation`, never for the additional-explanation claim.
-- `citation_window_ids`: unique acquired windows that should become final citations.
-- `abandon_reason`: concise internal typed-stage explanation; it is not reader-facing answer prose.
-
-GOOD EXAMPLE
-The proposed answer uses two official operands. After reading both windows, you correct one transcribed value,
-keep the same comparison, explain the arithmetic, reuse the QG claim IDs, and cite both acquired windows. This is
-a bounded correction and the final prose simply gives and defends the answer.
-
-BAD EXAMPLE
-You replace a workplace metric with residence data, invent a new candidate universe, or say "the supplied report
-does not show this, so I cannot answer" without searching for the relevant direct source. Those are path drift or
-internal workflow narration, not a completed reference answer.
-
-OUTPUT
-Return every schema field. An abandon output must use null answer fields and empty claim/citation arrays. Return
-only the native structured response; do not add prose or a Markdown fence."""
+    payload = {
+        "slots": [{"slot": slot} for slot in slots],
+        "already_accepted_routes_to_avoid": [item.model_dump(mode="json") for item in accepted_route_contexts],
+    }
+    return "Allocate public-document ecosystems for this request:\n" + json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-def structured_output_materialization_prompt(
-    reviewed_question: DomainTweakReviewedQuestion,
-    reference_output: DomainTweakReferenceAnswerOutput,
-) -> str:
-    return f"""WORK ORDER
-Without searching, solving, or correcting facts, convert the supplied grounded question and reference answer
-into one bounded JSON output contract and one matching reference value. Return only values the question asks
-the respondent to provide. Filter operands, supporting context, dates, and explanations are not output fields
-unless the question explicitly requests them.
-
-QUESTION
-{reviewed_question.question_packet.question}
-
-CONCRETE QUESTION REQUIREMENTS
-{_json(reviewed_question.form_review.question_requirements)}
-
-GROUNDED REFERENCE ANSWER
-{_json(reference_output)}
-
-DECISION CRITERIA
-Return `materialized` when at least one meaningful fixed output field can represent the requested answer without
-changing its meaning. Return `not_materializable` when the requested answer cannot be represented inside the
-allowed schema subset. Do not weaken or reinterpret the question merely to make it materializable.
-
-ALLOWED SCHEMA SUBSET
-- The root must be an object with one or more fixed lowercase snake_case properties.
-- Property names must match `^[a-z][a-z0-9_]{{0,63}}$`.
-- Every object property is required and every object has `additionalProperties: false`.
-- Allowed types are object, array, string, integer, number, and boolean.
-- Arrays have exactly one `items` schema. Primitive leaves contain only `type`.
-- Use only `type`, `properties`, `required`, `additionalProperties`, and `items`.
-- Do not emit `$schema`, annotations, descriptions, titles, defaults, examples, references, formats, patterns,
-  numeric or length constraints, tuple arrays, composition, conditionals, or dynamic/unevaluated keywords.
-
-PROCEDURE
-1. Identify the exact values the question requests the respondent to return.
-2. Choose the smallest natural fixed structure. One meaningful field is valid.
-3. Encode the schema as strict JSON text in `output_schema_json`.
-4. Encode the matching reference value as strict JSON text in `structured_output_json`.
-5. Emit one `field_binding` for every primitive leaf path. Use `[]` after array segments, for example
-   `candidates[]` or `results[].name`.
-6. Bind each leaf to exact supplied requirement IDs, reference claim IDs, and acquired evidence window IDs.
-   `answer_evidence` briefly identifies the supplied answer material that fixes that value.
-
-GOOD EXAMPLE
-If the question asks only which candidates qualify, return one `candidates` string-array field. Do not also
-return the threshold, year, scores, or explanation used to determine qualification.
-
-BAD EXAMPLE
-Do not create a generic `answer` field containing prose, add a `release_year` field merely because the reference
-mentions it, or place instructions in property names or schema annotations.
-
-OUTPUT
-Return every native structured-response field. For `not_materializable`, use null JSON-string fields and an empty
-binding array. Extra top-level envelope fields are ignored, but required fields must be present."""
-
-
-def semantic_support_prompt(
-    reviewed_question: DomainTweakReviewedQuestion,
-    reference_output: DomainTweakReferenceAnswerOutput,
-    *,
-    evidence_windows: tuple[dict[str, object], ...],
-    materialization: DomainTweakStructuredOutputMaterialization | None = None,
-) -> str:
-    structured_contract = (
-        _json(materialization) if materialization is not None else "No structured output materialization was requested."
+def dossier_prompt(allocation: PortfolioAllocation) -> str:
+    payload = {
+        "optional_ecosystem_seeds": list(allocation.ecosystems),
+    }
+    return "Find the first question-ready supported source dossier:\n" + json.dumps(
+        payload, ensure_ascii=False, indent=2
     )
-    return f"""WORK ORDER
-Without searching or rewriting the answer, decide whether the supplied reference answer and acquired source
-windows would sufficiently persuade a careful judge. This is an evidence-quality gate, not an oracle-truth test:
-strong direct evidence may justify confidence; weaker evidence requires a defensible bridge whose premises are
-themselves supported. Internal circumstances such as what an agent found or failed to find are never evidence.
-
-QUESTION
-{reviewed_question.question_packet.question}
-
-CONCRETE QUESTION REQUIREMENTS
-{_json(reviewed_question.form_review.question_requirements)}
-
-REFERENCE ANSWER OUTPUT
-{_json(reference_output)}
-
-STRUCTURED OUTPUT MATERIALIZATION
-{structured_contract}
-
-ACQUIRED EVIDENCE WINDOWS
-{json.dumps(evidence_windows, ensure_ascii=False, indent=2)}
-
-DECISION CRITERIA
-Return `pass` only when every supplied requirement and every manifested reference claim is supported at the
-relation strength it needs, and the answer contains no material factual assertion omitted from its claim manifest.
-External factual support must come from acquired windows. A logical or mathematical derivation may use no window
-when its premises are stated in the question or supported operands and the derivation is valid. Return `abandon`
-for any unsupported requirement, unsupported claim, or unmanifested material claim.
-
-PROCEDURE
-1. Emit exactly one `requirement_finding` for every supplied requirement ID, with no additions or omissions.
-2. Check candidate universe, field identity or equivalence, scope, time basis, cardinality, completeness, ranking,
-   absence, calculations, and proxy defense at the strength demanded by each requirement.
-3. Emit exactly one `claim_finding` for every reference claim ID, with no additions or omissions.
-4. Name only acquired window IDs that actually support the finding. The source-backed required relations require
-   at least one acquired window: direct fact, field equivalence, exhaustive set, exact cardinality, absence, and
-   upper or lower bound. A derived calculation may use empty evidence only when its supported premises make the
-   derivation valid; an `other` relation remains subject to the full semantic decision criteria.
-5. List any answer-determining or explanatory factual assertion in the answer text that is absent from the claim
-   manifest under `unmanifested_material_claims`.
-6. When a structured materialization is supplied, emit exactly one `structured_field_finding` for every
-   primitive schema leaf path. Independently verify that each value is requested by its bound requirement IDs,
-   fixed by its bound reference claim IDs, and supported by the named acquired windows. Use the exact binding IDs.
-7. When no structured materialization is supplied, emit an empty `structured_field_findings` array.
-8. Do not improve, rewrite, or complete the answer. A pass preserves its text byte-for-byte downstream.
-
-FIELD INTERPRETATION
-- `support_status`: whether the exact requirement or claim is adequately defended, not merely topically related.
-- `evidence_window_ids`: acquired windows that carry the support; never use URLs or invented IDs.
-- `explanation`: concise claim-to-evidence or derivation analysis.
-- `unmanifested_material_claims`: material answer assertions with no claim ID; empty only when none exist.
-- `structured_field_findings`: exact per-leaf adjudication of a supplied structured value and its bindings.
-- `status`: `pass` only when all findings are supported and the unmanifested list is empty.
-- `abandon_reason`: concise combined reason for rejection; null on pass.
-
-GOOD EXAMPLE
-A comparison requirement is supported by two windows containing the exact operands, and the finding explains the
-calculation. A proxy-based claim passes only when windows support both the proxy values and the asserted mapping.
-
-BAD EXAMPLE
-A finding passes because a source is authoritative or mentions the topic, even though it does not establish the
-requested field, time period, denominator, completeness, or proxy relationship. Authority is not claim binding.
-
-OUTPUT
-Return every schema field through the native structured response. Do not add prose or a Markdown fence."""
 
 
-def feedback_prompt(feedback: tuple[str, ...]) -> str:
+def question_prompt(
+    form: GenerationForm,
+    allocation: PortfolioAllocation,
+    dossier: SourceDossier,
+    evidence_identities: Sequence[Mapping[str, object]],
+) -> str:
+    payload = {
+        "source_form_for_natural_inspiration": form.form,
+        "portfolio_brief": dossier_prompt(allocation),
+        "verified_dossier": dossier.model_dump(mode="json"),
+        "registered_evidence_identities": list(evidence_identities),
+    }
+    return "Write the final question from this supported packet:\n" + json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def reference_prompt(
+    *,
+    question: str,
+    dossier: SourceDossier,
+    evidence_identities: Sequence[Mapping[str, object]],
+) -> str:
+    payload = {
+        "question": question,
+        "dossier_hypothesis": dossier.model_dump(mode="json"),
+        "pre_registered_evidence": list(evidence_identities),
+    }
+    return "Build the minimal complete verified reference proof:\n" + json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def reference_repair_prompt(
+    *,
+    question: str,
+    prior_proof: ReferenceProof,
+    defects: Sequence[str],
+) -> str:
+    payload = {
+        "question": question,
+        "prior_proof": prior_proof.model_dump(mode="json"),
+        "audit_defects": list(defects),
+    }
     return (
-        "Your previous native structured response failed deterministic schema or identity validation. "
-        "Correct only the listed structural defects while preserving the work order:\n"
-        + "\n".join(f"- {item}" for item in feedback)
+        "Repair only the listed proof defects. Search or fetch evidence when needed, preserve the fixed question, and "
+        "return a complete replacement proof:\n" + json.dumps(payload, ensure_ascii=False, indent=2)
     )
 
 
-def _json(value: BaseModel | tuple[BaseModel, ...]) -> str:
-    if isinstance(value, BaseModel):
-        payload: object = value.model_dump(mode="json")
-    else:
-        payload = [item.model_dump(mode="json") for item in value]
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+def audit_prompt(packet: Mapping[str, object]) -> str:
+    return "Audit this closed proof packet:\n" + _serialize_audit_packet(packet)
 
 
 __all__ = [
-    "feedback_prompt",
-    "form_blueprint_prompt",
-    "form_review_prompt",
-    "phase_instruction",
-    "question_generation_prompt",
-    "reference_answer_prompt",
-    "semantic_support_prompt",
-    "structured_output_materialization_prompt",
+    "AUDIT_SYSTEM",
+    "DOSSIER_SYSTEM",
+    "PORTFOLIO_SYSTEM",
+    "QUESTION_SYSTEM",
+    "REFERENCE_SYSTEM",
+    "audit_prompt",
+    "dossier_prompt",
+    "portfolio_prompt",
+    "question_prompt",
+    "reference_prompt",
+    "reference_repair_prompt",
 ]

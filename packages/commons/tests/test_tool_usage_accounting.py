@@ -10,7 +10,12 @@ from harnyx_commons.domain.tool_usage import (
     SearchToolUsageSummary,
     ToolUsageSummary,
 )
-from harnyx_commons.domain.tool_usage_accounting import merge_tool_usage_summaries, tool_usage_from_llm_usage
+from harnyx_commons.domain.tool_usage_accounting import (
+    known_zero_actual_cost_tool_usage,
+    merge_complete_actual_cost_usage,
+    merge_tool_usage_summaries,
+    tool_usage_from_llm_usage,
+)
 from harnyx_commons.llm.schema import LlmUsage
 
 
@@ -160,6 +165,67 @@ def test_merge_tool_usage_summaries_preserves_asymmetric_known_actual_costs() ->
     assert merged.actual_total_cost_usd == pytest.approx(0.31)
     assert merged.llm.providers["vertex"]["gemini-2.5-pro"].actual_cost == pytest.approx(0.18)
     assert merged.llm.providers["vertex"]["gemini-2.5-flash"].actual_cost is None
+
+
+def test_complete_cost_merge_marks_known_prefix_unavailable_without_losing_usage() -> None:
+    """Future failure: one unreported provider bill must make the containing aggregate explicitly incomplete."""
+    known = _usage_summary(
+        provider="vertex",
+        model="gemini-2.5-pro",
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        reasoning_tokens=7,
+        llm_cost=0.2,
+        search_cost=0.1,
+        actual_llm_cost=0.18,
+        actual_search_cost=0.09,
+    )
+    unknown = _usage_summary(
+        provider="vertex",
+        model="gemini-2.5-flash",
+        prompt_tokens=20,
+        completion_tokens=10,
+        total_tokens=30,
+        reasoning_tokens=11,
+        llm_cost=0.4,
+        search_cost=0.3,
+        actual_llm_cost=None,
+        actual_search_cost=None,
+    )
+
+    merged = merge_complete_actual_cost_usage(known, unknown)
+
+    assert merged.llm.total_tokens == 45
+    assert merged.actual_total_cost_usd is None
+    assert merged.llm.actual_cost is None
+    assert merged.actual_cost_by_provider == {}
+    assert all(
+        model.actual_cost is None
+        for provider in merged.llm.providers.values()
+        for model in provider.values()
+    )
+
+
+def test_complete_cost_merge_uses_reported_zero_identity() -> None:
+    known = _usage_summary(
+        provider="vertex",
+        model="gemini-2.5-pro",
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        reasoning_tokens=7,
+        llm_cost=0.2,
+        search_cost=0.1,
+        actual_llm_cost=0.18,
+        actual_search_cost=0.09,
+    )
+
+    merged = merge_complete_actual_cost_usage(known_zero_actual_cost_tool_usage(), known)
+
+    assert merged.actual_total_cost_usd == pytest.approx(0.27)
+    assert merged.llm.actual_cost == pytest.approx(0.18)
+    assert merged.actual_cost_by_provider == {"vertex": pytest.approx(0.27)}
 
 
 def _usage_summary(

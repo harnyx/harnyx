@@ -73,9 +73,7 @@ def _load_snapshot_from_dir(snapshot_dir: Traversable) -> BenchmarkDatasetSnapsh
     csv_path = snapshot_dir.joinpath(manifest.file_name)
     checksum = sha256(csv_path.read_bytes()).hexdigest()
     if checksum != manifest.sha256:
-        raise RuntimeError(
-            f"DeepSearchQA checksum mismatch: expected {manifest.sha256} got {checksum}"
-        )
+        raise RuntimeError(f"DeepSearchQA checksum mismatch: expected {manifest.sha256} got {checksum}")
     with io.StringIO(csv_path.read_text(encoding="utf-8")) as handle:
         rows = tuple(
             BenchmarkDatasetItem(
@@ -88,9 +86,7 @@ def _load_snapshot_from_dir(snapshot_dir: Traversable) -> BenchmarkDatasetSnapsh
             for index, row in enumerate(csv.DictReader(handle))
         )
     if len(rows) != manifest.row_count:
-        raise RuntimeError(
-            f"DeepSearchQA row count mismatch: expected {manifest.row_count} got {len(rows)}"
-        )
+        raise RuntimeError(f"DeepSearchQA row count mismatch: expected {manifest.row_count} got {len(rows)}")
     return BenchmarkDatasetSnapshot(manifest=manifest, items=rows)
 
 
