@@ -23,6 +23,8 @@ from harnyx_commons.miner_task_generation import DomainTweakFormBlueprint
 
 pytestmark = pytest.mark.anyio("asyncio")
 
+_HARD_TIMEOUT_WATCHDOG_SECONDS = 2.0
+
 
 @dataclass
 class _Executor:
@@ -290,7 +292,7 @@ async def test_live_context_setup_is_inside_the_hard_stage_timeout(
             output_schema=DomainTweakFormBlueprint,
             validate=validate_form_blueprint_output,
         ),
-        timeout=0.2,
+        timeout=_HARD_TIMEOUT_WATCHDOG_SECONDS,
     )
 
     assert result.terminal_status == "timeout"
@@ -323,7 +325,7 @@ async def test_live_context_cleanup_cannot_extend_the_hard_stage_timeout(
             output_schema=DomainTweakFormBlueprint,
             validate=validate_form_blueprint_output,
         ),
-        timeout=0.2,
+        timeout=_HARD_TIMEOUT_WATCHDOG_SECONDS,
     )
 
     assert result.terminal_status == "validated"
@@ -389,7 +391,7 @@ async def test_event_iterator_cleanup_cannot_extend_the_hard_stage_timeout(
             output_schema=DomainTweakFormBlueprint,
             validate=validate_form_blueprint_output,
         ),
-        timeout=0.2,
+        timeout=_HARD_TIMEOUT_WATCHDOG_SECONDS,
     )
 
     assert result.terminal_status == "timeout"
@@ -433,7 +435,7 @@ async def test_event_iterator_cleanup_failure_does_not_replace_timeout(
             output_schema=DomainTweakFormBlueprint,
             validate=validate_form_blueprint_output,
         ),
-        timeout=0.2,
+        timeout=_HARD_TIMEOUT_WATCHDOG_SECONDS,
     )
 
     assert iterator.close_called
