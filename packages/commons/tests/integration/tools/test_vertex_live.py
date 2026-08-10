@@ -4,7 +4,6 @@ import pytest
 from pydantic import BaseModel
 
 from harnyx_commons.clients import PLATFORM
-from harnyx_commons.config.llm import LlmSettings
 from harnyx_commons.config.vertex import VertexSettings
 from harnyx_commons.llm.providers.vertex.provider import VertexLlmProvider
 from harnyx_commons.llm.schema import (
@@ -12,7 +11,6 @@ from harnyx_commons.llm.schema import (
     LlmMessage,
     LlmMessageContentPart,
     LlmRequest,
-    extract_vertex_gemini_model_id,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio("asyncio")]
@@ -162,9 +160,7 @@ async def test_vertex_claude_web_search_live() -> None:
     assert location, "GCP_LOCATION must be configured"
     assert credentials_b64, "Vertex credentials must be configured"
 
-    reference_model = LlmSettings().reference_llm_model or "claude-haiku-4-5@20251001"
-    is_gemini_reference_model = extract_vertex_gemini_model_id(reference_model) is not None
-    reasoning_effort = "high" if is_gemini_reference_model else "2048"
+    claude_model = "claude-haiku-4-5@20251001"
 
     provider = VertexLlmProvider(
         project=project,
@@ -176,7 +172,7 @@ async def test_vertex_claude_web_search_live() -> None:
     try:
         request = GroundedLlmRequest(
             provider="vertex",
-            model=reference_model,
+            model=claude_model,
             messages=(
                 LlmMessage(
                     role="system",
@@ -193,7 +189,7 @@ async def test_vertex_claude_web_search_live() -> None:
             ),
             temperature=1.0,
             max_output_tokens=3072,
-            reasoning_effort=reasoning_effort,
+            reasoning_effort="2048",
         )
 
         response = await provider.invoke(request)
@@ -202,11 +198,7 @@ async def test_vertex_claude_web_search_live() -> None:
 
     assert response.raw_text, "Vertex web_search response should include text output"
     assert response.usage.web_search_calls is not None
-    if is_gemini_reference_model:
-        assert response.usage.reasoning_tokens is not None
-        assert response.usage.reasoning_tokens > 0
-    else:
-        assert response.usage.reasoning_tokens is None
+    assert response.usage.reasoning_tokens is None
 
 
 async def test_vertex_json_mode_live() -> None:
