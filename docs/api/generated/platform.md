@@ -310,24 +310,6 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `msg` |  | req | `string` |
 |  | `type` |  | req | `string` |
 
-`502` Platform API could not validate the worker acknowledgement for the async start.
-Content-Type: `application/json`
-Body: [ErrorResponse](#model-errorresponse)
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `error_code` |  |  | req | `string` |
-| `message` |  |  | req | `string` |
-
-`503` Platform API could not reach the worker for batch creation delegation.
-Content-Type: `application/json`
-Body: [ErrorResponse](#model-errorresponse)
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `error_code` |  |  | req | `string` |
-| `message` |  |  | req | `string` |
-
 
 #### {batch_id}
 
