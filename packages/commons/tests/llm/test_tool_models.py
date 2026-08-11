@@ -98,6 +98,7 @@ def test_miner_selected_chutes_rejects_openrouter_only_models() -> None:
         "z-ai/glm-5.2",
         "thinkingmachines/inkling",
         "qwen/qwen3.5-397b-a17b",
+        "meta/muse-glimmer-30b",
     ),
 )
 def test_miner_selected_openrouter_uses_native_model_ids_without_translation(
@@ -123,6 +124,7 @@ def test_miner_selected_openrouter_uses_native_model_ids_without_translation(
         "deepseek/deepseek-v4-flash",
         "deepseek/deepseek-v4-flash-0731",
         "deepseek/deepseek-v4-pro",
+        "meta/muse-glimmer-30b",
     ),
 )
 def test_miner_selected_ai_gateway_uses_native_model_ids_without_translation(model: str) -> None:

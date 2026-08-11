@@ -57,11 +57,13 @@ def test_tool_model_pricing_covers_every_allowed_tool_model() -> None:
         ("openrouter", "z-ai/glm-5.2", 0.8008, 2.5168),
         ("openrouter", "thinkingmachines/inkling", 1.00, 4.05),
         ("openrouter", "qwen/qwen3.5-397b-a17b", 0.39, 2.34),
+        ("openrouter", "meta/muse-glimmer-30b", 0.35, 1.50),
         ("ai_gateway", "openai/gpt-oss-20b", 0.05, 0.20),
         ("ai_gateway", "zai/glm-4.7", 0.60, 2.20),
         ("ai_gateway", "deepseek/deepseek-v4-flash", 0.14, 0.28),
         ("ai_gateway", "deepseek/deepseek-v4-flash-0731", 0.13, 0.26),
         ("ai_gateway", "deepseek/deepseek-v4-pro", 0.435, 0.87),
+        ("ai_gateway", "meta/muse-glimmer-30b", 0.35, 1.50),
     ),
 )
 def test_miner_model_reference_rates_match_approved_snapshot(

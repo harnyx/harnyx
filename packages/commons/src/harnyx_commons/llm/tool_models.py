@@ -71,6 +71,7 @@ MINER_SELECTED_LLM_PROVIDER_MODELS: Mapping[
         "z-ai/glm-5.2",
         "thinkingmachines/inkling",
         "qwen/qwen3.5-397b-a17b",
+        "meta/muse-glimmer-30b",
     ),
     AI_GATEWAY_PROVIDER: (
         "thinkingmachines/inkling",
@@ -84,6 +85,7 @@ MINER_SELECTED_LLM_PROVIDER_MODELS: Mapping[
         "deepseek/deepseek-v4-flash",
         "deepseek/deepseek-v4-flash-0731",
         "deepseek/deepseek-v4-pro",
+        "meta/muse-glimmer-30b",
     ),
 }
 
