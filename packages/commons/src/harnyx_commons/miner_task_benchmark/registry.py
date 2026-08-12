@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from harnyx_commons.miner_task_benchmark.browsecomp.loader import (
+    BROWSECOMP_SUITE_SLUG,
+    list_browsecomp_snapshots,
+    load_browsecomp_snapshot,
+)
 from harnyx_commons.miner_task_benchmark.deepresearch9k_l1.loader import (
     DEEPRESEARCH9K_L1_SUITE_SLUG,
     list_deepresearch9k_l1_snapshots,
@@ -40,6 +45,7 @@ BenchmarkCurrentSnapshotLoader = Callable[[], BenchmarkDatasetSnapshot]
 BenchmarkSnapshotVersionKey = tuple[str, str]
 
 _BENCHMARK_SNAPSHOT_CATALOG_LOADERS: dict[str, BenchmarkSnapshotCatalogLoader] = {
+    BROWSECOMP_SUITE_SLUG: list_browsecomp_snapshots,
     DEEPRESEARCH9K_L1_SUITE_SLUG: list_deepresearch9k_l1_snapshots,
     DEEPRESEARCH9K_L2_SUITE_SLUG: list_deepresearch9k_l2_snapshots,
     DEEPSEARCHQA_SUITE_SLUG: list_deepsearchqa_snapshots,
@@ -49,6 +55,7 @@ _BENCHMARK_SNAPSHOT_CATALOG_LOADERS: dict[str, BenchmarkSnapshotCatalogLoader] =
     WEBWALKERQA_SINGLE_SOURCE_MEDIUM_SUITE_SLUG: list_webwalkerqa_single_source_medium_snapshots,
 }
 _BENCHMARK_CURRENT_SNAPSHOT_LOADERS: dict[str, BenchmarkCurrentSnapshotLoader] = {
+    BROWSECOMP_SUITE_SLUG: load_browsecomp_snapshot,
     DEEPRESEARCH9K_L1_SUITE_SLUG: load_deepresearch9k_l1_snapshot,
     DEEPRESEARCH9K_L2_SUITE_SLUG: load_deepresearch9k_l2_snapshot,
     DEEPSEARCHQA_SUITE_SLUG: load_deepsearchqa_snapshot,

@@ -52,10 +52,11 @@ def test_benchmark_registry_loads_deepsearchqa_snapshot_generically() -> None:
     assert load_current_benchmark_snapshot("deepsearchqa") == snapshot
 
 
-def test_benchmark_registry_has_seven_current_suites_without_single_active_default() -> None:
+def test_benchmark_registry_has_eight_current_suites_without_single_active_default() -> None:
     snapshots = list_current_benchmark_snapshots()
 
     assert tuple(snapshot.manifest.suite_slug for snapshot in snapshots) == (
+        "browsecomp",
         "deepresearch9k-l1",
         "deepresearch9k-l2",
         "deepsearchqa",
@@ -65,6 +66,7 @@ def test_benchmark_registry_has_seven_current_suites_without_single_active_defau
         "webwalkerqa-single-source-medium",
     )
     assert list_current_benchmark_suite_slugs() == (
+        "browsecomp",
         "deepresearch9k-l1",
         "deepresearch9k-l2",
         "deepsearchqa",

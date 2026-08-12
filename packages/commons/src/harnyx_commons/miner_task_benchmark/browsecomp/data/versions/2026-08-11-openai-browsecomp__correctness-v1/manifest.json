@@ -1,0 +1,13 @@
+{
+  "suite_slug": "browsecomp",
+  "suite_name": "BrowseComp",
+  "dataset_version": "2026-08-11-openai-browsecomp",
+  "scoring_version": "correctness-v1",
+  "source_url": "https://openaipublic.blob.core.windows.net/simple-evals/browse_comp_test_set.csv",
+  "source_page_url": "https://github.com/openai/simple-evals",
+  "license": "MIT",
+  "sha256": "7b24471cd5b3eb2a46830a14802b5c029ea62f488ff75a0f88af7923d1454abf",
+  "row_count": 1266,
+  "file_name": "browse_comp_test_set.csv",
+  "fetched_at": "2026-08-11"
+}

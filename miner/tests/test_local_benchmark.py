@@ -278,6 +278,7 @@ def test_local_benchmark_lists_current_suites(
 
     payload = json.loads(capsys.readouterr().out)
     assert [suite["suite_slug"] for suite in payload["suites"]] == [
+        "browsecomp",
         "deepresearch9k-l1",
         "deepresearch9k-l2",
         "deepsearchqa",

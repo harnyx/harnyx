@@ -1,6 +1,6 @@
 [project]
 name = "harnyx-commons"
-version = "0.1.12"
+version = "0.1.13"
 description = "Shared SDK utilities and sandbox harness for the Harnyx Subnet."
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
@@ -43,6 +43,10 @@ build-backend = "hatchling.build"
 packages = ["src/harnyx_commons"]
 include = [
   "src/harnyx_commons/sandbox/seccomp/*.json",
+  "src/harnyx_commons/miner_task_benchmark/browsecomp/data/current_version.json",
+  "src/harnyx_commons/miner_task_benchmark/browsecomp/data/versions/*/*.csv",
+  "src/harnyx_commons/miner_task_benchmark/browsecomp/data/versions/*/*.json",
+  "src/harnyx_commons/miner_task_benchmark/browsecomp/data/versions/*/LICENSE.openai-simple-evals",
   "src/harnyx_commons/miner_task_benchmark/deepsearchqa/data/current_version.json",
   "src/harnyx_commons/miner_task_benchmark/deepsearchqa/data/versions/*/*.csv",
   "src/harnyx_commons/miner_task_benchmark/deepsearchqa/data/versions/*/*.json",

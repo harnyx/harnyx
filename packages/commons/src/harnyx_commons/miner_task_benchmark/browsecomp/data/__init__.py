@@ -1,0 +1,1 @@
+"""Immutable BrowseComp dataset snapshots."""

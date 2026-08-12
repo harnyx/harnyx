@@ -150,6 +150,7 @@ def test_benchmark_registry_loads_webwalkerqa_current_and_explicit_snapshot() ->
         == snapshot
     )
     assert list_current_benchmark_suite_slugs() == (
+        "browsecomp",
         "deepresearch9k-l1",
         "deepresearch9k-l2",
         "deepsearchqa",
@@ -159,6 +160,7 @@ def test_benchmark_registry_loads_webwalkerqa_current_and_explicit_snapshot() ->
         "webwalkerqa-single-source-medium",
     )
     assert {item.manifest.suite_slug for item in list_current_benchmark_snapshots()} == {
+        "browsecomp",
         "deepresearch9k-l1",
         "deepresearch9k-l2",
         "deepsearchqa",

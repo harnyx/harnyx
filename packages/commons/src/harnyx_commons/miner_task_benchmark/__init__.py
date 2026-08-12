@@ -1,3 +1,9 @@
+from harnyx_commons.miner_task_benchmark.browsecomp import (
+    BROWSECOMP_SUITE_NAME,
+    BROWSECOMP_SUITE_SLUG,
+    list_browsecomp_snapshots,
+    load_browsecomp_snapshot,
+)
 from harnyx_commons.miner_task_benchmark.deepresearch9k_l1 import (
     DEEPRESEARCH9K_L1_SUITE_NAME,
     DEEPRESEARCH9K_L1_SUITE_SLUG,
@@ -96,6 +102,8 @@ __all__ = [
     "BENCHMARK_CORRECTNESS_SCORING_VERSION",
     "BENCHMARK_SAMPLE_SIZE",
     "BENCHMARK_WEIGHTED_RUBRIC_SCORING_VERSION",
+    "BROWSECOMP_SUITE_NAME",
+    "BROWSECOMP_SUITE_SLUG",
     "DEFINED_BENCHMARK_SCORING_VERSIONS",
     "DEEPRESEARCH9K_L1_SUITE_NAME",
     "DEEPRESEARCH9K_L1_SUITE_SLUG",
@@ -144,6 +152,7 @@ __all__ = [
     "is_supported_benchmark_scoring_version",
     "list_current_benchmark_snapshots",
     "list_current_benchmark_suite_slugs",
+    "list_browsecomp_snapshots",
     "list_deepresearch9k_l1_snapshots",
     "list_deepresearch9k_l2_snapshots",
     "list_deepsearchqa_snapshots",
@@ -153,6 +162,7 @@ __all__ = [
     "list_webwalkerqa_single_source_medium_snapshots",
     "load_active_benchmark_snapshot",
     "load_benchmark_snapshot",
+    "load_browsecomp_snapshot",
     "load_current_benchmark_snapshot",
     "load_deepresearch9k_l1_snapshot",
     "load_deepresearch9k_l2_snapshot",
