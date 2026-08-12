@@ -204,6 +204,133 @@ async def test_fetch_page_normalizes_documented_scrape_shape_without_billing_met
     assert result.billing.source == "missing_provider_metadata"
 
 
+async def test_fetch_page_forwards_raw_html_format_and_normalizes_raw_html() -> None:
+    payloads: list[object] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "rawHtml": "<main>Raw content</main>",
+                    "metadata": {"title": "Example"},
+                },
+            },
+        )
+
+    client, http_client = _client(handler)
+    try:
+        result = await client.fetch_page(
+            FetchPageRequest.model_validate(
+                {
+                    "provider": "firecrawl",
+                    "url": "https://example.com",
+                    "provider_extra": {"formats": ["rawHtml"]},
+                }
+            )
+        )
+    finally:
+        await http_client.aclose()
+
+    assert payloads == [
+        {"url": "https://example.com", "formats": ["rawHtml"], "onlyMainContent": True}
+    ]
+    assert [item.content for item in result.response.data] == ["<main>Raw content</main>"]
+
+
+async def test_fetch_page_returns_every_requested_format_in_request_order() -> None:
+    payloads: list[object] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "markdown": "Markdown content",
+                    "rawHtml": "<main>Raw content</main>",
+                    "metadata": {
+                        "title": "Example",
+                        "sourceURL": "https://example.com/final",
+                    },
+                },
+            },
+        )
+
+    client, http_client = _client(handler)
+    try:
+        result = await client.fetch_page(
+            FetchPageRequest.model_validate(
+                {
+                    "provider": "firecrawl",
+                    "url": "https://example.com",
+                    "provider_extra": {"formats": ["rawHtml", "markdown"]},
+                }
+            )
+        )
+    finally:
+        await http_client.aclose()
+
+    assert payloads == [
+        {
+            "url": "https://example.com",
+            "formats": ["rawHtml", "markdown"],
+            "onlyMainContent": True,
+        }
+    ]
+    assert [item.model_dump() for item in result.response.data] == [
+        {
+            "url": "https://example.com/final",
+            "content": "<main>Raw content</main>",
+            "title": "Example",
+        },
+        {
+            "url": "https://example.com/final",
+            "content": "Markdown content",
+            "title": "Example",
+        },
+    ]
+
+
+@pytest.mark.parametrize("raw_html", [None, "", "   "])
+async def test_fetch_page_rejects_missing_or_blank_requested_raw_html(raw_html: object) -> None:
+    client, http_client = _client(
+        lambda _request: httpx.Response(
+            200,
+            json={
+                "success": True,
+                "id": "scrape-raw-html",
+                "creditsUsed": 1,
+                "data": {
+                    "markdown": "Markdown fallback must not be used",
+                    "rawHtml": raw_html,
+                    "metadata": {},
+                },
+            },
+        )
+    )
+    try:
+        with pytest.raises(ToolProviderError, match="response invalid") as exc_info:
+            await client.fetch_page(
+                FetchPageRequest.model_validate(
+                    {
+                        "provider": "firecrawl",
+                        "url": "https://example.com",
+                        "provider_extra": {"formats": ["rawHtml"]},
+                    }
+                )
+            )
+    finally:
+        await http_client.aclose()
+
+    assert exc_info.value.billing is not None
+    assert exc_info.value.billing.provider_request_id == "scrape-raw-html"
+    assert exc_info.value.billing.usage_count == 1
+
+
 async def test_fetch_page_maps_markdown_compatible_pdf_and_proxy_controls() -> None:
     payloads: list[object] = []
 

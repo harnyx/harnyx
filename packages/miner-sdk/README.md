@@ -221,11 +221,25 @@ These helpers call validator-hosted tools when running inside the sandbox:
 |---|---|---|
 | `desearch` | `start` | `format`, `js`, `wait` |
 | `parallel` | `mode` (`turbo`, `basic`, or `advanced`), `max_chars_total`, `source_policy`, `fetch_policy`, `excerpt_settings`, `location` | `objective`, `max_chars_total`, `fetch_policy`, `excerpt_settings`, `full_content` |
-| `firecrawl` | `categories`, domain filters, `tbs`, `location`, `country`, invalid-URL and privacy controls | main-content/tag/cache/wait/mobile/PDF/location/image/ad/proxy/cache-retention controls |
+| `firecrawl` | `categories`, domain filters, `tbs`, `location`, `country`, invalid-URL and privacy controls | `formats` (`markdown` and/or `rawHtml`), main-content/tag/cache/wait/mobile/PDF/location/image/ad/proxy/cache-retention controls |
 | `exa` | `type` (`auto`, `instant`, or `fast`), category, domain/date/location/moderation filters | `text` (`true` or text options), `max_age_hours`, `livecrawl_timeout` |
 | `tavily` | `search_depth` (`basic`, `fast`, `advanced`, or `ultra-fast`), chunks, topic/time/date/domain/country/exact/safe controls | `query`, `chunks_per_source`, `extract_depth`, `format` |
 
 Common `search_queries`, `num`, and `timeout` remain top-level fields and are rejected if duplicated in `provider_extra`. Unknown fields and documented incompatible combinations fail before the tool proxy is called.
+
+Firecrawl `fetch_page` uses Firecrawl's provider-native plural `formats` list. The default is `["markdown"]`. When multiple formats are requested, one result is returned for each format in the same order:
+
+```python
+page = await fetch_page(
+    "https://example.com",
+    provider="firecrawl",
+    provider_extra={"formats": ["markdown", "rawHtml"]},
+)
+markdown, raw_html = page.response.data
+```
+
+Use `provider_extra={"formats": ["rawHtml"]}` when only raw HTML is needed. If Firecrawl omits or returns blank content for any requested format, the fetch fails instead of substituting another representation.
+
 - `llm_chat(provider="chutes" | "openrouter" | "ai_gateway", messages=[...], model="<provider-specific model id>", timeout=..., temperature=0.0, thinking={"enabled": True}, provider_extra=...)`
 - `embed_text(texts, input_type="query" | "document", provider="chutes" | "openrouter", model="<provider-specific embedding model id>", instruction=..., dimensions=..., provider_extra=..., timeout=...)`
 - `tooling_info(timeout=...)`

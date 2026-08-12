@@ -32,7 +32,13 @@ async def test_firecrawl_live_search_and_scrape_contract() -> None:
             )
         )
         scrape = await client.fetch_page(
-            FetchPageRequest(provider="firecrawl", url="https://example.com")
+            FetchPageRequest.model_validate(
+                {
+                    "provider": "firecrawl",
+                    "url": "https://example.com",
+                    "provider_extra": {"formats": ["markdown", "rawHtml"]},
+                }
+            )
         )
     finally:
         await client.aclose()
@@ -40,6 +46,8 @@ async def test_firecrawl_live_search_and_scrape_contract() -> None:
     assert search.response.data
     assert all(result.link.strip() for result in search.response.data)
     assert search.billing.actual_cost_provider == "firecrawl"
-    assert scrape.response.data[0].url.strip()
+    assert len(scrape.response.data) == 2
+    assert all(result.url.strip() for result in scrape.response.data)
     assert scrape.response.data[0].content.strip()
+    assert "<" in scrape.response.data[1].content
     assert scrape.billing.actual_cost_provider == "firecrawl"

@@ -4,7 +4,11 @@ import pytest
 from pydantic import ValidationError
 
 from harnyx_miner_sdk.tools.search_models import FetchPageRequest, SearchWebSearchRequest
-from harnyx_miner_sdk.tools.search_provider_extra import ExaSearchExtra, TavilyFetchExtra
+from harnyx_miner_sdk.tools.search_provider_extra import (
+    ExaSearchExtra,
+    FirecrawlFetchExtra,
+    TavilyFetchExtra,
+)
 
 
 def test_exa_search_extra_is_selected_by_provider() -> None:
@@ -179,3 +183,36 @@ def test_firecrawl_fetch_accepts_documented_enhanced_proxy() -> None:
 
     assert request.provider_extra is not None
     assert request.provider_extra.to_provider_payload()["proxy"] == "enhanced"
+
+
+@pytest.mark.parametrize(
+    "formats",
+    [
+        ["rawHtml"],
+        ["markdown", "rawHtml"],
+        ["rawHtml", "markdown"],
+    ],
+)
+def test_firecrawl_fetch_preserves_provider_formats(formats: list[str]) -> None:
+    request = FetchPageRequest.model_validate(
+        {
+            "provider": "firecrawl",
+            "url": "https://example.com",
+            "provider_extra": {"formats": formats},
+        }
+    )
+
+    assert isinstance(request.provider_extra, FirecrawlFetchExtra)
+    assert request.provider_extra.to_provider_payload()["formats"] == formats
+
+
+@pytest.mark.parametrize("formats", [[], ["html"], ["markdown", "html"]])
+def test_firecrawl_fetch_rejects_empty_or_unsupported_formats(formats: list[str]) -> None:
+    with pytest.raises(ValidationError):
+        FetchPageRequest.model_validate(
+            {
+                "provider": "firecrawl",
+                "url": "https://example.com",
+                "provider_extra": {"formats": formats},
+            }
+        )

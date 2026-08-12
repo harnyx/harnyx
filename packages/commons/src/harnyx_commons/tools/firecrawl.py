@@ -120,16 +120,17 @@ class _FirecrawlScrapeMetadataPayload(BaseModel):
 class _FirecrawlScrapeDataPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    markdown: str = Field(min_length=1)
+    markdown: str | None = None
+    raw_html: str | None = Field(default=None, alias="rawHtml")
     metadata: _FirecrawlScrapeMetadataPayload = Field(default_factory=_FirecrawlScrapeMetadataPayload)
 
-    @field_validator("markdown")
+    @field_validator("markdown", "raw_html")
     @classmethod
-    def _normalize_markdown(cls, value: str) -> str:
+    def _normalize_content(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         normalized = value.strip()
-        if not normalized:
-            raise ValueError("Firecrawl scrape Markdown must be non-empty")
-        return normalized
+        return normalized or None
 
 
 class _FirecrawlScrapeResponsePayload(_FirecrawlBillingPayload):
@@ -214,7 +215,6 @@ class FirecrawlClient:
             "/v2/scrape",
             {
                 "url": request.url,
-                "formats": ["markdown"],
                 "onlyMainContent": True,
                 **extra.to_provider_payload(),
             },
@@ -225,19 +225,29 @@ class FirecrawlClient:
             parsed = _FirecrawlScrapeResponsePayload.model_validate(raw)
             if not parsed.success:
                 raise ValueError("Firecrawl scrape response reported failure")
-        except (ValidationError, ValueError) as exc:
-            raise ToolProviderError("tool provider response invalid", provider="firecrawl", billing=billing) from exc
-        result_url = parsed.data.metadata.source_url or parsed.data.metadata.url or request.url
-        return SearchProviderResult(
-            response=FetchPageResponse(
-                data=[
+            result_url = parsed.data.metadata.source_url or parsed.data.metadata.url or request.url
+            content_by_format = {
+                "markdown": parsed.data.markdown,
+                "rawHtml": parsed.data.raw_html,
+            }
+            results: list[FetchPageResult] = []
+            for requested_format in extra.formats:
+                content = content_by_format[requested_format]
+                if content is None:
+                    raise ValueError(
+                        f"Firecrawl scrape response omitted requested format {requested_format!r}"
+                    )
+                results.append(
                     FetchPageResult(
                         url=result_url,
-                        content=parsed.data.markdown,
+                        content=content,
                         title=parsed.data.metadata.title,
                     )
-                ]
-            ),
+                )
+        except (ValidationError, ValueError) as exc:
+            raise ToolProviderError("tool provider response invalid", provider="firecrawl", billing=billing) from exc
+        return SearchProviderResult(
+            response=FetchPageResponse(data=results),
             billing=billing,
         )
 

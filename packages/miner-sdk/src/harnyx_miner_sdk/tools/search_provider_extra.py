@@ -97,6 +97,10 @@ class FirecrawlLocation(_SearchExtra):
 
 
 class FirecrawlFetchExtra(_SearchExtra):
+    formats: tuple[Literal["markdown", "rawHtml"], ...] = Field(
+        default=("markdown",),
+        min_length=1,
+    )
     only_main_content: bool | None = Field(default=None, alias="onlyMainContent")
     include_tags: tuple[str, ...] | None = Field(default=None, alias="includeTags")
     exclude_tags: tuple[str, ...] | None = Field(default=None, alias="excludeTags")
