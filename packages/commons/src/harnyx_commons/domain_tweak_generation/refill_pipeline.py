@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import random
 import re
 import time
@@ -21,10 +22,12 @@ from harnyx_commons.domain.tool_usage_accounting import (
 from harnyx_commons.domain_tweak_generation.agent_runner import DomainTweakAgentRunner
 from harnyx_commons.domain_tweak_generation.candidate_pipeline import CandidatePipeline
 from harnyx_commons.domain_tweak_generation.contracts import (
+    CAPABILITY_PREFERENCES,
     AcceptedRouteContext,
     BatchTerminalGenerationError,
     CandidateFailure,
     CandidateStageError,
+    CapabilityPreference,
     DomainTweakBatchGenerationResult,
     DomainTweakFinalizedTask,
     DomainTweakFinalizedTaskCallback,
@@ -50,6 +53,18 @@ _LOGGER = logging.getLogger(__name__)
 @dataclass(frozen=True, slots=True)
 class _SlotInput:
     output_slot: int
+    capability_preference: CapabilityPreference
+
+
+def _capability_preferences(target_count: int) -> tuple[CapabilityPreference, ...]:
+    if target_count <= 0:
+        return ()
+    capacity = math.ceil(target_count / len(CAPABILITY_PREFERENCES))
+    return tuple(
+        preference
+        for preference in CAPABILITY_PREFERENCES
+        for _ in range(capacity)
+    )[:target_count]
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +124,7 @@ class ShortfallRefillPipeline:
             raise ValueError("target_count must be positive")
         started = time.perf_counter()
         open_slots = list(range(target_count))
+        preference_by_slot = _capability_preferences(target_count)
         finalized_by_slot: dict[int, DomainTweakFinalizedTask] = {}
         canonical_questions: set[str] = set()
         accepted_route_contexts: list[AcceptedRouteContext] = []
@@ -121,7 +137,7 @@ class ShortfallRefillPipeline:
 
         while open_slots:
             round_index += 1
-            slot_inputs = tuple(_SlotInput(slot) for slot in open_slots)
+            slot_inputs = tuple(_SlotInput(slot, preference_by_slot[slot]) for slot in open_slots)
             groups = tuple(
                 slot_inputs[start : start + _MAX_PORTFOLIO_GROUP_SIZE]
                 for start in range(0, len(slot_inputs), _MAX_PORTFOLIO_GROUP_SIZE)
@@ -238,7 +254,10 @@ class ShortfallRefillPipeline:
                         },
                     ) as parent:
                         try:
-                            result = await self._candidate_pipeline.run(allocation)
+                            result = await self._candidate_pipeline.run(
+                                allocation,
+                                capability_preference=item.capability_preference,
+                            )
                         except BatchTerminalGenerationError as exc:
                             result = exc
                         except BaseException as exc:

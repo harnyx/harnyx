@@ -1,5 +1,6 @@
 import asyncio
 import json
+from collections import Counter
 from collections.abc import Sequence
 from typing import cast
 from uuid import UUID
@@ -52,9 +53,11 @@ class _CandidatePipeline:
     def __init__(self, outcomes: Sequence[DomainTweakFinalizedTask | CandidateFailure]) -> None:
         self.outcomes = list(outcomes)
         self.calls = 0
+        self.preferences: list[tuple[int, str]] = []
 
-    async def run(self, _allocation: PortfolioAllocation):
+    async def run(self, allocation: PortfolioAllocation, *, capability_preference: str):
         self.calls += 1
+        self.preferences.append((allocation.slot, capability_preference))
         return self.outcomes.pop(0)
 
 
@@ -124,7 +127,8 @@ class _BatchTerminalCandidatePipeline:
         self.sibling_cancelled = asyncio.Event()
         self.calls = 0
 
-    async def run(self, _allocation: PortfolioAllocation):
+    async def run(self, _allocation: PortfolioAllocation, *, capability_preference: str):
+        del capability_preference
         self.calls += 1
         if self.calls == 1:
             await self.sibling_started.wait()
@@ -148,7 +152,8 @@ class _CompletedSuccessRaceCandidatePipeline:
         self.success_returned = asyncio.Event()
         self.calls = 0
 
-    async def run(self, _allocation: PortfolioAllocation):
+    async def run(self, _allocation: PortfolioAllocation, *, capability_preference: str):
+        del capability_preference
         self.calls += 1
         if self.calls == 1:
             raise BatchTerminalGenerationError(
@@ -301,6 +306,50 @@ async def test_refill_launches_only_current_shortfall_until_exact_completion() -
     assert all(item.route_context is None for item in result.finalized_tasks)
     assert result.slot_attempt_count == 6
     assert result.failure_counts == {"reasoning_no_generate": 3}
+    assert candidates.preferences == [
+        (0, "general_deep_research"),
+        (1, "false_premise_correction"),
+        (2, "source_conflict_time_uncertainty"),
+        (1, "false_premise_correction"),
+        (2, "source_conflict_time_uncertainty"),
+        (2, "source_conflict_time_uncertainty"),
+    ]
+
+
+@pytest.mark.anyio
+async def test_fourteen_output_slots_receive_fixed_preference_counts_without_quota_logic() -> None:
+    """Future failure: capability preferences must use ceil-per-kind then truncate in fixed order."""
+    candidates = _CandidatePipeline(tuple(_success(index) for index in range(14)))
+
+    result = await ShortfallRefillPipeline(
+        runner=_PortfolioRunner(),  # type: ignore[arg-type]
+        candidate_pipeline=candidates,  # type: ignore[arg-type]
+    ).generate_batch(target_count=14)
+
+    assert len(result.finalized_tasks) == 14
+    assert Counter(preference for _, preference in candidates.preferences) == {
+        "general_deep_research": 3,
+        "false_premise_correction": 3,
+        "source_conflict_time_uncertainty": 3,
+        "evidence_grounded_calculation_or_proof": 3,
+        "structured_field_semantics": 2,
+    }
+    assert [preference for _, preference in sorted(candidates.preferences)] == [
+        "general_deep_research",
+        "general_deep_research",
+        "general_deep_research",
+        "false_premise_correction",
+        "false_premise_correction",
+        "false_premise_correction",
+        "source_conflict_time_uncertainty",
+        "source_conflict_time_uncertainty",
+        "source_conflict_time_uncertainty",
+        "evidence_grounded_calculation_or_proof",
+        "evidence_grounded_calculation_or_proof",
+        "evidence_grounded_calculation_or_proof",
+        "structured_field_semantics",
+        "structured_field_semantics",
+    ]
 
 
 @pytest.mark.anyio

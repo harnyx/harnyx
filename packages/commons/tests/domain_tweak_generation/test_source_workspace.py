@@ -528,6 +528,72 @@ def test_proof_packet_trims_aggregate_evidence_inside_the_context_bound() -> Non
     )
 
 
+def test_structured_proof_packet_preserves_required_contract_while_trimming_evidence() -> None:
+    """Future failure: packet budgeting must never truncate schema or structured reference semantics."""
+    workspace = SourceWorkspace()
+    source = workspace.store(
+        SourceDocument(
+            requested_url="https://example.com/report",
+            final_url="https://example.com/report",
+            media_type="text/plain",
+            content=("a" * 30_000) + ("\n" * 5) + ("b" * 30_000) + ("\n" * 5) + ("c" * 30_000),
+            fetched_bytes=90_010,
+        )
+    )
+    lines = workspace.lines(source)
+    evidence = tuple(
+        workspace.register_evidence(
+            claim=f"value {index}",
+            start_line_id=lines[index * 5].line_id,
+            end_line_id=lines[index * 5].line_id,
+        )
+        for index in range(3)
+    )
+    schema = {
+        "type": "object",
+        "properties": {"value": {"type": "string"}},
+        "required": ["value"],
+        "additionalProperties": False,
+    }
+    structured_answer = {"value": "z" * 50_000}
+
+    packet = workspace.proof_packet(
+        question="Return field value.",
+        short_answers=("answer",),
+        steps=(
+            ProofStep(
+                step_id="S1",
+                statement="Combine the records.",
+                kind="supported",
+                evidence_ids=tuple(item.evidence_id for item in evidence),
+            ),
+        ),
+        response_mode="structured",
+        output_schema=schema,
+        structured_answer=structured_answer,
+    )
+
+    assert len(_serialize_audit_packet(packet)) <= 128_000
+    assert packet["output_schema"] == schema
+    assert packet["structured_answer"] == structured_answer
+    assert "audit text truncated" in str(packet["selected_evidence"])
+
+
+def test_structured_proof_packet_rejects_irreducible_required_envelope_overflow() -> None:
+    """Future failure: irreducible structured semantics must fail instead of being silently shortened."""
+    workspace = SourceWorkspace()
+
+    with pytest.raises(ValueError, match="required proof packet envelope"):
+        workspace.proof_packet(
+            question="q" * 60_000,
+            short_answers=("answer",),
+            steps=(),
+            response_mode="structured",
+            output_schema={"type": "object"},
+            structured_answer={"value": "z" * 70_000},
+        )
+
+
 def test_proof_packet_minimum_uses_the_smaller_serialized_text_value() -> None:
     """Future failure: escaping must not make a retained original larger than the truncation marker."""
     workspace = SourceWorkspace()

@@ -20,6 +20,7 @@ from harnyx_commons.domain_tweak_generation.contracts import (
     CandidateFailure,
     CandidateOutcome,
     CandidateStageError,
+    CapabilityPreference,
     DomainTweakFinalizedTask,
     DomainTweakStageSummary,
     GroundedQuestionDossier,
@@ -42,6 +43,7 @@ from harnyx_commons.domain_tweak_generation.proof_validation import (
     ValidatedReference,
     reference_contract_defects,
     validate_and_render_reference,
+    validate_structured_payload,
 )
 from harnyx_commons.domain_tweak_generation.source_workspace import SourceFetcherPort, SourceWorkspace
 
@@ -66,6 +68,8 @@ class CandidatePipeline:
     async def run(
         self,
         allocation: PortfolioAllocation,
+        *,
+        capability_preference: CapabilityPreference,
     ) -> CandidateOutcome:
         started = time.perf_counter()
         workspace = self._workspace_factory()
@@ -75,7 +79,7 @@ class CandidatePipeline:
             dossier_result = await self._runner.run_stage(
                 stage="question_generation",
                 system_prompt=QUESTION_GENERATION_SYSTEM,
-                prompt=question_generation_prompt(allocation),
+                prompt=question_generation_prompt(allocation, capability_preference),
                 output_model=GroundedQuestionDossier,
                 timeout_seconds=AGENT_STAGE_TIMEOUT_SECONDS,
                 web_search=True,
@@ -96,6 +100,7 @@ class CandidatePipeline:
                     source_failure_id=dossier.source_failure_id,
                 )
             assert dossier.question is not None
+            assert dossier.response_mode is not None
 
             proof_result = await self._runner.run_stage(
                 stage="reference",
@@ -112,7 +117,7 @@ class CandidatePipeline:
                 output_validator=lambda output: reference_contract_defects(
                     output,
                     workspace=workspace,
-                    dossier_answers=dossier.answers,
+                    dossier=dossier,
                 ),
             )
             usage = merge_complete_actual_cost_usage(usage, proof_result.tool_usage)
@@ -141,6 +146,8 @@ class CandidatePipeline:
                     prompt=reference_repair_prompt(
                         question=dossier.question,
                         prior_proof=proof,
+                        response_mode=dossier.response_mode,
+                        output_schema_json=dossier.output_schema_json,
                         defects=audit.defects,
                     ),
                     output_model=ReferenceProof,
@@ -150,7 +157,7 @@ class CandidatePipeline:
                     output_validator=lambda output: reference_contract_defects(
                         output,
                         workspace=workspace,
-                        dossier_answers=dossier.answers,
+                        dossier=dossier,
                     ),
                 )
                 usage = merge_complete_actual_cost_usage(usage, repair_result.tool_usage)
@@ -181,7 +188,7 @@ class CandidatePipeline:
             return DomainTweakFinalizedTask(
                 task=MinerTask(
                     task_id=self._task_id_factory(),
-                    query=Query(text=dossier.question),
+                    query=Query(text=dossier.question, output_schema=validated.output_schema),
                     reference_answer=validated.reference_answer,
                 ),
                 stage_summaries=tuple(summaries),
@@ -292,6 +299,11 @@ def _question_generation_contract_defects(
         defects.append("ready question dossier omitted question text")
     elif "[[" in dossier.question or "]]" in dossier.question:
         defects.append("generated question contains a model-authored citation marker")
+    if dossier.response_mode == "structured":
+        try:
+            validate_structured_payload(dossier.output_schema_json, dossier.structured_answer_json)
+        except ProofValidationError as exc:
+            defects.append(str(exc))
     return tuple(defects)
 
 
@@ -302,8 +314,7 @@ def _validate_reference(
 ) -> ValidatedReference:
     assert dossier.question is not None
     return validate_and_render_reference(
-        question=dossier.question,
-        dossier_answers=dossier.answers,
+        dossier=dossier,
         proof=proof,
         workspace=workspace,
     )

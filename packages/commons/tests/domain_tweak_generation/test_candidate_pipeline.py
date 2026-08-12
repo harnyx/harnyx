@@ -1,3 +1,4 @@
+import json
 from collections.abc import Sequence
 from types import SimpleNamespace
 
@@ -131,6 +132,7 @@ def _dossier(*, question: str = "Which named row has the larger value?") -> Grou
         derivation="Compare the two complete rows and preserve table order",
         why_not_one_page="The status evidence is separate from the bounded table",
         substantive_final_condition="The value comparison removes Beta",
+        response_mode="plain_text",
     )
 
 
@@ -151,6 +153,24 @@ def _proof() -> ReferenceProof:
     )
 
 
+def _structured_dossier() -> GroundedQuestionDossier:
+    return _dossier(
+        question="Return an object whose integer field value is Alpha's published value in whole units."
+    ).model_copy(
+        update={
+            "response_mode": "structured",
+            "output_schema_json": '{"$schema":"https://json-schema.org/draft/2020-12/schema",'
+            '"type":"object","properties":{"value":{"type":"integer"}},'
+            '"required":["value"],"additionalProperties":false}',
+            "structured_answer_json": '{"value":1200}',
+        }
+    )
+
+
+def _structured_proof(*, value: int = 1200) -> ReferenceProof:
+    return _proof().model_copy(update={"structured_answer_json": f'{{"value":{value}}}'})
+
+
 @pytest.mark.anyio
 async def test_single_question_generation_call_owns_question_and_dossier() -> None:
     """Future failure: QG must not regress to a source-form-conditioned second agent call."""
@@ -159,7 +179,10 @@ async def test_single_question_generation_call_owns_question_and_dossier() -> No
         runner=runner,  # type: ignore[arg-type]
         source_fetcher=_UnusedFetcher(),
         workspace_factory=_workspace,
-    ).run(PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")))
+    ).run(
+        PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
+        capability_preference="general_deep_research",
+    )
 
     assert isinstance(outcome, DomainTweakFinalizedTask)
     assert [call["stage"] for call in runner.calls] == ["question_generation", "reference", "audit"]
@@ -171,6 +194,65 @@ async def test_single_question_generation_call_owns_question_and_dossier() -> No
         "mcp__audit_vfs__regex_search",
         "mcp__audit_vfs__read_lines",
     )
+
+
+@pytest.mark.anyio
+async def test_capability_preference_does_not_gate_candidate_selected_response_mode() -> None:
+    """Future failure: preference drift must not become a hidden candidate rejection or retry trigger."""
+    structured_runner = _Runner(
+        (_structured_dossier(), _structured_proof(), AuditResult(status="pass", explanation="complete"))
+    )
+    structured = await CandidatePipeline(
+        runner=structured_runner,  # type: ignore[arg-type]
+        source_fetcher=_UnusedFetcher(),
+        workspace_factory=_workspace,
+    ).run(
+        PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
+        capability_preference="evidence_grounded_calculation_or_proof",
+    )
+    plain_runner = _Runner((_dossier(), _proof(), AuditResult(status="pass", explanation="complete")))
+    plain = await CandidatePipeline(
+        runner=plain_runner,  # type: ignore[arg-type]
+        source_fetcher=_UnusedFetcher(),
+        workspace_factory=_workspace,
+    ).run(
+        PortfolioAllocation(slot=1, ecosystems=("a", "b", "c", "d", "e")),
+        capability_preference="structured_field_semantics",
+    )
+
+    assert isinstance(structured, DomainTweakFinalizedTask)
+    assert structured.task.query.output_schema is not None
+    assert structured.task.reference_answer.text == '{"value":1200}'
+    assert isinstance(plain, DomainTweakFinalizedTask)
+    assert plain.task.query.output_schema is None
+    assert [call["stage"] for call in structured_runner.calls] == ["question_generation", "reference", "audit"]
+    assert [call["stage"] for call in plain_runner.calls] == ["question_generation", "reference", "audit"]
+
+
+def test_question_generation_contract_reports_invalid_structured_payload_before_reference() -> None:
+    """Future failure: public schema/value defects must be visible QG feedback, not late task failures."""
+    wrong_dialect = _structured_dossier().model_copy(
+        update={
+            "output_schema_json": _structured_dossier().output_schema_json.replace("2020-12", "2019-09")  # type: ignore[union-attr]
+        }
+    )
+
+    assert any(
+        "Draft 2020-12" in defect
+        for defect in _question_generation_contract_defects(wrong_dialect, _workspace())
+    )
+
+
+def test_question_generation_contract_reports_json_numeric_limit_as_candidate_defect() -> None:
+    """Future failure: one model-authored numeric literal must not terminate the complete batch."""
+    numeric_limit = _structured_dossier().model_copy(
+        update={"structured_answer_json": '{"value":' + ("9" * 5_000) + "}"}
+    )
+
+    defects = _question_generation_contract_defects(numeric_limit, _workspace())
+
+    assert len(defects) == 1
+    assert "could not be parsed" in defects[0]
 
 
 @pytest.mark.anyio
@@ -189,7 +271,10 @@ async def test_audit_rejection_gets_one_reference_repair_and_second_read_only_au
         runner=runner,  # type: ignore[arg-type]
         source_fetcher=_UnusedFetcher(),
         workspace_factory=_workspace,
-    ).run(PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")))
+    ).run(
+        PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
+        capability_preference="general_deep_research",
+    )
 
     assert isinstance(outcome, DomainTweakFinalizedTask)
     assert outcome.repaired
@@ -202,6 +287,37 @@ async def test_audit_rejection_gets_one_reference_repair_and_second_read_only_au
     ]
     audit_calls = [call for call in runner.calls if call["stage"] == "audit"]
     assert audit_calls[0]["tool_set"].allowed_tools == audit_calls[1]["tool_set"].allowed_tools  # type: ignore[union-attr]
+
+
+@pytest.mark.anyio
+async def test_structured_repair_receives_immutable_contract_and_replaces_rejected_value() -> None:
+    """Future failure: structured repair must not infer or mutate the fixed public schema."""
+    runner = _Runner(
+        (
+            _structured_dossier(),
+            _structured_proof(value=1200),
+            AuditResult(status="reject", defects=("value should be 1300",), explanation="stale value"),
+            _structured_proof(value=1300),
+            AuditResult(status="pass", explanation="complete"),
+        )
+    )
+
+    outcome = await CandidatePipeline(
+        runner=runner,  # type: ignore[arg-type]
+        source_fetcher=_UnusedFetcher(),
+        workspace_factory=_workspace,
+    ).run(
+        PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
+        capability_preference="general_deep_research",
+    )
+
+    assert isinstance(outcome, DomainTweakFinalizedTask)
+    assert outcome.repaired
+    assert outcome.task.reference_answer.text == '{"value":1300}'
+    repair_call = next(call for call in runner.calls if call["stage"] == "reference_repair")
+    payload = json.loads(str(repair_call["prompt"]).split("\n", 1)[1])
+    assert payload["immutable_response_mode"] == "structured"
+    assert payload["immutable_output_schema_json"] == _structured_dossier().output_schema_json
 
 
 @pytest.mark.anyio
@@ -233,7 +349,10 @@ async def test_reference_repair_can_acquire_stronger_source_and_owns_final_citat
         runner=runner,  # type: ignore[arg-type]
         source_fetcher=_UnusedFetcher(),
         workspace_factory=lambda: workspace,
-    ).run(PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")))
+    ).run(
+        PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
+        capability_preference="general_deep_research",
+    )
 
     assert isinstance(outcome, DomainTweakFinalizedTask)
     assert outcome.task.reference_answer.citations is not None
@@ -258,7 +377,10 @@ async def test_no_generate_retains_first_typed_blocker() -> None:
         runner=runner,  # type: ignore[arg-type]
         source_fetcher=_UnusedFetcher(),
         workspace_factory=_workspace,
-    ).run(PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")))
+    ).run(
+        PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
+        capability_preference="general_deep_research",
+    )
 
     assert isinstance(outcome, CandidateFailure)
     assert outcome.failure_class == "reasoning_no_generate"
@@ -306,7 +428,10 @@ async def test_wrong_internal_stage_output_becomes_batch_terminal() -> None:
         workspace_factory=_workspace,
     )
     with pytest.raises(BatchTerminalGenerationError) as captured:
-        await pipeline.run(PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")))
+        await pipeline.run(
+            PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
+            capability_preference="general_deep_research",
+        )
     assert captured.value.failure_class == "unexpected_pipeline_failure"
     assert captured.value.stage == "question_generation"
     assert captured.value.tool_usage.actual_total_cost_usd == 0.75
@@ -320,7 +445,10 @@ async def test_unexpected_pipeline_exception_becomes_typed_batch_terminal_fault(
         workspace_factory=_workspace,
     )
     with pytest.raises(BatchTerminalGenerationError) as captured:
-        await pipeline.run(PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")))
+        await pipeline.run(
+            PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
+            capability_preference="general_deep_research",
+        )
     assert captured.value.stage == "question_generation"
 
 
@@ -331,7 +459,10 @@ async def test_packet_size_first_exposed_by_question_is_proof_invalid() -> None:
         runner=runner,  # type: ignore[arg-type]
         source_fetcher=_UnusedFetcher(),
         workspace_factory=_workspace,
-    ).run(PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")))
+    ).run(
+        PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
+        capability_preference="general_deep_research",
+    )
     assert isinstance(outcome, CandidateFailure)
     assert outcome.failure_class == "proof_invalid"
     assert outcome.terminal_stage == "reference"

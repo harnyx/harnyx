@@ -7,9 +7,11 @@ from collections.abc import Mapping, Sequence
 
 from harnyx_commons.domain_tweak_generation.contracts import (
     AcceptedRouteContext,
+    CapabilityPreference,
     GroundedQuestionDossier,
     PortfolioAllocation,
     ReferenceProof,
+    ResponseMode,
 )
 from harnyx_commons.domain_tweak_generation.source_workspace import _serialize_audit_packet
 
@@ -34,7 +36,7 @@ Why: it supplies too few ecosystems and invents a lookup and answer."""
 
 QUESTION_GENERATION_SYSTEM = """ROLE
 Find at most one verified public-web source dossier and express its proven operation as a difficult, uniquely
-answerable short-answer question. Own discovery, inspection, the positive answer route, and wording; do not judge
+answerable research question. Own discovery, inspection, the positive answer route, and wording; do not judge
 novelty, predict the champion, or write the final reference presentation.
 
 RULES
@@ -52,10 +54,12 @@ cannot prove the route. Use however many sources the proof needs. A truncated se
 absence, uniqueness, or completeness.
 
 Return ready only when directly inspected and registered evidence proves the final question semantics, every answer
-item, every load-bearing condition, and one reproducible ordered short answer. The independent reference stage may
+item, every load-bearing condition, and one reproducible answer. The independent reference stage may
 strengthen bounded exclusions, but it must not be asked to repair a question-generation gap. Otherwise return
 no_generate with the first concrete blocker. The question must be self-contained and must not reveal private answer
-values, answer IDs, evidence IDs, citation markers, grading language, or JSON instructions.
+values, answer IDs, evidence IDs, citation markers, grading language, or private schema/hypothesis data. A structured
+question must publicly explain exact response-field meanings in ordinary user-facing language; never rely on schema
+annotations or property names alone.
 
 OUTPUT CONTRACT
 - status: ready or no_generate by the rules above.
@@ -74,6 +78,12 @@ OUTPUT CONTRACT
   no_generate.
 - why_not_one_page: the load-bearing cross-record or cross-source transition; null for no_generate.
 - substantive_final_condition: the final condition that actually changes the survivor set; null for no_generate.
+- response_mode: plain_text or structured for ready; null for no_generate. Choose it independently from the assigned
+  capability preference according to the natural answer contract.
+- output_schema_json: null for no_generate and plain_text. For structured, strict JSON for the smallest self-contained
+  annotation-free Draft 2020-12 object schema in the generated-safe subset; semantic instructions belong in question.
+- structured_answer_json: null for no_generate and plain_text. For structured, strict JSON for the exact privately
+  proved answer hypothesis matching output_schema_json.
 - failure_reason: null for ready; the first concrete blocker for no_generate.
 - failure_class: null for ready. For no_generate use reasoning_no_generate when the route itself is not viable, or the
   exact source_fetch_rejected, source_extraction_limit, or source_unavailable class from the fetch that ended the only
@@ -89,7 +99,8 @@ meet both the dated status and category conditions? Return names in roster order
 "source_facts":[{"statement":"Alpha has the required dated status","evidence_ids":["E1"]}],"derivation":
 "Enumerate the roster, join each record, apply both conditions, preserve roster order","why_not_one_page":
 "The roster omits the separate dated status","substantive_final_condition":"The category condition removes at least
-one status-matching entry","failure_reason":null,"failure_class":null,"source_failure_id":null}.
+one status-matching entry","response_mode":"plain_text","output_schema_json":null,
+"structured_answer_json":null,"failure_reason":null,"failure_class":null,"source_failure_id":null}.
 BAD: choose a convenient top five, fill missing rows from snippets, then decode one ID. Also bad: return ready while
 another candidate may exist, make the final condition decorative, or place any question semantics in a no_generate
 result.
@@ -113,15 +124,44 @@ OUTPUT CONTRACT:
   value remains correct; author a non-empty corrected_value only when evidence changes that answer.
 - proof_steps: ordered atomic proof. Unique step_id values; kind=supported requires registered evidence_ids;
   kind=derived requires only earlier depends_on_step_ids. scan_certificate_ids support only the bounded claim certified.
+- structured_answer_json: null for plain_text and giveup. For a finalized structured question, strict JSON encoding of
+  the complete independently derived value under the dossier's fixed output schema; do not copy the QG hypothesis.
 - giveup_reason: concrete missing evidence or invalid inference for giveup; null for finalized.
 
 GOOD: {"status":"finalized","answers":[{"answer_id":"A1","corrected_value":null}],"proof_steps":[{"step_id":"S1",
 "statement":"The bounded row reports Alpha with value 12.","kind":"supported","evidence_ids":["E1"],
 "depends_on_step_ids":[],"scan_certificate_ids":[]},{"step_id":"S2","statement":"Alpha is the maximum among the
 established candidates.","kind":"derived","evidence_ids":[],"depends_on_step_ids":["S1"],
-"scan_certificate_ids":[]}],"giveup_reason":null}
+"scan_certificate_ids":[]}],"structured_answer_json":null,"giveup_reason":null}
 BAD: {"status":"finalized","answers":[{"answer_id":"new","corrected_value":"Alpha[[1]]"}],"proof_steps":[]}
 Why: it invents an ID, authors a citation marker, and supplies no proof."""
+
+CAPABILITY_WORK_ORDERS: dict[CapabilityPreference, str] = {
+    "general_deep_research": """GENERAL DEEP-RESEARCH PREFERENCE
+Find the strongest natural dossier-first question supported by public records without manufacturing a premise trap,
+source conflict, prescribed calculation, or output-format challenge. Ordinary exact status, identity, date, category,
+version, exception, and complete-pool reasoning remain valid. If another tendency appears naturally, keep the sound
+route rather than rejecting it for preference drift.""",
+    "false_premise_correction": """FALSE-PREMISE CORRECTION PREFERENCE
+Prefer a plausible but demonstrably false, stale, or misclassified premise that must be corrected from authoritative
+public evidence before answering a substantive follow-up. Do not invent the false premise first, use wordplay, or stop
+at merely saying it is false. If no natural correction survives research, keep another sound grounded route.""",
+    "source_conflict_time_uncertainty": """SOURCE-CONFLICT, TIME, AND UNCERTAINTY PREFERENCE
+Prefer credible public records whose apparent disagreement must be reconciled through effective dates, versions,
+populations, definitions, jurisdictions, or update status. State each governing scope and any real residual
+uncertainty. Do not manufacture conflict from unrelated metrics; keep another sound route if reconciliation is not
+natural.""",
+    "evidence_grounded_calculation_or_proof": """EVIDENCE-GROUNDED CALCULATION OR PROOF PREFERENCE
+Prefer a conclusion not stated by one source that needs reproducible calculation, set proof, counterexample, or
+impossibility reasoning over cited public facts. Every operand, definition, and boundary must be inspectable. Avoid
+arbitrary formulas, hidden rounding, huge enumeration, or mathematics detached from research; keep a sound ordinary
+filtering route if it is stronger.""",
+    "structured_field_semantics": """STRUCTURED FIELD-SEMANTICS PREFERENCE
+Prefer a genuinely difficult research question whose natural answer is a small structured object. Every field's
+meaning, scope, ordering, units, date/version interpretation, and non-mechanical constraint must be explicit in the
+public question. Formatting alone is not difficulty. Do not add fields the user did not request, and keep a sound
+plain-text route when structured output is not natural.""",
+}
 
 AUDIT_SYSTEM = """Audit one proof independently. The packet contains the fixed question, final answer values, atomic
 proof steps, selected evidence, scan certificates, and bounded context. It is an index of the author's case, not an
@@ -129,12 +169,15 @@ authority. Independently inspect any retained source through the read-only list_
 tools. You cannot browse, fetch, follow links, register evidence, register certificates, or mutate the workspace, and
 you do not see the dossier trajectory or a benchmark answer.
 
-Pass only when every answer and load-bearing inference is directly supported, derivations use established operands in
-order, the question's requested answer set and ordering are correct, and completeness or uniqueness claims have
+Pass only when every answer, structured field, and load-bearing inference is directly supported. Derivations must use
+established operands in order, the question's requested answer set and ordering must be correct, and completeness or
+uniqueness claims must have
 adequate bounded evidence. Audit structural premises, required source scope, and record boundaries explicitly. Reject
 when a heading, date, source credit, status, exception, or category belongs to an adjacent record; when the question's
 pool or source scope was silently changed; when a decisive exclusion was not checked; or when the question itself
 reveals an answer. Return concise, independently actionable defects; do not demand decorative facts.
+For structured mode, independently check every public field meaning, scope, ordering, unit, date/version rule, and
+non-mechanical constraint against the fixed schema, canonical value, proof, and selected evidence.
 
 OUTPUT CONTRACT:
 - status: pass only when every criterion holds; otherwise reject.
@@ -159,14 +202,21 @@ def portfolio_prompt(
     return "Allocate public-document ecosystems for this request:\n" + json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-def question_generation_prompt(allocation: PortfolioAllocation) -> str:
+def question_generation_prompt(
+    allocation: PortfolioAllocation,
+    capability_preference: CapabilityPreference,
+) -> str:
     payload = {
         "optional_ecosystem_seeds": list(allocation.ecosystems),
+        "capability_preference": capability_preference,
+        "capability_work_order": CAPABILITY_WORK_ORDERS[capability_preference],
     }
     return (
         "Find at most one verified dossier and question. Explore primarily within or across these optional prose "
-        "ecosystems; discard or replace them when another route is materially better. Return ready only for a "
-        "directly proved unique route, else no_generate with the first blocker:\n"
+        "ecosystems; discard or replace them when another route is materially better. The capability work order is "
+        "a strong generation preference, never a classification, quota, acceptance gate, or no_generate reason. "
+        "Choose plain_text or structured independently from the natural question contract. Return ready only for a "
+        "directly proved unique route, else no_generate with the first concrete blocker:\n"
         + json.dumps(payload, ensure_ascii=False, indent=2)
     )
 
@@ -189,16 +239,21 @@ def reference_repair_prompt(
     *,
     question: str,
     prior_proof: ReferenceProof,
+    response_mode: ResponseMode,
+    output_schema_json: str | None,
     defects: Sequence[str],
 ) -> str:
     payload = {
         "question": question,
         "prior_proof": prior_proof.model_dump(mode="json"),
+        "immutable_response_mode": response_mode,
+        "immutable_output_schema_json": output_schema_json,
         "audit_defects": list(defects),
     }
     return (
-        "Repair only the listed proof defects. Search or fetch evidence when needed, preserve the fixed question, and "
-        "return a complete replacement proof:\n" + json.dumps(payload, ensure_ascii=False, indent=2)
+        "Repair only the listed proof defects. Search or fetch evidence when needed; preserve the fixed question, "
+        "response mode, and output schema. Return a complete replacement proof and structured value when required, "
+        "or give up visibly:\n" + json.dumps(payload, ensure_ascii=False, indent=2)
     )
 
 
@@ -211,6 +266,7 @@ def audit_prompt(packet: Mapping[str, object]) -> str:
 
 __all__ = [
     "AUDIT_SYSTEM",
+    "CAPABILITY_WORK_ORDERS",
     "PORTFOLIO_SYSTEM",
     "QUESTION_GENERATION_SYSTEM",
     "REFERENCE_SYSTEM",

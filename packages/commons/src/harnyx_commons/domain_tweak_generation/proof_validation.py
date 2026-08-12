@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
+from typing import cast
 
 from pydantic import ValidationError
 
@@ -13,8 +15,16 @@ from harnyx_commons.application.miner_response_hydration import (
     materialize_citation_slices,
 )
 from harnyx_commons.domain.miner_task import AnswerCitation, ReferenceAnswer, Response
-from harnyx_commons.domain_tweak_generation.contracts import DossierAnswer, ReferenceProof
+from harnyx_commons.domain_tweak_generation.contracts import GroundedQuestionDossier, ReferenceProof
 from harnyx_commons.domain_tweak_generation.source_workspace import SourceWorkspace, _ProofPacketSizeError
+from harnyx_commons.miner_task_generation import validate_generated_output_schema
+from harnyx_miner_sdk.json_types import JsonObject, JsonValue
+from harnyx_miner_sdk.structured_output import (
+    compact_json,
+    validate_output_against_schema,
+    validate_output_schema,
+    validate_output_size,
+)
 
 _CITATION_MARKER = re.compile(r"\[\[\s*\d+\s*\]\]")
 
@@ -27,26 +37,28 @@ class ProofValidationError(ValueError):
 class ValidatedReference:
     proof: ReferenceProof
     reference_answer: ReferenceAnswer
+    output_schema: JsonObject | None
     audit_packet: dict[str, object]
     selected_source_urls: tuple[str, ...]
 
 
 def validate_and_render_reference(
     *,
-    question: str,
-    dossier_answers: tuple[DossierAnswer, ...],
+    dossier: GroundedQuestionDossier,
     proof: ReferenceProof,
     workspace: SourceWorkspace,
 ) -> ValidatedReference:
+    if dossier.status != "ready" or dossier.question is None or dossier.response_mode is None:
+        raise ProofValidationError("reference validation requires a ready dossier")
     if proof.status != "finalized":
         raise ProofValidationError(proof.giveup_reason or "reference proof gave up")
-    expected_answer_ids = tuple(item.answer_id for item in dossier_answers)
+    expected_answer_ids = tuple(item.answer_id for item in dossier.answers)
     if not expected_answer_ids:
         raise ProofValidationError("dossier answer IDs must be non-empty")
     answer_ids = tuple(item.answer_id for item in proof.answers)
     if answer_ids != expected_answer_ids:
         raise ProofValidationError("reference answer IDs differ from the dossier contract")
-    dossier_values = {item.answer_id: item.value for item in dossier_answers}
+    dossier_values = {item.answer_id: item.value for item in dossier.answers}
     answer_values = tuple(
         dossier_values[item.answer_id] if item.corrected_value is None else item.corrected_value
         for item in proof.answers
@@ -109,17 +121,36 @@ def validate_and_render_reference(
         raise ProofValidationError(str(exc)) from exc
     if total_source_characters > MAX_TOTAL_CITATION_EVIDENCE_CHARS:
         raise ProofValidationError("reference citations exceed 120000 materialized source-text characters")
-    reference_text = "\n\n".join((answer_line, "\n".join(rendered_steps)))
+    output_schema: JsonObject | None = None
+    structured_value: JsonValue | None = None
+    if dossier.response_mode == "structured":
+        if proof.structured_answer_json is None:
+            raise ProofValidationError("structured reference proof omitted structured_answer_json")
+        output_schema, structured_value = validate_structured_payload(
+            dossier.output_schema_json,
+            proof.structured_answer_json,
+        )
+        reference_text = compact_json(structured_value)
+    else:
+        if proof.structured_answer_json is not None:
+            raise ProofValidationError("plain_text reference proof cannot contain structured_answer_json")
+        reference_text = "\n\n".join((answer_line, "\n".join(rendered_steps)))
     try:
-        Response(text=reference_text)
+        if structured_value is None:
+            Response(text=reference_text)
+        else:
+            Response(output=structured_value)
     except ValidationError as exc:
         raise ProofValidationError(f"reference answer violates the public miner response contract: {exc}") from exc
     reference = ReferenceAnswer(text=reference_text, citations=tuple(citations))
     try:
         audit_packet = workspace.proof_packet(
-            question=question,
+            question=dossier.question,
             short_answers=answer_values,
             steps=proof.proof_steps,
+            response_mode=dossier.response_mode,
+            output_schema=output_schema,
+            structured_answer=structured_value,
         )
     except _ProofPacketSizeError as exc:
         raise ProofValidationError(str(exc)) from exc
@@ -127,6 +158,7 @@ def validate_and_render_reference(
     return ValidatedReference(
         proof=proof,
         reference_answer=reference,
+        output_schema=output_schema,
         audit_packet=audit_packet,
         selected_source_urls=selected_source_urls,
     )
@@ -136,14 +168,13 @@ def reference_contract_defects(
     proof: ReferenceProof,
     *,
     workspace: SourceWorkspace,
-    dossier_answers: tuple[DossierAnswer, ...],
+    dossier: GroundedQuestionDossier,
 ) -> tuple[str, ...]:
     if proof.status == "giveup":
         return ()
     try:
         validate_and_render_reference(
-            question="contract validation only",
-            dossier_answers=dossier_answers,
+            dossier=dossier,
             proof=proof,
             workspace=workspace,
         )
@@ -152,9 +183,35 @@ def reference_contract_defects(
     return ()
 
 
+def validate_structured_payload(
+    output_schema_json: str | None,
+    structured_answer_json: str | None,
+) -> tuple[JsonObject, JsonValue]:
+    if output_schema_json is None or structured_answer_json is None:
+        raise ProofValidationError("structured response requires schema and answer JSON")
+    try:
+        schema_value = json.loads(output_schema_json)
+        answer_value = json.loads(structured_answer_json)
+    except (ValueError, RecursionError) as exc:
+        raise ProofValidationError(f"structured response JSON could not be parsed: {exc}") from exc
+    if not isinstance(schema_value, dict):
+        raise ProofValidationError("structured output schema must be a JSON object")
+    schema = cast(JsonObject, schema_value)
+    answer = cast(JsonValue, answer_value)
+    try:
+        validate_generated_output_schema(schema)
+        validate_output_schema(schema)
+        validate_output_size(answer)
+        validate_output_against_schema(answer, schema)
+    except ValueError as exc:
+        raise ProofValidationError(str(exc)) from exc
+    return schema, answer
+
+
 __all__ = [
     "ProofValidationError",
     "ValidatedReference",
     "reference_contract_defects",
+    "validate_structured_payload",
     "validate_and_render_reference",
 ]

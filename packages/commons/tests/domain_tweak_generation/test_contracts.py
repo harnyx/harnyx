@@ -103,3 +103,38 @@ def test_no_generate_question_dossier_rejects_partial_semantics() -> None:
             failure_reason="The complete roster is unavailable",
             failure_class="reasoning_no_generate",
         )
+
+
+def test_ready_dossier_requires_one_coherent_response_mode_contract() -> None:
+    """Future failure: QG must not emit an ambiguous or half-structured public answer contract."""
+    common = {
+        "status": "ready",
+        "subject": "Public roster",
+        "route_summary": "Join the roster to status records",
+        "question": "Which entry qualifies?",
+        "answers": [{"answer_id": "A1", "value": "Alpha"}],
+        "requirements": [{"description": "Check every roster entry"}],
+        "source_facts": [{"statement": "Alpha qualifies", "evidence_ids": ["E1"]}],
+        "derivation": "Enumerate, join, and filter",
+        "why_not_one_page": "The status record is separate from the roster",
+        "substantive_final_condition": "The status condition removes one entry",
+    }
+
+    with pytest.raises(ValidationError, match="requires response_mode"):
+        GroundedQuestionDossier(**common)
+    with pytest.raises(ValidationError, match="plain_text dossier cannot contain structured"):
+        GroundedQuestionDossier(
+            **common,
+            response_mode="plain_text",
+            output_schema_json='{"type":"object"}',
+        )
+    with pytest.raises(ValidationError, match="structured dossier requires"):
+        GroundedQuestionDossier(**common, response_mode="structured")
+
+    structured = GroundedQuestionDossier(
+        **common,
+        response_mode="structured",
+        output_schema_json='{"type":"object"}',
+        structured_answer_json='{"answer":"Alpha"}',
+    )
+    assert structured.response_mode == "structured"

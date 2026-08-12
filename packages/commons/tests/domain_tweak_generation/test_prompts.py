@@ -23,8 +23,23 @@ def test_portfolio_and_question_generation_prompts_have_no_source_form_boundary(
     allocation = PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e"))
 
     assert hidden_form not in portfolio_prompt((0,))
-    assert hidden_form not in question_generation_prompt(allocation)
-    assert "source_form" not in question_generation_prompt(allocation)
+    prompt = question_generation_prompt(allocation, "general_deep_research")
+    assert hidden_form not in prompt
+    assert "source_form" not in prompt
+
+
+def test_capability_preference_is_non_gating_and_response_mode_independent() -> None:
+    """Future failure: a capability work order must not become a classifier or response-mode quota."""
+    allocation = PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e"))
+
+    calculation = question_generation_prompt(allocation, "evidence_grounded_calculation_or_proof")
+    structured = question_generation_prompt(allocation, "structured_field_semantics")
+
+    assert "never a classification, quota, acceptance gate, or no_generate reason" in calculation
+    assert "Choose plain_text or structured independently" in calculation
+    assert "plain-text route when structured output is not natural" in structured
+    assert "response_mode" in QUESTION_GENERATION_SYSTEM
+    assert "annotation-free Draft 2020-12" in QUESTION_GENERATION_SYSTEM
 
 
 def test_portfolio_prompt_carries_only_bounded_prior_route_context() -> None:

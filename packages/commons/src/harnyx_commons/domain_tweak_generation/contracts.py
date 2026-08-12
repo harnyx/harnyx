@@ -13,6 +13,21 @@ from harnyx_commons.domain.shared_config import COMMONS_STRICT_CONFIG
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
 
 StageName = Literal["portfolio", "question_generation", "reference", "reference_repair", "audit"]
+CapabilityPreference = Literal[
+    "general_deep_research",
+    "false_premise_correction",
+    "source_conflict_time_uncertainty",
+    "evidence_grounded_calculation_or_proof",
+    "structured_field_semantics",
+]
+CAPABILITY_PREFERENCES: tuple[CapabilityPreference, ...] = (
+    "general_deep_research",
+    "false_premise_correction",
+    "source_conflict_time_uncertainty",
+    "evidence_grounded_calculation_or_proof",
+    "structured_field_semantics",
+)
+ResponseMode = Literal["plain_text", "structured"]
 CandidateFailureClass = Literal[
     "reasoning_no_generate",
     "transient_provider",
@@ -113,6 +128,9 @@ class GroundedQuestionDossier(BaseModel):
     derivation: str | None = None
     why_not_one_page: str | None = None
     substantive_final_condition: str | None = None
+    response_mode: ResponseMode | None = None
+    output_schema_json: str | None = Field(default=None, min_length=1)
+    structured_answer_json: str | None = Field(default=None, min_length=1)
     failure_reason: str | None = None
     failure_class: Literal[
         "reasoning_no_generate",
@@ -150,6 +168,9 @@ class GroundedQuestionDossier(BaseModel):
                 self.derivation,
                 self.why_not_one_page,
                 self.substantive_final_condition,
+                self.response_mode,
+                self.output_schema_json,
+                self.structured_answer_json,
             )
             if (
                 any(value is not None for value in semantic_values)
@@ -178,6 +199,16 @@ class GroundedQuestionDossier(BaseModel):
             raise ValueError(
                 "ready dossier requires subject, route, question, derivation, one-page explanation, and final condition"
             )
+        if self.response_mode is None:
+            raise ValueError("ready dossier requires response_mode")
+        if self.response_mode == "plain_text" and (
+            self.output_schema_json is not None or self.structured_answer_json is not None
+        ):
+            raise ValueError("plain_text dossier cannot contain structured schema or answer")
+        if self.response_mode == "structured" and (
+            self.output_schema_json is None or self.structured_answer_json is None
+        ):
+            raise ValueError("structured dossier requires output schema and answer hypothesis")
         if not self.requirements or not self.source_facts:
             raise ValueError("ready dossier requires load-bearing requirements and source facts")
         answer_ids = tuple(item.answer_id for item in self.answers)
@@ -215,6 +246,7 @@ class ReferenceProof(BaseModel):
     status: Literal["finalized", "giveup"]
     answers: tuple[ReferenceAnswerSelection, ...] = ()
     proof_steps: tuple[ProofStep, ...] = ()
+    structured_answer_json: str | None = Field(default=None, min_length=1)
     giveup_reason: str | None = None
 
     @field_validator("answers", "proof_steps", mode="before")
@@ -230,6 +262,8 @@ class ReferenceProof(BaseModel):
             raise ValueError("finalized proof cannot contain giveup_reason")
         if self.status == "giveup" and not self.giveup_reason:
             raise ValueError("giveup proof requires giveup_reason")
+        if self.status == "giveup" and self.structured_answer_json is not None:
+            raise ValueError("giveup proof cannot contain a structured answer")
         return self
 
 

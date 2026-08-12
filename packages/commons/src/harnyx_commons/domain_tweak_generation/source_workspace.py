@@ -23,7 +23,8 @@ from harnyx_commons.application.miner_response_hydration import (
     CitationSlice,
 )
 from harnyx_commons.domain.shared_config import COMMONS_STRICT_CONFIG
-from harnyx_commons.domain_tweak_generation.contracts import AgentToolSet, ProofStep
+from harnyx_commons.domain_tweak_generation.contracts import AgentToolSet, ProofStep, ResponseMode
+from harnyx_miner_sdk.json_types import JsonObject, JsonValue
 
 _MAX_READ_LINES = 128
 _MAX_REGEX_MATCHES = 100
@@ -615,6 +616,9 @@ class SourceWorkspace:
         question: str,
         short_answers: Sequence[str],
         steps: Sequence[ProofStep],
+        response_mode: ResponseMode = "plain_text",
+        output_schema: JsonObject | None = None,
+        structured_answer: JsonValue | None = None,
     ) -> dict[str, object]:
         evidence_ids = {evidence_id for step in steps for evidence_id in getattr(step, "evidence_ids", ())}
         certificate_ids = {
@@ -623,6 +627,9 @@ class SourceWorkspace:
         packet: dict[str, object] = {
             "question": question,
             "canonical_short_answers": list(short_answers),
+            "response_mode": response_mode,
+            "output_schema": output_schema,
+            "structured_answer": structured_answer,
             "proof_steps": [step.model_dump(mode="json") for step in steps],
             "selected_evidence": [
                 self._evidence_audit_view(self._evidence[evidence_id])
