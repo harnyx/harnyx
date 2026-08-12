@@ -9,7 +9,6 @@ from harnyx_commons.domain_tweak_generation.contracts import (
     PortfolioCallCallback,
     SlotAttemptCallback,
 )
-from harnyx_commons.domain_tweak_generation.form_source import DeepSearchQAFormSource
 from harnyx_commons.domain_tweak_generation.refill_pipeline import ShortfallRefillPipeline
 from harnyx_commons.miner_task_generation import MinerTaskDatasetRequest
 
@@ -18,12 +17,10 @@ class DomainTweakMinerTaskDatasetBuilder:
     def __init__(
         self,
         *,
-        form_source: DeepSearchQAFormSource,
         refill_pipeline: ShortfallRefillPipeline,
         on_portfolio_completed: PortfolioCallCallback | None = None,
         on_attempt_completed: SlotAttemptCallback | None = None,
     ) -> None:
-        self._form_source = form_source
         self._refill_pipeline = refill_pipeline
         self._on_portfolio_completed = on_portfolio_completed
         self._on_attempt_completed = on_attempt_completed
@@ -42,7 +39,6 @@ class DomainTweakMinerTaskDatasetBuilder:
             raise ValueError("domain-tweak generation requires request.created_at")
         return await self._refill_pipeline.generate_batch(
             target_count=request.minimum_task_total,
-            forms=self._form_source.cursor(request.batch_id, target_count=request.minimum_task_total),
             on_finalized_task=on_finalized_task,
             on_portfolio_completed=self._on_portfolio_completed,
             on_attempt_completed=self._on_attempt_completed,

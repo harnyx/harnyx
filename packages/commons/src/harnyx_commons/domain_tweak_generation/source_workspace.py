@@ -18,6 +18,10 @@ import regex as safe_regex
 from claude_agent_sdk import create_sdk_mcp_server, tool
 from pydantic import BaseModel, Field, field_validator
 
+from harnyx_commons.application.miner_response_hydration import (
+    MIN_CITATION_SLICE_CHARS,
+    CitationSlice,
+)
 from harnyx_commons.domain.shared_config import COMMONS_STRICT_CONFIG
 from harnyx_commons.domain_tweak_generation.contracts import AgentToolSet, ProofStep
 
@@ -25,6 +29,8 @@ _MAX_READ_LINES = 128
 _MAX_REGEX_MATCHES = 100
 _MAX_AUDIT_TEXT_CHARACTERS = 32_000
 _MAX_AUDIT_PACKET_CHARACTERS = 128_000
+_MAX_LINK_RESULT_CHARACTERS = 32_000
+_MAX_LINK_PATTERN_CHARACTERS = 1_000
 _MAX_EVIDENCE_RECORDS = 32
 _MAX_CERTIFICATES = 16
 _AUDIT_TEXT_TRUNCATION_MARKER = "[... audit text truncated ...]"
@@ -174,6 +180,13 @@ class SourceDocument:
     media_type: str
     content: str
     fetched_bytes: int
+    links: tuple[SourceLink, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SourceLink:
+    url: str
+    text: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,6 +251,7 @@ class StoredSource:
     content: str
     content_sha256: str
     fetched_bytes: int
+    links: tuple[SourceLink, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -374,6 +388,7 @@ class SourceWorkspace:
             content=document.content,
             content_sha256=digest,
             fetched_bytes=document.fetched_bytes,
+            links=document.links,
         )
         self._sources[source_id] = source
         token = _sha256(f"{source.source_id}\0{source.content_sha256}")[:10]
@@ -405,23 +420,27 @@ class SourceWorkspace:
             if isinstance(result, str):
                 continue
             for item in result.content:
-                candidate_id = f"source_candidate:{self._next_source_candidate}"
-                self._next_source_candidate += 1
-                candidate = SourceCandidate(
-                    source_candidate_id=candidate_id,
-                    url=item.url,
-                    title=item.title,
-                )
-                self._source_candidates[candidate_id] = candidate
+                candidate = self._register_source_candidate(url=item.url, title=item.title)
                 registered.append(
                     {
-                        "source_candidate_id": candidate_id,
+                        "source_candidate_id": candidate.source_candidate_id,
                         "title": candidate.title[:300],
                     }
                 )
         if not registered:
             return "Host registered no fetch candidates for this search."
         return "Host-registered fetch candidates:\n" + json.dumps(registered, ensure_ascii=False)
+
+    def _register_source_candidate(self, *, url: str, title: str) -> SourceCandidate:
+        candidate_id = f"source_candidate:{self._next_source_candidate}"
+        self._next_source_candidate += 1
+        candidate = SourceCandidate(
+            source_candidate_id=candidate_id,
+            url=url,
+            title=title,
+        )
+        self._source_candidates[candidate_id] = candidate
+        return candidate
 
     def get_source_candidate(self, source_candidate_id: str) -> SourceCandidate:
         try:
@@ -494,6 +513,22 @@ class SourceWorkspace:
         if not any(item.text.strip() for item in chosen):
             raise ValueError("line range is blank")
         return source, chosen
+
+    def citation_slices(self, evidence: EvidenceRecord) -> tuple[CitationSlice, ...]:
+        source, start, end = self._line_bounds(evidence.start_line_id, evidence.end_line_id)
+        lines = self._source_lines[source.source_id]
+        start_offset = lines.starts[start.ordinal - 1]
+        end_offset = lines.starts[end.ordinal] if end.ordinal < len(lines) else len(source.content)
+        if len(source.content) < MIN_CITATION_SLICE_CHARS:
+            start_offset = 0
+            end_offset = len(source.content)
+        elif end_offset - start_offset < MIN_CITATION_SLICE_CHARS:
+            start_offset = max(0, min(start_offset, len(source.content) - MIN_CITATION_SLICE_CHARS))
+            end_offset = max(end_offset, start_offset + MIN_CITATION_SLICE_CHARS)
+            if end_offset > len(source.content):
+                end_offset = len(source.content)
+                start_offset = end_offset - MIN_CITATION_SLICE_CHARS
+        return (CitationSlice(start=start_offset, end=end_offset),)
 
     def _line_bounds(self, start_line_id: str, end_line_id: str) -> tuple[StoredSource, SourceLine, SourceLine]:
         start_source, start = self.resolve_line(start_line_id)
@@ -787,9 +822,9 @@ class SourceWorkspace:
             top_k,
         )
 
-    def dossier_tools(self, fetcher: SourceFetcherPort) -> AgentToolSet:
+    def question_generation_tools(self, fetcher: SourceFetcherPort) -> AgentToolSet:
         return self._tool_set(
-            server_name="dossier_vfs",
+            server_name="question_generation_vfs",
             fetcher=fetcher,
             allow_certificates=False,
         )
@@ -799,6 +834,101 @@ class SourceWorkspace:
             server_name="reference_vfs",
             fetcher=fetcher,
             allow_certificates=True,
+        )
+
+    def _source_listing_payload(self) -> dict[str, object]:
+        return {"sources": self.source_metadata()}
+
+    async def _regex_search_payload(self, args: Mapping[str, object]) -> dict[str, object]:
+        source = self.get_source(str(args["source_id"]))
+        context = max(0, min(int(str(args.get("context_lines", 3))), 12))
+        limit = max(1, min(int(str(args.get("max_matches", 20))), _MAX_REGEX_MATCHES))
+        lines = self.lines(source)
+        match_ids, total_matches = await asyncio.to_thread(
+            self._scan_regex,
+            source,
+            1,
+            len(lines),
+            str(args["pattern"]),
+            retained_matches=limit,
+            reject_overflow=False,
+        )
+        windows = []
+        returned_lines: list[SourceLine] = []
+        for line_id in match_ids:
+            _, matched_line = self.resolve_line(line_id)
+            index = matched_line.ordinal - 1
+            window = lines[max(0, index - context) : min(len(lines), index + context + 1)]
+            assert isinstance(window, tuple)
+            returned_lines.extend(window)
+            windows.append(
+                {
+                    "match_line_id": lines[index].line_id,
+                    "start_line_id": window[0].line_id,
+                    "end_line_id": window[-1].line_id,
+                    "lines": [asdict(item) for item in window],
+                }
+            )
+        self._require_bounded_audit_text(returned_lines, label="regex search")
+        return {
+            "pattern": str(args["pattern"]),
+            "returned_match_count": len(windows),
+            "total_match_count": total_matches,
+            "truncated": total_matches > limit,
+            "matches": windows,
+        }
+
+    def _read_lines_payload(self, args: Mapping[str, object]) -> dict[str, object]:
+        source, chosen = self.line_range(str(args["start_line_id"]), str(args["end_line_id"]))
+        self._require_bounded_audit_text(chosen, label="read_lines")
+        return {
+            "source_id": source.source_id,
+            "start_line_id": chosen[0].line_id,
+            "end_line_id": chosen[-1].line_id,
+            "lines": [asdict(item) for item in chosen],
+        }
+
+    def audit_tools(self) -> AgentToolSet:
+        """Expose the frozen audit boundary: retained-source listing, regex search, and bounded reads only."""
+
+        def success(payload: object) -> dict[str, object]:
+            return {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}]}
+
+        def failure(message: str) -> dict[str, object]:
+            return {"content": [{"type": "text", "text": message}], "is_error": True}
+
+        @tool("list_sources", "List retained source metadata without source bodies.", {})
+        async def list_sources(_args: dict[str, Any]) -> dict[str, object]:
+            return success(self._source_listing_payload())
+
+        @tool(
+            "regex_search",
+            "Regex-search one complete retained source. Results are bounded and explicitly report truncation.",
+            {"source_id": str, "pattern": str, "context_lines": int, "max_matches": int},
+        )
+        async def regex_search(args: dict[str, Any]) -> dict[str, object]:
+            try:
+                return success(await self._regex_search_payload(args))
+            except Exception as exc:
+                return failure(f"regex_search failed: {exc}")
+
+        @tool(
+            "read_lines",
+            "Read at most 128 exact stable lines from one retained source.",
+            {"start_line_id": str, "end_line_id": str},
+        )
+        async def read_lines(args: dict[str, Any]) -> dict[str, object]:
+            try:
+                return success(self._read_lines_payload(args))
+            except Exception as exc:
+                return failure(f"read_lines failed: {exc}")
+
+        tools = (list_sources, regex_search, read_lines)
+        server_name = "audit_vfs"
+        server = create_sdk_mcp_server(name=server_name, version="1.0.0", tools=list(tools))
+        return AgentToolSet(
+            allowed_tools=tuple(f"mcp__{server_name}__{item.name}" for item in tools),
+            mcp_servers={server_name: server},
         )
 
     async def _fetch_source(
@@ -885,7 +1015,7 @@ class SourceWorkspace:
 
         @tool("list_sources", "List retained source metadata without source bodies.", {})
         async def list_sources(_args: dict[str, Any]) -> dict[str, object]:
-            return success({"sources": self.source_metadata()})
+            return success(self._source_listing_payload())
 
         tools.append(list_sources)
 
@@ -896,45 +1026,7 @@ class SourceWorkspace:
         )
         async def regex_search(args: dict[str, Any]) -> dict[str, object]:
             try:
-                source = self.get_source(str(args["source_id"]))
-                context = max(0, min(int(args.get("context_lines", 3)), 12))
-                limit = max(1, min(int(args.get("max_matches", 20)), _MAX_REGEX_MATCHES))
-                lines = self.lines(source)
-                match_ids, total_matches = await asyncio.to_thread(
-                    self._scan_regex,
-                    source,
-                    1,
-                    len(lines),
-                    str(args["pattern"]),
-                    retained_matches=limit,
-                    reject_overflow=False,
-                )
-                windows = []
-                returned_lines: list[SourceLine] = []
-                for line_id in match_ids:
-                    _, matched_line = self.resolve_line(line_id)
-                    index = matched_line.ordinal - 1
-                    window = lines[max(0, index - context) : min(len(lines), index + context + 1)]
-                    assert isinstance(window, tuple)
-                    returned_lines.extend(window)
-                    windows.append(
-                        {
-                            "match_line_id": lines[index].line_id,
-                            "start_line_id": window[0].line_id,
-                            "end_line_id": window[-1].line_id,
-                            "lines": [asdict(item) for item in window],
-                        }
-                    )
-                self._require_bounded_audit_text(returned_lines, label="regex search")
-                return success(
-                    {
-                        "pattern": str(args["pattern"]),
-                        "returned_match_count": len(windows),
-                        "total_match_count": total_matches,
-                        "truncated": total_matches > limit,
-                        "matches": windows,
-                    }
-                )
+                return success(await self._regex_search_payload(args))
             except Exception as exc:
                 return failure(f"regex_search failed: {exc}")
 
@@ -965,22 +1057,68 @@ class SourceWorkspace:
         )
         async def read_lines(args: dict[str, Any]) -> dict[str, object]:
             try:
-                source, chosen = self.line_range(str(args["start_line_id"]), str(args["end_line_id"]))
-                if len(chosen) > _MAX_READ_LINES:
-                    raise ValueError(f"read_lines is limited to {_MAX_READ_LINES} lines")
-                self._require_bounded_audit_text(chosen, label="read_lines")
-                return success(
-                    {
-                        "source_id": source.source_id,
-                        "start_line_id": chosen[0].line_id,
-                        "end_line_id": chosen[-1].line_id,
-                        "lines": [asdict(item) for item in chosen],
-                    }
-                )
+                return success(self._read_lines_payload(args))
             except Exception as exc:
                 return failure(f"read_lines failed: {exc}")
 
         tools.append(read_lines)
+
+        @tool(
+            "list_source_links",
+            "List matching navigation targets retained from one fetched HTML source and register returned targets "
+            "for fetch_source.",
+            {"source_id": str, "pattern": str},
+        )
+        async def list_source_links(args: dict[str, Any]) -> dict[str, object]:
+            try:
+                source = self.get_source(str(args["source_id"]))
+                if "html" not in source.media_type:
+                    raise ValueError("list_source_links requires a fetched HTML source")
+                raw_pattern = str(args.get("pattern", ""))
+                if len(raw_pattern) > _MAX_LINK_PATTERN_CHARACTERS:
+                    raise ValueError(
+                        f"list_source_links pattern is limited to {_MAX_LINK_PATTERN_CHARACTERS} characters"
+                    )
+                pattern = raw_pattern.casefold()
+                matches = tuple(
+                    link
+                    for link in source.links
+                    if not pattern or pattern in link.url.casefold() or pattern in link.text.casefold()
+                )
+                returned = []
+                for link in matches[:100]:
+                    candidate = self._register_source_candidate(
+                        url=link.url,
+                        title=link.text or link.url,
+                    )
+                    item = {
+                        "source_candidate_id": candidate.source_candidate_id,
+                        "url": link.url,
+                        "text": link.text,
+                    }
+                    proposed = {
+                        "pattern": raw_pattern,
+                        "returned_match_count": len(returned) + 1,
+                        "total_match_count": len(matches),
+                        "truncated": len(returned) + 1 < len(matches),
+                        "links": [*returned, item],
+                    }
+                    if len(json.dumps(proposed, ensure_ascii=False)) > _MAX_LINK_RESULT_CHARACTERS:
+                        self._source_candidates.pop(candidate.source_candidate_id)
+                        break
+                    returned.append(item)
+                payload = {
+                    "pattern": raw_pattern,
+                    "returned_match_count": len(returned),
+                    "total_match_count": len(matches),
+                    "truncated": len(matches) > len(returned),
+                    "links": returned,
+                }
+                return success(payload)
+            except Exception as exc:
+                return failure(f"list_source_links failed: {exc}")
+
+        tools.append(list_source_links)
 
         @tool(
             "register_evidence",
@@ -1068,6 +1206,7 @@ __all__ = [
     "SourceCandidate",
     "SourceDocument",
     "SourceFetcherPort",
+    "SourceLink",
     "SourceWorkspace",
     "StoredSource",
 ]

@@ -15,7 +15,6 @@ from harnyx_commons.domain_tweak_generation import (
     CandidateFailure,
     CandidateStageError,
     DomainTweakFinalizedTask,
-    GenerationForm,
     PortfolioAllocation,
     PortfolioCallEvent,
     PortfolioPacket,
@@ -24,7 +23,6 @@ from harnyx_commons.domain_tweak_generation import (
     StageRunResult,
 )
 from harnyx_commons.domain_tweak_generation import refill_pipeline as refill_pipeline_module
-from harnyx_commons.domain_tweak_generation.form_source import GenerationFormCursor
 
 
 class _PortfolioRunner:
@@ -55,7 +53,7 @@ class _CandidatePipeline:
         self.outcomes = list(outcomes)
         self.calls = 0
 
-    async def run(self, _form: GenerationForm, _allocation: PortfolioAllocation):
+    async def run(self, _allocation: PortfolioAllocation):
         self.calls += 1
         return self.outcomes.pop(0)
 
@@ -126,7 +124,7 @@ class _BatchTerminalCandidatePipeline:
         self.sibling_cancelled = asyncio.Event()
         self.calls = 0
 
-    async def run(self, _form: GenerationForm, _allocation: PortfolioAllocation):
+    async def run(self, _allocation: PortfolioAllocation):
         self.calls += 1
         if self.calls == 1:
             await self.sibling_started.wait()
@@ -150,7 +148,7 @@ class _CompletedSuccessRaceCandidatePipeline:
         self.success_returned = asyncio.Event()
         self.calls = 0
 
-    async def run(self, _form: GenerationForm, _allocation: PortfolioAllocation):
+    async def run(self, _allocation: PortfolioAllocation):
         self.calls += 1
         if self.calls == 1:
             raise BatchTerminalGenerationError(
@@ -228,16 +226,12 @@ class _UnexpectedPortfolioRunner:
 
 class _WrongTypePortfolioRunner:
     async def run_stage(self, **_kwargs: object) -> StageRunResult:
-        return StageRunResult(_form(99), 1.0, known_zero_actual_cost_tool_usage(), actual_llm_cost_usd=0.0)
-
-
-def _form(index: int) -> GenerationForm:
-    return GenerationForm(form_identity=f"form:{index}", source_index=index, form=f"form {index}")
+        output = PortfolioAllocation(slot=99, ecosystems=("a", "b", "c", "d", "e"))
+        return StageRunResult(output, 1.0, known_zero_actual_cost_tool_usage(), actual_llm_cost_usd=0.0)
 
 
 def _success(index: int) -> DomainTweakFinalizedTask:
     return DomainTweakFinalizedTask(
-        form_identity=f"form:{index}",
         task=MinerTask(
             task_id=UUID(int=index + 1),
             query=Query(text=f"question {index}"),
@@ -264,9 +258,11 @@ def _prompt_payload(prompt: str) -> dict[str, object]:
 def _failure() -> CandidateFailure:
     return CandidateFailure(
         "reasoning_no_generate",
-        "dossier",
+        "question_generation",
         (),
         known_zero_actual_cost_tool_usage(),
+        failure_reason="complete route unavailable",
+        source_failure_id="source_failure:1",
     )
 
 
@@ -295,7 +291,6 @@ async def test_refill_launches_only_current_shortfall_until_exact_completion() -
         candidate_pipeline=candidates,  # type: ignore[arg-type]
     ).generate_batch(
         target_count=3,
-        forms=GenerationFormCursor(tuple(_form(index) for index in range(10)), UUID(int=0)),
         on_finalized_task=accept,
     )
 
@@ -343,7 +338,6 @@ async def test_portfolio_and_candidate_work_run_inside_distinct_cost_free_parent
         attempt_id_factory=lambda: UUID(int=99),
     ).generate_batch(
         target_count=1,
-        forms=GenerationFormCursor(tuple(_form(index) for index in range(10)), UUID(int=0)),
     )
 
     assert [item["name"] for item in starts] == [
@@ -369,7 +363,6 @@ async def test_unavailable_candidate_cost_makes_successful_batch_cost_unavailabl
         candidate_pipeline=_CandidatePipeline((unknown_cost_success,)),  # type: ignore[arg-type]
     ).generate_batch(
         target_count=1,
-        forms=GenerationFormCursor(tuple(_form(index) for index in range(10)), UUID(int=0)),
     )
 
     assert result.tool_usage.actual_total_cost_usd is None
@@ -422,7 +415,6 @@ async def test_candidate_parent_uses_final_outcome_after_duplicate_reclassificat
         attempt_id_factory=lambda: next(attempt_ids),
     ).generate_batch(
         target_count=2,
-        forms=GenerationFormCursor(tuple(_form(index) for index in range(10)), UUID(int=0)),
         on_attempt_completed=record,
     )
 
@@ -474,7 +466,6 @@ async def test_candidate_parent_keeps_final_outcome_when_finalized_callback_rais
             candidate_pipeline=_CandidatePipeline((_success(0),)),  # type: ignore[arg-type]
         ).generate_batch(
             target_count=1,
-            forms=GenerationFormCursor(tuple(_form(index) for index in range(10)), UUID(int=0)),
             on_finalized_task=reject_persistence,
         )
 
@@ -490,7 +481,6 @@ async def test_more_than_ten_slots_groups_portfolios_without_surplus_candidates(
         candidate_pipeline=candidates,  # type: ignore[arg-type]
     ).generate_batch(
         target_count=13,
-        forms=GenerationFormCursor(tuple(_form(index) for index in range(20)), UUID(int=0)),
     )
 
     assert sorted(runner.group_sizes) == [3, 10]
@@ -499,8 +489,8 @@ async def test_more_than_ten_slots_groups_portfolios_without_surplus_candidates(
 
 
 @pytest.mark.anyio
-async def test_failed_attempt_emits_stable_attribution_without_raw_detail() -> None:
-    """Future failure: callbacks must retain stable attribution without model-authored failure text."""
+async def test_failed_attempt_preserves_private_blocker_without_serializing_it() -> None:
+    """Future failure: orchestration needs the blocker, while telemetry must not expose model-authored text."""
     runner = _PortfolioRunner()
     candidates = _CandidatePipeline((_failure(), _success(0)))
     events: list[SlotAttemptEvent] = []
@@ -513,12 +503,16 @@ async def test_failed_attempt_emits_stable_attribution_without_raw_detail() -> N
         candidate_pipeline=candidates,  # type: ignore[arg-type]
     ).generate_batch(
         target_count=1,
-        forms=GenerationFormCursor(tuple(_form(index) for index in range(10)), UUID(int=0)),
         on_attempt_completed=record,
     )
 
     assert events[0].outcome == "reasoning_no_generate"
     assert events[0].failure_class is None
+    assert events[0].failure_reason == "complete route unavailable"
+    assert events[0].source_failure_id == "source_failure:1"
+    serialized = events[0].model_dump(mode="json")
+    assert "failure_reason" not in serialized
+    assert "source_failure_id" not in serialized
     assert events[1].outcome == "finalized"
     assert not events[1].repaired
 
@@ -539,7 +533,6 @@ async def test_one_failed_portfolio_group_preserves_other_successes_and_counts_s
         sleep=sleep,
     ).generate_batch(
         target_count=13,
-        forms=GenerationFormCursor(tuple(_form(index) for index in range(20)), UUID(int=0)),
     )
 
     assert sorted(runner.group_sizes) == [3, 3, 10]
@@ -565,7 +558,6 @@ async def test_host_rejected_portfolio_preserves_billable_usage_exactly_once() -
         candidate_pipeline=candidates,  # type: ignore[arg-type]
     ).generate_batch(
         target_count=1,
-        forms=GenerationFormCursor(tuple(_form(index) for index in range(10)), UUID(int=0)),
         on_portfolio_completed=record,
     )
 
@@ -593,7 +585,6 @@ async def test_batch_terminal_candidate_failure_cancels_and_drains_siblings() ->
     with pytest.raises(BatchTerminalGenerationError, match="credentials rejected") as captured:
         await pipeline.generate_batch(
             target_count=2,
-            forms=GenerationFormCursor(tuple(_form(index) for index in range(10)), UUID(int=0)),
             on_attempt_completed=record,
         )
 
@@ -627,7 +618,6 @@ async def test_completed_success_is_retained_before_terminal_propagates() -> Non
             candidate_pipeline=candidates,  # type: ignore[arg-type]
         ).generate_batch(
             target_count=2,
-            forms=GenerationFormCursor(tuple(_form(index) for index in range(10)), UUID(int=0)),
             on_attempt_completed=record_attempt,
             on_finalized_task=accept,
         )
@@ -654,7 +644,6 @@ async def test_batch_terminal_portfolio_failure_cancels_and_drains_siblings() ->
     with pytest.raises(BatchTerminalGenerationError, match="credentials rejected") as captured:
         await pipeline.generate_batch(
             target_count=13,
-            forms=GenerationFormCursor(tuple(_form(index) for index in range(20)), UUID(int=0)),
             on_portfolio_completed=record,
         )
 
@@ -685,7 +674,6 @@ async def test_completed_portfolio_call_is_recorded_before_terminal_propagates()
             candidate_pipeline=_CandidatePipeline(()),  # type: ignore[arg-type]
         ).generate_batch(
             target_count=13,
-            forms=GenerationFormCursor(tuple(_form(index) for index in range(20)), UUID(int=0)),
             on_portfolio_completed=record,
         )
 
@@ -709,7 +697,6 @@ async def test_unexpected_portfolio_exception_emits_a_typed_terminal_event() -> 
             candidate_pipeline=_CandidatePipeline(()),  # type: ignore[arg-type]
         ).generate_batch(
             target_count=1,
-            forms=GenerationFormCursor(tuple(_form(index) for index in range(10)), UUID(int=0)),
             on_portfolio_completed=record,
         )
 
@@ -733,7 +720,6 @@ async def test_wrong_portfolio_output_type_is_batch_terminal() -> None:
             candidate_pipeline=_CandidatePipeline(()),  # type: ignore[arg-type]
         ).generate_batch(
             target_count=1,
-            forms=GenerationFormCursor(tuple(_form(index) for index in range(10)), UUID(int=0)),
             on_portfolio_completed=record,
         )
 

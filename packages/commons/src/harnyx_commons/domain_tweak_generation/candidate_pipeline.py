@@ -22,22 +22,18 @@ from harnyx_commons.domain_tweak_generation.contracts import (
     CandidateStageError,
     DomainTweakFinalizedTask,
     DomainTweakStageSummary,
-    GenerationForm,
+    GroundedQuestionDossier,
     PortfolioAllocation,
-    QuestionPacket,
     ReferenceProof,
-    SourceDossier,
     StageName,
     StageRunResult,
 )
 from harnyx_commons.domain_tweak_generation.prompts import (
     AUDIT_SYSTEM,
-    DOSSIER_SYSTEM,
-    QUESTION_SYSTEM,
+    QUESTION_GENERATION_SYSTEM,
     REFERENCE_SYSTEM,
     audit_prompt,
-    dossier_prompt,
-    question_prompt,
+    question_generation_prompt,
     reference_prompt,
     reference_repair_prompt,
 )
@@ -49,11 +45,8 @@ from harnyx_commons.domain_tweak_generation.proof_validation import (
 )
 from harnyx_commons.domain_tweak_generation.source_workspace import SourceFetcherPort, SourceWorkspace
 
-DOSSIER_TIMEOUT_SECONDS = 360.0
-QUESTION_TIMEOUT_SECONDS = 180.0
-REFERENCE_TIMEOUT_SECONDS = 240.0
-_OutputT = TypeVar("_OutputT", bound=SourceDossier | QuestionPacket | ReferenceProof | AuditResult)
-AUDIT_TIMEOUT_SECONDS = 180.0
+AGENT_STAGE_TIMEOUT_SECONDS = 600.0
+_OutputT = TypeVar("_OutputT", bound=GroundedQuestionDossier | ReferenceProof | AuditResult)
 
 
 class CandidatePipeline:
@@ -72,7 +65,6 @@ class CandidatePipeline:
 
     async def run(
         self,
-        form: GenerationForm,
         allocation: PortfolioAllocation,
     ) -> CandidateOutcome:
         started = time.perf_counter()
@@ -81,57 +73,40 @@ class CandidatePipeline:
         usage = known_zero_actual_cost_tool_usage()
         try:
             dossier_result = await self._runner.run_stage(
-                stage="dossier",
-                system_prompt=DOSSIER_SYSTEM,
-                prompt=dossier_prompt(allocation),
-                output_model=SourceDossier,
-                timeout_seconds=DOSSIER_TIMEOUT_SECONDS,
+                stage="question_generation",
+                system_prompt=QUESTION_GENERATION_SYSTEM,
+                prompt=question_generation_prompt(allocation),
+                output_model=GroundedQuestionDossier,
+                timeout_seconds=AGENT_STAGE_TIMEOUT_SECONDS,
                 web_search=True,
-                tool_set=workspace.dossier_tools(self._source_fetcher),
-                output_validator=lambda output: _dossier_contract_defects(output, workspace),
+                tool_set=workspace.question_generation_tools(self._source_fetcher),
+                output_validator=lambda output: _question_generation_contract_defects(output, workspace),
             )
             usage = merge_complete_actual_cost_usage(usage, dossier_result.tool_usage)
-            dossier = _typed_output(dossier_result, SourceDossier)
-            summaries.append(_summary("dossier", dossier.status, dossier_result))
+            dossier = _typed_output(dossier_result, GroundedQuestionDossier)
+            summaries.append(_summary("question_generation", dossier.status, dossier_result))
             if dossier.status == "no_generate":
                 assert dossier.failure_class is not None
                 return CandidateFailure(
                     dossier.failure_class,
-                    "dossier",
+                    "question_generation",
                     tuple(summaries),
                     usage,
+                    failure_reason=dossier.failure_reason,
+                    source_failure_id=dossier.source_failure_id,
                 )
-
-            question_result = await self._runner.run_stage(
-                stage="question",
-                system_prompt=QUESTION_SYSTEM,
-                prompt=question_prompt(form, allocation, dossier, workspace.evidence_identities()),
-                output_model=QuestionPacket,
-                timeout_seconds=QUESTION_TIMEOUT_SECONDS,
-                output_validator=_question_contract_defects,
-            )
-            usage = merge_complete_actual_cost_usage(usage, question_result.tool_usage)
-            question_packet = _typed_output(question_result, QuestionPacket)
-            summaries.append(_summary("question", question_packet.status, question_result))
-            if question_packet.status == "giveup":
-                return CandidateFailure(
-                    "reasoning_no_generate",
-                    "question",
-                    tuple(summaries),
-                    usage,
-                )
-            assert question_packet.question is not None
+            assert dossier.question is not None
 
             proof_result = await self._runner.run_stage(
                 stage="reference",
                 system_prompt=REFERENCE_SYSTEM,
                 prompt=reference_prompt(
-                    question=question_packet.question,
+                    question=dossier.question,
                     dossier=dossier,
                     evidence_identities=workspace.evidence_identities(),
                 ),
                 output_model=ReferenceProof,
-                timeout_seconds=REFERENCE_TIMEOUT_SECONDS,
+                timeout_seconds=AGENT_STAGE_TIMEOUT_SECONDS,
                 web_search=True,
                 tool_set=workspace.reference_tools(self._source_fetcher),
                 output_validator=lambda output: reference_contract_defects(
@@ -149,10 +124,11 @@ class CandidatePipeline:
                     "reference",
                     tuple(summaries),
                     usage,
+                    failure_reason=proof.giveup_reason,
                 )
-            validated = _validate_reference(question_packet, dossier, proof, workspace)
+            validated = _validate_reference(dossier, proof, workspace)
 
-            audit_result = await self._audit(validated)
+            audit_result = await self._audit(validated, workspace)
             usage = merge_complete_actual_cost_usage(usage, audit_result.tool_usage)
             audit = _typed_output(audit_result, AuditResult)
             summaries.append(_summary("audit", audit.status, audit_result))
@@ -163,12 +139,12 @@ class CandidatePipeline:
                     stage="reference_repair",
                     system_prompt=REFERENCE_SYSTEM,
                     prompt=reference_repair_prompt(
-                        question=question_packet.question,
+                        question=dossier.question,
                         prior_proof=proof,
                         defects=audit.defects,
                     ),
                     output_model=ReferenceProof,
-                    timeout_seconds=REFERENCE_TIMEOUT_SECONDS,
+                    timeout_seconds=AGENT_STAGE_TIMEOUT_SECONDS,
                     web_search=True,
                     tool_set=workspace.reference_tools(self._source_fetcher),
                     output_validator=lambda output: reference_contract_defects(
@@ -186,9 +162,10 @@ class CandidatePipeline:
                         "reference_repair",
                         tuple(summaries),
                         usage,
+                        failure_reason=repaired_proof.giveup_reason,
                     )
-                validated = _validate_reference(question_packet, dossier, repaired_proof, workspace)
-                second_audit_result = await self._audit(validated)
+                validated = _validate_reference(dossier, repaired_proof, workspace)
+                second_audit_result = await self._audit(validated, workspace)
                 usage = merge_complete_actual_cost_usage(usage, second_audit_result.tool_usage)
                 second_audit = _typed_output(second_audit_result, AuditResult)
                 summaries.append(_summary("audit", second_audit.status, second_audit_result))
@@ -198,13 +175,13 @@ class CandidatePipeline:
                         "audit",
                         tuple(summaries),
                         usage,
+                        failure_reason=second_audit.explanation,
                     )
 
             return DomainTweakFinalizedTask(
-                form_identity=form.form_identity,
                 task=MinerTask(
                     task_id=self._task_id_factory(),
-                    query=Query(text=question_packet.question),
+                    query=Query(text=dossier.question),
                     reference_answer=validated.reference_answer,
                 ),
                 stage_summaries=tuple(summaries),
@@ -251,15 +228,16 @@ class CandidatePipeline:
                 usage,
                 exc.retry_after_seconds,
             )
-        except ProofValidationError:
+        except ProofValidationError as exc:
             return CandidateFailure(
                 "proof_invalid",
-                "reference",
+                summaries[-1].stage if summaries else "reference",
                 tuple(summaries),
                 usage,
+                failure_reason=str(exc),
             )
         except Exception as exc:
-            stage = summaries[-1].stage if summaries else "dossier"
+            stage = summaries[-1].stage if summaries else "question_generation"
             raise BatchTerminalGenerationError(
                 "unexpected_pipeline_failure",
                 f"{type(exc).__name__}: {exc}",
@@ -270,13 +248,14 @@ class CandidatePipeline:
                 actual_llm_cost_usd=usage.llm.actual_cost,
             ) from exc
 
-    async def _audit(self, validated: ValidatedReference) -> StageRunResult:
+    async def _audit(self, validated: ValidatedReference, workspace: SourceWorkspace) -> StageRunResult:
         return await self._runner.run_stage(
             stage="audit",
             system_prompt=AUDIT_SYSTEM,
             prompt=audit_prompt(validated.audit_packet),
             output_model=AuditResult,
-            timeout_seconds=AUDIT_TIMEOUT_SECONDS,
+            timeout_seconds=AGENT_STAGE_TIMEOUT_SECONDS,
+            tool_set=workspace.audit_tools(),
         )
 
 
@@ -290,47 +269,40 @@ def _summary(stage: StageName, outcome: str, result: StageRunResult) -> DomainTw
     return DomainTweakStageSummary(stage=stage, outcome=outcome, elapsed_ms=result.elapsed_ms)
 
 
-def _dossier_contract_defects(
-    dossier: SourceDossier,
+def _question_generation_contract_defects(
+    dossier: GroundedQuestionDossier,
     workspace: SourceWorkspace,
 ) -> tuple[str, ...]:
     if dossier.status == "no_generate":
         if dossier.source_failure_id is not None:
             source_failure = workspace.source_failure(dossier.source_failure_id)
             if source_failure is None:
-                return ("dossier source_failure_id was not observed by the workspace",)
+                return ("question-generation source_failure_id was not observed by the workspace",)
             if source_failure.failure_class != dossier.failure_class:
-                return ("dossier source_failure_id does not match its declared failure_class",)
+                return ("question-generation source_failure_id does not match its declared failure_class",)
         return ()
     defects: list[str] = []
     evidence_ids = {item.evidence_id for item in workspace.evidence}
     if not evidence_ids:
-        defects.append("ready dossier has no registered evidence")
+        defects.append("ready question dossier has no registered evidence")
     referenced = {evidence_id for fact in dossier.source_facts for evidence_id in fact.evidence_ids}
     if not referenced or not referenced <= evidence_ids:
-        defects.append("dossier references missing evidence IDs")
+        defects.append("question dossier references missing evidence IDs")
+    if dossier.question is None:
+        defects.append("ready question dossier omitted question text")
+    elif "[[" in dossier.question or "]]" in dossier.question:
+        defects.append("generated question contains a model-authored citation marker")
     return tuple(defects)
 
 
-def _question_contract_defects(question: QuestionPacket) -> tuple[str, ...]:
-    if question.status == "giveup":
-        return ()
-    if question.question is None:
-        return ("generated question omitted question text",)
-    if "[[" in question.question or "]]" in question.question:
-        return ("generated question contains a model-authored citation marker",)
-    return ()
-
-
 def _validate_reference(
-    question: QuestionPacket,
-    dossier: SourceDossier,
+    dossier: GroundedQuestionDossier,
     proof: ReferenceProof,
     workspace: SourceWorkspace,
 ) -> ValidatedReference:
-    assert question.question is not None
+    assert dossier.question is not None
     return validate_and_render_reference(
-        question=question.question,
+        question=dossier.question,
         dossier_answers=dossier.answers,
         proof=proof,
         workspace=workspace,
@@ -338,9 +310,6 @@ def _validate_reference(
 
 
 __all__ = [
-    "AUDIT_TIMEOUT_SECONDS",
+    "AGENT_STAGE_TIMEOUT_SECONDS",
     "CandidatePipeline",
-    "DOSSIER_TIMEOUT_SECONDS",
-    "QUESTION_TIMEOUT_SECONDS",
-    "REFERENCE_TIMEOUT_SECONDS",
 ]

@@ -36,7 +36,7 @@ async def test_agent_sdk_live_captures_native_web_search_result_shape(
         runner = DomainTweakAgentRunner(project_id=project_id, region="global")
         workspace = SourceWorkspace()
         result = await runner.run_stage(
-            stage="dossier",
+            stage="question_generation",
             system_prompt=(
                 "Call WebSearch exactly once for the official Python documentation. "
                 "After the host reports registered source candidates, return the first source_candidate_id."
@@ -45,7 +45,7 @@ async def test_agent_sdk_live_captures_native_web_search_result_shape(
             output_model=_SearchCaptureResult,
             timeout_seconds=180,
             web_search=True,
-            tool_set=workspace.dossier_tools(PublicSourceFetcher()),
+            tool_set=workspace.question_generation_tools(PublicSourceFetcher()),
         )
     finally:
         cleanup_credentials_file(credentials_file)

@@ -11,11 +11,16 @@ import resource
 import sys
 import zipfile
 import zlib
+from dataclasses import asdict, dataclass
+from urllib.parse import urljoin
 
 MAX_ADDRESS_SPACE_BYTES = 512 * 1024 * 1024
 MAX_CPU_SECONDS = 45
 MAX_PDF_PAGES = 2_000
 MAX_EXTRACTED_CHARACTERS = 5_000_000
+MAX_EXTRACTED_ENVELOPE_CHARACTERS = 10_000_000
+MAX_EXTRACTED_LINK_URL_CHARACTERS = 8_192
+MAX_EXTRACTED_LINK_TEXT_CHARACTERS = 4_096
 MAX_XLSX_ZIP_ENTRIES = 10_000
 MAX_XLSX_UNCOMPRESSED_BYTES = 128 * 1024 * 1024
 MAX_XLSX_COMPRESSION_RATIO = 100
@@ -27,16 +32,35 @@ class ExtractionRejectedError(RuntimeError):
         self.code = code
 
 
+@dataclass(frozen=True, slots=True)
+class ExtractedLink:
+    url: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractedSource:
+    content: str
+    links: tuple[ExtractedLink, ...] = ()
+
+
 def main() -> None:
     try:
         _set_resource_limits()
         media_type, encoding, url = sys.argv[1:4]
-        content = extract_content(sys.stdin.buffer.read(), media_type, encoding, url)
-        if not content.strip():
+        extracted = extract_source(sys.stdin.buffer.read(), media_type, encoding, url)
+        if not extracted.content.strip():
             raise ExtractionRejectedError("source_unavailable", "source extraction returned no text")
-        if len(content) > MAX_EXTRACTED_CHARACTERS:
+        if len(extracted.content) > MAX_EXTRACTED_CHARACTERS:
             raise ExtractionRejectedError("source_extraction_limit", "source exceeds extracted-character limit")
-        _write(b"O" + content.encode("utf-8"))
+        payload = json.dumps(
+            {"content": extracted.content, "links": [asdict(link) for link in extracted.links]},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        if len(payload) > MAX_EXTRACTED_ENVELOPE_CHARACTERS:
+            raise ExtractionRejectedError("source_extraction_limit", "source link metadata exceeds extraction envelope")
+        _write(b"O" + payload.encode("utf-8"))
     except ExtractionRejectedError as exc:
         _write_error(exc.code, str(exc))
     except BaseException as exc:
@@ -44,13 +68,17 @@ def main() -> None:
 
 
 def extract_content(body: bytes, media_type: str, encoding: str, url: str) -> str:
+    return extract_source(body, media_type, encoding, url).content
+
+
+def extract_source(body: bytes, media_type: str, encoding: str, url: str) -> ExtractedSource:
     if encoding == "gzip":
         body = gzip.decompress(body)
     elif encoding == "deflate":
         body = zlib.decompress(body)
     normalized_url = url.casefold().split("?", 1)[0]
     if "spreadsheetml" in media_type or normalized_url.endswith(".xlsx"):
-        return _extract_xlsx(body)
+        return ExtractedSource(content=_extract_xlsx(body))
     if "macroenabled" in media_type or normalized_url.endswith(".xlsm"):
         raise ExtractionRejectedError("source_unavailable", "macro-enabled workbooks are unsupported")
     if "pdf" in media_type or normalized_url.endswith(".pdf"):
@@ -69,20 +97,44 @@ def extract_content(body: bytes, media_type: str, encoding: str, url: str) -> st
                 if total > MAX_EXTRACTED_CHARACTERS:
                     raise ExtractionRejectedError("source_extraction_limit", "PDF exceeds extracted-character limit")
                 pieces.append(piece)
-            return "\n\n".join(pieces)
+            return ExtractedSource(content="\n\n".join(pieces))
         finally:
             document.close()
     decoded = body.decode("utf-8", errors="replace")
     if "json" in media_type:
         try:
-            return json.dumps(json.loads(decoded), ensure_ascii=False, indent=2)
+            return ExtractedSource(content=json.dumps(json.loads(decoded), ensure_ascii=False, indent=2))
         except json.JSONDecodeError as exc:
             raise ExtractionRejectedError("source_unavailable", "declared JSON source is malformed") from exc
     if "html" not in media_type and "<html" not in decoded[:1000].casefold():
-        return decoded
+        return ExtractedSource(content=decoded)
     from bs4 import BeautifulSoup
 
     soup = BeautifulSoup(decoded, "html.parser")
+    document_base_url = url
+    base_tag = soup.find("base", href=True)
+    if base_tag is not None:
+        base_href = base_tag.get("href")
+        if isinstance(base_href, str):
+            document_base_url = urljoin(url, base_href.strip())
+    links: list[ExtractedLink] = []
+    seen_links: set[tuple[str, str]] = set()
+    for element, attribute in (("a", "href"), ("link", "href"), ("script", "src"), ("form", "action")):
+        for tag in soup.find_all(element):
+            target = tag.get(attribute)
+            if not isinstance(target, str) or not target.strip():
+                continue
+            absolute_url = urljoin(document_base_url, target.strip())
+            text = re.sub(r"\s+", " ", tag.get_text(" ", strip=True)).strip()
+            if len(absolute_url) > MAX_EXTRACTED_LINK_URL_CHARACTERS:
+                raise ExtractionRejectedError("source_extraction_limit", "source link URL exceeds extraction limit")
+            if len(text) > MAX_EXTRACTED_LINK_TEXT_CHARACTERS:
+                raise ExtractionRejectedError("source_extraction_limit", "source link text exceeds extraction limit")
+            identity = (absolute_url, text)
+            if identity in seen_links:
+                continue
+            seen_links.add(identity)
+            links.append(ExtractedLink(url=absolute_url, text=text))
     for element in soup(["script", "style", "noscript", "template"]):
         element.decompose()
     lines: list[str] = []
@@ -94,7 +146,7 @@ def extract_content(body: bytes, media_type: str, encoding: str, url: str) -> st
                 lines.append(prefix + "\t" + "\t".join(cells))
         table.decompose()
     lines.extend(line.strip() for line in soup.get_text("\n").splitlines() if line.strip())
-    return "\n".join(lines)
+    return ExtractedSource(content="\n".join(lines), links=tuple(links))
 
 
 def _extract_xlsx(body: bytes) -> str:

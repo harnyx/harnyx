@@ -7,10 +7,9 @@ from collections.abc import Mapping, Sequence
 
 from harnyx_commons.domain_tweak_generation.contracts import (
     AcceptedRouteContext,
-    GenerationForm,
+    GroundedQuestionDossier,
     PortfolioAllocation,
     ReferenceProof,
-    SourceDossier,
 )
 from harnyx_commons.domain_tweak_generation.source_workspace import _serialize_audit_packet
 
@@ -33,95 +32,80 @@ Why: it preserves slot identity while offering unrelated document families.
 BAD: {"allocations":[{"slot":0,"ecosystems":["Find the named 2024 report and answer Alpha."]}]}
 Why: it supplies too few ecosystems and invents a lookup and answer."""
 
-DOSSIER_SYSTEM = """You construct one question-ready source dossier from five optional ecosystem ideas. You never see
-the source form or benchmark answer. Search actively and stop at the first supported,
-interesting route; universal success is not required. Mix, discard, or replace ecosystems and sources whenever useful.
-WebSearch snippets are discovery context, never evidence. A PostToolUse message supplies opaque source_candidate_id
-values for URLs returned by WebSearch. Fetch only those IDs with fetch_source, declaring the document kind and why it is
-an ordinary public document. Never invent or copy a URL into fetch_source. Do not use undocumented APIs, credentials,
-reverse-engineered endpoints, Wikipedia, Reddit, or search snippets as evidence.
+QUESTION_GENERATION_SYSTEM = """ROLE
+Find at most one verified public-web source dossier and express its proven operation as a difficult, uniquely
+answerable short-answer question. Own discovery, inspection, the positive answer route, and wording; do not judge
+novelty, predict the champion, or write the final reference presentation.
 
-Fetched HTML/text/static-JSON, PDF, and XLSX documents remain in a private VFS. Use list_sources, regex_search,
-similarity_search, read_lines, and register_evidence to locate exact support without requesting a whole source in the
-prompt. Retain as many independent sources as the route needs. A truncated search result cannot prove absence,
-uniqueness, or completeness. Return ready only when registered evidence supports the question material, every
-load-bearing requirement, the complete answer set implied by the proposed question, and the stated derivation with no
-answer-material gap. Choose a natural non-empty answer set whose values are established by that evidence. Otherwise
-return no_generate promptly. Do not write the final question or reference answer.
+RULES
+Fetch sources directly; snippets only locate evidence. WebSearch results become opaque source_candidate_id values;
+fetch only those IDs as ordinary public documents. Never use snippets, undocumented APIs, credentials,
+reverse-engineered endpoints, Wikipedia, or Reddit as evidence. Fetched bodies remain in the private source workspace;
+inspect them through list_sources, regex_search, similarity_search, bounded read_lines, list_source_links, and
+register_evidence rather than asking for full bodies in the prompt. For HTML navigation, inspect list_source_links;
+use regex_search before bounded read_lines when locating evidence.
 
-OUTPUT CONTRACT:
-- status: ready only under the rule above; otherwise no_generate.
+Prefer a natural complete pool whose answer changes under exact cross-record status, identity, date, category,
+version, or exception semantics. Reject one-page/obvious lookup, dominant maximum, identifier decoding, arbitrary
+boundaries, unsupported absence, ambiguity, or broken access. Preflight required source systems and pivot when they
+cannot prove the route. Use however many sources the proof needs. A truncated search or link result cannot prove
+absence, uniqueness, or completeness.
+
+Return ready only when directly inspected and registered evidence proves the final question semantics, every answer
+item, every load-bearing condition, and one reproducible ordered short answer. The independent reference stage may
+strengthen bounded exclusions, but it must not be asked to repair a question-generation gap. Otherwise return
+no_generate with the first concrete blocker. The question must be self-contained and must not reveal private answer
+values, answer IDs, evidence IDs, citation markers, grading language, or JSON instructions.
+
+OUTPUT CONTRACT
+- status: ready or no_generate by the rules above.
 - subject: concise subject identity for ready; null for no_generate.
-- route_summary: concise relation and source path for ready; null for no_generate.
-- question_plan: supported retrieval/filter/comparison operation, not final wording.
-- answers: one or more supported answers for ready. Each answer_id is unique and stable; value is the dossier
-  hypothesis.
-- requirements: every load-bearing condition as an operational description.
-- source_facts: atomic facts whose evidence_ids name already registered VFS spans.
-- derivation: reproducible operation from supported facts to answer IDs.
-- unresolved_gaps: empty for ready; concrete missing answer material for no_generate.
-- no_generate_reason: concrete blocker for no_generate; null for ready.
-- failure_class: reasoning_no_generate when the route itself is not viable; otherwise the exact source_fetch_rejected,
-  source_extraction_limit, or source_unavailable failure returned by the fetch_source attempt that prevents generation.
-  Required for no_generate and null for ready.
-- source_failure_id: for a source-related no_generate, copy the source_failure_id returned by the exact fetch_source
-  failure that prevents generation. Do not select an earlier incidental failure after another route remains viable. Use
-  null for reasoning_no_generate and ready.
+- route_summary: concise source relation and operation for ready; null for no_generate.
+- question: final user-facing question with explicit scope, definitions, editions or categories, and answer shape;
+  null for no_generate.
+- answers: every requested short-answer item in question order. Each answer_id is unique and stable; value is the
+  directly proved hypothesis passed privately to reference generation. Empty for no_generate.
+- requirements: every load-bearing condition as an operational description. Empty for no_generate.
+- source_facts: atomic answer-determining facts whose evidence_ids name registered source spans. Together they must
+  identify every load-bearing fetched document's publisher and version when relevant, the answer-determining facts,
+  and the inspected supporting spans. Do not copy URLs or excerpts; evidence IDs retain that acquired-source detail.
+  Empty for no_generate.
+- derivation: reproducible pool, joins, filters, decisive exclusions, ordering, and final operation; null for
+  no_generate.
+- why_not_one_page: the load-bearing cross-record or cross-source transition; null for no_generate.
+- substantive_final_condition: the final condition that actually changes the survivor set; null for no_generate.
+- failure_reason: null for ready; the first concrete blocker for no_generate.
+- failure_class: null for ready. For no_generate use reasoning_no_generate when the route itself is not viable, or the
+  exact source_fetch_rejected, source_extraction_limit, or source_unavailable class from the fetch that ended the only
+  provable route.
+- source_failure_id: null for ready and reasoning_no_generate. For a source-related no_generate, copy the exact
+  source_failure_id returned by that terminal fetch failure, not an earlier incidental failure.
 
-GOOD: {"status":"ready","subject":"Annual collection awards","route_summary":"Join the annual index to two award
-tables","question_plan":"Filter the complete nominees then compare reported totals","answers":[{"answer_id":"A1",
-"value":"Alpha"},{"answer_id":"A2","value":"Beta"}],"requirements":[{"description":"Use only the bounded
-nominee table"}],"source_facts":[{"statement":"Alpha has total 12","evidence_ids":["E1"]}],"derivation":
-"Apply the bounded-table requirement and select the two highest supported totals","unresolved_gaps":[],
-"no_generate_reason":null,"failure_class":null,"source_failure_id":null}
-Why: it uses stable IDs, registered evidence, and a reproducible supported path.
-GOOD no-generate: {"status":"no_generate","subject":null,"route_summary":null,"question_plan":null,"answers":[],
-"requirements":[],"source_facts":[],"derivation":null,"unresolved_gaps":["The public document omits the bounded
-candidate table"],"no_generate_reason":"The required table is absent from every retained source.","failure_class":
-"reasoning_no_generate","source_failure_id":null}
-Why: it states the actual terminal decision instead of attributing an unrelated earlier tool failure.
-GOOD source no-generate: {"status":"no_generate","subject":null,"route_summary":null,"question_plan":null,
-"answers":[],"requirements":[],"source_facts":[],"derivation":null,"unresolved_gaps":["The required report could not
-be fetched"],"no_generate_reason":"The only public report needed for the route was unavailable.","failure_class":
-"source_unavailable","source_failure_id":"source_failure:2"}
-Why: the class and ID identify the exact fetch failure that ended the route.
-BAD no-generate: {"status":"no_generate","failure_class":"source_unavailable","source_failure_id":
-"source_failure:1"}
-Why: a source failure ID is not a terminal cause merely because it occurred earlier; use reasoning_no_generate when the
-route ultimately fails for a different reason.
-BAD: {"status":"ready","answers":[{"answer_id":"A1","value":"Alpha"}],"unresolved_gaps":["Other candidates
-may exist"]}
-Why: it claims readiness while retaining an answer-determining gap."""
+GOOD: reconcile a bounded roster to per-record statuses and a second publisher's exact category; inspect every answer
+and decisive exclusion. Example shape: {"status":"ready","subject":"Annual public roster","route_summary":
+"Reconcile a complete roster with separate status records","question":"Which entries in the complete annual roster
+meet both the dated status and category conditions? Return names in roster order.","answers":[{"answer_id":"A1",
+"value":"Alpha"}],"requirements":[{"description":"Check every roster entry against its dated status record"}],
+"source_facts":[{"statement":"Alpha has the required dated status","evidence_ids":["E1"]}],"derivation":
+"Enumerate the roster, join each record, apply both conditions, preserve roster order","why_not_one_page":
+"The roster omits the separate dated status","substantive_final_condition":"The category condition removes at least
+one status-matching entry","failure_reason":null,"failure_class":null,"source_failure_id":null}.
+BAD: choose a convenient top five, fill missing rows from snippets, then decode one ID. Also bad: return ready while
+another candidate may exist, make the final condition decorative, or place any question semantics in a no_generate
+result.
+"""
 
-QUESTION_SYSTEM = """You write one natural benchmark question from a verified dossier and a sampled source form. The
-form is structural and difficulty inspiration, not a template to compile literally. Preserve the useful character of
-its multi-step retrieval, filtering, comparison, ordering, or completeness challenge only where that fits the dossier
-naturally. Do not force relation-by-relation isomorphism. Use only supplied dossier facts. Do not include private answer
-values, answer IDs, evidence IDs, citation markers, grading language, or JSON instructions in the question or output.
-Prefer a connected route that cannot be solved from one supplied source alone. Return giveup when no natural,
-self-contained, supported question can be written.
-
-OUTPUT CONTRACT:
-- status: generated only for a fully supported natural question; otherwise giveup.
-- question: complete user-facing question for generated; null for giveup.
-- form_transfer_explanation: specifically explain which useful structural/difficulty properties transferred naturally;
-  required for both statuses and never user-facing.
-- giveup_reason: concrete unsupported or unnatural condition for giveup; null for generated.
-
-GOOD: {"status":"generated","question":"Which two entries meet both independently sourced conditions? Give them in
-the order established by the annual table.","form_transfer_explanation":"Transfers the source form's bounded filtering,
-cross-source comparison, and ordered-result requirement without copying its domain.","giveup_reason":null}
-BAD: {"status":"generated","question":"Why are Alpha and Beta the answers?","form_transfer_explanation":"Same
-topic.","giveup_reason":null}
-Why: it leaks answers and does not explain a meaningful form transfer."""
-
-REFERENCE_SYSTEM = """Independently answer the fixed generated question. Treat the dossier answer values and facts as
+REFERENCE_SYSTEM = """Independently answer the fixed generated question. Begin by determining the complete direct
+answer, then prove it claim by claim. Treat the dossier answer values and facts as
 hypotheses, not truth. Search and fetch additional ordinary public documents when the current VFS cannot establish a
 load-bearing claim or a stronger source is available. WebSearch results become opaque source_candidate_id values;
 fetch only those IDs. Navigate retained sources with VFS search/read tools, register exact evidence, and use regex
 certificates only for truly bounded complete scans. You may correct dossier answer values while preserving the fixed
-question's universe, metric, scope, and operation. Return giveup rather than change the question or fill a gap from
-memory. Do not author citation markers or copy excerpts into output.
+question's universe, metric, scope, and operation. Audit the question's structural premises, exact source scope, and
+record ownership before finalizing: do not let a heading, source credit, date, or exception from an adjacent record
+support the selected record. Prove complete pools and decisive exclusions when the requested answer depends on them.
+Return giveup rather than change the question or fill a gap from memory. Do not author citation markers or copy
+excerpts into output.
 
 OUTPUT CONTRACT:
 - status: finalized only when VFS evidence establishes every answer and load-bearing inference; otherwise giveup.
@@ -139,12 +123,18 @@ established candidates.","kind":"derived","evidence_ids":[],"depends_on_step_ids
 BAD: {"status":"finalized","answers":[{"answer_id":"new","corrected_value":"Alpha[[1]]"}],"proof_steps":[]}
 Why: it invents an ID, authors a citation marker, and supplies no proof."""
 
-AUDIT_SYSTEM = """Audit one proof packet independently. You receive only the question, final answer values, atomic
-proof steps, selected exact excerpts, scan certificates, and bounded context. You cannot browse and do not see
-unselected source bodies, the dossier trajectory, source form, or benchmark answer. Pass only when every answer and
-load-bearing inference is directly supported, derivations use established operands in order, the question's requested
-answer set and ordering are correct, and completeness or uniqueness claims have adequate bounded evidence. Reject if
-the question itself reveals an answer. Return concise, independently actionable defects; do not demand decorative facts.
+AUDIT_SYSTEM = """Audit one proof independently. The packet contains the fixed question, final answer values, atomic
+proof steps, selected evidence, scan certificates, and bounded context. It is an index of the author's case, not an
+authority. Independently inspect any retained source through the read-only list_sources, regex_search, and read_lines
+tools. You cannot browse, fetch, follow links, register evidence, register certificates, or mutate the workspace, and
+you do not see the dossier trajectory or a benchmark answer.
+
+Pass only when every answer and load-bearing inference is directly supported, derivations use established operands in
+order, the question's requested answer set and ordering are correct, and completeness or uniqueness claims have
+adequate bounded evidence. Audit structural premises, required source scope, and record boundaries explicitly. Reject
+when a heading, date, source credit, status, exception, or category belongs to an adjacent record; when the question's
+pool or source scope was silently changed; when a decisive exclusion was not checked; or when the question itself
+reveals an answer. Return concise, independently actionable defects; do not demand decorative facts.
 
 OUTPUT CONTRACT:
 - status: pass only when every criterion holds; otherwise reject.
@@ -169,34 +159,22 @@ def portfolio_prompt(
     return "Allocate public-document ecosystems for this request:\n" + json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-def dossier_prompt(allocation: PortfolioAllocation) -> str:
+def question_generation_prompt(allocation: PortfolioAllocation) -> str:
     payload = {
         "optional_ecosystem_seeds": list(allocation.ecosystems),
     }
-    return "Find the first question-ready supported source dossier:\n" + json.dumps(
-        payload, ensure_ascii=False, indent=2
+    return (
+        "Find at most one verified dossier and question. Explore primarily within or across these optional prose "
+        "ecosystems; discard or replace them when another route is materially better. Return ready only for a "
+        "directly proved unique route, else no_generate with the first blocker:\n"
+        + json.dumps(payload, ensure_ascii=False, indent=2)
     )
-
-
-def question_prompt(
-    form: GenerationForm,
-    allocation: PortfolioAllocation,
-    dossier: SourceDossier,
-    evidence_identities: Sequence[Mapping[str, object]],
-) -> str:
-    payload = {
-        "source_form_for_natural_inspiration": form.form,
-        "portfolio_brief": dossier_prompt(allocation),
-        "verified_dossier": dossier.model_dump(mode="json"),
-        "registered_evidence_identities": list(evidence_identities),
-    }
-    return "Write the final question from this supported packet:\n" + json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 def reference_prompt(
     *,
     question: str,
-    dossier: SourceDossier,
+    dossier: GroundedQuestionDossier,
     evidence_identities: Sequence[Mapping[str, object]],
 ) -> str:
     payload = {
@@ -225,19 +203,20 @@ def reference_repair_prompt(
 
 
 def audit_prompt(packet: Mapping[str, object]) -> str:
-    return "Audit this closed proof packet:\n" + _serialize_audit_packet(packet)
+    return (
+        "Audit this proof packet and independently inspect the retained sources where needed:\n"
+        + _serialize_audit_packet(packet)
+    )
 
 
 __all__ = [
     "AUDIT_SYSTEM",
-    "DOSSIER_SYSTEM",
     "PORTFOLIO_SYSTEM",
-    "QUESTION_SYSTEM",
+    "QUESTION_GENERATION_SYSTEM",
     "REFERENCE_SYSTEM",
     "audit_prompt",
-    "dossier_prompt",
+    "question_generation_prompt",
     "portfolio_prompt",
-    "question_prompt",
     "reference_prompt",
     "reference_repair_prompt",
 ]

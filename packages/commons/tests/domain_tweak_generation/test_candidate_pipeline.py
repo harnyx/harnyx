@@ -14,18 +14,19 @@ from harnyx_commons.domain_tweak_generation import (
     DossierAnswer,
     DossierFact,
     DossierRequirement,
-    GenerationForm,
+    GroundedQuestionDossier,
     PortfolioAllocation,
     ProofStep,
-    QuestionPacket,
     ReferenceAnswerSelection,
     ReferenceProof,
     SourceDocument,
-    SourceDossier,
     SourceWorkspace,
     StageRunResult,
 )
-from harnyx_commons.domain_tweak_generation.candidate_pipeline import _dossier_contract_defects
+from harnyx_commons.domain_tweak_generation.candidate_pipeline import (
+    AGENT_STAGE_TIMEOUT_SECONDS,
+    _question_generation_contract_defects,
+)
 
 
 class _Runner:
@@ -51,19 +52,12 @@ class _UnexpectedRunner:
 
 class _WrongOutputRunner:
     async def run_stage(self, **_kwargs: object) -> StageRunResult:
-        return StageRunResult(
-            QuestionPacket(
-                status="giveup",
-                form_transfer_explanation="wrong boundary type",
-                giveup_reason="wrong boundary type",
-            ),
-            1.0,
-            ToolUsageSummary(
-                llm=LlmUsageSummary(actual_cost=0.75),
-                actual_total_cost_usd=0.75,
-                actual_cost_by_provider={"vertex": 0.75},
-            ),
+        usage = ToolUsageSummary(
+            llm=LlmUsageSummary(actual_cost=0.75),
+            actual_total_cost_usd=0.75,
+            actual_cost_by_provider={"vertex": 0.75},
         )
+        return StageRunResult(AuditResult(status="pass", explanation="wrong boundary"), 1.0, usage)
 
 
 class _RepairAcquisitionRunner(_Runner):
@@ -112,7 +106,7 @@ def _workspace() -> SourceWorkspace:
             requested_url="https://example.com/report",
             final_url="https://example.com/report",
             media_type="text/plain",
-            content="HEADER\tName\tValue\nROW\tAlpha\t1200\nROW\tBeta\t900",
+            content="HEADER\tName\tValue\r\nROW\tAlpha\t1200\r\nROW\tBeta\t900",
             fetched_bytes=58,
         )
     )
@@ -122,27 +116,26 @@ def _workspace() -> SourceWorkspace:
     return workspace
 
 
-def _dossier() -> SourceDossier:
-    return SourceDossier(
+def _dossier(*, question: str = "Which named row has the larger value?") -> GroundedQuestionDossier:
+    return GroundedQuestionDossier(
         status="ready",
         subject="Published comparison",
-        route_summary="route",
-        question_plan="compare two bounded rows",
+        route_summary="Reconcile a bounded table with separate status evidence",
+        question=question,
         answers=(DossierAnswer(answer_id="A1", value="Alpha"),),
-        requirements=(DossierRequirement(description="compare"),),
+        requirements=(DossierRequirement(description="compare every bounded row"),),
         source_facts=(
             DossierFact(statement="Alpha 1200", evidence_ids=("E1",)),
             DossierFact(statement="Beta 900", evidence_ids=("E2",)),
         ),
-        derivation="1200 is greater than 900",
+        derivation="Compare the two complete rows and preserve table order",
+        why_not_one_page="The status evidence is separate from the bounded table",
+        substantive_final_condition="The value comparison removes Beta",
     )
 
 
-@pytest.mark.anyio
-async def test_audit_rejection_gets_one_reference_repair_and_second_audit() -> None:
-    """Future failure: a correctable proof defect must not discard an otherwise good candidate."""
-    dossier = _dossier()
-    proof = ReferenceProof(
+def _proof() -> ReferenceProof:
+    return ReferenceProof(
         status="finalized",
         answers=(ReferenceAnswerSelection(answer_id="A1"),),
         proof_steps=(
@@ -156,52 +149,66 @@ async def test_audit_rejection_gets_one_reference_repair_and_second_audit() -> N
             ),
         ),
     )
-    runner = _Runner(
-        (
-            dossier,
-            QuestionPacket(
-                status="generated",
-                question="Which named row has the larger value?",
-                form_transfer_explanation="preserved",
-            ),
-            proof,
-            AuditResult(status="reject", defects=("bind the second operand",), explanation="gap"),
-            proof,
-            AuditResult(status="pass", explanation="complete"),
-        )
-    )
-    pipeline = CandidatePipeline(
+
+
+@pytest.mark.anyio
+async def test_single_question_generation_call_owns_question_and_dossier() -> None:
+    """Future failure: QG must not regress to a source-form-conditioned second agent call."""
+    runner = _Runner((_dossier(), _proof(), AuditResult(status="pass", explanation="complete")))
+    outcome = await CandidatePipeline(
         runner=runner,  # type: ignore[arg-type]
         source_fetcher=_UnusedFetcher(),
         workspace_factory=_workspace,
+    ).run(PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")))
+
+    assert isinstance(outcome, DomainTweakFinalizedTask)
+    assert [call["stage"] for call in runner.calls] == ["question_generation", "reference", "audit"]
+    assert all(call["timeout_seconds"] == AGENT_STAGE_TIMEOUT_SECONDS for call in runner.calls)
+    assert "source_form" not in str(runner.calls[0]["prompt"])
+    audit_tools = runner.calls[2]["tool_set"].allowed_tools  # type: ignore[union-attr]
+    assert audit_tools == (
+        "mcp__audit_vfs__list_sources",
+        "mcp__audit_vfs__regex_search",
+        "mcp__audit_vfs__read_lines",
     )
-    outcome = await pipeline.run(
-        GenerationForm(form_identity="form:1", source_index=1, form="Hidden source form"),
-        PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
+
+
+@pytest.mark.anyio
+async def test_audit_rejection_gets_one_reference_repair_and_second_read_only_audit() -> None:
+    """Future failure: a correctable proof defect must get one material repair and no silent pass."""
+    runner = _Runner(
+        (
+            _dossier(),
+            _proof(),
+            AuditResult(status="reject", defects=("bind the second operand",), explanation="gap"),
+            _proof(),
+            AuditResult(status="pass", explanation="complete"),
+        )
     )
+    outcome = await CandidatePipeline(
+        runner=runner,  # type: ignore[arg-type]
+        source_fetcher=_UnusedFetcher(),
+        workspace_factory=_workspace,
+    ).run(PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")))
 
     assert isinstance(outcome, DomainTweakFinalizedTask)
     assert outcome.repaired
-    assert outcome.route_context is not None
-    assert outcome.route_context.subject == "Published comparison"
-    assert outcome.route_context.source_urls == ("https://example.com/report",)
     assert [call["stage"] for call in runner.calls] == [
-        "dossier",
-        "question",
+        "question_generation",
         "reference",
         "audit",
         "reference_repair",
         "audit",
     ]
-    assert "Hidden source form" not in str(runner.calls[0]["prompt"])
-    assert "Hidden source form" in str(runner.calls[1]["prompt"])
+    audit_calls = [call for call in runner.calls if call["stage"] == "audit"]
+    assert audit_calls[0]["tool_set"].allowed_tools == audit_calls[1]["tool_set"].allowed_tools  # type: ignore[union-attr]
 
 
 @pytest.mark.anyio
 async def test_reference_repair_can_acquire_stronger_source_and_owns_final_citations() -> None:
     """Future failure: accepted rendering must not retain evidence rejected before source-upgrading repair."""
     workspace = _workspace()
-    initial_proof = ReferenceProof(
+    initial = ReferenceProof(
         status="finalized",
         answers=(ReferenceAnswerSelection(answer_id="A1"),),
         proof_steps=(
@@ -216,12 +223,7 @@ async def test_reference_repair_can_acquire_stronger_source_and_owns_final_citat
     runner = _RepairAcquisitionRunner(
         (
             _dossier(),
-            QuestionPacket(
-                status="generated",
-                question="Which named row has the supported larger value?",
-                form_transfer_explanation="preserved",
-            ),
-            initial_proof,
+            initial,
             AuditResult(status="reject", defects=("upgrade the source",), explanation="weak source"),
             AuditResult(status="pass", explanation="complete"),
         ),
@@ -231,73 +233,57 @@ async def test_reference_repair_can_acquire_stronger_source_and_owns_final_citat
         runner=runner,  # type: ignore[arg-type]
         source_fetcher=_UnusedFetcher(),
         workspace_factory=lambda: workspace,
-    ).run(
-        GenerationForm(form_identity="form:1", source_index=1, form="Hidden source form"),
-        PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
-    )
+    ).run(PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")))
 
     assert isinstance(outcome, DomainTweakFinalizedTask)
-    assert outcome.route_context is not None
-    assert outcome.route_context.source_urls == ("https://example.org/stronger-report",)
     assert outcome.task.reference_answer.citations is not None
     assert tuple(item.url for item in outcome.task.reference_answer.citations) == (
         "https://example.org/stronger-report",
     )
-    reference_calls = [call for call in runner.calls if call["stage"] in {"reference", "reference_repair"}]
-    assert all(call["web_search"] is True for call in reference_calls)
-    assert all(call["tool_set"].search_result_registrar is not None for call in reference_calls)  # type: ignore[union-attr]
 
 
 @pytest.mark.anyio
-async def test_candidate_giveup_retains_stable_failure_class_and_stage() -> None:
-    """Future failure: a discarded candidate must retain bounded aggregate attribution without raw model text."""
+async def test_no_generate_retains_first_typed_blocker() -> None:
+    """Future failure: a genuine QG blocker must remain terminal and observable."""
     runner = _Runner(
         (
-            _dossier(),
-            QuestionPacket(
-                status="giveup",
-                form_transfer_explanation="The required operation is unnatural for this dossier.",
-                giveup_reason="the dossier cannot support the source form's exhaustive boundary",
+            GroundedQuestionDossier(
+                status="no_generate",
+                failure_reason="The complete public roster cannot be established",
+                failure_class="reasoning_no_generate",
             ),
         )
     )
-    pipeline = CandidatePipeline(
+    outcome = await CandidatePipeline(
         runner=runner,  # type: ignore[arg-type]
         source_fetcher=_UnusedFetcher(),
         workspace_factory=_workspace,
-    )
-
-    outcome = await pipeline.run(
-        GenerationForm(form_identity="form:1", source_index=1, form="Hidden source form"),
-        PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
-    )
+    ).run(PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")))
 
     assert isinstance(outcome, CandidateFailure)
     assert outcome.failure_class == "reasoning_no_generate"
-    assert outcome.terminal_stage == "question"
+    assert outcome.terminal_stage == "question_generation"
+    assert outcome.failure_reason == "The complete public roster cannot be established"
+    assert outcome.source_failure_id is None
 
 
-def test_dossier_source_failure_must_match_workspace_evidence() -> None:
-    """Future failure: an incidental tool failure must not become the dossier's declared terminal cause."""
-    dossier = SourceDossier(
+def test_source_failure_must_match_workspace_evidence() -> None:
+    """Future failure: an incidental fetch failure must not become the declared terminal cause."""
+    dossier = GroundedQuestionDossier(
         status="no_generate",
-        unresolved_gaps=("source unavailable",),
-        no_generate_reason="the selected source could not be used",
+        failure_reason="The selected source could not be used",
         failure_class="source_unavailable",
         source_failure_id="source_failure:1",
     )
-
-    assert _dossier_contract_defects(dossier, SourceWorkspace()) == (
-        "dossier source_failure_id was not observed by the workspace",
+    assert _question_generation_contract_defects(dossier, SourceWorkspace()) == (
+        "question-generation source_failure_id was not observed by the workspace",
     )
 
 
-def test_dossier_source_failure_id_must_resolve_to_the_declared_class() -> None:
-    """Future failure: one failed fetch must not authorize a different terminal source cause."""
-    dossier = SourceDossier(
+def test_source_failure_id_must_resolve_to_declared_class() -> None:
+    dossier = GroundedQuestionDossier(
         status="no_generate",
-        unresolved_gaps=("required document rejected",),
-        no_generate_reason="the required document was rejected by source policy",
+        failure_reason="The required document was rejected",
         failure_class="source_fetch_rejected",
         source_failure_id="source_failure:1",
     )
@@ -307,86 +293,45 @@ def test_dossier_source_failure_id_must_resolve_to_the_declared_class() -> None:
             failure_class="source_unavailable",
         )
     )
-
-    assert _dossier_contract_defects(dossier, workspace) == (
-        "dossier source_failure_id does not match its declared failure_class",
+    assert _question_generation_contract_defects(dossier, workspace) == (
+        "question-generation source_failure_id does not match its declared failure_class",
     )
 
 
 @pytest.mark.anyio
 async def test_wrong_internal_stage_output_becomes_batch_terminal() -> None:
-    """Future failure: an internal output-type defect must not enter paid candidate refill."""
     pipeline = CandidatePipeline(
         runner=_WrongOutputRunner(),  # type: ignore[arg-type]
         source_fetcher=_UnusedFetcher(),
         workspace_factory=_workspace,
     )
-
     with pytest.raises(BatchTerminalGenerationError) as captured:
-        await pipeline.run(
-            GenerationForm(form_identity="form:1", source_index=1, form="Hidden source form"),
-            PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
-        )
-
+        await pipeline.run(PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")))
     assert captured.value.failure_class == "unexpected_pipeline_failure"
-    assert captured.value.stage == "dossier"
+    assert captured.value.stage == "question_generation"
     assert captured.value.tool_usage.actual_total_cost_usd == 0.75
 
 
 @pytest.mark.anyio
-async def test_unexpected_pipeline_exception_becomes_a_typed_batch_terminal_fault() -> None:
-    """Future failure: a shared host-code defect must not abort without an observable terminal class."""
+async def test_unexpected_pipeline_exception_becomes_typed_batch_terminal_fault() -> None:
     pipeline = CandidatePipeline(
         runner=_UnexpectedRunner(),  # type: ignore[arg-type]
         source_fetcher=_UnusedFetcher(),
         workspace_factory=_workspace,
     )
-
     with pytest.raises(BatchTerminalGenerationError) as captured:
-        await pipeline.run(
-            GenerationForm(form_identity="form:1", source_index=1, form="Hidden source form"),
-            PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
-        )
-
-    assert captured.value.failure_class == "unexpected_pipeline_failure"
-    assert captured.value.stage == "dossier"
+        await pipeline.run(PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")))
+    assert captured.value.stage == "question_generation"
 
 
 @pytest.mark.anyio
-async def test_packet_size_first_exposed_by_actual_question_is_proof_invalid() -> None:
-    """Future failure: a final-question packet overflow must discard one candidate, not abort refill."""
-    runner = _Runner(
-        (
-            _dossier(),
-            QuestionPacket(
-                status="generated",
-                question="Q" * 128_001,
-                form_transfer_explanation="preserved",
-            ),
-            ReferenceProof(
-                status="finalized",
-                answers=(ReferenceAnswerSelection(answer_id="A1"),),
-                proof_steps=(
-                    ProofStep(
-                        step_id="S1",
-                        statement="Alpha is the supported answer.",
-                        kind="supported",
-                        evidence_ids=("E1",),
-                    ),
-                ),
-            ),
-        )
-    )
-
+async def test_packet_size_first_exposed_by_question_is_proof_invalid() -> None:
+    runner = _Runner((_dossier(question="Q" * 128_001), _proof()))
     outcome = await CandidatePipeline(
         runner=runner,  # type: ignore[arg-type]
         source_fetcher=_UnusedFetcher(),
         workspace_factory=_workspace,
-    ).run(
-        GenerationForm(form_identity="form:1", source_index=1, form="Hidden source form"),
-        PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
-    )
-
+    ).run(PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")))
     assert isinstance(outcome, CandidateFailure)
     assert outcome.failure_class == "proof_invalid"
     assert outcome.terminal_stage == "reference"

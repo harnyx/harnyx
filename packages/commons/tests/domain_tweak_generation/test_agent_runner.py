@@ -144,7 +144,7 @@ def test_auth_and_model_access_results_stop_the_batch(status: int) -> None:
     )
 
     with pytest.raises(BatchTerminalGenerationError):
-        _raise_for_provider_result("dossier", result, tool_usage=ToolUsageSummary.zero())
+        _raise_for_provider_result("question_generation", result, tool_usage=ToolUsageSummary.zero())
 
 
 def test_invalid_provider_request_stops_the_batch() -> None:
@@ -161,7 +161,7 @@ def test_invalid_provider_request_stops_the_batch() -> None:
     )
 
     with pytest.raises(BatchTerminalGenerationError):
-        _raise_for_provider_result("dossier", result, tool_usage=ToolUsageSummary.zero())
+        _raise_for_provider_result("question_generation", result, tool_usage=ToolUsageSummary.zero())
 
 
 @pytest.mark.parametrize("status", [429, 500, 503])
@@ -179,7 +179,7 @@ def test_rate_limit_and_server_results_end_only_the_candidate(status: int) -> No
     )
 
     with pytest.raises(CandidateStageError, match="temporary provider failure") as captured:
-        _raise_for_provider_result("dossier", result, tool_usage=ToolUsageSummary.zero())
+        _raise_for_provider_result("question_generation", result, tool_usage=ToolUsageSummary.zero())
 
     assert captured.value.failure_class == "transient_provider"
 
@@ -227,14 +227,14 @@ def test_unknown_sdk_exception_stops_the_batch_instead_of_refilling() -> None:
     """Future failure: an unknown shared runtime bug must not be misreported as candidate pressure."""
     with pytest.raises(BatchTerminalGenerationError) as captured:
         _raise_classified_exception(
-            "dossier",
+            "question_generation",
             RuntimeError("unexpected SDK failure"),
             client_initialized=True,
             elapsed_ms=12.0,
         )
 
     assert captured.value.failure_class == "unexpected_sdk_failure"
-    assert captured.value.stage == "dossier"
+    assert captured.value.stage == "question_generation"
 
 
 @pytest.mark.parametrize(
@@ -380,7 +380,7 @@ def test_error_result_without_usage_preserves_provider_error_accounting() -> Non
     assert usage.llm.call_count == 1
     assert usage.llm.total_tokens == 0
     with pytest.raises(BatchTerminalGenerationError) as captured:
-        _raise_for_provider_result("dossier", result, tool_usage=usage)
+        _raise_for_provider_result("question_generation", result, tool_usage=usage)
     assert captured.value.failure_class == "provider_auth"
 
 
@@ -390,7 +390,7 @@ def test_sdk_accounting_contract_error_is_batch_terminal_configuration_failure()
 
     with pytest.raises(BatchTerminalGenerationError) as captured:
         _raise_classified_exception(
-            "dossier",
+            "question_generation",
             error,
             client_initialized=True,
             elapsed_ms=1.0,
@@ -427,8 +427,7 @@ async def test_each_stage_records_one_named_generation_with_explicit_known_or_un
     updates: list[tuple[object, dict[str, object]]] = []
     stage_costs: dict[StageName, float | None] = {
         "portfolio": 1.0,
-        "dossier": 2.0,
-        "question": 3.0,
+        "question_generation": 2.0,
         "reference": 0.0,
         "reference_repair": 4.0,
         "audit": None,
@@ -575,7 +574,7 @@ async def test_query_failure_before_any_result_marks_stage_cost_unavailable(
 
     with pytest.raises(CandidateStageError) as captured:
         await DomainTweakAgentRunner().run_stage(
-            stage="dossier",
+            stage="question_generation",
             system_prompt="system",
             prompt="prompt",
             output_model=_StageOutput,
@@ -616,7 +615,7 @@ async def test_receive_response_process_failure_ends_only_the_initialized_candid
 
     with pytest.raises(CandidateStageError) as captured:
         await DomainTweakAgentRunner().run_stage(
-            stage="dossier",
+            stage="question_generation",
             system_prompt="system",
             prompt="prompt",
             output_model=_StageOutput,
@@ -655,7 +654,7 @@ async def test_receive_response_without_result_ends_only_the_initialized_candida
 
     with pytest.raises(CandidateStageError) as captured:
         await DomainTweakAgentRunner().run_stage(
-            stage="dossier",
+            stage="question_generation",
             system_prompt="system",
             prompt="prompt",
             output_model=_StageOutput,
@@ -846,7 +845,7 @@ async def test_feedback_query_failure_keeps_known_prefix_usage_but_marks_total_c
 
     with pytest.raises(CandidateStageError) as captured:
         await DomainTweakAgentRunner().run_stage(
-            stage="question",
+            stage="question_generation",
             system_prompt="system",
             prompt="prompt",
             output_model=_StageOutput,

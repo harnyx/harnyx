@@ -28,7 +28,6 @@ from harnyx_commons.domain_tweak_generation.contracts import (
     DomainTweakBatchGenerationResult,
     DomainTweakFinalizedTask,
     DomainTweakFinalizedTaskCallback,
-    GenerationForm,
     PortfolioAllocation,
     PortfolioCallCallback,
     PortfolioCallEvent,
@@ -36,7 +35,6 @@ from harnyx_commons.domain_tweak_generation.contracts import (
     SlotAttemptCallback,
     SlotAttemptEvent,
 )
-from harnyx_commons.domain_tweak_generation.form_source import GenerationFormCursor
 from harnyx_commons.domain_tweak_generation.prompts import PORTFOLIO_SYSTEM, portfolio_prompt
 from harnyx_commons.observability.langfuse import (
     LangfuseGeneration,
@@ -52,7 +50,6 @@ _LOGGER = logging.getLogger(__name__)
 @dataclass(frozen=True, slots=True)
 class _SlotInput:
     output_slot: int
-    form: GenerationForm
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,7 +101,6 @@ class ShortfallRefillPipeline:
         self,
         *,
         target_count: int,
-        forms: GenerationFormCursor,
         on_finalized_task: DomainTweakFinalizedTaskCallback | None = None,
         on_portfolio_completed: PortfolioCallCallback | None = None,
         on_attempt_completed: SlotAttemptCallback | None = None,
@@ -115,7 +111,6 @@ class ShortfallRefillPipeline:
         open_slots = list(range(target_count))
         finalized_by_slot: dict[int, DomainTweakFinalizedTask] = {}
         canonical_questions: set[str] = set()
-        finalized_form_identities: set[str] = set()
         accepted_route_contexts: list[AcceptedRouteContext] = []
         failures: Counter[str] = Counter()
         total_usage = known_zero_actual_cost_tool_usage()
@@ -126,14 +121,7 @@ class ShortfallRefillPipeline:
 
         while open_slots:
             round_index += 1
-            slot_inputs = tuple(
-                _SlotInput(slot, form)
-                for slot, form in zip(
-                    open_slots,
-                    forms.next_inputs(len(open_slots), excluding=frozenset(finalized_form_identities)),
-                    strict=True,
-                )
-            )
+            slot_inputs = tuple(_SlotInput(slot) for slot in open_slots)
             groups = tuple(
                 slot_inputs[start : start + _MAX_PORTFOLIO_GROUP_SIZE]
                 for start in range(0, len(slot_inputs), _MAX_PORTFOLIO_GROUP_SIZE)
@@ -246,12 +234,11 @@ class ShortfallRefillPipeline:
                             "attempt_id": attempt_id,
                             "round_index": current_round,
                             "output_slot": item.output_slot,
-                            "form_identity": item.form.form_identity,
                             "portfolio_call_id": portfolio_call_id,
                         },
                     ) as parent:
                         try:
-                            result = await self._candidate_pipeline.run(item.form, allocation)
+                            result = await self._candidate_pipeline.run(allocation)
                         except BatchTerminalGenerationError as exc:
                             result = exc
                         except BaseException as exc:
@@ -322,7 +309,6 @@ class ShortfallRefillPipeline:
                         attempt_id=candidate_run.attempt_id,
                         round_index=current_round,
                         output_slot=item.output_slot,
-                        form_identity=item.form.form_identity,
                         outcome="batch_terminal",
                         terminal_stage=outcome.stage,
                         elapsed_ms=candidate_run.elapsed_ms,
@@ -341,9 +327,10 @@ class ShortfallRefillPipeline:
                     if canonical in canonical_questions:
                         outcome = CandidateFailure(
                             "contract_invalid",
-                            "question",
+                            "question_generation",
                             outcome.stage_summaries,
                             outcome.tool_usage,
+                            failure_reason="generated question duplicates an already accepted question",
                         )
                     else:
                         canonical_questions.add(canonical)
@@ -362,7 +349,6 @@ class ShortfallRefillPipeline:
                         attempt_id=candidate_run.attempt_id,
                         round_index=current_round,
                         output_slot=item.output_slot,
-                        form_identity=item.form.form_identity,
                         outcome="finalized",
                         terminal_stage="audit",
                         elapsed_ms=candidate_run.elapsed_ms,
@@ -376,7 +362,6 @@ class ShortfallRefillPipeline:
                     if on_attempt_completed is not None:
                         await on_attempt_completed(event)
                     accepted_route_contexts.append(outcome.route_context)
-                    finalized_form_identities.add(outcome.form_identity)
                     public_outcome = outcome.model_copy(update={"route_context": None})
                     if on_finalized_task is not None:
                         await on_finalized_task(item.output_slot, public_outcome)
@@ -391,7 +376,6 @@ class ShortfallRefillPipeline:
                     attempt_id=candidate_run.attempt_id,
                     round_index=current_round,
                     output_slot=item.output_slot,
-                    form_identity=item.form.form_identity,
                     outcome=outcome.failure_class,
                     terminal_stage=outcome.terminal_stage,
                     elapsed_ms=candidate_run.elapsed_ms,
@@ -399,6 +383,8 @@ class ShortfallRefillPipeline:
                     tool_usage=outcome.tool_usage,
                     retry_after_seconds=outcome.retry_after_seconds,
                     portfolio_call_id=candidate_run.portfolio_call_id,
+                    failure_reason=outcome.failure_reason,
+                    source_failure_id=outcome.source_failure_id,
                 )
                 candidate_run.verdict.set_result(event)
                 await candidate_run.observation_done
@@ -637,7 +623,6 @@ async def _emit_portfolio_failure_attempts(
             attempt_id=str(attempt_id_factory()),
             round_index=round_index,
             output_slot=item.output_slot,
-            form_identity=item.form.form_identity,
             outcome=outcome.error.failure_class,
             terminal_stage="portfolio",
             elapsed_ms=outcome.call_event.elapsed_ms,

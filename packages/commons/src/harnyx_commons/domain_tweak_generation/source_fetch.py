@@ -16,14 +16,14 @@ from urllib.parse import parse_qsl, unquote, urljoin, urlsplit
 from pydantic import BaseModel, Field
 
 from harnyx_commons.domain.shared_config import COMMONS_STRICT_CONFIG
-from harnyx_commons.domain_tweak_generation.source_workspace import SourceDocument
+from harnyx_commons.domain_tweak_generation.source_workspace import SourceDocument, SourceLink
 from harnyx_commons.source_extractor_worker import (
     MAX_ADDRESS_SPACE_BYTES,
     MAX_CPU_SECONDS,
     MAX_EXTRACTED_CHARACTERS,
     MAX_PDF_PAGES,
     ExtractionRejectedError,
-    extract_content,
+    extract_source,
 )
 
 MAX_RESPONSE_BYTES = 64 * 1024 * 1024
@@ -76,6 +76,20 @@ class _WorkerError(BaseModel):
     message: str = Field(min_length=1, max_length=2_000)
 
 
+class _ExtractedLinkPayload(BaseModel):
+    model_config = COMMONS_STRICT_CONFIG
+
+    url: str = Field(min_length=1)
+    text: str
+
+
+class _ExtractedSourcePayload(BaseModel):
+    model_config = COMMONS_STRICT_CONFIG
+
+    content: str = Field(min_length=1, max_length=MAX_EXTRACTED_CHARACTERS)
+    links: tuple[_ExtractedLinkPayload, ...] = ()
+
+
 class _PinnedHTTPConnection(http.client.HTTPConnection):
     def __init__(self, host: str, port: int, pinned_ip: str, timeout: float) -> None:
         super().__init__(host, port=port, timeout=timeout)
@@ -111,7 +125,7 @@ class PublicSourceFetcher:
         async with self._worker_slots:
             fetched = await _fetch_isolated(url, document_kind)
             _validate_document_response(fetched, document_kind)
-            content = await _extract_isolated(
+            extracted = await _extract_isolated(
                 fetched.body,
                 fetched.media_type,
                 fetched.content_encoding,
@@ -121,8 +135,9 @@ class PublicSourceFetcher:
             requested_url=url,
             final_url=fetched.final_url,
             media_type=fetched.media_type,
-            content=content,
+            content=extracted.content,
             fetched_bytes=len(fetched.body),
+            links=tuple(SourceLink(url=link.url, text=link.text) for link in extracted.links),
         )
 
 
@@ -367,7 +382,7 @@ async def _fetch_isolated(url: str, document_kind: DocumentKind) -> _FetchedBody
     )
 
 
-async def _extract_isolated(body: bytes, media_type: str, encoding: str, url: str) -> str:
+async def _extract_isolated(body: bytes, media_type: str, encoding: str, url: str) -> _ExtractedSourcePayload:
     output = await _run_worker(
         (sys.executable, "-m", "harnyx_commons.source_extractor_worker", media_type, encoding, url),
         input_payload=body,
@@ -376,7 +391,10 @@ async def _extract_isolated(body: bytes, media_type: str, encoding: str, url: st
         timeout_message="source extraction exceeded 60 wall seconds",
     )
     if output[:1] == b"O":
-        return output[1:].decode("utf-8")
+        try:
+            return _ExtractedSourcePayload.model_validate_json(output[1:])
+        except Exception as exc:
+            raise SourceFetchError("source_unavailable", "isolated source extractor returned invalid metadata") from exc
     if output[:1] == b"E":
         _raise_worker_error(output)
     raise SourceFetchError("source_unavailable", "isolated source extractor returned an invalid response")
@@ -428,7 +446,7 @@ def _raise_worker_error(output: bytes) -> None:
 
 def _extract_content(body: bytes, media_type: str, encoding: str, url: str) -> str:
     try:
-        return extract_content(body, media_type, encoding, url)
+        return extract_source(body, media_type, encoding, url).content
     except ExtractionRejectedError as exc:
         raise SourceFetchError(exc.code, str(exc)) from exc
 

@@ -2,46 +2,29 @@ import json
 
 from harnyx_commons.domain_tweak_generation import (
     AcceptedRouteContext,
-    DossierAnswer,
-    DossierFact,
-    DossierRequirement,
-    GenerationForm,
+    GroundedQuestionDossier,
     PortfolioAllocation,
-    SourceDossier,
 )
 from harnyx_commons.domain_tweak_generation.prompts import (
     AUDIT_SYSTEM,
-    DOSSIER_SYSTEM,
     PORTFOLIO_SYSTEM,
-    QUESTION_SYSTEM,
+    QUESTION_GENERATION_SYSTEM,
     REFERENCE_SYSTEM,
     audit_prompt,
-    dossier_prompt,
     portfolio_prompt,
-    question_prompt,
+    question_generation_prompt,
 )
 from harnyx_commons.domain_tweak_generation.source_workspace import _serialize_audit_packet
 
 
-def test_portfolio_and_dossier_prompts_are_form_blind() -> None:
+def test_portfolio_and_question_generation_prompts_have_no_source_form_boundary() -> None:
     """Future failure: discovery must not regain source-form or benchmark-answer leakage."""
     hidden_form = "SECRET FORM OPERATION"
-    form = GenerationForm(form_identity="f", source_index=1, form=hidden_form)
     allocation = PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e"))
-    dossier = SourceDossier(
-        status="ready",
-        subject="subject",
-        route_summary="route",
-        question_plan="plan",
-        answers=(DossierAnswer(answer_id="A1", value="x"), DossierAnswer(answer_id="A2", value="y")),
-        requirements=(DossierRequirement(description="requirement"),),
-        source_facts=(DossierFact(statement="fact", evidence_ids=("E1",)),),
-        derivation="derive",
-    )
 
     assert hidden_form not in portfolio_prompt((0,))
-    assert hidden_form not in dossier_prompt(allocation)
-    assert hidden_form in question_prompt(form, allocation, dossier, ())
+    assert hidden_form not in question_generation_prompt(allocation)
+    assert "source_form" not in question_generation_prompt(allocation)
 
 
 def test_portfolio_prompt_carries_only_bounded_prior_route_context() -> None:
@@ -64,8 +47,8 @@ def test_portfolio_prompt_carries_only_bounded_prior_route_context() -> None:
 
 def test_every_llm_work_order_interprets_its_output_contract_and_examples() -> None:
     """Future failure: JSON Schema field names alone must not define stage semantics."""
-    for work_order in (PORTFOLIO_SYSTEM, DOSSIER_SYSTEM, QUESTION_SYSTEM, REFERENCE_SYSTEM, AUDIT_SYSTEM):
-        assert "OUTPUT CONTRACT:" in work_order
+    for work_order in (PORTFOLIO_SYSTEM, QUESTION_GENERATION_SYSTEM, REFERENCE_SYSTEM, AUDIT_SYSTEM):
+        assert "OUTPUT CONTRACT" in work_order
         assert "GOOD:" in work_order
         assert "BAD:" in work_order
     assert "question itself reveals an answer" in " ".join(AUDIT_SYSTEM.split())
@@ -85,4 +68,17 @@ def test_audit_prompt_reuses_the_bounded_packet_serializer_without_format_drift(
     prompt = audit_prompt(packet)
 
     assert _serialize_audit_packet(packet) == expected_json
-    assert prompt == "Audit this closed proof packet:\n" + expected_json
+    assert prompt == (
+        "Audit this proof packet and independently inspect the retained sources where needed:\n" + expected_json
+    )
+
+
+def test_question_generation_work_order_preserves_ultra_agent_responsibility() -> None:
+    """Future failure: final wording and source proof must not be split back into separate agents."""
+    normalized = " ".join(QUESTION_GENERATION_SYSTEM.split())
+    assert "Own discovery, inspection, the positive answer route, and wording" in normalized
+    assert "inspect list_source_links; use regex_search before bounded read_lines" in normalized
+    assert "publisher and version when relevant" in normalized
+    assert "why_not_one_page" in QUESTION_GENERATION_SYSTEM
+    assert "substantive_final_condition" in QUESTION_GENERATION_SYSTEM
+    assert set(GroundedQuestionDossier.model_fields) >= {"question", "answers", "derivation", "source_facts"}

@@ -9,7 +9,7 @@ from mcp import types as mcp_types
 
 from harnyx_commons.domain_tweak_generation import ProofStep, SourceDocument, SourceFetchError, SourceWorkspace
 from harnyx_commons.domain_tweak_generation import source_workspace as source_workspace_module
-from harnyx_commons.domain_tweak_generation.source_workspace import _serialize_audit_packet
+from harnyx_commons.domain_tweak_generation.source_workspace import SourceLink, _serialize_audit_packet
 
 
 class _RecordingFetcher:
@@ -60,8 +60,8 @@ def test_web_search_registration_rejects_undocumented_non_error_shape() -> None:
 
 
 @pytest.mark.anyio
-async def test_fetch_tool_returns_a_stable_failure_id_for_exact_dossier_attribution() -> None:
-    """Future failure: the dossier must be able to select the exact fetch failure that blocks generation."""
+async def test_fetch_tool_returns_a_stable_failure_id_for_exact_question_generation_attribution() -> None:
+    """Future failure: QG must be able to select the exact fetch failure that blocks generation."""
     workspace = SourceWorkspace()
     workspace.register_web_search_results(
         {
@@ -75,7 +75,9 @@ async def test_fetch_tool_returns_a_stable_failure_id_for_exact_dossier_attribut
             "durationSeconds": 0.2,
         }
     )
-    server = workspace.dossier_tools(_UnavailableFetcher()).mcp_servers["dossier_vfs"]["instance"]
+    server = workspace.question_generation_tools(_UnavailableFetcher()).mcp_servers[
+        "question_generation_vfs"
+    ]["instance"]
     request = mcp_types.CallToolRequest(
         method="tools/call",
         params=mcp_types.CallToolRequestParams(
@@ -183,6 +185,181 @@ def test_workspace_uses_stable_ids_and_attaches_table_header() -> None:
     assert evidence.excerpt.startswith("HEADER\tName\tValue")
     assert certificate.match_line_ids == (lines[1].line_id, lines[2].line_id)
     assert "content" not in workspace.source_metadata()[0]
+
+
+@pytest.mark.anyio
+async def test_list_source_links_filters_bounded_results_and_registers_fetch_candidates() -> None:
+    """Future failure: retained HTML navigation must stay bounded without becoming a crawler."""
+    workspace = SourceWorkspace()
+    source = workspace.store(
+        SourceDocument(
+            requested_url="https://example.com/index",
+            final_url="https://example.com/index",
+            media_type="text/html",
+            content="Index",
+            fetched_bytes=5,
+            links=tuple(
+                SourceLink(url=f"https://example.com/annual/{index}", text=f"Annual record {index}")
+                for index in range(105)
+            )
+            + (SourceLink(url="https://example.com/monthly", text="Monthly record"),),
+        )
+    )
+    server = workspace.question_generation_tools(_UnavailableFetcher()).mcp_servers[
+        "question_generation_vfs"
+    ]["instance"]
+    request = mcp_types.CallToolRequest(
+        method="tools/call",
+        params=mcp_types.CallToolRequestParams(
+            name="list_source_links",
+            arguments={"source_id": source.source_id, "pattern": "ANNUAL"},
+        ),
+    )
+
+    response = await server.request_handlers[mcp_types.CallToolRequest](request)
+
+    content = response.root.content
+    assert response.root.isError is not True
+    assert len(content) == 1 and isinstance(content[0], mcp_types.TextContent)
+    payload = json.loads(content[0].text)
+    assert payload["returned_match_count"] == 100
+    assert payload["total_match_count"] == 105
+    assert payload["truncated"] is True
+    assert len(payload["links"]) == 100
+    assert workspace.get_source_candidate("source_candidate:100").url.endswith("/annual/99")
+
+
+@pytest.mark.anyio
+async def test_list_source_links_bounds_the_serialized_result_not_only_the_link_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Future failure: many individually valid links must not create an unbounded agent-tool response."""
+    monkeypatch.setattr(source_workspace_module, "_MAX_LINK_RESULT_CHARACTERS", 600)
+    workspace = SourceWorkspace()
+    source = workspace.store(
+        SourceDocument(
+            requested_url="https://example.com/index",
+            final_url="https://example.com/index",
+            media_type="text/html",
+            content="Index",
+            fetched_bytes=5,
+            links=tuple(
+                SourceLink(
+                    url=f"https://example.com/annual/{index}/" + ("u" * 80),
+                    text=f"Annual record {index} " + ("t" * 80),
+                )
+                for index in range(20)
+            ),
+        )
+    )
+    server = workspace.question_generation_tools(_UnavailableFetcher()).mcp_servers[
+        "question_generation_vfs"
+    ]["instance"]
+    request = mcp_types.CallToolRequest(
+        method="tools/call",
+        params=mcp_types.CallToolRequestParams(
+            name="list_source_links",
+            arguments={"source_id": source.source_id, "pattern": "annual"},
+        ),
+    )
+
+    response = await server.request_handlers[mcp_types.CallToolRequest](request)
+
+    content = response.root.content
+    assert len(content) == 1 and isinstance(content[0], mcp_types.TextContent)
+    payload = json.loads(content[0].text)
+    assert 0 < payload["returned_match_count"] < payload["total_match_count"]
+    assert payload["truncated"] is True
+    assert len(content[0].text) <= 600
+    for item in payload["links"]:
+        assert workspace.get_source_candidate(item["source_candidate_id"]).url == item["url"]
+
+
+def test_audit_tools_are_exactly_the_fixed_read_only_source_inspection_boundary() -> None:
+    """Future failure: the blind audit must not gain fetch, search, registration, or mutation tools."""
+    assert SourceWorkspace().audit_tools().allowed_tools == (
+        "mcp__audit_vfs__list_sources",
+        "mcp__audit_vfs__regex_search",
+        "mcp__audit_vfs__read_lines",
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("list_sources", {}),
+        ("regex_search", {"pattern": "Alpha", "context_lines": 1, "max_matches": 10}),
+        ("read_lines", {}),
+    ],
+)
+async def test_shared_inspection_tools_return_the_same_payload_for_author_and_audit_paths(
+    tool_name: str,
+    arguments: dict[str, object],
+) -> None:
+    """Future failure: author and audit wrappers must not drift into different source semantics."""
+    workspace = SourceWorkspace()
+    source = workspace.store(
+        SourceDocument(
+            requested_url="https://example.com/report",
+            final_url="https://example.com/report",
+            media_type="text/plain",
+            content="HEADER\tName\tValue\nROW\tAlpha\t7\nROW\tBeta\t9",
+            fetched_bytes=45,
+        )
+    )
+    lines = workspace.lines(source)
+    resolved_arguments = dict(arguments)
+    if tool_name == "regex_search":
+        resolved_arguments["source_id"] = source.source_id
+    elif tool_name == "read_lines":
+        resolved_arguments = {
+            "start_line_id": lines[0].line_id,
+            "end_line_id": lines[-1].line_id,
+        }
+    author_server = workspace.question_generation_tools(_UnavailableFetcher()).mcp_servers[
+        "question_generation_vfs"
+    ]["instance"]
+    audit_server = workspace.audit_tools().mcp_servers["audit_vfs"]["instance"]
+
+    async def call(server: object) -> str:
+        request = mcp_types.CallToolRequest(
+            method="tools/call",
+            params=mcp_types.CallToolRequestParams(name=tool_name, arguments=resolved_arguments),
+        )
+        response = await server.request_handlers[mcp_types.CallToolRequest](request)  # type: ignore[attr-defined]
+        content = response.root.content
+        assert len(content) == 1 and isinstance(content[0], mcp_types.TextContent)
+        return content[0].text
+
+    assert await call(author_server) == await call(audit_server)
+
+
+def test_citation_offsets_preserve_raw_crlf_and_non_ascii_source_text() -> None:
+    """Future failure: line views must map back to exact miner-visible raw character offsets."""
+    content = "preface-" + ("x" * 90) + "\r\nROW\tCafé\t1,200\r\ntail-雪"
+    workspace = SourceWorkspace()
+    source = workspace.store(
+        SourceDocument(
+            requested_url="https://example.com/report",
+            final_url="https://example.com/report",
+            media_type="text/plain",
+            content=content,
+            fetched_bytes=len(content.encode()),
+        )
+    )
+    lines = workspace.lines(source)
+    evidence = workspace.register_evidence(
+        claim="Café value",
+        start_line_id=lines[1].line_id,
+        end_line_id=lines[1].line_id,
+    )
+
+    selected = workspace.citation_slices(evidence)[0]
+
+    assert selected.end - selected.start >= 100
+    assert content[selected.start : selected.end] == source.content[selected.start : selected.end]
+    assert "ROW\tCafé\t1,200\r\n" in content[selected.start : selected.end]
 
 
 def test_closed_audit_packet_includes_selected_evidence_and_certificate_boundaries() -> None:

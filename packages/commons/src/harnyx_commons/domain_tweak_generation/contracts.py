@@ -12,7 +12,7 @@ from harnyx_commons.domain.miner_task import MinerTask
 from harnyx_commons.domain.shared_config import COMMONS_STRICT_CONFIG
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
 
-StageName = Literal["portfolio", "dossier", "question", "reference", "reference_repair", "audit"]
+StageName = Literal["portfolio", "question_generation", "reference", "reference_repair", "audit"]
 CandidateFailureClass = Literal[
     "reasoning_no_generate",
     "transient_provider",
@@ -43,14 +43,6 @@ _SOURCE_FAILURE_CLASSES = frozenset(
         "source_unavailable",
     }
 )
-
-
-class GenerationForm(BaseModel):
-    model_config = COMMONS_STRICT_CONFIG
-
-    form_identity: str = Field(min_length=1)
-    source_index: int = Field(ge=0)
-    form: str = Field(min_length=1)
 
 
 class PortfolioAllocation(BaseModel):
@@ -108,19 +100,20 @@ class DossierAnswer(BaseModel):
     value: str = Field(min_length=1)
 
 
-class SourceDossier(BaseModel):
+class GroundedQuestionDossier(BaseModel):
     model_config = COMMONS_STRICT_CONFIG
 
     status: Literal["ready", "no_generate"]
     subject: str | None = Field(default=None, max_length=160)
     route_summary: str | None = Field(default=None, max_length=500)
-    question_plan: str | None = None
+    question: str | None = None
     answers: tuple[DossierAnswer, ...] = ()
     requirements: tuple[DossierRequirement, ...] = ()
     source_facts: tuple[DossierFact, ...] = ()
     derivation: str | None = None
-    unresolved_gaps: tuple[str, ...] = ()
-    no_generate_reason: str | None = None
+    why_not_one_page: str | None = None
+    substantive_final_condition: str | None = None
+    failure_reason: str | None = None
     failure_class: Literal[
         "reasoning_no_generate",
         "source_fetch_rejected",
@@ -133,7 +126,6 @@ class SourceDossier(BaseModel):
         "answers",
         "requirements",
         "source_facts",
-        "unresolved_gaps",
         mode="before",
     )
     @classmethod
@@ -141,47 +133,56 @@ class SourceDossier(BaseModel):
         return tuple(value) if isinstance(value, list) else value
 
     @model_validator(mode="after")
-    def _status_contract(self) -> SourceDossier:
+    def _status_contract(self) -> GroundedQuestionDossier:
         if self.status == "no_generate":
-            if not self.no_generate_reason:
-                raise ValueError("no_generate dossier requires no_generate_reason")
+            if not self.failure_reason:
+                raise ValueError("no_generate dossier requires failure_reason")
             if self.failure_class is None:
                 raise ValueError("no_generate dossier requires failure_class")
             if self.failure_class in _SOURCE_FAILURE_CLASSES and self.source_failure_id is None:
                 raise ValueError("source-related no_generate dossier requires source_failure_id")
             if self.failure_class == "reasoning_no_generate" and self.source_failure_id is not None:
                 raise ValueError("reasoning_no_generate cannot contain source_failure_id")
+            semantic_values = (
+                self.subject,
+                self.route_summary,
+                self.question,
+                self.derivation,
+                self.why_not_one_page,
+                self.substantive_final_condition,
+            )
+            if (
+                any(value is not None for value in semantic_values)
+                or self.answers
+                or self.requirements
+                or self.source_facts
+            ):
+                raise ValueError("no_generate dossier cannot contain question semantics")
             return self
-        if self.no_generate_reason is not None:
-            raise ValueError("ready dossier cannot contain no_generate_reason")
+        if self.failure_reason is not None:
+            raise ValueError("ready dossier cannot contain failure_reason")
         if self.failure_class is not None:
             raise ValueError("ready dossier cannot contain failure_class")
         if self.source_failure_id is not None:
             raise ValueError("ready dossier cannot contain source_failure_id")
-        if not self.subject or not self.route_summary or not self.question_plan or not self.derivation:
-            raise ValueError("ready dossier requires subject, route, question plan, and derivation")
-        if self.unresolved_gaps:
-            raise ValueError("ready dossier cannot retain answer-material gaps")
+        if not all(
+            (
+                self.subject,
+                self.route_summary,
+                self.question,
+                self.derivation,
+                self.why_not_one_page,
+                self.substantive_final_condition,
+            )
+        ):
+            raise ValueError(
+                "ready dossier requires subject, route, question, derivation, one-page explanation, and final condition"
+            )
+        if not self.requirements or not self.source_facts:
+            raise ValueError("ready dossier requires load-bearing requirements and source facts")
         answer_ids = tuple(item.answer_id for item in self.answers)
         if not answer_ids or len(answer_ids) != len(set(answer_ids)):
             raise ValueError("ready dossier requires unique answer IDs")
-        return self
-
-
-class QuestionPacket(BaseModel):
-    model_config = COMMONS_STRICT_CONFIG
-
-    status: Literal["generated", "giveup"]
-    question: str | None = None
-    form_transfer_explanation: str = Field(min_length=1)
-    giveup_reason: str | None = None
-
-    @model_validator(mode="after")
-    def _status_contract(self) -> QuestionPacket:
-        if self.status == "generated" and (not self.question or self.giveup_reason is not None):
-            raise ValueError("generated question requires question and no giveup_reason")
-        if self.status == "giveup" and not self.giveup_reason:
-            raise ValueError("giveup question requires giveup_reason")
         return self
 
 
@@ -286,7 +287,6 @@ class AcceptedRouteContext(BaseModel):
 class DomainTweakFinalizedTask(BaseModel):
     model_config = COMMONS_STRICT_CONFIG
 
-    form_identity: str = Field(min_length=1)
     task: MinerTask
     stage_summaries: tuple[DomainTweakStageSummary, ...] = ()
     tool_usage: ToolUsageSummary = Field(default_factory=ToolUsageSummary.zero)
@@ -319,7 +319,6 @@ class SlotAttemptEvent(BaseModel):
     attempt_id: str = Field(min_length=1)
     round_index: int = Field(gt=0)
     output_slot: int = Field(ge=0)
-    form_identity: str = Field(min_length=1)
     outcome: AttemptOutcome
     terminal_stage: StageName
     elapsed_ms: float = Field(ge=0)
@@ -329,6 +328,12 @@ class SlotAttemptEvent(BaseModel):
     portfolio_call_id: str | None = None
     failure_class: str | None = Field(default=None, max_length=64)
     repaired: bool = False
+    failure_reason: str | None = Field(default=None, exclude=True)
+    source_failure_id: str | None = Field(
+        default=None,
+        pattern=r"^source_failure:[1-9][0-9]*$",
+        exclude=True,
+    )
 
     @field_validator("stage_summaries", mode="before")
     @classmethod
@@ -413,6 +418,8 @@ class CandidateFailure:
     stage_summaries: tuple[DomainTweakStageSummary, ...]
     tool_usage: ToolUsageSummary = field(default_factory=ToolUsageSummary.zero)
     retry_after_seconds: float | None = None
+    failure_reason: str | None = None
+    source_failure_id: str | None = None
 
 
 CandidateOutcome = DomainTweakFinalizedTask | CandidateFailure
@@ -456,18 +463,16 @@ __all__ = [
     "DomainTweakFinalizedTask",
     "DomainTweakFinalizedTaskCallback",
     "DomainTweakStageSummary",
-    "GenerationForm",
+    "GroundedQuestionDossier",
     "PortfolioAllocation",
     "PortfolioCallCallback",
     "PortfolioCallEvent",
     "PortfolioPacket",
     "ProofStep",
-    "QuestionPacket",
     "ReferenceAnswerSelection",
     "ReferenceProof",
     "SlotAttemptCallback",
     "SlotAttemptEvent",
-    "SourceDossier",
     "StageName",
     "StageRunResult",
 ]

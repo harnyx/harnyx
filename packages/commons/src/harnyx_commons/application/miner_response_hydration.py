@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Self
 from uuid import UUID
@@ -19,8 +20,8 @@ from harnyx_miner_sdk.structured_output import validate_output_against_schema, v
 _MAX_RESPONSE_CHARS = 80_000
 _MAX_CITATION_REFS = 200
 _MAX_EVIDENCE_SEGMENTS_PER_RESPONSE = 400
-_MIN_SLICE_CHARS = 100
-_MAX_TOTAL_EVIDENCE_CHARS = 120_000
+MIN_CITATION_SLICE_CHARS = 100
+MAX_TOTAL_CITATION_EVIDENCE_CHARS = 120_000
 
 
 class MinerResponsePayloadError(ValueError):
@@ -28,7 +29,19 @@ class MinerResponsePayloadError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
-class _MaterializedSelection:
+class CitationSlice:
+    start: int
+    end: int
+
+    def __post_init__(self) -> None:
+        if self.start < 0:
+            raise MinerResponsePayloadError("citation slice start must be non-negative")
+        if self.end <= self.start:
+            raise MinerResponsePayloadError("citation slice end must be greater than start")
+
+
+@dataclass(frozen=True, slots=True)
+class MaterializedCitationSelection:
     text: str
     char_count: int
 
@@ -107,7 +120,7 @@ def hydrate_miner_response_payload(
         session_id=session_id,
         receipt_log=receipt_log,
     )
-    if hydrated_citations.source_text_chars > _MAX_TOTAL_EVIDENCE_CHARS:
+    if hydrated_citations.source_text_chars > MAX_TOTAL_CITATION_EVIDENCE_CHARS:
         raise MinerResponsePayloadError("response citations exceed 120000 materialized source-text characters")
     return Response(
         text=raw_response.text,
@@ -162,7 +175,10 @@ def _hydrate_citation(
     if result is None:
         return None
     source_text = _require_source_text(result.note)
-    materialized = _materialize_selection(source_text, tuple(citation_ref.slices))
+    materialized = materialize_citation_slices(
+        source_text,
+        tuple(CitationSlice(start=item.start, end=item.end) for item in citation_ref.slices),
+    )
     return _HydratedCitation(
         answer_citation=AnswerCitation(
             url=result.url,
@@ -198,11 +214,11 @@ def _require_source_text(note: str | None) -> str:
     return note
 
 
-def _materialize_selection(
+def materialize_citation_slices(
     source_text: str,
-    slices: tuple[_CitationSlicePayload, ...],
-) -> _MaterializedSelection:
-    selected_slices = slices or (_CitationSlicePayload(start=0, end=len(source_text)),)
+    slices: Sequence[CitationSlice],
+) -> MaterializedCitationSelection:
+    selected_slices = tuple(slices) or (CitationSlice(start=0, end=len(source_text)),)
     parts: list[str] = []
     source_text_chars = 0
     for selected_slice in selected_slices:
@@ -210,21 +226,30 @@ def _materialize_selection(
         excerpt = source_text[selected_slice.start : selected_slice.end]
         parts.append(f"[slice {selected_slice.start}:{selected_slice.end}]\n{excerpt}")
         source_text_chars += len(excerpt)
-    return _MaterializedSelection(text="\n\n".join(parts), char_count=source_text_chars)
+    return MaterializedCitationSelection(text="\n\n".join(parts), char_count=source_text_chars)
 
 
-def _validate_slice_against_source(source_text: str, selected_slice: _CitationSlicePayload) -> None:
+def _validate_slice_against_source(source_text: str, selected_slice: CitationSlice) -> None:
     if selected_slice.end > len(source_text):
         raise MinerResponsePayloadError("citation slice exceeds source text length")
     slice_length = selected_slice.end - selected_slice.start
-    if slice_length >= _MIN_SLICE_CHARS:
+    if slice_length >= MIN_CITATION_SLICE_CHARS:
         return
-    if len(source_text) < _MIN_SLICE_CHARS and selected_slice.start == 0 and selected_slice.end == len(source_text):
+    if (
+        len(source_text) < MIN_CITATION_SLICE_CHARS
+        and selected_slice.start == 0
+        and selected_slice.end == len(source_text)
+    ):
         return
     raise MinerResponsePayloadError("citation slice must contain at least 100 characters")
 
 
 __all__ = [
+    "CitationSlice",
+    "MAX_TOTAL_CITATION_EVIDENCE_CHARS",
+    "MIN_CITATION_SLICE_CHARS",
+    "MaterializedCitationSelection",
     "MinerResponsePayloadError",
     "hydrate_miner_response_payload",
+    "materialize_citation_slices",
 ]

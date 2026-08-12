@@ -1,8 +1,10 @@
 import asyncio
 import io
+import json
 import socket
 import ssl
 import zipfile
+from types import SimpleNamespace
 
 import fitz
 import pytest
@@ -521,6 +523,112 @@ def test_html_extraction_projects_table_headers_and_rows() -> None:
     assert "ROW\tA\t7" in content
 
 
+def test_html_extraction_retains_complete_normalized_navigation_links() -> None:
+    """Future failure: dossier inspection must not lose non-anchor or relative navigation targets."""
+    extracted = source_extractor_worker.extract_source(
+        b"""
+        <html><head>
+          <link href="/annual.css"><script src="scripts/annual.js"></script>
+        </head><body>
+          <a href="reports/2025.html"> Annual   report </a>
+          <a href="reports/2025.html">Annual report</a>
+          <form action="/annual/search"><button>Search records</button></form>
+        </body></html>
+        """,
+        "text/html",
+        "",
+        "https://example.com/archive/index.html",
+    )
+
+    assert tuple((link.url, link.text) for link in extracted.links) == (
+        ("https://example.com/archive/reports/2025.html", "Annual report"),
+        ("https://example.com/annual.css", ""),
+        ("https://example.com/archive/scripts/annual.js", ""),
+        ("https://example.com/annual/search", "Search records"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("base_href", "expected_url"),
+    [
+        ("../published/", "https://example.com/published/report.html"),
+        ("https://cdn.example.net/records/", "https://cdn.example.net/records/report.html"),
+    ],
+)
+def test_html_extraction_resolves_navigation_against_the_document_base(
+    base_href: str,
+    expected_url: str,
+) -> None:
+    """Future failure: retained navigation must resolve as the HTML document resolves it."""
+    extracted = source_extractor_worker.extract_source(
+        f"""
+        <html><head>
+          <base target="_blank"><base href="{base_href}"><base href="https://ignored.example/">
+        </head><body>
+          <a href="report.html">Annual report</a>
+        </body></html>
+        """.encode(),
+        "text/html",
+        "",
+        "https://example.com/archive/index.html",
+    )
+
+    assert tuple((link.url, link.text) for link in extracted.links) == ((expected_url, "Annual report"),)
+
+
+@pytest.mark.parametrize(
+    ("limit_name", "html", "message"),
+    [
+        (
+            "MAX_EXTRACTED_LINK_URL_CHARACTERS",
+            b'<html><body><a href="/path-that-is-too-long">report</a></body></html>',
+            "source link URL exceeds extraction limit",
+        ),
+        (
+            "MAX_EXTRACTED_LINK_TEXT_CHARACTERS",
+            b'<html><body><a href="/report">text that is too long</a></body></html>',
+            "source link text exceeds extraction limit",
+        ),
+    ],
+)
+def test_html_extraction_rejects_oversized_individual_link_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    limit_name: str,
+    html: bytes,
+    message: str,
+) -> None:
+    """Future failure: one hostile link must not escape the bounded source-extraction envelope."""
+    monkeypatch.setattr(source_extractor_worker, "MAX_EXTRACTED_LINK_URL_CHARACTERS", 10_000)
+    monkeypatch.setattr(source_extractor_worker, "MAX_EXTRACTED_LINK_TEXT_CHARACTERS", 10_000)
+    monkeypatch.setattr(source_extractor_worker, limit_name, 20)
+
+    with pytest.raises(source_extractor_worker.ExtractionRejectedError, match=message):
+        source_extractor_worker.extract_source(html, "text/html", "", "https://example.com")
+
+
+def test_extraction_envelope_rejects_link_metadata_overflow(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Future failure: link navigation must fail visibly instead of silently dropping later targets."""
+    written: list[bytes] = []
+    monkeypatch.setattr(source_extractor_worker, "_set_resource_limits", lambda: None)
+    monkeypatch.setattr(source_extractor_worker, "MAX_EXTRACTED_ENVELOPE_CHARACTERS", 100)
+    monkeypatch.setattr(
+        source_extractor_worker,
+        "extract_source",
+        lambda *_args: source_extractor_worker.ExtractedSource(
+            content="body",
+            links=(source_extractor_worker.ExtractedLink(url="https://example.com", text="x" * 200),),
+        ),
+    )
+    monkeypatch.setattr(source_extractor_worker, "_write", written.append)
+    monkeypatch.setattr(source_extractor_worker.sys, "argv", ["worker", "text/html", "", "https://example.com"])
+    monkeypatch.setattr(source_extractor_worker.sys, "stdin", SimpleNamespace(buffer=io.BytesIO(b"body")))
+
+    source_extractor_worker.main()
+
+    assert len(written) == 1 and written[0].startswith(b"E")
+    assert json.loads(written[0][1:])["code"] == "source_extraction_limit"
+
+
 @pytest.mark.anyio
 async def test_isolated_pdf_extractor_has_enough_headroom_inside_its_512_mib_limit() -> None:
     """Future failure: the worker baseline must not consume its whole address-space allowance before parsing."""
@@ -530,9 +638,9 @@ async def test_isolated_pdf_extractor_has_enough_headroom_inside_its_512_mib_lim
     body = document.tobytes()
     document.close()
 
-    content = await _extract_isolated(body, "application/pdf", "", "https://example.com/report.pdf")
+    extracted = await _extract_isolated(body, "application/pdf", "", "https://example.com/report.pdf")
 
-    assert "Alpha 1200" in content
+    assert "Alpha 1200" in extracted.content
 
 
 @pytest.mark.anyio

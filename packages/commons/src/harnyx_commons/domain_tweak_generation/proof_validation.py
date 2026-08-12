@@ -5,7 +5,14 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from harnyx_commons.domain.miner_task import AnswerCitation, ReferenceAnswer
+from pydantic import ValidationError
+
+from harnyx_commons.application.miner_response_hydration import (
+    MAX_TOTAL_CITATION_EVIDENCE_CHARS,
+    MinerResponsePayloadError,
+    materialize_citation_slices,
+)
+from harnyx_commons.domain.miner_task import AnswerCitation, ReferenceAnswer, Response
 from harnyx_commons.domain_tweak_generation.contracts import DossierAnswer, ReferenceProof
 from harnyx_commons.domain_tweak_generation.source_workspace import SourceWorkspace, _ProofPacketSizeError
 
@@ -83,15 +90,31 @@ def validate_and_render_reference(
     for step in proof.proof_steps:
         markers = "".join(f"[[{number_by_id[item]}]]" for item in step.evidence_ids)
         rendered_steps.append(f"- {step.statement}{markers}")
-    citations = tuple(
-        AnswerCitation(
-            url=evidence_by_id[evidence_id].url,
-            title=evidence_by_id[evidence_id].claim,
-            note=evidence_by_id[evidence_id].excerpt,
-        )
-        for evidence_id in ordered_evidence_ids
-    )
-    reference = ReferenceAnswer(text="\n\n".join((answer_line, "\n".join(rendered_steps))), citations=citations)
+    citations: list[AnswerCitation] = []
+    total_source_characters = 0
+    try:
+        for evidence_id in ordered_evidence_ids:
+            evidence = evidence_by_id[evidence_id]
+            source = workspace.get_source(evidence.source_id)
+            materialized = materialize_citation_slices(source.content, workspace.citation_slices(evidence))
+            total_source_characters += materialized.char_count
+            citations.append(
+                AnswerCitation(
+                    url=source.final_url,
+                    title=None,
+                    note=materialized.text,
+                )
+            )
+    except MinerResponsePayloadError as exc:
+        raise ProofValidationError(str(exc)) from exc
+    if total_source_characters > MAX_TOTAL_CITATION_EVIDENCE_CHARS:
+        raise ProofValidationError("reference citations exceed 120000 materialized source-text characters")
+    reference_text = "\n\n".join((answer_line, "\n".join(rendered_steps)))
+    try:
+        Response(text=reference_text)
+    except ValidationError as exc:
+        raise ProofValidationError(f"reference answer violates the public miner response contract: {exc}") from exc
+    reference = ReferenceAnswer(text=reference_text, citations=tuple(citations))
     try:
         audit_packet = workspace.proof_packet(
             question=question,

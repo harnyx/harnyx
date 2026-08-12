@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from uuid import UUID
-
 import pytest
 from pydantic import BaseModel
 
@@ -12,17 +10,14 @@ from harnyx_commons.domain_tweak_generation import (
     DossierAnswer,
     DossierFact,
     DossierRequirement,
-    GenerationForm,
-    GenerationFormCursor,
+    GroundedQuestionDossier,
     PortfolioAllocation,
     PortfolioPacket,
     ProofStep,
-    QuestionPacket,
     ReferenceAnswerSelection,
     ReferenceProof,
     ShortfallRefillPipeline,
     SourceDocument,
-    SourceDossier,
     SourceWorkspace,
     StageRunResult,
 )
@@ -63,11 +58,11 @@ def _workspace() -> SourceWorkspace:
 
 @pytest.mark.anyio
 async def test_composed_pipeline_reaches_plain_miner_task_without_hidden_form_leakage() -> None:
-    dossier = SourceDossier(
+    dossier = GroundedQuestionDossier(
         status="ready",
         subject="Published comparison",
         route_summary="route",
-        question_plan="compare rows",
+        question="Which named row has the larger value?",
         answers=(DossierAnswer(answer_id="A1", value="Alpha"),),
         requirements=(DossierRequirement(description="compare"),),
         source_facts=(
@@ -75,6 +70,8 @@ async def test_composed_pipeline_reaches_plain_miner_task_without_hidden_form_le
             DossierFact(statement="Beta 900", evidence_ids=("E2",)),
         ),
         derivation="1200 exceeds 900",
+        why_not_one_page="The bounded roster and decisive values come from separate records.",
+        substantive_final_condition="The exact numeric comparison removes Beta.",
     )
     proof = ReferenceProof(
         status="finalized",
@@ -91,11 +88,6 @@ async def test_composed_pipeline_reaches_plain_miner_task_without_hidden_form_le
                 allocations=(PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),)
             ),
             dossier,
-            QuestionPacket(
-                status="generated",
-                question="Which named row has the larger value?",
-                form_transfer_explanation="comparison preserved",
-            ),
             proof,
             AuditResult(status="pass", explanation="complete"),
         ]
@@ -108,15 +100,9 @@ async def test_composed_pipeline_reaches_plain_miner_task_without_hidden_form_le
     result = await ShortfallRefillPipeline(
         runner=runner,  # type: ignore[arg-type]
         candidate_pipeline=candidate,
-    ).generate_batch(
-        target_count=1,
-        forms=GenerationFormCursor(
-            (GenerationForm(form_identity="form:1", source_index=1, form="hidden form"),),
-            UUID(int=0),
-        ),
-    )
+    ).generate_batch(target_count=1)
 
     assert result.finalized_tasks[0].task.query.output_schema is None
     assert result.finalized_tasks[0].task.reference_answer.citations
     assert result.slot_attempt_count == 1
-    assert result.finalized_tasks[0].task.task_id != UUID(int=0)
+    assert result.finalized_tasks[0].task.task_id.int != 0

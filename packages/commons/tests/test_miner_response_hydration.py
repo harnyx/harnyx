@@ -7,7 +7,9 @@ import pytest
 from pydantic import ValidationError
 
 from harnyx_commons.application.miner_response_hydration import (
+    CitationSlice,
     MinerResponsePayloadError,
+    materialize_citation_slices,
 )
 from harnyx_commons.application.miner_response_hydration import (
     hydrate_miner_response_payload as _hydrate_miner_response_payload,
@@ -157,6 +159,33 @@ def test_hydrate_miner_response_payload_materializes_multiple_slices() -> None:
         f"[slice 0:120]\n{source_text[:120]}\n\n"
         f"[slice 180:300]\n{source_text[180:300]}"
     )
+
+
+def test_public_slice_materializer_matches_official_hydration_for_raw_unicode_crlf_slices() -> None:
+    """Future failure: reference authoring and miner hydration must share one raw projection rule."""
+    session_id = uuid4()
+    source_text = ("prefix\r\nCafé 雪 " + _source_text(130) + "\r\nsuffix " + _source_text(130))
+    slices = (CitationSlice(0, 120), CitationSlice(140, 260))
+
+    materialized = materialize_citation_slices(source_text, slices)
+    hydrated = hydrate_miner_response_payload(
+        {
+            "text": "Answer",
+            "citations": [
+                {
+                    "receipt_id": "receipt-1",
+                    "result_id": "result-1",
+                    "slices": [{"start": item.start, "end": item.end} for item in slices],
+                }
+            ],
+        },
+        session_id=session_id,
+        receipt_log=_receipt_log_with_result(session_id=session_id, note=source_text),
+    )
+
+    assert hydrated.citations is not None
+    assert hydrated.citations[0].note == materialized.text
+    assert materialized.char_count == 240
 
 
 def test_hydrate_miner_response_payload_uses_unstripped_source_text_offsets() -> None:

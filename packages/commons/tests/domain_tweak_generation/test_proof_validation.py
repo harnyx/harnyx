@@ -58,6 +58,36 @@ def test_host_renders_citation_markers() -> None:
     assert validated.reference_answer.citations is not None
 
 
+def test_public_reference_contains_only_raw_miner_projection_not_private_semantics() -> None:
+    """Future failure: model-authored claims and audit annotations must never enter judge-visible citations."""
+    validated = validate_and_render_reference(
+        question="Which value?",
+        dossier_answers=(DossierAnswer(answer_id="A1", value="1200"),),
+        proof=ReferenceProof(
+            status="finalized",
+            answers=(ReferenceAnswerSelection(answer_id="A1"),),
+            proof_steps=(
+                ProofStep(
+                    step_id="S1",
+                    statement="Private authored claim: Alpha has value 1200.",
+                    kind="supported",
+                    evidence_ids=("E1",),
+                ),
+            ),
+        ),
+        workspace=_workspace(),
+    )
+
+    citations = validated.reference_answer.citations
+    assert citations is not None
+    assert citations[0].title is None
+    assert citations[0].note == "[slice 0:33]\nHEADER\tName\tValue\nROW\tAlpha\t1,200"
+    assert "Private authored claim" not in citations[0].note
+    assert "Claim:" not in citations[0].note
+    assert "Supports:" not in citations[0].note
+    assert "Verified excerpts:" not in citations[0].note
+
+
 def test_host_leaves_semantic_answer_support_to_the_independent_audit() -> None:
     """Future failure: host validation must not replace semantic audit with substring matching."""
     validated = validate_and_render_reference(
@@ -129,6 +159,28 @@ def test_reference_may_correct_value_but_not_answer_identity() -> None:
         workspace=workspace,
         dossier_answers=dossier_answers,
     ) == ("reference answer IDs differ from the dossier contract",)
+
+
+def test_reference_rejects_text_that_exceeds_the_public_miner_response_contract() -> None:
+    """Future failure: finalized references must fit through the public miner response boundary."""
+    with pytest.raises(ProofValidationError, match="public miner response contract"):
+        validate_and_render_reference(
+            question="Which value?",
+            dossier_answers=(DossierAnswer(answer_id="A1", value="1200"),),
+            proof=ReferenceProof(
+                status="finalized",
+                answers=(ReferenceAnswerSelection(answer_id="A1", corrected_value="x" * 80_000),),
+                proof_steps=(
+                    ProofStep(
+                        step_id="S1",
+                        statement="Alpha has value 1200.",
+                        kind="supported",
+                        evidence_ids=("E1",),
+                    ),
+                ),
+            ),
+            workspace=_workspace(),
+        )
 
 
 def test_unfit_nontrimmable_packet_envelope_is_a_proof_validation_error() -> None:

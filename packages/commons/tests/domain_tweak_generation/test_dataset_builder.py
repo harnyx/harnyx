@@ -4,11 +4,7 @@ from uuid import UUID
 import pytest
 
 from harnyx_commons.domain.miner_task import MinerTask, Query, ReferenceAnswer
-from harnyx_commons.domain_tweak_generation import (
-    DeepSearchQAFormSource,
-    DomainTweakBatchGenerationResult,
-    DomainTweakFinalizedTask,
-)
+from harnyx_commons.domain_tweak_generation import DomainTweakBatchGenerationResult, DomainTweakFinalizedTask
 from harnyx_commons.domain_tweak_generation.dataset_builder import DomainTweakMinerTaskDatasetBuilder
 from harnyx_commons.miner_task_generation import MinerTaskDatasetRequest, MinerTaskModelSpec
 
@@ -29,7 +25,6 @@ class _Refill:
 
 def _finalized(index: int) -> DomainTweakFinalizedTask:
     return DomainTweakFinalizedTask(
-        form_identity=f"form:{index}",
         task=MinerTask(
             task_id=UUID(int=index + 1),
             query=Query(text=f"question {index}"),
@@ -43,7 +38,6 @@ async def test_builder_delegates_exact_requested_count_without_attempt_multiplie
     """Future failure: dataset adaptation must not expand N into an N-multiple candidate budget."""
     refill = _Refill()
     builder = DomainTweakMinerTaskDatasetBuilder(
-        form_source=DeepSearchQAFormSource(),
         refill_pipeline=refill,  # type: ignore[arg-type]
     )
     spec = MinerTaskModelSpec(
