@@ -1013,6 +1013,7 @@ def test_create_similarity_judge_uses_similarity_llm_config() -> None:
     assert judge._config.provider == "vertex"
     assert judge._config.model == "google/gemma-4-31B-turbo-TEE"
     assert judge._config.fallback_models == (
+        "deepseek-ai/DeepSeek-V4-Flash-0731-TEE",
         "zai-org/GLM-5.2-TEE",
         "moonshotai/Kimi-K3-TEE",
     )
@@ -1031,6 +1032,19 @@ def test_similarity_fallback_tail_only_uses_candidates_after_primary_override() 
     )
 
     assert bootstrap._similarity_judge_fallback_models(settings) == ("moonshotai/Kimi-K3-TEE",)
+
+
+def test_similarity_deepseek_override_uses_only_later_candidates() -> None:
+    settings = Settings.model_construct(
+        llm=LlmSettings.model_construct(
+            similarity_llm_model_override="deepseek-ai/DeepSeek-V4-Flash-0731-TEE",
+        ),
+    )
+
+    assert bootstrap._similarity_judge_fallback_models(settings) == (
+        "zai-org/GLM-5.2-TEE",
+        "moonshotai/Kimi-K3-TEE",
+    )
 
 
 def test_similarity_model_override_participates_in_duplication_detection_route_override() -> None:

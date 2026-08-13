@@ -10,6 +10,7 @@ import pytest
 from pydantic import BaseModel
 
 from harnyx_commons.llm.pricing import ModelPricing
+from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_commons.llm.providers.chutes import (
     ChutesLlmProvider,
     ChutesTextEmbeddingClient,
@@ -410,6 +411,18 @@ def test_chutes_reasoning_effort_derives_template_thinking_for_capable_model() -
     assert "reasoning_effort" not in payload
 
 
+def test_chutes_deepseek_v4_flash_reasoning_effort_enables_thinking() -> None:
+    payload = _ChutesChatRequest.from_request(
+        _basic_chutes_request(
+            model="deepseek-ai/DeepSeek-V4-Flash-0731-TEE",
+            reasoning_effort="high",
+        )
+    ).model_dump(mode="python", exclude_none=True)
+
+    assert payload["chat_template_kwargs"] == {"enable_thinking": True}
+    assert "reasoning_effort" not in payload
+
+
 def test_chutes_explicit_thinking_overrides_reasoning_effort() -> None:
     payload = _ChutesChatRequest.from_request(
         _basic_chutes_request(
@@ -615,6 +628,35 @@ async def test_chutes_provider_persists_stream_ttft_metadata() -> None:
     assert response.metadata is not None
     assert isinstance(response.metadata["ttft_ms"], float)
     assert response.metadata["ttft_ms"] >= 0.0
+
+
+@pytest.mark.anyio("asyncio")
+async def test_chutes_provider_enforces_request_timeout_as_total_stream_deadline() -> None:
+    class _NeverEndingHeartbeatStream(httpx.AsyncByteStream):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            while True:
+                yield b": heartbeat\n\n"
+                await asyncio.sleep(0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=_NeverEndingHeartbeatStream(), request=request)
+
+    provider = ChutesLlmProvider(
+        base_url="https://example.com",
+        api_key="test-key",
+        client=httpx.AsyncClient(base_url="https://example.com", transport=httpx.MockTransport(handler)),
+    )
+    request = replace(
+        _basic_chutes_request(),
+        timeout_seconds=0.01,
+        retry_policy=RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0.0),
+    )
+
+    try:
+        with pytest.raises(LlmRetryExhaustedError, match="TimeoutError"):
+            await asyncio.wait_for(provider.invoke(request), timeout=0.5)
+    finally:
+        await provider.aclose()
 
 
 @pytest.mark.anyio("asyncio")

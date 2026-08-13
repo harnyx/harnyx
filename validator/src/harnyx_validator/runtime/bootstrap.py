@@ -119,6 +119,7 @@ _DIRECT_SCORING_LLM_MODEL = "google/gemma-4-31B-turbo-TEE"
 _SCORING_LLM_REASONING_EFFORT = "high"
 _DUPLICATION_DETECTION_MODEL_CHAIN = (
     "google/gemma-4-31B-turbo-TEE",
+    "deepseek-ai/DeepSeek-V4-Flash-0731-TEE",
     "zai-org/GLM-5.2-TEE",
     "moonshotai/Kimi-K3-TEE",
 )

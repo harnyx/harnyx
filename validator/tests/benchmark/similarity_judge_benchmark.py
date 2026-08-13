@@ -201,6 +201,8 @@ class BenchmarkSummary(BaseModel):
     pairwise_overclassification_rate: float
     final_overclassification_count: int
     final_overclassification_rate: float
+    pairwise_multi_step_underclassification_count: int
+    final_multi_step_underclassification_count: int
     false_novel_count: int
     false_novel_rate: float
     missed_novel_count: int
@@ -534,6 +536,16 @@ async def run_benchmark(
         observed_labels=final_observed,
         rank=_FINAL_RANK,
     )
+    pairwise_multi_step_underclassification_count = _multi_step_underclassification_count(
+        expected_labels=pair_expected,
+        observed_labels=pair_observed,
+        rank=_PAIRWISE_RANK,
+    )
+    final_multi_step_underclassification_count = _multi_step_underclassification_count(
+        expected_labels=final_expected,
+        observed_labels=final_observed,
+        rank=_FINAL_RANK,
+    )
     false_novel_count = sum(
         expected != "novel" and observed == "novel"
         for expected, observed in zip(final_expected, final_observed, strict=True)
@@ -560,6 +572,12 @@ async def run_benchmark(
             final_overclassification_count,
             len(final_expected),
         ),
+        pairwise_multi_step_underclassification_count=(
+            pairwise_multi_step_underclassification_count
+        ),
+        final_multi_step_underclassification_count=(
+            final_multi_step_underclassification_count
+        ),
         false_novel_count=false_novel_count,
         false_novel_rate=_safe_ratio(false_novel_count, non_novel_count),
         missed_novel_count=missed_novel_count,
@@ -579,6 +597,18 @@ def _overclassification_count(
 ) -> int:
     return sum(
         observed != "provider_failure" and rank[observed] > rank[expected]
+        for expected, observed in zip(expected_labels, observed_labels, strict=True)
+    )
+
+
+def _multi_step_underclassification_count(
+    *,
+    expected_labels: Sequence[str],
+    observed_labels: Sequence[str],
+    rank: Mapping[str, int],
+) -> int:
+    return sum(
+        observed != "provider_failure" and rank[expected] - rank[observed] > 1
         for expected, observed in zip(expected_labels, observed_labels, strict=True)
     )
 

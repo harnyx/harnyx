@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import Literal, TypeAlias, cast
 
 from harnyx_commons.llm.provider_types import (
     AI_GATEWAY_PROVIDER,
@@ -23,11 +23,13 @@ ToolModelName = Literal[
     "google/gemma-4-31B-turbo-TEE",
 ]
 
-ToolModelThinkingField = Literal[
+ModelThinkingField = Literal[
     "chat_template_kwargs.thinking",
     "chat_template_kwargs.enable_thinking",
 ]
-ToolModelThinkingProvider = Literal["chutes", "vertex", "custom-openai-compatible"]
+ModelThinkingProvider = Literal["chutes", "vertex", "custom-openai-compatible"]
+ToolModelThinkingField: TypeAlias = ModelThinkingField
+ToolModelThinkingProvider: TypeAlias = ModelThinkingProvider
 MinerSelectedLlmProviderName = Literal["chutes", "openrouter", "ai_gateway"]
 MinerSelectedLlmModelName = str
 
@@ -91,8 +93,8 @@ MINER_SELECTED_LLM_PROVIDER_MODELS: Mapping[
 
 
 @dataclass(frozen=True)
-class ToolModelThinkingCapability:
-    field: ToolModelThinkingField
+class ModelThinkingCapability:
+    field: ModelThinkingField
 
     def chat_template_kwargs(self, *, enabled: bool) -> dict[str, bool]:
         match self.field:
@@ -101,6 +103,9 @@ class ToolModelThinkingCapability:
             case "chat_template_kwargs.enable_thinking":
                 return {"enable_thinking": enabled}
         raise AssertionError(f"unsupported thinking field: {self.field}")
+
+
+ToolModelThinkingCapability: TypeAlias = ModelThinkingCapability
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,34 +154,54 @@ def parse_miner_selected_llm_provider_model(
     return MinerSelectedLlmProviderModel(provider=selected_provider, model=selected_model)
 
 
-# Canonical thinking controls for internal llm_chat routes. Miner-selected
+# Verified provider/model thinking controls. This capability registry is
+# independent from validator-tool and miner-selected model authorization.
 # OpenRouter-native ids use OpenRouter reasoning controls directly in the
 # OpenRouter provider.
+MODEL_THINKING_CAPABILITIES: Mapping[
+    str,
+    Mapping[ModelThinkingProvider, ModelThinkingCapability],
+] = {
+    "deepseek-ai/DeepSeek-V3.2-TEE": {
+        "chutes": ModelThinkingCapability("chat_template_kwargs.thinking"),
+        "vertex": ModelThinkingCapability("chat_template_kwargs.thinking"),
+    },
+    "deepseek-ai/DeepSeek-V4-Flash-0731-TEE": {
+        "chutes": ModelThinkingCapability("chat_template_kwargs.enable_thinking"),
+    },
+    "zai-org/GLM-5-TEE": {
+        "chutes": ModelThinkingCapability("chat_template_kwargs.enable_thinking"),
+        "vertex": ModelThinkingCapability("chat_template_kwargs.enable_thinking"),
+    },
+    "google/gemma-4-31B-turbo-TEE": {
+        "chutes": ModelThinkingCapability("chat_template_kwargs.enable_thinking"),
+        "custom-openai-compatible": ModelThinkingCapability("chat_template_kwargs.enable_thinking"),
+    },
+    "Qwen/Qwen3.6-27B-TEE": {
+        "chutes": ModelThinkingCapability("chat_template_kwargs.enable_thinking"),
+        "custom-openai-compatible": ModelThinkingCapability("chat_template_kwargs.enable_thinking"),
+    },
+}
+
+# Backward-compatible authorization-restricted view for consumers of the
+# original tool-model capability API. Provider capabilities outside
+# ALLOWED_TOOL_MODELS intentionally remain absent.
 TOOL_MODEL_THINKING_CAPABILITIES: Mapping[
     ToolModelName,
     Mapping[ToolModelThinkingProvider, ToolModelThinkingCapability],
 ] = {
-    "deepseek-ai/DeepSeek-V3.2-TEE": {
-        "chutes": ToolModelThinkingCapability("chat_template_kwargs.thinking"),
-        "vertex": ToolModelThinkingCapability("chat_template_kwargs.thinking"),
-    },
-    "zai-org/GLM-5-TEE": {
-        "chutes": ToolModelThinkingCapability("chat_template_kwargs.enable_thinking"),
-        "vertex": ToolModelThinkingCapability("chat_template_kwargs.enable_thinking"),
-    },
-    "google/gemma-4-31B-turbo-TEE": {
-        "chutes": ToolModelThinkingCapability("chat_template_kwargs.enable_thinking"),
-        "custom-openai-compatible": ToolModelThinkingCapability("chat_template_kwargs.enable_thinking"),
-    },
-    "Qwen/Qwen3.6-27B-TEE": {
-        "chutes": ToolModelThinkingCapability("chat_template_kwargs.enable_thinking"),
-        "custom-openai-compatible": ToolModelThinkingCapability("chat_template_kwargs.enable_thinking"),
-    },
+    model: MODEL_THINKING_CAPABILITIES[model]
+    for model in ALLOWED_TOOL_MODELS
+    if model in MODEL_THINKING_CAPABILITIES
 }
 
 _NORMALIZED_TOOL_MODELS: Mapping[str, ToolModelName] = {
     model.lower(): model
     for model in ALLOWED_TOOL_MODELS
+}
+
+_NORMALIZED_THINKING_CAPABILITY_MODELS: Mapping[str, str] = {
+    model.lower(): model for model in MODEL_THINKING_CAPABILITIES
 }
 
 
@@ -191,6 +216,20 @@ def resolve_tool_model(raw: str | None) -> ToolModelName | None:
     return _NORMALIZED_TOOL_MODELS.get(value.lower())
 
 
+def model_thinking_capability(
+    raw: str | None,
+    *,
+    provider_name: str,
+) -> ModelThinkingCapability | None:
+    model = _resolve_thinking_capability_model(raw)
+    if model is None:
+        return None
+    provider = _model_thinking_provider(provider_name)
+    if provider is None:
+        return None
+    return MODEL_THINKING_CAPABILITIES[model].get(provider)
+
+
 def tool_model_thinking_capability(
     raw: str | None,
     *,
@@ -199,16 +238,22 @@ def tool_model_thinking_capability(
     tool_model = resolve_tool_model(raw)
     if tool_model is None:
         return None
-    provider = _tool_model_thinking_provider(provider_name)
-    if provider is None:
+    return model_thinking_capability(tool_model, provider_name=provider_name)
+
+
+def _resolve_thinking_capability_model(raw: str | None) -> str | None:
+    if raw is None:
         return None
-    return TOOL_MODEL_THINKING_CAPABILITIES.get(tool_model, {}).get(provider)
+    value = raw.strip()
+    if not value:
+        return None
+    return _NORMALIZED_THINKING_CAPABILITY_MODELS.get(value.lower())
 
 
-def _tool_model_thinking_provider(provider_name: str) -> ToolModelThinkingProvider | None:
+def _model_thinking_provider(provider_name: str) -> ModelThinkingProvider | None:
     provider = provider_name.strip().lower()
     if provider in {CHUTES_PROVIDER, VERTEX_PROVIDER}:
-        return cast(ToolModelThinkingProvider, provider)
+        return cast(ModelThinkingProvider, provider)
     if provider == CUSTOM_OPENAI_COMPATIBLE_PROVIDER_TAG or provider.startswith(
         f"{CUSTOM_OPENAI_COMPATIBLE_PROVIDER_TAG}:"
     ):
@@ -223,7 +268,11 @@ __all__ = [
     "MinerSelectedLlmModelName",
     "MinerSelectedLlmProviderModel",
     "MinerSelectedLlmProviderName",
+    "MODEL_THINKING_CAPABILITIES",
     "TOOL_MODEL_THINKING_CAPABILITIES",
+    "ModelThinkingCapability",
+    "ModelThinkingField",
+    "ModelThinkingProvider",
     "ToolModelName",
     "ToolModelThinkingCapability",
     "ToolModelThinkingField",
@@ -232,5 +281,6 @@ __all__ = [
     "parse_miner_selected_llm_provider_model",
     "parse_tool_model",
     "resolve_tool_model",
+    "model_thinking_capability",
     "tool_model_thinking_capability",
 ]

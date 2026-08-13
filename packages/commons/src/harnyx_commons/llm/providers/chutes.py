@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -100,7 +101,11 @@ class ChutesLlmProvider(BaseLlmProvider):
         }
         if timeout_seconds is not None:
             request_kwargs["timeout"] = timeout_seconds
-        body, ttft_ms = await self._stream_chat_completions(**request_kwargs)
+        if timeout_seconds is None:
+            body, ttft_ms = await self._stream_chat_completions(**request_kwargs)
+        else:
+            async with asyncio.timeout(timeout_seconds):
+                body, ttft_ms = await self._stream_chat_completions(**request_kwargs)
         llm_response = body.to_llm_response()
         metadata = dict(llm_response.metadata or {})
         metadata.setdefault("raw_response", body.model_dump(mode="python", exclude_none=True))
@@ -193,6 +198,8 @@ class ChutesLlmProvider(BaseLlmProvider):
         classify_exception: Callable[[Exception], tuple[bool, str]] | None = None,
     ) -> tuple[bool, str]:
         match exc:
+            case TimeoutError():
+                return True, exc.__class__.__name__
             case httpx.HTTPStatusError():
                 status = exc.response.status_code if exc.response else None
                 retryable = status is not None and (status == 429 or status >= 500)

@@ -23,6 +23,8 @@ _GEMMA_MODEL = "google/gemma-4-31B-turbo-TEE"
 _GEMMA_ENDPOINT_ID = "gemma4-cloud-run-turbo"
 _GEMMA_ROUTE_TARGET = f"custom-openai-compatible:{_GEMMA_ENDPOINT_ID}"
 _GEMMA_SERVICE_URL = "https://gemma-4-31b-turbo-obbrpx3ppa-uc.a.run.app"
+_DEEPSEEK_MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731-TEE"
+_DEEPSEEK_ROUTE_TARGET = "chutes"
 _KIMI_MODEL = "moonshotai/Kimi-K2.5-TEE"
 _KIMI_ROUTE_TARGET = "bedrock"
 _GLM_MODEL = "zai-org/GLM-5-TEE"
@@ -88,6 +90,7 @@ class RecordingProvider(LlmProviderPort):
     ("model", "route_target"),
     (
         (_GEMMA_MODEL, _GEMMA_ROUTE_TARGET),
+        (_DEEPSEEK_MODEL, _DEEPSEEK_ROUTE_TARGET),
         (_KIMI_MODEL, _KIMI_ROUTE_TARGET),
         (_GLM_MODEL, _GLM_ROUTE_TARGET),
     ),
@@ -106,6 +109,7 @@ async def test_similarity_judge_live_supports_production_provider_contract(
                         {
                             "duplication_detection": {
                                 _GEMMA_MODEL: _GEMMA_ROUTE_TARGET,
+                                _DEEPSEEK_MODEL: _DEEPSEEK_ROUTE_TARGET,
                                 _KIMI_MODEL: _KIMI_ROUTE_TARGET,
                                 _GLM_MODEL: _GLM_ROUTE_TARGET,
                             }
@@ -190,6 +194,10 @@ async def test_similarity_judge_live_supports_production_provider_contract(
     assert llm_request.retry_policy == settings.llm.similarity_llm_retry_policy
     assert llm_request.thinking is None
     assert llm_request.use_case == "miner_task_similarity_judge"
+    if model == _DEEPSEEK_MODEL:
+        assert response.choices[0].message.reasoning
+        assert result.reasoning_tokens is not None
+        assert result.reasoning_tokens > 1
     assert response.metadata is not None
     assert response.metadata["selected_provider"] == similarity_route.provider
     assert response.metadata["selected_model"] == similarity_route.model

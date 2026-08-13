@@ -28,6 +28,7 @@ pytestmark = [
 ]
 
 CHUTES_TOOL_MODELS = MINER_SELECTED_LLM_PROVIDER_MODELS["chutes"]
+DEEPSEEK_V4_FLASH_0731_MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731-TEE"
 NEW_CHUTES_MODELS = (
     "moonshotai/Kimi-K2.6-TEE",
     "zai-org/GLM-5.2-TEE",
@@ -167,6 +168,39 @@ async def test_chutes_supported_model_reasoning_usage_live(model: str) -> None:
         assert response.usage.completion_tokens > 1
     else:
         assert response.usage.reasoning_tokens > 1
+
+
+async def test_chutes_deepseek_v4_flash_reasoning_effort_live() -> None:
+    api_key, timeout = _provider_settings()
+    provider = ChutesLlmProvider(
+        base_url=CHUTES.base_url,
+        api_key=api_key,
+        timeout=timeout,
+    )
+    request = LlmRequest(
+        provider="chutes",
+        model=DEEPSEEK_V4_FLASH_0731_MODEL,
+        messages=(
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text('Think briefly, then reply with only "ok".'),),
+            ),
+        ),
+        temperature=0.0,
+        max_output_tokens=96,
+        timeout_seconds=180.0,
+        reasoning_effort="high",
+    )
+
+    try:
+        response = await provider.invoke(request)
+    finally:
+        await provider.aclose()
+
+    assert response.raw_text
+    assert response.choices[0].message.reasoning
+    assert response.usage.reasoning_tokens is not None
+    assert response.usage.reasoning_tokens > 1
 
 
 async def test_miner_paid_chutes_helper_completion_live() -> None:

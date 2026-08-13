@@ -6,14 +6,14 @@ from dataclasses import dataclass
 from typing import cast
 
 from harnyx_commons.llm.schema import LlmThinkingConfig, ReasoningEffort
-from harnyx_commons.llm.tool_models import ToolModelThinkingCapability, tool_model_thinking_capability
+from harnyx_commons.llm.tool_models import ModelThinkingCapability, model_thinking_capability
 
 _TYPED_REASONING_EFFORTS = frozenset(("low", "medium", "high"))
 
 
 @dataclass(frozen=True, slots=True)
 class ResolvedTemplateThinking:
-    capability: ToolModelThinkingCapability
+    capability: ModelThinkingCapability
     thinking: LlmThinkingConfig
 
     def chat_template_kwargs(self) -> dict[str, bool]:
@@ -28,7 +28,7 @@ def resolve_template_thinking(
     reasoning_effort: str | None,
 ) -> ResolvedTemplateThinking | None:
     """Resolve request thinking to a provider template capability when one exists."""
-    capability = tool_model_thinking_capability(canonical_model, provider_name=provider_name)
+    capability = model_thinking_capability(canonical_model, provider_name=provider_name)
     if capability is None:
         return None
     if request_thinking is not None:

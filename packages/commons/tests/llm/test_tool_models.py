@@ -5,6 +5,11 @@ import pytest
 from harnyx_commons.llm.tool_models import (
     ALLOWED_TOOL_MODELS,
     MINER_SELECTED_LLM_PROVIDER_MODELS,
+    TOOL_MODEL_THINKING_CAPABILITIES,
+    ToolModelThinkingCapability,
+    ToolModelThinkingField,
+    ToolModelThinkingProvider,
+    model_thinking_capability,
     parse_miner_selected_llm_provider_model,
     parse_tool_model,
     resolve_tool_model,
@@ -13,18 +18,18 @@ from harnyx_commons.llm.tool_models import (
 
 
 def test_tool_model_thinking_capabilities_share_the_canonical_model_owner() -> None:
-    deepseek = tool_model_thinking_capability("deepseek-ai/deepseek-v3.2-tee", provider_name="chutes")
-    glm = tool_model_thinking_capability("zai-org/GLM-5-TEE", provider_name="vertex")
-    qwen36_chutes = tool_model_thinking_capability(
+    deepseek = model_thinking_capability("deepseek-ai/deepseek-v3.2-tee", provider_name="chutes")
+    glm = model_thinking_capability("zai-org/GLM-5-TEE", provider_name="vertex")
+    qwen36_chutes = model_thinking_capability(
         "Qwen/Qwen3.6-27B-TEE",
         provider_name="chutes",
     )
-    qwen36 = tool_model_thinking_capability(
+    qwen36 = model_thinking_capability(
         "Qwen/Qwen3.6-27B-TEE",
         provider_name="custom-openai-compatible:qwen36-cloud-run",
     )
-    gemma_chutes = tool_model_thinking_capability("google/gemma-4-31B-turbo-TEE", provider_name="chutes")
-    gemma_custom = tool_model_thinking_capability(
+    gemma_chutes = model_thinking_capability("google/gemma-4-31B-turbo-TEE", provider_name="chutes")
+    gemma_custom = model_thinking_capability(
         "google/gemma-4-31B-turbo-TEE",
         provider_name="custom-openai-compatible:gemma4-cloud-run-turbo",
     )
@@ -47,10 +52,47 @@ def test_tool_model_thinking_capabilities_share_the_canonical_model_owner() -> N
     assert gemma_chutes.chat_template_kwargs(enabled=False) == {"enable_thinking": False}
     assert gemma_custom is not None
     assert gemma_custom.chat_template_kwargs(enabled=True) == {"enable_thinking": True}
-    assert tool_model_thinking_capability("openai/gpt-oss-20b", provider_name="chutes") is None
-    assert tool_model_thinking_capability("openai/gpt-oss-120b", provider_name="chutes") is None
-    assert tool_model_thinking_capability("openai/gpt-oss-20b", provider_name="openrouter") is None
-    assert tool_model_thinking_capability("openai/gpt-oss-120b", provider_name="openrouter") is None
+    assert model_thinking_capability("openai/gpt-oss-20b", provider_name="chutes") is None
+    assert model_thinking_capability("openai/gpt-oss-120b", provider_name="chutes") is None
+    assert model_thinking_capability("openai/gpt-oss-20b", provider_name="openrouter") is None
+    assert model_thinking_capability("openai/gpt-oss-120b", provider_name="openrouter") is None
+
+
+def test_benchmark_model_thinking_capability_does_not_expand_tool_authorization() -> None:
+    model = "deepseek-ai/DeepSeek-V4-Flash-0731-TEE"
+
+    assert model not in ALLOWED_TOOL_MODELS
+    assert model not in MINER_SELECTED_LLM_PROVIDER_MODELS["chutes"]
+    with pytest.raises(ValueError, match="not allowed for validator tools"):
+        parse_tool_model(model)
+    with pytest.raises(ValueError, match="not supported for miner-selected provider 'chutes'"):
+        parse_miner_selected_llm_provider_model(provider="chutes", model=model)
+    capability = model_thinking_capability(model.lower(), provider_name="chutes")
+    assert capability is not None
+    assert capability.chat_template_kwargs(enabled=True) == {"enable_thinking": True}
+
+
+def test_legacy_tool_thinking_exports_remain_authorization_restricted() -> None:
+    field: ToolModelThinkingField = "chat_template_kwargs.enable_thinking"
+    provider: ToolModelThinkingProvider = "chutes"
+    capability = ToolModelThinkingCapability(field)
+
+    assert capability.chat_template_kwargs(enabled=True) == {"enable_thinking": True}
+    assert set(TOOL_MODEL_THINKING_CAPABILITIES) <= set(ALLOWED_TOOL_MODELS)
+    assert tool_model_thinking_capability(
+        "google/gemma-4-31B-turbo-TEE",
+        provider_name=provider,
+    ) == model_thinking_capability(
+        "google/gemma-4-31B-turbo-TEE",
+        provider_name=provider,
+    )
+    assert (
+        tool_model_thinking_capability(
+            "deepseek-ai/DeepSeek-V4-Flash-0731-TEE",
+            provider_name=provider,
+        )
+        is None
+    )
 
 
 def test_miner_selected_chutes_supports_only_chutes_models() -> None:
@@ -144,9 +186,9 @@ def test_new_chutes_provider_models_are_not_internal_canonical_models() -> None:
         assert model not in ALLOWED_TOOL_MODELS
         with pytest.raises(ValueError, match="not allowed for validator tools"):
             parse_tool_model(model)
-        assert tool_model_thinking_capability(model, provider_name="chutes") is None
-        assert tool_model_thinking_capability(model, provider_name="vertex") is None
-        assert tool_model_thinking_capability(model, provider_name="custom-openai-compatible") is None
+        assert model_thinking_capability(model, provider_name="chutes") is None
+        assert model_thinking_capability(model, provider_name="vertex") is None
+        assert model_thinking_capability(model, provider_name="custom-openai-compatible") is None
 
 
 def test_retired_chutes_model_is_not_in_miner_selected_namespace() -> None:

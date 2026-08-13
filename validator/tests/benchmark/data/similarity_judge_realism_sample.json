@@ -1,0 +1,81 @@
+{
+  "source_batch_id": "cd9101db-44f8-518a-bcb8-eadf6f656dca",
+  "retrieved_at_utc": "2026-08-12T07:20:00Z",
+  "population_artifact_count": 262,
+  "selection_method": "Order all batch artifacts by (size_bytes, artifact_id), then select one artifact at ranks 1, 34, 67, 99, 132, 165, 197, 230, and 262.",
+  "selected_ranks": [1, 34, 67, 99, 132, 165, 197, 230, 262],
+  "artifacts": [
+    {
+      "rank": 1,
+      "artifact_order": 141,
+      "artifact_id": "9083d8d8-f28a-47e3-bdae-33c9cf9f7f78",
+      "content_hash": "465949c3b4e928d278126148a524edddd02e5f036ac9d4a485fa3e63c3ff8205",
+      "size_bytes": 47980,
+      "line_count": 1195
+    },
+    {
+      "rank": 34,
+      "artifact_order": 249,
+      "artifact_id": "c02143e4-5c3f-4cb2-a044-3a9b613d8d6e",
+      "content_hash": "778c9e41f8d371471e1747242e7bf2dce8b590c02c4411696509016a0796c2c7",
+      "size_bytes": 110635,
+      "line_count": 1999
+    },
+    {
+      "rank": 67,
+      "artifact_order": 227,
+      "artifact_id": "36cd2f73-3921-4d91-ab7b-0f56ea0a9e70",
+      "content_hash": "8c1c1d7939a54e07b109f9abf7767496061773ec8db9be2ce382ee4838c575a8",
+      "size_bytes": 146257,
+      "line_count": 2797
+    },
+    {
+      "rank": 99,
+      "artifact_order": 188,
+      "artifact_id": "2aa762d7-6b9e-473a-ba21-ab8027c49704",
+      "content_hash": "d44efca6c1c2451d941aa5d45d9424657bb69136d9f6912c342c4287a513de79",
+      "size_bytes": 154334,
+      "line_count": 3002
+    },
+    {
+      "rank": 132,
+      "artifact_order": 11,
+      "artifact_id": "0b7b2851-c592-4e60-be2c-3df1d7ad477d",
+      "content_hash": "b91f758ae265d00968e8db5c27d5c7669ad9c7935efa750eacf69b1b15691754",
+      "size_bytes": 179286,
+      "line_count": 2726
+    },
+    {
+      "rank": 165,
+      "artifact_order": 43,
+      "artifact_id": "e76713ca-b2ab-473a-bffd-aa7edfa3fcc3",
+      "content_hash": "57db8a389758d89f563c55db39ad4286af81183bb2d47c2ec3e39f2581e58d86",
+      "size_bytes": 240235,
+      "line_count": 3404
+    },
+    {
+      "rank": 197,
+      "artifact_order": 194,
+      "artifact_id": "088c0516-14bf-4a9e-bb44-dfef4e9c50e1",
+      "content_hash": "1191d002636a2755d8a3b36c617c59bed892b17203fec654bf46b506fee48cbd",
+      "size_bytes": 331013,
+      "line_count": 6012
+    },
+    {
+      "rank": 230,
+      "artifact_order": 65,
+      "artifact_id": "f1520d25-95c5-4076-8d48-6bcce6e4f1c4",
+      "content_hash": "9d23cbe3567b58168ae63787b441bfe8f7c7d5657182da9aa808f8456fc87ae0",
+      "size_bytes": 394289,
+      "line_count": 5547
+    },
+    {
+      "rank": 262,
+      "artifact_order": 198,
+      "artifact_id": "99b3dfcb-a1f4-4c5a-b571-3f25b531fe7a",
+      "content_hash": "7dcb44a395a37dbb3cfdaf01498a29823297e9ff252d4bb5cbf66f109e7b50cb",
+      "size_bytes": 682847,
+      "line_count": 9047
+    }
+  ]
+}

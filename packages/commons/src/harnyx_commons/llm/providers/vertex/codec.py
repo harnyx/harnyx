@@ -36,7 +36,7 @@ from harnyx_commons.llm.schema import (
     LlmTool,
     LlmUsage,
 )
-from harnyx_commons.llm.tool_models import tool_model_thinking_capability
+from harnyx_commons.llm.tool_models import model_thinking_capability
 
 _IMAGE_FETCH_TIMEOUT_SECONDS = 20.0
 _STRING_KEY_MAPPING_ADAPTER = TypeAdapter(dict[str, object])
@@ -72,7 +72,7 @@ class _VertexMaasChatRequest(BaseModel):
     def from_request(cls, request: AbstractLlmRequest) -> _VertexMaasChatRequest:
         wire_model = vertex_maas_openai_chat_model_name(request.model)
         canonical_model = canonical_model_for_provider_model(provider_name="vertex", model=wire_model)
-        template_thinking_capable = tool_model_thinking_capability(canonical_model, provider_name="vertex") is not None
+        template_thinking_capable = model_thinking_capability(canonical_model, provider_name="vertex") is not None
         request_parts = OpenAiChatRequestParts.from_request(
             request,
             provider_name="Vertex MaaS",

@@ -46,6 +46,7 @@ _GEMMA_ROUTE_TARGET = f"custom-openai-compatible:{_GEMMA_ENDPOINT_ID}"
 _GEMMA_SERVICE_URL = "https://gemma-4-31b-turbo-obbrpx3ppa-uc.a.run.app"
 _GLM_MODEL = "zai-org/GLM-5.2-TEE"
 _KIMI_MODEL = "moonshotai/Kimi-K3-TEE"
+_DEEPSEEK_MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731-TEE"
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +101,13 @@ _BENCHMARK_TARGETS = (
         endpoint_id="chutes",
         normalized_base_url=CHUTES.base_url,
     ),
+    BenchmarkTarget(
+        test_id="deepseek-v4-flash-0731-chutes",
+        model=_DEEPSEEK_MODEL,
+        route_target="chutes",
+        endpoint_id="chutes",
+        normalized_base_url=CHUTES.base_url,
+    ),
 )
 
 
@@ -127,6 +135,10 @@ def _benchmark_source_hashes() -> dict[str, str]:
         "pytest.ini",
         "public/pytest.ini",
         "apps/platform/src/harnyx_platform/application/services/miner_task_similarity.py",
+        "public/packages/commons/src/harnyx_commons/llm/providers/chutes.py",
+        "public/packages/commons/src/harnyx_commons/llm/providers/chutes_codec.py",
+        "public/packages/commons/src/harnyx_commons/llm/providers/thinking.py",
+        "public/packages/commons/src/harnyx_commons/llm/tool_models.py",
         "scripts/test/run_integration_tests.sh",
         "public/validator/src/harnyx_validator/application/similarity_judge.py",
         "public/validator/tests/benchmark/data/similarity_judge_benchmark_cases.jsonl",
@@ -227,4 +239,6 @@ async def test_fixed_dataset_similarity_benchmark(target: BenchmarkTarget) -> No
     assert summary.provider_failure_count == 0
     assert summary.pairwise_overclassification_count == 0
     assert summary.final_overclassification_count == 0
+    assert summary.pairwise_multi_step_underclassification_count == 0
+    assert summary.final_multi_step_underclassification_count == 0
     assert summary.false_novel_count == 0
