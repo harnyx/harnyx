@@ -106,21 +106,27 @@ sequenceDiagram
 | **What’s happening** | Platform owns the batch work ledger; validator polls for assigned task attempts, fetches artifacts, runs `query`, and submits results back to platform. |
 | **Actors** | Platform ↔ Validator worker ↔ Sandbox |
 | **Auth** | Validator↔Platform is Bittensor-signed; Validator↔Sandbox uses `x-platform-token` + `x-session-id` + `x-host-container-url`. |
-| **Happy path** | materialize expected work → poll task assignment → fetch artifact → run `query` → submit result |
+| **Happy path** | accept a durable unfinished batch → workers materialize expected work → poll task assignment → fetch artifact → run `query` → submit result |
 | **Assignment gate** | Platform assigns work only to registered, healthy, metagraph-authorized validators that have a `validator_allowlist_entry` row for `miner_task_batch_delivery`. |
 
-#### 1) Platform creates a batch and materializes expected work
+#### 1) Platform accepts a batch, then workers construct expected work
+
+The manual route accepts `CreateBatchRequest`, whose only fields are nullable `champion_artifact_id` and boolean `use_previous_task_dataset`. Acceptance does not mean that task or validator-work rows already exist.
 
 ```mermaid
 sequenceDiagram
-  participant P as Platform
+  participant O as Subnet owner or platform admin
+  participant P as Platform API
   participant DB as Platform DB
+  participant W as Miner-task worker
 
-  Note over P: Manual or scheduled creation
-  P->>P: POST /v1/miner-task-batches/batch<br/>{ tasks, artifacts, cutoff_at }
-  P->>DB: Store batch, artifact refs, and expected validator task rows
-  P->>DB: Initialize delivery projection from platform-owned rows
+  O->>P: POST /v1/miner-task-batches/batch<br/>{ champion_artifact_id, use_previous_task_dataset }
+  P->>DB: Persist unfinished batch and immutable artifact snapshot
+  P-->>O: 202 { batch_id }
+  W->>DB: Sweep unfinished batch
+  W->>DB: Persist tasks, reference selection, and expected validator work
 
+  Note over P,W: Scheduled initiation uses the same durable unfinished-batch boundary.
   Note over P,DB: No batch payload is pushed to validators.
 ```
 
@@ -152,7 +158,7 @@ sequenceDiagram
   P-->>V: 200 <application/octet-stream>
 
   Note over V,S: Headers: x-session-id + x-platform-token + x-host-container-url
-  V->>S: POST /entry/query<br/>{ text: "..." }
+  V->>S: POST /entry/query<br/>{ payload:{ text:"..." }, context:{} }
 
   Note over S,VA: Headers: x-session-id + x-platform-token
   S->>VA: POST /v1/tools/execute<br/>ToolExecuteRequestDTO (0+ times)
@@ -180,8 +186,7 @@ sequenceDiagram
   V->>P: POST /v2/miner-task-work/results<br/>{ results:[{ batch_id, artifact_id, task_id, attempt_number, result, terminal_attempt }] }
   P->>DB: Accept or reject final scored result against persisted execution state
   P-->>V: 200 { results:[{ outcome:"accepted"|"rejected", canonical:true|false, reason_code:null|"already_accepted"|... }] }
-  Note over V: Act only on outcome; reason_code is diagnostic.
-
+  Note over V,P: Act only on outcome. reason_code is diagnostic.
   Note over V,P: Validator retries pending execution/result submissions whose outcome is unknown or transient.
 ```
 

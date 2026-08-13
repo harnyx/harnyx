@@ -20,7 +20,7 @@ The benchmark page is the public surface for inspecting benchmark history and sa
 
 - **Bittensor-signed requests**
   - `Authorization: Bittensor ss58="<ss58>",sig="<hex>"`
-  - Signature is over canonical `{method, path+query, body}`.
+  - Signature is over the UTF-8 bytes of `METHOD + "\n" + PATH_QUERY + "\n" + sha256(body_bytes)`, where `METHOD` is uppercase, `PATH_QUERY` includes the query string when present, and `sha256(body_bytes)` is the lowercase hexadecimal digest of the exact transmitted body bytes.
 - **Platform admin API keys**
   - Some endpoints may accept an out-of-band `X-Api-Key` platform admin key.
   - This is not miner or validator identity and is not the same as Bittensor signing.

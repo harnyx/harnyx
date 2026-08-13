@@ -7,7 +7,7 @@ This package contains the **sandbox runtime** — the FastAPI server that valida
 - A lightweight HTTP server exposing `/entry/{entrypoint}` endpoints
 - Loads miner scripts via `runpy.run_path` and invokes registered entrypoints
 - Provides tool proxies (search, LLM) back to the validator host
-- In the subnet miner-task path, validators typically call `/entry/query` with `{ "text": "..." }`
+- In the subnet miner-task path, validators call `/entry/query` with the sandbox envelope `{ "payload": { "text": "..." }, "context": {} }`
 - Runs inside a Docker container with seccomp + resource limits
 
 ## How it fits in

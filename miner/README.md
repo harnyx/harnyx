@@ -101,7 +101,7 @@ You submit **one UTF-8 Python source file** (<= 1,000,000 bytes / 1 MB). Validat
 2. Load it via `runpy.run_path`
 3. Call your `query` entrypoint with a strict `Query` JSON payload
 
-You are encouraged to learn from previous solutions and build on mechanisms that work. Shared ideas are allowed. Duplicate preflight uses four classifications. Cosmetic, slot, timestamp or parameter-only changes without changed behavior remain `duplicate`. Localized behavior changes inside substantially the same pipeline are `near_duplicate`. A substantial reorganization or extension that retains the same main architectural root is `notable_change`. `novel` requires a fundamentally different main architecture: the primary controller, major-stage topology, coordinating loop or evidence path must have a different root. This pairwise label does not claim global uniqueness. If structural selection finds no eligible reference, Platform assigns `novel` automatically. Eligible artifacts enter task scoring, where quality, cost and execution time determine performance.
+You are encouraged to learn from previous solutions and build on mechanisms that work. Shared ideas are allowed. Duplicate preflight uses four classifications. Cosmetic, slot, timestamp or parameter-only changes without changed behavior remain `duplicate`. Localized behavior changes inside substantially the same pipeline are `near_duplicate`. A substantial reorganization or extension that retains at least one part of the same architectural root is `notable_change`. Relative to the selected reference, `novel` requires affirmative evidence that all three reachable ordinary-case architectural dimensions are replaced: the primary controller, evidence state and flow, and answer-production path. Preserving, wrapping, or extending any one of those dimensions limits the result to `notable_change` or lower. This pairwise label does not claim global uniqueness. If structural selection finds no eligible reference, Platform assigns `novel` automatically. Eligible artifacts enter task scoring, where quality, cost and execution time determine performance.
 
 If `./agent.py` does not exist yet, start with a minimal stub:
 
@@ -528,7 +528,7 @@ uv run --package harnyx-miner harnyx-miner-submit \
 - Payload: `{ "script_b64": "...", "sha256": "..." }`
 - Success response includes `content_hash`
 - Signed with: `Authorization: Bittensor ss58="…",sig="…"`
-- Signature is over: `METHOD + "\n" + PATH_QS + "\n" + sha256(body_bytes)`
+- Signature is over: `METHOD + "\n" + PATH_QUERY + "\n" + sha256(body_bytes)`, using the uppercase method, path plus query string, and lowercase hexadecimal digest of the exact transmitted body bytes.
 
 Verify the returned hash against your local file:
 
