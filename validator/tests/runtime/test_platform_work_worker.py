@@ -965,10 +965,12 @@ async def test_platform_work_worker_cancels_active_scoring_on_stop() -> None:
     assert worker._active_scoring == {}
 
 
-async def test_platform_work_worker_captures_active_attempts_inside_work_request_coroutine() -> None:
-    """Prevent scheduling a work-poll task with a stale active-attempt snapshot."""
+async def test_platform_work_worker_freezes_active_attempts_before_scheduling_work_poll() -> None:
+    """Prevent a scheduled work poll from observing a later unreportable starting state."""
 
-    result = _platform_result()
+    batch_id = uuid4()
+    artifact = _artifact(uid=1)
+    assignment = _assignment(batch_id=batch_id, artifact=artifact, task=_task("scheduled"))
     captured_active_attempts: list[tuple[PlatformTaskAttemptIdentity, ...]] = []
 
     class _Platform:
@@ -987,22 +989,33 @@ async def test_platform_work_worker_captures_active_attempts_inside_work_request
     worker = PlatformWorkWorker(
         platform=_Platform(),  # type: ignore[arg-type]
         execute_artifact_assignments=_unexpected_execute_artifact_assignments,
-        target_concurrency=1,
+        target_concurrency=2,
         max_active_artifacts=1,
+        monotonic_clock=lambda: 0.0,
     )
+    group = _assigned_group(artifact_id=artifact.artifact_id)
+    assert group.put_nowait(assignment)
+    startup_assignment = group.take_nowait_for_startup()
+    group.mark_dispatch_ready()
+    worker._active_artifacts[(batch_id, artifact.artifact_id)] = group
 
-    worker._start_work_request()
-    worker._results_pending_submission.append(result)
-    await _wait_for_work_request_done(worker)
+    await worker.run_once()
+    poll_task = worker._work_request_task
+    assert poll_task is not None
+
+    claimed = group.claim_initial_for_dispatch(startup_assignment)
+    assert claimed is not None
+    assert group.reportable_identities() == ()
+    await poll_task
 
     assert captured_active_attempts == [
         (
             PlatformTaskAttemptIdentity(
-                batch_id=result.batch_id,
-                artifact_id=result.artifact_id,
-                task_id=result.task_id,
-                attempt_number=result.attempt_number,
-                validator_session_id=result.terminal_attempt.validator_session_id,
+                batch_id=assignment.batch_id,
+                artifact_id=assignment.artifact.artifact_id,
+                task_id=assignment.task.task_id,
+                attempt_number=assignment.attempt_number,
+                validator_session_id=None,
             ),
         )
     ]

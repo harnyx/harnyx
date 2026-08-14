@@ -411,13 +411,16 @@ class PlatformWorkWorker:
             self._start_work_request()
 
     def _start_work_request(self) -> None:
+        active_attempts = self._active_attempts()
         self._work_request_task = asyncio.create_task(
-            self._request_platform_work(),
+            self._request_platform_work(active_attempts),
             name="validator-platform-work-request",
         )
 
-    async def _request_platform_work(self) -> tuple[MinerTaskWorkAssignment, ...]:
-        active_attempts = self._active_attempts()
+    async def _request_platform_work(
+        self,
+        active_attempts: tuple[PlatformTaskAttemptIdentity, ...],
+    ) -> tuple[MinerTaskWorkAssignment, ...]:
         return await self._platform.request_miner_task_work(
             target_concurrency=self._target_concurrency,
             max_active_artifacts=self._max_active_artifacts,
