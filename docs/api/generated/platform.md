@@ -43,7 +43,7 @@ Generated from FastAPI OpenAPI.
 
 Search for similar indexed feed items, optionally scoped to strict prior items.
 
-**Auth**: Google Bearer (`Authorization: Bearer <google_id_token>`) OR ApiKey OR Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
+**Auth**: Google Bearer (`Authorization: Bearer <google_id_token>`) OR Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`) OR ConsoleSessionCookie
 
 **Request**
 Content-Type: `application/json`
@@ -112,7 +112,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 Provider-native simple search endpoint for feed-item grounding with optional enqueue boundary.
 
-**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`) OR ApiKey
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`) OR ConfiguredApiKey
 
 **Parameters**
 | Param | In | Req | Notes |
@@ -865,7 +865,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 Ensure a repository index is available for repo tools.
 
-**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`) OR ApiKey
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`) OR ConfiguredApiKey
 
 **Request**
 Content-Type: `application/json`
@@ -906,7 +906,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 Fetch a markdown file from a repository snapshot.
 
-**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`) OR ApiKey
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`) OR ConfiguredApiKey
 
 **Request**
 Content-Type: `application/json`
@@ -955,7 +955,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 Search markdown files in a repository snapshot.
 
-**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`) OR ApiKey
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`) OR ConfiguredApiKey
 
 **Request**
 Content-Type: `application/json`
@@ -1006,7 +1006,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 Provider-native simple search endpoint for full-file repo grounding.
 
-**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`) OR ApiKey
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`) OR ConfiguredApiKey
 
 **Parameters**
 | Param | In | Req | Notes |
@@ -1053,7 +1053,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 Provider-native simple search endpoint for repo-diff grounding.
 
-**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`) OR ApiKey
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`) OR ConfiguredApiKey
 
 **Parameters**
 | Param | In | Req | Notes |
