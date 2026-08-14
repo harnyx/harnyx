@@ -38,7 +38,7 @@ The benchmark page is the public surface for inspecting benchmark history and sa
 All Mermaid sequence diagrams live in [flows.md](flows.md), grouped by domain:
 
 - Subnet runtime (Platform ↔ Validator ↔ Miner)
-  - [flows.md#miner-provider-credential-config](flows.md#miner-provider-credential-config)
+  - [Miner provider credential configuration](../../miner/README.md#provider-credentials-on-the-platform)
   - [flows.md#miner-script-upload](flows.md#miner-script-upload)
   - [flows.md#miner-task-batch](flows.md#miner-task-batch)
 - Subnet ops (Platform ↔ Validator)

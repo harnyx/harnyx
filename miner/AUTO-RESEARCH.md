@@ -126,7 +126,7 @@ Stop the agent by interrupting it.
 
 AutoResearch does not upload automatically. If you want to submit a kept
 `train.py`, do it manually with the normal submit flow in
-[`README.md`](README.md#step-5-submit-to-the-platform), then use the
+[`README.md`](README.md#step-4-submit-to-the-platform), then use the
 [Mining Runbook](mining-runbook.md) for config checks, submission verification,
 batch monitoring, and completed-result diagnosis.
 
