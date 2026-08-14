@@ -106,6 +106,30 @@ class ValidatorResourceUsageResponse(BaseModel):
     disk_percent: float = Field(ge=0.0)
 
 
+class ValidatorHealthResponse(BaseModel):
+    model_config = VALIDATOR_STRICT_CONFIG
+
+    status: Literal["ok"]
+
+
+class ValidatorReadinessSuccessResponse(BaseModel):
+    model_config = VALIDATOR_STRICT_CONFIG
+
+    status: Literal["ok"]
+
+
+class ValidatorReadinessFailureResponse(BaseModel):
+    model_config = VALIDATOR_STRICT_CONFIG
+
+    status: Literal[
+        "waiting_for_platform_registration",
+        "waiting_for_auth_warmup",
+        "registration_failed",
+        "auth_unavailable",
+    ]
+    detail: str | None = None
+
+
 class ValidatorStatusResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -129,6 +153,9 @@ __all__ = [
     "SimilarityJudgeFailureResponseModel",
     "SimilarityJudgeRequestModel",
     "SimilarityJudgeResponseModel",
+    "ValidatorHealthResponse",
+    "ValidatorReadinessFailureResponse",
+    "ValidatorReadinessSuccessResponse",
     "ValidatorResourceUsageResponse",
     "ValidatorInternalErrorResponse",
     "ValidatorStatusResponse",

@@ -9,6 +9,9 @@ Generated from FastAPI OpenAPI.
   - [GET /validator/status](#endpoint-get-validator-status)
 - [tools](#tools)
   - [POST /v1/tools/execute](#endpoint-post-v1-tools-execute)
+- [Misc](#misc)
+  - [GET /healthz](#endpoint-get-healthz)
+  - [GET /readyz](#endpoint-get-readyz)
 
 ## miner-task-batches
 
@@ -249,6 +252,56 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
 |  | `msg` |  | req | `string` |
 |  | `type` |  | req | `string` |
+
+
+
+## Misc
+
+### healthz
+
+<a id="endpoint-get-healthz"></a>
+#### GET /healthz
+
+Validator health check.
+
+**Auth**: None.
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: [ValidatorHealthResponse](#model-validatorhealthresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `status` |  |  | req | `string` |
+
+
+### readyz
+
+<a id="endpoint-get-readyz"></a>
+#### GET /readyz
+
+Validator readiness check.
+
+**Auth**: None.
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: [ValidatorReadinessSuccessResponse](#model-validatorreadinesssuccessresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `status` |  |  | req | `string` |
+
+`503` Validator is not ready.
+Content-Type: `application/json`
+Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailureresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | opt | `string` (nullable) |
+| `status` |  |  | req | `string` (enum: [waiting_for_platform_registration, waiting_for_auth_warmup, registration_failed, auth_unavailable]) |
 
 
 
@@ -1137,6 +1190,36 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 </details>
 
+<a id="model-validatorhealthresponse"></a>
+### Model: ValidatorHealthResponse
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `status` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "const": "ok",
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "status"
+  ],
+  "title": "ValidatorHealthResponse",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-validatorinternalerrorresponse"></a>
 ### Model: ValidatorInternalErrorResponse
 
@@ -1189,6 +1272,83 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     "traceback"
   ],
   "title": "ValidatorInternalErrorResponse",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-validatorreadinessfailureresponse"></a>
+### Model: ValidatorReadinessFailureResponse
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | opt | `string` (nullable) |
+| `status` |  |  | req | `string` (enum: [waiting_for_platform_registration, waiting_for_auth_warmup, registration_failed, auth_unavailable]) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "detail": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Detail"
+    },
+    "status": {
+      "enum": [
+        "waiting_for_platform_registration",
+        "waiting_for_auth_warmup",
+        "registration_failed",
+        "auth_unavailable"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "status"
+  ],
+  "title": "ValidatorReadinessFailureResponse",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-validatorreadinesssuccessresponse"></a>
+### Model: ValidatorReadinessSuccessResponse
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `status` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "const": "ok",
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "status"
+  ],
+  "title": "ValidatorReadinessSuccessResponse",
   "type": "object"
 }
 ```

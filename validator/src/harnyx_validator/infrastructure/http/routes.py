@@ -31,7 +31,10 @@ from harnyx_validator.infrastructure.http.schemas import (
     SimilarityJudgeFailureResponseModel,
     SimilarityJudgeRequestModel,
     SimilarityJudgeResponseModel,
+    ValidatorHealthResponse,
     ValidatorInternalErrorResponse,
+    ValidatorReadinessFailureResponse,
+    ValidatorReadinessSuccessResponse,
     ValidatorResourceUsageResponse,
     ValidatorStatusResponse,
 )
@@ -138,6 +141,7 @@ def add_tool_routes(app: FastAPI, dependency_provider: Callable[[], ToolRouteDep
 def add_system_routes(app: FastAPI, status_provider: StatusProvider) -> None:
     @app.get(
         "/healthz",
+        response_model=ValidatorHealthResponse,
         description="Validator health check.",
     )
     def healthz() -> dict[str, str]:
@@ -145,6 +149,13 @@ def add_system_routes(app: FastAPI, status_provider: StatusProvider) -> None:
 
     @app.get(
         "/readyz",
+        responses={
+            200: {"model": ValidatorReadinessSuccessResponse},
+            503: {
+                "model": ValidatorReadinessFailureResponse,
+                "description": "Validator is not ready.",
+            },
+        },
         description="Validator readiness check.",
     )
     def readyz(response: Response) -> dict[str, str]:

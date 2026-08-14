@@ -33,6 +33,9 @@ Generated from FastAPI OpenAPI.
   - [POST /v1/validators/register](#endpoint-post-v1-validators-register)
 - [weights](#weights)
   - [GET /v1/weights](#endpoint-get-v1-weights)
+- [Misc](#misc)
+  - [GET /healthz](#endpoint-get-healthz)
+  - [GET /readyz](#endpoint-get-readyz)
 
 ## feeds
 
@@ -1159,6 +1162,55 @@ Body: [WeightsResponse](#model-weightsresponse)
 | --- | --- | --- | --- | --- |
 | `champion_uid` |  |  | opt | `integer` (nullable) |
 | `weights` |  |  | req | `object` |
+
+
+
+## Misc
+
+### healthz
+
+<a id="endpoint-get-healthz"></a>
+#### GET /healthz
+
+Platform health check.
+
+**Auth**: None.
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: [StatusResponse](#model-statusresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `status` |  |  | req | `string` |
+
+
+### readyz
+
+<a id="endpoint-get-readyz"></a>
+#### GET /readyz
+
+Platform readiness check.
+
+**Auth**: None.
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: [StatusResponse](#model-statusresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `status` |  |  | req | `string` |
+
+`503` Platform is draining.
+Content-Type: `application/json`
+Body: [StatusResponse](#model-statusresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `status` |  |  | req | `string` |
 
 
 

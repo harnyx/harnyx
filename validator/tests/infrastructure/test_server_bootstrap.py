@@ -226,6 +226,9 @@ def test_validator_import_configures_sentry_before_tracing(monkeypatch) -> None:
             sys.modules[module_name] = original_module
 
     assert imported._settings is fake_settings
+    runtime_system_app = FastAPI()
+    routes_mod.add_system_routes(runtime_system_app, fake_runtime.status_provider)
+    assert imported.app.openapi()["paths"] == runtime_system_app.openapi()["paths"]
     assert calls[:6] == [
         "logging",
         "sentry",
