@@ -14,9 +14,13 @@ from harnyx_commons.domain.miner_task import EvaluationDetails
 ScoreVector = list[float]
 _SCORE_PRECISION = 12
 
-COST_REDUCTION_REQUIRED = 0.20
-TIME_REDUCTION_REQUIRED = 0.20
+COST_REDUCTION_REQUIRED = 0.10
+TIME_REDUCTION_REQUIRED = 0.10
 TIME_REDUCTION_MIN_MS = 1000.0
+_SCORE_MARGIN_FRACTION_OF_MAXIMUM = 0.10
+_HISTORICAL_SCORE_MARGIN_REQUIRED = 0.20
+_HISTORICAL_COST_REDUCTION_REQUIRED = 0.20
+_HISTORICAL_TIME_REDUCTION_REQUIRED = 0.20
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,20 +122,46 @@ def main_participant_priority(
     return tuple(dict.fromkeys(ordered))
 
 
-@dataclass(frozen=True)
-class CascadeConfig:
-    """Static cascade configuration identical to platform defaults."""
+class _ScoreMarginKind(StrEnum):
+    RELATIVE = "relative"
+    FRACTION_OF_MAXIMUM = "fraction_of_maximum"
 
-    score_margin_required: float = 0.20
+
+@dataclass(frozen=True, slots=True)
+class _RankingPolicy:
+    score_margin_kind: _ScoreMarginKind
+    score_margin_required: float
+    cost_reduction_required: float
+    time_reduction_required: float
+
+
+_CURRENT_POLICY = _RankingPolicy(
+    score_margin_kind=_ScoreMarginKind.FRACTION_OF_MAXIMUM,
+    score_margin_required=_SCORE_MARGIN_FRACTION_OF_MAXIMUM,
+    cost_reduction_required=COST_REDUCTION_REQUIRED,
+    time_reduction_required=TIME_REDUCTION_REQUIRED,
+)
+_HISTORICAL_POLICY = _RankingPolicy(
+    score_margin_kind=_ScoreMarginKind.RELATIVE,
+    score_margin_required=_HISTORICAL_SCORE_MARGIN_REQUIRED,
+    cost_reduction_required=_HISTORICAL_COST_REDUCTION_REQUIRED,
+    time_reduction_required=_HISTORICAL_TIME_REDUCTION_REQUIRED,
+)
 
 
 class RankingCascade:
     """Applies dethroning rules using challenger order and aggregate metrics."""
 
-    def __init__(self, config: CascadeConfig) -> None:
-        if not 0.0 < config.score_margin_required <= 1.0:
-            raise ValueError("score_margin_required must be in (0.0, 1.0]")
-        self._cfg = config
+    def __init__(self) -> None:
+        self._policy = _CURRENT_POLICY
+
+    @classmethod
+    def for_historical_batches(cls) -> RankingCascade:
+        """Return the fixed policy used by miner-task batch data versions 1 through 7."""
+
+        cascade = cls()
+        cascade._policy = _HISTORICAL_POLICY
+        return cascade
 
     def decide(
         self,
@@ -220,17 +250,26 @@ class RankingCascade:
                 RankingRuleEvaluation(
                     rule=RankingDecisionRule.SCORE_MARGIN,
                     status=RankingRuleStatus.NOT_APPLICABLE,
-                    required_relative_improvement=self._cfg.score_margin_required,
+                    required_relative_improvement=(
+                        self._policy.score_margin_required
+                        if self._policy.score_margin_kind is _ScoreMarginKind.RELATIVE
+                        else None
+                    ),
+                    required_absolute_improvement=(
+                        self._policy.score_margin_required
+                        if self._policy.score_margin_kind is _ScoreMarginKind.FRACTION_OF_MAXIMUM
+                        else None
+                    ),
                 ),
                 RankingRuleEvaluation(
                     rule=RankingDecisionRule.COST_REDUCTION,
                     status=RankingRuleStatus.NOT_APPLICABLE,
-                    required_relative_improvement=COST_REDUCTION_REQUIRED,
+                    required_relative_improvement=self._policy.cost_reduction_required,
                 ),
                 RankingRuleEvaluation(
                     rule=RankingDecisionRule.RUNTIME_REDUCTION,
                     status=RankingRuleStatus.NOT_APPLICABLE,
-                    required_relative_improvement=TIME_REDUCTION_REQUIRED,
+                    required_relative_improvement=self._policy.time_reduction_required,
                     required_absolute_improvement=TIME_REDUCTION_MIN_MS,
                 ),
             ),
@@ -254,18 +293,11 @@ class RankingCascade:
                 abs_tol=1e-9,
             )
         )
-        score_margin_passed = challenger_total > 0.0 and challenger_total >= incumbent_total * (
-            1.0 + self._cfg.score_margin_required
-        )
-        score_rule = RankingRuleEvaluation(
-            rule=RankingDecisionRule.SCORE_MARGIN,
-            status=RankingRuleStatus.PASSED if score_margin_passed else RankingRuleStatus.FAILED,
-            required_relative_improvement=self._cfg.score_margin_required,
-            observed_relative_improvement=_relative_improvement(
-                challenger_metric=challenger_total,
-                incumbent_metric=incumbent_total,
-                lower_is_better=False,
-            ),
+        score_rule = self._evaluate_score_margin(
+            incumbent_artifact_id=incumbent_artifact_id,
+            challenger_total=challenger_total,
+            incumbent_total=incumbent_total,
+            aggregates=aggregates,
         )
 
         challenger_cost = aggregates.costs.get(challenger_artifact_id)
@@ -289,10 +321,10 @@ class RankingCascade:
                 metric_passed=_is_meaningfully_lower(
                     candidate_metric=challenger_cost,
                     incumbent_metric=incumbent_cost,
-                    reduction_required=COST_REDUCTION_REQUIRED,
+                    reduction_required=self._policy.cost_reduction_required,
                 ),
             ),
-            required_relative_improvement=COST_REDUCTION_REQUIRED,
+            required_relative_improvement=self._policy.cost_reduction_required,
             observed_relative_improvement=_relative_improvement(
                 challenger_metric=challenger_cost,
                 incumbent_metric=incumbent_cost,
@@ -313,11 +345,11 @@ class RankingCascade:
                 metric_passed=_is_meaningfully_faster(
                     candidate_metric=challenger_runtime,
                     incumbent_metric=incumbent_runtime,
-                    reduction_required=TIME_REDUCTION_REQUIRED,
+                    reduction_required=self._policy.time_reduction_required,
                     min_reduction_ms=TIME_REDUCTION_MIN_MS,
                 ),
             ),
-            required_relative_improvement=TIME_REDUCTION_REQUIRED,
+            required_relative_improvement=self._policy.time_reduction_required,
             required_absolute_improvement=TIME_REDUCTION_MIN_MS,
             observed_relative_improvement=_relative_improvement(
                 challenger_metric=challenger_runtime,
@@ -341,6 +373,58 @@ class RankingCascade:
             rules=rules,
             cost_non_regressing=cost_non_regressing,
             runtime_non_regressing=runtime_non_regressing,
+        )
+
+    def _evaluate_score_margin(
+        self,
+        *,
+        incumbent_artifact_id: UUID,
+        challenger_total: float,
+        incumbent_total: float,
+        aggregates: ArtifactAggregateBundle,
+    ) -> RankingRuleEvaluation:
+        if self._policy.score_margin_kind is _ScoreMarginKind.RELATIVE:
+            passed = challenger_total > 0.0 and challenger_total >= incumbent_total * (
+                1.0 + self._policy.score_margin_required
+            )
+            return RankingRuleEvaluation(
+                rule=RankingDecisionRule.SCORE_MARGIN,
+                status=RankingRuleStatus.PASSED if passed else RankingRuleStatus.FAILED,
+                required_relative_improvement=self._policy.score_margin_required,
+                observed_relative_improvement=_relative_improvement(
+                    challenger_metric=challenger_total,
+                    incumbent_metric=incumbent_total,
+                    lower_is_better=False,
+                ),
+            )
+
+        maximum_score = float(len(aggregates.vectors[incumbent_artifact_id]))
+        if maximum_score <= 0.0:
+            return RankingRuleEvaluation(
+                rule=RankingDecisionRule.SCORE_MARGIN,
+                status=RankingRuleStatus.UNAVAILABLE,
+                required_absolute_improvement=self._policy.score_margin_required,
+            )
+        required_total = min(
+            maximum_score,
+            incumbent_total + maximum_score * self._policy.score_margin_required,
+        )
+        meets_required_total = challenger_total >= required_total or math.isclose(
+            challenger_total,
+            required_total,
+            rel_tol=1e-9,
+            abs_tol=1e-9,
+        )
+        passed = challenger_total > incumbent_total and meets_required_total
+        return RankingRuleEvaluation(
+            rule=RankingDecisionRule.SCORE_MARGIN,
+            status=RankingRuleStatus.PASSED if passed else RankingRuleStatus.FAILED,
+            required_absolute_improvement=_normalize_score(
+                max(0.0, required_total - incumbent_total) / maximum_score
+            ),
+            observed_absolute_improvement=_normalize_score(
+                (challenger_total - incumbent_total) / maximum_score
+            ),
         )
 
     @staticmethod
@@ -591,7 +675,6 @@ __all__ = [
     "ArtifactAggregateBundle",
     "ArtifactRankingRow",
     "COST_REDUCTION_REQUIRED",
-    "CascadeConfig",
     "RankingCascadeEvaluation",
     "RankingCascade",
     "RankingCascadeStep",

@@ -24,7 +24,6 @@ from harnyx_commons.domain.tool_usage import LlmModelUsageCost
 from harnyx_commons.llm.provider_factory import build_routed_llm_provider
 from harnyx_commons.miner_task_ranking import (
     ArtifactRankingRow,
-    CascadeConfig,
     RankingCascade,
     aggregate_ranking_rows,
     ordered_challengers,
@@ -1452,7 +1451,7 @@ def _local_champion_selection_summary(
         tuple(_ranking_row_from_submission(submission) for submission in candidate_submissions)
     )
     candidate_artifact_ids = [artifact.artifact_id for artifact in candidate_artifacts]
-    selected_artifact_id = RankingCascade(CascadeConfig()).decide(
+    selected_artifact_id = RankingCascade().decide(
         initial=incumbent_artifact_id,
         challengers_ordered=ordered_challengers(
             initial=incumbent_artifact_id,

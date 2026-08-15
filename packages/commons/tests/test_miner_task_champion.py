@@ -18,7 +18,7 @@ from harnyx_commons.miner_task_champion import (
     selection_from_stored_champion_weights,
     validate_champion_run_inputs,
 )
-from harnyx_commons.miner_task_ranking import ArtifactAggregateBundle, CascadeConfig, RankingCascade
+from harnyx_commons.miner_task_ranking import ArtifactAggregateBundle, RankingCascade
 
 
 def test_selection_from_stored_champion_weights_reads_single_champion_score() -> None:
@@ -245,7 +245,7 @@ def test_select_champion_returns_winner_take_all_selection() -> None:
             ChampionRunInput(validator_id, challenger, task_id, 1.0, 1.0),
         ),
         current_champion_artifact_id=incumbent,
-        cascade=RankingCascade(CascadeConfig(score_margin_required=0.2)),
+        cascade=RankingCascade(),
     )
 
     assert selection == ChampionSelection(
@@ -282,7 +282,7 @@ def test_select_champion_similarity_candidates_walk_backward_through_dethrone_se
             ChampionRunInput(validator_id, challenger_b, task_id, 0.60, 7.0, elapsed_ms=5_000.0),
         ),
         current_champion_artifact_id=incumbent,
-        cascade=RankingCascade(CascadeConfig(score_margin_required=0.2)),
+        cascade=RankingCascade(),
     )
 
     assert selection is not None
@@ -307,7 +307,7 @@ def test_select_champion_similarity_candidates_include_replacement_of_zero_incum
             ChampionRunInput(validator_id, challenger, task_id, 0.8, 1.0),
         ),
         current_champion_artifact_id=incumbent,
-        cascade=RankingCascade(CascadeConfig(score_margin_required=0.2)),
+        cascade=RankingCascade(),
     )
 
     assert selection is not None

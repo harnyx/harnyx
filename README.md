@@ -99,10 +99,13 @@ sequenceDiagram
 
 Champion selection is not the same as "highest score in the batch wins."
 
-The platform starts from the incumbent champion and compares challengers in batch order. A challenger only replaces the incumbent when it clears the dethroning rule:
+The platform starts from the incumbent champion and compares challengers in batch order. For current data-version-8 batches, a challenger only replaces the incumbent when it clears one of these hard-coded dethroning rules:
 
-- it beats the incumbent by a sufficient score margin, or
-- its score does not regress and it is materially cheaper without being slower, or materially faster without being more expensive
+- its score is strictly higher and at least `min(perfect score, incumbent score + 10 percentage points)`, regardless of cost or runtime
+- its score and runtime do not regress and median cost falls by at least 10%, or
+- its score and cost do not regress and median runtime falls by at least 10% and at least 1,000 ms
+
+Data versions 1 through 7 retain their historical 20% relative score, cost, and runtime thresholds when replayed. The 1,000 ms runtime floor also applies historically.
 
 Because of that:
 
@@ -114,7 +117,7 @@ Because of that:
 
 ### How participant miner emission works
 
-`GET /v1/weights` uses latest champion weights for champion emission and the latest terminal source batch with finalized tasks and artifacts for participant emission. For a failed terminal batch, champion emission is reserved first and the entire remainder is divided equally among distinct participant hotkeys. For a successful data-version-7 batch, the remainder is divided per reward-eligible artifact. The participation-stage multiplier is `1` for top 50%, `2` for top 10%, or `5` for main; the novelty multiplier is `1` for `near_duplicate`, `3` for `notable_change`, or `5` for `novel`. An artifact's share is proportional to the product of those multipliers, up to `25`. Shares are aggregated to hotkeys afterward. A challenger that becomes champion receives champion emission plus its participant share; champion emission itself is never multiplied. The unchanged entering incumbent, duplicates, zero-response artifacts and artifacts outside the reward tiers receive no participant share. Data versions 1 through 6 retain their historical calculation. Registered hotkeys project to current metagraph UIDs; unregistered shares burn through owner `uid=0`.
+`GET /v1/weights` uses latest champion weights for champion emission and the latest terminal source batch with finalized tasks and artifacts for participant emission. For a failed terminal batch, champion emission is reserved first and the entire remainder is divided equally among distinct participant hotkeys. For a successful data-version-7-or-later batch, the remainder is divided per reward-eligible artifact. The participation-stage multiplier is `1` for top 50%, `2` for top 10%, or `5` for main; the novelty multiplier is `1` for `near_duplicate`, `3` for `notable_change`, or `5` for `novel`. An artifact's share is proportional to the product of those multipliers, up to `25`. Shares are aggregated to hotkeys afterward. A challenger that becomes champion receives champion emission plus its participant share; champion emission itself is never multiplied. The unchanged entering incumbent, duplicates, zero-response artifacts and artifacts outside the reward tiers receive no participant share. Data versions 1 through 6 retain their historical calculation. Registered hotkeys project to current metagraph UIDs; unregistered shares burn through owner `uid=0`.
 
 Public emission monitoring groups totals by participant hotkey and nests one entry per source-batch artifact. Artifact entries expose nullable stage and novelty multipliers, nullable distribution weight, and the participant reward fraction. Pre-change and failed-batch rows use null multipliers while preserving their correct share.
 

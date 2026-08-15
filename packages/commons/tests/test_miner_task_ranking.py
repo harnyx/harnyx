@@ -10,7 +10,6 @@ from harnyx_commons.miner_task_emission import compose_champion_weights
 from harnyx_commons.miner_task_ranking import (
     ArtifactAggregateBundle,
     ArtifactRankingRow,
-    CascadeConfig,
     RankingCascade,
     RankingCascadeStep,
     RankingCascadeTrace,
@@ -87,8 +86,144 @@ def test_aggregate_ranking_rows_omits_elapsed_when_any_validator_elapsed_is_miss
     assert artifact not in bundle.median_elapsed_ms
 
 
+@pytest.mark.parametrize(
+    ("task_count", "incumbent_total", "challenger_total", "expected_status"),
+    (
+        (10, 5.0, 5.999, RankingRuleStatus.FAILED),
+        (10, 5.0, 6.0, RankingRuleStatus.PASSED),
+        (10, 3.000004, 4.000004, RankingRuleStatus.PASSED),
+        (30, 15.0, 17.999, RankingRuleStatus.FAILED),
+        (30, 15.0, 18.0, RankingRuleStatus.PASSED),
+        (30, 13.000002, 16.000002, RankingRuleStatus.PASSED),
+        (10, 9.5, 10.0, RankingRuleStatus.PASSED),
+        (10, 10.0, 10.0, RankingRuleStatus.FAILED),
+    ),
+)
+def test_current_ranking_cascade_uses_ceiling_aware_ten_percentage_point_score_margin(
+    task_count: int,
+    incumbent_total: float,
+    challenger_total: float,
+    expected_status: RankingRuleStatus,
+) -> None:
+    cascade = RankingCascade()
+    incumbent = uuid4()
+    challenger = uuid4()
+
+    trace = cascade.trace(
+        initial=incumbent,
+        challengers_ordered=(challenger,),
+        aggregates=ArtifactAggregateBundle(
+            vectors={incumbent: [0.0] * task_count, challenger: [0.0] * task_count},
+            totals={incumbent: incumbent_total, challenger: challenger_total},
+            costs={incumbent: 10.0, challenger: 10.0},
+            median_elapsed_ms={incumbent: 10_000.0, challenger: 10_000.0},
+        ),
+    )
+
+    evaluation = trace.steps[0].evaluation
+    assert evaluation is not None
+    score_rule = evaluation.rules[0]
+    assert score_rule.status is expected_status
+    assert score_rule.required_relative_improvement is None
+    assert score_rule.required_absolute_improvement == pytest.approx(
+        min(0.10, (task_count - incumbent_total) / task_count)
+    )
+    assert score_rule.observed_absolute_improvement == pytest.approx((challenger_total - incumbent_total) / task_count)
+    assert trace.final_artifact_id == (challenger if expected_status is RankingRuleStatus.PASSED else incumbent)
+
+
+@pytest.mark.parametrize(
+    ("challenger_cost", "expected_status"),
+    (
+        (90.001, RankingRuleStatus.FAILED),
+        (90.0, RankingRuleStatus.PASSED),
+    ),
+)
+def test_current_ranking_cascade_cost_reduction_requires_ten_percent(
+    challenger_cost: float,
+    expected_status: RankingRuleStatus,
+) -> None:
+    incumbent = uuid4()
+    challenger = uuid4()
+
+    trace = RankingCascade().trace(
+        initial=incumbent,
+        challengers_ordered=(challenger,),
+        aggregates=ArtifactAggregateBundle(
+            vectors={incumbent: [0.5], challenger: [0.5]},
+            totals={incumbent: 0.5, challenger: 0.5},
+            costs={incumbent: 100.0, challenger: challenger_cost},
+            median_elapsed_ms={incumbent: 20_000.0, challenger: 20_000.0},
+        ),
+    )
+
+    evaluation = trace.steps[0].evaluation
+    assert evaluation is not None
+    assert evaluation.rules[1].status is expected_status
+    assert evaluation.rules[1].required_relative_improvement == pytest.approx(0.10)
+
+
+@pytest.mark.parametrize(
+    ("incumbent_runtime", "challenger_runtime", "expected_status"),
+    (
+        (20_000.0, 19_000.0, RankingRuleStatus.FAILED),
+        (20_000.0, 18_000.0, RankingRuleStatus.PASSED),
+        (5_000.0, 4_500.0, RankingRuleStatus.FAILED),
+        (5_000.0, 4_000.0, RankingRuleStatus.PASSED),
+    ),
+)
+def test_current_ranking_cascade_runtime_reduction_binds_relative_and_absolute_requirements(
+    incumbent_runtime: float,
+    challenger_runtime: float,
+    expected_status: RankingRuleStatus,
+) -> None:
+    incumbent = uuid4()
+    challenger = uuid4()
+
+    trace = RankingCascade().trace(
+        initial=incumbent,
+        challengers_ordered=(challenger,),
+        aggregates=ArtifactAggregateBundle(
+            vectors={incumbent: [0.5], challenger: [0.5]},
+            totals={incumbent: 0.5, challenger: 0.5},
+            costs={incumbent: 10.0, challenger: 10.0},
+            median_elapsed_ms={incumbent: incumbent_runtime, challenger: challenger_runtime},
+        ),
+    )
+
+    evaluation = trace.steps[0].evaluation
+    assert evaluation is not None
+    runtime_rule = evaluation.rules[2]
+    assert runtime_rule.status is expected_status
+    assert runtime_rule.required_relative_improvement == pytest.approx(0.10)
+    assert runtime_rule.required_absolute_improvement == pytest.approx(1_000.0)
+
+
+def test_historical_ranking_cascade_retains_relative_twenty_percent_margins() -> None:
+    incumbent = uuid4()
+    challenger = uuid4()
+
+    trace = RankingCascade.for_historical_batches().trace(
+        initial=incumbent,
+        challengers_ordered=(challenger,),
+        aggregates=ArtifactAggregateBundle(
+            vectors={incumbent: [0.8], challenger: [0.9]},
+            totals={incumbent: 0.8, challenger: 0.9},
+            costs={incumbent: 100.0, challenger: 85.0},
+            median_elapsed_ms={incumbent: 20_000.0, challenger: 17_000.0},
+        ),
+    )
+
+    evaluation = trace.steps[0].evaluation
+    assert evaluation is not None
+    assert evaluation.selected_rule is None
+    assert [rule.required_relative_improvement for rule in evaluation.rules] == [0.20, 0.20, 0.20]
+    assert evaluation.rules[0].required_absolute_improvement is None
+    assert trace.final_artifact_id == incumbent
+
+
 def test_ranking_cascade_preserves_incumbent_without_margin_or_efficiency_win() -> None:
-    cascade = RankingCascade(CascadeConfig())
+    cascade = RankingCascade()
     incumbent = uuid4()
     challenger = uuid4()
 
@@ -107,7 +242,7 @@ def test_ranking_cascade_preserves_incumbent_without_margin_or_efficiency_win() 
 
 
 def test_ranking_cascade_dethrones_on_non_regressing_score_and_efficiency() -> None:
-    cascade = RankingCascade(CascadeConfig())
+    cascade = RankingCascade()
     incumbent = uuid4()
     challenger = uuid4()
 
@@ -126,7 +261,7 @@ def test_ranking_cascade_dethrones_on_non_regressing_score_and_efficiency() -> N
 
 
 def test_ranking_cascade_score_margin_is_independent_of_efficiency() -> None:
-    cascade = RankingCascade(CascadeConfig())
+    cascade = RankingCascade()
     incumbent = uuid4()
     worse_efficiency = uuid4()
     missing_efficiency = uuid4()
@@ -181,7 +316,7 @@ def test_ranking_cascade_cost_reduction_requires_runtime_non_regression(
     expected_status: RankingRuleStatus,
     expected_champion: str,
 ) -> None:
-    cascade = RankingCascade(CascadeConfig())
+    cascade = RankingCascade()
     incumbent = uuid4()
     challenger = uuid4()
     runtimes = {incumbent: 10_000.0}
@@ -228,7 +363,7 @@ def test_ranking_cascade_runtime_reduction_requires_cost_non_regression(
     expected_status: RankingRuleStatus,
     expected_champion: str,
 ) -> None:
-    cascade = RankingCascade(CascadeConfig())
+    cascade = RankingCascade()
     incumbent = uuid4()
     challenger = uuid4()
     costs = {incumbent: 10.0}
@@ -255,7 +390,7 @@ def test_ranking_cascade_runtime_reduction_requires_cost_non_regression(
 
 
 def test_ranking_cascade_alternating_efficiency_dethrones_do_not_regress_either_dimension() -> None:
-    cascade = RankingCascade(CascadeConfig())
+    cascade = RankingCascade()
     incumbent = uuid4()
     faster_challenger = uuid4()
     cheaper_challenger = uuid4()
@@ -295,7 +430,7 @@ def test_ranking_cascade_alternating_efficiency_dethrones_do_not_regress_either_
 
 
 def test_ranking_cascade_trace_records_successful_dethrone_sequence() -> None:
-    cascade = RankingCascade(CascadeConfig())
+    cascade = RankingCascade()
     incumbent = uuid4()
     challenger_a = uuid4()
     challenger_b = uuid4()
@@ -352,7 +487,8 @@ def test_ranking_cascade_trace_records_successful_dethrone_sequence() -> None:
         RankingDecisionRule.COST_REDUCTION,
     ]
     assert trace.steps[0].evaluation is not None
-    assert trace.steps[0].evaluation.rules[0].observed_relative_improvement == pytest.approx(0.2)
+    assert trace.steps[0].evaluation.rules[0].observed_relative_improvement is None
+    assert trace.steps[0].evaluation.rules[0].observed_absolute_improvement == pytest.approx(0.1)
     assert trace.steps[1].evaluation is not None
     assert trace.steps[1].evaluation.score_non_regressing is False
     assert trace.steps[1].evaluation.rules[1].status is RankingRuleStatus.FAILED
@@ -392,7 +528,7 @@ def test_ranking_cascade_trace_records_championless_champion_lineage() -> None:
 
 
 def test_ranking_cascade_trace_treats_positive_replacement_of_zero_incumbent_as_dethrone() -> None:
-    cascade = RankingCascade(CascadeConfig())
+    cascade = RankingCascade()
     incumbent = uuid4()
     challenger = uuid4()
 
@@ -427,7 +563,7 @@ def test_ranking_cascade_trace_treats_positive_replacement_of_zero_incumbent_as_
 
 
 def test_ranking_cascade_trace_marks_missing_runtime_unavailable() -> None:
-    cascade = RankingCascade(CascadeConfig())
+    cascade = RankingCascade()
     incumbent = uuid4()
     challenger = uuid4()
 
@@ -452,7 +588,7 @@ def test_ranking_cascade_trace_marks_missing_runtime_unavailable() -> None:
 
 
 def test_ranking_cascade_trace_preserves_rule_thresholds_and_precedence() -> None:
-    cascade = RankingCascade(CascadeConfig())
+    cascade = RankingCascade()
     incumbent = uuid4()
     challenger = uuid4()
 
