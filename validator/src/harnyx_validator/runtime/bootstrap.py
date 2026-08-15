@@ -30,6 +30,7 @@ from harnyx_commons.llm.provider_factory import (
 from harnyx_commons.llm.provider_types import (
     BEDROCK_PROVIDER,
     CHUTES_PROVIDER,
+    OPENROUTER_PROVIDER,
     parse_custom_openai_compatible_target,
 )
 from harnyx_commons.llm.routing import ResolvedLlmRoute, resolve_llm_route
@@ -146,6 +147,9 @@ _SCORING_SLOT_CONFIG = ScoringSlotConfig(
 )
 _DUPLICATION_DETECTION_CHUTES_CHAIN_MODELS = frozenset(
     _DUPLICATION_DETECTION_MODEL_CHAIN
+)
+_DUPLICATION_DETECTION_OPENROUTER_MODELS = frozenset(
+    {"deepseek-ai/DeepSeek-V4-Flash-0731-TEE"}
 )
 _SEARCH_PROVIDER_TOOLS = frozenset(("search_web", "search_ai", "fetch_page"))
 _MINER_SELECTED_SEARCH_PROVIDERS = frozenset(get_args(SearchProviderName))
@@ -598,7 +602,7 @@ def _build_llm_clients(settings: Settings) -> RuntimeLlmClients:
         surface="duplication_detection",
         default_provider=settings.llm.similarity_llm_provider,
         llm_settings=settings.llm,
-        allowed_providers={"bedrock", "chutes", "vertex"},
+        allowed_providers={"bedrock", "chutes", "openrouter", "vertex"},
         allow_custom_openai_compatible=True,
         provider_registry=llm_provider_registry,
     )
@@ -637,7 +641,7 @@ def _resolve_similarity_judge_route(
         default_provider=settings.llm.similarity_llm_provider,
         model=model or _effective_similarity_llm_model(settings),
         overrides=settings.llm.llm_model_provider_overrides,
-        allowed_providers={"bedrock", "chutes", "vertex"},
+        allowed_providers={"bedrock", "chutes", "openrouter", "vertex"},
         allow_custom_openai_compatible=True,
     )
 
@@ -649,6 +653,14 @@ def _resolve_similarity_judge_routes(settings: Settings) -> tuple[ResolvedLlmRou
     )
     routes = tuple(_resolve_similarity_judge_route(settings, model=model) for model in models)
     for route in routes:
+        if route.provider == OPENROUTER_PROVIDER:
+            if route.model in _DUPLICATION_DETECTION_OPENROUTER_MODELS:
+                continue
+            supported_models = ", ".join(sorted(_DUPLICATION_DETECTION_OPENROUTER_MODELS))
+            raise ValueError(
+                "duplicate-preflight similarity OpenRouter route supports only "
+                f"{supported_models}; resolved model was {route.model!r}"
+            )
         if route.model not in _DUPLICATION_DETECTION_CHUTES_CHAIN_MODELS:
             continue
         if route.provider == CHUTES_PROVIDER:

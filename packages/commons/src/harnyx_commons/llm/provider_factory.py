@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Set
 
 from pydantic import SecretStr
 
@@ -16,6 +16,7 @@ from harnyx_commons.llm.provider import LlmProviderName, LlmProviderPort
 from harnyx_commons.llm.provider_types import (
     AI_GATEWAY_PROVIDER,
     OPENROUTER_PROVIDER,
+    LlmRouteTarget,
     parse_builtin_provider_name,
     parse_custom_openai_compatible_target,
     parse_provider_route_target,
@@ -102,7 +103,7 @@ def build_routed_llm_provider(
     surface: LlmRouteSurface,
     default_provider: LlmProviderName,
     llm_settings: LlmSettings,
-    allowed_providers: set[LlmProviderName],
+    allowed_providers: Set[LlmRouteTarget],
     provider_registry: CachedLlmProviderRegistry,
     allow_custom_openai_compatible: bool = False,
 ) -> RoutedLlmProvider:

@@ -98,6 +98,7 @@ def test_openrouter_supported_models_come_from_miner_selected_provider_contract(
 def test_openrouter_internal_routes_rewrite_only_internal_canonical_models() -> None:
     assert OPENROUTER_INTERNAL_TO_NATIVE_MODEL == {
         "deepseek-ai/DeepSeek-V3.2-TEE": "deepseek/deepseek-v3.2",
+        "deepseek-ai/DeepSeek-V4-Flash-0731-TEE": "deepseek/deepseek-v4-flash-0731",
         "zai-org/GLM-5-TEE": "z-ai/glm-5",
         "Qwen/Qwen3.6-27B-TEE": "qwen/qwen3.6-27b",
         "google/gemma-4-31B-turbo-TEE": "google/gemma-4-31b-it",
@@ -402,17 +403,20 @@ async def test_openrouter_provider_serializes_request_provider_only_extra(model:
 
 @pytest.mark.parametrize("model", OPENROUTER_TEST_MODELS)
 @pytest.mark.parametrize(
-    ("thinking", "expected_reasoning"),
+    ("thinking", "reasoning_effort", "expected_reasoning"),
     (
-        (LlmThinkingConfig(enabled=True), {"enabled": True}),
-        (LlmThinkingConfig(enabled=True, effort="high"), {"enabled": True, "effort": "high"}),
-        (LlmThinkingConfig(enabled=True, budget=2048), {"enabled": True, "max_tokens": 2048}),
-        (LlmThinkingConfig(enabled=False), {"effort": "none"}),
+        (LlmThinkingConfig(enabled=True), None, {"enabled": True}),
+        (LlmThinkingConfig(enabled=True, effort="high"), None, {"enabled": True, "effort": "high"}),
+        (LlmThinkingConfig(enabled=True, budget=2048), None, {"enabled": True, "max_tokens": 2048}),
+        (LlmThinkingConfig(enabled=False), None, {"effort": "none"}),
+        (None, "high", {"enabled": True, "effort": "high"}),
+        (LlmThinkingConfig(enabled=False), "high", {"effort": "none"}),
     ),
 )
-async def test_openrouter_provider_serializes_thinking_as_reasoning(
+async def test_openrouter_provider_serializes_resolved_thinking_as_reasoning(
     model: str,
-    thinking: LlmThinkingConfig,
+    thinking: LlmThinkingConfig | None,
+    reasoning_effort: str | None,
     expected_reasoning: dict[str, object],
 ) -> None:
     captured: dict[str, Any] = {}
@@ -448,7 +452,13 @@ async def test_openrouter_provider_serializes_thinking_as_reasoning(
         openrouter_chat_provider_factory=lambda _: (openai_provider, client),
     )
 
-    await provider.invoke(_request(model=model, thinking=thinking))
+    await provider.invoke(
+        _request(
+            model=model,
+            thinking=thinking,
+            reasoning_effort=reasoning_effort,
+        )
+    )
     await provider.aclose()
 
     assert captured["json"]["reasoning"] == expected_reasoning
@@ -477,7 +487,18 @@ async def test_openrouter_provider_rejects_non_object_request_reasoning_extra(
 
 
 @pytest.mark.parametrize("model", OPENROUTER_TEST_MODELS)
-async def test_openrouter_provider_merges_request_reasoning_extra_with_typed_thinking(model: str) -> None:
+@pytest.mark.parametrize(
+    ("thinking", "reasoning_effort"),
+    (
+        (LlmThinkingConfig(enabled=True, effort="high"), None),
+        (None, "high"),
+    ),
+)
+async def test_openrouter_provider_merges_request_reasoning_extra_with_resolved_thinking(
+    model: str,
+    thinking: LlmThinkingConfig | None,
+    reasoning_effort: str | None,
+) -> None:
     fake_provider = _FakeOpenAiProvider()
     fake_client = _FakeClient()
     provider = OpenRouterLlmProvider(
@@ -494,7 +515,8 @@ async def test_openrouter_provider_merges_request_reasoning_extra_with_typed_thi
         _request(
             model=model,
             extra={"reasoning": {"exclude": True, "effort": "low"}},
-            thinking=LlmThinkingConfig(enabled=True, effort="high"),
+            thinking=thinking,
+            reasoning_effort=reasoning_effort,
         )
     )
 
@@ -591,6 +613,7 @@ def _request(
     model: str,
     extra: dict[str, Any] | None = None,
     thinking: LlmThinkingConfig | None = None,
+    reasoning_effort: str | None = None,
     retry_policy: RetryPolicy | None = None,
 ) -> LlmRequest:
     return LlmRequest(
@@ -606,5 +629,6 @@ def _request(
         max_output_tokens=32,
         extra=extra,
         thinking=thinking,
+        reasoning_effort=reasoning_effort,
         retry_policy=retry_policy,
     )

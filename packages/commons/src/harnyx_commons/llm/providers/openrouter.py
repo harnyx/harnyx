@@ -15,6 +15,7 @@ from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.llm.provider import LlmProviderConfigurationError, LlmProviderPort
 from harnyx_commons.llm.provider_types import OPENROUTER_PROVIDER
 from harnyx_commons.llm.providers.openai_compatible import OpenAiCompatibleLlmProvider
+from harnyx_commons.llm.providers.thinking import resolve_request_thinking
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse, LlmThinkingConfig
 from harnyx_commons.llm.tool_models import MINER_SELECTED_LLM_PROVIDER_MODELS
 
@@ -25,6 +26,7 @@ OPENROUTER_NATIVE_SUPPORTED_MODELS = MINER_SELECTED_LLM_PROVIDER_MODELS[OPENROUT
 OPENROUTER_EMBEDDING_SUPPORTED_MODELS = ("qwen/qwen3-embedding-8b",)
 OPENROUTER_INTERNAL_TO_NATIVE_MODEL: Mapping[str, str] = {
     "deepseek-ai/DeepSeek-V3.2-TEE": "deepseek/deepseek-v3.2",
+    "deepseek-ai/DeepSeek-V4-Flash-0731-TEE": "deepseek/deepseek-v4-flash-0731",
     "zai-org/GLM-5-TEE": "z-ai/glm-5",
     "Qwen/Qwen3.6-27B-TEE": "qwen/qwen3.6-27b",
     "google/gemma-4-31B-turbo-TEE": "google/gemma-4-31b-it",
@@ -238,7 +240,11 @@ class OpenRouterLlmProvider(LlmProviderPort):
 
     def _openrouter_request(self, request: AbstractLlmRequest, *, model: str) -> AbstractLlmRequest:
         extra = dict(request.extra or {})
-        extra = _merge_reasoning_extra(extra, request.thinking)
+        thinking = resolve_request_thinking(
+            request_thinking=request.thinking,
+            reasoning_effort=request.reasoning_effort,
+        )
+        extra = _merge_reasoning_extra(extra, thinking)
         return replace(
             request,
             provider=OPENROUTER_PROVIDER,

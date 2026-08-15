@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Set
 from dataclasses import dataclass, replace
 from typing import Literal, cast
 
@@ -104,7 +104,7 @@ def resolve_llm_route(
     default_provider: LlmProviderName,
     model: str,
     overrides: LlmModelProviderOverrides,
-    allowed_providers: set[LlmProviderName],
+    allowed_providers: Set[LlmRouteTarget],
     allow_custom_openai_compatible: bool = False,
 ) -> ResolvedLlmRoute:
     normalized_model = model.strip()
@@ -138,7 +138,7 @@ class RoutedLlmProvider(LlmProviderPort):
         surface: LlmRouteSurface,
         default_provider: LlmProviderName,
         overrides: LlmModelProviderOverrides,
-        allowed_providers: set[LlmProviderName],
+        allowed_providers: Set[LlmRouteTarget],
         allow_custom_openai_compatible: bool = False,
         resolve_provider: Callable[[str], LlmProviderPort],
     ) -> None:

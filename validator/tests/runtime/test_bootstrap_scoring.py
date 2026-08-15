@@ -1125,6 +1125,47 @@ def test_default_similarity_chain_allows_explicit_custom_routes() -> None:
     assert tuple(route.provider for route in routes) == tuple(route_target for _ in models)
 
 
+def test_default_similarity_chain_routes_only_deepseek_through_openrouter() -> None:
+    deepseek_model = "deepseek-ai/DeepSeek-V4-Flash-0731-TEE"
+    settings = Settings.model_construct(
+        llm=LlmSettings.model_construct(
+            similarity_llm_provider="chutes",
+            similarity_llm_model_override=None,
+            llm_model_provider_overrides_json=json.dumps(
+                {"duplication_detection": {deepseek_model: "openrouter"}}
+            ),
+        ),
+    )
+
+    routes = bootstrap._resolve_similarity_judge_routes(settings)
+
+    assert tuple((route.model, route.provider) for route in routes) == (
+        ("google/gemma-4-31B-turbo-TEE", "chutes"),
+        (deepseek_model, "openrouter"),
+        ("zai-org/GLM-5.2-TEE", "chutes"),
+        ("moonshotai/Kimi-K3-TEE", "chutes"),
+    )
+
+
+def test_default_similarity_chain_rejects_openrouter_for_non_deepseek_model() -> None:
+    glm_model = "zai-org/GLM-5.2-TEE"
+    settings = Settings.model_construct(
+        llm=LlmSettings.model_construct(
+            similarity_llm_provider="chutes",
+            similarity_llm_model_override=None,
+            llm_model_provider_overrides_json=json.dumps(
+                {"duplication_detection": {glm_model: "openrouter"}}
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="duplicate-preflight similarity OpenRouter route.*DeepSeek-V4-Flash-0731",
+    ):
+        bootstrap._resolve_similarity_judge_routes(settings)
+
+
 def test_build_llm_clients_routes_configured_scoring_entries_to_custom_endpoints(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -25,6 +25,7 @@ _GEMMA_ROUTE_TARGET = f"custom-openai-compatible:{_GEMMA_ENDPOINT_ID}"
 _GEMMA_SERVICE_URL = "https://gemma-4-31b-turbo-obbrpx3ppa-uc.a.run.app"
 _DEEPSEEK_MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731-TEE"
 _DEEPSEEK_ROUTE_TARGET = "chutes"
+_DEEPSEEK_OPENROUTER_ROUTE_TARGET = "openrouter"
 _KIMI_MODEL = "moonshotai/Kimi-K2.5-TEE"
 _KIMI_ROUTE_TARGET = "bedrock"
 _GLM_MODEL = "zai-org/GLM-5-TEE"
@@ -91,6 +92,7 @@ class RecordingProvider(LlmProviderPort):
     (
         (_GEMMA_MODEL, _GEMMA_ROUTE_TARGET),
         (_DEEPSEEK_MODEL, _DEEPSEEK_ROUTE_TARGET),
+        (_DEEPSEEK_MODEL, _DEEPSEEK_OPENROUTER_ROUTE_TARGET),
         (_KIMI_MODEL, _KIMI_ROUTE_TARGET),
         (_GLM_MODEL, _GLM_ROUTE_TARGET),
     ),
@@ -100,6 +102,13 @@ async def test_similarity_judge_live_supports_production_provider_contract(
     route_target: str,
 ) -> None:
     base_settings = Settings.load()
+    route_overrides = {
+        _GEMMA_MODEL: _GEMMA_ROUTE_TARGET,
+        _DEEPSEEK_MODEL: _DEEPSEEK_ROUTE_TARGET,
+        _KIMI_MODEL: _KIMI_ROUTE_TARGET,
+        _GLM_MODEL: _GLM_ROUTE_TARGET,
+    }
+    route_overrides[model] = route_target
     settings = base_settings.model_copy(
         update={
             "llm": base_settings.llm.model_copy(
@@ -107,12 +116,7 @@ async def test_similarity_judge_live_supports_production_provider_contract(
                     "openai_compatible_endpoints_json": json.dumps([_gemma_cloud_run_endpoint_config()]),
                     "llm_model_provider_overrides_json": json.dumps(
                         {
-                            "duplication_detection": {
-                                _GEMMA_MODEL: _GEMMA_ROUTE_TARGET,
-                                _DEEPSEEK_MODEL: _DEEPSEEK_ROUTE_TARGET,
-                                _KIMI_MODEL: _KIMI_ROUTE_TARGET,
-                                _GLM_MODEL: _GLM_ROUTE_TARGET,
-                            }
+                            "duplication_detection": route_overrides
                         }
                     ),
                     "similarity_llm_model_override": model,
@@ -133,7 +137,7 @@ async def test_similarity_judge_live_supports_production_provider_contract(
         surface="duplication_detection",
         default_provider=settings.llm.similarity_llm_provider,
         llm_settings=settings.llm,
-        allowed_providers={"bedrock", "chutes", "vertex"},
+        allowed_providers={"bedrock", "chutes", "openrouter", "vertex"},
         allow_custom_openai_compatible=True,
         provider_registry=registry,
     )

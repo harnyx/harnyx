@@ -180,10 +180,48 @@ def test_custom_route_target_is_canonicalized() -> None:
     assert parsed["tool"]["google/gemma-4-31B-turbo-TEE"] == "custom-openai-compatible:gemma4-cloud-run-turbo"
 
 
-@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b", "Qwen/Qwen3.6-27B-TEE"))
-def test_parse_llm_model_provider_overrides_rejects_internal_openrouter_target(model: str) -> None:
-    with pytest.raises(ValueError, match="not allowed"):
-        parse_llm_model_provider_overrides(f'{{"tool":{{"{model}":"openrouter"}}}}')
+def test_openrouter_route_target_requires_explicit_surface_authorization() -> None:
+    model = "deepseek-ai/DeepSeek-V4-Flash-0731-TEE"
+    parsed = parse_llm_model_provider_overrides(
+        f'{{"duplication_detection":{{"{model}":"openrouter"}}}}'
+    )
+
+    route = resolve_llm_route(
+        surface="duplication_detection",
+        default_provider="chutes",
+        model=model,
+        overrides=parsed,
+        allowed_providers={"chutes", "openrouter"},
+    )
+
+    assert route == ResolvedLlmRoute(
+        surface="duplication_detection",
+        provider="openrouter",
+        model=model,
+    )
+    with pytest.raises(ValueError, match="override provider 'openrouter' is not supported"):
+        resolve_llm_route(
+            surface="duplication_detection",
+            default_provider="chutes",
+            model=model,
+            overrides=parsed,
+            allowed_providers={"chutes"},
+        )
+
+
+def test_tool_surface_does_not_authorize_openrouter_route_target() -> None:
+    model = "google/gemma-4-31B-turbo-TEE"
+    parsed = parse_llm_model_provider_overrides(f'{{"tool":{{"{model}":"openrouter"}}}}')
+
+    with pytest.raises(ValueError, match="override provider 'openrouter' is not supported"):
+        resolve_llm_route(
+            surface="tool",
+            default_provider="chutes",
+            model=model,
+            overrides=parsed,
+            allowed_providers={"chutes", "vertex"},
+            allow_custom_openai_compatible=True,
+        )
 
 
 @pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b", "Qwen/Qwen3.6-27B-TEE"))

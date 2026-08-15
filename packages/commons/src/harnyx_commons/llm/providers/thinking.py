@@ -31,15 +31,27 @@ def resolve_template_thinking(
     capability = model_thinking_capability(canonical_model, provider_name=provider_name)
     if capability is None:
         return None
+    thinking = resolve_request_thinking(
+        request_thinking=request_thinking,
+        reasoning_effort=reasoning_effort,
+    )
+    if thinking is None:
+        return None
+    return ResolvedTemplateThinking(capability=capability, thinking=thinking)
+
+
+def resolve_request_thinking(
+    *,
+    request_thinking: LlmThinkingConfig | None,
+    reasoning_effort: str | None,
+) -> LlmThinkingConfig | None:
+    """Resolve the typed thinking config, falling back to the legacy named effort."""
     if request_thinking is not None:
-        return ResolvedTemplateThinking(capability=capability, thinking=request_thinking)
+        return request_thinking
     named_effort = _named_reasoning_effort(reasoning_effort)
     if named_effort is None:
         return None
-    return ResolvedTemplateThinking(
-        capability=capability,
-        thinking=LlmThinkingConfig(enabled=True, effort=named_effort),
-    )
+    return LlmThinkingConfig(enabled=True, effort=named_effort)
 
 
 def _named_reasoning_effort(reasoning_effort: str | None) -> ReasoningEffort | None:
@@ -53,5 +65,6 @@ def _named_reasoning_effort(reasoning_effort: str | None) -> ReasoningEffort | N
 
 __all__ = [
     "ResolvedTemplateThinking",
+    "resolve_request_thinking",
     "resolve_template_thinking",
 ]

@@ -60,6 +60,8 @@ def parse_provider_route_target(raw: str | None, *, component: str) -> LlmRouteT
     custom_endpoint_id = parse_custom_openai_compatible_target(value)
     if custom_endpoint_id is not None:
         return custom_openai_compatible_target(custom_endpoint_id)
+    if value == OPENROUTER_PROVIDER:
+        return OPENROUTER_PROVIDER
     return parse_builtin_provider_name(value, component=component)
 
 
