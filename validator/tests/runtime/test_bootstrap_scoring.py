@@ -219,6 +219,7 @@ def test_build_llm_clients_uses_shared_provider_registry(monkeypatch: pytest.Mon
         provider="chutes",
         model=bootstrap._DUPLICATION_DETECTION_LLM_MODEL,
     )
+    assert clients.similarity_request_extra_by_model == {}
     assert calls == []
 
 
@@ -645,6 +646,7 @@ def test_build_runtime_cleans_stale_sandbox_containers_on_startup(
             similarity_llm_provider=None,
             scoring_routes=object(),
             similarity_route=object(),
+            similarity_request_extra_by_model={},
         ),
     )
     monkeypatch.setattr(bootstrap, "_build_proxy_tooling", lambda **_kwargs: (object(), object()))
@@ -889,6 +891,7 @@ def test_build_services_passes_slot_fallback_models_to_scoring_services() -> Non
             provider="chutes",
             model="google/gemma-4-31B-turbo-TEE",
         ),
+        similarity_request_extra_by_model={},
         subtensor_client=SimpleNamespace(),
         platform_client=SimpleNamespace(),
     )
@@ -1008,6 +1011,7 @@ def test_create_similarity_judge_uses_similarity_llm_config() -> None:
             provider="chutes",
             model="google/gemma-4-31B-turbo-TEE",
         ),
+        request_extra_by_model={},
     )
 
     assert judge._config.provider == "vertex"
@@ -1022,6 +1026,7 @@ def test_create_similarity_judge_uses_similarity_llm_config() -> None:
     assert judge._config.reasoning_effort == "high"
     assert judge._config.timeout_seconds == 300.0
     assert judge._config.retry_policy == settings.llm.similarity_llm_retry_policy
+    assert judge._config.request_extra_by_model == {}
 
 
 def test_similarity_fallback_tail_only_uses_candidates_after_primary_override() -> None:
@@ -1145,6 +1150,22 @@ def test_default_similarity_chain_routes_only_deepseek_through_openrouter() -> N
         ("zai-org/GLM-5.2-TEE", "chutes"),
         ("moonshotai/Kimi-K3-TEE", "chutes"),
     )
+    assert bootstrap._similarity_request_extra_by_model(routes) == {
+        deepseek_model: {
+            "provider": {
+                "ignore": [
+                    "Baidu",
+                    "Cloudflare",
+                    "Decart",
+                    "Io Net",
+                    "OpenInference",
+                    "Parasail",
+                    "Sail Research",
+                    "Together",
+                ]
+            }
+        }
+    }
 
 
 def test_default_similarity_chain_rejects_openrouter_for_non_deepseek_model() -> None:

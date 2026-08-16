@@ -21,6 +21,7 @@ from harnyx_commons.errors import ToolProviderError
 from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
 from harnyx_commons.infrastructure.state.session_registry import InMemorySessionRegistry
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
+from harnyx_commons.json_types import JsonObject
 from harnyx_commons.llm.provider import LlmProviderPort
 from harnyx_commons.llm.provider_factory import (
     CachedLlmProviderRegistry,
@@ -148,8 +149,19 @@ _SCORING_SLOT_CONFIG = ScoringSlotConfig(
 _DUPLICATION_DETECTION_CHUTES_CHAIN_MODELS = frozenset(
     _DUPLICATION_DETECTION_MODEL_CHAIN
 )
+_DUPLICATION_DETECTION_DEEPSEEK_MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731-TEE"
 _DUPLICATION_DETECTION_OPENROUTER_MODELS = frozenset(
-    {"deepseek-ai/DeepSeek-V4-Flash-0731-TEE"}
+    {_DUPLICATION_DETECTION_DEEPSEEK_MODEL}
+)
+_DUPLICATION_DETECTION_DEEPSEEK_OPENROUTER_IGNORED_PROVIDERS = (
+    "Baidu",
+    "Cloudflare",
+    "Decart",
+    "Io Net",
+    "OpenInference",
+    "Parasail",
+    "Sail Research",
+    "Together",
 )
 _SEARCH_PROVIDER_TOOLS = frozenset(("search_web", "search_ai", "fetch_page"))
 _MINER_SELECTED_SEARCH_PROVIDERS = frozenset(get_args(SearchProviderName))
@@ -304,6 +316,7 @@ class RuntimeLlmClients:
     similarity_llm_provider: LlmProviderPort | None
     scoring_routes: Mapping[str, ResolvedLlmRoute]
     similarity_route: ResolvedLlmRoute
+    similarity_request_extra_by_model: Mapping[str, JsonObject]
 
 
 @dataclass(frozen=True, slots=True)
@@ -345,6 +358,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         similarity_llm_provider=llm_clients.similarity_llm_provider,
         scoring_routes=llm_clients.scoring_routes,
         similarity_route=llm_clients.similarity_route,
+        similarity_request_extra_by_model=llm_clients.similarity_request_extra_by_model,
         subtensor_client=subtensor_client,
         platform_client=platform_client,
     )
@@ -615,6 +629,7 @@ def _build_llm_clients(settings: Settings) -> RuntimeLlmClients:
         similarity_llm_provider=similarity_provider,
         scoring_routes=scoring_routes,
         similarity_route=similarity_route,
+        similarity_request_extra_by_model=_similarity_request_extra_by_model(similarity_routes),
     )
 
 
@@ -672,6 +687,21 @@ def _resolve_similarity_judge_routes(settings: Settings) -> tuple[ResolvedLlmRou
             f"OpenAI-compatible route; resolved provider was {route.provider!r}"
         )
     return routes
+
+
+def _similarity_request_extra_by_model(
+    routes: tuple[ResolvedLlmRoute, ...],
+) -> dict[str, JsonObject]:
+    return {
+        route.model: {
+            "provider": {
+                "ignore": list(_DUPLICATION_DETECTION_DEEPSEEK_OPENROUTER_IGNORED_PROVIDERS)
+            }
+        }
+        for route in routes
+        if route.provider == OPENROUTER_PROVIDER
+        and route.model == _DUPLICATION_DETECTION_DEEPSEEK_MODEL
+    }
 
 
 def _effective_similarity_llm_model(settings: Settings) -> str:
@@ -778,6 +808,7 @@ def _build_services(
     similarity_llm_provider: LlmProviderPort | None,
     scoring_routes: Mapping[str, ResolvedLlmRoute],
     similarity_route: ResolvedLlmRoute,
+    similarity_request_extra_by_model: Mapping[str, JsonObject],
     subtensor_client: SubtensorClientPort,
     platform_client: PlatformPort,
 ) -> tuple[dict[str, EvaluationScoringService], SimilarityJudge, WeightSubmissionService]:
@@ -794,6 +825,7 @@ def _build_services(
         resolved,
         similarity_llm_provider,
         similarity_route=similarity_route,
+        request_extra_by_model=similarity_request_extra_by_model,
     )
     weight_submission_service = _build_weight_service(
         resolved,
@@ -1226,6 +1258,7 @@ def _create_similarity_judge(
     provider: LlmProviderPort | None,
     *,
     similarity_route: ResolvedLlmRoute,
+    request_extra_by_model: Mapping[str, JsonObject],
 ) -> SimilarityJudge:
     if provider is None:
         raise ValueError("similarity_llm_provider must be configured")
@@ -1238,6 +1271,7 @@ def _create_similarity_judge(
         reasoning_effort=_SCORING_LLM_REASONING_EFFORT,
         timeout_seconds=settings.llm.similarity_llm_timeout_seconds,
         retry_policy=settings.llm.similarity_llm_retry_policy,
+        request_extra_by_model=request_extra_by_model,
     )
     return SimilarityJudge(
         llm_provider=provider,

@@ -243,6 +243,34 @@ async def test_similarity_judge_returns_classification_and_validator_reasoning()
     assert llm_request.postprocessor is not None
 
 
+async def test_similarity_judge_forwards_configured_request_extra_for_selected_model() -> None:
+    model = "deepseek-ai/DeepSeek-V4-Flash-0731-TEE"
+    request_extra = {"provider": {"ignore": ["unreliable-provider"]}}
+    llm = StubLlmProvider()
+    service = SimilarityJudge(
+        llm_provider=llm,
+        config=SimilarityJudgeConfig(
+            provider="openrouter",
+            model=model,
+            request_extra_by_model={model: request_extra},
+        ),
+    )
+
+    await service.judge(
+        SimilarityJudgeRequest(
+            batch_id=uuid4(),
+            candidate_artifact_id=uuid4(),
+            reference_artifact_id=uuid4(),
+            candidate_miner_uid=20,
+            reference_miner_uid=10,
+            reference_script="def answer(): return 'old'",
+            candidate_diff="+ def answer(): return 'new'",
+        )
+    )
+
+    assert llm.requests[0].extra == request_extra
+
+
 async def test_similarity_judge_structured_output_contract_rejects_invalid_shapes() -> None:
     llm = StubLlmProvider()
     service = SimilarityJudge(

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from harnyx_commons.domain.judge_usage import JudgeUsageSummary
+from harnyx_commons.json_types import JsonObject
 from harnyx_commons.llm.json_utils import pydantic_postprocessor
 from harnyx_commons.llm.judge_usage import (
     JudgeUsageMetadataError,
@@ -276,6 +278,7 @@ class SimilarityJudgeConfig:
     reasoning_effort: str | None = "high"
     timeout_seconds: float = 300.0
     retry_policy: RetryPolicy | None = None
+    request_extra_by_model: Mapping[str, JsonObject] = field(default_factory=dict)
 
 
 class SimilarityJudge:
@@ -373,6 +376,7 @@ class SimilarityJudge:
             timeout_seconds=self._config.timeout_seconds,
             retry_policy=self._config.retry_policy,
             use_case="miner_task_similarity_judge",
+            extra=self._config.request_extra_by_model.get(model),
         )
 
 

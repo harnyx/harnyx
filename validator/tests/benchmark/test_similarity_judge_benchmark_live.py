@@ -15,6 +15,7 @@ from harnyx_commons.llm.provider_factory import (
     build_cached_llm_provider_registry,
     build_routed_llm_provider,
 )
+from harnyx_commons.llm.providers.openrouter import OPENROUTER_BASE_URL
 from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_validator.application.similarity_judge import (
     SimilarityJudge,
@@ -102,11 +103,11 @@ _BENCHMARK_TARGETS = (
         normalized_base_url=CHUTES.base_url,
     ),
     BenchmarkTarget(
-        test_id="deepseek-v4-flash-0731-chutes",
+        test_id="deepseek-v4-flash-0731-openrouter",
         model=_DEEPSEEK_MODEL,
-        route_target="chutes",
-        endpoint_id="chutes",
-        normalized_base_url=CHUTES.base_url,
+        route_target="openrouter",
+        endpoint_id="openrouter",
+        normalized_base_url=OPENROUTER_BASE_URL,
     ),
 )
 
@@ -137,10 +138,12 @@ def _benchmark_source_hashes() -> dict[str, str]:
         "apps/platform/src/harnyx_platform/application/services/miner_task_similarity.py",
         "public/packages/commons/src/harnyx_commons/llm/providers/chutes.py",
         "public/packages/commons/src/harnyx_commons/llm/providers/chutes_codec.py",
+        "public/packages/commons/src/harnyx_commons/llm/providers/openrouter.py",
         "public/packages/commons/src/harnyx_commons/llm/providers/thinking.py",
         "public/packages/commons/src/harnyx_commons/llm/tool_models.py",
         "scripts/test/run_integration_tests.sh",
         "public/validator/src/harnyx_validator/application/similarity_judge.py",
+        "public/validator/src/harnyx_validator/runtime/bootstrap.py",
         "public/validator/tests/benchmark/data/similarity_judge_benchmark_cases.jsonl",
         "public/validator/tests/benchmark/similarity_judge_benchmark.py",
         "public/validator/tests/benchmark/test_similarity_judge_benchmark_live.py",
@@ -187,7 +190,7 @@ async def test_fixed_dataset_similarity_benchmark(target: BenchmarkTarget) -> No
         surface="duplication_detection",
         default_provider=settings.llm.similarity_llm_provider,
         llm_settings=settings.llm,
-        allowed_providers={"bedrock", "chutes", "vertex"},
+        allowed_providers={"bedrock", "chutes", "openrouter", "vertex"},
         allow_custom_openai_compatible=True,
         provider_registry=registry,
     )
@@ -207,6 +210,9 @@ async def test_fixed_dataset_similarity_benchmark(target: BenchmarkTarget) -> No
                 initial_ms=0,
                 max_ms=0,
                 jitter=0.0,
+            ),
+            request_extra_by_model=bootstrap._similarity_request_extra_by_model(
+                (similarity_route,)
             ),
         ),
     )

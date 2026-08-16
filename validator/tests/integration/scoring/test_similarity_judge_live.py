@@ -152,6 +152,9 @@ async def test_similarity_judge_live_supports_production_provider_contract(
             max_output_tokens=settings.llm.similarity_llm_max_output_tokens,
             timeout_seconds=float(settings.llm.similarity_llm_timeout_seconds),
             retry_policy=settings.llm.similarity_llm_retry_policy,
+            request_extra_by_model=bootstrap._similarity_request_extra_by_model(
+                (similarity_route,)
+            ),
         ),
     )
     request = SimilarityJudgeRequest(
@@ -198,6 +201,10 @@ async def test_similarity_judge_live_supports_production_provider_contract(
     assert llm_request.retry_policy == settings.llm.similarity_llm_retry_policy
     assert llm_request.thinking is None
     assert llm_request.use_case == "miner_task_similarity_judge"
+    expected_extra_by_model = bootstrap._similarity_request_extra_by_model(
+        (similarity_route,)
+    )
+    assert llm_request.extra == expected_extra_by_model.get(model)
     if model == _DEEPSEEK_MODEL:
         assert response.choices[0].message.reasoning
         assert result.reasoning_tokens is not None
