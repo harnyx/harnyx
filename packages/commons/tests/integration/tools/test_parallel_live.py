@@ -58,13 +58,14 @@ async def test_parallel_search_web_live() -> None:
         await client.aclose()
 
 
+@pytest.mark.flaky(reruns=1)
 @pytest.mark.expensive
 async def test_parallel_batch_extract_live_preserves_success_and_unavailable_url() -> None:
     settings = LlmSettings()
     client = _build_parallel_client(settings)
     urls = (
-        "https://example.com/",
-        "https://example.com/harnyx-intentionally-missing-source-847",
+        "https://www.rfc-editor.org/rfc/rfc2606.html",
+        "https://www.rfc-editor.org/rfc/harnyx-intentionally-missing-source-847.html",
     )
     try:
         result = await client.extract_pages(
@@ -80,11 +81,19 @@ async def test_parallel_batch_extract_live_preserves_success_and_unavailable_url
     finally:
         await client.aclose()
 
-    assert any(page.url.rstrip("/") == "https://example.com" and page.content for page in result.response.pages)
+    extraction_summary = {
+        "pages": [(page.url, bool(page.content)) for page in result.response.pages],
+        "errors": [
+            (error.url, error.error_type, error.http_status_code) for error in result.response.errors
+        ],
+    }
+    assert any(
+        page.url.rstrip("/") == urls[0].rstrip("/") and page.content for page in result.response.pages
+    ), extraction_summary
     assert any(
         error.url == urls[1] and error.error_type and error.http_status_code is not None
         for error in result.response.errors
-    )
+    ), extraction_summary
     assert result.billing.source in {"response_body", "request_body"}
     expected_units = 1 if result.billing.source == "response_body" else 2
     assert result.billing.billable_units == expected_units
