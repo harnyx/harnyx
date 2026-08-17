@@ -46,7 +46,7 @@ Generated from FastAPI OpenAPI.
 
 Search for similar indexed feed items, optionally scoped to strict prior items.
 
-**Auth**: Google Bearer (`Authorization: Bearer <google_id_token>`) OR Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`) OR ConsoleSessionCookie
+**Auth**: Google Bearer (`Authorization: Bearer <google_id_token>`) OR Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`) OR BrowserSessionCookie
 
 **Request**
 Content-Type: `application/json`
