@@ -24,6 +24,10 @@ def test_tool_model_thinking_capabilities_share_the_canonical_model_owner() -> N
         "Qwen/Qwen3.6-27B-TEE",
         provider_name="chutes",
     )
+    qwen38_chutes = model_thinking_capability(
+        "Qwen/Qwen3.8-27B-TEE",
+        provider_name="chutes",
+    )
     qwen36 = model_thinking_capability(
         "Qwen/Qwen3.6-27B-TEE",
         provider_name="custom-openai-compatible:qwen36-cloud-run",
@@ -48,6 +52,8 @@ def test_tool_model_thinking_capabilities_share_the_canonical_model_owner() -> N
     assert qwen36.chat_template_kwargs(enabled=False) == {"enable_thinking": False}
     assert qwen36_chutes is not None
     assert qwen36_chutes.chat_template_kwargs(enabled=True) == {"enable_thinking": True}
+    assert qwen38_chutes is not None
+    assert qwen38_chutes.chat_template_kwargs(enabled=False) == {"enable_thinking": False}
     assert gemma_chutes is not None
     assert gemma_chutes.chat_template_kwargs(enabled=False) == {"enable_thinking": False}
     assert gemma_custom is not None
@@ -117,6 +123,13 @@ def test_miner_selected_chutes_supports_only_chutes_models() -> None:
         ).model
         == "moonshotai/Kimi-K2.6-TEE"
     )
+    assert (
+        parse_miner_selected_llm_provider_model(
+            provider="chutes",
+            model="Qwen/Qwen3.8-27B-TEE",
+        ).model
+        == "Qwen/Qwen3.8-27B-TEE"
+    )
 
 
 def test_miner_selected_chutes_rejects_openrouter_only_models() -> None:
@@ -133,6 +146,7 @@ def test_miner_selected_chutes_rejects_openrouter_only_models() -> None:
         "deepseek/deepseek-v3.2",
         "z-ai/glm-5",
         "qwen/qwen3.6-27b",
+        "qwen/qwen3.8-27b",
         "google/gemma-4-31b-it",
         "deepseek/deepseek-v4-flash",
         "deepseek/deepseek-v4-flash-0731",
@@ -167,6 +181,7 @@ def test_miner_selected_openrouter_uses_native_model_ids_without_translation(
         "deepseek/deepseek-v4-flash-0731",
         "deepseek/deepseek-v4-pro",
         "meta/muse-glimmer-30b",
+        "alibaba/qwen3.8-27b",
     ),
 )
 def test_miner_selected_ai_gateway_uses_native_model_ids_without_translation(model: str) -> None:
@@ -189,6 +204,15 @@ def test_new_chutes_provider_models_are_not_internal_canonical_models() -> None:
         assert model_thinking_capability(model, provider_name="chutes") is None
         assert model_thinking_capability(model, provider_name="vertex") is None
         assert model_thinking_capability(model, provider_name="custom-openai-compatible") is None
+
+
+def test_qwen38_chutes_model_does_not_expand_internal_tool_authorization() -> None:
+    model = "Qwen/Qwen3.8-27B-TEE"
+
+    assert model in MINER_SELECTED_LLM_PROVIDER_MODELS["chutes"]
+    assert model not in ALLOWED_TOOL_MODELS
+    with pytest.raises(ValueError, match="not allowed for validator tools"):
+        parse_tool_model(model)
 
 
 def test_retired_chutes_model_is_not_in_miner_selected_namespace() -> None:

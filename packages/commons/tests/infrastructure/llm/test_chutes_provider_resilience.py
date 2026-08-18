@@ -378,7 +378,14 @@ def test_chutes_glm_thinking_disabled_uses_enable_thinking_template_kwarg() -> N
     assert "reasoning_effort" not in payload
 
 
-@pytest.mark.parametrize("model", ("Qwen/Qwen3.6-27B-TEE", "google/gemma-4-31B-turbo-TEE"))
+@pytest.mark.parametrize(
+    "model",
+    (
+        "Qwen/Qwen3.6-27B-TEE",
+        "Qwen/Qwen3.8-27B-TEE",
+        "google/gemma-4-31B-turbo-TEE",
+    ),
+)
 @pytest.mark.parametrize(
     "thinking",
     (

@@ -56,6 +56,7 @@ MINER_SELECTED_LLM_PROVIDER_MODELS: Mapping[
         "deepseek-ai/DeepSeek-V3.2-TEE",
         "moonshotai/Kimi-K2.6-TEE",
         "Qwen/Qwen3.6-27B-TEE",
+        "Qwen/Qwen3.8-27B-TEE",
         "google/gemma-4-31B-turbo-TEE",
         "zai-org/GLM-5.2-TEE",
         "Qwen/Qwen3.5-397B-A17B-TEE",
@@ -66,6 +67,7 @@ MINER_SELECTED_LLM_PROVIDER_MODELS: Mapping[
         "deepseek/deepseek-v3.2",
         "z-ai/glm-5",
         "qwen/qwen3.6-27b",
+        "qwen/qwen3.8-27b",
         "google/gemma-4-31b-it",
         "deepseek/deepseek-v4-flash",
         "deepseek/deepseek-v4-flash-0731",
@@ -88,6 +90,7 @@ MINER_SELECTED_LLM_PROVIDER_MODELS: Mapping[
         "deepseek/deepseek-v4-flash-0731",
         "deepseek/deepseek-v4-pro",
         "meta/muse-glimmer-30b",
+        "alibaba/qwen3.8-27b",
     ),
 }
 
@@ -180,6 +183,9 @@ MODEL_THINKING_CAPABILITIES: Mapping[
     "Qwen/Qwen3.6-27B-TEE": {
         "chutes": ModelThinkingCapability("chat_template_kwargs.enable_thinking"),
         "custom-openai-compatible": ModelThinkingCapability("chat_template_kwargs.enable_thinking"),
+    },
+    "Qwen/Qwen3.8-27B-TEE": {
+        "chutes": ModelThinkingCapability("chat_template_kwargs.enable_thinking"),
     },
 }
 

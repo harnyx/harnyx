@@ -133,6 +133,7 @@ async def test_chutes_pricing_cache_updated_empty_snapshot_uses_fallback_without
         ("zai-org/GLM-5.1-TEE", 0.98, 3.08),
         ("zai-org/GLM-5.2-TEE", 1.40, 4.40),
         ("Qwen/Qwen3.5-397B-A17B-TEE", 0.45, 3.00),
+        ("Qwen/Qwen3.8-27B-TEE", 0.40, 3.00),
     ),
 )
 async def test_new_chutes_models_settle_from_approved_static_rates(

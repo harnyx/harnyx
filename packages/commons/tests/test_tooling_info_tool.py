@@ -44,12 +44,14 @@ def test_tool_model_pricing_covers_every_allowed_tool_model() -> None:
     (
         ("chutes", "deepseek-ai/DeepSeek-V3.2-TEE", 1.00, 1.00),
         ("chutes", "Qwen/Qwen3.6-27B-TEE", 0.30, 2.00),
+        ("chutes", "Qwen/Qwen3.8-27B-TEE", 0.40, 3.00),
         ("chutes", "google/gemma-4-31B-turbo-TEE", 0.12, 0.37),
         ("chutes", "zai-org/GLM-5.2-TEE", 1.40, 4.40),
         ("chutes", "Qwen/Qwen3.5-397B-A17B-TEE", 0.45, 3.00),
         ("openrouter", "openai/gpt-oss-120b", 0.037, 0.17),
         ("openrouter", "deepseek/deepseek-v3.2", 0.269, 0.40),
         ("openrouter", "qwen/qwen3.6-27b", 0.30, 2.00),
+        ("openrouter", "qwen/qwen3.8-27b", 0.45, 3.20),
         ("openrouter", "google/gemma-4-31b-it", 0.14, 0.40),
         ("openrouter", "deepseek/deepseek-v4-flash", 0.14, 0.28),
         ("openrouter", "deepseek/deepseek-v4-flash-0731", 0.09, 0.18),
@@ -64,6 +66,7 @@ def test_tool_model_pricing_covers_every_allowed_tool_model() -> None:
         ("ai_gateway", "deepseek/deepseek-v4-flash-0731", 0.13, 0.26),
         ("ai_gateway", "deepseek/deepseek-v4-pro", 0.435, 0.87),
         ("ai_gateway", "meta/muse-glimmer-30b", 0.35, 1.50),
+        ("ai_gateway", "alibaba/qwen3.8-27b", 0.10, 0.40),
     ),
 )
 def test_miner_model_reference_rates_match_approved_snapshot(
@@ -155,6 +158,10 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
     assert model_prices["chutes"]["Qwen/Qwen3.6-27B-TEE"]["input_per_million"] == pytest.approx(0.30)
     assert model_prices["chutes"]["Qwen/Qwen3.6-27B-TEE"]["output_per_million"] == pytest.approx(2.00)
     assert model_prices["chutes"]["Qwen/Qwen3.6-27B-TEE"]["reasoning_per_million"] == pytest.approx(2.00)
+    assert "Qwen/Qwen3.8-27B-TEE" in provider_models["chutes"]
+    assert model_prices["chutes"]["Qwen/Qwen3.8-27B-TEE"]["input_per_million"] == pytest.approx(0.40)
+    assert model_prices["chutes"]["Qwen/Qwen3.8-27B-TEE"]["output_per_million"] == pytest.approx(3.00)
+    assert model_prices["chutes"]["Qwen/Qwen3.8-27B-TEE"]["reasoning_per_million"] == pytest.approx(3.00)
     assert "deepseek-ai/DeepSeek-V3.1-TEE" not in provider_models["chutes"]
     assert "deepseek-ai/DeepSeek-V3.1-TEE" not in model_prices["chutes"]
     assert "moonshotai/Kimi-K2.5-TEE" not in provider_models["chutes"]
@@ -190,6 +197,8 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
     assert model_prices["ai_gateway"]["minimax/minimax-m2.7"]["output_per_million"] == pytest.approx(1.20)
     assert model_prices["ai_gateway"]["zai/glm-4.7-flash"]["input_per_million"] == pytest.approx(0.07)
     assert model_prices["ai_gateway"]["zai/glm-4.7-flash"]["output_per_million"] == pytest.approx(0.40)
+    assert model_prices["ai_gateway"]["alibaba/qwen3.8-27b"]["input_per_million"] == pytest.approx(0.10)
+    assert model_prices["ai_gateway"]["alibaba/qwen3.8-27b"]["output_per_million"] == pytest.approx(0.40)
 
     assert payload["pricing"]["embed_text"]["kind"] == "provider_specific_static"
     embedding_provider_models = payload["allowed_embedding_provider_models"]

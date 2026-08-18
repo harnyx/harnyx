@@ -33,6 +33,7 @@ NEW_CHUTES_MODELS = (
     "moonshotai/Kimi-K2.6-TEE",
     "zai-org/GLM-5.2-TEE",
     "Qwen/Qwen3.5-397B-A17B-TEE",
+    "Qwen/Qwen3.8-27B-TEE",
 )
 CHUTES_TOOL_LOOP_MODELS = (CHUTES_TOOL_MODELS[0], *NEW_CHUTES_MODELS)
 SCORING_FALLBACK_MODELS = (

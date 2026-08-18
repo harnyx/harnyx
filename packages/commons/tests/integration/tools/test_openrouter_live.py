@@ -40,6 +40,7 @@ NEW_OPENROUTER_MODELS = (
     "thinkingmachines/inkling",
     "qwen/qwen3.5-397b-a17b",
     "meta/muse-glimmer-30b",
+    "qwen/qwen3.8-27b",
 )
 OPENROUTER_REASONING_PROVIDER_BY_NATIVE_MODEL = {
     "openai/gpt-oss-20b": "wandb",

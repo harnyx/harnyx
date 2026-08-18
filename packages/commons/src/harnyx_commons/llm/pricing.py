@@ -96,6 +96,7 @@ MINER_TOOL_LLM_PRICING: Mapping[MinerSelectedLlmProviderName, Mapping[str, Model
         "deepseek-ai/DeepSeek-V3.2-TEE": ModelPricing(1.00, 1.00, 0.0),
         "moonshotai/Kimi-K2.6-TEE": ModelPricing(0.66, 3.50, 0.0),
         "Qwen/Qwen3.6-27B-TEE": ModelPricing(0.30, 2.00, 0.0),
+        "Qwen/Qwen3.8-27B-TEE": ModelPricing(0.40, 3.00, 0.0),
         "google/gemma-4-31B-turbo-TEE": ModelPricing(0.12, 0.37, 0.0),
         "zai-org/GLM-5.2-TEE": ModelPricing(1.40, 4.40, 0.0),
         "Qwen/Qwen3.5-397B-A17B-TEE": ModelPricing(0.45, 3.00, 0.0),
@@ -106,6 +107,7 @@ MINER_TOOL_LLM_PRICING: Mapping[MinerSelectedLlmProviderName, Mapping[str, Model
         "deepseek/deepseek-v3.2": ModelPricing(0.269, 0.40, 0.0),
         "z-ai/glm-5": ModelPricing(0.95, 2.55, 0.0),
         "qwen/qwen3.6-27b": ModelPricing(0.30, 2.00, 0.0),
+        "qwen/qwen3.8-27b": ModelPricing(0.45, 3.20, 0.0),
         "google/gemma-4-31b-it": ModelPricing(0.14, 0.40, 0.0),
         "deepseek/deepseek-v4-flash": ModelPricing(0.14, 0.28, 0.0),
         "deepseek/deepseek-v4-flash-0731": ModelPricing(0.09, 0.18, 0.0),
@@ -128,6 +130,7 @@ MINER_TOOL_LLM_PRICING: Mapping[MinerSelectedLlmProviderName, Mapping[str, Model
         "deepseek/deepseek-v4-flash-0731": ModelPricing(0.13, 0.26, 0.0),
         "deepseek/deepseek-v4-pro": ModelPricing(0.435, 0.87, 0.0),
         "meta/muse-glimmer-30b": ModelPricing(0.35, 1.50, 0.0),
+        "alibaba/qwen3.8-27b": ModelPricing(0.10, 0.40, 0.0),
     },
 }
 
