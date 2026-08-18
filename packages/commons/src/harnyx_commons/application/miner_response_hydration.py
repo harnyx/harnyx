@@ -54,7 +54,7 @@ class _HydratedCitation:
 
 @dataclass(frozen=True, slots=True)
 class _HydratedCitations:
-    citations: tuple[AnswerCitation, ...]
+    citations: tuple[AnswerCitation | None, ...]
     source_text_chars: int
 
 
@@ -147,7 +147,7 @@ def _hydrate_citations(
     session_id: UUID,
     receipt_log: ReceiptLogPort,
 ) -> _HydratedCitations:
-    hydrated: list[AnswerCitation] = []
+    hydrated: list[AnswerCitation | None] = []
     source_text_chars = 0
     for citation_ref in citation_refs:
         hydrated_citation = _hydrate_citation(
@@ -156,6 +156,7 @@ def _hydrate_citations(
             receipt_log=receipt_log,
         )
         if hydrated_citation is None:
+            hydrated.append(None)
             continue
         hydrated.append(hydrated_citation.answer_citation)
         source_text_chars += hydrated_citation.source_text_chars

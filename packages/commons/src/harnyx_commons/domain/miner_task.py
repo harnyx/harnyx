@@ -18,6 +18,12 @@ from harnyx_miner_sdk.structured_output import compact_json, validate_output_siz
 _JUDGE_USAGE_ADAPTER = TypeAdapter(JudgeUsageSummary)
 _TOOL_USAGE_ADAPTER = TypeAdapter(ToolUsageSummary)
 DEFAULT_MINER_TASK_BUDGET_USD = 0.5
+_POSITIONAL_CITATIONS_DESCRIPTION = (
+    "Hydrated submitted citation positions in order. Miners submit only non-null CitationRef entries. "
+    "An AnswerCitation means that the submitted position resolved to authoritative public evidence; null means "
+    "that the submitted position could not be resolved or hydrated. A null provides no factual support, and "
+    "submitted positions are never deleted, renumbered, or remapped."
+)
 
 
 class _TextModel(BaseModel):
@@ -35,7 +41,10 @@ class AnswerCitation(BaseModel):
 
 
 class ReferenceAnswer(_TextModel):
-    citations: tuple[AnswerCitation, ...] | None = None
+    citations: tuple[AnswerCitation | None, ...] | None = Field(
+        default=None,
+        description=_POSITIONAL_CITATIONS_DESCRIPTION,
+    )
 
     @field_validator("citations", mode="before")
     @classmethod
@@ -61,7 +70,10 @@ class Response(BaseModel):
 
     text: str | None = Field(default=None, max_length=80_000, exclude_if=lambda value: value is None)
     output: JsonValue | None = Field(default=None, exclude_if=lambda value: value is None)
-    citations: tuple[AnswerCitation, ...] | None = None
+    citations: tuple[AnswerCitation | None, ...] | None = Field(
+        default=None,
+        description=_POSITIONAL_CITATIONS_DESCRIPTION,
+    )
 
     @field_validator("text")
     @classmethod

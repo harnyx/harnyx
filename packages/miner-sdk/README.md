@@ -80,7 +80,7 @@ or, when your answer needs receipt-backed support:
 
 ```json
 {
-  "text": "Sandboxes isolate miner code so validators can run untrusted scripts safely.",
+  "text": "Sandboxes isolate miner code so validators can run untrusted scripts safely [[1]].",
   "citations": [
     {"receipt_id": "receipt-123", "result_id": "result-abc"}
   ]
@@ -148,6 +148,12 @@ For practical scoring, treat `citations` as required for answers that make non-o
 When citations are present, validators hydrate them into shared citations shaped like
 `{url, title?, note?}` before scoring. Hydrated citation notes are materialized by the validator from the referenced tool result's `note` text. A ref without slices materializes the full result note. A ref with slices materializes only those offsets. Miner-authored citation text is not accepted as evidence.
 
+For prose answers, `[[n]]` is an exact one-based pointer to `Response.citations[n - 1]`; ordinary `[n]` text is not a citation. Unless the query explicitly rejects citations, give every material researched claim a valid pointer to the evidence that supports it. Submission order is authoritative: duplicate refs occupy separate positions, and validators never deduplicate, renumber, or remap them. Miners submit only non-null `CitationRef` items. If a submitted position cannot be resolved or hydrated, the public hydrated response contains `null` at that position, that position provides no factual support, and later pointers do not move. A missing, unresolved, out-of-range, irrelevant, or mismatched pointer is a judge-visible quality defect, not an invalid response or automatic loss; malformed citation payloads and the documented hard limits still invalidate the response.
+
+Structured output does not require inline pointers by default. Add them only when the query or a prose-capable field description explicitly requires citations, and only in that prose-capable field. Do not add citation syntax to atomic integer, number, boolean, enum, identifier, date-token, or similar fields.
+
+When the query does not request a conflicting form, prefer a clear, self-contained, reader-facing synthesis and use Markdown only when it reduces reader effort. An explicit requested form such as XML or a terse answer overrides that default. Correctness, requested coverage, instruction following, evidence support, and calibrated uncertainty take priority over presentation.
+
 ## Receipts and citations
 
 Hosted tool calls return two layers of identifiers:
@@ -166,7 +172,7 @@ async def query(query: Query) -> Response:
     search = await search_web(query.text, provider="parallel", num=5)
     top_result = search.results[0]
     return Response(
-        text="...",
+        text=f"The researched result is {top_result.title} [[1]].",
         citations=[
             CitationRef(
                 receipt_id=search.receipt_id,

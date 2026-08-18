@@ -81,7 +81,13 @@ OUTPUT CONTRACT
 - response_mode: plain_text or structured for ready; null for no_generate. Choose it independently from the assigned
   capability preference according to the natural answer contract.
 - output_schema_json: null for no_generate and plain_text. For structured, strict JSON for the smallest self-contained
-  annotation-free Draft 2020-12 object schema in the generated-safe subset; semantic instructions belong in question.
+  Draft 2020-12 object schema in the generated-safe subset. Preserve the exact field descriptions and constraints
+  needed by the public answer contract. Allowed optional keywords are title/description, string minLength/maxLength,
+  and array minItems/maxItems. An annotation must describe field semantics without stating any private canonical answer
+  value. Do not use const, enum, numeric value assertions, uniqueItems, or any combination of constraints that
+  discloses a researched answer.
+  Do not use subschema applicators. The question must still
+  explain the field semantics in ordinary user-facing language rather than relying on schema annotations alone.
 - structured_answer_json: null for no_generate and plain_text. For structured, strict JSON for the exact privately
   proved answer hypothesis matching output_schema_json.
 - failure_reason: null for ready; the first concrete blocker for no_generate.
@@ -106,8 +112,8 @@ another candidate may exist, make the final condition decorative, or place any q
 result.
 """
 
-REFERENCE_SYSTEM = """Independently answer the fixed generated question. Begin by determining the complete direct
-answer, then prove it claim by claim. Treat the dossier answer values and facts as
+REFERENCE_SYSTEM = """Independently answer the fixed generated question and author its final public response. Begin by
+determining the complete direct answer, then prove it claim by claim. Treat the dossier answer values and facts as
 hypotheses, not truth. Search and fetch additional ordinary public documents when the current VFS cannot establish a
 load-bearing claim or a stronger source is available. WebSearch results become opaque source_candidate_id values;
 fetch only those IDs. Navigate retained sources with VFS search/read tools, register exact evidence, and use regex
@@ -115,26 +121,57 @@ certificates only for truly bounded complete scans. You may correct dossier answ
 question's universe, metric, scope, and operation. Audit the question's structural premises, exact source scope, and
 record ownership before finalizing: do not let a heading, source credit, date, or exception from an adjacent record
 support the selected record. Prove complete pools and decisive exclusions when the requested answer depends on them.
-Return giveup rather than change the question or fill a gap from memory. Do not author citation markers or copy
-excerpts into output.
+Return giveup rather than change the question or fill a gap from memory.
+
+PUBLIC RESPONSE CONTRACT:
+- citation_evidence_ids is the submitted citation array in exact order. `[[n]]` in the public answer points exactly
+  to citation position n-1. `[n]` is ordinary content. Preserve duplicate positions and any position that no longer
+  resolves; never deduplicate, renumber, remap, collapse, or skip a position.
+- For plain prose, every material researched claim requires a valid `[[n]]` pointer unless the query explicitly
+  rejects citations. Ordinary connective reasoning and genuinely trivial common knowledge need no pointer.
+- When no requested form conflicts, write clear, self-contained, reader-facing Markdown-style synthesis and use
+  Markdown only when it lowers reader effort. Prefer synthesis over a raw provenance dump. An explicit requested form
+  such as XML or a terse answer always overrides this default presentation.
+- Correctness, requested coverage, instruction following, evidence support, and calibrated uncertainty outrank
+  presentation. Do not conceal a gap with polished formatting or unqualified certainty.
+- For structured output, follow the exact public output_schema_json, including every description and constraint.
+  Inline pointers are not required by default. Include them only when the query or a prose-capable field description
+  explicitly requires citations, and then only in that prose-capable field. An atomic field such as an integer,
+  number, boolean, enum, identifier, date token, or other non-explanatory value must not be polluted with citation
+  syntax.
+- Public answer text must not expose evidence IDs, proof step IDs, audit reasoning, private author annotations, or
+  labels such as `Supports:` or `Claim:`. Citation notes are host-materialized raw source slices; never copy excerpts
+  or private provenance prose into the public answer.
 
 OUTPUT CONTRACT:
 - status: finalized only when VFS evidence establishes every answer and load-bearing inference; otherwise giveup.
+- answer_text: final public response for plain_text, preserving any explicit requested form exactly; null for
+  structured and giveup.
+- citation_evidence_ids: registered evidence IDs in exact public citation-position order. Duplicate an ID when the
+  public citation array contains duplicate positions. Empty when the query explicitly rejects citations and for
+  giveup. Never invent an ID to fill an evidence gap.
 - answers: select every known answer_id exactly once and in dossier order. Set corrected_value to null when the dossier
   value remains correct; author a non-empty corrected_value only when evidence changes that answer.
 - proof_steps: ordered atomic proof. Unique step_id values; kind=supported requires registered evidence_ids;
   kind=derived requires only earlier depends_on_step_ids. scan_certificate_ids support only the bounded claim certified.
+  Proof steps are private audit input and must not contain public citation-pointer syntax or private labels in
+  answer_text.
 - structured_answer_json: null for plain_text and giveup. For a finalized structured question, strict JSON encoding of
-  the complete independently derived value under the dossier's fixed output schema; do not copy the QG hypothesis.
+  the complete independently derived value under the dossier's exact fixed public output schema; do not copy the QG
+  hypothesis. Citation markers may occur only under the structured-field rule above.
 - giveup_reason: concrete missing evidence or invalid inference for giveup; null for finalized.
 
-GOOD: {"status":"finalized","answers":[{"answer_id":"A1","corrected_value":null}],"proof_steps":[{"step_id":"S1",
+GOOD: {"status":"finalized","answer_text":"## Result\\n\\nAlpha has the published value 12 [[1]].",
+"citation_evidence_ids":["E1"],"answers":[{"answer_id":"A1","corrected_value":null}],"proof_steps":[{"step_id":"S1",
 "statement":"The bounded row reports Alpha with value 12.","kind":"supported","evidence_ids":["E1"],
 "depends_on_step_ids":[],"scan_certificate_ids":[]},{"step_id":"S2","statement":"Alpha is the maximum among the
 established candidates.","kind":"derived","evidence_ids":[],"depends_on_step_ids":["S1"],
 "scan_certificate_ids":[]}],"structured_answer_json":null,"giveup_reason":null}
-BAD: {"status":"finalized","answers":[{"answer_id":"new","corrected_value":"Alpha[[1]]"}],"proof_steps":[]}
-Why: it invents an ID, authors a citation marker, and supplies no proof."""
+BAD: {"status":"finalized","answer_text":"Claim: Alpha is probably 12.","citation_evidence_ids":[],
+"answers":[{"answer_id":"new","corrected_value":"Alpha"}],"proof_steps":[],"structured_answer_json":null,
+"giveup_reason":null}
+Why: it invents an answer ID, exposes a private label, omits the material claim's pointer and evidence position, hides
+uncertainty behind unsupported prose, and supplies no proof."""
 
 CAPABILITY_WORK_ORDERS: dict[CapabilityPreference, str] = {
     "general_deep_research": """GENERAL DEEP-RESEARCH PREFERENCE
@@ -163,11 +200,15 @@ public question. Formatting alone is not difficulty. Do not add fields the user 
 plain-text route when structured output is not natural.""",
 }
 
-AUDIT_SYSTEM = """Audit one proof independently. The packet contains the fixed question, final answer values, atomic
-proof steps, selected evidence, scan certificates, and bounded context. It is an index of the author's case, not an
-authority. Independently inspect any retained source through the read-only list_sources, regex_search, and read_lines
-tools. You cannot browse, fetch, follow links, register evidence, register certificates, or mutate the workspace, and
-you do not see the dossier trajectory or a benchmark answer.
+AUDIT_SYSTEM = """Audit one proof independently. For production candidate finalization, the packet contains the fixed
+question, final public answer, exact public output_schema, exact ordered nullable validated_citations projection,
+canonical_short_answers, canonical structured_answer when present, atomic proof steps, selected evidence, scan
+certificates, and bounded context. An independently re-fetched acceptance packet is labeled by its user prompt and
+contains only the persisted public fields plus re-fetched evidence; do not infer omitted private proof fields or
+canonical_short_answers. Either packet is an index of the case, not an authority. Independently inspect any retained
+source through the read-only list_sources, regex_search, and read_lines tools. You cannot browse, fetch, follow links,
+register evidence, register certificates, or mutate the workspace, and you do not see the dossier trajectory or a
+benchmark answer.
 
 Pass only when every answer, structured field, and load-bearing inference is directly supported. Derivations must use
 established operands in order, the question's requested answer set and ordering must be correct, and completeness or
@@ -176,8 +217,25 @@ adequate bounded evidence. Audit structural premises, required source scope, and
 when a heading, date, source credit, status, exception, or category belongs to an adjacent record; when the question's
 pool or source scope was silently changed; when a decisive exclusion was not checked; or when the question itself
 reveals an answer. Return concise, independently actionable defects; do not demand decorative facts.
-For structured mode, independently check every public field meaning, scope, ordering, unit, date/version rule, and
-non-mechanical constraint against the fixed schema, canonical value, proof, and selected evidence.
+For citation mapping and claim support, use only the exact ordered nullable validated_citations projection that the
+judge receives. `[[n]]` points only to position n-1, `[n]` is ordinary content, and null is unresolved. Private proof,
+selected-evidence context, certificates, and VFS reads may verify factual correctness and diagnose a deficient public
+projection, but must not substitute private support for a public pointer, repair a citation note, renumber positions,
+or change the claim-to-evidence mapping. A wrong, out-of-range, unresolved, mismatched, or missing pointer is a visible
+quality defect rather than an invalid response or automatic loss.
+For plain prose, require valid pointers on material researched claims unless the query explicitly rejects citations.
+Check requested-form compliance and prefer clear self-contained synthesis only when no explicit form conflicts and
+substantive quality is already sound. Do not reward Markdown itself. Reject public `Supports:`, `Claim:`, proof IDs,
+audit reasoning, or other private author/audit annotations.
+For structured mode, compare the exact public output_schema, including its property names, titles, descriptions, and
+constraints, directly against canonical_short_answers and canonical structured_answer. Production packets provide
+both; an acceptance packet provides the canonical structured_answer but may omit canonical_short_answers. Reject when
+the public question or any schema element directly, indirectly, or semantically reveals an actual canonical value,
+tells the miner which value to return, or otherwise removes the need for the requested research. Distinguish ordinary
+field semantics, such as defining what true means when a researched condition holds, from disclosing that the actual
+canonical value is true. Independently check every public field meaning, scope, ordering, unit, date/version rule, and
+constraint against the exact fixed schema and canonical value. Do not require inline pointers by default. Require
+them only when the query or a prose-capable field description explicitly requests them, and never in atomic fields.
 
 OUTPUT CONTRACT:
 - status: pass only when every criterion holds; otherwise reject.

@@ -39,7 +39,8 @@ def test_capability_preference_is_non_gating_and_response_mode_independent() -> 
     assert "Choose plain_text or structured independently" in calculation
     assert "plain-text route when structured output is not natural" in structured
     assert "response_mode" in QUESTION_GENERATION_SYSTEM
-    assert "annotation-free Draft 2020-12" in QUESTION_GENERATION_SYSTEM
+    assert "exact field descriptions and constraints" in QUESTION_GENERATION_SYSTEM
+    assert "Do not use subschema applicators" in QUESTION_GENERATION_SYSTEM
 
 
 def test_portfolio_prompt_carries_only_bounded_prior_route_context() -> None:
@@ -67,6 +68,44 @@ def test_every_llm_work_order_interprets_its_output_contract_and_examples() -> N
         assert "GOOD:" in work_order
         assert "BAD:" in work_order
     assert "question itself reveals an answer" in " ".join(AUDIT_SYSTEM.split())
+
+
+def test_reference_work_orders_define_the_public_response_contract() -> None:
+    """Future failure: reference authors and auditors must share the judge-visible response contract."""
+    normalized_reference = " ".join(REFERENCE_SYSTEM.split())
+    normalized_audit = " ".join(AUDIT_SYSTEM.split())
+
+    assert "material researched claim" in normalized_reference
+    assert "[[n]]" in REFERENCE_SYSTEM
+    assert "citation position n-1" in normalized_reference
+    assert "`[n]` is ordinary content" in normalized_reference
+    assert "clear, self-contained, reader-facing" in normalized_reference
+    assert "Markdown" in REFERENCE_SYSTEM
+    assert "XML" in REFERENCE_SYSTEM
+    assert "terse" in normalized_reference
+    assert "explicit requested form" in normalized_reference
+    assert "correctness, requested coverage, instruction following, evidence support" in normalized_reference.casefold()
+    assert "calibrated uncertainty" in normalized_reference
+    assert "prose-capable field" in normalized_reference
+    assert "atomic field" in normalized_reference
+    assert "Supports:" in REFERENCE_SYSTEM
+    assert "Claim:" in REFERENCE_SYSTEM
+    assert "exact ordered nullable" in normalized_audit
+    assert "must not substitute" in normalized_audit
+
+
+def test_audit_work_order_owns_semantic_schema_disclosure() -> None:
+    """Future failure: semantic schema leakage must not fall back to deterministic word matching."""
+    normalized = " ".join(AUDIT_SYSTEM.split())
+
+    assert "exact public output_schema" in normalized
+    assert "property names, titles, descriptions, and constraints" in normalized
+    assert "canonical_short_answers and canonical structured_answer" in normalized
+    assert "directly, indirectly, or semantically reveals" in normalized
+    assert "ordinary field semantics" in normalized
+    assert "actual canonical value" in normalized
+    assert "independently re-fetched acceptance packet" in normalized
+    assert "do not infer omitted private proof fields or canonical_short_answers" in normalized
 
 
 def test_audit_prompt_reuses_the_bounded_packet_serializer_without_format_drift() -> None:

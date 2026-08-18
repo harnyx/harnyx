@@ -390,6 +390,8 @@ def test_closed_audit_packet_includes_selected_evidence_and_certificate_boundari
     packet = workspace.proof_packet(
         question="Which row is larger?",
         short_answers=("Alpha",),
+        answer_text="Alpha is larger [[1]].",
+        validated_citations=(),
         steps=(
             ProofStep(
                 step_id="S1",
@@ -502,6 +504,8 @@ def test_proof_packet_trims_aggregate_evidence_inside_the_context_bound() -> Non
     packet = workspace.proof_packet(
         question="Combine the values.",
         short_answers=("answer",),
+        answer_text="Combined answer.",
+        validated_citations=(),
         steps=(
             ProofStep(
                 step_id="S1",
@@ -560,6 +564,8 @@ def test_structured_proof_packet_preserves_required_contract_while_trimming_evid
     packet = workspace.proof_packet(
         question="Return field value.",
         short_answers=("answer",),
+        answer_text=None,
+        validated_citations=(),
         steps=(
             ProofStep(
                 step_id="S1",
@@ -579,19 +585,24 @@ def test_structured_proof_packet_preserves_required_contract_while_trimming_evid
     assert "audit text truncated" in str(packet["selected_evidence"])
 
 
-def test_structured_proof_packet_rejects_irreducible_required_envelope_overflow() -> None:
-    """Future failure: irreducible structured semantics must fail instead of being silently shortened."""
+def test_structured_proof_packet_preserves_irreducible_public_envelope_over_target() -> None:
+    """Future failure: the ordinary packet target must not silently narrow exact public semantics."""
     workspace = SourceWorkspace()
 
-    with pytest.raises(ValueError, match="required proof packet envelope"):
-        workspace.proof_packet(
-            question="q" * 60_000,
-            short_answers=("answer",),
-            steps=(),
-            response_mode="structured",
-            output_schema={"type": "object"},
-            structured_answer={"value": "z" * 70_000},
-        )
+    packet = workspace.proof_packet(
+        question="q" * 60_000,
+        short_answers=("answer",),
+        answer_text=None,
+        validated_citations=(),
+        steps=(),
+        response_mode="structured",
+        output_schema={"type": "object"},
+        structured_answer={"value": "z" * 70_000},
+    )
+
+    assert len(_serialize_audit_packet(packet)) > 128_000
+    assert packet["question"] == "q" * 60_000
+    assert packet["structured_answer"] == {"value": "z" * 70_000}
 
 
 def test_proof_packet_minimum_uses_the_smaller_serialized_text_value() -> None:
@@ -620,10 +631,22 @@ def test_proof_packet_minimum_uses_the_smaller_serialized_text_value() -> None:
             evidence_ids=(evidence.evidence_id,),
         ),
     )
-    ordinary = workspace.proof_packet(question="", short_answers=("answer",), steps=steps)
+    ordinary = workspace.proof_packet(
+        question="",
+        short_answers=("answer",),
+        answer_text="answer",
+        validated_citations=(),
+        steps=steps,
+    )
     question = "Q" * (128_001 - len(_serialize_audit_packet(ordinary)))
 
-    packet = workspace.proof_packet(question=question, short_answers=("answer",), steps=steps)
+    packet = workspace.proof_packet(
+        question=question,
+        short_answers=("answer",),
+        answer_text="answer",
+        validated_citations=(),
+        steps=steps,
+    )
 
     assert len(_serialize_audit_packet(packet)) <= 128_000
     selected = packet["selected_evidence"]

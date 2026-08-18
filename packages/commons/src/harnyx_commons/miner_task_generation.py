@@ -34,6 +34,12 @@ GENERATED_OUTPUT_SCHEMA_MAX_DEPTH = 8
 GENERATED_OUTPUT_SCHEMA_MAX_NODES = 128
 GENERATED_OUTPUT_SCHEMA_MAX_LEAVES = 64
 _GENERATED_OUTPUT_SCHEMA_PROPERTY_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_GENERATED_OUTPUT_SCHEMA_ANNOTATIONS = frozenset({"description", "title"})
+_GENERATED_OUTPUT_ARRAY_ASSERTIONS = frozenset({"maxItems", "minItems"})
+_GENERATED_OUTPUT_STRING_ASSERTIONS = frozenset({"maxLength", "minLength"})
+_GENERATED_OUTPUT_VALUE_ASSERTIONS = frozenset(
+    {"const", "enum", "exclusiveMaximum", "exclusiveMinimum", "maximum", "minimum", "multipleOf"}
+)
 _GENERATED_OUTPUT_PRIMITIVE_SCHEMA_TYPES = frozenset({"string", "integer", "number", "boolean"})
 
 _TASK_GENERATION_SYSTEM_PROMPT = (
@@ -358,28 +364,24 @@ def validate_generated_output_schema(schema: JsonObject) -> tuple[str, ...]:
         if node_count > GENERATED_OUTPUT_SCHEMA_MAX_NODES:
             raise ValueError("generated output schema exceeds maximum node count")
 
-        allowed_keys = {"type", "properties", "required", "additionalProperties", "items"}
-        if is_root:
-            allowed_keys.add("$schema")
-        unknown_keys = sorted(set(node_object) - allowed_keys)
-        if unknown_keys:
-            raise ValueError(f"generated output schema contains unsafe keywords: {unknown_keys}")
-
         schema_type = node_object.get("type")
         if schema_type == "object":
-            expected_object_keys = {
+            required_object_keys = {
                 "type",
                 "properties",
                 "required",
                 "additionalProperties",
             }
+            allowed_object_keys = required_object_keys | _GENERATED_OUTPUT_SCHEMA_ANNOTATIONS
+            if is_root:
+                allowed_object_keys.add("$schema")
             actual_object_keys = set(node_object) - ({"$schema"} if is_root else set())
-            if actual_object_keys != expected_object_keys:
-                missing_keys = sorted(expected_object_keys - actual_object_keys)
-                extra_keys = sorted(actual_object_keys - expected_object_keys)
+            if not required_object_keys <= actual_object_keys or not actual_object_keys <= allowed_object_keys:
+                missing_keys = sorted(required_object_keys - actual_object_keys)
+                extra_keys = sorted(actual_object_keys - allowed_object_keys)
                 raise ValueError(
-                    "object schemas require exactly type, properties, required, and "
-                    "additionalProperties; "
+                    "object schemas require type, properties, required, and additionalProperties with only "
+                    "bounded annotations; "
                     f"missing={missing_keys}, extra={extra_keys}"
                 )
             properties = node_object.get("properties")
@@ -406,11 +408,38 @@ def validate_generated_output_schema(schema: JsonObject) -> tuple[str, ...]:
         if is_root:
             raise ValueError("generated output schema root must be an object")
         if schema_type == "array":
-            if set(node_object) != {"type", "items"}:
-                missing_keys = sorted({"type", "items"} - set(node_object))
-                extra_keys = sorted(set(node_object) - {"type", "items"})
+            required_array_keys = {"type", "items"}
+            allowed_array_keys = (
+                required_array_keys
+                | _GENERATED_OUTPUT_SCHEMA_ANNOTATIONS
+                | _GENERATED_OUTPUT_ARRAY_ASSERTIONS
+            )
+            if not required_array_keys <= set(node_object) or not set(node_object) <= allowed_array_keys:
+                missing_keys = sorted(required_array_keys - set(node_object))
+                extra_keys = sorted(set(node_object) - allowed_array_keys)
                 raise ValueError(
-                    f"array schemas require exactly type and items; missing={missing_keys}, extra={extra_keys}"
+                    "array schemas require type and items with only bounded annotations and assertions; "
+                    f"missing={missing_keys}, extra={extra_keys}"
+                )
+            for assertion_name in _GENERATED_OUTPUT_ARRAY_ASSERTIONS:
+                assertion = node_object.get(assertion_name)
+                if assertion_name in node_object and (
+                    not isinstance(assertion, int) or isinstance(assertion, bool)
+                ):
+                    raise ValueError(f"generated {assertion_name} must be a JSON integer")
+            if node_object.get("maxItems") == 0:
+                raise ValueError(
+                    "generated output schema constraints must not disclose the answer: "
+                    "maxItems=0 pins an empty array"
+                )
+            if (
+                "minItems" in node_object
+                and "maxItems" in node_object
+                and node_object["minItems"] == node_object["maxItems"]
+            ):
+                raise ValueError(
+                    "generated output schema constraints must not disclose the answer: "
+                    "minItems and maxItems must differ"
                 )
             visit(
                 node_object.get("items"),
@@ -421,50 +450,44 @@ def validate_generated_output_schema(schema: JsonObject) -> tuple[str, ...]:
             return
         if schema_type not in _GENERATED_OUTPUT_PRIMITIVE_SCHEMA_TYPES:
             raise ValueError(f"unsupported generated schema type: {schema_type!r}")
-        if set(node_object) != {"type"}:
-            raise ValueError("primitive schemas may contain only type")
+        allowed_primitive_keys = {"type"} | _GENERATED_OUTPUT_SCHEMA_ANNOTATIONS
+        if schema_type == "string":
+            allowed_primitive_keys |= _GENERATED_OUTPUT_STRING_ASSERTIONS
+            for assertion_name in _GENERATED_OUTPUT_STRING_ASSERTIONS:
+                assertion = node_object.get(assertion_name)
+                if assertion_name in node_object and (
+                    not isinstance(assertion, int) or isinstance(assertion, bool)
+                ):
+                    raise ValueError(f"generated {assertion_name} must be a JSON integer")
+            if node_object.get("maxLength") == 0:
+                raise ValueError(
+                    "generated output schema constraints must not disclose the answer: "
+                    "maxLength=0 pins an empty string"
+                )
+            if (
+                "minLength" in node_object
+                and "maxLength" in node_object
+                and node_object["minLength"] == node_object["maxLength"]
+            ):
+                raise ValueError(
+                    "generated output schema constraints must not disclose the answer: "
+                    "minLength and maxLength must differ"
+                )
+        answer_assertions = sorted(set(node_object) & _GENERATED_OUTPUT_VALUE_ASSERTIONS)
+        if answer_assertions:
+            raise ValueError(
+                "generated output schema constraints must not disclose the answer: "
+                f"value assertions are not allowed: {answer_assertions}"
+            )
+        unknown_keys = sorted(set(node_object) - allowed_primitive_keys)
+        if unknown_keys:
+            raise ValueError(f"generated output schema contains unsafe keywords: {unknown_keys}")
         leaf_paths.append(path)
         if len(leaf_paths) > GENERATED_OUTPUT_SCHEMA_MAX_LEAVES:
             raise ValueError("generated output schema exceeds maximum leaf count")
 
     visit(schema, path="", depth=1, is_root=True)
     return tuple(leaf_paths)
-
-
-def generated_output_contract_for_judge(schema: JsonObject) -> JsonObject | None:
-    """Return the annotation-free structural projection safe for a judge prompt."""
-
-    try:
-        validate_generated_output_schema(schema)
-    except ValueError:
-        return None
-
-    def project(node: JsonObject) -> JsonObject:
-        node_object = cast(dict[str, object], node)
-        node_type = node_object["type"]
-        assert isinstance(node_type, str)
-        projected: JsonObject = {"type": node_type}
-        if node_type == "object":
-            properties = node_object["properties"]
-            assert isinstance(properties, dict)
-            properties_object = cast(dict[str, object], properties)
-            projected["properties"] = {
-                name: project(cast(JsonObject, child))
-                for name, child in properties_object.items()
-                if isinstance(child, dict)
-            }
-            required = node_object["required"]
-            assert isinstance(required, list)
-            required_objects = cast(list[object], required)
-            projected["required"] = [item for item in required_objects if isinstance(item, str)]
-            projected["additionalProperties"] = False
-        elif node_type == "array":
-            items = node_object["items"]
-            assert isinstance(items, dict)
-            projected["items"] = project(cast(JsonObject, items))
-        return projected
-
-    return project(schema)
 
 
 class _GeneratedTaskPayload(BaseModel):
@@ -776,6 +799,5 @@ __all__ = [
     "MinerTaskDatasetRequest",
     "MinerTaskModelSpec",
     "build_miner_task_model_request",
-    "generated_output_contract_for_judge",
     "validate_generated_output_schema",
 ]

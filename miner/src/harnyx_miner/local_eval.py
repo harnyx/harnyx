@@ -1779,14 +1779,14 @@ def _render_answer_markdown(
     return lines
 
 
-def _render_citations_markdown(label: str, citations: tuple[AnswerCitation, ...] | None) -> list[str]:
+def _render_citations_markdown(label: str, citations: tuple[AnswerCitation | None, ...] | None) -> list[str]:
     if citations is None:
         return []
     if not citations:
         return []
     lines = [f"- {label} citations:"]
     for citation in citations:
-        lines.append(f"  - {_citation_markdown_line(citation)}")
+        lines.append("  - (unresolved)" if citation is None else f"  - {_citation_markdown_line(citation)}")
     return lines
 
 

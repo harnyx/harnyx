@@ -244,12 +244,14 @@ class ReferenceProof(BaseModel):
     model_config = COMMONS_STRICT_CONFIG
 
     status: Literal["finalized", "giveup"]
+    answer_text: str | None = Field(min_length=1)
+    citation_evidence_ids: tuple[str, ...] = Field(max_length=200)
     answers: tuple[ReferenceAnswerSelection, ...] = ()
     proof_steps: tuple[ProofStep, ...] = ()
     structured_answer_json: str | None = Field(default=None, min_length=1)
     giveup_reason: str | None = None
 
-    @field_validator("answers", "proof_steps", mode="before")
+    @field_validator("answers", "citation_evidence_ids", "proof_steps", mode="before")
     @classmethod
     def _tuple_from_list(cls, value: object) -> object:
         return tuple(value) if isinstance(value, list) else value
@@ -258,12 +260,16 @@ class ReferenceProof(BaseModel):
     def _status_contract(self) -> ReferenceProof:
         if self.status == "finalized" and (not self.answers or not self.proof_steps):
             raise ValueError("finalized proof requires answers and proof steps")
+        if self.status == "finalized" and ((self.answer_text is None) == (self.structured_answer_json is None)):
+            raise ValueError("finalized proof requires exactly one public answer representation")
         if self.status == "finalized" and self.giveup_reason is not None:
             raise ValueError("finalized proof cannot contain giveup_reason")
         if self.status == "giveup" and not self.giveup_reason:
             raise ValueError("giveup proof requires giveup_reason")
-        if self.status == "giveup" and self.structured_answer_json is not None:
-            raise ValueError("giveup proof cannot contain a structured answer")
+        if self.status == "giveup" and (
+            self.answer_text is not None or self.structured_answer_json is not None or self.citation_evidence_ids
+        ):
+            raise ValueError("giveup proof cannot contain a public answer or citation positions")
         return self
 
 

@@ -16,7 +16,7 @@ from harnyx_commons.application.miner_response_hydration import (
 )
 from harnyx_commons.domain.miner_task import AnswerCitation, ReferenceAnswer, Response
 from harnyx_commons.domain_tweak_generation.contracts import GroundedQuestionDossier, ReferenceProof
-from harnyx_commons.domain_tweak_generation.source_workspace import SourceWorkspace, _ProofPacketSizeError
+from harnyx_commons.domain_tweak_generation.source_workspace import SourceWorkspace
 from harnyx_commons.miner_task_generation import validate_generated_output_schema
 from harnyx_miner_sdk.json_types import JsonObject, JsonValue
 from harnyx_miner_sdk.structured_output import (
@@ -63,9 +63,9 @@ def validate_and_render_reference(
         dossier_values[item.answer_id] if item.corrected_value is None else item.corrected_value
         for item in proof.answers
     )
-    authored_values = (*answer_values, *(step.statement for step in proof.proof_steps))
-    if any(_CITATION_MARKER.search(value) for value in authored_values):
-        raise ProofValidationError("model-authored citation markers are forbidden")
+    private_proof_values = (*answer_values, *(step.statement for step in proof.proof_steps))
+    if any(_CITATION_MARKER.search(value) for value in private_proof_values):
+        raise ProofValidationError("private proof fields cannot contain public citation markers")
 
     evidence_by_id = {item.evidence_id: item for item in workspace.evidence}
     certificates_by_id = {item.certificate_id: item for item in workspace.certificates}
@@ -89,24 +89,19 @@ def validate_and_render_reference(
             raise ProofValidationError("derived proof steps require prior step dependencies")
         known_steps.add(step.step_id)
 
-    ordered_evidence_ids: list[str] = []
-    for step in proof.proof_steps:
-        for evidence_id in step.evidence_ids:
-            if evidence_id not in ordered_evidence_ids:
-                ordered_evidence_ids.append(evidence_id)
-    if not ordered_evidence_ids:
+    proof_evidence_ids = tuple(
+        dict.fromkeys(evidence_id for step in proof.proof_steps for evidence_id in step.evidence_ids)
+    )
+    if not proof_evidence_ids:
         raise ProofValidationError("reference proof contains no selected evidence")
-    number_by_id = {evidence_id: index for index, evidence_id in enumerate(ordered_evidence_ids, start=1)}
-    answer_line = "Short answers: " + "; ".join(answer_values)
-    rendered_steps = []
-    for step in proof.proof_steps:
-        markers = "".join(f"[[{number_by_id[item]}]]" for item in step.evidence_ids)
-        rendered_steps.append(f"- {step.statement}{markers}")
-    citations: list[AnswerCitation] = []
+    citations: list[AnswerCitation | None] = []
     total_source_characters = 0
     try:
-        for evidence_id in ordered_evidence_ids:
-            evidence = evidence_by_id[evidence_id]
+        for evidence_id in proof.citation_evidence_ids:
+            evidence = evidence_by_id.get(evidence_id)
+            if evidence is None:
+                citations.append(None)
+                continue
             source = workspace.get_source(evidence.source_id)
             materialized = materialize_citation_slices(source.content, workspace.citation_slices(evidence))
             total_source_characters += materialized.char_count
@@ -124,6 +119,8 @@ def validate_and_render_reference(
     output_schema: JsonObject | None = None
     structured_value: JsonValue | None = None
     if dossier.response_mode == "structured":
+        if proof.answer_text is not None:
+            raise ProofValidationError("structured reference proof cannot contain answer_text")
         if proof.structured_answer_json is None:
             raise ProofValidationError("structured reference proof omitted structured_answer_json")
         output_schema, structured_value = validate_structured_payload(
@@ -132,9 +129,11 @@ def validate_and_render_reference(
         )
         reference_text = compact_json(structured_value)
     else:
+        if proof.answer_text is None:
+            raise ProofValidationError("plain_text reference proof omitted answer_text")
         if proof.structured_answer_json is not None:
             raise ProofValidationError("plain_text reference proof cannot contain structured_answer_json")
-        reference_text = "\n\n".join((answer_line, "\n".join(rendered_steps)))
+        reference_text = proof.answer_text
     try:
         if structured_value is None:
             Response(text=reference_text)
@@ -142,19 +141,21 @@ def validate_and_render_reference(
             Response(output=structured_value)
     except ValidationError as exc:
         raise ProofValidationError(f"reference answer violates the public miner response contract: {exc}") from exc
-    reference = ReferenceAnswer(text=reference_text, citations=tuple(citations))
-    try:
-        audit_packet = workspace.proof_packet(
-            question=dossier.question,
-            short_answers=answer_values,
-            steps=proof.proof_steps,
-            response_mode=dossier.response_mode,
-            output_schema=output_schema,
-            structured_answer=structured_value,
-        )
-    except _ProofPacketSizeError as exc:
-        raise ProofValidationError(str(exc)) from exc
-    selected_source_urls = tuple(dict.fromkeys(evidence_by_id[evidence_id].url for evidence_id in ordered_evidence_ids))
+    reference = ReferenceAnswer(text=reference_text, citations=tuple(citations) or None)
+    validated_citations = [
+        None if citation is None else citation.model_dump(mode="json", exclude_none=True) for citation in citations
+    ]
+    audit_packet = workspace.proof_packet(
+        question=dossier.question,
+        short_answers=answer_values,
+        steps=proof.proof_steps,
+        answer_text=proof.answer_text,
+        validated_citations=validated_citations,
+        response_mode=dossier.response_mode,
+        output_schema=output_schema,
+        structured_answer=structured_value,
+    )
+    selected_source_urls = tuple(dict.fromkeys(evidence_by_id[evidence_id].url for evidence_id in proof_evidence_ids))
     return ValidatedReference(
         proof=proof,
         reference_answer=reference,

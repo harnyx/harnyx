@@ -1182,6 +1182,30 @@ def test_render_answer_markdown_uses_shared_models_and_ignores_empty_optional_ci
     ]
 
 
+def test_render_answer_markdown_preserves_unresolved_citation_position() -> None:
+    """Future failure: local reports must not hide a positional citation placeholder."""
+    lines = local_eval._render_answer_markdown(
+        "Target",
+        {
+            "text": "answer [[3]]",
+            "citations": [
+                {"url": "https://example.com/one"},
+                None,
+                {"url": "https://example.com/three"},
+            ],
+        },
+        model_type=Response,
+    )
+
+    assert lines == [
+        "- Target answer: answer [[3]]",
+        "- Target citations:",
+        "  - https://example.com/one",
+        "  - (unresolved)",
+        "  - https://example.com/three",
+    ]
+
+
 def test_render_answer_markdown_uses_canonical_structured_json() -> None:
     lines = local_eval._render_answer_markdown(
         "Target",

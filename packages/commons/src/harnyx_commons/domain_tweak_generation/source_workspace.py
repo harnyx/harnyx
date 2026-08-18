@@ -52,10 +52,6 @@ _SOURCE_FAILURE_CLASSES: frozenset[str] = frozenset(
 )
 
 
-class _ProofPacketSizeError(ValueError):
-    pass
-
-
 @dataclass(slots=True)
 class _AuditTextSlot:
     container: dict[str, object]
@@ -616,6 +612,8 @@ class SourceWorkspace:
         question: str,
         short_answers: Sequence[str],
         steps: Sequence[ProofStep],
+        answer_text: str | None,
+        validated_citations: Sequence[Mapping[str, object] | None],
         response_mode: ResponseMode = "plain_text",
         output_schema: JsonObject | None = None,
         structured_answer: JsonValue | None = None,
@@ -627,6 +625,8 @@ class SourceWorkspace:
         packet: dict[str, object] = {
             "question": question,
             "canonical_short_answers": list(short_answers),
+            "answer_text": answer_text,
+            "validated_citations": list(validated_citations),
             "response_mode": response_mode,
             "output_schema": output_schema,
             "structured_answer": structured_answer,
@@ -648,9 +648,7 @@ class SourceWorkspace:
         for slot in (*load_bearing_slots, *context_slots):
             slot.minimize()
         if len(_serialize_audit_packet(packet)) > _MAX_AUDIT_PACKET_CHARACTERS:
-            raise _ProofPacketSizeError(
-                f"required proof packet envelope exceeds {_MAX_AUDIT_PACKET_CHARACTERS} characters"
-            )
+            return packet
         _restore_audit_text(packet, load_bearing_slots)
         _restore_audit_text(packet, context_slots)
         assert len(_serialize_audit_packet(packet)) <= _MAX_AUDIT_PACKET_CHARACTERS

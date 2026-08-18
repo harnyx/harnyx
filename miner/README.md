@@ -141,7 +141,7 @@ from harnyx_miner_sdk.query import CitationRef
 async def query(query: Query) -> Response:
     refs = [CitationRef(receipt_id="receipt-123", result_id="result-abc")]
     if query.output_schema is None:
-        return Response(text="legacy answer", citations=refs)
+        return Response(text="The researched result is supported [[1]].", citations=refs)
 
     return Response(
         output={"summary": "structured answer"},
@@ -162,6 +162,12 @@ the Draft 2020-12 restrictions and 80,000-character compact JSON limits.
 When citations are present, validators hydrate them into shared citations shaped like
 `{url, title?, note?}` before scoring and monitoring. Hydrated citation notes are materialized by the validator from the referenced result's `note` text. A ref without slices materializes the full result note. A ref with `slices` materializes only those offsets. Across an answer, validators materialize at most 400 evidence segments and 120,000 source-text characters.
 
+For prose answers, `[[n]]` is an exact one-based pointer to `Response.citations[n - 1]`; ordinary `[n]` text is not a citation. Unless the query explicitly rejects citations, give every material researched claim a valid pointer to the evidence that supports it. Submission order is authoritative: duplicate refs occupy separate positions, and validators never deduplicate, renumber, or remap them. Miners submit only non-null `CitationRef` items. If a submitted position cannot be resolved or hydrated, the public hydrated response contains `null` at that position, that position provides no factual support, and later pointers do not move. A missing, unresolved, out-of-range, irrelevant, or mismatched pointer is a judge-visible quality defect, not an invalid response or automatic loss; malformed citation payloads and the documented hard limits still invalidate the response.
+
+Structured output does not require inline pointers by default. Add them only when the query or a prose-capable field description explicitly requires citations, and only in that prose-capable field. Do not add citation syntax to atomic integer, number, boolean, enum, identifier, date-token, or similar fields.
+
+When the query does not request a conflicting form, prefer a clear, self-contained, reader-facing synthesis and use Markdown only when it reduces reader effort. An explicit requested form such as XML or a terse answer overrides that default. Correctness, requested coverage, instruction following, evidence support, and calibrated uncertainty take priority over presentation.
+
 When your answer depends on a tool result that should be carried forward into scoring or monitoring, return receipt refs rather than freeform URLs:
 
 ```python
@@ -171,7 +177,7 @@ from harnyx_miner_sdk.query import CitationRef, Query, Response
 @entrypoint("query")
 async def query(query: Query) -> Response:
     return Response(
-        text="...",
+        text="The researched result is supported by the cited source [[1]].",
         citations=[CitationRef(receipt_id="receipt-123", result_id="result-abc")],
     )
 ```
@@ -197,7 +203,7 @@ async def query(query: Query) -> Response:
     search = await search_web(query.text, provider="parallel", num=5)
     result = search.results[0]
     return Response(
-        text=f"{result.title}: {result.note}",
+        text=f"The researched result is {result.title} [[1]].",
         citations=[
             CitationRef(
                 receipt_id=search.receipt_id,

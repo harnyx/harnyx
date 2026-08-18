@@ -1,7 +1,13 @@
 import pytest
 from pydantic import ValidationError
 
-from harnyx_commons.domain_tweak_generation import DomainTweakBatchGenerationResult, GroundedQuestionDossier
+from harnyx_commons.domain_tweak_generation import (
+    DomainTweakBatchGenerationResult,
+    GroundedQuestionDossier,
+    ProofStep,
+    ReferenceAnswerSelection,
+    ReferenceProof,
+)
 
 
 def test_batch_result_rejects_partial_success_state() -> None:
@@ -138,3 +144,21 @@ def test_ready_dossier_requires_one_coherent_response_mode_contract() -> None:
         structured_answer_json='{"answer":"Alpha"}',
     )
     assert structured.response_mode == "structured"
+
+
+def test_reference_proof_enforces_public_citation_position_limit() -> None:
+    """Future failure: accepted references must never be silently truncated by the 200-position judge boundary."""
+    common = {
+        "status": "finalized",
+        "answer_text": "Alpha is the published result [[1]].",
+        "answers": (ReferenceAnswerSelection(answer_id="A1"),),
+        "proof_steps": (
+            ProofStep(step_id="S1", statement="Alpha is published.", kind="supported", evidence_ids=("E1",)),
+        ),
+    }
+
+    accepted = ReferenceProof(**common, citation_evidence_ids=tuple("E1" for _ in range(200)))
+
+    assert len(accepted.citation_evidence_ids) == 200
+    with pytest.raises(ValidationError, match="at most 200"):
+        ReferenceProof(**common, citation_evidence_ids=tuple("E1" for _ in range(201)))

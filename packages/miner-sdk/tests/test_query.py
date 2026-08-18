@@ -167,6 +167,12 @@ def test_response_accepts_optional_citation_refs() -> None:
     assert response.citations[0].slices == []
 
 
+def test_response_rejects_null_citation_refs_at_miner_ingress() -> None:
+    """Future failure: only hydrated public responses may contain null citation positions."""
+    with pytest.raises(ValidationError):
+        Response.model_validate({"text": "hello", "citations": [None]})
+
+
 def test_response_accepts_targeted_citation_slices() -> None:
     response = Response.model_validate(
         {

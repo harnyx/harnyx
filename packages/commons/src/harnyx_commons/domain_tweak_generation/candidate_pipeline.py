@@ -301,7 +301,10 @@ def _question_generation_contract_defects(
         defects.append("generated question contains a model-authored citation marker")
     if dossier.response_mode == "structured":
         try:
-            validate_structured_payload(dossier.output_schema_json, dossier.structured_answer_json)
+            validate_structured_payload(
+                dossier.output_schema_json,
+                dossier.structured_answer_json,
+            )
         except ProofValidationError as exc:
             defects.append(str(exc))
     return tuple(defects)

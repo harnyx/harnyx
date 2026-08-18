@@ -14,17 +14,31 @@ from harnyx_commons.application.miner_response_hydration import (
 from harnyx_commons.application.miner_response_hydration import (
     hydrate_miner_response_payload as _hydrate_miner_response_payload,
 )
-from harnyx_commons.domain.miner_task import AnswerCitation, Query, Response
+from harnyx_commons.domain.miner_task import AnswerCitation, Query, ReferenceAnswer, Response
 from harnyx_commons.domain.tool_call import (
     SearchToolResult,
     ToolCall,
     ToolCallDetails,
     ToolCallOutcome,
+    ToolResult,
     ToolResultPolicy,
 )
 from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
+from harnyx_commons.tools.types import ToolName
 
 _LEGACY_QUERY = Query(text="question")
+
+
+def test_reference_answer_loads_legacy_persisted_citation_count_above_judge_cap() -> None:
+    """Future failure: nullable slots must not tighten persisted ReferenceAnswer cardinality."""
+    citation = {"url": "https://example.com/source", "note": "evidence"}
+
+    reference = ReferenceAnswer.model_validate(
+        {"text": "Legacy reference", "citations": [citation] * 201}
+    )
+
+    assert reference.citations is not None
+    assert len(reference.citations) == 201
 
 
 def hydrate_miner_response_payload(
@@ -77,6 +91,34 @@ def _receipt_log_with_result(
         )
     )
     return receipt_log
+
+
+def _record_receipt(
+    receipt_log: InMemoryReceiptLog,
+    *,
+    receipt_id: str,
+    session_id: UUID,
+    tool: ToolName = "search_web",
+    outcome: ToolCallOutcome = ToolCallOutcome.OK,
+    result_policy: ToolResultPolicy = ToolResultPolicy.REFERENCEABLE,
+    results: tuple[ToolResult, ...] = (),
+) -> None:
+    receipt_log.record(
+        ToolCall(
+            receipt_id=receipt_id,
+            session_id=session_id,
+            uid=42,
+            tool=tool,
+            issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
+            outcome=outcome,
+            details=ToolCallDetails(
+                request_hash=f"request-{receipt_id}",
+                response_hash=f"response-{receipt_id}",
+                result_policy=result_policy,
+                results=results,
+            ),
+        )
+    )
 
 
 def test_hydrate_miner_response_payload_materializes_full_result_when_slices_are_omitted() -> None:
@@ -302,9 +344,11 @@ def test_hydrate_miner_response_payload_rejects_total_materialized_evidence_over
         )
 
 
-def test_hydrate_miner_response_payload_drops_invalid_or_cross_session_citations() -> None:
+def test_hydrate_miner_response_payload_preserves_duplicate_and_unresolved_positions() -> None:
+    """Future failure: hydration must not renumber positional citation pointers."""
     session_id = uuid4()
-    receipt_log = _receipt_log_with_result(session_id=uuid4(), note=_source_text())
+    source_text = _source_text()
+    receipt_log = _receipt_log_with_result(session_id=session_id, note=source_text)
 
     response = hydrate_miner_response_payload(
         {
@@ -312,13 +356,106 @@ def test_hydrate_miner_response_payload_drops_invalid_or_cross_session_citations
             "citations": [
                 {"receipt_id": "receipt-1", "result_id": "result-1"},
                 {"receipt_id": "missing", "result_id": "result-1"},
+                {"receipt_id": "receipt-1", "result_id": "result-1"},
             ],
         },
         session_id=session_id,
         receipt_log=receipt_log,
     )
 
-    assert response == Response(text="Answer")
+    resolved = AnswerCitation(
+        url="https://example.com/source",
+        note=f"[slice 0:{len(source_text)}]\n{source_text}",
+        title="Example source",
+    )
+    assert response == Response(text="Answer", citations=(resolved, None, resolved))
+
+
+def test_hydrate_miner_response_payload_preserves_every_soft_unresolved_class_as_null() -> None:
+    """Future failure: soft unresolved refs must not disappear or weaken later citations."""
+    session_id = uuid4()
+    source_text = _source_text()
+    valid_result = SearchToolResult(
+        index=0,
+        result_id="result-1",
+        url="https://example.com/source",
+        note=source_text,
+        title="Example source",
+    )
+    receipt_log = InMemoryReceiptLog()
+    _record_receipt(
+        receipt_log,
+        receipt_id="wrong-session",
+        session_id=uuid4(),
+        results=(valid_result,),
+    )
+    _record_receipt(
+        receipt_log,
+        receipt_id="unsuccessful",
+        session_id=session_id,
+        outcome=ToolCallOutcome.PROVIDER_ERROR,
+        results=(valid_result,),
+    )
+    _record_receipt(
+        receipt_log,
+        receipt_id="non-citation-tool",
+        session_id=session_id,
+        tool="llm_chat",
+        results=(valid_result,),
+    )
+    _record_receipt(
+        receipt_log,
+        receipt_id="not-referenceable",
+        session_id=session_id,
+        result_policy=ToolResultPolicy.LOG_ONLY,
+        results=(valid_result,),
+    )
+    _record_receipt(
+        receipt_log,
+        receipt_id="missing-result",
+        session_id=session_id,
+        results=(valid_result,),
+    )
+    _record_receipt(
+        receipt_log,
+        receipt_id="wrong-result-type",
+        session_id=session_id,
+        results=(ToolResult(index=0, result_id="result-1"),),
+    )
+    _record_receipt(
+        receipt_log,
+        receipt_id="valid",
+        session_id=session_id,
+        results=(valid_result,),
+    )
+
+    response = hydrate_miner_response_payload(
+        {
+            "text": "Answer [[8]]",
+            "citations": [
+                {"receipt_id": "missing-receipt", "result_id": "result-1"},
+                {"receipt_id": "wrong-session", "result_id": "result-1"},
+                {"receipt_id": "unsuccessful", "result_id": "result-1"},
+                {"receipt_id": "non-citation-tool", "result_id": "result-1"},
+                {"receipt_id": "not-referenceable", "result_id": "result-1"},
+                {"receipt_id": "missing-result", "result_id": "absent"},
+                {"receipt_id": "wrong-result-type", "result_id": "result-1"},
+                {"receipt_id": "valid", "result_id": "result-1"},
+            ],
+        },
+        session_id=session_id,
+        receipt_log=receipt_log,
+    )
+
+    resolved = AnswerCitation(
+        url="https://example.com/source",
+        note=f"[slice 0:{len(source_text)}]\n{source_text}",
+        title="Example source",
+    )
+    assert response == Response(
+        text="Answer [[8]]",
+        citations=(None, None, None, None, None, None, None, resolved),
+    )
 
 
 def test_hydrate_miner_response_payload_preserves_existing_list_ingress_shape() -> None:

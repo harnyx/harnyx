@@ -5785,7 +5785,14 @@ Body: [StatusResponse](#model-statusresponse)
       "anyOf": [
         {
           "items": {
-            "$ref": "#/components/schemas/AnswerCitation"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnswerCitation"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "type": "array"
         },
@@ -5793,6 +5800,7 @@ Body: [StatusResponse](#model-statusresponse)
           "type": "null"
         }
       ],
+      "description": "Hydrated submitted citation positions in order. Miners submit only non-null CitationRef entries. An AnswerCitation means that the submitted position resolved to authoritative public evidence; null means that the submitted position could not be resolved or hydrated. A null provides no factual support, and submitted positions are never deleted, renumbered, or remapped.",
       "title": "Citations"
     },
     "text": {
@@ -5952,7 +5960,14 @@ Body: [StatusResponse](#model-statusresponse)
       "anyOf": [
         {
           "items": {
-            "$ref": "#/components/schemas/AnswerCitation"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnswerCitation"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "type": "array"
         },
@@ -5960,6 +5975,7 @@ Body: [StatusResponse](#model-statusresponse)
           "type": "null"
         }
       ],
+      "description": "Hydrated submitted citation positions in order. Miners submit only non-null CitationRef entries. An AnswerCitation means that the submitted position resolved to authoritative public evidence; null means that the submitted position could not be resolved or hydrated. A null provides no factual support, and submitted positions are never deleted, renumbered, or remapped.",
       "title": "Citations"
     },
     "output": {
