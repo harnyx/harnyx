@@ -137,9 +137,7 @@ class OpenRouterEmbeddingClient:
         vectors = tuple(tuple(float(value) for value in item.embedding) for _, item in ordered)
         for vector in vectors:
             if self.dimensions is not None and len(vector) != self.dimensions:
-                raise RuntimeError(
-                    f"embedding dimensions mismatch: expected={self.dimensions} actual={len(vector)}"
-                )
+                raise RuntimeError(f"embedding dimensions mismatch: expected={self.dimensions} actual={len(vector)}")
         usage = None
         if payload.usage is not None:
             usage = OpenRouterEmbeddingUsage(
@@ -187,15 +185,19 @@ class OpenRouterLlmProvider(LlmProviderPort):
         *,
         openrouter_api_key: SecretStr,
         openrouter_chat_provider_factory: OpenRouterChatProviderFactory | None = None,
+        additional_supported_models: Sequence[str] = (),
     ) -> None:
         self._openrouter_api_key = openrouter_api_key
         self._openrouter_chat_provider_factory = openrouter_chat_provider_factory or build_openrouter_chat_provider
+        self._supported_models = frozenset(
+            (*OPENROUTER_SUPPORTED_MODELS, *(model.strip() for model in additional_supported_models if model.strip()))
+        )
         self._openrouter_provider: OpenAiCompatibleLlmProvider | None = None
         self._openrouter_client: httpx.AsyncClient | None = None
 
     async def invoke(self, request: AbstractLlmRequest) -> LlmResponse:
         model = request.model.strip()
-        if model not in OPENROUTER_SUPPORTED_MODELS:
+        if model not in self._supported_models:
             raise ValueError(f"OpenRouter provider does not support model {request.model!r}")
         openrouter_provider = self._ensure_openrouter_provider(model=model)
         response = await openrouter_provider.invoke(self._openrouter_request(request, model=model))

@@ -132,6 +132,26 @@ async def test_openrouter_provider_rejects_unsupported_model_before_key_lookup()
     assert factory_calls == []
 
 
+async def test_openrouter_provider_allows_explicit_additional_research_model() -> None:
+    fake_provider = _FakeOpenAiProvider()
+    fake_client = _FakeClient()
+    model = "qwen/qwen3.8-27b"
+    provider = OpenRouterLlmProvider(
+        openrouter_api_key=SecretStr("test-openrouter-key"),
+        openrouter_chat_provider_factory=lambda api_key: _fake_provider_factory(
+            api_key,
+            [],
+            fake_provider,
+            fake_client,
+        ),
+        additional_supported_models=(model,),
+    )
+
+    await provider.invoke(_request(model=model))
+
+    assert fake_provider.requests[0].model == model
+
+
 @pytest.mark.parametrize("model", OPENROUTER_TEST_MODELS)
 async def test_openrouter_provider_omits_extra_when_request_has_no_extra(model: str) -> None:
     fake_provider = _FakeOpenAiProvider()
@@ -520,9 +540,7 @@ async def test_openrouter_provider_merges_request_reasoning_extra_with_resolved_
         )
     )
 
-    assert fake_provider.requests[0].extra == {
-        "reasoning": {"exclude": True, "effort": "high", "enabled": True}
-    }
+    assert fake_provider.requests[0].extra == {"reasoning": {"exclude": True, "effort": "high", "enabled": True}}
 
 
 async def test_openrouter_embedding_client_posts_embeddings_request() -> None:

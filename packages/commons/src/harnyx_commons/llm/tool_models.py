@@ -151,9 +151,7 @@ def parse_miner_selected_llm_provider_model(
     if not selected_model:
         raise ValueError("model must be provided for validator tools")
     if selected_model not in MINER_SELECTED_LLM_PROVIDER_MODELS[selected_provider]:
-        raise ValueError(
-            f"model {selected_model!r} is not supported for miner-selected provider {selected_provider!r}"
-        )
+        raise ValueError(f"model {selected_model!r} is not supported for miner-selected provider {selected_provider!r}")
     return MinerSelectedLlmProviderModel(provider=selected_provider, model=selected_model)
 
 
@@ -195,16 +193,9 @@ MODEL_THINKING_CAPABILITIES: Mapping[
 TOOL_MODEL_THINKING_CAPABILITIES: Mapping[
     ToolModelName,
     Mapping[ToolModelThinkingProvider, ToolModelThinkingCapability],
-] = {
-    model: MODEL_THINKING_CAPABILITIES[model]
-    for model in ALLOWED_TOOL_MODELS
-    if model in MODEL_THINKING_CAPABILITIES
-}
+] = {model: MODEL_THINKING_CAPABILITIES[model] for model in ALLOWED_TOOL_MODELS if model in MODEL_THINKING_CAPABILITIES}
 
-_NORMALIZED_TOOL_MODELS: Mapping[str, ToolModelName] = {
-    model.lower(): model
-    for model in ALLOWED_TOOL_MODELS
-}
+_NORMALIZED_TOOL_MODELS: Mapping[str, ToolModelName] = {model.lower(): model for model in ALLOWED_TOOL_MODELS}
 
 _NORMALIZED_THINKING_CAPABILITY_MODELS: Mapping[str, str] = {
     model.lower(): model for model in MODEL_THINKING_CAPABILITIES

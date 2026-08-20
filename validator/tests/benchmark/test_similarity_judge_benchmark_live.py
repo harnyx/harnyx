@@ -48,6 +48,7 @@ _GEMMA_SERVICE_URL = "https://gemma-4-31b-turbo-obbrpx3ppa-uc.a.run.app"
 _GLM_MODEL = "zai-org/GLM-5.2-TEE"
 _KIMI_MODEL = "moonshotai/Kimi-K3-TEE"
 _DEEPSEEK_MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731-TEE"
+_MUSE_GLIMMER_MODEL = "meta/muse-glimmer-30b"
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +106,13 @@ _BENCHMARK_TARGETS = (
     BenchmarkTarget(
         test_id="deepseek-v4-flash-0731-openrouter",
         model=_DEEPSEEK_MODEL,
+        route_target="openrouter",
+        endpoint_id="openrouter",
+        normalized_base_url=OPENROUTER_BASE_URL,
+    ),
+    BenchmarkTarget(
+        test_id="muse-glimmer-30b-openrouter",
+        model=_MUSE_GLIMMER_MODEL,
         route_target="openrouter",
         endpoint_id="openrouter",
         normalized_base_url=OPENROUTER_BASE_URL,
@@ -202,7 +210,7 @@ async def test_fixed_dataset_similarity_benchmark(target: BenchmarkTarget) -> No
             model=similarity_route.model,
             fallback_models=(),
             temperature=0.0,
-            max_output_tokens=settings.llm.similarity_llm_max_output_tokens,
+            max_output_tokens=None,
             reasoning_effort=bootstrap._SCORING_LLM_REASONING_EFFORT,
             timeout_seconds=float(settings.llm.similarity_llm_timeout_seconds),
             retry_policy=RetryPolicy(

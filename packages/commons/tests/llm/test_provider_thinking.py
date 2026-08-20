@@ -17,6 +17,19 @@ def test_resolve_template_thinking_derives_named_reasoning_effort_for_capable_mo
     assert resolved.chat_template_kwargs() == {"enable_thinking": True}
 
 
+def test_resolve_template_thinking_enables_qwen38_on_chutes() -> None:
+    resolved = resolve_template_thinking(
+        canonical_model="Qwen/Qwen3.8-27B-TEE",
+        provider_name="chutes",
+        request_thinking=None,
+        reasoning_effort="high",
+    )
+
+    assert resolved is not None
+    assert resolved.thinking == LlmThinkingConfig(enabled=True, effort="high")
+    assert resolved.chat_template_kwargs() == {"enable_thinking": True}
+
+
 def test_resolve_template_thinking_prefers_explicit_request_thinking() -> None:
     resolved = resolve_template_thinking(
         canonical_model="google/gemma-4-31B-turbo-TEE",
