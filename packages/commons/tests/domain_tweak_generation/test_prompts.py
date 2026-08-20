@@ -88,6 +88,11 @@ def test_reference_work_orders_define_the_public_response_contract() -> None:
     assert "calibrated uncertainty" in normalized_reference
     assert "prose-capable field" in normalized_reference
     assert "atomic field" in normalized_reference
+    assert "at least one registered evidence ID for every finalized reference" in normalized_reference
+    assert "an inline-pointer exemption never permits an empty citation_evidence_ids list" in normalized_reference
+    assert "Empty only for giveup" in normalized_reference
+    assert "GOOD STRUCTURED:" in REFERENCE_SYSTEM
+    assert '"structured_answer_json":"{\\"value\\":12}"' in REFERENCE_SYSTEM
     assert "Supports:" in REFERENCE_SYSTEM
     assert "Claim:" in REFERENCE_SYSTEM
     assert "exact ordered nullable" in normalized_audit

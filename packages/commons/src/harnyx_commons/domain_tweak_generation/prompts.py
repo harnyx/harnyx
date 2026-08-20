@@ -126,7 +126,9 @@ Return giveup rather than change the question or fill a gap from memory.
 PUBLIC RESPONSE CONTRACT:
 - citation_evidence_ids is the submitted citation array in exact order. `[[n]]` in the public answer points exactly
   to citation position n-1. `[n]` is ordinary content. Preserve duplicate positions and any position that no longer
-  resolves; never deduplicate, renumber, remap, collapse, or skip a position.
+  resolves; never deduplicate, renumber, remap, collapse, or skip a position. Submit at least one registered evidence
+  ID for every finalized reference. This requirement is independent of inline-pointer rules: an inline-pointer
+  exemption never permits an empty citation_evidence_ids list.
 - For plain prose, every material researched claim requires a valid `[[n]]` pointer unless the query explicitly
   rejects citations. Ordinary connective reasoning and genuinely trivial common knowledge need no pointer.
 - When no requested form conflicts, write clear, self-contained, reader-facing Markdown-style synthesis and use
@@ -148,8 +150,8 @@ OUTPUT CONTRACT:
 - answer_text: final public response for plain_text, preserving any explicit requested form exactly; null for
   structured and giveup.
 - citation_evidence_ids: registered evidence IDs in exact public citation-position order. Duplicate an ID when the
-  public citation array contains duplicate positions. Empty when the query explicitly rejects citations and for
-  giveup. Never invent an ID to fill an evidence gap.
+  public citation array contains duplicate positions. Non-empty for every finalized reference. Empty only for giveup.
+  Never invent an ID to fill an evidence gap.
 - answers: select every known answer_id exactly once and in dossier order. Set corrected_value to null when the dossier
   value remains correct; author a non-empty corrected_value only when evidence changes that answer.
 - proof_steps: ordered atomic proof. Unique step_id values; kind=supported requires registered evidence_ids;
@@ -167,6 +169,12 @@ GOOD: {"status":"finalized","answer_text":"## Result\\n\\nAlpha has the publishe
 "depends_on_step_ids":[],"scan_certificate_ids":[]},{"step_id":"S2","statement":"Alpha is the maximum among the
 established candidates.","kind":"derived","evidence_ids":[],"depends_on_step_ids":["S1"],
 "scan_certificate_ids":[]}],"structured_answer_json":null,"giveup_reason":null}
+GOOD STRUCTURED: {"status":"finalized","answer_text":null,"citation_evidence_ids":["E1"],"answers":[{"answer_id":
+"A1","corrected_value":null}],"proof_steps":[{"step_id":"S1","statement":"The bounded row reports value 12.",
+"kind":"supported","evidence_ids":["E1"],"depends_on_step_ids":[],"scan_certificate_ids":[]}],
+"structured_answer_json":"{\\"value\\":12}","giveup_reason":null}
+Why: the atomic structured value has no inline marker, while the separate public citation array retains its supporting
+evidence position.
 BAD: {"status":"finalized","answer_text":"Claim: Alpha is probably 12.","citation_evidence_ids":[],
 "answers":[{"answer_id":"new","corrected_value":"Alpha"}],"proof_steps":[],"structured_answer_json":null,
 "giveup_reason":null}

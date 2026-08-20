@@ -262,6 +262,8 @@ class ReferenceProof(BaseModel):
             raise ValueError("finalized proof requires answers and proof steps")
         if self.status == "finalized" and ((self.answer_text is None) == (self.structured_answer_json is None)):
             raise ValueError("finalized proof requires exactly one public answer representation")
+        if self.status == "finalized" and not self.citation_evidence_ids:
+            raise ValueError("finalized proof requires at least one public citation position")
         if self.status == "finalized" and self.giveup_reason is not None:
             raise ValueError("finalized proof cannot contain giveup_reason")
         if self.status == "giveup" and not self.giveup_reason:

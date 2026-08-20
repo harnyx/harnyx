@@ -10,6 +10,7 @@ from harnyx_commons.domain.tool_usage import LlmModelUsageCost, LlmUsageSummary,
 from harnyx_commons.domain_tweak_generation import (
     BatchTerminalGenerationError,
     CandidateStageError,
+    ReferenceProof,
     StageRunResult,
 )
 from harnyx_commons.domain_tweak_generation import agent_runner as agent_runner_module
@@ -741,6 +742,102 @@ async def test_stage_contract_feedback_repairs_in_same_client_and_aggregates_usa
     assert len(clients) == 1
     assert clients[0].queries[0] == "initial"
     assert "value must be right" in clients[0].queries[1]
+
+
+@pytest.mark.anyio
+async def test_empty_finalized_citation_positions_use_same_client_contract_feedback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Future failure: citationless finalized output must be repaired before public materialization."""
+
+    def reference_output(citation_evidence_ids: list[str]) -> dict[str, object]:
+        return {
+            "status": "finalized",
+            "answer_text": "Alpha is the published result [[1]].",
+            "citation_evidence_ids": citation_evidence_ids,
+            "answers": [{"answer_id": "A1", "corrected_value": None}],
+            "proof_steps": [
+                {
+                    "step_id": "S1",
+                    "statement": "Alpha is published.",
+                    "kind": "supported",
+                    "evidence_ids": ["E1"],
+                    "depends_on_step_ids": [],
+                    "scan_certificate_ids": [],
+                },
+            ],
+            "structured_answer_json": None,
+            "giveup_reason": None,
+        }
+
+    results = [
+        ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=False,
+            num_turns=1,
+            session_id="session",
+            total_cost_usd=0.25,
+            usage={"input_tokens": 5, "output_tokens": 3},
+            structured_output=reference_output([]),
+        ),
+        ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=False,
+            num_turns=1,
+            session_id="session",
+            total_cost_usd=0.25,
+            usage={"input_tokens": 5, "output_tokens": 3},
+            structured_output=reference_output(["E1"]),
+        ),
+    ]
+
+    class FeedbackClient:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        async def __aenter__(self) -> object:
+            return self
+
+        async def __aexit__(self, exc_type: object, exc: object, exc_tb: object) -> bool:
+            return False
+
+        async def query(self, prompt: str) -> None:
+            self.queries.append(prompt)
+
+        async def receive_response(self):
+            yield results.pop(0)
+
+    clients: list[FeedbackClient] = []
+
+    def client_factory(**_kwargs: object) -> FeedbackClient:
+        client = FeedbackClient()
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(agent_runner_module, "ClaudeSDKClient", client_factory)
+    monkeypatch.setattr(
+        agent_runner_module,
+        "start_metadata_only_observation",
+        lambda *args, **kwargs: nullcontext(None),
+    )
+
+    result = await DomainTweakAgentRunner().run_stage(
+        stage="reference",
+        system_prompt="system",
+        prompt="initial",
+        output_model=ReferenceProof,
+        timeout_seconds=30,
+    )
+
+    assert cast(ReferenceProof, result.output).citation_evidence_ids == ("E1",)
+    assert result.validation_repaired
+    assert len(clients) == 1
+    assert len(clients[0].queries) == 2
+    assert "at least one public citation position" in clients[0].queries[1]
 
 
 @pytest.mark.anyio

@@ -162,3 +162,42 @@ def test_reference_proof_enforces_public_citation_position_limit() -> None:
     assert len(accepted.citation_evidence_ids) == 200
     with pytest.raises(ValidationError, match="at most 200"):
         ReferenceProof(**common, citation_evidence_ids=tuple("E1" for _ in range(201)))
+
+
+@pytest.mark.parametrize(
+    ("answer_text", "structured_answer_json"),
+    [
+        ("Alpha is the published result.", None),
+        (None, '{"answer":"Alpha"}'),
+    ],
+)
+def test_finalized_reference_proof_requires_a_public_citation_position(
+    answer_text: str | None,
+    structured_answer_json: str | None,
+) -> None:
+    """Future failure: finalized public answers must not be accepted with only private proof evidence."""
+    with pytest.raises(ValidationError, match="at least one public citation position"):
+        ReferenceProof(
+            status="finalized",
+            answer_text=answer_text,
+            citation_evidence_ids=(),
+            answers=(ReferenceAnswerSelection(answer_id="A1"),),
+            proof_steps=(
+                ProofStep(
+                    step_id="S1",
+                    statement="Alpha is published.",
+                    kind="supported",
+                    evidence_ids=("E1",),
+                ),
+            ),
+            structured_answer_json=structured_answer_json,
+        )
+
+    giveup = ReferenceProof(
+        status="giveup",
+        answer_text=None,
+        citation_evidence_ids=(),
+        structured_answer_json=None,
+        giveup_reason="No public source establishes the required answer.",
+    )
+    assert giveup.status == "giveup"
