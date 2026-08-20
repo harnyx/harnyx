@@ -9,6 +9,7 @@ from harnyx_commons.miner_task_emission import (
     OWNER_UID,
     ParticipantEmissionScore,
     apply_miner_emission_cap,
+    champion_max_emission_fraction,
     compose_artifact_participant_distribution_weights,
     compose_emission_weights,
     compose_equal_participant_emission_allocations,
@@ -53,6 +54,26 @@ def test_apply_miner_emission_cap_scales_by_configured_max_fraction() -> None:
         8: pytest.approx(0.04),
     }
     assert sum(weights.values()) == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize(
+    ("consecutive_decision_count", "expected"),
+    ((1, 0.5), (2, 0.25), (3, 0.125), (4, 0.125)),
+)
+def test_champion_max_emission_halves_per_retained_decision_with_floor(
+    consecutive_decision_count: int,
+    expected: float,
+) -> None:
+    assert champion_max_emission_fraction(
+        consecutive_decision_count,
+        configured_ceiling=0.5,
+    ) == pytest.approx(expected)
+
+
+def test_champion_max_emission_respects_lower_configured_ceiling() -> None:
+    assert champion_max_emission_fraction(1, configured_ceiling=0.2) == pytest.approx(0.2)
+    assert champion_max_emission_fraction(2, configured_ceiling=0.2) == pytest.approx(0.2)
+    assert champion_max_emission_fraction(3, configured_ceiling=0.2) == pytest.approx(0.125)
 
 
 def test_apply_miner_emission_cap_ignores_owner_weight_in_base_vector() -> None:
@@ -526,6 +547,26 @@ def test_artifact_participant_weights_preserve_multiple_artifacts_for_one_hotkey
     assert set(weights) == {artifact_a, artifact_b}
     assert weights[artifact_a].participant_distribution_weight == 2
     assert weights[artifact_b].participant_distribution_weight == 25
+
+
+def test_artifact_participant_weights_support_current_novel_multiplier() -> None:
+    artifact_id = UUID(int=1)
+
+    weights = compose_artifact_participant_distribution_weights(
+        (
+            ParticipantEmissionScore(
+                "hotkey-a",
+                1.0,
+                artifact_id=artifact_id,
+                classification="novel",
+            ),
+        ),
+        main_participant_artifact_ids=(artifact_id,),
+        novel_multiplier=10,
+    )
+
+    assert weights[artifact_id].novelty_multiplier == 10
+    assert weights[artifact_id].participant_distribution_weight == 50
 
 
 def test_weighted_participant_allocations_divide_the_entire_pool() -> None:

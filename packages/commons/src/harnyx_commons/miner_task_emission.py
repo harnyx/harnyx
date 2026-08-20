@@ -18,8 +18,9 @@ _TOTAL_WEIGHT_EPSILON = 1e-12
 _ParticipantKey = TypeVar("_ParticipantKey")
 NoveltyDistributionWeight = Literal[1, 3, 5]
 ParticipationStageMultiplier = Literal[1, 2, 5]
-NoveltyMultiplier = Literal[1, 3, 5]
-ParticipantDistributionWeight = Literal[1, 2, 3, 5, 6, 10, 15, 25]
+NovelArtifactMultiplier = Literal[5, 10]
+NoveltyMultiplier = Literal[1, 3, 5, 10]
+ParticipantDistributionWeight = Literal[1, 2, 3, 5, 6, 10, 15, 20, 25, 50]
 _ParticipantTierWeight = Literal[1, 2]
 
 
@@ -105,6 +106,23 @@ def champion_emission_fraction(
     ):
         raise ValueError("max miner emission fraction must be between 0.0 and 1.0")
     return batch_score * max_miner_emission_fraction
+
+
+def champion_max_emission_fraction(
+    consecutive_decision_count: int,
+    *,
+    configured_ceiling: float,
+) -> float:
+    """Return the configured champion ceiling after successful retained decisions."""
+
+    if consecutive_decision_count < 1:
+        raise ValueError("consecutive champion decision count must be positive")
+    champion_emission_fraction(
+        0.0,
+        max_miner_emission_fraction=configured_ceiling,
+    )
+    policy_ceiling = (0.5, 0.25, 0.125)[min(consecutive_decision_count, 3) - 1]
+    return min(configured_ceiling, policy_ceiling)
 
 
 def participant_emission_fraction(
@@ -227,6 +245,7 @@ def compose_artifact_participant_distribution_weights(
     participant_scores: Sequence[ParticipantEmissionScore],
     *,
     main_participant_artifact_ids: Collection[UUID] = (),
+    novel_multiplier: NovelArtifactMultiplier = 5,
 ) -> dict[UUID, ParticipantEmissionArtifactWeight]:
     """Return v7 participant distribution weights keyed by eligible artifact."""
 
@@ -255,7 +274,10 @@ def compose_artifact_participant_distribution_weights(
         classification = participant.classification
         if classification is None:
             raise ValueError("artifact-weighted participant emission requires a classification")
-        novelty_multiplier = _novelty_multiplier(classification)
+        novelty_multiplier = _novelty_multiplier(
+            classification,
+            novel_multiplier=novel_multiplier,
+        )
         weights[artifact_id] = ParticipantEmissionArtifactWeight(
             participation_stage_multiplier=stage_multiplier,
             novelty_multiplier=novelty_multiplier,
@@ -522,12 +544,14 @@ def _artifact_participation_stage_multipliers(
 
 def _novelty_multiplier(
     classification: EligibleSimilarityClassification,
+    *,
+    novel_multiplier: NovelArtifactMultiplier,
 ) -> NoveltyMultiplier:
     if classification == "near_duplicate":
         return 1
     if classification == "notable_change":
         return 3
-    return 5
+    return novel_multiplier
 
 
 def _validate_miner_participation_emission(miner_participation_emission: float) -> None:
@@ -583,6 +607,7 @@ __all__ = [
     "DEFAULT_MINER_PARTICIPATION_EMISSION",
     "DEFAULT_SUCCESSFUL_MINER_PARTICIPATION_EMISSION",
     "NoveltyDistributionWeight",
+    "NovelArtifactMultiplier",
     "NoveltyMultiplier",
     "OWNER_UID",
     "ParticipantEmissionArtifactWeight",
@@ -595,6 +620,7 @@ __all__ = [
     "apply_miner_emission_cap",
     "admit_prioritized_emission",
     "champion_emission_fraction",
+    "champion_max_emission_fraction",
     "compose_artifact_participant_distribution_weights",
     "compose_champion_weights",
     "compose_base_participant_emission_allocations",
