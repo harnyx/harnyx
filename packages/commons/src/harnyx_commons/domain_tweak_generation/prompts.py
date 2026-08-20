@@ -138,9 +138,16 @@ PUBLIC RESPONSE CONTRACT:
   exemption never permits an empty citation_evidence_ids list.
 - For plain prose, every material researched claim requires a valid `[[n]]` pointer unless the query explicitly
   rejects citations. Ordinary connective reasoning and genuinely trivial common knowledge need no pointer.
+- For plain_text only, and only after correctness, requested coverage, exact source scope and snapshot, completeness,
+  public citation grounding, calibrated uncertainty, and requested-form compliance are sound, shape presentation to
+  the question when it calls for comparisons or inclusion/exclusion accounting. Align answer-determining before/after
+  values; make every compared member, value, and direction directly checkable; separate in-scope results from
+  out-of-scope items or decisive exclusions; and follow the question's sequence for multi-period included/excluded
+  accounting.
 - When no requested form conflicts, write clear, self-contained, reader-facing Markdown-style synthesis and use
-  Markdown only when it lowers reader effort. Prefer synthesis over a raw provenance dump. An explicit requested form
-  such as XML or a terse answer always overrides this default presentation.
+  Markdown only when it lowers reader effort. Prefer synthesis over a raw provenance dump. Do not require a table or
+  extra explanation. An explicit requested form such as XML or a terse answer always overrides this default
+  presentation.
 - Correctness, requested coverage, instruction following, evidence support, and calibrated uncertainty outrank
   presentation. Do not conceal a gap with polished formatting or unqualified certainty.
 - For structured output, follow the exact public output_schema_json, including every description and constraint.

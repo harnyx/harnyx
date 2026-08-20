@@ -102,6 +102,22 @@ def test_reference_work_orders_define_the_public_response_contract() -> None:
     assert "must not substitute" in normalized_audit
 
 
+def test_reference_presentation_is_eligibility_first_and_question_shaped() -> None:
+    """Future failure: prose presentation must not outrank eligibility or requested form."""
+    normalized = " ".join(REFERENCE_SYSTEM.split()).casefold()
+
+    assert "for plain_text only, and only after" in normalized
+    assert "correctness, requested coverage, exact source scope and snapshot, completeness" in normalized
+    assert "public citation grounding, calibrated uncertainty, and requested-form compliance" in normalized
+    assert "align answer-determining before/after values" in normalized
+    assert "every compared member, value, and direction directly checkable" in normalized
+    assert "separate in-scope results from out-of-scope items or decisive exclusions" in normalized
+    assert "follow the question's sequence for multi-period included/excluded accounting" in normalized
+    assert "do not require a table or extra explanation" in normalized
+    assert "an explicit requested form such as xml or a terse answer always overrides" in normalized
+    assert "for structured output, follow the exact public output_schema_json" in normalized
+
+
 def test_audit_work_order_owns_semantic_schema_disclosure() -> None:
     """Future failure: semantic schema leakage must not fall back to deterministic word matching."""
     normalized = " ".join(AUDIT_SYSTEM.split())
