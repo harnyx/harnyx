@@ -90,6 +90,15 @@ Body: [FeedSearchResponseModel](#model-feedsearchresponsemodel)
 |  | `text` |  | req | `string` |
 |  | `url` |  | opt | `string` (nullable) |
 
+`409` The Google identity requires explicit linking (`identity_link_required`).
+Content-Type: `application/json`
+Body: [ErrorResponse](#model-errorresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `error_code` |  |  | req | `string` |
+| `message` |  |  | req | `string` |
+
 `422` Validation Error
 Content-Type: `application/json`
 Body: [HTTPValidationError](#model-httpvalidationerror)
@@ -102,6 +111,15 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
 |  | `msg` |  | req | `string` |
 |  | `type` |  | req | `string` |
+
+`503` The Google identity provider is unavailable (`provider_unavailable`).
+Content-Type: `application/json`
+Body: [ErrorResponse](#model-errorresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `error_code` |  |  | req | `string` |
+| `message` |  |  | req | `string` |
 
 
 ### {feed_id}
