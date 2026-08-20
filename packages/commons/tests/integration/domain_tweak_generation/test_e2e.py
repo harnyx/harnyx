@@ -106,12 +106,14 @@ async def test_composed_pipeline_reaches_plain_miner_task_without_hidden_form_le
     result = await ShortfallRefillPipeline(
         runner=runner,  # type: ignore[arg-type]
         candidate_pipeline=candidate,
-    ).generate_batch(target_count=1)
+    ).generate_batch(target_count=1, plain_text_probability=1.0)
 
     assert result.finalized_tasks[0].task.query.output_schema is None
     assert result.finalized_tasks[0].task.reference_answer.citations
     assert result.slot_attempt_count == 1
     assert result.finalized_tasks[0].task.task_id.int != 0
+    assert result.required_response_mode_counts == {"plain_text": 1, "structured": 0}
+    assert result.finalized_response_mode_counts == {"plain_text": 1, "structured": 0}
 
 
 @pytest.mark.anyio
@@ -158,13 +160,15 @@ async def test_composed_pipeline_reaches_structured_miner_task_on_the_same_share
             source_fetcher=_NoFetch(),
             workspace_factory=_workspace,
         ),
-    ).generate_batch(target_count=1)
+    ).generate_batch(target_count=1, plain_text_probability=0.0)
 
     task = result.finalized_tasks[0].task
     assert task.query.output_schema is not None
     assert task.reference_answer.text == '{"value":1200}'
     assert task.reference_answer.citations
     assert result.slot_attempt_count == 1
+    assert result.required_response_mode_counts == {"plain_text": 0, "structured": 1}
+    assert result.finalized_response_mode_counts == {"plain_text": 0, "structured": 1}
 
 
 @pytest.mark.anyio
@@ -220,8 +224,10 @@ async def test_production_reference_positions_and_rich_schema_reach_judge_payloa
             source_fetcher=_NoFetch(),
             workspace_factory=_workspace,
         ),
-    ).generate_batch(target_count=1)
+    ).generate_batch(target_count=1, plain_text_probability=0.0)
     task = result.finalized_tasks[0].task
+    assert result.required_response_mode_counts == {"plain_text": 0, "structured": 1}
+    assert result.finalized_response_mode_counts == {"plain_text": 0, "structured": 1}
 
     audit_call = next(call for call in runner.calls if call["stage"] == "audit")
     audit_packet = json.loads(str(audit_call["prompt"]).split("\n", 1)[1])

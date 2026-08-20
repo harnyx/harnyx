@@ -202,6 +202,7 @@ async def test_single_question_generation_call_owns_question_and_dossier() -> No
     ).run(
         PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
         capability_preference="general_deep_research",
+        required_response_mode="plain_text",
     )
 
     assert isinstance(outcome, DomainTweakFinalizedTask)
@@ -217,8 +218,8 @@ async def test_single_question_generation_call_owns_question_and_dossier() -> No
 
 
 @pytest.mark.anyio
-async def test_capability_preference_does_not_gate_candidate_selected_response_mode() -> None:
-    """Future failure: preference drift must not become a hidden candidate rejection or retry trigger."""
+async def test_capability_preference_does_not_override_required_response_mode() -> None:
+    """Future failure: capability preference must not replace the slot's required response mode."""
     structured_runner = _Runner(
         (_structured_dossier(), _structured_proof(), AuditResult(status="pass", explanation="complete"))
     )
@@ -229,6 +230,7 @@ async def test_capability_preference_does_not_gate_candidate_selected_response_m
     ).run(
         PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
         capability_preference="evidence_grounded_calculation_or_proof",
+        required_response_mode="structured",
     )
     plain_runner = _Runner((_dossier(), _proof(), AuditResult(status="pass", explanation="complete")))
     plain = await CandidatePipeline(
@@ -238,6 +240,7 @@ async def test_capability_preference_does_not_gate_candidate_selected_response_m
     ).run(
         PortfolioAllocation(slot=1, ecosystems=("a", "b", "c", "d", "e")),
         capability_preference="structured_field_semantics",
+        required_response_mode="plain_text",
     )
 
     assert isinstance(structured, DomainTweakFinalizedTask)
@@ -250,6 +253,28 @@ async def test_capability_preference_does_not_gate_candidate_selected_response_m
     reference_call = next(call for call in structured_runner.calls if call["stage"] == "reference")
     reference_payload = json.loads(str(reference_call["prompt"]).split("\n", 1)[1])
     assert reference_payload["dossier_hypothesis"]["output_schema_json"] == _structured_dossier().output_schema_json
+
+
+@pytest.mark.anyio
+async def test_ready_dossier_in_wrong_required_mode_fails_before_reference() -> None:
+    """Future failure: QG must not silently replace a structured slot with a plain-text task."""
+    runner = _Runner((_dossier(),))
+
+    outcome = await CandidatePipeline(
+        runner=runner,  # type: ignore[arg-type]
+        source_fetcher=_UnusedFetcher(),
+        workspace_factory=_workspace,
+    ).run(
+        PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
+        capability_preference="general_deep_research",
+        required_response_mode="structured",
+    )
+
+    assert isinstance(outcome, CandidateFailure)
+    assert outcome.failure_class == "contract_invalid"
+    assert outcome.terminal_stage == "question_generation"
+    assert outcome.actual_response_mode == "plain_text"
+    assert [call["stage"] for call in runner.calls] == ["question_generation"]
 
 
 def test_question_generation_contract_reports_invalid_structured_payload_before_reference() -> None:
@@ -296,6 +321,7 @@ async def test_answer_disclosing_structured_schema_cannot_finalize_candidate() -
     ).run(
         PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
         capability_preference="structured_field_semantics",
+        required_response_mode="structured",
     )
 
     assert isinstance(outcome, CandidateFailure)
@@ -332,6 +358,7 @@ async def test_semantic_schema_disclosure_rejected_by_audit_cannot_finalize_cand
     ).run(
         PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
         capability_preference="structured_field_semantics",
+        required_response_mode="structured",
     )
 
     assert isinstance(outcome, CandidateFailure)
@@ -359,6 +386,7 @@ async def test_audit_execution_failure_cannot_finalize_candidate() -> None:
     ).run(
         PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
         capability_preference="general_deep_research",
+        required_response_mode="plain_text",
     )
 
     assert isinstance(outcome, CandidateFailure)
@@ -388,6 +416,7 @@ async def test_audit_rejection_gets_one_reference_repair_and_second_read_only_au
     ).run(
         PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
         capability_preference="general_deep_research",
+        required_response_mode="plain_text",
     )
 
     assert isinstance(outcome, DomainTweakFinalizedTask)
@@ -423,6 +452,7 @@ async def test_structured_repair_receives_immutable_contract_and_replaces_reject
     ).run(
         PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
         capability_preference="general_deep_research",
+        required_response_mode="structured",
     )
 
     assert isinstance(outcome, DomainTweakFinalizedTask)
@@ -468,6 +498,7 @@ async def test_reference_repair_can_acquire_stronger_source_and_owns_final_citat
     ).run(
         PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
         capability_preference="general_deep_research",
+        required_response_mode="plain_text",
     )
 
     assert isinstance(outcome, DomainTweakFinalizedTask)
@@ -496,6 +527,7 @@ async def test_no_generate_retains_first_typed_blocker() -> None:
     ).run(
         PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
         capability_preference="general_deep_research",
+        required_response_mode="plain_text",
     )
 
     assert isinstance(outcome, CandidateFailure)
@@ -547,6 +579,7 @@ async def test_wrong_internal_stage_output_becomes_batch_terminal() -> None:
         await pipeline.run(
             PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
             capability_preference="general_deep_research",
+            required_response_mode="plain_text",
         )
     assert captured.value.failure_class == "unexpected_pipeline_failure"
     assert captured.value.stage == "question_generation"
@@ -564,6 +597,7 @@ async def test_unexpected_pipeline_exception_becomes_typed_batch_terminal_fault(
         await pipeline.run(
             PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
             capability_preference="general_deep_research",
+            required_response_mode="plain_text",
         )
     assert captured.value.stage == "question_generation"
 
@@ -580,6 +614,7 @@ async def test_public_question_over_ordinary_audit_target_reaches_finalized_task
     ).run(
         PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
         capability_preference="general_deep_research",
+        required_response_mode="plain_text",
     )
 
     assert isinstance(outcome, DomainTweakFinalizedTask)

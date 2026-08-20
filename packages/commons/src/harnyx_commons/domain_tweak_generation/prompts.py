@@ -55,11 +55,18 @@ absence, uniqueness, or completeness.
 
 Return ready only when directly inspected and registered evidence proves the final question semantics, every answer
 item, every load-bearing condition, and one reproducible answer. The independent reference stage may
-strengthen bounded exclusions, but it must not be asked to repair a question-generation gap. Otherwise return
-no_generate with the first concrete blocker. The question must be self-contained and must not reveal private answer
-values, answer IDs, evidence IDs, citation markers, grading language, or private schema/hypothesis data. A structured
-question must publicly explain exact response-field meanings in ordinary user-facing language; never rely on schema
-annotations or property names alone.
+strengthen bounded exclusions, but it must not be asked to repair a question-generation gap.
+Otherwise return no_generate with the first concrete blocker. The question must be self-contained and must not reveal
+private answer values, answer IDs, evidence IDs, citation markers, grading language, or private schema/hypothesis data.
+A structured question must publicly explain exact response-field meanings in ordinary user-facing language;
+never rely on schema annotations or property names alone.
+
+The request supplies required_response_mode independently from the capability preference. For ready,
+response_mode must equal required_response_mode. A plain_text task must have a natural prose answer contract and null
+output_schema_json/structured_answer_json. A structured task must naturally require the smallest valid structured
+object, explain every response field in the public question, and provide its schema and private answer hypothesis.
+If no difficult, uniquely answerable, fully proved question can satisfy the required response mode naturally, return
+no_generate with the concrete blocker; never switch to the other response mode or weaken the question to fill a slot.
 
 OUTPUT CONTRACT
 - status: ready or no_generate by the rules above.
@@ -78,8 +85,8 @@ OUTPUT CONTRACT
   no_generate.
 - why_not_one_page: the load-bearing cross-record or cross-source transition; null for no_generate.
 - substantive_final_condition: the final condition that actually changes the survivor set; null for no_generate.
-- response_mode: plain_text or structured for ready; null for no_generate. Choose it independently from the assigned
-  capability preference according to the natural answer contract.
+- response_mode: plain_text or structured for ready; null for no_generate. For ready it must equal
+  required_response_mode exactly; the capability preference cannot override it.
 - output_schema_json: null for no_generate and plain_text. For structured, strict JSON for the smallest self-contained
   Draft 2020-12 object schema in the generated-safe subset. Preserve the exact field descriptions and constraints
   needed by the public answer contract. Allowed optional keywords are title/description, string minLength/maxLength,
@@ -205,7 +212,7 @@ filtering route if it is stronger.""",
 Prefer a genuinely difficult research question whose natural answer is a small structured object. Every field's
 meaning, scope, ordering, units, date/version interpretation, and non-mechanical constraint must be explicit in the
 public question. Formatting alone is not difficulty. Do not add fields the user did not request, and keep a sound
-plain-text route when structured output is not natural.""",
+route in the required response mode when this preference is not natural.""",
 }
 
 AUDIT_SYSTEM = """Audit one proof independently. For production candidate finalization, the packet contains the fixed
@@ -271,18 +278,21 @@ def portfolio_prompt(
 def question_generation_prompt(
     allocation: PortfolioAllocation,
     capability_preference: CapabilityPreference,
+    required_response_mode: ResponseMode,
 ) -> str:
     payload = {
         "optional_ecosystem_seeds": list(allocation.ecosystems),
         "capability_preference": capability_preference,
         "capability_work_order": CAPABILITY_WORK_ORDERS[capability_preference],
+        "required_response_mode": required_response_mode,
     }
     return (
         "Find at most one verified dossier and question. Explore primarily within or across these optional prose "
         "ecosystems; discard or replace them when another route is materially better. The capability work order is "
         "a strong generation preference, never a classification, quota, acceptance gate, or no_generate reason. "
-        "Choose plain_text or structured independently from the natural question contract. Return ready only for a "
-        "directly proved unique route, else no_generate with the first concrete blocker:\n"
+        "The required response mode is a mandatory answer contract, not a preference. Return ready only for a "
+        "directly proved unique route in that exact mode. If it cannot be satisfied naturally, return no_generate "
+        "with the first concrete blocker; never switch response modes:\n"
         + json.dumps(payload, ensure_ascii=False, indent=2)
     )
 

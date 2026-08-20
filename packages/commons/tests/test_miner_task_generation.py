@@ -31,6 +31,25 @@ from harnyx_commons.miner_task_generation import (
 pytestmark = pytest.mark.anyio("asyncio")
 
 
+def test_miner_task_dataset_request_validates_optional_plain_text_probability() -> None:
+    """Future failure: caller-owned probabilities must be bounded without affecting legacy callers."""
+    spec = MinerTaskModelSpec(provider="vertex", model="unused", temperature=None, max_output_tokens=None)
+    common = {
+        "batch_id": uuid4(),
+        "minimum_task_total": 1,
+        "generation_task_buffer": 0,
+        "generation_spec": spec,
+        "reference_spec": spec,
+    }
+
+    assert MinerTaskDatasetRequest(**common).plain_text_probability is None
+    assert MinerTaskDatasetRequest(**common, plain_text_probability=0.7).plain_text_probability == 0.7
+    with pytest.raises(ValueError):
+        MinerTaskDatasetRequest(**common, plain_text_probability=-0.01)
+    with pytest.raises(ValueError):
+        MinerTaskDatasetRequest(**common, plain_text_probability=1.01)
+
+
 class StubLlmProvider(LlmProviderPort):
     def __init__(self, generated_query_texts: tuple[str, ...]) -> None:
         self.calls: list[GroundedLlmRequest | LlmRequest] = []

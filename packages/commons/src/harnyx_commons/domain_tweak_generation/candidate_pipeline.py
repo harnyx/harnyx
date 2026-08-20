@@ -26,6 +26,7 @@ from harnyx_commons.domain_tweak_generation.contracts import (
     GroundedQuestionDossier,
     PortfolioAllocation,
     ReferenceProof,
+    ResponseMode,
     StageName,
     StageRunResult,
 )
@@ -70,6 +71,7 @@ class CandidatePipeline:
         allocation: PortfolioAllocation,
         *,
         capability_preference: CapabilityPreference,
+        required_response_mode: ResponseMode,
     ) -> CandidateOutcome:
         started = time.perf_counter()
         workspace = self._workspace_factory()
@@ -79,7 +81,7 @@ class CandidatePipeline:
             dossier_result = await self._runner.run_stage(
                 stage="question_generation",
                 system_prompt=QUESTION_GENERATION_SYSTEM,
-                prompt=question_generation_prompt(allocation, capability_preference),
+                prompt=question_generation_prompt(allocation, capability_preference, required_response_mode),
                 output_model=GroundedQuestionDossier,
                 timeout_seconds=AGENT_STAGE_TIMEOUT_SECONDS,
                 web_search=True,
@@ -101,6 +103,15 @@ class CandidatePipeline:
                 )
             assert dossier.question is not None
             assert dossier.response_mode is not None
+            if dossier.response_mode != required_response_mode:
+                return CandidateFailure(
+                    "contract_invalid",
+                    "question_generation",
+                    tuple(summaries),
+                    usage,
+                    failure_reason="question generation returned a response mode different from the required mode",
+                    actual_response_mode=dossier.response_mode,
+                )
 
             proof_result = await self._runner.run_stage(
                 stage="reference",

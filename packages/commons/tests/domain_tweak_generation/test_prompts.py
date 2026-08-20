@@ -23,21 +23,24 @@ def test_portfolio_and_question_generation_prompts_have_no_source_form_boundary(
     allocation = PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e"))
 
     assert hidden_form not in portfolio_prompt((0,))
-    prompt = question_generation_prompt(allocation, "general_deep_research")
+    prompt = question_generation_prompt(allocation, "general_deep_research", "plain_text")
     assert hidden_form not in prompt
     assert "source_form" not in prompt
 
 
-def test_capability_preference_is_non_gating_and_response_mode_independent() -> None:
-    """Future failure: a capability work order must not become a classifier or response-mode quota."""
+def test_capability_preference_is_non_gating_and_required_response_mode_is_explicit() -> None:
+    """Future failure: capability preference must not override the caller-owned response contract."""
     allocation = PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e"))
 
-    calculation = question_generation_prompt(allocation, "evidence_grounded_calculation_or_proof")
-    structured = question_generation_prompt(allocation, "structured_field_semantics")
+    calculation = question_generation_prompt(allocation, "evidence_grounded_calculation_or_proof", "plain_text")
+    structured = question_generation_prompt(allocation, "structured_field_semantics", "structured")
 
     assert "never a classification, quota, acceptance gate, or no_generate reason" in calculation
-    assert "Choose plain_text or structured independently" in calculation
-    assert "plain-text route when structured output is not natural" in structured
+    assert '"required_response_mode": "plain_text"' in calculation
+    assert '"required_response_mode": "structured"' in structured
+    assert "must equal required_response_mode" in QUESTION_GENERATION_SYSTEM
+    assert "never switch" in QUESTION_GENERATION_SYSTEM
+    assert "return no_generate" in QUESTION_GENERATION_SYSTEM
     assert "response_mode" in QUESTION_GENERATION_SYSTEM
     assert "exact field descriptions and constraints" in QUESTION_GENERATION_SYSTEM
     assert "Do not use subschema applicators" in QUESTION_GENERATION_SYSTEM

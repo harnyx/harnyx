@@ -332,6 +332,7 @@ class MinerTaskDatasetRequest(BaseModel):
     created_at: datetime | None = None
     minimum_task_total: int = Field(gt=0)
     generation_task_buffer: int = Field(ge=0)
+    plain_text_probability: float | None = Field(default=None, ge=0.0, le=1.0)
     generation_spec: MinerTaskModelSpec
     reference_spec: MinerTaskModelSpec
 

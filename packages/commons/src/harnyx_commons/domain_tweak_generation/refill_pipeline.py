@@ -35,6 +35,7 @@ from harnyx_commons.domain_tweak_generation.contracts import (
     PortfolioCallCallback,
     PortfolioCallEvent,
     PortfolioPacket,
+    ResponseMode,
     SlotAttemptCallback,
     SlotAttemptEvent,
 )
@@ -54,6 +55,7 @@ _LOGGER = logging.getLogger(__name__)
 class _SlotInput:
     output_slot: int
     capability_preference: CapabilityPreference
+    required_response_mode: ResponseMode
 
 
 def _capability_preferences(target_count: int) -> tuple[CapabilityPreference, ...]:
@@ -65,6 +67,24 @@ def _capability_preferences(target_count: int) -> tuple[CapabilityPreference, ..
         for preference in CAPABILITY_PREFERENCES
         for _ in range(capacity)
     )[:target_count]
+
+
+def _required_response_modes(
+    target_count: int,
+    plain_text_probability: float,
+    random_value: Callable[[], float],
+) -> tuple[ResponseMode, ...]:
+    return tuple(
+        "plain_text" if random_value() < plain_text_probability else "structured"
+        for _ in range(target_count)
+    )
+
+
+def _validate_batch_request(target_count: int, plain_text_probability: float) -> None:
+    if target_count <= 0:
+        raise ValueError("target_count must be positive")
+    if not 0.0 <= plain_text_probability <= 1.0:
+        raise ValueError("plain_text_probability must be between 0 and 1")
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,12 +122,14 @@ class ShortfallRefillPipeline:
         *,
         runner: DomainTweakAgentRunner,
         candidate_pipeline: CandidatePipeline,
+        random_value: Callable[[], float] = random.random,
         random_uniform: Callable[[float, float], float] = random.uniform,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         attempt_id_factory: Callable[[], UUID] = uuid4,
     ) -> None:
         self._runner = runner
         self._candidate_pipeline = candidate_pipeline
+        self._random_value = random_value
         self._random_uniform = random_uniform
         self._sleep = sleep
         self._attempt_id_factory = attempt_id_factory
@@ -116,19 +138,26 @@ class ShortfallRefillPipeline:
         self,
         *,
         target_count: int,
+        plain_text_probability: float,
         on_finalized_task: DomainTweakFinalizedTaskCallback | None = None,
         on_portfolio_completed: PortfolioCallCallback | None = None,
         on_attempt_completed: SlotAttemptCallback | None = None,
     ) -> DomainTweakBatchGenerationResult:
-        if target_count <= 0:
-            raise ValueError("target_count must be positive")
+        _validate_batch_request(target_count, plain_text_probability)
         started = time.perf_counter()
         open_slots = list(range(target_count))
         preference_by_slot = _capability_preferences(target_count)
+        mode_by_slot = _required_response_modes(
+            target_count,
+            plain_text_probability,
+            self._random_value,
+        )
         finalized_by_slot: dict[int, DomainTweakFinalizedTask] = {}
         canonical_questions: set[str] = set()
         accepted_route_contexts: list[AcceptedRouteContext] = []
         failures: Counter[str] = Counter()
+        finalized_response_mode_counts: Counter[ResponseMode] = Counter()
+        failed_slot_attempt_counts: Counter[ResponseMode] = Counter()
         total_usage = known_zero_actual_cost_tool_usage()
         portfolio_call_count = 0
         slot_attempt_count = 0
@@ -137,7 +166,9 @@ class ShortfallRefillPipeline:
 
         while open_slots:
             round_index += 1
-            slot_inputs = tuple(_SlotInput(slot, preference_by_slot[slot]) for slot in open_slots)
+            slot_inputs = tuple(
+                _SlotInput(slot, preference_by_slot[slot], mode_by_slot[slot]) for slot in open_slots
+            )
             groups = tuple(
                 slot_inputs[start : start + _MAX_PORTFOLIO_GROUP_SIZE]
                 for start in range(0, len(slot_inputs), _MAX_PORTFOLIO_GROUP_SIZE)
@@ -179,6 +210,7 @@ class ShortfallRefillPipeline:
                 if isinstance(outcome, _PortfolioFailure):
                     failure_name = outcome.error.failure_class
                     failures[failure_name] += len(group)
+                    failed_slot_attempt_counts.update(item.required_response_mode for item in group)
                     if failure_name == "transient_provider":
                         round_transient = True
                         if outcome.error.retry_after_seconds is not None:
@@ -257,6 +289,7 @@ class ShortfallRefillPipeline:
                             result = await self._candidate_pipeline.run(
                                 allocation,
                                 capability_preference=item.capability_preference,
+                                required_response_mode=item.required_response_mode,
                             )
                         except BatchTerminalGenerationError as exc:
                             result = exc
@@ -328,6 +361,7 @@ class ShortfallRefillPipeline:
                         attempt_id=candidate_run.attempt_id,
                         round_index=current_round,
                         output_slot=item.output_slot,
+                        required_response_mode=item.required_response_mode,
                         outcome="batch_terminal",
                         terminal_stage=outcome.stage,
                         elapsed_ms=candidate_run.elapsed_ms,
@@ -368,6 +402,8 @@ class ShortfallRefillPipeline:
                         attempt_id=candidate_run.attempt_id,
                         round_index=current_round,
                         output_slot=item.output_slot,
+                        required_response_mode=item.required_response_mode,
+                        actual_response_mode=_response_mode(outcome),
                         outcome="finalized",
                         terminal_stage="audit",
                         elapsed_ms=candidate_run.elapsed_ms,
@@ -381,12 +417,14 @@ class ShortfallRefillPipeline:
                     if on_attempt_completed is not None:
                         await on_attempt_completed(event)
                     accepted_route_contexts.append(outcome.route_context)
+                    finalized_response_mode_counts[_response_mode(outcome)] += 1
                     public_outcome = outcome.model_copy(update={"route_context": None})
                     if on_finalized_task is not None:
                         await on_finalized_task(item.output_slot, public_outcome)
                     finalized_by_slot[item.output_slot] = public_outcome
                     return None
                 failures[outcome.failure_class] += 1
+                failed_slot_attempt_counts[item.required_response_mode] += 1
                 if outcome.failure_class == "transient_provider":
                     round_transient = True
                     if outcome.retry_after_seconds is not None:
@@ -395,6 +433,8 @@ class ShortfallRefillPipeline:
                     attempt_id=candidate_run.attempt_id,
                     round_index=current_round,
                     output_slot=item.output_slot,
+                    required_response_mode=item.required_response_mode,
+                    actual_response_mode=outcome.actual_response_mode,
                     outcome=outcome.failure_class,
                     terminal_stage=outcome.terminal_stage,
                     elapsed_ms=candidate_run.elapsed_ms,
@@ -464,6 +504,11 @@ class ShortfallRefillPipeline:
             slot_attempt_count=slot_attempt_count,
             round_count=round_index,
             failure_counts=dict(failures),
+            required_response_mode_counts=_complete_response_mode_counts(Counter(mode_by_slot)),
+            finalized_response_mode_counts=_complete_response_mode_counts(finalized_response_mode_counts),
+            failed_slot_attempt_counts_by_required_response_mode=_complete_response_mode_counts(
+                failed_slot_attempt_counts
+            ),
             tool_usage=total_usage,
             elapsed_ms=(time.perf_counter() - started) * 1000,
         )
@@ -642,6 +687,7 @@ async def _emit_portfolio_failure_attempts(
             attempt_id=str(attempt_id_factory()),
             round_index=round_index,
             output_slot=item.output_slot,
+            required_response_mode=item.required_response_mode,
             outcome=outcome.error.failure_class,
             terminal_stage="portfolio",
             elapsed_ms=outcome.call_event.elapsed_ms,
@@ -738,6 +784,14 @@ def _usage_after_terminal_cancellation(usage: ToolUsageSummary, has_unresolved_s
 
 def _canonical_question(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip().casefold()
+
+
+def _response_mode(finalized: DomainTweakFinalizedTask) -> ResponseMode:
+    return "structured" if finalized.task.query.output_schema is not None else "plain_text"
+
+
+def _complete_response_mode_counts(counts: Counter[ResponseMode]) -> dict[ResponseMode, int]:
+    return {mode: counts[mode] for mode in ("plain_text", "structured")}
 
 
 def _with_batch_usage(

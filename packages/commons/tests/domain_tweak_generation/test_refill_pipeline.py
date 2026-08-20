@@ -54,10 +54,18 @@ class _CandidatePipeline:
         self.outcomes = list(outcomes)
         self.calls = 0
         self.preferences: list[tuple[int, str]] = []
+        self.required_modes: list[tuple[int, str | None]] = []
 
-    async def run(self, allocation: PortfolioAllocation, *, capability_preference: str):
+    async def run(
+        self,
+        allocation: PortfolioAllocation,
+        *,
+        capability_preference: str,
+        required_response_mode: str | None = None,
+    ):
         self.calls += 1
         self.preferences.append((allocation.slot, capability_preference))
+        self.required_modes.append((allocation.slot, required_response_mode))
         return self.outcomes.pop(0)
 
 
@@ -127,8 +135,14 @@ class _BatchTerminalCandidatePipeline:
         self.sibling_cancelled = asyncio.Event()
         self.calls = 0
 
-    async def run(self, _allocation: PortfolioAllocation, *, capability_preference: str):
-        del capability_preference
+    async def run(
+        self,
+        _allocation: PortfolioAllocation,
+        *,
+        capability_preference: str,
+        required_response_mode: str,
+    ):
+        del capability_preference, required_response_mode
         self.calls += 1
         if self.calls == 1:
             await self.sibling_started.wait()
@@ -152,8 +166,14 @@ class _CompletedSuccessRaceCandidatePipeline:
         self.success_returned = asyncio.Event()
         self.calls = 0
 
-    async def run(self, _allocation: PortfolioAllocation, *, capability_preference: str):
-        del capability_preference
+    async def run(
+        self,
+        _allocation: PortfolioAllocation,
+        *,
+        capability_preference: str,
+        required_response_mode: str,
+    ):
+        del capability_preference, required_response_mode
         self.calls += 1
         if self.calls == 1:
             raise BatchTerminalGenerationError(
@@ -251,6 +271,28 @@ def _success(index: int) -> DomainTweakFinalizedTask:
     )
 
 
+def _structured_success(index: int) -> DomainTweakFinalizedTask:
+    finalized = _success(index)
+    return finalized.model_copy(
+        update={
+            "task": finalized.task.model_copy(
+                update={
+                    "query": finalized.task.query.model_copy(
+                        update={
+                            "output_schema": {
+                                "type": "object",
+                                "properties": {"value": {"type": "integer"}},
+                                "required": ["value"],
+                                "additionalProperties": False,
+                            }
+                        }
+                    )
+                }
+            )
+        }
+    )
+
+
 def _prompt_rows(prompt: str) -> list[dict[str, object]]:
     payload = _prompt_payload(prompt)
     return cast(list[dict[str, object]], payload["slots"])
@@ -296,6 +338,7 @@ async def test_refill_launches_only_current_shortfall_until_exact_completion() -
         candidate_pipeline=candidates,  # type: ignore[arg-type]
     ).generate_batch(
         target_count=3,
+        plain_text_probability=1.0,
         on_finalized_task=accept,
     )
 
@@ -317,6 +360,88 @@ async def test_refill_launches_only_current_shortfall_until_exact_completion() -
 
 
 @pytest.mark.anyio
+async def test_response_mode_is_sampled_once_per_slot_and_survives_refill() -> None:
+    """Future failure: retrying one slot must not roll its response-mode die again."""
+    observed_draws: list[float] = []
+    draws = iter((0.1, 0.9))
+
+    def draw() -> float:
+        value = next(draws)
+        observed_draws.append(value)
+        return value
+
+    candidates = _CandidatePipeline((_failure(), _structured_success(1), _success(0)))
+    result = await ShortfallRefillPipeline(
+        runner=_PortfolioRunner(),  # type: ignore[arg-type]
+        candidate_pipeline=candidates,  # type: ignore[arg-type]
+        random_value=draw,
+    ).generate_batch(target_count=2, plain_text_probability=0.7)
+
+    assert observed_draws == [0.1, 0.9]
+    assert candidates.required_modes == [(0, "plain_text"), (1, "structured"), (0, "plain_text")]
+    assert result.required_response_mode_counts == {"plain_text": 1, "structured": 1}
+    assert result.finalized_response_mode_counts == {"plain_text": 1, "structured": 1}
+    assert result.failed_slot_attempt_counts_by_required_response_mode == {"plain_text": 1, "structured": 0}
+
+
+@pytest.mark.anyio
+async def test_wrong_mode_attempt_is_visible_and_refills_in_the_same_required_mode() -> None:
+    """Future failure: a wrong-mode candidate must not disappear into a fallback or untyped retry."""
+    events: list[SlotAttemptEvent] = []
+
+    async def record(event: SlotAttemptEvent) -> None:
+        events.append(event)
+
+    mismatch = CandidateFailure(
+        "contract_invalid",
+        "question_generation",
+        (),
+        known_zero_actual_cost_tool_usage(),
+        failure_reason="returned a different response mode",
+        actual_response_mode="plain_text",
+    )
+    candidates = _CandidatePipeline((mismatch, _structured_success(0)))
+    result = await ShortfallRefillPipeline(
+        runner=_PortfolioRunner(),  # type: ignore[arg-type]
+        candidate_pipeline=candidates,  # type: ignore[arg-type]
+        random_value=lambda: 0.9,
+    ).generate_batch(
+        target_count=1,
+        plain_text_probability=0.7,
+        on_attempt_completed=record,
+    )
+
+    assert candidates.required_modes == [(0, "structured"), (0, "structured")]
+    assert [(event.outcome, event.required_response_mode, event.actual_response_mode) for event in events] == [
+        ("contract_invalid", "structured", "plain_text"),
+        ("finalized", "structured", "structured"),
+    ]
+    assert result.failed_slot_attempt_counts_by_required_response_mode == {"plain_text": 0, "structured": 1}
+
+
+@pytest.mark.anyio
+async def test_failed_portfolio_attempts_are_counted_under_each_slots_sampled_mode() -> None:
+    """Future failure: a shared portfolio failure must not erase the sampled mode of its affected slots."""
+
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    draws = iter((0.1, 0.9, 0.2))
+    result = await ShortfallRefillPipeline(
+        runner=_OneFailedPortfolioRunner(),  # type: ignore[arg-type]
+        candidate_pipeline=_CandidatePipeline(  # type: ignore[arg-type]
+            (_success(0), _structured_success(1), _success(2))
+        ),
+        random_value=lambda: next(draws),
+        sleep=no_sleep,
+    ).generate_batch(target_count=3, plain_text_probability=0.7)
+
+    assert result.required_response_mode_counts == {"plain_text": 2, "structured": 1}
+    assert result.finalized_response_mode_counts == {"plain_text": 2, "structured": 1}
+    assert result.failed_slot_attempt_counts_by_required_response_mode == {"plain_text": 2, "structured": 1}
+
+
+@pytest.mark.anyio
 async def test_fourteen_output_slots_receive_fixed_preference_counts_without_quota_logic() -> None:
     """Future failure: capability preferences must use ceil-per-kind then truncate in fixed order."""
     candidates = _CandidatePipeline(tuple(_success(index) for index in range(14)))
@@ -324,7 +449,7 @@ async def test_fourteen_output_slots_receive_fixed_preference_counts_without_quo
     result = await ShortfallRefillPipeline(
         runner=_PortfolioRunner(),  # type: ignore[arg-type]
         candidate_pipeline=candidates,  # type: ignore[arg-type]
-    ).generate_batch(target_count=14)
+    ).generate_batch(target_count=14, plain_text_probability=1.0)
 
     assert len(result.finalized_tasks) == 14
     assert Counter(preference for _, preference in candidates.preferences) == {
@@ -387,6 +512,7 @@ async def test_portfolio_and_candidate_work_run_inside_distinct_cost_free_parent
         attempt_id_factory=lambda: UUID(int=99),
     ).generate_batch(
         target_count=1,
+        plain_text_probability=1.0,
     )
 
     assert [item["name"] for item in starts] == [
@@ -412,6 +538,7 @@ async def test_unavailable_candidate_cost_makes_successful_batch_cost_unavailabl
         candidate_pipeline=_CandidatePipeline((unknown_cost_success,)),  # type: ignore[arg-type]
     ).generate_batch(
         target_count=1,
+        plain_text_probability=1.0,
     )
 
     assert result.tool_usage.actual_total_cost_usd is None
@@ -464,6 +591,7 @@ async def test_candidate_parent_uses_final_outcome_after_duplicate_reclassificat
         attempt_id_factory=lambda: next(attempt_ids),
     ).generate_batch(
         target_count=2,
+        plain_text_probability=1.0,
         on_attempt_completed=record,
     )
 
@@ -515,6 +643,7 @@ async def test_candidate_parent_keeps_final_outcome_when_finalized_callback_rais
             candidate_pipeline=_CandidatePipeline((_success(0),)),  # type: ignore[arg-type]
         ).generate_batch(
             target_count=1,
+            plain_text_probability=1.0,
             on_finalized_task=reject_persistence,
         )
 
@@ -530,6 +659,7 @@ async def test_more_than_ten_slots_groups_portfolios_without_surplus_candidates(
         candidate_pipeline=candidates,  # type: ignore[arg-type]
     ).generate_batch(
         target_count=13,
+        plain_text_probability=1.0,
     )
 
     assert sorted(runner.group_sizes) == [3, 10]
@@ -552,6 +682,7 @@ async def test_failed_attempt_preserves_private_blocker_without_serializing_it()
         candidate_pipeline=candidates,  # type: ignore[arg-type]
     ).generate_batch(
         target_count=1,
+        plain_text_probability=1.0,
         on_attempt_completed=record,
     )
 
@@ -582,6 +713,7 @@ async def test_one_failed_portfolio_group_preserves_other_successes_and_counts_s
         sleep=sleep,
     ).generate_batch(
         target_count=13,
+        plain_text_probability=1.0,
     )
 
     assert sorted(runner.group_sizes) == [3, 3, 10]
@@ -607,6 +739,7 @@ async def test_host_rejected_portfolio_preserves_billable_usage_exactly_once() -
         candidate_pipeline=candidates,  # type: ignore[arg-type]
     ).generate_batch(
         target_count=1,
+        plain_text_probability=1.0,
         on_portfolio_completed=record,
     )
 
@@ -634,6 +767,7 @@ async def test_batch_terminal_candidate_failure_cancels_and_drains_siblings() ->
     with pytest.raises(BatchTerminalGenerationError, match="credentials rejected") as captured:
         await pipeline.generate_batch(
             target_count=2,
+            plain_text_probability=1.0,
             on_attempt_completed=record,
         )
 
@@ -667,6 +801,7 @@ async def test_completed_success_is_retained_before_terminal_propagates() -> Non
             candidate_pipeline=candidates,  # type: ignore[arg-type]
         ).generate_batch(
             target_count=2,
+            plain_text_probability=1.0,
             on_attempt_completed=record_attempt,
             on_finalized_task=accept,
         )
@@ -693,6 +828,7 @@ async def test_batch_terminal_portfolio_failure_cancels_and_drains_siblings() ->
     with pytest.raises(BatchTerminalGenerationError, match="credentials rejected") as captured:
         await pipeline.generate_batch(
             target_count=13,
+            plain_text_probability=1.0,
             on_portfolio_completed=record,
         )
 
@@ -723,6 +859,7 @@ async def test_completed_portfolio_call_is_recorded_before_terminal_propagates()
             candidate_pipeline=_CandidatePipeline(()),  # type: ignore[arg-type]
         ).generate_batch(
             target_count=13,
+            plain_text_probability=1.0,
             on_portfolio_completed=record,
         )
 
@@ -746,6 +883,7 @@ async def test_unexpected_portfolio_exception_emits_a_typed_terminal_event() -> 
             candidate_pipeline=_CandidatePipeline(()),  # type: ignore[arg-type]
         ).generate_batch(
             target_count=1,
+            plain_text_probability=1.0,
             on_portfolio_completed=record,
         )
 
@@ -769,6 +907,7 @@ async def test_wrong_portfolio_output_type_is_batch_terminal() -> None:
             candidate_pipeline=_CandidatePipeline(()),  # type: ignore[arg-type]
         ).generate_batch(
             target_count=1,
+            plain_text_probability=1.0,
             on_portfolio_completed=record,
         )
 

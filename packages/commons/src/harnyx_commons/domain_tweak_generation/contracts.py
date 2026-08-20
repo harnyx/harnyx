@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypeVar
+from typing import Annotated, Any, Literal, TypeVar
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -28,6 +29,7 @@ CAPABILITY_PREFERENCES: tuple[CapabilityPreference, ...] = (
     "structured_field_semantics",
 )
 ResponseMode = Literal["plain_text", "structured"]
+ResponseModeCount = Annotated[int, Field(ge=0)]
 CandidateFailureClass = Literal[
     "reasoning_no_generate",
     "transient_provider",
@@ -361,6 +363,8 @@ class SlotAttemptEvent(BaseModel):
     attempt_id: str = Field(min_length=1)
     round_index: int = Field(gt=0)
     output_slot: int = Field(ge=0)
+    required_response_mode: ResponseMode
+    actual_response_mode: ResponseMode | None = None
     outcome: AttemptOutcome
     terminal_stage: StageName
     elapsed_ms: float = Field(ge=0)
@@ -382,6 +386,17 @@ class SlotAttemptEvent(BaseModel):
     def _tuple_from_list(cls, value: object) -> object:
         return tuple(value) if isinstance(value, list) else value
 
+    @model_validator(mode="after")
+    def _response_mode_contract(self) -> SlotAttemptEvent:
+        if self.outcome == "finalized":
+            if self.actual_response_mode is None:
+                raise ValueError("finalized slot attempt requires actual_response_mode")
+            if self.actual_response_mode != self.required_response_mode:
+                raise ValueError("finalized slot attempt response mode must match required_response_mode")
+        if self.actual_response_mode is not None and self.outcome not in {"finalized", "contract_invalid"}:
+            raise ValueError("actual_response_mode is only valid for finalized or contract_invalid attempts")
+        return self
+
 
 class DomainTweakBatchGenerationResult(BaseModel):
     model_config = COMMONS_STRICT_CONFIG
@@ -392,6 +407,9 @@ class DomainTweakBatchGenerationResult(BaseModel):
     slot_attempt_count: int = Field(default=0, ge=0)
     round_count: int = Field(default=0, ge=0)
     failure_counts: dict[str, int] = Field(default_factory=dict)
+    required_response_mode_counts: dict[ResponseMode, ResponseModeCount]
+    finalized_response_mode_counts: dict[ResponseMode, ResponseModeCount]
+    failed_slot_attempt_counts_by_required_response_mode: dict[ResponseMode, ResponseModeCount]
     tool_usage: ToolUsageSummary = Field(default_factory=ToolUsageSummary.zero)
     elapsed_ms: float = Field(default=0, ge=0)
 
@@ -404,6 +422,31 @@ class DomainTweakBatchGenerationResult(BaseModel):
     def _exact_finalized_count(self) -> DomainTweakBatchGenerationResult:
         if len(self.finalized_tasks) != self.target_count:
             raise ValueError("finalized task count must equal target_count")
+        expected_modes = {"plain_text", "structured"}
+        for field_name in (
+            "required_response_mode_counts",
+            "finalized_response_mode_counts",
+            "failed_slot_attempt_counts_by_required_response_mode",
+        ):
+            counts = getattr(self, field_name)
+            if set(counts) != expected_modes:
+                raise ValueError(f"{field_name} must contain plain_text and structured counts")
+        derived_finalized_counts: Counter[ResponseMode] = Counter(
+            "structured" if item.task.query.output_schema is not None else "plain_text"
+            for item in self.finalized_tasks
+        )
+        complete_derived_counts = {mode: derived_finalized_counts[mode] for mode in ("plain_text", "structured")}
+        if self.finalized_response_mode_counts != complete_derived_counts:
+            raise ValueError("finalized_response_mode_counts must match finalized task output schemas")
+        if sum(self.required_response_mode_counts.values()) != self.target_count:
+            raise ValueError("required response mode count must equal target_count")
+        if self.required_response_mode_counts != self.finalized_response_mode_counts:
+            raise ValueError("finalized response mode counts must equal required response mode counts")
+        failed_slot_attempt_count = sum(self.failed_slot_attempt_counts_by_required_response_mode.values())
+        if failed_slot_attempt_count != self.slot_attempt_count - self.target_count:
+            raise ValueError("failed slot attempt counts must equal slot_attempt_count minus target_count")
+        if failed_slot_attempt_count != sum(self.failure_counts.values()):
+            raise ValueError("failed slot attempt counts must equal failure_counts total")
         return self
 
 
@@ -462,6 +505,7 @@ class CandidateFailure:
     retry_after_seconds: float | None = None
     failure_reason: str | None = None
     source_failure_id: str | None = None
+    actual_response_mode: ResponseMode | None = None
 
 
 CandidateOutcome = DomainTweakFinalizedTask | CandidateFailure

@@ -1,13 +1,36 @@
+from uuid import UUID
+
 import pytest
 from pydantic import ValidationError
 
+from harnyx_commons.domain.miner_task import MinerTask, Query, ReferenceAnswer
 from harnyx_commons.domain_tweak_generation import (
     DomainTweakBatchGenerationResult,
+    DomainTweakFinalizedTask,
     GroundedQuestionDossier,
     ProofStep,
     ReferenceAnswerSelection,
     ReferenceProof,
+    SlotAttemptEvent,
 )
+
+
+def _finalized(*, structured: bool = False) -> DomainTweakFinalizedTask:
+    output_schema = None
+    if structured:
+        output_schema = {
+            "type": "object",
+            "properties": {"value": {"type": "integer"}},
+            "required": ["value"],
+            "additionalProperties": False,
+        }
+    return DomainTweakFinalizedTask(
+        task=MinerTask(
+            task_id=UUID(int=1),
+            query=Query(text="question", output_schema=output_schema),
+            reference_answer=ReferenceAnswer(text='{"value":1}' if structured else "answer"),
+        )
+    )
 
 
 def test_batch_result_rejects_partial_success_state() -> None:
@@ -19,11 +42,91 @@ def test_batch_result_rejects_partial_success_state() -> None:
             slot_attempt_count=10_000,
             round_count=10_000,
             failure_counts={"reasoning_no_generate": 10_000},
+            required_response_mode_counts={"plain_text": 0, "structured": 0},
+            finalized_response_mode_counts={"plain_text": 0, "structured": 0},
+            failed_slot_attempt_counts_by_required_response_mode={"plain_text": 10_000, "structured": 0},
         )
 
     assert "discarded_candidates" not in DomainTweakBatchGenerationResult.model_fields
     assert "rejected_attempts" not in DomainTweakBatchGenerationResult.model_fields
     assert "completed" not in DomainTweakBatchGenerationResult.model_fields
+
+
+def test_attempt_and_batch_contracts_require_complete_response_mode_accounting() -> None:
+    """Future failure: sampled requirements must not be inferred from accepted tasks after failures."""
+    assert "required_response_mode" in SlotAttemptEvent.model_fields
+    assert "actual_response_mode" in SlotAttemptEvent.model_fields
+    assert {
+        "required_response_mode_counts",
+        "finalized_response_mode_counts",
+        "failed_slot_attempt_counts_by_required_response_mode",
+    } <= set(DomainTweakBatchGenerationResult.model_fields)
+
+
+def test_batch_result_derives_finalized_mode_counts_from_task_output_schemas() -> None:
+    """Future failure: reported actual counts must not be copied from sampled slot requirements."""
+    with pytest.raises(ValidationError, match="must match finalized task output schemas"):
+        DomainTweakBatchGenerationResult(
+            target_count=1,
+            finalized_tasks=(_finalized(),),
+            required_response_mode_counts={"plain_text": 0, "structured": 1},
+            finalized_response_mode_counts={"plain_text": 0, "structured": 1},
+            failed_slot_attempt_counts_by_required_response_mode={"plain_text": 0, "structured": 0},
+        )
+
+
+def test_batch_result_rejects_finalized_mode_that_does_not_match_sampled_requirement() -> None:
+    """Future failure: a wrong-mode task must not make a batch successful even when totals match."""
+    with pytest.raises(ValidationError, match="must equal required response mode counts"):
+        DomainTweakBatchGenerationResult(
+            target_count=1,
+            finalized_tasks=(_finalized(),),
+            required_response_mode_counts={"plain_text": 0, "structured": 1},
+            finalized_response_mode_counts={"plain_text": 1, "structured": 0},
+            failed_slot_attempt_counts_by_required_response_mode={"plain_text": 0, "structured": 1},
+        )
+
+
+def test_batch_result_rejects_failed_mode_counts_that_do_not_cover_failed_attempts() -> None:
+    """Future failure: successful result accounting must not lose failed slot-attempt attribution."""
+    with pytest.raises(ValidationError, match="slot_attempt_count minus target_count"):
+        DomainTweakBatchGenerationResult(
+            target_count=1,
+            finalized_tasks=(_finalized(),),
+            slot_attempt_count=3,
+            failure_counts={"contract_invalid": 2},
+            required_response_mode_counts={"plain_text": 1, "structured": 0},
+            finalized_response_mode_counts={"plain_text": 1, "structured": 0},
+            failed_slot_attempt_counts_by_required_response_mode={"plain_text": 0, "structured": 0},
+        )
+
+
+def test_batch_result_rejects_failure_class_counts_that_omit_failed_attempts() -> None:
+    """Future failure: failure-class and required-mode accounting must describe the same failed attempts."""
+    with pytest.raises(ValidationError, match="must equal failure_counts total"):
+        DomainTweakBatchGenerationResult(
+            target_count=1,
+            finalized_tasks=(_finalized(),),
+            slot_attempt_count=2,
+            required_response_mode_counts={"plain_text": 1, "structured": 0},
+            finalized_response_mode_counts={"plain_text": 1, "structured": 0},
+            failed_slot_attempt_counts_by_required_response_mode={"plain_text": 1, "structured": 0},
+        )
+
+
+def test_finalized_attempt_rejects_wrong_actual_response_mode() -> None:
+    """Future failure: an attempt event must not describe a wrong-mode candidate as finalized."""
+    with pytest.raises(ValidationError, match="must match required_response_mode"):
+        SlotAttemptEvent(
+            attempt_id="attempt-1",
+            round_index=1,
+            output_slot=0,
+            required_response_mode="structured",
+            actual_response_mode="plain_text",
+            outcome="finalized",
+            terminal_stage="audit",
+            elapsed_ms=1,
+        )
 
 
 def test_no_generate_dossier_requires_typed_terminal_cause() -> None:
