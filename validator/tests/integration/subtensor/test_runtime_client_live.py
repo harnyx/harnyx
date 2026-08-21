@@ -18,20 +18,33 @@ def _load_settings() -> Settings:
     return settings
 
 
-def test_runtime_client_live_commitment_and_weights() -> None:
+def _connected_client() -> tuple[Settings, RuntimeSubtensorClient]:
     settings = _load_settings()
+    client = RuntimeSubtensorClient(settings.subtensor)
+    try:
+        client.connect()
+    except Exception as exc:  # pragma: no cover - network issues
+        pytest.fail(f"unable to connect to subtensor: {exc}")
+    return settings, client
+
+
+def test_runtime_client_live_read_smoke() -> None:
+    settings, client = _connected_client()
+
+    validator_info = client.validator_info()
+    assert validator_info.uid >= 0, "validator hotkey is not registered on the subnet"
+    assert client.current_block() >= 0
+    assert client.tempo(settings.subtensor.netuid) > 0
+    assert len(client.fetch_metagraph().uids) > 0
+
+
+def test_runtime_client_live_commitment_and_weights() -> None:
+    settings, client = _connected_client()
 
     try:
         import bittensor
     except ModuleNotFoundError as exc:  # pragma: no cover - runtime dependency
         pytest.fail(f"bittensor package not available: {exc}")
-
-    client = RuntimeSubtensorClient(settings.subtensor)
-
-    try:
-        client.connect()
-    except Exception as exc:  # pragma: no cover - network issues
-        pytest.fail(f"unable to connect to subtensor: {exc}")
 
     validator_info = client.validator_info()
     assert validator_info.uid >= 0, "validator hotkey is not registered on the subnet"
