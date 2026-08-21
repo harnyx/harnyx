@@ -218,21 +218,26 @@ async def test_scoring_service_includes_citations_in_pairwise_prompt() -> None:
     assert "Return JSON only with exactly one key: `preferred_position`." in system_prompt
     assert "Set `preferred_position` to either `first` or `second`." in system_prompt
     assert "Case-local decision procedure" in user_prompt
-    assert "Identify the exact requested facts, coverage, instructions, and response form" in user_prompt
-    assert "explicit requested form such as XML or a terse answer overrides" in user_prompt
+    assert "Evaluate each answer independently against the same fixed requirements" in user_prompt
+    assert "explicit source or naming restrictions, exact-value requirements" in user_prompt
+    assert "An explicit requested form such as XML or a terse answer overrides" in user_prompt
     assert "Evaluate factual correctness claim by claim" in user_prompt
     assert "coverage failure" in user_prompt
-    assert "verify each side and the conclusion drawn from them" in user_prompt
+    assert "verify the complete required candidate or comparison set" in user_prompt
+    assert "Evidence for only the selected result is insufficient" in user_prompt
     assert "material researched claim" in user_prompt
     assert "unless the query explicitly rejects citations" in user_prompt
     assert "Apply each `[[n]]` to its exact position" in user_prompt
     assert "reduces evidence support but does not invalidate the whole answer" in user_prompt
     assert "directly supports the associated claim" in user_prompt
-    assert "Reward broad, relevant claim-level traceability, not citation count" in user_prompt
-    assert "correctness, requested coverage, instruction following, evidence support" in user_prompt
+    assert "whether every required claim and required comparison member is directly verifiable" in user_prompt
+    assert "One evidence packet has a material advantage only when it changes that verifiability" in user_prompt
+    assert "do not prefer one for citation count, slice length, excerpt granularity" in user_prompt
+    assert "correctness, requested coverage, exact instruction following, evidence support" in user_prompt
     assert "factually correct answer with a citation defect can beat a factually wrong answer" in user_prompt
-    assert "clear, unambiguous, appropriately detailed, self-contained" in user_prompt
-    assert "prefer synthesis over a raw provenance dump" in user_prompt
+    assert "prefer the clearer answer that lowers reader effort" in user_prompt
+    assert "a candidate dump, or a provenance dump does not help" in user_prompt
+    assert "Apply the same substantive standard regardless of answer position" in user_prompt
     assert "Do not award points for Markdown itself" in user_prompt
 
 
