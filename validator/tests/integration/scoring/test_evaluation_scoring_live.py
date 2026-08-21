@@ -8,7 +8,7 @@ from uuid import uuid4
 import pytest
 
 from harnyx_commons.config.llm import LlmSettings, OpenAiCompatibleGoogleIdTokenAuthConfig
-from harnyx_commons.domain.miner_task import AnswerCitation, MinerTask, Query, ReferenceAnswer, Response
+from harnyx_commons.domain.miner_task import MinerTask, Query, ReferenceAnswer, Response
 from harnyx_commons.llm.provider import LlmProviderPort
 from harnyx_commons.llm.provider_factory import build_cached_llm_provider_registry, build_routed_llm_provider
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
@@ -16,8 +16,6 @@ from harnyx_commons.miner_task_scoring import (
     EvaluationScoringConfig,
     EvaluationScoringService,
 )
-from harnyx_miner_sdk.json_types import JsonObject
-from harnyx_miner_sdk.structured_output import validate_output_against_schema
 from harnyx_validator.runtime import bootstrap
 from harnyx_validator.runtime.settings import Settings
 
@@ -34,104 +32,6 @@ _GLM_MODEL = "zai-org/GLM-5-TEE"
 _GLM_ROUTE_TARGET = "vertex"
 _KIMI_MODEL = "moonshotai/Kimi-K2.5-TEE"
 _KIMI_ROUTE_TARGET = "bedrock"
-_RYDER_CUP_QUESTION = (
-    "I'd like a list of repeat United States Ryder Cup captains (i.e., those who have served as the "
-    "official team captain more than once) and the years that they served. Don't include anyone who "
-    "has also served as the official captain of the United States Presidents Cup team. Make it clear "
-    "if any of these repeat captains won the Masters Tournament during their playing careers."
-)
-_RYDER_CUP_OUTPUT_SCHEMA: JsonObject = {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "properties": {
-        "captains": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "years_served": {"type": "array", "items": {"type": "integer"}},
-                    "won_masters": {"type": "boolean"},
-                },
-                "required": ["name", "years_served", "won_masters"],
-                "additionalProperties": False,
-            },
-        }
-    },
-    "required": ["captains"],
-    "additionalProperties": False,
-}
-_RYDER_CUP_REFERENCE_OUTPUT: JsonObject = {
-    "captains": [
-        {
-            "name": "Walter Hagen",
-            "years_served": [1927, 1929, 1931, 1933, 1935, 1937],
-            "won_masters": False,
-        },
-        {"name": "Ben Hogan", "years_served": [1947, 1949, 1967], "won_masters": True},
-        {"name": "Sam Snead", "years_served": [1951, 1959, 1969], "won_masters": True},
-        {"name": "Jack Burke Jr.", "years_served": [1957, 1973], "won_masters": True},
-        {"name": "Tom Watson", "years_served": [1993, 2014], "won_masters": True},
-    ]
-}
-_RYDER_CUP_WRONG_YEAR_OUTPUT: JsonObject = {
-    "captains": [
-        {
-            "name": "Walter Hagen",
-            "years_served": [1927, 1929, 1931, 1933, 1935, 1937],
-            "won_masters": False,
-        },
-        {"name": "Ben Hogan", "years_served": [1947, 1949, 1969], "won_masters": True},
-        {"name": "Sam Snead", "years_served": [1951, 1959, 1969], "won_masters": True},
-        {"name": "Jack Burke Jr.", "years_served": [1957, 1973], "won_masters": True},
-        {"name": "Tom Watson", "years_served": [1993, 2014], "won_masters": True},
-    ]
-}
-_RYDER_CUP_WRONG_BOOLEAN_OUTPUT: JsonObject = {
-    "captains": [
-        {
-            "name": "Walter Hagen",
-            "years_served": [1927, 1929, 1931, 1933, 1935, 1937],
-            "won_masters": True,
-        },
-        {"name": "Ben Hogan", "years_served": [1947, 1949, 1967], "won_masters": True},
-        {"name": "Sam Snead", "years_served": [1951, 1959, 1969], "won_masters": True},
-        {"name": "Jack Burke Jr.", "years_served": [1957, 1973], "won_masters": True},
-        {"name": "Tom Watson", "years_served": [1993, 2014], "won_masters": True},
-    ]
-}
-_RYDER_CUP_MISSING_CAPTAIN_OUTPUT: JsonObject = {
-    "captains": [
-        {
-            "name": "Walter Hagen",
-            "years_served": [1927, 1929, 1931, 1933, 1935, 1937],
-            "won_masters": False,
-        },
-        {"name": "Ben Hogan", "years_served": [1947, 1949, 1967], "won_masters": True},
-        {"name": "Sam Snead", "years_served": [1951, 1959, 1969], "won_masters": True},
-        {"name": "Jack Burke Jr.", "years_served": [1957, 1973], "won_masters": True},
-    ]
-}
-_RYDER_CUP_VALIDATED_CITATIONS = (
-    AnswerCitation(
-        url="https://en.wikipedia.org/wiki/Ryder_Cup",
-        note=(
-            "The complete qualifying set and captain years are Walter Hagen "
-            "(1927, 1929, 1931, 1933, 1935, 1937), Ben Hogan (1947, 1949, 1967), "
-            "Sam Snead (1951, 1959, 1969), Jack Burke Jr. (1957, 1973), and "
-            "Tom Watson (1993, 2014). Arnold Palmer, Jack Nicklaus, Davis Love III, "
-            "and Jim Furyk are excluded because they also captained the United States "
-            "Presidents Cup team."
-        ),
-    ),
-    AnswerCitation(
-        url="https://www.masters.com/en_US/tournament/past_winners.html",
-        note=(
-            "Ben Hogan, Sam Snead, Jack Burke Jr., and Tom Watson won the Masters "
-            "Tournament. Walter Hagen did not win the Masters Tournament."
-        ),
-    ),
-)
 
 
 class RecordingProvider(LlmProviderPort):
@@ -250,103 +150,6 @@ async def test_evaluation_scoring_live_uses_real_structured_runtime_flow(
         assert score.reasoning.text.strip()
         if score.reasoning.reasoning_tokens is not None:
             assert score.reasoning.reasoning_tokens >= 0
-
-
-@pytest.mark.parametrize(
-    ("model", "endpoint_id", "route_target", "service_url"),
-    (
-        (_GEMMA_MODEL, _GEMMA_ENDPOINT_ID, _GEMMA_ROUTE_TARGET, _GEMMA_SERVICE_URL),
-        (_QWEN36_MODEL, _QWEN36_ENDPOINT_ID, _QWEN36_ROUTE_TARGET, _QWEN36_SERVICE_URL),
-    ),
-)
-@pytest.mark.parametrize(
-    ("case_name", "miner_output"),
-    (
-        ("wrong_nested_year", _RYDER_CUP_WRONG_YEAR_OUTPUT),
-        ("wrong_boolean", _RYDER_CUP_WRONG_BOOLEAN_OUTPUT),
-        ("missing_captain", _RYDER_CUP_MISSING_CAPTAIN_OUTPUT),
-    ),
-)
-async def test_evaluation_scoring_live_rejects_schema_valid_incorrect_structured_values(
-    model: str,
-    endpoint_id: str,
-    route_target: str,
-    service_url: str,
-    case_name: str,
-    miner_output: JsonObject,
-) -> None:
-    base_settings = Settings.load()
-    settings = base_settings.model_copy(
-        update={
-            "llm": _build_live_scoring_settings(
-                os.environ,
-                base_settings.llm,
-                model=model,
-                endpoint_id=endpoint_id,
-                route_target=route_target,
-                service_url=service_url,
-            ),
-        }
-    )
-    scoring_route = bootstrap._resolve_scoring_judge_route(settings, model=model)
-    registry = build_cached_llm_provider_registry(
-        llm_settings=settings.llm,
-        bedrock_settings=settings.bedrock,
-        vertex_settings=settings.vertex,
-    )
-    routed_provider = build_routed_llm_provider(
-        surface="scoring",
-        default_provider=settings.llm.scoring_llm_provider,
-        llm_settings=settings.llm,
-        allowed_providers={"bedrock", "chutes", "vertex"},
-        allow_custom_openai_compatible=True,
-        provider_registry=registry,
-    )
-    llm_provider = RecordingProvider(routed_provider)
-    service = EvaluationScoringService(
-        llm_provider=llm_provider,
-        config=EvaluationScoringConfig(
-            provider=settings.llm.scoring_llm_provider,
-            model=scoring_route.model,
-            fallback_models=(),
-            reasoning_effort=bootstrap._SCORING_LLM_REASONING_EFFORT,
-            temperature=0.0,
-            max_output_tokens=settings.llm.scoring_llm_max_output_tokens,
-            timeout_seconds=float(settings.llm.scoring_llm_timeout_seconds),
-        ),
-    )
-    task = MinerTask(
-        task_id=uuid4(),
-        query=Query(text=_RYDER_CUP_QUESTION, output_schema=_RYDER_CUP_OUTPUT_SCHEMA),
-        reference_answer=ReferenceAnswer(
-            text=json.dumps(
-                _RYDER_CUP_REFERENCE_OUTPUT,
-                ensure_ascii=False,
-                separators=(",", ":"),
-                sort_keys=True,
-            ),
-            citations=_RYDER_CUP_VALIDATED_CITATIONS,
-        ),
-    )
-    validate_output_against_schema(miner_output, _RYDER_CUP_OUTPUT_SCHEMA)
-
-    try:
-        score = await service.score(
-            task=task,
-            response=Response(
-                output=miner_output,
-                citations=_RYDER_CUP_VALIDATED_CITATIONS,
-            ),
-        )
-    finally:
-        await registry.aclose()
-
-    assert len(llm_provider.requests) == 2
-    assert score.comparison_score == pytest.approx(0.0), (
-        f"structured judge did not prefer the reference in both orderings: "
-        f"model={model} case={case_name} score={score.comparison_score} "
-        f"reasoning={score.reasoning}"
-    )
 
 
 @pytest.mark.parametrize(

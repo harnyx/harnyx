@@ -33,7 +33,7 @@ from validator.tests.benchmark.similarity_judge_benchmark import (
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.expensive,
-    pytest.mark.similarity_judge_benchmark,
+    pytest.mark.judge_agent_benchmark,
     pytest.mark.anyio("asyncio"),
 ]
 
