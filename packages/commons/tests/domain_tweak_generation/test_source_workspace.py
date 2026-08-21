@@ -52,6 +52,59 @@ def test_web_search_registration_does_not_require_additive_search_count_metadata
     assert "https://example.com/report" not in context
 
 
+def test_web_search_registration_preserves_titleless_item_and_valid_siblings() -> None:
+    """Future failure: optional display metadata must not discard usable search candidates."""
+    workspace = SourceWorkspace()
+    items = [
+        {"title": f"Result {index}", "url": f"https://example.com/report/{index}"}
+        for index in range(1, 11)
+    ]
+    items[7] = {
+        "title": "",
+        "url": "https://beta.csrc.nist.gov/publications/detail/sp/800-37/rev-1/final",
+    }
+
+    context = workspace.register_web_search_results(
+        {
+            "query": "NIST SP 800-37 revision 1",
+            "results": [
+                {"tool_use_id": "server-tool-1", "content": items},
+                "Search results for query `NIST SP 800-37 revision 1`",
+            ],
+            "durationSeconds": 0.2,
+        }
+    )
+
+    assert workspace.get_source_candidate("source_candidate:1").url == "https://example.com/report/1"
+    titleless = workspace.get_source_candidate("source_candidate:8")
+    assert titleless.url == "https://beta.csrc.nist.gov/publications/detail/sp/800-37/rev-1/final"
+    assert titleless.title == ""
+    assert workspace.get_source_candidate("source_candidate:10").url == "https://example.com/report/10"
+    assert "source_candidate:1" in context
+    assert "source_candidate:8" in context
+    assert "source_candidate:10" in context
+
+
+@pytest.mark.parametrize("url", ["", None])
+def test_web_search_registration_still_rejects_missing_or_empty_url(url: object) -> None:
+    """Future failure: accepting optional titles must not make source identity optional."""
+    workspace = SourceWorkspace()
+
+    with pytest.raises(ValueError, match="pinned Agent SDK contract"):
+        workspace.register_web_search_results(
+            {
+                "query": "annual report",
+                "results": [
+                    {
+                        "tool_use_id": "server-tool-1",
+                        "content": [{"title": "Annual report", "url": url}],
+                    }
+                ],
+                "durationSeconds": 0.2,
+            }
+        )
+
+
 def test_web_search_registration_rejects_undocumented_non_error_shape() -> None:
     workspace = SourceWorkspace()
 

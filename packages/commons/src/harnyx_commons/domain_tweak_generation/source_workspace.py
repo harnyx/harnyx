@@ -209,7 +209,7 @@ class _SourceFetchAttemptError(RuntimeError):
 class _AgentSDKSearchItem(BaseModel):
     model_config = COMMONS_STRICT_CONFIG
 
-    title: str = Field(min_length=1)
+    title: str
     url: str = Field(min_length=1)
 
 

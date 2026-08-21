@@ -53,4 +53,4 @@ async def test_agent_sdk_live_captures_native_web_search_result_shape(
     assert isinstance(result.output, _SearchCaptureResult)
     candidate = workspace.get_source_candidate(result.output.source_candidate_id)
     assert candidate.url.startswith(("https://", "http://"))
-    assert candidate.title
+    assert isinstance(candidate.title, str)

@@ -11,6 +11,7 @@ from harnyx_commons.domain_tweak_generation import (
     BatchTerminalGenerationError,
     CandidateStageError,
     ReferenceProof,
+    SourceWorkspace,
     StageRunResult,
 )
 from harnyx_commons.domain_tweak_generation import agent_runner as agent_runner_module
@@ -99,6 +100,53 @@ async def test_web_search_results_are_registered_by_the_sdk_hook() -> None:
     assert responses == [tool_response]
     assert state.contract_error is None
     assert captured["hookSpecificOutput"]["additionalContext"] == "source_candidate_id=SC1 title=Report"
+
+
+@pytest.mark.anyio
+async def test_web_search_hook_accepts_titleless_result_without_retaining_contract_error() -> None:
+    """Future failure: a usable titleless result must not poison an otherwise successful agent stage."""
+    workspace = SourceWorkspace()
+    state = _WebSearchCaptureState()
+    matcher = _web_search_capture_hooks(workspace.register_web_search_results, state)["PostToolUse"][0]
+    hook = matcher.hooks[0]
+    hook_input = {
+        "session_id": "session",
+        "transcript_path": "/workspace/transcript",
+        "cwd": "/workspace",
+        "agent_id": "agent",
+        "agent_type": "main",
+        "hook_event_name": "PostToolUse",
+        "tool_name": "WebSearch",
+        "tool_input": {"query": "NIST SP 800-37 revision 1"},
+        "tool_response": {
+            "query": "NIST SP 800-37 revision 1",
+            "results": [
+                {
+                    "tool_use_id": "server-tool-1",
+                    "content": [
+                        {"title": "NIST publication", "url": "https://example.com/nist"},
+                        {
+                            "title": "",
+                            "url": "https://beta.csrc.nist.gov/publications/detail/sp/800-37/rev-1/final",
+                        },
+                    ],
+                },
+                "Search results for query `NIST SP 800-37 revision 1`",
+            ],
+            "durationSeconds": 0.2,
+        },
+        "tool_use_id": "tool",
+    }
+
+    captured = await hook(hook_input, "tool", {})  # type: ignore[arg-type]
+
+    assert state.contract_error is None
+    context = captured["hookSpecificOutput"]["additionalContext"]
+    assert "source_candidate:1" in context
+    assert "source_candidate:2" in context
+    titleless = workspace.get_source_candidate("source_candidate:2")
+    assert titleless.url == "https://beta.csrc.nist.gov/publications/detail/sp/800-37/rev-1/final"
+    assert titleless.title == ""
 
 
 @pytest.mark.anyio
