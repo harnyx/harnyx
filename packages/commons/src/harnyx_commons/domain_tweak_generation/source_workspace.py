@@ -52,6 +52,10 @@ _SOURCE_FAILURE_CLASSES: frozenset[str] = frozenset(
 )
 
 
+class AuditPacketSizeError(ValueError):
+    """The full public response cannot fit in the bounded reference audit packet."""
+
+
 @dataclass(slots=True)
 class _AuditTextSlot:
     container: dict[str, object]
@@ -614,6 +618,7 @@ class SourceWorkspace:
         steps: Sequence[ProofStep],
         answer_text: str | None,
         validated_citations: Sequence[Mapping[str, object] | None],
+        note: str | None = None,
         response_mode: ResponseMode = "plain_text",
         output_schema: JsonObject | None = None,
         structured_answer: JsonValue | None = None,
@@ -626,6 +631,7 @@ class SourceWorkspace:
             "question": question,
             "canonical_short_answers": list(short_answers),
             "answer_text": answer_text,
+            "note": note,
             "validated_citations": list(validated_citations),
             "response_mode": response_mode,
             "output_schema": output_schema,
@@ -648,6 +654,10 @@ class SourceWorkspace:
         for slot in (*load_bearing_slots, *context_slots):
             slot.minimize()
         if len(_serialize_audit_packet(packet)) > _MAX_AUDIT_PACKET_CHARACTERS:
+            if note is not None:
+                raise AuditPacketSizeError(
+                    f"reference audit packet exceeds {_MAX_AUDIT_PACKET_CHARACTERS} characters with full note"
+                )
             return packet
         _restore_audit_text(packet, load_bearing_slots)
         _restore_audit_text(packet, context_slots)

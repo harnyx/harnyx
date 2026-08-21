@@ -117,13 +117,30 @@ Return the JSON value directly in `output`, not as encoded JSON inside `text`:
 }
 ```
 
+Either answer mode may also include an optional response-level `note`:
+
+```json
+{
+  "output": {"region": "North", "finding": "Demand increased."},
+  "note": "The question's stated date range was incorrect; this uses the published range [[1]].",
+  "citations": [
+    {"receipt_id": "receipt-123", "result_id": "result-abc"}
+  ]
+}
+```
+
+Use `note` only to explain, qualify, support, or correct the required answer. It
+is outside `output_schema`, cannot replace or repair a missing or invalid
+`text`/`output`, and is not private reasoning or a no-answer branch. Omission is
+neutral. A note may contain at most 80,000 characters and must not be blank.
+
 `output_schema` is an entrypoint contract. It is not an `llm_chat` request
 option. A missing or `null` schema requires `Response.text` for a plain-text
 answer; a present schema, including `{}`, requires `Response.output`. Return
 exactly one of `text` or `output`, never both. Top-level `null` does not count as an answer,
 although nested nulls are valid when the schema permits them. The schema applies
-only to `output`; citation refs remain Harnyx-owned response siblings and are
-hydrated after output validation.
+only to `output`; `note` and citation refs remain Harnyx-owned response siblings.
+The host validates the note and hydrates citation refs after output validation.
 
 Schemas must use Draft 2020-12 when `$schema` is declared, must resolve entirely
 within the submitted schema, and cannot use external `$ref` or `$dynamicRef`
@@ -135,6 +152,7 @@ Both `Query` and `Response` are strict Pydantic models:
 - extra fields are rejected
 - `Query.text` is required and empty/whitespace-only strings are rejected
 - `Response` requires exactly one non-null answer field for the query mode
+- `note` is optional, non-blank when present, and may contain at most 80,000 characters
 - `citations` is optional
 - plain-text response `text` may contain at most 80,000 characters
 - structured schemas and outputs may contain at most 80,000 compact JSON characters each
@@ -149,6 +167,13 @@ When citations are present, validators hydrate them into shared citations shaped
 `{url, title?, note?}` before scoring. Hydrated citation notes are materialized by the validator from the referenced tool result's `note` text. A ref without slices materializes the full result note. A ref with slices materializes only those offsets. Miner-authored citation text is not accepted as evidence.
 
 For prose answers, `[[n]]` is an exact one-based pointer to `Response.citations[n - 1]`; ordinary `[n]` text is not a citation. Unless the query explicitly rejects citations, give every material researched claim a valid pointer to the evidence that supports it. Submission order is authoritative: duplicate refs occupy separate positions, and validators never deduplicate, renumber, or remap them. Miners submit only non-null `CitationRef` items. If a submitted position cannot be resolved or hydrated, the public hydrated response contains `null` at that position, that position provides no factual support, and later pointers do not move. A missing, unresolved, out-of-range, irrelevant, or mismatched pointer is a judge-visible quality defect, not an invalid response or automatic loss; malformed citation payloads and the documented hard limits still invalidate the response.
+
+Factual claims in `note` use the same `[[n]]` mapping and the same hydrated
+citations array as the required answer. The note is never evidence itself.
+Correctness and evidence remain primary; the judge considers a useful note only
+as a tie-break when answers and evidence are otherwise comparable. Absence is
+neutral, repetition earns nothing, and a wrong, contradictory, or unsupported
+note may lose that tie-break.
 
 Structured output does not require inline pointers by default. Add them only when the query or a prose-capable field description explicitly requires citations, and only in that prose-capable field. Do not add citation syntax to atomic integer, number, boolean, enum, identifier, date-token, or similar fields.
 

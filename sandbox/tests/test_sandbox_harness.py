@@ -655,7 +655,7 @@ def test_harness_round_trips_miner_sdk_response_as_json_object() -> None:
 
     @entrypoint("query")
     async def response_entrypoint(query: Query) -> Response:
-        return Response(text=query.text)
+        return Response(text=query.text, note="Public scope correction")
 
     harness = SandboxHarness()
     app = FastAPI()
@@ -671,7 +671,11 @@ def test_harness_round_trips_miner_sdk_response_as_json_object() -> None:
     assert response.status_code == 200
     assert response.json() == {
         "ok": True,
-        "result": {"text": "answer", "citations": None},
+        "result": {
+            "text": "answer",
+            "note": "Public scope correction",
+            "citations": None,
+        },
     }
 
 

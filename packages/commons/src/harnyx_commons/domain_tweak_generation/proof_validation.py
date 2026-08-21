@@ -16,7 +16,7 @@ from harnyx_commons.application.miner_response_hydration import (
 )
 from harnyx_commons.domain.miner_task import AnswerCitation, ReferenceAnswer, Response
 from harnyx_commons.domain_tweak_generation.contracts import GroundedQuestionDossier, ReferenceProof
-from harnyx_commons.domain_tweak_generation.source_workspace import SourceWorkspace
+from harnyx_commons.domain_tweak_generation.source_workspace import AuditPacketSizeError, SourceWorkspace
 from harnyx_commons.miner_task_generation import validate_generated_output_schema
 from harnyx_miner_sdk.json_types import JsonObject, JsonValue
 from harnyx_miner_sdk.structured_output import (
@@ -136,25 +136,33 @@ def validate_and_render_reference(
         reference_text = proof.answer_text
     try:
         if structured_value is None:
-            Response(text=reference_text)
+            public_response = Response(text=reference_text, note=proof.note)
         else:
-            Response(output=structured_value)
+            public_response = Response(output=structured_value, note=proof.note)
     except ValidationError as exc:
         raise ProofValidationError(f"reference answer violates the public miner response contract: {exc}") from exc
-    reference = ReferenceAnswer(text=reference_text, citations=tuple(citations) or None)
+    reference = ReferenceAnswer(
+        text=reference_text,
+        note=public_response.note,
+        citations=tuple(citations) or None,
+    )
     validated_citations = [
         None if citation is None else citation.model_dump(mode="json", exclude_none=True) for citation in citations
     ]
-    audit_packet = workspace.proof_packet(
-        question=dossier.question,
-        short_answers=answer_values,
-        steps=proof.proof_steps,
-        answer_text=proof.answer_text,
-        validated_citations=validated_citations,
-        response_mode=dossier.response_mode,
-        output_schema=output_schema,
-        structured_answer=structured_value,
-    )
+    try:
+        audit_packet = workspace.proof_packet(
+            question=dossier.question,
+            short_answers=answer_values,
+            steps=proof.proof_steps,
+            answer_text=proof.answer_text,
+            note=public_response.note,
+            validated_citations=validated_citations,
+            response_mode=dossier.response_mode,
+            output_schema=output_schema,
+            structured_answer=structured_value,
+        )
+    except AuditPacketSizeError as exc:
+        raise ProofValidationError(str(exc)) from exc
     selected_source_urls = tuple(dict.fromkeys(evidence_by_id[evidence_id].url for evidence_id in proof_evidence_ids))
     return ValidatedReference(
         proof=proof,

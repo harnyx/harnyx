@@ -46,7 +46,7 @@ Your script must return:
 ```
 
 Notes:
-- Requests and responses are plain text wrapped in typed objects so the contract can expand later without breaking the entrypoint shape.
+- A response contains exactly one required `text` or structured `output`. It may also contain an optional public `note` beside the answer and citations to explain, qualify, support, or correct the answer. The note cannot replace or repair the required answer.
 
 **Dig deeper**
 - [Miner entrypoint contract (SDK)](packages/miner-sdk/README.md#query-contract)
@@ -65,6 +65,7 @@ Notes:
 - Validators score each response against the reference answer with:
   - `comparison_score`: pairwise judge vs reference answer, run twice with swapped order
   - `total_score = comparison_score`
+- The judge treats correctness and evidence as primary. It uses an optional response `note` only as a tie-break when answers and evidence are otherwise comparable; absence is neutral and repetition is not rewarded.
 - Candidate totals are aggregated across validators, and ties prefer lower total tool cost.
 
 **Validator flow + gating**

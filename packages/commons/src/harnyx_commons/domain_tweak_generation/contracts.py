@@ -251,12 +251,23 @@ class ReferenceProof(BaseModel):
     answers: tuple[ReferenceAnswerSelection, ...] = ()
     proof_steps: tuple[ProofStep, ...] = ()
     structured_answer_json: str | None = Field(default=None, min_length=1)
+    note: str | None = Field(default=None, max_length=80_000)
     giveup_reason: str | None = None
 
     @field_validator("answers", "citation_evidence_ids", "proof_steps", mode="before")
     @classmethod
     def _tuple_from_list(cls, value: object) -> object:
         return tuple(value) if isinstance(value, list) else value
+
+    @field_validator("note")
+    @classmethod
+    def _validate_note(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("reference note must not be blank")
+        return stripped
 
     @model_validator(mode="after")
     def _status_contract(self) -> ReferenceProof:
@@ -271,9 +282,12 @@ class ReferenceProof(BaseModel):
         if self.status == "giveup" and not self.giveup_reason:
             raise ValueError("giveup proof requires giveup_reason")
         if self.status == "giveup" and (
-            self.answer_text is not None or self.structured_answer_json is not None or self.citation_evidence_ids
+            self.answer_text is not None
+            or self.structured_answer_json is not None
+            or self.note is not None
+            or self.citation_evidence_ids
         ):
-            raise ValueError("giveup proof cannot contain a public answer or citation positions")
+            raise ValueError("giveup proof cannot contain a public answer, note, or citation positions")
         return self
 
 

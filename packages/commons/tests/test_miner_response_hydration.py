@@ -550,6 +550,66 @@ def test_hydrate_structured_output_and_citations() -> None:
     )
 
 
+def test_hydration_preserves_optional_note_for_plain_and_structured_answers() -> None:
+    prose = hydrate_miner_response_payload(
+        {"text": "Answer", "note": "  Scope qualification.  "},
+        query=Query(text="question"),
+        session_id=uuid4(),
+        receipt_log=InMemoryReceiptLog(),
+    )
+    structured = hydrate_miner_response_payload(
+        {"output": {"answer": 1}, "note": "Structured correction."},
+        query=Query(
+            text="question",
+            output_schema={
+                "type": "object",
+                "properties": {"answer": {"type": "integer"}},
+                "required": ["answer"],
+            },
+        ),
+        session_id=uuid4(),
+        receipt_log=InMemoryReceiptLog(),
+    )
+
+    assert prose.note == "Scope qualification."
+    assert structured.note == "Structured correction."
+
+
+@pytest.mark.parametrize("note", ["", "   ", "x" * 80_001])
+def test_hydration_rejects_invalid_note(note: str) -> None:
+    with pytest.raises(ValidationError):
+        hydrate_miner_response_payload(
+            {"text": "Answer", "note": note},
+            query=Query(text="question"),
+            session_id=uuid4(),
+            receipt_log=InMemoryReceiptLog(),
+        )
+
+
+def test_hydration_note_cannot_repair_missing_or_invalid_required_answer() -> None:
+    with pytest.raises(ValidationError, match="exactly one non-null answer field"):
+        hydrate_miner_response_payload(
+            {"note": "The missing answer is 1."},
+            query=Query(text="question"),
+            session_id=uuid4(),
+            receipt_log=InMemoryReceiptLog(),
+        )
+    with pytest.raises(MinerResponsePayloadError, match="does not match output schema"):
+        hydrate_miner_response_payload(
+            {"output": {"answer": "wrong"}, "note": "The valid answer is 1."},
+            query=Query(
+                text="question",
+                output_schema={
+                    "type": "object",
+                    "properties": {"answer": {"type": "integer"}},
+                    "required": ["answer"],
+                },
+            ),
+            session_id=uuid4(),
+            receipt_log=InMemoryReceiptLog(),
+        )
+
+
 @pytest.mark.parametrize(
     ("query", "payload"),
     [

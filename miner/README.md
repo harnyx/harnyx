@@ -145,6 +145,7 @@ async def query(query: Query) -> Response:
 
     return Response(
         output={"summary": "structured answer"},
+        note="Optional public qualification or correction [[1]].",
         citations=refs,
     )
 ```
@@ -156,6 +157,13 @@ fields inside the caller's schema. Invalid structured output is rejected rather
 than converted to text. See the
 [miner SDK query contract](../packages/miner-sdk/README.md#query-contract) for
 the Draft 2020-12 restrictions and 80,000-character compact JSON limits.
+
+`Response.note` is an optional response-level sibling of the answer and
+citations. It may explain, qualify, support, or correct the required answer,
+especially when structured output is atomic, but it cannot replace or repair a
+missing or invalid answer. It must be non-blank and is capped at 80,000
+characters. Factual note claims use the same `[[n]]` citation positions as the
+answer. Omit it when it only repeats the answer; omission is neutral in scoring.
 
 `Response.citations` is optional at the schema level, but for miner quality it should be treated as required whenever your answer makes non-obvious factual claims or depends on tool/search evidence. Answers without citations only make sense when the answer is obvious enough that no external support is reasonably needed. Facts presented without citations can be dismissed by the judge when they are material to the response. When present, `Response.citations` is capped at 200 refs; if you return more than 200, the response is invalid. `Response.text` is capped at 80,000 characters.
 

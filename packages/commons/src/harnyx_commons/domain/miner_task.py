@@ -24,6 +24,10 @@ _POSITIONAL_CITATIONS_DESCRIPTION = (
     "that the submitted position could not be resolved or hydrated. A null provides no factual support, and "
     "submitted positions are never deleted, renumbered, or remapped."
 )
+_RESPONSE_NOTE_DESCRIPTION = (
+    "Optional public supplementary content that may explain, qualify, support, or correct the required answer. "
+    "It cannot replace or repair a missing or invalid answer. Factual claims use the same citations array."
+)
 
 
 class _TextModel(BaseModel):
@@ -41,10 +45,21 @@ class AnswerCitation(BaseModel):
 
 
 class ReferenceAnswer(_TextModel):
+    note: str | None = Field(
+        default=None,
+        max_length=80_000,
+        description=_RESPONSE_NOTE_DESCRIPTION,
+        exclude_if=lambda value: value is None,
+    )
     citations: tuple[AnswerCitation | None, ...] | None = Field(
         default=None,
         description=_POSITIONAL_CITATIONS_DESCRIPTION,
     )
+
+    @field_validator("note")
+    @classmethod
+    def _validate_note(cls, value: str | None) -> str | None:
+        return _normalize_response_note(value)
 
     @field_validator("citations", mode="before")
     @classmethod
@@ -70,6 +85,12 @@ class Response(BaseModel):
 
     text: str | None = Field(default=None, max_length=80_000, exclude_if=lambda value: value is None)
     output: JsonValue | None = Field(default=None, exclude_if=lambda value: value is None)
+    note: str | None = Field(
+        default=None,
+        max_length=80_000,
+        description=_RESPONSE_NOTE_DESCRIPTION,
+        exclude_if=lambda value: value is None,
+    )
     citations: tuple[AnswerCitation | None, ...] | None = Field(
         default=None,
         description=_POSITIONAL_CITATIONS_DESCRIPTION,
@@ -91,6 +112,11 @@ class Response(BaseModel):
         if value is None:
             return None
         return validate_output_size(value)
+
+    @field_validator("note")
+    @classmethod
+    def _validate_note(cls, value: str | None) -> str | None:
+        return _normalize_response_note(value)
 
     @field_validator("citations", mode="before")
     @classmethod
@@ -116,6 +142,15 @@ class Response(BaseModel):
             return self.text
         assert self.output is not None
         return compact_json(self.output)
+
+
+def _normalize_response_note(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError("response note must not be blank")
+    return stripped
 
 
 class ScorerReasoning(BaseModel):

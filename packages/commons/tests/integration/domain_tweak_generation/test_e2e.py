@@ -208,6 +208,7 @@ async def test_production_reference_positions_and_rich_schema_reach_judge_payloa
             ProofStep(step_id="S2", statement="Beta is 900", kind="supported", evidence_ids=("E2",)),
         ),
         structured_answer_json=answer_json,
+        note="The question's original premise is corrected by the published row [[1]].",
     )
     runner = _ScriptedRunner(
         [
@@ -236,6 +237,7 @@ async def test_production_reference_positions_and_rich_schema_reach_judge_payloa
     assert audit_packet["canonical_short_answers"] == ["Alpha"]
     assert audit_packet["structured_answer"] == json.loads(answer_json)
     assert audit_packet["answer_text"] is None
+    assert audit_packet["note"] == proof.note
     assert audit_packet["proof_steps"][0]["statement"] == "Alpha is 1200"
     assert audit_packet["validated_citations"][0] == audit_packet["validated_citations"][2]
     assert audit_packet["validated_citations"][1] is None
@@ -249,6 +251,8 @@ async def test_production_reference_positions_and_rich_schema_reach_judge_payloa
 
     assert payload["output_contract"] == task.query.output_schema
     assert payload["answers"][0]["answer_text"] == answer_json
+    assert payload["answers"][0]["note"] == proof.note
+    assert task.reference_answer.note == proof.note
     citations = payload["answers"][0]["validated_citations"]
     assert citations[0] == citations[2]
     assert citations[1] is None

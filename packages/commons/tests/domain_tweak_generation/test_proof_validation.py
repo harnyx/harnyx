@@ -82,6 +82,7 @@ def test_author_owned_citation_markers_reach_public_reference() -> None:
         proof=ReferenceProof(
             status="finalized",
             answer_text="Alpha has value 1200 [[1]].",
+            note="The question used the wrong unit; this is the corrected value [[1]].",
             citation_evidence_ids=("E1",),
             answers=(ReferenceAnswerSelection(answer_id="A1"),),
             proof_steps=(
@@ -96,7 +97,22 @@ def test_author_owned_citation_markers_reach_public_reference() -> None:
         workspace=_workspace(),
     )
     assert "[[1]]" in validated.reference_answer.text
+    assert validated.reference_answer.note == (
+        "The question used the wrong unit; this is the corrected value [[1]]."
+    )
+    assert validated.audit_packet["note"] == validated.reference_answer.note
     assert validated.reference_answer.citations is not None
+
+
+def test_reference_note_is_optional_but_invalid_on_giveup() -> None:
+    with pytest.raises(ValueError, match="giveup proof cannot contain a public answer, note, or citation positions"):
+        ReferenceProof(
+            status="giveup",
+            answer_text=None,
+            note="This cannot stand in for an answer.",
+            citation_evidence_ids=(),
+            giveup_reason="Evidence unavailable.",
+        )
 
 
 @pytest.mark.parametrize(
@@ -502,15 +518,18 @@ def test_structured_reference_uses_fixed_schema_canonical_json_and_complete_audi
             ),
         ),
         structured_answer_json='{"value":1200}',
+        note="The question's stated unit was incorrect; the value is in whole units [[1]].",
     )
 
     validated = validate_and_render_reference(dossier=_structured_dossier(), proof=proof, workspace=_workspace())
 
     assert validated.output_schema is not None
     assert validated.reference_answer.text == '{"value":1200}'
+    assert validated.reference_answer.note == proof.note
     assert validated.audit_packet["response_mode"] == "structured"
     assert validated.audit_packet["output_schema"] == validated.output_schema
     assert validated.audit_packet["structured_answer"] == {"value": 1200}
+    assert validated.audit_packet["note"] == proof.note
     assert validated.reference_answer.citations
 
 
@@ -683,6 +702,29 @@ def test_reference_rejects_text_that_exceeds_the_public_miner_response_contract(
             ),
             workspace=_workspace(),
         )
+
+
+def test_reference_contract_reports_full_note_that_cannot_fit_the_audit_packet() -> None:
+    answer_suffix = " [[1]]."
+    proof = ReferenceProof(
+        status="finalized",
+        answer_text=("A" * (70_000 - len(answer_suffix))) + answer_suffix,
+        note="N" * 70_000,
+        citation_evidence_ids=("E1",),
+        answers=(ReferenceAnswerSelection(answer_id="A1"),),
+        proof_steps=(
+            ProofStep(
+                step_id="S1",
+                statement="Alpha has value 1200.",
+                kind="supported",
+                evidence_ids=("E1",),
+            ),
+        ),
+    )
+
+    defects = reference_contract_defects(proof, workspace=_workspace(), dossier=_dossier())
+
+    assert defects == ("reference audit packet exceeds 128000 characters with full note",)
 
 
 def test_public_sized_answer_and_citations_do_not_hit_a_reference_only_combined_limit() -> None:

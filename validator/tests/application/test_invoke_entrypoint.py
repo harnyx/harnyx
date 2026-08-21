@@ -99,6 +99,7 @@ def _build_invoker(token: str) -> tuple[
 async def test_invoke_entrypoint_calls_query_with_query_payload() -> None:
     token = uuid4().hex
     invoker, sandbox, session_id, _, _, _, _ = _build_invoker(token)
+    sandbox.response = {"text": "Answer", "note": "Public scope correction"}
 
     response = await invoker.invoke(
         EntrypointInvocationRequest(
@@ -109,7 +110,7 @@ async def test_invoke_entrypoint_calls_query_with_query_payload() -> None:
         ),
     )
 
-    assert response.response == Response(text="Answer")
+    assert response.response == Response(text="Answer", note="Public scope correction")
     assert sandbox.invocations == [
         (
             "query",

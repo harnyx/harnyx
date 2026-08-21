@@ -374,6 +374,7 @@ Body: [MinerTaskBatchModel](#model-minertaskbatchmodel)
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  |  | `note` | opt | `string` (nullable) |
 |  |  | `text` | req | `string` |
 |  | `task_id` |  | req | `string` (format: uuid) |
 
@@ -461,6 +462,7 @@ Body: [MinerTaskWorkExecutionsRequest](#model-minertaskworkexecutionsrequest)
 |  | `miner_hotkey_ss58` |  | req | `string` |
 |  | `response` |  | req | [Response](#model-response) |
 |  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  |  | `note` | opt | `string` (nullable) |
 |  |  | `output` | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  |  | `text` | opt | `string` (nullable) |
 |  | `session` |  | req | [SessionModel](#model-sessionmodel) |
@@ -657,6 +659,7 @@ Body: [MinerTaskWorkScoreableExecutionsResponse](#model-minertaskworkscoreableex
 |  | `miner_hotkey_ss58` |  | req | `string` |
 |  | `response` |  | req | [Response](#model-response) (nullable) |
 |  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  |  | `note` | opt | `string` (nullable) |
 |  |  | `output` | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  |  | `text` | opt | `string` (nullable) |
 |  | `session` |  | req | [SessionModel](#model-sessionmodel) |
@@ -3366,6 +3369,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `title` | opt | `string` (nullable) |
 |  |  | `url` | req | `string` |
+|  | `note` |  | opt | `string` (nullable) |
 |  | `text` |  | req | `string` |
 | `task_id` |  |  | req | `string` (format: uuid) |
 
@@ -3925,6 +3929,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  |  | `note` | opt | `string` (nullable) |
 |  |  | `text` | req | `string` |
 |  | `task_id` |  | req | `string` (format: uuid) |
 
@@ -4135,6 +4140,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `completed_at` |  | opt | `string` (format: date-time; nullable) |
 |  | `response` |  | opt | [Response](#model-response) (nullable) |
 |  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  |  | `note` | opt | `string` (nullable) |
 |  |  | `output` | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  |  | `text` | opt | `string` (nullable) |
 |  | `task_id` |  | req | `string` (format: uuid) |
@@ -4263,6 +4269,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `title` | opt | `string` (nullable) |
 |  |  | `url` | req | `string` |
+|  | `note` |  | opt | `string` (nullable) |
 |  | `output` |  | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  | `text` |  | opt | `string` (nullable) |
 | `task_id` |  |  | req | `string` (format: uuid) |
@@ -4402,6 +4409,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  |  | `note` | opt | `string` (nullable) |
 |  |  | `text` | req | `string` |
 |  | `task_id` |  | req | `string` (format: uuid) |
 
@@ -4489,6 +4497,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `title` | opt | `string` (nullable) |
 |  |  | `url` | req | `string` |
+|  | `note` |  | opt | `string` (nullable) |
 |  | `output` |  | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  | `text` |  | opt | `string` (nullable) |
 | `session` |  |  | req | [SessionModel](#model-sessionmodel) |
@@ -4757,6 +4766,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `miner_hotkey_ss58` |  | req | `string` |
 |  | `response` |  | req | [Response](#model-response) |
 |  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  |  | `note` | opt | `string` (nullable) |
 |  |  | `output` | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  |  | `text` | opt | `string` (nullable) |
 |  | `session` |  | req | [SessionModel](#model-sessionmodel) |
@@ -5221,6 +5231,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `title` | opt | `string` (nullable) |
 |  |  | `url` | req | `string` |
+|  | `note` |  | opt | `string` (nullable) |
 |  | `output` |  | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  | `text` |  | opt | `string` (nullable) |
 | `session` |  |  | req | [SessionModel](#model-sessionmodel) |
@@ -5237,6 +5248,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  |  | `note` | opt | `string` (nullable) |
 |  |  | `text` | req | `string` |
 |  | `task_id` |  | req | `string` (format: uuid) |
 | `total_tool_usage` |  |  | req | [ToolUsageSummary](#model-toolusagesummary) |
@@ -5456,6 +5468,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `miner_hotkey_ss58` |  | req | `string` |
 |  | `response` |  | req | [Response](#model-response) (nullable) |
 |  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  |  | `note` | opt | `string` (nullable) |
 |  |  | `output` | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  |  | `text` | opt | `string` (nullable) |
 |  | `session` |  | req | [SessionModel](#model-sessionmodel) |
@@ -5790,6 +5803,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `note` |  | opt | `string` (nullable) |
 |  | `title` |  | opt | `string` (nullable) |
 |  | `url` |  | req | `string` |
+| `note` |  |  | opt | `string` (nullable) |
 | `text` |  |  | req | `string` |
 
 <details>
@@ -5820,6 +5834,19 @@ Body: [StatusResponse](#model-statusresponse)
       ],
       "description": "Hydrated submitted citation positions in order. Miners submit only non-null CitationRef entries. An AnswerCitation means that the submitted position resolved to authoritative public evidence; null means that the submitted position could not be resolved or hydrated. A null provides no factual support, and submitted positions are never deleted, renumbered, or remapped.",
       "title": "Citations"
+    },
+    "note": {
+      "anyOf": [
+        {
+          "maxLength": 80000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional public supplementary content that may explain, qualify, support, or correct the required answer. It cannot replace or repair a missing or invalid answer. Factual claims use the same citations array.",
+      "title": "Note"
     },
     "text": {
       "minLength": 1,
@@ -5964,6 +5991,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `note` |  | opt | `string` (nullable) |
 |  | `title` |  | opt | `string` (nullable) |
 |  | `url` |  | req | `string` |
+| `note` |  |  | opt | `string` (nullable) |
 | `output` |  |  | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 | `text` |  |  | opt | `string` (nullable) |
 
@@ -5995,6 +6023,19 @@ Body: [StatusResponse](#model-statusresponse)
       ],
       "description": "Hydrated submitted citation positions in order. Miners submit only non-null CitationRef entries. An AnswerCitation means that the submitted position resolved to authoritative public evidence; null means that the submitted position could not be resolved or hydrated. A null provides no factual support, and submitted positions are never deleted, renumbered, or remapped.",
       "title": "Citations"
+    },
+    "note": {
+      "anyOf": [
+        {
+          "maxLength": 80000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional public supplementary content that may explain, qualify, support, or correct the required answer. It cannot replace or repair a missing or invalid answer. Factual claims use the same citations array.",
+      "title": "Note"
     },
     "output": {
       "anyOf": [

@@ -19,6 +19,10 @@ _MINER_SDK_STRICT_CONFIG = ConfigDict(
 _MAX_RESPONSE_CHARS = 80_000
 _MAX_RESPONSE_CITATIONS = 200
 _MAX_RESPONSE_EVIDENCE_SEGMENTS = 400
+_RESPONSE_NOTE_DESCRIPTION = (
+    "Optional public supplementary content that may explain, qualify, support, or correct the required answer. "
+    "It cannot replace or repair a missing or invalid answer. Factual claims use the same citations array."
+)
 
 
 class Query(BaseModel):
@@ -73,6 +77,12 @@ class Response(BaseModel):
         exclude_if=lambda value: value is None,
     )
     output: JsonValue | None = Field(default=None, exclude_if=lambda value: value is None)
+    note: str | None = Field(
+        default=None,
+        max_length=_MAX_RESPONSE_CHARS,
+        description=_RESPONSE_NOTE_DESCRIPTION,
+        exclude_if=lambda value: value is None,
+    )
     citations: list[CitationRef] | None = Field(default=None, max_length=_MAX_RESPONSE_CITATIONS)
 
     @field_validator("text")
@@ -91,6 +101,16 @@ class Response(BaseModel):
         if value is None:
             return None
         return validate_output_size(value)
+
+    @field_validator("note")
+    @classmethod
+    def validate_note(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("response note must not be blank")
+        return stripped
 
     @model_validator(mode="after")
     def validate_total_evidence_segments(self) -> Self:

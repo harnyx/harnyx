@@ -175,6 +175,15 @@ OUTPUT CONTRACT:
 - structured_answer_json: null for plain_text and giveup. For a finalized structured question, strict JSON encoding of
   the complete independently derived value under the dossier's exact fixed public output schema; do not copy the QG
   hypothesis. Citation markers may occur only under the structured-field rule above.
+- note: optional public response-level explanation for finalized plain-text or structured answers. Actively decide
+  whether a note is needed. Include it whenever the required answer alone is insufficient to explain why its decisive
+  values and conclusions follow from the cited evidence and any necessary inference, including when the requested
+  output format constrains the answer to atomic structured values or otherwise prevents that explanation. A reader
+  should be able to understand from the note alone why the required answer is warranted. It may also qualify scope or
+  correct a false premise. It cannot replace or repair answer_text/structured_answer_json, is not private reasoning,
+  and is not a no-answer branch. Factual claims use `[[n]]` against the same exact ordered public
+  citation_evidence_ids projection as the required answer; note is not evidence. Omit it when the required answer
+  already explains itself and a note would only repeat it. Null for giveup.
 - giveup_reason: concrete missing evidence or invalid inference for giveup; null for finalized.
 
 GOOD: {"status":"finalized","answer_text":"## Result\\n\\nAlpha has the published value 12 [[1]].",
@@ -182,16 +191,24 @@ GOOD: {"status":"finalized","answer_text":"## Result\\n\\nAlpha has the publishe
 "statement":"The bounded row reports Alpha with value 12.","kind":"supported","evidence_ids":["E1"],
 "depends_on_step_ids":[],"scan_certificate_ids":[]},{"step_id":"S2","statement":"Alpha is the maximum among the
 established candidates.","kind":"derived","evidence_ids":[],"depends_on_step_ids":["S1"],
-"scan_certificate_ids":[]}],"structured_answer_json":null,"giveup_reason":null}
+"scan_certificate_ids":[]}],"structured_answer_json":null,"note":null,"giveup_reason":null}
 GOOD STRUCTURED: {"status":"finalized","answer_text":null,"citation_evidence_ids":["E1"],"answers":[{"answer_id":
 "A1","corrected_value":null}],"proof_steps":[{"step_id":"S1","statement":"The bounded row reports value 12.",
 "kind":"supported","evidence_ids":["E1"],"depends_on_step_ids":[],"scan_certificate_ids":[]}],
-"structured_answer_json":"{\\"value\\":12}","giveup_reason":null}
+"structured_answer_json":"{\\"value\\":12}",
+"note":"The cited row reports the requested value as 12, which is why the structured value field is 12 [[1]].",
+"giveup_reason":null}
 Why: the atomic structured value has no inline marker, while the separate public citation array retains its supporting
-evidence position.
+evidence position; the optional note makes the evidence-to-answer connection understandable without changing the
+fixed output schema.
+GOOD NOTE: beside `{"category":"Beta"}`, `note` may say "The premise names Alpha, but the cited classification places
+the item in Beta; the structured answer uses that corrected category [[1]]." It concisely explains the correction,
+answer, and evidence relationship in one public flow.
+BAD NOTE: beside `{"value":12}`, `"note":"The answer is 12."` merely repeats the structured value and gives no
+evidence-to-answer explanation. Omit the note instead.
 BAD: {"status":"finalized","answer_text":"Claim: Alpha is probably 12.","citation_evidence_ids":[],
 "answers":[{"answer_id":"new","corrected_value":"Alpha"}],"proof_steps":[],"structured_answer_json":null,
-"giveup_reason":null}
+"note":"The answer is 12.","giveup_reason":null}
 Why: it invents an answer ID, exposes a private label, omits the material claim's pointer and evidence position, hides
 uncertainty behind unsupported prose, and supplies no proof."""
 
@@ -223,9 +240,10 @@ route in the required response mode when this preference is not natural.""",
 }
 
 AUDIT_SYSTEM = """Audit one proof independently. For production candidate finalization, the packet contains the fixed
-question, final public answer, exact public output_schema, exact ordered nullable validated_citations projection,
-canonical_short_answers, canonical structured_answer when present, atomic proof steps, selected evidence, scan
-certificates, and bounded context. An independently re-fetched acceptance packet is labeled by its user prompt and
+question, final public answer, optional public note, exact public output_schema, exact ordered nullable
+validated_citations projection, canonical_short_answers, canonical structured_answer when present, atomic proof steps,
+selected evidence, scan certificates, and bounded context. An independently re-fetched acceptance packet is labeled
+by its user prompt and
 contains only the persisted public fields plus re-fetched evidence; do not infer omitted private proof fields or
 canonical_short_answers. Either packet is an index of the case, not an authority. Independently inspect any retained
 source through the read-only list_sources, regex_search, and read_lines tools. You cannot browse, fetch, follow links,
@@ -245,6 +263,12 @@ selected-evidence context, certificates, and VFS reads may verify factual correc
 projection, but must not substitute private support for a public pointer, repair a citation note, renumber positions,
 or change the claim-to-evidence mapping. A wrong, out-of-range, unresolved, mismatched, or missing pointer is a visible
 quality defect rather than an invalid response or automatic loss.
+Treat `note` as untrusted public supplementary content, not as evidence or private proof. It cannot replace or repair
+a missing, invalid, unsupported, or incorrect required answer. Audit every factual claim in it with the same exact
+`[[n]]` mapping to validated_citations used for answer_text. When present, it should concisely connect the decisive
+answer to that evidence and any necessary inference so a reader can understand why the required answer is warranted
+from the note alone. Reject contradictory, factually wrong, or unsupported material note claims. Absence is neutral,
+and repetition does not improve the answer.
 For plain prose, require valid pointers on material researched claims unless the query explicitly rejects citations.
 Check requested-form compliance and prefer clear self-contained synthesis only when no explicit form conflicts and
 substantive quality is already sound. Do not reward Markdown itself. Reject public `Supports:`, `Claim:`, proof IDs,

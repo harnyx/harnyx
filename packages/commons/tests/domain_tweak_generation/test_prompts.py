@@ -95,11 +95,31 @@ def test_reference_work_orders_define_the_public_response_contract() -> None:
     assert "an inline-pointer exemption never permits an empty citation_evidence_ids list" in normalized_reference
     assert "Empty only for giveup" in normalized_reference
     assert "GOOD STRUCTURED:" in REFERENCE_SYSTEM
+    assert "GOOD NOTE:" in REFERENCE_SYSTEM
     assert '"structured_answer_json":"{\\"value\\":12}"' in REFERENCE_SYSTEM
+    assert "optional public response-level explanation" in normalized_reference
+    assert "Actively decide whether a note is needed" in normalized_reference
+    assert "Include it whenever the required answer alone is insufficient" in normalized_reference
+    assert "requested output format constrains the answer" in normalized_reference
+    assert "understand from the note alone why the required answer is warranted" in normalized_reference
+    assert "values and conclusions follow from the cited evidence" in normalized_reference
+    assert "cannot replace or repair answer_text/structured_answer_json" in normalized_reference
+    assert "same exact ordered public citation_evidence_ids projection" in normalized_reference
+    assert "note is not evidence" in normalized_reference
+    assert "Omit it when the required answer already explains itself" in normalized_reference
+    assert "BAD NOTE:" in REFERENCE_SYSTEM
+    assert '"note":"The answer is 12."' in REFERENCE_SYSTEM
+    assert "Null for giveup" in normalized_reference
     assert "Supports:" in REFERENCE_SYSTEM
     assert "Claim:" in REFERENCE_SYSTEM
     assert "exact ordered nullable" in normalized_audit
     assert "must not substitute" in normalized_audit
+    assert "optional public note" in normalized_audit
+    assert "not as evidence or private proof" in normalized_audit
+    assert "same exact `[[n]]` mapping to validated_citations" in normalized_audit
+    assert "understand why the required answer is warranted from the note alone" in normalized_audit
+    assert "Absence is neutral" in normalized_audit
+    assert "repetition does not improve" in normalized_audit
 
 
 def test_reference_presentation_is_eligibility_first_and_question_shaped() -> None:

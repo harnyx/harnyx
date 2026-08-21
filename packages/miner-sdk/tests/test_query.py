@@ -233,6 +233,26 @@ def test_response_rejects_text_longer_than_eighty_thousand_chars() -> None:
         Response.model_validate({"text": "x" * 80_001})
 
 
+def test_response_accepts_optional_note_beside_each_required_answer_mode() -> None:
+    prose = Response(text="answer", note="  Useful qualification.  ")
+    structured = Response(output={"answer": 42}, note="Useful structured correction.")
+
+    assert prose.note == "Useful qualification."
+    assert structured.note == "Useful structured correction."
+    assert Response(text="answer").model_dump(mode="json") == {"text": "answer", "citations": None}
+
+
+@pytest.mark.parametrize("note", ["", "   ", "x" * 80_001])
+def test_response_rejects_invalid_note(note: str) -> None:
+    with pytest.raises(ValidationError):
+        Response(text="answer", note=note)
+
+
+def test_response_note_cannot_replace_the_required_answer() -> None:
+    with pytest.raises(ValidationError, match="exactly one non-null answer field"):
+        Response(note="The missing answer would be 42.")
+
+
 def test_citation_slice_requires_end_after_start() -> None:
     with pytest.raises(ValidationError):
         CitationSlice(start=10, end=10)

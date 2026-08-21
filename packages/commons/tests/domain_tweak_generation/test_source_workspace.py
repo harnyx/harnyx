@@ -638,6 +638,34 @@ def test_structured_proof_packet_preserves_required_contract_while_trimming_evid
     assert "audit text truncated" in str(packet["selected_evidence"])
 
 
+def test_proof_packet_preserves_full_note_when_bounded() -> None:
+    note = "The question's premise is corrected by the cited record [[1]]."
+
+    packet = SourceWorkspace().proof_packet(
+        question="Which value?",
+        short_answers=("answer",),
+        answer_text="Answer [[1]].",
+        note=note,
+        validated_citations=(),
+        steps=(),
+    )
+
+    assert packet["note"] == note
+    assert len(_serialize_audit_packet(packet)) <= 128_000
+
+
+def test_proof_packet_rejects_full_note_that_cannot_fit_after_evidence_minimization() -> None:
+    with pytest.raises(ValueError, match="reference audit packet exceeds 128000 characters with full note"):
+        SourceWorkspace().proof_packet(
+            question="Which value?",
+            short_answers=("answer",),
+            answer_text="A" * 70_000,
+            note="N" * 70_000,
+            validated_citations=(),
+            steps=(),
+        )
+
+
 def test_structured_proof_packet_preserves_irreducible_public_envelope_over_target() -> None:
     """Future failure: the ordinary packet target must not silently narrow exact public semantics."""
     workspace = SourceWorkspace()

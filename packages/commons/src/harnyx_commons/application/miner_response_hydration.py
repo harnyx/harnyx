@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Self
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.domain.miner_task import AnswerCitation, Query, Response
@@ -89,7 +89,18 @@ class _RawMinerResponsePayload(BaseModel):
 
     text: str | None = Field(default=None, max_length=_MAX_RESPONSE_CHARS)
     output: JsonValue | None = None
+    note: str | None = Field(default=None, max_length=_MAX_RESPONSE_CHARS)
     citations: list[_CitationRefPayload] | None = Field(default=None, max_length=_MAX_CITATION_REFS)
+
+    @field_validator("note")
+    @classmethod
+    def validate_note(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("response note must not be blank")
+        return stripped
 
     @model_validator(mode="after")
     def validate_total_evidence_segments(self) -> Self:
@@ -125,6 +136,7 @@ def hydrate_miner_response_payload(
     return Response(
         text=raw_response.text,
         output=raw_response.output,
+        note=raw_response.note,
         citations=hydrated_citations.citations or None,
     )
 

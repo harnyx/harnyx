@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from harnyx_commons.domain.miner_task import AnswerCitation
 from harnyx_commons.domain.miner_task import Query as CommonsQuery
 from harnyx_commons.domain.miner_task import Response as CommonsResponse
@@ -52,3 +55,15 @@ def test_response_contract_matches_miner_sdk_boundary() -> None:
 def test_response_contracts_share_answer_modes_with_distinct_citation_types() -> None:
     assert CommonsResponse(output={"answer": [1, None]}).answer_text == '{"answer":[1,null]}'
     assert MinerSdkResponse(output={"answer": [1, None]})
+
+
+def test_response_contracts_share_optional_note_semantics() -> None:
+    assert CommonsResponse(text="hello", note="  qualification  ").note == "qualification"
+    assert MinerSdkResponse(text="hello", note="  qualification  ").note == "qualification"
+    assert CommonsResponse(text="hello").model_dump(mode="json") == {"text": "hello", "citations": None}
+
+    for model in (CommonsResponse, MinerSdkResponse):
+        with pytest.raises(ValidationError):
+            model(text="hello", note="   ")
+        with pytest.raises(ValidationError):
+            model(text="hello", note="x" * 80_001)
