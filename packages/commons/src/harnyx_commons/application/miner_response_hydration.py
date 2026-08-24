@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Self
@@ -22,6 +23,7 @@ _MAX_CITATION_REFS = 200
 _MAX_EVIDENCE_SEGMENTS_PER_RESPONSE = 400
 MIN_CITATION_SLICE_CHARS = 100
 MAX_TOTAL_CITATION_EVIDENCE_CHARS = 120_000
+_MATERIALIZED_SLICE_HEADER = re.compile(r"\[slice ([0-9]+):([0-9]+)\]\n")
 
 
 class MinerResponsePayloadError(ValueError):
@@ -104,9 +106,12 @@ class _RawMinerResponsePayload(BaseModel):
 
     @model_validator(mode="after")
     def validate_total_evidence_segments(self) -> Self:
-        if (self.text is None) == (self.output is None):
-            raise ValueError("response must include exactly one non-null answer field")
-        if self.output is not None:
+        answer_fields = self.model_fields_set & {"text", "output"}
+        if len(answer_fields) != 1:
+            raise ValueError("response must include exactly one answer field")
+        if "text" in answer_fields and self.text is None:
+            raise ValueError("response text must not be null")
+        if "output" in answer_fields:
             validate_output_size(self.output)
         total_segments = sum(len(citation.slices) if citation.slices else 1 for citation in self.citations or ())
         if total_segments > _MAX_EVIDENCE_SEGMENTS_PER_RESPONSE:
@@ -133,22 +138,21 @@ def hydrate_miner_response_payload(
     )
     if hydrated_citations.source_text_chars > MAX_TOTAL_CITATION_EVIDENCE_CHARS:
         raise MinerResponsePayloadError("response citations exceed 120000 materialized source-text characters")
-    return Response(
-        text=raw_response.text,
-        output=raw_response.output,
-        note=raw_response.note,
-        citations=hydrated_citations.citations or None,
-    )
+    citations = hydrated_citations.citations or None
+    if "text" in raw_response.model_fields_set:
+        return Response(text=raw_response.text, note=raw_response.note, citations=citations)
+    return Response(output=raw_response.output, note=raw_response.note, citations=citations)
 
 
 def _validate_answer_for_query(response: _RawMinerResponsePayload, query: Query) -> None:
     if query.output_schema is None:
-        if response.text is None:
+        if "text" not in response.model_fields_set:
             raise ValueError("legacy query response must use text")
+        assert response.text is not None
         if not response.text.strip():
             raise ValueError("response text must not be blank")
         return
-    if response.output is None:
+    if "output" not in response.model_fields_set:
         raise ValueError("structured query response must use output")
     validate_output_against_schema(response.output, query.output_schema)
 
@@ -242,6 +246,31 @@ def materialize_citation_slices(
     return MaterializedCitationSelection(text="\n\n".join(parts), char_count=source_text_chars)
 
 
+def parse_materialized_citation_excerpts(note: str | None) -> tuple[str, ...]:
+    """Recover exact excerpts from the materialized note format this module owns."""
+
+    if note is None:
+        return ()
+    excerpts: list[str] = []
+    position = 0
+    while position < len(note):
+        header = _MATERIALIZED_SLICE_HEADER.match(note, position)
+        if header is None:
+            return (note,)
+        start, end = (int(value) for value in header.groups())
+        excerpt_end = header.end() + (end - start)
+        if end <= start or excerpt_end > len(note):
+            return (note,)
+        excerpts.append(note[header.end() : excerpt_end])
+        position = excerpt_end
+        if position == len(note):
+            return tuple(excerpts)
+        if note[position : position + 2] != "\n\n":
+            return (note,)
+        position += 2
+    return (note,)
+
+
 def _validate_slice_against_source(source_text: str, selected_slice: CitationSlice) -> None:
     if selected_slice.end > len(source_text):
         raise MinerResponsePayloadError("citation slice exceeds source text length")
@@ -265,4 +294,5 @@ __all__ = [
     "MinerResponsePayloadError",
     "hydrate_miner_response_payload",
     "materialize_citation_slices",
+    "parse_materialized_citation_excerpts",
 ]

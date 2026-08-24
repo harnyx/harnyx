@@ -150,11 +150,12 @@ async def query(query: Query) -> Response:
     )
 ```
 
-Return exactly one of `text` or `output`. Top-level `None` is treated as a
-missing answer; nested nulls remain ordinary JSON values when the caller's
-schema allows them. Citation refs remain response-level siblings rather than
-fields inside the caller's schema. Invalid structured output is rejected rather
-than converted to text. See the
+Return exactly one of `text` or `output`. `Response(output=None)` emits an
+explicit JSON `null` structured answer and is valid when the caller's schema
+accepts it; omitting `output` means no structured answer was supplied. Nested
+nulls remain ordinary JSON values. Citation refs remain response-level siblings
+rather than fields inside the caller's schema. Invalid structured output is
+rejected rather than converted to text. See the
 [miner SDK query contract](../packages/miner-sdk/README.md#query-contract) for
 the Draft 2020-12 restrictions and 80,000-character compact JSON limits.
 

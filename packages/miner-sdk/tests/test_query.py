@@ -126,18 +126,25 @@ def test_response_requires_non_empty_text() -> None:
         Response.model_validate({"text": ""})
 
 
-@pytest.mark.parametrize("output", [False, 0, "", [], {}])
-def test_response_accepts_every_non_null_json_value(output: object) -> None:
+@pytest.mark.parametrize("output", [None, False, 0, "", [], {}])
+def test_response_accepts_every_json_value(output: object) -> None:
     response = Response(output=output)
 
     assert response.output == output
     assert response.text is None
+    assert response.model_dump(mode="json", exclude_none=True) == {"output": output}
 
 
-@pytest.mark.parametrize("payload", [{}, {"output": None}, {"text": "answer", "output": {} }])
-def test_response_requires_exactly_one_non_null_answer(payload: dict[str, object]) -> None:
+@pytest.mark.parametrize("payload", [{}, {"text": None}, {"text": "answer", "output": {}}])
+def test_response_requires_exactly_one_answer_field(payload: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
         Response.model_validate(payload)
+
+
+def test_response_keeps_legacy_explicit_none_as_an_omitted_output_for_text() -> None:
+    response = Response(text="answer", output=None)
+
+    assert response.model_dump(mode="json") == {"text": "answer", "citations": None}
 
 
 def test_response_preserves_nested_null_and_whitespace_sensitive_strings() -> None:
@@ -249,7 +256,7 @@ def test_response_rejects_invalid_note(note: str) -> None:
 
 
 def test_response_note_cannot_replace_the_required_answer() -> None:
-    with pytest.raises(ValidationError, match="exactly one non-null answer field"):
+    with pytest.raises(ValidationError, match="exactly one answer field"):
         Response(note="The missing answer would be 42.")
 
 

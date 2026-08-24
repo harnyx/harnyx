@@ -679,6 +679,31 @@ def test_harness_round_trips_miner_sdk_response_as_json_object() -> None:
     }
 
 
+def test_harness_preserves_explicit_structured_null_output() -> None:
+    clear_entrypoints()
+
+    @entrypoint("query")
+    async def response_entrypoint(_query: Query) -> Response:
+        return Response(output=None)
+
+    harness = SandboxHarness()
+    app = FastAPI()
+    app.include_router(harness.create_router(), prefix="/entry")
+
+    response = TestClient(app).post(
+        "/entry/query",
+        json={"payload": {"text": "question", "output_schema": {"type": "null"}}, "context": {}},
+        headers={"x-platform-token": "token", "x-session-id": "session-null-response"},
+    )
+    clear_entrypoints()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "result": {"output": None, "citations": None},
+    }
+
+
 def test_harness_invokes_entrypoint_and_closes_tools() -> None:
     close_flag = mp.Value("i", 0)
     factory_calls = mp.Value("i", 0)

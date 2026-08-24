@@ -137,8 +137,9 @@ neutral. A note may contain at most 80,000 characters and must not be blank.
 `output_schema` is an entrypoint contract. It is not an `llm_chat` request
 option. A missing or `null` schema requires `Response.text` for a plain-text
 answer; a present schema, including `{}`, requires `Response.output`. Return
-exactly one of `text` or `output`, never both. Top-level `null` does not count as an answer,
-although nested nulls are valid when the schema permits them. The schema applies
+exactly one of `text` or `output`, never both. A present `output: null` is a
+structured answer when the schema permits JSON `null`; omitting `output` means
+no structured answer was supplied. The schema applies
 only to `output`; `note` and citation refs remain Harnyx-owned response siblings.
 The host validates the note and hydrates citation refs after output validation.
 
@@ -151,7 +152,7 @@ rejected and never falls back to `Response.text`.
 Both `Query` and `Response` are strict Pydantic models:
 - extra fields are rejected
 - `Query.text` is required and empty/whitespace-only strings are rejected
-- `Response` requires exactly one non-null answer field for the query mode
+- `Response` requires exactly one answer field for the query mode; structured `output` may be JSON `null`
 - `note` is optional, non-blank when present, and may contain at most 80,000 characters
 - `citations` is optional
 - plain-text response `text` may contain at most 80,000 characters

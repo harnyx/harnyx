@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Self
+from typing import Self, cast
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializationInfo,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from harnyx_miner_sdk.json_types import JsonObject, JsonValue
 from harnyx_miner_sdk.structured_output import validate_output_schema, validate_output_size
@@ -85,6 +94,18 @@ class Response(BaseModel):
     )
     citations: list[CitationRef] | None = Field(default=None, max_length=_MAX_RESPONSE_CITATIONS)
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_text_answer(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        payload = cast(dict[str, object], value)
+        if payload.get("text") is None or payload.get("output", ...) is not None:
+            return value
+        normalized = dict(payload)
+        normalized.pop("output", None)
+        return normalized
+
     @field_validator("text")
     @classmethod
     def validate_text(cls, value: str | None) -> str | None:
@@ -114,12 +135,30 @@ class Response(BaseModel):
 
     @model_validator(mode="after")
     def validate_total_evidence_segments(self) -> Self:
-        if (self.text is None) == (self.output is None):
-            raise ValueError("response must include exactly one non-null answer field")
+        answer_fields = self.model_fields_set & {"text", "output"}
+        if len(answer_fields) != 1:
+            raise ValueError("response must include exactly one answer field")
+        if "text" in answer_fields and self.text is None:
+            raise ValueError("response text must not be null")
         total_segments = sum(len(citation.slices) if citation.slices else 1 for citation in self.citations or ())
         if total_segments > _MAX_RESPONSE_EVIDENCE_SEGMENTS:
             raise ValueError("response citations exceed 400 materialized evidence segments")
         return self
+
+    @model_serializer(mode="wrap")
+    def serialize_answer_presence(
+        self,
+        handler: SerializerFunctionWrapHandler,
+        info: SerializationInfo,
+    ) -> dict[str, object]:
+        payload = cast(dict[str, object], handler(self))
+        output_is_selected = (
+            (info.include is None or "output" in info.include)
+            and (info.exclude is None or "output" not in info.exclude)
+        )
+        if "output" in self.model_fields_set and output_is_selected:
+            payload["output"] = self.output
+        return payload
 
 
 __all__ = ["CitationRef", "CitationSlice", "Query", "Response"]

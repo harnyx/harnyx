@@ -10,6 +10,7 @@ from harnyx_commons.application.miner_response_hydration import (
     CitationSlice,
     MinerResponsePayloadError,
     materialize_citation_slices,
+    parse_materialized_citation_excerpts,
 )
 from harnyx_commons.application.miner_response_hydration import (
     hydrate_miner_response_payload as _hydrate_miner_response_payload,
@@ -29,13 +30,23 @@ from harnyx_commons.tools.types import ToolName
 _LEGACY_QUERY = Query(text="question")
 
 
+def test_parse_materialized_citation_excerpts_recovers_each_exact_slice() -> None:
+    note = "[slice 10:14]\na\n[b\n\n[slice 20:23]\nxyz"
+    assert parse_materialized_citation_excerpts(note) == ("a\n[b", "xyz")
+
+
+def test_parse_materialized_citation_excerpts_preserves_legacy_notes() -> None:
+    assert parse_materialized_citation_excerpts(None) == ()
+    assert parse_materialized_citation_excerpts("legacy evidence") == ("legacy evidence",)
+    malformed = "[slice 0:10]\nshort"
+    assert parse_materialized_citation_excerpts(malformed) == (malformed,)
+
+
 def test_reference_answer_loads_legacy_persisted_citation_count_above_judge_cap() -> None:
     """Future failure: nullable slots must not tighten persisted ReferenceAnswer cardinality."""
     citation = {"url": "https://example.com/source", "note": "evidence"}
 
-    reference = ReferenceAnswer.model_validate(
-        {"text": "Legacy reference", "citations": [citation] * 201}
-    )
+    reference = ReferenceAnswer.model_validate({"text": "Legacy reference", "citations": [citation] * 201})
 
     assert reference.citations is not None
     assert len(reference.citations) == 201
@@ -198,15 +209,14 @@ def test_hydrate_miner_response_payload_materializes_multiple_slices() -> None:
 
     assert response.citations is not None
     assert response.citations[0].note == (
-        f"[slice 0:120]\n{source_text[:120]}\n\n"
-        f"[slice 180:300]\n{source_text[180:300]}"
+        f"[slice 0:120]\n{source_text[:120]}\n\n[slice 180:300]\n{source_text[180:300]}"
     )
 
 
 def test_public_slice_materializer_matches_official_hydration_for_raw_unicode_crlf_slices() -> None:
     """Future failure: reference authoring and miner hydration must share one raw projection rule."""
     session_id = uuid4()
-    source_text = ("prefix\r\nCafé 雪 " + _source_text(130) + "\r\nsuffix " + _source_text(130))
+    source_text = "prefix\r\nCafé 雪 " + _source_text(130) + "\r\nsuffix " + _source_text(130)
     slices = (CitationSlice(0, 120), CitationSlice(140, 260))
 
     materialized = materialize_citation_slices(source_text, slices)
@@ -483,8 +493,7 @@ def test_hydrate_miner_response_payload_rejects_more_than_two_hundred_citations(
             {
                 "text": "Answer",
                 "citations": [
-                    {"receipt_id": f"receipt-{index}", "result_id": f"result-{index}"}
-                    for index in range(201)
+                    {"receipt_id": f"receipt-{index}", "result_id": f"result-{index}"} for index in range(201)
                 ],
             },
             session_id=uuid4(),
@@ -550,6 +559,20 @@ def test_hydrate_structured_output_and_citations() -> None:
     )
 
 
+@pytest.mark.parametrize("output_schema", ({"type": "null"}, {"const": None}))
+def test_hydrate_structured_null_output(output_schema: dict[str, object]) -> None:
+    response = hydrate_miner_response_payload(
+        {"output": None},
+        query=Query(text="question", output_schema=output_schema),
+        session_id=uuid4(),
+        receipt_log=InMemoryReceiptLog(),
+    )
+
+    assert response.output is None
+    assert response.answer_text == "null"
+    assert response.model_dump(mode="json", exclude_none=True) == {"output": None}
+
+
 def test_hydration_preserves_optional_note_for_plain_and_structured_answers() -> None:
     prose = hydrate_miner_response_payload(
         {"text": "Answer", "note": "  Scope qualification.  "},
@@ -587,7 +610,7 @@ def test_hydration_rejects_invalid_note(note: str) -> None:
 
 
 def test_hydration_note_cannot_repair_missing_or_invalid_required_answer() -> None:
-    with pytest.raises(ValidationError, match="exactly one non-null answer field"):
+    with pytest.raises(ValidationError, match="exactly one answer field"):
         hydrate_miner_response_payload(
             {"note": "The missing answer is 1."},
             query=Query(text="question"),
@@ -614,6 +637,7 @@ def test_hydration_note_cannot_repair_missing_or_invalid_required_answer() -> No
     ("query", "payload"),
     [
         (Query(text="question"), {"output": {"answer": 1}}),
+        (Query(text="question"), {"output": None}),
         (Query(text="question", output_schema={}), {"text": "answer"}),
         (Query(text="question", output_schema={"type": "array"}), {"output": {"answer": 1}}),
     ],

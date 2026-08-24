@@ -55,6 +55,15 @@ def test_response_contract_matches_miner_sdk_boundary() -> None:
 def test_response_contracts_share_answer_modes_with_distinct_citation_types() -> None:
     assert CommonsResponse(output={"answer": [1, None]}).answer_text == '{"answer":[1,null]}'
     assert MinerSdkResponse(output={"answer": [1, None]})
+    assert CommonsResponse(output=None).answer_text == "null"
+    assert CommonsResponse(output=None).model_dump(mode="json", exclude_none=True) == {"output": None}
+    assert MinerSdkResponse(output=None).model_dump(mode="json", exclude_none=True) == {"output": None}
+    assert CommonsResponse(text="answer", output=None).model_dump(mode="json", exclude_none=True) == {
+        "text": "answer"
+    }
+    assert MinerSdkResponse(text="answer", output=None).model_dump(mode="json", exclude_none=True) == {
+        "text": "answer"
+    }
 
 
 def test_response_contracts_share_optional_note_semantics() -> None:

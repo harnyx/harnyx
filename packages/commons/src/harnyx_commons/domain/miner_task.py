@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal
+from typing import Literal, cast
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializationInfo,
+    SerializerFunctionWrapHandler,
+    TypeAdapter,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from harnyx_commons.domain.judge_usage import JudgeUsageSummary
 from harnyx_commons.domain.shared_config import COMMONS_STRICT_CONFIG
@@ -96,6 +106,18 @@ class Response(BaseModel):
         description=_POSITIONAL_CITATIONS_DESCRIPTION,
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_legacy_text_answer(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        payload = cast(dict[str, object], value)
+        if payload.get("text") is None or payload.get("output", ...) is not None:
+            return value
+        normalized = dict(payload)
+        normalized.pop("output", None)
+        return normalized
+
     @field_validator("text")
     @classmethod
     def _validate_text(cls, value: str | None) -> str | None:
@@ -132,15 +154,35 @@ class Response(BaseModel):
 
     @model_validator(mode="after")
     def _validate_answer_mode(self) -> Response:
-        if (self.text is None) == (self.output is None):
-            raise ValueError("response must include exactly one non-null answer field")
+        answer_fields = self.model_fields_set & {"text", "output"}
+        if len(answer_fields) != 1:
+            raise ValueError("response must include exactly one answer field")
+        if "text" in answer_fields and self.text is None:
+            raise ValueError("response text must not be null")
         return self
+
+    @model_serializer(mode="wrap")
+    def _serialize_answer_presence(  # noqa: ANN202 - return annotation changes Pydantic's published schema
+        self,
+        handler: SerializerFunctionWrapHandler,
+        info: SerializationInfo,
+    ):
+        # A return annotation makes Pydantic publish distinct input/output schemas even
+        # though json_schema_mode_override intentionally keeps this contract canonical.
+        payload = cast(dict[str, object], handler(self))
+        output_is_selected = (
+            (info.include is None or "output" in info.include)
+            and (info.exclude is None or "output" not in info.exclude)
+        )
+        if "output" in self.model_fields_set and output_is_selected:
+            payload["output"] = self.output
+        return payload
 
     @property
     def answer_text(self) -> str:
-        if self.text is not None:
+        if "text" in self.model_fields_set:
+            assert self.text is not None
             return self.text
-        assert self.output is not None
         return compact_json(self.output)
 
 
