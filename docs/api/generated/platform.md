@@ -373,7 +373,7 @@ Body: [MinerTaskBatchModel](#model-minertaskbatchmodel)
 |  |  | `output_schema` | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
-|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation) (nullable)] (nullable) |
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `text` | req | `string` |
 |  | `task_id` |  | req | `string` (format: uuid) |
@@ -461,7 +461,7 @@ Body: [MinerTaskWorkExecutionsRequest](#model-minertaskworkexecutionsrequest)
 |  |  | `uid` | req | `integer` |
 |  | `miner_hotkey_ss58` |  | req | `string` |
 |  | `response` |  | req | [Response](#model-response) |
-|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation) (nullable)] (nullable) |
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `output` | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  |  | `text` | opt | `string` (nullable) |
@@ -658,7 +658,7 @@ Body: [MinerTaskWorkScoreableExecutionsResponse](#model-minertaskworkscoreableex
 |  | `max_attempts` |  | req | `integer` |
 |  | `miner_hotkey_ss58` |  | req | `string` |
 |  | `response` |  | req | [Response](#model-response) (nullable) |
-|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation) (nullable)] (nullable) |
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `output` | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  |  | `text` | opt | `string` (nullable) |
@@ -1481,7 +1481,7 @@ Body: [StatusResponse](#model-statusresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `aggregate_score` |  |  | req | `number` |
-| `criterion_evaluations` |  |  | req | array[[CriterionEvaluationModel](#model-criterionevaluationmodel)] |
+| `criterion_evaluations` |  |  | req | array[[CriterionEvaluationModel](#model-criterionevaluationmodel) (nullable)] |
 |  | `citations` |  | opt | array[[CitationModel](#model-citationmodel)] (default: []) |
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `title` | opt | `string` (nullable) |
@@ -2022,7 +2022,7 @@ Body: [StatusResponse](#model-statusresponse)
 | --- | --- | --- | --- | --- |
 | `criteria` |  |  | req | array[[CriterionAssessmentModel](#model-criterionassessmentmodel)] |
 |  | `aggregate_score` |  | req | `number` |
-|  | `criterion_evaluations` |  | req | array[[CriterionEvaluationModel](#model-criterionevaluationmodel)] |
+|  | `criterion_evaluations` |  | req | array[[CriterionEvaluationModel](#model-criterionevaluationmodel) (nullable)] |
 |  |  | `citations` | opt | array[[CitationModel](#model-citationmodel)] (default: []) |
 |  |  | `internal_metadata` | opt | `object` (nullable) |
 |  |  | `justification` | req | `string` |
@@ -2224,7 +2224,7 @@ Body: [StatusResponse](#model-statusresponse)
 | `content_review_rubric_result` |  |  | opt | [ExternalEvalResultModel](#model-externalevalresultmodel) (nullable) |
 |  | `criteria` |  | req | array[[CriterionAssessmentModel](#model-criterionassessmentmodel)] |
 |  |  | `aggregate_score` | req | `number` |
-|  |  | `criterion_evaluations` | req | array[[CriterionEvaluationModel](#model-criterionevaluationmodel)] |
+|  |  | `criterion_evaluations` | req | array[[CriterionEvaluationModel](#model-criterionevaluationmodel) (nullable)] |
 |  |  | `criterion_id` | req | `string` |
 |  |  | `verdict_options` | req | array[[VerdictOptionModel](#model-verdictoptionmodel)] |
 |  | `overall_rationale` |  | opt | `string` (nullable) |
@@ -2233,7 +2233,7 @@ Body: [StatusResponse](#model-statusresponse)
 | `content_review_topic_gate` |  |  | opt | [TopicGateModel](#model-topicgatemodel) (nullable) |
 |  | `criteria` |  | opt | array[[CriterionAssessmentModel](#model-criterionassessmentmodel)] (default: []) |
 |  |  | `aggregate_score` | req | `number` |
-|  |  | `criterion_evaluations` | req | array[[CriterionEvaluationModel](#model-criterionevaluationmodel)] |
+|  |  | `criterion_evaluations` | req | array[[CriterionEvaluationModel](#model-criterionevaluationmodel) (nullable)] |
 |  |  | `criterion_id` | req | `string` |
 |  |  | `verdict_options` | req | array[[VerdictOptionModel](#model-verdictoptionmodel)] |
 |  | `score` |  | opt | `number` (nullable) |
@@ -3365,7 +3365,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `output_schema` |  | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
 |  | `text` |  | req | `string` |
 | `reference_answer` |  |  | req | [ReferenceAnswer](#model-referenceanswer) |
-|  | `citations` |  | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  | `citations` |  | opt | array[[AnswerCitation](#model-answercitation) (nullable)] (nullable) |
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `title` | opt | `string` (nullable) |
 |  |  | `url` | req | `string` |
@@ -3928,7 +3928,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `output_schema` | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
-|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation) (nullable)] (nullable) |
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `text` | req | `string` |
 |  | `task_id` |  | req | `string` (format: uuid) |
@@ -4139,7 +4139,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `artifact_id` |  | req | `string` (format: uuid) |
 |  | `completed_at` |  | opt | `string` (format: date-time; nullable) |
 |  | `response` |  | opt | [Response](#model-response) (nullable) |
-|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation) (nullable)] (nullable) |
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `output` | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  |  | `text` | opt | `string` (nullable) |
@@ -4265,7 +4265,7 @@ Body: [StatusResponse](#model-statusresponse)
 | `artifact_id` |  |  | req | `string` (format: uuid) |
 | `completed_at` |  |  | opt | `string` (format: date-time; nullable) |
 | `response` |  |  | opt | [Response](#model-response) (nullable) |
-|  | `citations` |  | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  | `citations` |  | opt | array[[AnswerCitation](#model-answercitation) (nullable)] (nullable) |
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `title` | opt | `string` (nullable) |
 |  |  | `url` | req | `string` |
@@ -4408,7 +4408,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `output_schema` | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
-|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation) (nullable)] (nullable) |
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `text` | req | `string` |
 |  | `task_id` |  | req | `string` (format: uuid) |
@@ -4493,7 +4493,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `uid` |  | req | `integer` |
 | `miner_hotkey_ss58` |  |  | req | `string` |
 | `response` |  |  | req | [Response](#model-response) |
-|  | `citations` |  | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  | `citations` |  | opt | array[[AnswerCitation](#model-answercitation) (nullable)] (nullable) |
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `title` | opt | `string` (nullable) |
 |  |  | `url` | req | `string` |
@@ -4765,7 +4765,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `uid` | req | `integer` |
 |  | `miner_hotkey_ss58` |  | req | `string` |
 |  | `response` |  | req | [Response](#model-response) |
-|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation) (nullable)] (nullable) |
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `output` | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  |  | `text` | opt | `string` (nullable) |
@@ -5227,7 +5227,7 @@ Body: [StatusResponse](#model-statusresponse)
 | `max_attempts` |  |  | req | `integer` |
 | `miner_hotkey_ss58` |  |  | req | `string` |
 | `response` |  |  | req | [Response](#model-response) (nullable) |
-|  | `citations` |  | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  | `citations` |  | opt | array[[AnswerCitation](#model-answercitation) (nullable)] (nullable) |
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `title` | opt | `string` (nullable) |
 |  |  | `url` | req | `string` |
@@ -5247,7 +5247,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `output_schema` | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
-|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation) (nullable)] (nullable) |
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `text` | req | `string` |
 |  | `task_id` |  | req | `string` (format: uuid) |
@@ -5467,7 +5467,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `max_attempts` |  | req | `integer` |
 |  | `miner_hotkey_ss58` |  | req | `string` |
 |  | `response` |  | req | [Response](#model-response) (nullable) |
-|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation) (nullable)] (nullable) |
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `output` | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  |  | `text` | opt | `string` (nullable) |
@@ -5799,7 +5799,7 @@ Body: [StatusResponse](#model-statusresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `citations` |  |  | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+| `citations` |  |  | opt | array[[AnswerCitation](#model-answercitation) (nullable)] (nullable) |
 |  | `note` |  | opt | `string` (nullable) |
 |  | `title` |  | opt | `string` (nullable) |
 |  | `url` |  | req | `string` |
@@ -5987,7 +5987,7 @@ Body: [StatusResponse](#model-statusresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `citations` |  |  | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+| `citations` |  |  | opt | array[[AnswerCitation](#model-answercitation) (nullable)] (nullable) |
 |  | `note` |  | opt | `string` (nullable) |
 |  | `title` |  | opt | `string` (nullable) |
 |  | `url` |  | req | `string` |
@@ -7344,7 +7344,7 @@ Body: [StatusResponse](#model-statusresponse)
 | --- | --- | --- | --- | --- |
 | `criteria` |  |  | opt | array[[CriterionAssessmentModel](#model-criterionassessmentmodel)] (default: []) |
 |  | `aggregate_score` |  | req | `number` |
-|  | `criterion_evaluations` |  | req | array[[CriterionEvaluationModel](#model-criterionevaluationmodel)] |
+|  | `criterion_evaluations` |  | req | array[[CriterionEvaluationModel](#model-criterionevaluationmodel) (nullable)] |
 |  |  | `citations` | opt | array[[CitationModel](#model-citationmodel)] (default: []) |
 |  |  | `internal_metadata` | opt | `object` (nullable) |
 |  |  | `justification` | req | `string` |
