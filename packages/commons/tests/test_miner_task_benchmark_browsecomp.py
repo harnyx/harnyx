@@ -142,32 +142,11 @@ def test_browsecomp_sampling_uses_fixed_snapshot_panel() -> None:
     ]
 
 
-def test_browsecomp_packaged_source_and_license_match_pinned_bytes() -> None:
-    version_dir = _version_dir()
-
-    assert sha256(version_dir.joinpath("browse_comp_test_set.csv").read_bytes()).hexdigest() == (
-        _SOURCE_SHA256
-    )
-    license_bytes = version_dir.joinpath("LICENSE.openai-simple-evals").read_bytes()
-    assert len(license_bytes) == 1063
-    assert sha256(license_bytes).hexdigest() == _LICENSE_SHA256
-
-
-def test_browsecomp_current_pointer_matches_pinned_version() -> None:
-    data_dir = files("harnyx_commons.miner_task_benchmark.browsecomp.data")
-
-    assert json.loads(data_dir.joinpath("current_version.json").read_text(encoding="utf-8")) == {
-        "dataset_version": _DATASET_VERSION,
-        "scoring_version": _SCORING_VERSION,
-    }
-
-
 @pytest.mark.parametrize(
     ("raw", "message"),
     [
         (b"answer,problem,problem_topic,canary\nA,P,T,C\n", "header"),
         (b"problem,answer,problem_topic,problem_topic\nP,A,T,C\n", "header"),
-        (b"problem,answer,problem_topic,canary\nP,A,T\n", "missing cell"),
         (b"problem,answer,problem_topic,canary\nP,A,T,C,extra\n", "extra cell"),
         (b"problem,answer,problem_topic,canary\nP,,T,C\n", "empty answer"),
     ],

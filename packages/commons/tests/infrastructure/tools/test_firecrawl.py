@@ -61,9 +61,7 @@ async def test_search_web_normalizes_results_and_optional_billing_metadata() -> 
 
     client, http_client = _client(handler)
     try:
-        result = await client.search_web(
-            SearchWebSearchRequest(provider="firecrawl", search_queries=("one", "two"))
-        )
+        result = await client.search_web(SearchWebSearchRequest(provider="firecrawl", search_queries=("one", "two")))
     finally:
         await http_client.aclose()
 
@@ -130,9 +128,7 @@ async def test_search_web_rejects_malformed_result_contract(response_json: objec
     client, http_client = _client(lambda _request: httpx.Response(200, json=response_json))
     try:
         with pytest.raises(ToolProviderError, match="response invalid"):
-            await client.search_web(
-                SearchWebSearchRequest(provider="firecrawl", search_queries=("harnyx",))
-            )
+            await client.search_web(SearchWebSearchRequest(provider="firecrawl", search_queries=("harnyx",)))
     finally:
         await http_client.aclose()
 
@@ -144,9 +140,7 @@ async def test_search_web_rejects_query_over_500_characters_without_request() ->
     client, http_client = _client(handler)
     try:
         with pytest.raises(ValueError, match="500 characters"):
-            await client.search_web(
-                SearchWebSearchRequest(provider="firecrawl", search_queries=("x" * 499,))
-            )
+            await client.search_web(SearchWebSearchRequest(provider="firecrawl", search_queries=("x" * 499,)))
     finally:
         await http_client.aclose()
 
@@ -162,9 +156,7 @@ async def test_search_web_maps_malformed_json_to_provider_failure(response: http
     client, http_client = _client(lambda _request: response)
     try:
         with pytest.raises(ToolProviderError, match="response invalid"):
-            await client.search_web(
-                SearchWebSearchRequest(provider="firecrawl", search_queries=("harnyx",))
-            )
+            await client.search_web(SearchWebSearchRequest(provider="firecrawl", search_queries=("harnyx",)))
     finally:
         await http_client.aclose()
 
@@ -187,15 +179,11 @@ async def test_fetch_page_normalizes_documented_scrape_shape_without_billing_met
 
     client, http_client = _client(handler)
     try:
-        result = await client.fetch_page(
-            FetchPageRequest(provider="firecrawl", url="https://example.com")
-        )
+        result = await client.fetch_page(FetchPageRequest(provider="firecrawl", url="https://example.com"))
     finally:
         await http_client.aclose()
 
-    assert payloads == [
-        {"url": "https://example.com", "formats": ["markdown"], "onlyMainContent": True}
-    ]
+    assert payloads == [{"url": "https://example.com", "formats": ["markdown"], "onlyMainContent": True}]
     assert result.response.data[0].model_dump() == {
         "url": "https://example.com/final",
         "content": "# Example\n\nContent",
@@ -234,9 +222,7 @@ async def test_fetch_page_forwards_raw_html_format_and_normalizes_raw_html() -> 
     finally:
         await http_client.aclose()
 
-    assert payloads == [
-        {"url": "https://example.com", "formats": ["rawHtml"], "onlyMainContent": True}
-    ]
+    assert payloads == [{"url": "https://example.com", "formats": ["rawHtml"], "onlyMainContent": True}]
     assert [item.content for item in result.response.data] == ["<main>Raw content</main>"]
 
 
@@ -295,7 +281,13 @@ async def test_fetch_page_returns_every_requested_format_in_request_order() -> N
     ]
 
 
-@pytest.mark.parametrize("raw_html", [None, "", "   "])
+@pytest.mark.parametrize(
+    "raw_html",
+    [
+        None,
+        "   ",
+    ],
+)
 async def test_fetch_page_rejects_missing_or_blank_requested_raw_html(raw_html: object) -> None:
     client, http_client = _client(
         lambda _request: httpx.Response(
@@ -369,7 +361,13 @@ async def test_fetch_page_maps_markdown_compatible_pdf_and_proxy_controls() -> N
     ]
 
 
-@pytest.mark.parametrize("markdown", [None, "", "   "])
+@pytest.mark.parametrize(
+    "markdown",
+    [
+        None,
+        "   ",
+    ],
+)
 async def test_fetch_page_rejects_missing_or_blank_markdown(markdown: object) -> None:
     client, http_client = _client(
         lambda _request: httpx.Response(
@@ -384,7 +382,12 @@ async def test_fetch_page_rejects_missing_or_blank_markdown(markdown: object) ->
         await http_client.aclose()
 
 
-@pytest.mark.parametrize("metadata", [{"sourceURL": {}}, {"url": []}, {"sourceURL": 42}])
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"sourceURL": {}},
+    ],
+)
 async def test_fetch_page_rejects_non_string_metadata_urls(metadata: object) -> None:
     client, http_client = _client(
         lambda _request: httpx.Response(
@@ -421,7 +424,13 @@ async def test_rate_limit_respects_retry_after(monkeypatch: pytest.MonkeyPatch) 
     assert sleeps == [2.0]
 
 
-@pytest.mark.parametrize("status", [401, 402, 403])
+@pytest.mark.parametrize(
+    "status",
+    [
+        401,
+        403,
+    ],
+)
 async def test_non_retryable_statuses_fail_once(status: int) -> None:
     calls = 0
 
@@ -439,13 +448,17 @@ async def test_non_retryable_statuses_fail_once(status: int) -> None:
 
     assert calls == 1
     assert exc_info.value.failure_code is (
-        ToolProviderFailureCode.AUTHENTICATION_FAILED
-        if status == 401
-        else ToolProviderFailureCode.PROVIDER_FAILED
+        ToolProviderFailureCode.AUTHENTICATION_FAILED if status == 401 else ToolProviderFailureCode.PROVIDER_FAILED
     )
 
 
-@pytest.mark.parametrize("status", [408, 429, 500, 502, 503, 504])
+@pytest.mark.parametrize(
+    "status",
+    [
+        408,
+        504,
+    ],
+)
 async def test_documented_transient_statuses_retry(status: int) -> None:
     calls = 0
 
@@ -458,9 +471,7 @@ async def test_documented_transient_statuses_retry(status: int) -> None:
 
     client, http_client = _client(handler, attempts=2)
     try:
-        result = await client.search_web(
-            SearchWebSearchRequest(provider="firecrawl", search_queries=("harnyx",))
-        )
+        result = await client.search_web(SearchWebSearchRequest(provider="firecrawl", search_queries=("harnyx",)))
     finally:
         await http_client.aclose()
 

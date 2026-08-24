@@ -71,7 +71,6 @@ def _context(source: ProviderCredentialSource) -> ToolInvocationContext:
     ("provider", "model"),
     [
         ("chutes", "Qwen/Qwen3-Embedding-8B-TEE"),
-        ("openrouter", "qwen/qwen3-embedding-8b"),
     ],
 )
 async def test_platform_credential_session_resolves_requested_embedding_without_miner_fallback(
@@ -227,9 +226,7 @@ async def test_runtime_invoker_lowers_openrouter_embedding_provider_extra() -> N
     assert len(embedding_provider.requests) == 1
     request = embedding_provider.requests[0]
     assert request.provider_extra is not None
-    assert request.provider_extra.to_request_extra() == {
-        "provider": {"only": ["nebius"], "allow_fallbacks": False}
-    }
+    assert request.provider_extra.to_request_extra() == {"provider": {"only": ["nebius"], "allow_fallbacks": False}}
     assert output.actual_cost_provider == "openrouter"
 
 

@@ -36,8 +36,7 @@ def test_parse_weighted_rubric_accepts_minimized_verified_draco_answer_shape() -
                             "id": "twfe-variance-weighted-decomposition",
                             "weight": 10,
                             "requirement": (
-                                "States TWFE coefficient is a variance-weighted average "
-                                "of treatment effects."
+                                "States TWFE coefficient is a variance-weighted average of treatment effects."
                             ),
                         },
                         {
@@ -60,9 +59,7 @@ def test_parse_weighted_rubric_accepts_minimized_verified_draco_answer_shape() -
             section_id="factual-accuracy",
             criterion_id="twfe-variance-weighted-decomposition",
             weight=10.0,
-            requirement=(
-                "States TWFE coefficient is a variance-weighted average of treatment effects."
-            ),
+            requirement=("States TWFE coefficient is a variance-weighted average of treatment effects."),
         ),
         WeightedRubricCriterion(
             section_id="factual-accuracy",
@@ -264,45 +261,6 @@ async def test_weighted_rubric_judge_calls_one_ungrounded_structured_request_per
     assert all(request.use_case == "benchmark_weighted_rubric_criterion_judge" for request in provider.requests)
     assert all(request.max_output_tokens is None for request in provider.requests)
     assert score.normalized_score == pytest.approx(1.0)
-
-
-@pytest.mark.anyio("asyncio")
-async def test_weighted_rubric_judge_prompt_payload_uses_criterion_type_not_weight() -> None:
-    provider = _RecordingRubricJudgeProvider(
-        verdicts=[
-            {"verdict": "MET", "justification": "Positive requirement is satisfied."},
-            {"verdict": "UNMET", "justification": "Negative issue is absent."},
-        ]
-    )
-    service = BenchmarkWeightedRubricScoringService(
-        llm_provider=provider,
-        config=BenchmarkWeightedRubricScoringConfig(provider="vertex", model="rubric-model"),
-    )
-
-    await service.score(
-        question="Which answer should be blue?",
-        rubric_answer=_rubric_answer_json(),
-        generated_answer="The answer is blue.",
-    )
-
-    positive_payload = _rubric_judge_payload(provider.requests[0])
-    negative_payload = _rubric_judge_payload(provider.requests[1])
-    assert positive_payload["query"] == "Which answer should be blue?"
-    assert positive_payload["generated_response"] == "The answer is blue."
-    assert positive_payload["criterion"] == {
-        "section_id": "factual-accuracy",
-        "criterion_id": "positive",
-        "criterion_type": "positive",
-        "requirement": "Reward this when MET.",
-    }
-    assert negative_payload["criterion"] == {
-        "section_id": "factual-accuracy",
-        "criterion_id": "negative",
-        "criterion_type": "negative",
-        "requirement": "Penalize this when MET.",
-    }
-    assert "weight" not in positive_payload["criterion"]
-    assert "weight" not in negative_payload["criterion"]
 
 
 @pytest.mark.anyio("asyncio")

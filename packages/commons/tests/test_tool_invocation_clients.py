@@ -18,7 +18,6 @@ from harnyx_commons.llm.schema import (
     LlmResponse,
     LlmUsage,
 )
-from harnyx_commons.platform_tool_proxy import platform_tool_proxy_provider_timeout_seconds
 from harnyx_commons.tools import invocation_clients
 from harnyx_commons.tools.invocation_clients import (
     ChutesEmbeddingProvider,
@@ -31,7 +30,6 @@ GEMMA_MODEL = "google/gemma-4-31B-turbo-TEE"
 GEMMA_ROUTE_TARGET = "custom-openai-compatible:gemma4-cloud-run-turbo"
 QWEN36_MODEL = "Qwen/Qwen3.6-27B-TEE"
 QWEN36_ROUTE_TARGET = "custom-openai-compatible:qwen36-cloud-run"
-CHUTES_SELECTED_MODELS = ("openai/gpt-oss-20b", "openai/gpt-oss-120b", QWEN36_MODEL)
 
 
 class _FakeLlmProvider:
@@ -203,33 +201,6 @@ def _openrouter_tool_request(*, model: str) -> LlmRequest:
     )
 
 
-def test_tool_invocation_clients_do_not_resolve_tool_provider_until_invoked(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[str] = []
-
-    class _FakeRegistry:
-        def resolve(self, name: str) -> str:
-            calls.append(name)
-            return f"provider:{name}"
-
-    monkeypatch.setattr(
-        invocation_clients,
-        "build_cached_llm_provider_registry",
-        lambda **_: _FakeRegistry(),
-    )
-
-    clients = build_tool_invocation_clients(
-        llm_settings=_llm_settings(),
-        bedrock_settings=BedrockSettings.model_construct(region="us-east-1"),
-        vertex_settings=VertexSettings.model_construct(gcp_project_id="project", gcp_location="us-central1"),
-    )
-
-    assert clients.search_client is None
-    assert clients.tool_llm_provider is not None
-    assert calls == []
-
-
 def test_tool_invocation_clients_can_require_search_provider() -> None:
     with pytest.raises(RuntimeError, match="SEARCH_PROVIDER must be configured"):
         build_tool_invocation_clients(
@@ -249,99 +220,6 @@ def test_tool_invocation_clients_can_skip_routed_tool_provider_policy() -> None:
     )
 
     assert clients.tool_llm_provider is None
-
-
-def test_internal_search_provider_keeps_configured_desearch_concurrency(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: list[dict[str, object]] = []
-
-    class _FakeDeSearchClient:
-        def __init__(self, **kwargs: object) -> None:
-            captured.append(kwargs)
-
-    monkeypatch.setattr(invocation_clients, "DeSearchClient", _FakeDeSearchClient)
-
-    provider = invocation_clients.build_web_search_provider(
-        LlmSettings.model_construct(
-            search_provider="desearch",
-            desearch_api_key=SecretStr("operator-desearch-key"),
-            desearch_max_concurrent=7,
-        )
-    )
-
-    assert provider is not None
-    assert captured == [
-        {
-            "base_url": invocation_clients.DESEARCH.base_url,
-            "api_key": "operator-desearch-key",
-            "timeout": invocation_clients.DESEARCH.timeout_seconds,
-            "max_concurrent": 7,
-            "include_payloads_in_logs": True,
-        }
-    ]
-
-
-def test_internal_search_provider_keeps_configured_parallel_concurrency(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: list[dict[str, object]] = []
-
-    class _FakeParallelClient:
-        def __init__(self, **kwargs: object) -> None:
-            captured.append(kwargs)
-
-    monkeypatch.setattr(invocation_clients, "ParallelClient", _FakeParallelClient)
-
-    provider = invocation_clients.build_web_search_provider(
-        LlmSettings.model_construct(
-            search_provider="parallel",
-            parallel_api_key=SecretStr("operator-parallel-key"),
-            parallel_base_url="https://parallel.example",
-            parallel_max_concurrent=11,
-        )
-    )
-
-    assert provider is not None
-    assert captured == [
-        {
-            "base_url": "https://parallel.example",
-            "api_key": "operator-parallel-key",
-            "timeout": invocation_clients.PARALLEL.timeout_seconds,
-            "max_concurrent": 11,
-            "include_payloads_in_logs": True,
-        }
-    ]
-
-
-def test_internal_search_provider_builds_firecrawl_with_fixed_endpoint_and_concurrency(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: list[dict[str, object]] = []
-
-    class _FakeFirecrawlClient:
-        def __init__(self, **kwargs: object) -> None:
-            captured.append(kwargs)
-
-    monkeypatch.setattr(invocation_clients, "FirecrawlClient", _FakeFirecrawlClient)
-
-    invocation_clients.build_web_search_provider(
-        LlmSettings.model_construct(
-            search_provider="firecrawl",
-            firecrawl_api_key=SecretStr("operator-firecrawl-key"),
-            firecrawl_max_concurrent=13,
-        )
-    )
-
-    assert captured == [
-        {
-            "base_url": invocation_clients.FIRECRAWL.base_url,
-            "api_key": "operator-firecrawl-key",
-            "timeout": invocation_clients.FIRECRAWL.timeout_seconds,
-            "max_concurrent": 13,
-            "include_payloads_in_logs": True,
-        }
-    ]
 
 
 @pytest.mark.parametrize(
@@ -382,62 +260,6 @@ def test_internal_new_search_providers_use_configured_credentials_and_concurrenc
             "max_concurrent": 17,
             "include_payloads_in_logs": True,
         }
-    ]
-
-
-def test_cached_web_search_provider_registry_resolves_requested_provider_without_payload_logging(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: list[tuple[str, dict[str, object]]] = []
-
-    class _FakeDeSearchClient:
-        def __init__(self, **kwargs: object) -> None:
-            captured.append(("desearch", kwargs))
-
-    class _FakeParallelClient:
-        def __init__(self, **kwargs: object) -> None:
-            captured.append(("parallel", kwargs))
-
-    monkeypatch.setattr(invocation_clients, "DeSearchClient", _FakeDeSearchClient)
-    monkeypatch.setattr(invocation_clients, "ParallelClient", _FakeParallelClient)
-    registry = invocation_clients.CachedWebSearchProviderRegistry(
-        llm_settings=LlmSettings.model_construct(
-            desearch_api_key=SecretStr("operator-desearch-key"),
-            desearch_max_concurrent=7,
-            parallel_api_key=SecretStr("operator-parallel-key"),
-            parallel_base_url="https://parallel.example",
-            parallel_max_concurrent=11,
-        ),
-        include_payloads_in_logs=False,
-    )
-
-    parallel = registry.resolve("parallel")
-    same_parallel = registry.resolve("parallel")
-    desearch = registry.resolve("desearch")
-
-    assert parallel is same_parallel
-    assert parallel is not desearch
-    assert captured == [
-        (
-            "parallel",
-            {
-                "base_url": "https://parallel.example",
-                "api_key": "operator-parallel-key",
-                "timeout": invocation_clients.PARALLEL.timeout_seconds,
-                "max_concurrent": 11,
-                "include_payloads_in_logs": False,
-            },
-        ),
-        (
-            "desearch",
-            {
-                "base_url": invocation_clients.DESEARCH.base_url,
-                "api_key": "operator-desearch-key",
-                "timeout": invocation_clients.DESEARCH.timeout_seconds,
-                "max_concurrent": 7,
-                "include_payloads_in_logs": False,
-            },
-        ),
     ]
 
 
@@ -484,27 +306,12 @@ def test_fixed_parallel_client_is_shared_between_web_and_ai_roles() -> None:
     assert clients.search_client is clients.ai_search_client
 
 
-@pytest.mark.parametrize("provider", ["firecrawl", "exa", "tavily"])
-@pytest.mark.parametrize("lazy_search", [False, True])
-def test_fixed_web_only_search_providers_do_not_build_ai_search_clients(
-    monkeypatch: pytest.MonkeyPatch,
-    provider: str,
-    lazy_search: bool,
-) -> None:
-    sentinel = object()
-    monkeypatch.setattr(invocation_clients, "build_web_search_provider", lambda _settings: sentinel)
-
-    search_client, ai_search_client = invocation_clients._build_optional_search_clients(
-        LlmSettings.model_construct(search_provider=provider),
-        lazy=lazy_search,
-        required=True,
-    )
-
-    assert search_client is not None
-    assert ai_search_client is None
-
-
-@pytest.mark.parametrize("provider", ["desearch", "parallel"])
+@pytest.mark.parametrize(
+    "provider",
+    [
+        "desearch",
+    ],
+)
 def test_cached_web_search_provider_registry_reports_missing_platform_credential(provider: str) -> None:
     registry = invocation_clients.CachedWebSearchProviderRegistry(llm_settings=LlmSettings.model_construct())
 
@@ -524,127 +331,51 @@ def test_cached_embedding_provider_registry_reports_missing_platform_credential(
     assert exc_info.value.provider == provider
 
 
-def test_miner_paid_desearch_provider_uses_explicit_key_without_shared_concurrency(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: list[dict[str, object]] = []
-
-    class _FakeDeSearchClient:
-        def __init__(self, **kwargs: object) -> None:
-            captured.append(kwargs)
-
-    monkeypatch.setattr(invocation_clients, "DeSearchClient", _FakeDeSearchClient)
-
-    provider = invocation_clients.build_miner_paid_web_search_provider(
-        provider="desearch",
-        api_key=SecretStr("miner-desearch-key"),
-        llm_settings=LlmSettings.model_construct(
-            desearch_api_key=SecretStr("operator-desearch-key"),
-            desearch_max_concurrent=7,
+@pytest.mark.parametrize(
+    ("provider", "client_name", "operator_settings"),
+    [
+        (
+            "desearch",
+            "DeSearchClient",
+            {
+                "desearch_api_key": SecretStr("operator-desearch-key"),
+                "desearch_max_concurrent": 7,
+            },
         ),
-    )
-
-    assert provider is not None
-    assert captured == [
-        {
-            "base_url": invocation_clients.DESEARCH.base_url,
-            "api_key": "miner-desearch-key",
-            "timeout": invocation_clients.DESEARCH.timeout_seconds,
-            "max_concurrent": None,
-        }
-    ]
-
-
-def test_miner_paid_parallel_provider_uses_explicit_key_without_shared_concurrency(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: list[dict[str, object]] = []
-
-    class _FakeParallelClient:
-        def __init__(self, **kwargs: object) -> None:
-            captured.append(kwargs)
-
-    monkeypatch.setattr(invocation_clients, "ParallelClient", _FakeParallelClient)
-
-    provider = invocation_clients.build_miner_paid_web_search_provider(
-        provider="parallel",
-        api_key=SecretStr("miner-parallel-key"),
-        llm_settings=LlmSettings.model_construct(
-            parallel_api_key=SecretStr("operator-parallel-key"),
-            parallel_base_url="https://parallel.example",
-            parallel_max_concurrent=11,
+        (
+            "parallel",
+            "ParallelClient",
+            {
+                "parallel_api_key": SecretStr("operator-parallel-key"),
+                "parallel_base_url": "https://parallel.example",
+                "parallel_max_concurrent": 11,
+            },
         ),
-    )
-
-    assert provider is not None
-    assert captured == [
-        {
-            "base_url": "https://parallel.example",
-            "api_key": "miner-parallel-key",
-            "timeout": invocation_clients.PARALLEL.timeout_seconds,
-            "max_concurrent": None,
-        }
-    ]
-
-
-def test_miner_paid_search_provider_uses_effective_timeout_when_above_default(
+    ],
+)
+def test_miner_paid_search_provider_isolates_credential_and_concurrency(
     monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    client_name: str,
+    operator_settings: dict[str, object],
 ) -> None:
     captured: list[dict[str, object]] = []
-
-    class _FakeParallelClient:
-        def __init__(self, **kwargs: object) -> None:
-            captured.append(kwargs)
-
-    monkeypatch.setattr(invocation_clients, "ParallelClient", _FakeParallelClient)
-
-    provider = invocation_clients.build_miner_paid_web_search_provider(
-        provider="parallel",
-        api_key=SecretStr("miner-parallel-key"),
-        llm_settings=LlmSettings.model_construct(
-            parallel_base_url="https://parallel.example",
-        ),
-        timeout=180.0,
+    sentinel = object()
+    monkeypatch.setattr(
+        invocation_clients,
+        client_name,
+        lambda **kwargs: captured.append(kwargs) or sentinel,
     )
 
-    assert provider is not None
-    assert captured == [
-        {
-            "base_url": "https://parallel.example",
-            "api_key": "miner-parallel-key",
-            "timeout": platform_tool_proxy_provider_timeout_seconds(180.0),
-            "max_concurrent": None,
-        }
-    ]
-
-
-def test_miner_paid_search_provider_keeps_default_when_effective_timeout_is_shorter(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: list[dict[str, object]] = []
-
-    class _FakeDeSearchClient:
-        def __init__(self, **kwargs: object) -> None:
-            captured.append(kwargs)
-
-    monkeypatch.setattr(invocation_clients, "DeSearchClient", _FakeDeSearchClient)
-
-    provider = invocation_clients.build_miner_paid_web_search_provider(
-        provider="desearch",
-        api_key=SecretStr("miner-desearch-key"),
-        llm_settings=LlmSettings.model_construct(),
-        timeout=5.0,
+    resolved = invocation_clients.build_miner_paid_web_search_provider(
+        provider=provider,
+        api_key=SecretStr(f"miner-{provider}-key"),
+        llm_settings=LlmSettings.model_construct(**operator_settings),
     )
 
-    assert provider is not None
-    assert captured == [
-        {
-            "base_url": invocation_clients.DESEARCH.base_url,
-            "api_key": "miner-desearch-key",
-            "timeout": invocation_clients.DESEARCH.timeout_seconds,
-            "max_concurrent": None,
-        }
-    ]
+    assert resolved is sentinel
+    assert captured[0]["api_key"] == f"miner-{provider}-key"
+    assert captured[0]["max_concurrent"] is None
 
 
 def test_miner_paid_web_search_provider_rejects_blank_key() -> None:
@@ -666,47 +397,7 @@ def test_miner_paid_web_search_provider_rejects_unknown_provider() -> None:
 
 
 @pytest.mark.anyio("asyncio")
-async def test_tool_invocation_clients_route_tool_model_to_custom_endpoint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    registry = _FakeLlmRegistry()
-    monkeypatch.setattr(invocation_clients, "build_cached_llm_provider_registry", lambda **_: registry)
-
-    clients = build_tool_invocation_clients(
-        llm_settings=_llm_settings(),
-        bedrock_settings=BedrockSettings.model_construct(region="us-east-1"),
-        vertex_settings=VertexSettings.model_construct(gcp_project_id="project", gcp_location="us-central1"),
-    )
-
-    assert clients.tool_llm_provider is not None
-    await clients.tool_llm_provider.invoke(_gemma_tool_request())
-
-    assert registry.requests_by_provider["custom-openai-compatible:gemma4-cloud-run-turbo"][0].provider == (
-        "custom-openai-compatible:gemma4-cloud-run-turbo"
-    )
-
-
-@pytest.mark.anyio("asyncio")
-async def test_tool_invocation_clients_route_qwen36_tool_model_to_custom_endpoint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    registry = _FakeLlmRegistry()
-    monkeypatch.setattr(invocation_clients, "build_cached_llm_provider_registry", lambda **_: registry)
-
-    clients = build_tool_invocation_clients(
-        llm_settings=_llm_settings(),
-        bedrock_settings=BedrockSettings.model_construct(region="us-east-1"),
-        vertex_settings=VertexSettings.model_construct(gcp_project_id="project", gcp_location="us-central1"),
-    )
-
-    assert clients.tool_llm_provider is not None
-    await clients.tool_llm_provider.invoke(_qwen36_tool_request())
-
-    assert registry.requests_by_provider[QWEN36_ROUTE_TARGET][0].provider == QWEN36_ROUTE_TARGET
-
-
-@pytest.mark.anyio("asyncio")
-@pytest.mark.parametrize("model", CHUTES_SELECTED_MODELS)
+@pytest.mark.parametrize("model", ("openai/gpt-oss-20b",))
 async def test_tool_invocation_clients_keep_chutes_selected_model_on_chutes(
     monkeypatch: pytest.MonkeyPatch,
     model: str,

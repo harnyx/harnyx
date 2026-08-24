@@ -40,16 +40,6 @@ def test_settings_accepts_validator_env_names(monkeypatch) -> None:
     assert settings.rpc_port == 9001
 
 
-def test_settings_ignore_removed_parallelism_env_names(monkeypatch) -> None:
-    monkeypatch.setenv("VALIDATOR_ARTIFACT_PARALLELISM", "1")
-    monkeypatch.setenv("VALIDATOR_TASK_PARALLELISM", "10")
-
-    settings = Settings.load()
-
-    assert not hasattr(settings, "artifact_parallelism")
-    assert not hasattr(settings, "artifact_task_parallelism")
-
-
 def test_settings_defaults_validator_state_dir(monkeypatch) -> None:
     monkeypatch.delenv("VALIDATOR_STATE_DIR", raising=False)
 

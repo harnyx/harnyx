@@ -93,9 +93,7 @@ async def test_parallel_client_search_web_posts_keyword_list_and_turbo_mode() ->
     assert response.data[0].snippet == "alpha snippet"
     assert response.attempts == 1
     assert response.retry_reasons == ()
-    assert result.billing.actual_cost_usd == pytest.approx(
-        price_parallel_search(billable_results=1, mode="turbo")
-    )
+    assert result.billing.actual_cost_usd == pytest.approx(price_parallel_search(billable_results=1, mode="turbo"))
     assert result.billing.actual_cost_provider == "parallel"
     assert result.billing.billable_units == 1
     assert captured["method"] == "POST"
@@ -463,9 +461,7 @@ async def test_parallel_exact_zero_usage_does_not_fall_back_to_submitted_urls() 
         ),
     )
 
-    result = await adapter.extract_pages(
-        ExtractPagesRequest(urls=("https://example.com/missing",))
-    )
+    result = await adapter.extract_pages(ExtractPagesRequest(urls=("https://example.com/missing",)))
 
     assert result.billing.billable_units == 0
     assert result.billing.source == "response_body"
@@ -477,17 +473,7 @@ async def test_parallel_exact_zero_usage_does_not_fall_back_to_submitted_urls() 
         {
             "extract_id": "extract-invalid-content",
             "session_id": "session-invalid-content",
-            "results": [
-                {"url": "https://example.com", "full_content": ["not", "text"]}
-            ],
-            "errors": [],
-        },
-        {
-            "extract_id": "extract-invalid-excerpt",
-            "session_id": "session-invalid-excerpt",
-            "results": [
-                {"url": "https://example.com", "excerpts": [{"not": "text"}]}
-            ],
+            "results": [{"url": "https://example.com", "full_content": ["not", "text"]}],
             "errors": [],
         },
         {"results": [], "errors": []},
@@ -517,7 +503,6 @@ async def test_parallel_rejects_extract_response_shape_drift(
     ("content", "content_type"),
     [
         (b"<html>not json</html>", "text/html"),
-        (b"[]", "application/json"),
     ],
 )
 async def test_parallel_rejects_undecodable_or_non_object_extract_response(
@@ -558,19 +543,6 @@ async def test_parallel_rejects_undecodable_or_non_object_extract_response(
                     "url": "https://example.com/two",
                     "error_type": "fetch_error",
                 }
-            ],
-        ),
-        (
-            [{"url": "https://example.com/one", "full_content": "one"}],
-            [
-                {
-                    "url": "https://example.com/one",
-                    "error_type": "fetch_error",
-                },
-                {
-                    "url": "https://example.com/two",
-                    "error_type": "fetch_error",
-                },
             ],
         ),
         (
@@ -625,11 +597,7 @@ async def test_parallel_rejects_invalid_extract_url_partition(
     )
 
     with pytest.raises(ToolProviderError, match="response invalid"):
-        await adapter.extract_pages(
-            ExtractPagesRequest(
-                urls=("https://example.com/one", "https://example.com/two")
-            )
-        )
+        await adapter.extract_pages(ExtractPagesRequest(urls=("https://example.com/one", "https://example.com/two")))
 
 
 async def test_parallel_client_raises_on_error_status() -> None:

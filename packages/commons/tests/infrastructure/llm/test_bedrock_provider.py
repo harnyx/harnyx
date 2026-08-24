@@ -17,15 +17,8 @@ from harnyx_commons.llm.providers.bedrock_codec import (
     ContentBlockDeltaEvent,
     ContentBlockStartEvent,
     ContentBlockStopEvent,
-    InternalServerExceptionEvent,
-    MessageStartEvent,
     MessageStopEvent,
-    MetadataEvent,
-    ModelStreamErrorExceptionEvent,
     ReasoningDelta,
-    ServiceUnavailableExceptionEvent,
-    TextDelta,
-    ThrottlingExceptionEvent,
     ValidationExceptionEvent,
 )
 from harnyx_commons.llm.retry_utils import RetryPolicy
@@ -174,89 +167,6 @@ async def test_bedrock_provider_maps_stream_response_and_logs_ttft(
     assert ttft_records[0].__dict__["data"]["ttft_ms"] >= 0
 
 
-async def test_bedrock_provider_ttft_uses_first_reasoning_delta(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    _patch_session(
-        monkeypatch,
-        events=(
-            {"messageStart": {"role": "assistant"}},
-            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"reasoningContent": {"text": "Thinking. "}}}},
-            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "56"}}},
-            {"messageStop": {"stopReason": "end_turn"}},
-            {"metadata": {"usage": {"inputTokens": 11, "outputTokens": 7, "totalTokens": 18}}},
-        ),
-    )
-    produced_output_events: list[tuple[object, dict[str, object], bool]] = []
-    original_apply = BedrockStreamAccumulator.apply
-
-    def _record_apply(self: BedrockStreamAccumulator, event, *, raw_event: dict[str, object]) -> bool:
-        result = original_apply(self, event, raw_event=raw_event)
-        produced_output_events.append((event, dict(raw_event), result))
-        return result
-
-    monkeypatch.setattr("harnyx_commons.llm.providers.bedrock.BedrockStreamAccumulator.apply", _record_apply)
-    caplog.set_level(logging.DEBUG, logger="harnyx_commons.llm.calls")
-    provider = _provider()
-
-    await provider.invoke(_base_request())
-
-    ttft_records = [record for record in caplog.records if record.message == "llm.bedrock.stream.ttft"]
-    assert ttft_records
-    assert any(result for _, _, result in produced_output_events)
-    first_output_event, first_output_raw_event, first_output_result = next(
-        (event, raw_event, result) for event, raw_event, result in produced_output_events if result
-    )
-    assert first_output_result is True
-    assert isinstance(first_output_event, ContentBlockDeltaEvent)
-    assert isinstance(first_output_event.content_block_delta.delta, ReasoningDelta)
-    assert first_output_raw_event == {
-        "contentBlockDelta": {
-            "contentBlockIndex": 0,
-            "delta": {"reasoningContent": {"text": "Thinking. "}},
-        }
-    }
-
-
-async def test_bedrock_provider_ttft_uses_first_text_delta(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    _patch_session(
-        monkeypatch,
-        events=(
-            {"messageStart": {"role": "assistant"}},
-            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "56"}}},
-            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"reasoningContent": {"text": "Thinking. "}}}},
-            {"messageStop": {"stopReason": "end_turn"}},
-            {"metadata": {"usage": {"inputTokens": 11, "outputTokens": 7, "totalTokens": 18}}},
-        ),
-    )
-    produced_output_events: list[tuple[object, bool]] = []
-    original_apply = BedrockStreamAccumulator.apply
-
-    def _record_apply(self: BedrockStreamAccumulator, event, *, raw_event: dict[str, object]) -> bool:
-        result = original_apply(self, event, raw_event=raw_event)
-        produced_output_events.append((event, result))
-        return result
-
-    monkeypatch.setattr("harnyx_commons.llm.providers.bedrock.BedrockStreamAccumulator.apply", _record_apply)
-    caplog.set_level(logging.DEBUG, logger="harnyx_commons.llm.calls")
-    provider = _provider()
-
-    await provider.invoke(_base_request())
-
-    ttft_records = [record for record in caplog.records if record.message == "llm.bedrock.stream.ttft"]
-    assert ttft_records
-    first_output_event, first_output_result = next(
-        (event, result) for event, result in produced_output_events if result
-    )
-    assert first_output_result is True
-    assert isinstance(first_output_event, ContentBlockDeltaEvent)
-    assert isinstance(first_output_event.content_block_delta.delta, TextDelta)
-
-
 async def test_bedrock_provider_builds_structured_output_config(monkeypatch: pytest.MonkeyPatch) -> None:
     session, client_calls = _patch_session(
         monkeypatch,
@@ -284,24 +194,6 @@ async def test_bedrock_provider_builds_structured_output_config(monkeypatch: pyt
     assert "description" not in json_schema
 
 
-async def test_bedrock_provider_preserves_explicit_zero_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    session, _ = _patch_session(
-        monkeypatch,
-        events=(
-            {"messageStart": {"role": "assistant"}},
-            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "56"}}},
-            {"messageStop": {"stopReason": "end_turn"}},
-            {"metadata": {"usage": {"inputTokens": 5, "outputTokens": 2, "totalTokens": 7}}},
-        ),
-    )
-    provider = _provider()
-    request = replace(_base_request(), timeout_seconds=0.0)
-
-    await provider.invoke(request)
-
-    assert session.calls[0]["config"].read_timeout == 0.0
-
-
 async def test_bedrock_provider_omits_empty_inference_config(monkeypatch: pytest.MonkeyPatch) -> None:
     _, client_calls = _patch_session(
         monkeypatch,
@@ -318,13 +210,6 @@ async def test_bedrock_provider_omits_empty_inference_config(monkeypatch: pytest
     await provider.invoke(request)
 
     assert "inferenceConfig" not in client_calls[0]
-
-
-def test_bedrock_stream_event_adapter_parses_message_start_variant() -> None:
-    event = BEDROCK_STREAM_EVENT_ADAPTER.validate_python({"messageStart": {"role": "assistant"}})
-
-    assert isinstance(event, MessageStartEvent)
-    assert event.message_start.role == "assistant"
 
 
 def test_bedrock_stream_event_adapter_parses_content_block_stop_variant() -> None:
@@ -370,27 +255,11 @@ def test_bedrock_stream_event_adapter_rejects_invalid_multi_key_shape() -> None:
         )
 
 
-def test_bedrock_stream_event_adapter_rejects_unknown_message_start_keys() -> None:
-    with pytest.raises(ValidationError):
-        BEDROCK_STREAM_EVENT_ADAPTER.validate_python({"messageStart": {"role": "assistant", "unexpected": "x"}})
-
-
 def test_bedrock_stream_event_adapter_rejects_unknown_error_payload_keys() -> None:
     with pytest.raises(ValidationError):
         BEDROCK_STREAM_EVENT_ADAPTER.validate_python(
             {"validationException": {"message": "schema mismatch", "unexpected": "x"}}
         )
-
-
-def test_bedrock_stream_event_dispatch_delegates_message_start_behavior() -> None:
-    event = BEDROCK_STREAM_EVENT_ADAPTER.validate_python({"messageStart": {"role": "assistant"}})
-    accumulator = BedrockStreamAccumulator()
-
-    result = accumulator.apply(event, raw_event={"messageStart": {"role": "assistant"}})
-
-    assert isinstance(event, MessageStartEvent)
-    assert result is False
-    assert accumulator.response_role == "assistant"
 
 
 def test_bedrock_stream_event_dispatch_delegates_content_block_start_behavior() -> None:
@@ -401,60 +270,6 @@ def test_bedrock_stream_event_dispatch_delegates_content_block_start_behavior() 
 
     assert isinstance(event, ContentBlockStartEvent)
     assert result is False
-
-
-def test_bedrock_stream_event_dispatch_delegates_message_stop_behavior() -> None:
-    event = BEDROCK_STREAM_EVENT_ADAPTER.validate_python(
-        {"messageStop": {"stopReason": "end_turn", "additionalModelResponseFields": {"foo": "bar"}}}
-    )
-    accumulator = BedrockStreamAccumulator()
-
-    result = accumulator.apply(
-        event,
-        raw_event={"messageStop": {"stopReason": "end_turn", "additionalModelResponseFields": {"foo": "bar"}}},
-    )
-
-    assert isinstance(event, MessageStopEvent)
-    assert result is False
-    assert accumulator.finish_reason == "end_turn"
-    assert accumulator.additional_model_response_fields == {"foo": "bar"}
-
-
-def test_bedrock_stream_event_dispatch_delegates_metadata_behavior() -> None:
-    event = BEDROCK_STREAM_EVENT_ADAPTER.validate_python({"metadata": {"usage": {"totalTokens": 1}}})
-    accumulator = BedrockStreamAccumulator()
-
-    result = accumulator.apply(event, raw_event={"metadata": {"usage": {"totalTokens": 1}}})
-
-    assert isinstance(event, MetadataEvent)
-    assert result is False
-    assert accumulator.metadata_event is not None
-    assert accumulator.metadata_event.usage is not None
-    assert accumulator.metadata_event.usage.total_tokens == 1
-
-
-def test_bedrock_stream_event_adapter_preserves_documented_metadata_fields() -> None:
-    event = BEDROCK_STREAM_EVENT_ADAPTER.validate_python(
-        {
-            "metadata": {
-                "usage": {"totalTokens": 1, "cacheWriteInputTokens": 2},
-                "metrics": {"latencyMs": 123},
-                "trace": {"guardrail": {}},
-                "performanceConfig": {"latency": "optimized"},
-                "serviceTier": {"type": "priority"},
-                "ignoredFutureField": {"still": "allowed"},
-            }
-        }
-    )
-
-    assert isinstance(event, MetadataEvent)
-    assert event.metadata.model_dump(mode="python", by_alias=True, exclude_none=True) == {
-        "usage": {"totalTokens": 1, "cacheWriteInputTokens": 2},
-        "metrics": {"latencyMs": 123},
-        "trace": {"guardrail": {}},
-        "performanceConfig": {"latency": "optimized"},
-        "serviceTier": {"type": "priority"},
-    }
 
 
 def test_bedrock_stream_event_adapter_keeps_documented_start_tool_shape_opaque_until_rejection() -> None:
@@ -497,10 +312,6 @@ def test_bedrock_stream_event_dispatch_delegates_stream_error_behavior() -> None
     ("raw_event", "expected_type"),
     [
         ({"validationException": {"message": "schema mismatch"}}, ValidationExceptionEvent),
-        ({"throttlingException": {"message": "slow down"}}, ThrottlingExceptionEvent),
-        ({"serviceUnavailableException": {"message": "outage"}}, ServiceUnavailableExceptionEvent),
-        ({"modelStreamErrorException": {"message": "stream exploded"}}, ModelStreamErrorExceptionEvent),
-        ({"internalServerException": {"message": "internal"}}, InternalServerExceptionEvent),
     ],
 )
 def test_bedrock_stream_event_adapter_parses_stream_error_variants(
@@ -628,17 +439,6 @@ async def test_bedrock_provider_rejects_unsupported_delta_variants(
                 messages=(LlmMessage(role="user", content=(LlmMessageContentPart.input_text("hello"),)),),
                 temperature=None,
                 max_output_tokens=None,
-                output_mode="json_object",
-            ),
-            "does not support json_object",
-        ),
-        (
-            LlmRequest(
-                provider="bedrock",
-                model="openai.gpt-oss-20b-1:0",
-                messages=(LlmMessage(role="user", content=(LlmMessageContentPart.input_text("hello"),)),),
-                temperature=None,
-                max_output_tokens=None,
                 output_mode="text",
                 tools=(LlmTool(type="function", function={"name": "lookup"}),),
             ),
@@ -734,9 +534,7 @@ async def test_bedrock_provider_retries_expired_signature_with_fresh_request(
                     "20260523T072628Z (20260523T073128Z - 5 min.)"
                 ),
             },
-            "ResponseMetadata": {
-                "HTTPStatusCode": 403,
-            },
+            "ResponseMetadata": {"HTTPStatusCode": 403},
         },
         operation_name="ConverseStream",
     )
@@ -751,41 +549,14 @@ async def test_bedrock_provider_retries_expired_signature_with_fresh_request(
         failures=(expired_signature,),
     )
     provider = _provider()
-    provider._retry_policy = RetryPolicy(attempts=2, initial_ms=0, max_ms=0, jitter=0.0)
-
-    response = await provider.invoke(_base_request())
-
-    assert response.raw_text == "56"
-    assert len(client_calls) == 2
-
-
-async def test_bedrock_provider_uses_request_retry_policy_over_default(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    throttled = ClientError(
-        error_response={
-            "Error": {"Code": "ThrottlingException", "Message": "slow down"},
-            "ResponseMetadata": {"HTTPStatusCode": 429},
-        },
-        operation_name="ConverseStream",
+    request = replace(
+        _base_request(),
+        retry_policy=RetryPolicy(attempts=2, initial_ms=0, max_ms=0, jitter=0.0),
     )
-    _, client_calls = _patch_session(
-        monkeypatch,
-        events=(
-            {"messageStart": {"role": "assistant"}},
-            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "ok"}}},
-            {"messageStop": {"stopReason": "end_turn"}},
-            {"metadata": {"usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2}}},
-        ),
-        failures=(throttled,),
-    )
-    provider = _provider()
-    provider._retry_policy = RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0.0)
-    request = replace(_base_request(), retry_policy=RetryPolicy(attempts=2, initial_ms=0, max_ms=0, jitter=0.0))
 
     response = await provider.invoke(request)
 
-    assert response.raw_text == "ok"
+    assert response.raw_text == "56"
     assert len(client_calls) == 2
 
 

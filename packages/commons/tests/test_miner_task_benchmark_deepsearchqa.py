@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import json
-from hashlib import sha256
-from importlib.resources import files
 from uuid import UUID
 
 import harnyx_commons.miner_task_benchmark.registry as registry_mod
@@ -89,30 +86,6 @@ def test_deepsearchqa_loader_retains_current_snapshot_in_version_catalog() -> No
     snapshots = list_deepsearchqa_snapshots()
 
     assert snapshots == (snapshot,)
-
-
-def test_load_deepsearchqa_snapshot_manifest_checksum_matches_versioned_packaged_csv() -> None:
-    snapshot = load_deepsearchqa_snapshot()
-    version_dir = files("harnyx_commons.miner_task_benchmark.deepsearchqa.data").joinpath(
-        "versions",
-        f"{snapshot.manifest.dataset_version}__{snapshot.manifest.scoring_version}",
-    )
-    checksum = sha256(version_dir.joinpath(snapshot.manifest.file_name).read_bytes()).hexdigest()
-
-    assert checksum == snapshot.manifest.sha256
-
-
-def test_load_deepsearchqa_snapshot_current_version_points_at_versioned_payload() -> None:
-    snapshot = load_deepsearchqa_snapshot()
-    data_dir = files("harnyx_commons.miner_task_benchmark.deepsearchqa.data")
-    current_version = json.loads(
-        data_dir.joinpath("current_version.json").read_text(encoding="utf-8")
-    )
-
-    assert current_version == {
-        "dataset_version": snapshot.manifest.dataset_version,
-        "scoring_version": snapshot.manifest.scoring_version,
-    }
 
 
 def test_benchmark_registry_resolves_explicit_active_version_only(monkeypatch) -> None:

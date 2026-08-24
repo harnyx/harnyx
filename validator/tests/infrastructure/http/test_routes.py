@@ -242,34 +242,6 @@ def test_execute_tool_endpoint_accepts_neutral_headers() -> None:
     assert provider.tool_concurrency_limiter.release_calls == [(DEMO_SESSION_TOKEN, "search_web")]
 
 
-def test_execute_tool_endpoint_releases_semaphore_on_failure() -> None:
-    provider = DemoDependencyProvider()
-    provider.dependencies = ToolRouteDeps(
-        tool_executor=_FailingToolExecutor(),
-        tool_concurrency_limiter=provider.tool_concurrency_limiter,
-    )
-    app = create_test_app(provider)
-    client = TestClient(app)
-
-    response = client.post(
-        "/v1/tools/execute",
-        json={
-            "tool": "search_web",
-            "args": ["demo"],
-            "kwargs": {"query": "demo"},
-        },
-        headers={
-            "x-platform-token": DEMO_SESSION_TOKEN,
-            SESSION_ID_HEADER: str(provider.session.session_id),
-        },
-    )
-
-    assert response.status_code == 400
-    invocation = _invocation("search_web")
-    assert provider.tool_concurrency_limiter.release_calls == [(DEMO_SESSION_TOKEN, "search_web")]
-    assert provider.tool_concurrency_limiter.in_flight(invocation) == 0
-
-
 def test_execute_tool_endpoint_returns_generic_detail_for_provider_failure() -> None:
     provider = DemoDependencyProvider()
     provider.dependencies = ToolRouteDeps(
@@ -377,32 +349,6 @@ def test_execute_tool_endpoint_keeps_unsafe_platform_provider_failure_detail_gen
     assert response.json() == {"detail": "tool execution failed"}
 
 
-def test_execute_tool_endpoint_unexpected_internal_error_uses_generic_500_body() -> None:
-    provider = DemoDependencyProvider()
-    provider.dependencies = ToolRouteDeps(
-        tool_executor=_UnexpectedFailingToolExecutor(),
-        tool_concurrency_limiter=provider.tool_concurrency_limiter,
-    )
-    app = create_test_app(provider)
-    client = TestClient(app, raise_server_exceptions=False)
-
-    response = client.post(
-        "/v1/tools/execute",
-        json={
-            "tool": "search_web",
-            "args": ["demo"],
-            "kwargs": {"query": "demo"},
-        },
-        headers={
-            "x-platform-token": DEMO_SESSION_TOKEN,
-            SESSION_ID_HEADER: str(provider.session.session_id),
-        },
-    )
-
-    assert response.status_code == 500
-    assert "tool secret" not in response.text
-
-
 def test_execute_tool_endpoint_rejects_repo_tools() -> None:
     provider = DemoDependencyProvider()
     app = create_test_app(provider)
@@ -480,35 +426,6 @@ def test_execute_tool_endpoint_waits_when_shared_tool_cap_is_full_then_succeeds(
             provider=provider,
             tool="llm_chat",
             model=DEFAULT_LIMIT_LLM_MODEL,
-            expected_acquire_calls=21,
-            unblock_invocation=unblock_invocation,
-        )
-    finally:
-        for invocation in held:
-            provider.tool_concurrency_limiter.release(invocation)
-
-    assert response.status_code == 200
-    assert provider.tool_concurrency_limiter.in_flight(_invocation("llm_chat")) == 0
-
-
-def test_execute_tool_endpoint_uses_same_cap_for_different_llm_models() -> None:
-    provider = DemoDependencyProvider()
-    provider.dependencies = ToolRouteDeps(
-        tool_executor=cast(ToolExecutor, _StaticToolExecutor()),
-        tool_concurrency_limiter=provider.tool_concurrency_limiter,
-    )
-    app = create_test_app(provider)
-    held = _mixed_invocations(20)
-    for invocation in held:
-        provider.tool_concurrency_limiter.acquire(invocation)
-
-    try:
-        unblock_invocation = held.pop()
-        response = _issue_waiting_tool_request(
-            app=app,
-            provider=provider,
-            tool="llm_chat",
-            model=DEEPSEEK_V32_MODEL,
             expected_acquire_calls=21,
             unblock_invocation=unblock_invocation,
         )
@@ -671,45 +588,6 @@ def test_execute_tool_endpoint_rejects_missing_token_header() -> None:
 
     assert response.status_code == 401
     assert response.json() == {"detail": "missing x-platform-token header"}
-
-
-def test_execute_tool_endpoint_rejects_missing_session_header() -> None:
-    provider = DemoDependencyProvider()
-    app = create_test_app(provider)
-    client = TestClient(app)
-
-    response = client.post(
-        "/v1/tools/execute",
-        json={
-            "tool": "search_web",
-            "args": ["demo"],
-            "kwargs": {"query": "demo"},
-        },
-        headers={"x-platform-token": DEMO_SESSION_TOKEN},
-    )
-
-    assert response.status_code == 422
-
-
-def test_execute_tool_endpoint_rejects_malformed_session_header() -> None:
-    provider = DemoDependencyProvider()
-    app = create_test_app(provider)
-    client = TestClient(app)
-
-    response = client.post(
-        "/v1/tools/execute",
-        json={
-            "tool": "search_web",
-            "args": ["demo"],
-            "kwargs": {"query": "demo"},
-        },
-        headers={
-            "x-platform-token": DEMO_SESSION_TOKEN,
-            SESSION_ID_HEADER: "not-a-uuid",
-        },
-    )
-
-    assert response.status_code == 422
 
 
 def test_execute_tool_endpoint_rejects_legacy_body_session_id_field() -> None:

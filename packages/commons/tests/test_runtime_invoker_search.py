@@ -49,6 +49,23 @@ class _BlockingSearchProvider(_CapturingSearchProvider):
         raise AssertionError("unreachable")
 
 
+class _CancellableSearchProvider(_CapturingSearchProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def search_web(self, request: SearchWebSearchRequest) -> SearchProviderResult[SearchWebSearchResponse]:
+        self.requests.append(request)
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+        raise AssertionError("unreachable")
+
+
 def _context(source: ProviderCredentialSource) -> ToolInvocationContext:
     return ToolInvocationContext(
         receipt_id=f"receipt-{source.value}",
@@ -59,7 +76,13 @@ def _context(source: ProviderCredentialSource) -> ToolInvocationContext:
     )
 
 
-@pytest.mark.parametrize("provider", ["desearch", "parallel", "firecrawl", "exa", "tavily"])
+@pytest.mark.parametrize(
+    "provider",
+    [
+        "desearch",
+        "tavily",
+    ],
+)
 async def test_platform_credential_session_resolves_requested_search_without_miner_fallback(provider: str) -> None:
     platform_provider = _CapturingSearchProvider()
     miner_resolver_calls: list[str] = []
@@ -125,9 +148,7 @@ async def test_firecrawl_static_settlement_retains_provider_billing_evidence() -
         ) -> SearchProviderResult[SearchWebSearchResponse]:
             self.requests.append(request)
             return SearchProviderResult(
-                response=SearchWebSearchResponse(
-                    data=[SearchWebResult(link="https://example.com", title="Example")]
-                ),
+                response=SearchWebSearchResponse(data=[SearchWebResult(link="https://example.com", title="Example")]),
                 billing=ProviderBillingMetadata(
                     actual_cost_provider="firecrawl",
                     source="response_body",
@@ -164,13 +185,9 @@ async def test_firecrawl_static_settlement_retains_provider_billing_evidence() -
 
 async def test_exa_provider_returned_cost_is_settled_directly() -> None:
     class _ExaProvider(_CapturingSearchProvider):
-        async def search_web(
-            self, request: SearchWebSearchRequest
-        ) -> SearchProviderResult[SearchWebSearchResponse]:
+        async def search_web(self, request: SearchWebSearchRequest) -> SearchProviderResult[SearchWebSearchResponse]:
             return SearchProviderResult(
-                response=SearchWebSearchResponse(
-                    data=[SearchWebResult(link="https://example.com", title="Example")]
-                ),
+                response=SearchWebSearchResponse(data=[SearchWebResult(link="https://example.com", title="Example")]),
                 billing=ProviderBillingMetadata(
                     actual_cost_provider="exa",
                     actual_cost_usd=0.007,
@@ -181,12 +198,8 @@ async def test_exa_provider_returned_cost_is_settled_directly() -> None:
                 ),
             )
 
-    invoker = RuntimeToolInvoker(
-        InMemoryReceiptLog(), web_search_client=_ExaProvider(), web_search_provider_name="exa"
-    )
-    result = await invoker.invoke(
-        "search_web", args=(), kwargs={"provider": "exa", "search_queries": ["harnyx"]}
-    )
+    invoker = RuntimeToolInvoker(InMemoryReceiptLog(), web_search_client=_ExaProvider(), web_search_provider_name="exa")
+    result = await invoker.invoke("search_web", args=(), kwargs={"provider": "exa", "search_queries": ["harnyx"]})
 
     assert result.actual_cost_usd == pytest.approx(0.007)
     assert result.actual_cost_provider == "exa"
@@ -195,13 +208,9 @@ async def test_exa_provider_returned_cost_is_settled_directly() -> None:
 
 async def test_tavily_usage_evidence_is_retained_with_static_settlement() -> None:
     class _TavilyProvider(_CapturingSearchProvider):
-        async def search_web(
-            self, request: SearchWebSearchRequest
-        ) -> SearchProviderResult[SearchWebSearchResponse]:
+        async def search_web(self, request: SearchWebSearchRequest) -> SearchProviderResult[SearchWebSearchResponse]:
             return SearchProviderResult(
-                response=SearchWebSearchResponse(
-                    data=[SearchWebResult(link="https://example.com", title="Example")]
-                ),
+                response=SearchWebSearchResponse(data=[SearchWebResult(link="https://example.com", title="Example")]),
                 billing=ProviderBillingMetadata(
                     actual_cost_provider="tavily",
                     source="response_body",
@@ -214,9 +223,7 @@ async def test_tavily_usage_evidence_is_retained_with_static_settlement() -> Non
     invoker = RuntimeToolInvoker(
         InMemoryReceiptLog(), web_search_client=_TavilyProvider(), web_search_provider_name="tavily"
     )
-    result = await invoker.invoke(
-        "search_web", args=(), kwargs={"provider": "tavily", "search_queries": ["harnyx"]}
-    )
+    result = await invoker.invoke("search_web", args=(), kwargs={"provider": "tavily", "search_queries": ["harnyx"]})
 
     assert result.actual_cost_provider == "tavily"
     assert result.actual_cost_evidence["settlement_source"] == "static_pricing"
@@ -280,6 +287,7 @@ async def test_omitted_search_timeout_uses_same_outer_deadline_for_every_credent
     monkeypatch: pytest.MonkeyPatch,
     credential_source: ProviderCredentialSource,
 ) -> None:
+    """Future failure: a provider cannot bypass the invoker's default deadline."""
     provider = _BlockingSearchProvider()
     monkeypatch.setattr(runtime_invoker_module, "DEFAULT_SEARCH_TOOL_TIMEOUT_SECONDS", 0.01)
 
@@ -304,3 +312,28 @@ async def test_omitted_search_timeout_uses_same_outer_deadline_for_every_credent
         )
 
     assert provider.requests[0].timeout == 0.01
+
+
+async def test_runtime_invoker_cancels_timed_search_web_provider_when_parent_cancelled() -> None:
+    """Future failure: cancelling a sandbox request must cancel and drain paid provider work."""
+    provider = _CancellableSearchProvider()
+    invoker = RuntimeToolInvoker(
+        InMemoryReceiptLog(),
+        web_search_client=provider,
+        web_search_provider_name="desearch",
+    )
+
+    invocation = asyncio.create_task(
+        invoker.invoke(
+            "search_web",
+            args=(),
+            kwargs={"provider": "desearch", "search_queries": ["harnyx"], "timeout": 30.0},
+        )
+    )
+    await provider.started.wait()
+
+    invocation.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await invocation
+
+    await asyncio.wait_for(provider.cancelled.wait(), timeout=1.0)

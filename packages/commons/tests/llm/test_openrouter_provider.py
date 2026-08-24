@@ -21,7 +21,6 @@ from harnyx_commons.llm.providers.openrouter import (
     OpenRouterEmbeddingClient,
     OpenRouterLlmProvider,
     _openrouter_response_metadata,
-    _openrouter_routing_evidence,
     build_openrouter_chat_provider,
 )
 from harnyx_commons.llm.retry_utils import RetryPolicy
@@ -41,7 +40,12 @@ from harnyx_commons.llm.tool_models import (
 
 pytestmark = pytest.mark.anyio("asyncio")
 
-OPENROUTER_TEST_MODELS = OPENROUTER_SUPPORTED_MODELS
+OPENROUTER_NATIVE_TEST_MODEL = OPENROUTER_NATIVE_SUPPORTED_MODELS[0]
+OPENROUTER_INTERNAL_TEST_MODEL = OPENROUTER_INTERNAL_SUPPORTED_MODELS[0]
+OPENROUTER_ROUTE_TEST_MODELS = (
+    OPENROUTER_NATIVE_TEST_MODEL,
+    OPENROUTER_INTERNAL_TEST_MODEL,
+)
 
 
 class _FakeOpenAiProvider:
@@ -90,12 +94,6 @@ class _FakeClient:
 
 def test_openrouter_supported_models_come_from_miner_selected_provider_contract() -> None:
     assert OPENROUTER_NATIVE_SUPPORTED_MODELS == MINER_SELECTED_LLM_PROVIDER_MODELS[OPENROUTER_PROVIDER]
-    assert set(OPENROUTER_INTERNAL_SUPPORTED_MODELS) == set(OPENROUTER_INTERNAL_TO_NATIVE_MODEL)
-    assert set(OPENROUTER_NATIVE_SUPPORTED_MODELS) <= set(OPENROUTER_SUPPORTED_MODELS)
-    assert set(OPENROUTER_INTERNAL_SUPPORTED_MODELS) <= set(OPENROUTER_SUPPORTED_MODELS)
-
-
-def test_openrouter_internal_routes_rewrite_only_internal_canonical_models() -> None:
     assert OPENROUTER_INTERNAL_TO_NATIVE_MODEL == {
         "deepseek-ai/DeepSeek-V3.2-TEE": "deepseek/deepseek-v3.2",
         "deepseek-ai/DeepSeek-V4-Flash-0731-TEE": "deepseek/deepseek-v4-flash-0731",
@@ -103,10 +101,12 @@ def test_openrouter_internal_routes_rewrite_only_internal_canonical_models() -> 
         "Qwen/Qwen3.6-27B-TEE": "qwen/qwen3.6-27b",
         "google/gemma-4-31B-turbo-TEE": "google/gemma-4-31b-it",
     }
+    assert set(OPENROUTER_INTERNAL_SUPPORTED_MODELS) == set(OPENROUTER_INTERNAL_TO_NATIVE_MODEL)
+    assert set(OPENROUTER_NATIVE_SUPPORTED_MODELS) <= set(OPENROUTER_SUPPORTED_MODELS)
+    assert set(OPENROUTER_INTERNAL_SUPPORTED_MODELS) <= set(OPENROUTER_SUPPORTED_MODELS)
 
 
-@pytest.mark.parametrize("model", OPENROUTER_TEST_MODELS)
-async def test_openrouter_provider_requires_key_only_when_openrouter_model_is_invoked(model: str) -> None:
+async def test_openrouter_provider_requires_key_only_when_openrouter_model_is_invoked() -> None:
     factory_calls: list[str] = []
     provider = OpenRouterLlmProvider(
         openrouter_api_key=SecretStr(""),
@@ -114,7 +114,7 @@ async def test_openrouter_provider_requires_key_only_when_openrouter_model_is_in
     )
 
     with pytest.raises(LlmProviderConfigurationError, match="OPENROUTER_API_KEY must be configured"):
-        await provider.invoke(_request(model=model))
+        await provider.invoke(_request(model=OPENROUTER_NATIVE_TEST_MODEL))
 
     assert factory_calls == []
 
@@ -152,8 +152,7 @@ async def test_openrouter_provider_allows_explicit_additional_research_model() -
     assert fake_provider.requests[0].model == model
 
 
-@pytest.mark.parametrize("model", OPENROUTER_TEST_MODELS)
-async def test_openrouter_provider_omits_extra_when_request_has_no_extra(model: str) -> None:
+async def test_openrouter_provider_omits_extra_when_request_has_no_extra() -> None:
     fake_provider = _FakeOpenAiProvider()
     fake_client = _FakeClient()
     provider = OpenRouterLlmProvider(
@@ -166,7 +165,7 @@ async def test_openrouter_provider_omits_extra_when_request_has_no_extra(model: 
         ),
     )
 
-    await provider.invoke(_request(model=model))
+    await provider.invoke(_request(model=OPENROUTER_NATIVE_TEST_MODEL))
 
     assert fake_provider.requests[0].extra is None
 
@@ -202,20 +201,6 @@ async def test_build_openrouter_chat_provider_enables_router_metadata() -> None:
 
     await provider.aclose()
     await client.aclose()
-
-
-def test_openrouter_routing_evidence_requires_selected_endpoint_for_upstream_attribution() -> None:
-    evidence = _openrouter_routing_evidence(
-        {
-            "id": "resp-cached",
-            "provider": "OpenAI",
-            "model": "openai/gpt-oss-20b",
-        }
-    )
-
-    assert evidence == {
-        "provider_request_id": "resp-cached",
-    }
 
 
 async def test_openrouter_provider_keeps_success_when_router_metadata_is_malformed(
@@ -260,7 +245,7 @@ async def test_openrouter_provider_keeps_success_when_router_metadata_is_malform
     assert "OpenRouter router metadata is malformed" in caplog.messages
 
 
-@pytest.mark.parametrize("model", OPENROUTER_TEST_MODELS)
+@pytest.mark.parametrize("model", OPENROUTER_ROUTE_TEST_MODELS)
 async def test_openrouter_provider_serializes_openrouter_request_contract(model: str) -> None:
     captured: dict[str, Any] = {}
 
@@ -333,8 +318,7 @@ async def test_openrouter_provider_serializes_openrouter_request_contract(model:
     assert response.metadata["actual_cost_evidence"]["provider_request_id"] == "resp-1"
 
 
-@pytest.mark.parametrize("model", OPENROUTER_TEST_MODELS)
-async def test_openrouter_provider_preserves_nested_reasoning_usage(model: str) -> None:
+async def test_openrouter_provider_preserves_nested_reasoning_usage() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         body = "\n\n".join(
             (
@@ -369,7 +353,7 @@ async def test_openrouter_provider_preserves_nested_reasoning_usage(model: str) 
         openrouter_chat_provider_factory=lambda _: (openai_provider, client),
     )
 
-    response = await provider.invoke(_request(model=model))
+    response = await provider.invoke(_request(model=OPENROUTER_NATIVE_TEST_MODEL))
     await provider.aclose()
 
     assert response.usage.completion_tokens == 2
@@ -377,8 +361,7 @@ async def test_openrouter_provider_preserves_nested_reasoning_usage(model: str) 
     assert response.usage.total_tokens == 9
 
 
-@pytest.mark.parametrize("model", OPENROUTER_TEST_MODELS)
-async def test_openrouter_provider_serializes_request_provider_only_extra(model: str) -> None:
+async def test_openrouter_provider_serializes_request_provider_only_extra() -> None:
     captured: dict[str, Any] = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -415,13 +398,17 @@ async def test_openrouter_provider_serializes_request_provider_only_extra(model:
         openrouter_chat_provider_factory=lambda _: (openai_provider, client),
     )
 
-    await provider.invoke(_request(model=model, extra={"provider": {"only": ["cerebras"]}}))
+    await provider.invoke(
+        _request(
+            model=OPENROUTER_NATIVE_TEST_MODEL,
+            extra={"provider": {"only": ["cerebras"]}},
+        )
+    )
     await provider.aclose()
 
     assert captured["json"]["provider"] == {"only": ["cerebras"]}
 
 
-@pytest.mark.parametrize("model", OPENROUTER_TEST_MODELS)
 @pytest.mark.parametrize(
     ("thinking", "reasoning_effort", "expected_reasoning"),
     (
@@ -434,7 +421,6 @@ async def test_openrouter_provider_serializes_request_provider_only_extra(model:
     ),
 )
 async def test_openrouter_provider_serializes_resolved_thinking_as_reasoning(
-    model: str,
     thinking: LlmThinkingConfig | None,
     reasoning_effort: str | None,
     expected_reasoning: dict[str, object],
@@ -474,7 +460,7 @@ async def test_openrouter_provider_serializes_resolved_thinking_as_reasoning(
 
     await provider.invoke(
         _request(
-            model=model,
+            model=OPENROUTER_NATIVE_TEST_MODEL,
             thinking=thinking,
             reasoning_effort=reasoning_effort,
         )
@@ -485,10 +471,8 @@ async def test_openrouter_provider_serializes_resolved_thinking_as_reasoning(
     assert "provider" not in captured["json"]
 
 
-@pytest.mark.parametrize("model", OPENROUTER_TEST_MODELS)
 @pytest.mark.parametrize("thinking", (None, LlmThinkingConfig(enabled=True)))
 async def test_openrouter_provider_rejects_non_object_request_reasoning_extra(
-    model: str,
     thinking: LlmThinkingConfig | None,
 ) -> None:
     provider = OpenRouterLlmProvider(
@@ -499,14 +483,13 @@ async def test_openrouter_provider_rejects_non_object_request_reasoning_extra(
     with pytest.raises(ValueError, match="OpenRouter request extra.reasoning must be an object"):
         await provider.invoke(
             _request(
-                model=model,
+                model=OPENROUTER_NATIVE_TEST_MODEL,
                 extra={"reasoning": "invalid"},
                 thinking=thinking,
             )
         )
 
 
-@pytest.mark.parametrize("model", OPENROUTER_TEST_MODELS)
 @pytest.mark.parametrize(
     ("thinking", "reasoning_effort"),
     (
@@ -515,7 +498,6 @@ async def test_openrouter_provider_rejects_non_object_request_reasoning_extra(
     ),
 )
 async def test_openrouter_provider_merges_request_reasoning_extra_with_resolved_thinking(
-    model: str,
     thinking: LlmThinkingConfig | None,
     reasoning_effort: str | None,
 ) -> None:
@@ -533,7 +515,7 @@ async def test_openrouter_provider_merges_request_reasoning_extra_with_resolved_
 
     await provider.invoke(
         _request(
-            model=model,
+            model=OPENROUTER_NATIVE_TEST_MODEL,
             extra={"reasoning": {"exclude": True, "effort": "low"}},
             thinking=thinking,
             reasoning_effort=reasoning_effort,

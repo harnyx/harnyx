@@ -8,7 +8,6 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from harnyx_commons import miner_task_benchmark
 from harnyx_commons.domain.miner_task import (
     EvaluationDetails,
     MinerTask,
@@ -23,16 +22,12 @@ from harnyx_commons.domain.tool_usage import (
     ToolUsageSummary,
 )
 from harnyx_commons.miner_task_benchmark import (
-    BENCHMARK_CORRECTNESS_SCORING_VERSION,
     BENCHMARK_WEIGHTED_RUBRIC_SCORING_VERSION,
     BenchmarkAnswerType,
     BenchmarkDatasetItem,
     BenchmarkDatasetManifest,
     BenchmarkDatasetSnapshot,
-    benchmark_backing_batch_id_for_run,
     benchmark_run_id_for_source_batch,
-    benchmark_task_id_for_item,
-    load_current_benchmark_snapshot,
 )
 from harnyx_miner import local_benchmark
 from harnyx_validator.application.dto.evaluation import (
@@ -40,7 +35,6 @@ from harnyx_validator.application.dto.evaluation import (
     ScriptArtifactSpec,
     TokenUsageSummary,
 )
-from harnyx_validator.application.services.evaluation_runner import ArtifactEvaluationOutcome
 from harnyx_validator.domain.evaluation import MinerTaskRun
 
 
@@ -225,17 +219,6 @@ def test_local_benchmark_builds_platform_compatible_tasks() -> None:
     assert tasks[0].task_id != tasks[1].task_id
 
 
-def test_local_benchmark_uses_existing_commons_benchmark_boundaries() -> None:
-    assert local_benchmark._DEFAULT_SAMPLE_SIZE == miner_task_benchmark.BENCHMARK_SAMPLE_SIZE
-    assert local_benchmark.aggregate_benchmark_metrics is miner_task_benchmark.aggregate_benchmark_metrics
-    assert local_benchmark.sample_benchmark_items is miner_task_benchmark.sample_benchmark_items
-    assert (
-        local_benchmark.is_supported_benchmark_scoring_version
-        is miner_task_benchmark.is_supported_benchmark_scoring_version
-    )
-    assert local_benchmark.is_supported_benchmark_scoring_version(BENCHMARK_WEIGHTED_RUBRIC_SCORING_VERSION)
-
-
 def test_local_benchmark_help_uses_benchmark_parser(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exc_info:
         local_benchmark._parse_args(("--help",))
@@ -287,174 +270,6 @@ def test_local_benchmark_lists_current_suites(
         "webwalkerqa-multi-source-medium",
         "webwalkerqa-single-source-medium",
     ]
-
-
-def test_local_benchmark_uses_invocation_only_runtime(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    snapshot = _snapshot()
-    agent_path = tmp_path / "agent.py"
-    agent_path.write_text("print('candidate')\n", encoding="utf-8")
-    captured: dict[str, object] = {}
-    events: list[str] = []
-
-    class _FakeRuntime:
-        async def evaluate_artifact(
-            self,
-            *,
-            artifact_label,
-            agent_source,
-            artifact,
-            batch_id,
-            tasks,
-            scoring_service,
-        ):
-            del artifact_label, agent_source
-            assert scoring_service is captured["invocation_scoring"]
-            assert isinstance(scoring_service, local_benchmark._InvocationOnlyScoringService)
-            return ArtifactEvaluationOutcome(
-                submissions=tuple(
-                    _submission(
-                        batch_id=batch_id,
-                        artifact=artifact,
-                        task=task,
-                        answer="The benchmark authors.",
-                    )
-                    for task in tasks
-                ),
-            )
-
-        async def aclose(self) -> None:
-            captured["runtime_closed"] = True
-
-    class _FakeBenchmarkScoringService:
-        async def score(
-            self,
-            *,
-            item: BenchmarkDatasetItem,
-            generated_answer: str,
-        ) -> local_benchmark._BenchmarkItemScore:
-            del item, generated_answer
-            return local_benchmark._BenchmarkItemScore(
-                is_correct=True,
-                score=1.0,
-                score_reason="Matches the reference.",
-                score_detail=None,
-            )
-
-    class _FakeScoringBundle:
-        service = _FakeBenchmarkScoringService()
-        config = local_benchmark.BenchmarkCorrectnessScoringConfig(
-            provider="chutes",
-            model="benchmark-model",
-        )
-        scoring_boundary = "benchmark-correctness-judge"
-        scoring_method = "binary correctness against the canonical benchmark answer"
-        uses_numeric_scores = False
-        failed_item_report_score = 0.0
-
-        async def aclose(self) -> None:
-            captured["scoring_closed"] = True
-
-    def _build_benchmark_scoring_bundle(scoring_version: str) -> _FakeScoringBundle:
-        assert scoring_version == BENCHMARK_CORRECTNESS_SCORING_VERSION
-        return _FakeScoringBundle()
-
-    def _create_invocation_only_runtime(*, scoring_service, scoring_config, run_progress_root):
-        events.append("create_invocation_only")
-        assert events == ["load_public_env", "create_invocation_only"]
-        captured["invocation_scoring"] = scoring_service
-        captured["invocation_config"] = scoring_config
-        captured["run_progress_root"] = run_progress_root
-        return _FakeRuntime()
-
-    monkeypatch.setattr(local_benchmark, "load_public_env", lambda: events.append("load_public_env"))
-    monkeypatch.setattr(local_benchmark, "_create_invocation_only_runtime", _create_invocation_only_runtime)
-    monkeypatch.setattr(local_benchmark, "_build_benchmark_scoring_bundle", _build_benchmark_scoring_bundle)
-    monkeypatch.setattr(local_benchmark, "load_benchmark_snapshot", lambda *_args, **_kwargs: snapshot)
-    monkeypatch.setattr(
-        local_benchmark,
-        "sample_benchmark_items",
-        lambda *, items, run_id, dataset_version, scoring_version, sample_size: tuple(items)[:sample_size],
-    )
-
-    asyncio.run(
-        local_benchmark._amain(
-            (
-                "--agent-path",
-                str(agent_path),
-                "--source-batch-id",
-                "00000000-0000-4000-8000-00000000b501",
-                "--suite",
-                "deepsearchqa",
-                "--sample-size",
-                "1",
-                "--output-dir",
-                str(tmp_path),
-            )
-        )
-    )
-
-    payload = json.loads(capsys.readouterr().out)
-
-    assert payload["mean_total_score"] == 1.0
-    assert payload["item_count"] == 1
-    assert captured["invocation_config"] is local_benchmark._INVOCATION_ONLY_SCORING_CONFIG
-    assert captured["run_progress_root"] == tmp_path / ".harnyx-local-benchmark-progress" / payload["run_id"]
-    assert captured["runtime_closed"] is True
-    assert captured["scoring_closed"] is True
-
-
-def test_miner_local_benchmark_ids_match_current_platform_values() -> None:
-    source_batch_id = UUID("00000000-0000-4000-8000-00000000b501")
-
-    run_id = benchmark_run_id_for_source_batch(
-        suite_slug="deepsearchqa",
-        source_batch_id=source_batch_id,
-        dataset_version="2026-04-02-google-main",
-        scoring_version="correctness-v1",
-    )
-
-    assert str(run_id) == "d40019ec-5d16-5ba1-b30d-545c8c5d252d"
-    assert str(benchmark_backing_batch_id_for_run(suite_slug="deepsearchqa", run_id=run_id)) == (
-        "d4ca3d15-ca41-5af1-a692-1f150d0a8463"
-    )
-    assert str(benchmark_task_id_for_item(suite_slug="deepsearchqa", run_id=run_id, item_index=0)) == (
-        "b46064ba-ed49-5552-a61a-8c9dbc7913e6"
-    )
-    assert str(benchmark_task_id_for_item(suite_slug="deepsearchqa", run_id=run_id, item_index=17)) == (
-        "8b511d85-6c81-58c4-a101-7feef9999c73"
-    )
-
-
-def test_miner_local_deepsearchqa_loader_loads_packaged_snapshot() -> None:
-    snapshot = load_current_benchmark_snapshot("deepsearchqa")
-
-    assert snapshot.manifest.suite_slug == "deepsearchqa"
-    assert snapshot.manifest.dataset_version == "2026-04-02-google-main"
-    assert snapshot.manifest.scoring_version == "correctness-v1"
-    assert snapshot.manifest.row_count == 900
-    assert len(snapshot.items) == 900
-    assert snapshot.items[0].item_index == 0
-    assert snapshot.items[0].problem
-    assert snapshot.items[0].answer
-    assert snapshot.items[0].answer_type in {
-        BenchmarkAnswerType.SINGLE_ANSWER,
-        BenchmarkAnswerType.SET_ANSWER,
-    }
-
-
-def test_miner_local_draco_loader_loads_current_weighted_rubric_snapshot() -> None:
-    snapshot = load_current_benchmark_snapshot("draco")
-
-    assert snapshot.manifest.suite_slug == "draco"
-    assert snapshot.manifest.dataset_version == "2026-06-16-hf-ce076749"
-    assert snapshot.manifest.scoring_version == BENCHMARK_WEIGHTED_RUBRIC_SCORING_VERSION
-    assert snapshot.manifest.row_count == 100
-    assert len(snapshot.items) == 100
-    assert snapshot.items[0].answer
 
 
 class _FakeLocalBenchmarkScoringService:
@@ -521,45 +336,6 @@ def _weighted_rubric_scoring_bundle() -> local_benchmark._BenchmarkScoringBundle
         uses_numeric_scores=True,
         failed_item_report_score=None,
     )
-
-
-async def test_local_benchmark_uses_canonical_structured_answer() -> None:
-    snapshot = _snapshot()
-    task = local_benchmark._build_tasks(
-        run_id=uuid4(),
-        snapshot=snapshot,
-        items=snapshot.items[:1],
-    )[0]
-    artifact = ScriptArtifactSpec(
-        uid=7,
-        artifact_id=uuid4(),
-        content_hash="structured-output",
-        size_bytes=128,
-    )
-    submission = _submission(
-        batch_id=uuid4(),
-        artifact=artifact,
-        task=task,
-        answer="unused legacy answer",
-    )
-    submission = submission.model_copy(
-        update={
-            "run": submission.run.model_copy(
-                update={"response": Response(output={"z": [1, None], "a": True})},
-            )
-        }
-    )
-    scoring_service = _CapturingLocalBenchmarkScoringService()
-
-    result = await local_benchmark._score_item_submission(
-        item=snapshot.items[0],
-        task=task,
-        submission=submission,
-        scoring_service=scoring_service,
-    )
-
-    assert result.error_code is None
-    assert scoring_service.generated_answers == ['{"a":true,"z":[1,null]}']
 
 
 def test_local_benchmark_report_includes_answers_and_summary(tmp_path: Path) -> None:

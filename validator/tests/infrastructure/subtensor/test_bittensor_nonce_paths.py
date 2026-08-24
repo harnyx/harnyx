@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import socket
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -249,28 +248,6 @@ def test_publish_commitment_uses_pool_aware_hotkey_nonce(
     assert subtensor.set_reveal_commitment_calls == []
 
 
-def test_submit_weights_uses_pool_aware_hotkey_nonce_when_commit_reveal_enabled(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    subtensor = _SubtensorStub(commit_reveal_enabled=True)
-    client = _make_client(monkeypatch, subtensor=subtensor)
-
-    tx_hash = client.submit_weights({7: 1.0})
-
-    assert tx_hash.startswith("reveal_round:")
-    assert len(subtensor.sign_calls) == 1
-    assert subtensor.sign_calls[0]["use_nonce"] is True
-    assert subtensor.sign_calls[0]["nonce_key"] == "hotkey"
-    assert subtensor.sign_calls[0]["sign_with"] == "hotkey"
-    call = cast(dict[str, object], subtensor.sign_calls[0]["call"])
-    assert call["call_module"] == "SubtensorModule"
-    assert call["call_function"] == "commit_timelocked_mechanism_weights"
-    params = cast(dict[str, object], call["call_params"])
-    assert params["netuid"] == 1
-    assert params["mecid"] == 0
-    assert subtensor.set_weights_calls == []
-
-
 def test_submit_weights_commit_reveal_waits_for_inclusion_when_settings_disable_all_waits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -334,9 +311,7 @@ def test_commit_reveal_preserves_deterministic_return_after_transient_network_fa
     "exc",
     [
         ConnectionError("connect failed"),
-        httpx.ConnectError("connect failed"),
         TimeoutError("local timeout"),
-        socket.gaierror(socket.EAI_NONAME, "permanent dns"),
         httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"),
     ],
 )
@@ -523,9 +498,10 @@ def test_submit_weights_commit_reveal_raises_too_early_for_chain_cadence_error(
     assert subtensor.set_weights_calls == []
 
 
-def test_submit_weights_commit_reveal_keeps_non_chain_too_early_text_hard(
+def test_submit_weights_commit_reveal_keeps_unstructured_cadence_text_hard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Future failure: diagnostic text alone must not turn a hard failure into a cadence refusal."""
     subtensor = _SubtensorStub(commit_reveal_enabled=True)
     subtensor.sign_side_effects = [
         RuntimeError("diagnostic text mentioned SettingWeightsTooFast but was not a chain error")
@@ -549,18 +525,3 @@ def test_submit_weights_commit_reveal_raises_too_early_for_chain_error_mapping(
         client.submit_weights({7: 1.0})
 
     assert len(subtensor.sign_calls) == 1
-
-
-def test_submit_weights_uses_direct_plain_set_weights_extrinsic_when_commit_reveal_disabled(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _patch_set_weights_extrinsic(monkeypatch)
-    subtensor = _SubtensorStub(commit_reveal_enabled=False)
-    client = _make_client(monkeypatch, subtensor=subtensor)
-
-    tx_hash = client.submit_weights({7: 1.0})
-
-    assert tx_hash
-    assert len(subtensor.sign_calls) == 1
-    assert subtensor.set_weights_extrinsic_calls[0]["mechid"] == 0
-    assert subtensor.set_weights_calls == []

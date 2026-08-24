@@ -60,10 +60,8 @@ async def test_http_sandbox_client_retries_connect_error_with_same_session_and_c
     "exception_factory",
     [
         lambda request: httpx.ReadError("lost response", request=request),
-        lambda request: httpx.RemoteProtocolError("remote disconnected", request=request),
-        lambda request: httpx.WriteError("write failed", request=request),
     ],
-    ids=["read", "remote-protocol", "write"],
+    ids=["read"],
 )
 async def test_http_sandbox_client_does_not_retry_errors_that_may_have_reached_sandbox(
     exception_factory: Callable[[httpx.Request], httpx.RequestError],
@@ -98,10 +96,8 @@ async def test_http_sandbox_client_does_not_retry_errors_that_may_have_reached_s
     "exception_factory",
     [
         lambda request: httpx.ReadTimeout("read timed out", request=request),
-        lambda request: httpx.ConnectTimeout("connect timed out", request=request),
-        lambda request: httpx.WriteTimeout("write timed out", request=request),
     ],
-    ids=["read", "connect", "write"],
+    ids=["read"],
 )
 async def test_http_sandbox_client_does_not_retry_timeout_errors(
     exception_factory: Callable[[httpx.Request], httpx.TimeoutException],

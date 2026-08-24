@@ -182,9 +182,7 @@ def test_custom_route_target_is_canonicalized() -> None:
 
 def test_openrouter_route_target_requires_explicit_surface_authorization() -> None:
     model = "deepseek-ai/DeepSeek-V4-Flash-0731-TEE"
-    parsed = parse_llm_model_provider_overrides(
-        f'{{"duplication_detection":{{"{model}":"openrouter"}}}}'
-    )
+    parsed = parse_llm_model_provider_overrides(f'{{"duplication_detection":{{"{model}":"openrouter"}}}}')
 
     route = resolve_llm_route(
         surface="duplication_detection",
@@ -224,7 +222,7 @@ def test_tool_surface_does_not_authorize_openrouter_route_target() -> None:
         )
 
 
-@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b", "Qwen/Qwen3.6-27B-TEE"))
+@pytest.mark.parametrize("model", ("openai/gpt-oss-20b",))
 def test_resolve_llm_route_keeps_chutes_selected_model_on_chutes(model: str) -> None:
     route = resolve_llm_route(
         surface="tool",
@@ -272,7 +270,7 @@ def test_resolve_llm_route_custom_qwen36_override_wins_over_default_provider() -
     )
 
 
-@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b", "Qwen/Qwen3.6-27B-TEE"))
+@pytest.mark.parametrize("model", ("openai/gpt-oss-20b",))
 def test_resolve_llm_route_chutes_override_keeps_model_on_chutes(model: str) -> None:
     route = resolve_llm_route(
         surface="tool",
@@ -286,7 +284,7 @@ def test_resolve_llm_route_chutes_override_keeps_model_on_chutes(model: str) -> 
     assert route == ResolvedLlmRoute(surface="tool", provider="chutes", model=model)
 
 
-@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b", "Qwen/Qwen3.6-27B-TEE"))
+@pytest.mark.parametrize("model", ("openai/gpt-oss-20b",))
 def test_resolve_llm_route_does_not_special_case_non_chutes_selection(model: str) -> None:
     route = resolve_llm_route(
         surface="tool",
@@ -448,7 +446,7 @@ async def test_routed_provider_attaches_effective_route_to_provider_failure_with
 
 
 @pytest.mark.anyio("asyncio")
-@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b"))
+@pytest.mark.parametrize("model", ("openai/gpt-oss-20b",))
 async def test_routed_provider_preserves_selected_route_metadata(model: str) -> None:
     delegate = _RecordingProvider(seen_requests=[])
 

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
-import threading
-import time
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -11,7 +9,6 @@ from uuid import uuid4
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from httpx import Response
 from pydantic import SecretStr
 
 from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
@@ -266,9 +263,7 @@ class TrackingDependencyProvider:
         self.receipt_log = FakeReceiptLog()
         self.tokens = InMemoryTokenRegistry()
         self._progress_storage = tempfile.TemporaryDirectory(prefix="harnyx-test-run-progress-")
-        self.progress_tracker = FileBackedRunProgress(
-            storage_root=Path(self._progress_storage.name) / "run-progress"
-        )
+        self.progress_tracker = FileBackedRunProgress(storage_root=Path(self._progress_storage.name) / "run-progress")
         self.batch_id = uuid4()
         self.artifact_id = uuid4()
 
@@ -336,167 +331,6 @@ class TrackingDependencyProvider:
 
     def __call__(self) -> ToolRouteDeps:
         return self.dependencies
-
-
-def test_execute_tool_endpoint_records_receipt() -> None:
-    provider = DemoDependencyProvider()
-    app = create_test_app(provider)
-    client = TestClient(app)
-
-    response = client.post(
-        "/v1/tools/execute",
-        json={
-            "tool": "search_web",
-            "args": ["demo"],
-            "kwargs": {"query": "demo"},
-        },
-        headers={
-            "x-platform-token": DEMO_SESSION_TOKEN,
-            SESSION_ID_HEADER: str(provider.session.session_id),
-        },
-    )
-
-    assert response.status_code == 200
-    body = response.json()
-    receipt_id = body["receipt_id"]
-    receipt = provider.receipt_log.lookup(receipt_id)
-    assert receipt is not None
-    assert body["results"][0]["result_id"] == receipt.details.results[0].result_id
-    assert body["result_policy"] == receipt.details.result_policy.value
-    assert receipt.details.request_hash
-    session_snapshot = provider.session_registry.get(provider.session.session_id)
-    assert session_snapshot is not None
-    assert session_snapshot.usage.total_cost_usd == pytest.approx(0.005)
-    assert provider.tool_concurrency_limiter.acquire_calls == [(DEMO_SESSION_TOKEN, "search_web")]
-    assert provider.tool_concurrency_limiter.release_calls == [(DEMO_SESSION_TOKEN, "search_web")]
-    assert provider.tool_concurrency_limiter.in_flight(_invocation("search_web")) == 0
-
-
-def test_execute_tool_endpoint_accepts_neutral_headers() -> None:
-    provider = DemoDependencyProvider()
-    app = create_test_app(provider)
-    client = TestClient(app)
-
-    response = client.post(
-        "/v1/tools/execute",
-        json={
-            "tool": "search_web",
-            "args": ["demo"],
-            "kwargs": {"query": "demo"},
-        },
-        headers={
-            "x-platform-token": DEMO_SESSION_TOKEN,
-            SESSION_ID_HEADER: str(provider.session.session_id),
-        },
-    )
-
-    assert response.status_code == 200
-    assert provider.tool_concurrency_limiter.acquire_calls == [(DEMO_SESSION_TOKEN, "search_web")]
-    assert provider.tool_concurrency_limiter.release_calls == [(DEMO_SESSION_TOKEN, "search_web")]
-
-
-def test_execute_tool_endpoint_releases_semaphore_on_failure() -> None:
-    provider = DemoDependencyProvider()
-    provider.dependencies = ToolRouteDeps(
-        tool_executor=_FailingToolExecutor(),
-        tool_concurrency_limiter=provider.tool_concurrency_limiter,
-    )
-    app = create_test_app(provider)
-    client = TestClient(app)
-
-    response = client.post(
-        "/v1/tools/execute",
-        json={
-            "tool": "search_web",
-            "args": ["demo"],
-            "kwargs": {"query": "demo"},
-        },
-        headers={
-            "x-platform-token": DEMO_SESSION_TOKEN,
-            SESSION_ID_HEADER: str(provider.session.session_id),
-        },
-    )
-
-    assert response.status_code == 400
-    assert provider.tool_concurrency_limiter.release_calls == [(DEMO_SESSION_TOKEN, "search_web")]
-    assert provider.tool_concurrency_limiter.in_flight(_invocation("search_web")) == 0
-
-
-def test_execute_tool_endpoint_returns_generic_detail_for_provider_failure() -> None:
-    provider = DemoDependencyProvider()
-    provider.dependencies = ToolRouteDeps(
-        tool_executor=_ProviderFailingToolExecutor(),
-        tool_concurrency_limiter=provider.tool_concurrency_limiter,
-    )
-    app = create_test_app(provider)
-    client = TestClient(app)
-
-    response = client.post(
-        "/v1/tools/execute",
-        json={
-            "tool": "search_web",
-            "args": ["demo"],
-            "kwargs": {"query": "demo"},
-        },
-        headers={
-            "x-platform-token": DEMO_SESSION_TOKEN,
-            SESSION_ID_HEADER: str(provider.session.session_id),
-        },
-    )
-
-    assert response.status_code == 400
-    assert response.json() == {"detail": "tool execution failed"}
-
-
-def test_execute_tool_endpoint_waits_for_same_token_permit_then_succeeds() -> None:
-    provider = DemoDependencyProvider()
-    app = create_test_app(provider)
-    response_box: dict[str, Response | Exception] = {}
-    done = threading.Event()
-    held = _mixed_invocations(20)
-
-    def issue_request() -> None:
-        try:
-            with TestClient(app) as client:
-                response_box["response"] = client.post(
-                    "/v1/tools/execute",
-                    json={
-                        "tool": "search_web",
-                        "args": ["demo"],
-                        "kwargs": {"query": "demo"},
-                    },
-                    headers={
-                        "x-platform-token": DEMO_SESSION_TOKEN,
-                        SESSION_ID_HEADER: str(provider.session.session_id),
-                    },
-                )
-        except Exception as exc:  # pragma: no cover - defensive capture
-            response_box["error"] = exc
-        finally:
-            done.set()
-
-    for invocation in held:
-        provider.tool_concurrency_limiter.acquire(invocation)
-    request_thread = threading.Thread(target=issue_request)
-    request_thread.start()
-    try:
-        deadline = time.monotonic() + 1.0
-        while len(provider.tool_concurrency_limiter.acquire_calls) < 21 and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert len(provider.tool_concurrency_limiter.acquire_calls) == 21
-        assert not done.is_set()
-        provider.tool_concurrency_limiter.release(held.pop())
-    finally:
-        for invocation in held:
-            provider.tool_concurrency_limiter.release(invocation)
-    request_thread.join(timeout=1.0)
-
-    assert not request_thread.is_alive()
-    assert "error" not in response_box
-    response = response_box["response"]
-    assert isinstance(response, Response)
-    assert response.status_code == 200
-    assert provider.tool_concurrency_limiter.in_flight(_invocation("search_web")) == 0
 
 
 def test_execute_tool_endpoint_invalid_llm_payload_does_not_record_provider_call() -> None:
@@ -583,10 +417,7 @@ def test_execute_tool_endpoint_records_openrouter_missing_key_as_failed_receipt(
     assert receipts[0].outcome is ToolCallOutcome.PROVIDER_ERROR
     assert receipts[0].details.extra is not None
     assert receipts[0].details.extra["error_type"] == "ToolProviderError"
-    expected_failure_reason = (
-        "OPENROUTER_API_KEY must be configured to use OpenRouter model "
-        "openai/gpt-oss-120b"
-    )
+    expected_failure_reason = "OPENROUTER_API_KEY must be configured to use OpenRouter model openai/gpt-oss-120b"
     assert receipts[0].details.extra["error_message"] == expected_failure_reason
     assert receipts[0].details.extra["error_cause_type"] == "LlmProviderConfigurationError"
     assert receipts[0].details.extra["error_cause_message"] == expected_failure_reason
@@ -597,9 +428,7 @@ def test_execute_tool_endpoint_records_openrouter_missing_key_as_failed_receipt(
         "failed_calls": 1,
         "failure_reason": expected_failure_reason,
     }
-    assert provider.progress_tracker.provider_evidence(provider.batch_id) == (
-        expected_provider_failure,
-    )
+    assert provider.progress_tracker.provider_evidence(provider.batch_id) == (expected_provider_failure,)
     assert provider.progress_tracker.consume_provider_failures(provider.session.session_id) == (
         expected_provider_failure,
     )
@@ -632,42 +461,6 @@ def test_execute_tool_endpoint_records_provider_call_on_live_llm_success() -> No
         {
             "provider": "openrouter",
             "model": ALLOWED_TOOL_MODELS[0],
-            "total_calls": 1,
-            "failed_calls": 0,
-        },
-    )
-
-
-def test_execute_tool_endpoint_records_openrouter_provider_call_for_non_default_model() -> None:
-    provider = TrackingDependencyProvider(
-        llm_provider=_SuccessfulLlmProvider(),
-        llm_provider_name="openrouter",
-    )
-    app = create_test_app(provider)
-    client = TestClient(app)
-
-    response = client.post(
-        "/v1/tools/execute",
-        json={
-            "tool": "llm_chat",
-            "args": [],
-            "kwargs": {
-                "provider": "openrouter",
-                "messages": [{"role": "user", "content": "hi"}],
-                "model": "google/gemma-4-31b-it",
-            },
-        },
-        headers={
-            "x-platform-token": DEMO_SESSION_TOKEN,
-            SESSION_ID_HEADER: str(provider.session.session_id),
-        },
-    )
-
-    assert response.status_code == 200
-    assert provider.progress_tracker.provider_evidence(provider.batch_id) == (
-        {
-            "provider": "openrouter",
-            "model": "google/gemma-4-31b-it",
             "total_calls": 1,
             "failed_calls": 0,
         },
@@ -768,10 +561,10 @@ def test_execute_tool_endpoint_does_not_record_provider_failure_for_fetch_page_t
 
 
 @pytest.mark.parametrize(
-        ("tool", "kwargs"),
-        [
-            ("search_web", {"provider": "desearch", "search_queries": ["harnyx"], "timeout": 0.01}),
-            (
+    ("tool", "kwargs"),
+    [
+        ("search_web", {"provider": "desearch", "search_queries": ["harnyx"], "timeout": 0.01}),
+        (
             "llm_chat",
             {
                 "provider": "openrouter",

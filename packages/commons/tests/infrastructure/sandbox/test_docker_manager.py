@@ -1,3 +1,5 @@
+"""Behavior tests for the Commons-owned Docker sandbox lifecycle."""
+
 from __future__ import annotations
 
 import json
@@ -120,6 +122,7 @@ def test_docker_sandbox_manager_builds_commands(monkeypatch) -> None:
     manager = DockerSandboxManager(
         docker_binary="docker",
         host="127.0.0.1",
+        published_port_bind_host="127.0.0.1",
         command_runner=runner,
         client_factory=client_factory,
     )
@@ -131,7 +134,11 @@ def test_docker_sandbox_manager_builds_commands(monkeypatch) -> None:
         host_port=9000,
         container_port=8000,
         env={"EXAMPLE": "value"},
+        labels={"harnyx.sandbox.owner": "validator"},
         network="harnyx-net",
+        volumes=(("/host/agent.py", "/workspace/agent.py", "ro"),),
+        extra_hosts=(("host.docker.internal", "host-gateway"),),
+        seccomp_profile="/workspace/runtime-seccomp.json",
         host_container_url=_HOST_CONTAINER_URL,
     )
 
@@ -149,15 +156,16 @@ def test_docker_sandbox_manager_builds_commands(monkeypatch) -> None:
         "--pull",
         options.pull_policy,
     ]
-    assert run_args[4:9] == [
-        "-d",
-        "--name",
-        "sandbox-demo",
-        "-p",
-        "9000:8000",
-    ]
+    assert run_args[4:7] == ["-d", "--name", "sandbox-demo"]
+    assert run_args[run_args.index("-p") + 1] == "127.0.0.1:9000:8000"
     assert "--network" in run_args
     assert "-e" in run_args
+    assert ["--label", "harnyx.sandbox.owner=validator"] == run_args[
+        run_args.index("--label") : run_args.index("--label") + 2
+    ]
+    assert run_args[run_args.index("-v") + 1] == "/host/agent.py:/workspace/agent.py:ro"
+    assert run_args[run_args.index("--add-host") + 1] == "host.docker.internal:host-gateway"
+    assert run_args[run_args.index("--security-opt") + 1] == "seccomp=/workspace/runtime-seccomp.json"
     assert run_args[-1] == options.image
     assert run_kwargs["capture_output"] is True
     assert run_kwargs["text"] is True
@@ -296,47 +304,6 @@ def test_pull_policy_always_retries_docker_pull_before_local_run(
     assert "--rm" not in run_args
 
 
-def test_docker_sandbox_manager_adds_labels_to_docker_run() -> None:
-    runner = RecordingRunner()
-
-    def client_factory(base_url: str, host_container_url: str | None) -> DummyClient:
-        return DummyClient(base_url, host_container_url)
-
-    manager = DockerSandboxManager(
-        docker_binary="docker",
-        host="127.0.0.1",
-        command_runner=runner,
-        client_factory=client_factory,
-    )
-
-    options = SandboxOptions(
-        image="harnyx/sandbox:demo",
-        container_name="sandbox-demo",
-        pull_policy="missing",
-        host_port=9000,
-        container_port=8000,
-        labels={"b": "two", "a": "one"},
-        network="harnyx-net",
-        host_container_url=_HOST_CONTAINER_URL,
-    )
-
-    deployment = manager.start(options)
-    run_args, _ = runner.commands[0]
-
-    name_index = run_args.index("--name")
-    assert run_args[name_index : name_index + 8] == [
-        "--name",
-        "sandbox-demo",
-        "--label",
-        "a=one",
-        "--label",
-        "b=two",
-        "-p",
-        "9000:8000",
-    ]
-    manager.stop(deployment)
-
-
 def test_docker_sandbox_manager_requires_every_label_and_removes_legacy_prefix_matches() -> None:
     commands: list[list[str]] = []
     removed = False
@@ -471,48 +438,6 @@ def test_docker_sandbox_manager_logs_and_continues_when_stale_cleanup_fails(capl
 
     assert removal_confirmed is False
     assert "failed to remove stale sandbox containers" in caplog.text
-
-
-def test_docker_sandbox_manager_binds_published_port_when_configured() -> None:
-    runner = RecordingRunner()
-    created_clients: list[DummyClient] = []
-
-    def client_factory(base_url: str, host_container_url: str | None) -> DummyClient:
-        client = DummyClient(base_url, host_container_url)
-        created_clients.append(client)
-        return client
-
-    manager = DockerSandboxManager(
-        docker_binary="docker",
-        host="127.0.0.1",
-        published_port_bind_host="127.0.0.1",
-        command_runner=runner,
-        client_factory=client_factory,
-    )
-
-    options = SandboxOptions(
-        image="harnyx/sandbox:demo",
-        container_name="sandbox-demo",
-        pull_policy="missing",
-        host_port=9000,
-        container_port=8000,
-        env={"EXAMPLE": "value"},
-        network="harnyx-net",
-        host_container_url=_HOST_CONTAINER_URL,
-    )
-
-    deployment = manager.start(options)
-
-    run_args, _ = runner.commands[0]
-    assert run_args[4:9] == [
-        "-d",
-        "--name",
-        "sandbox-demo",
-        "-p",
-        "127.0.0.1:9000:8000",
-    ]
-    assert deployment.base_url == "http://127.0.0.1:9000"
-    assert created_clients[0].base_url == "http://127.0.0.1:9000"
 
 
 def test_docker_sandbox_manager_does_not_use_probe_host_as_bind_host() -> None:
@@ -766,35 +691,6 @@ def test_docker_manager_cleans_up_when_container_ip_never_becomes_valid(
     assert any(args == ["docker", "rm", "-f", "container123"] for args, _ in runner.commands)
 
 
-def test_docker_manager_mounts_volumes() -> None:
-    runner = RecordingRunner()
-
-    def client_factory(base_url: str, host_container_url: str | None) -> DummyClient:
-        return DummyClient(base_url, host_container_url)
-
-    manager = DockerSandboxManager(
-        docker_binary="docker",
-        host="127.0.0.1",
-        command_runner=runner,
-        client_factory=client_factory,
-    )
-
-    options = SandboxOptions(
-        image="harnyx/sandbox:demo",
-        container_name="sandbox-demo",
-        pull_policy="missing",
-        volumes=(("/host/agent.py", "/workspace/agent.py", "ro"),),
-        host_container_url=_HOST_CONTAINER_URL,
-    )
-
-    deployment = manager.start(options)
-    run_args, _ = runner.commands[0]
-    assert "-v" in run_args
-    volume_arg_index = run_args.index("-v") + 1
-    assert run_args[volume_arg_index] == "/host/agent.py:/workspace/agent.py:ro"
-    manager.stop(deployment)
-
-
 def test_docker_manager_requires_network_when_host_port_missing() -> None:
     manager = DockerSandboxManager()
     options = SandboxOptions(
@@ -806,65 +702,6 @@ def test_docker_manager_requires_network_when_host_port_missing() -> None:
     )
     with pytest.raises(ValueError):
         manager.start(options)
-
-
-def test_docker_manager_adds_extra_hosts() -> None:
-    runner = RecordingRunner()
-
-    def client_factory(base_url: str, host_container_url: str | None) -> DummyClient:
-        return DummyClient(base_url, host_container_url)
-
-    manager = DockerSandboxManager(
-        docker_binary="docker",
-        host="127.0.0.1",
-        command_runner=runner,
-        client_factory=client_factory,
-    )
-
-    options = SandboxOptions(
-        image="harnyx/sandbox:demo",
-        container_name="sandbox-demo",
-        pull_policy="missing",
-        extra_hosts=(("host.docker.internal", "host-gateway"),),
-        host_container_url=_HOST_CONTAINER_URL,
-    )
-
-    deployment = manager.start(options)
-    run_args, _ = runner.commands[0]
-    assert "--add-host" in run_args
-    host_arg_index = run_args.index("--add-host") + 1
-    assert run_args[host_arg_index] == "host.docker.internal:host-gateway"
-    manager.stop(deployment)
-
-
-def test_docker_manager_sets_seccomp_profile() -> None:
-    runner = RecordingRunner()
-
-    def client_factory(base_url: str, host_container_url: str | None) -> DummyClient:
-        return DummyClient(base_url, host_container_url)
-
-    manager = DockerSandboxManager(
-        docker_binary="docker",
-        host="127.0.0.1",
-        command_runner=runner,
-        client_factory=client_factory,
-    )
-
-    seccomp_path = "/workspace/runtime-seccomp.json"
-    options = SandboxOptions(
-        image="harnyx/sandbox:demo",
-        container_name="sandbox-demo",
-        pull_policy="missing",
-        seccomp_profile=seccomp_path,
-        host_container_url=_HOST_CONTAINER_URL,
-    )
-
-    deployment = manager.start(options)
-    run_args, _ = runner.commands[0]
-    assert "--security-opt" in run_args
-    opt_index = run_args.index("--security-opt") + 1
-    assert run_args[opt_index] == f"seccomp={seccomp_path}"
-    manager.stop(deployment)
 
 
 def test_start_cleans_up_container_on_healthz_failure(monkeypatch) -> None:

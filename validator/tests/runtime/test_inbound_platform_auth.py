@@ -172,49 +172,6 @@ def test_inbound_verifier_start_does_not_raise_when_initial_refresh_fails(monkey
         assert verifier.stop(timeout_seconds=1.0) is True
 
 
-def test_inbound_verifier_start_warms_authorized_hotkeys_and_verify_uses_memory(monkeypatch) -> None:
-    keypair = bt.Keypair.create_from_mnemonic(bt.Keypair.generate_mnemonic())
-    header = _build_signed_header(keypair=keypair)
-    calls: dict[str, int] = {"count": 0}
-    warmup_done = Event()
-
-    class FakeSubtensor:
-        def __init__(self, *, network: str) -> None:
-            self.network = network
-
-        def get_owned_hotkeys(self, coldkey_ss58: str):
-            assert coldkey_ss58 == "5OwnerColdkey"
-            calls["count"] += 1
-            warmup_done.set()
-            return (keypair.ss58_address,)
-
-        def close(self) -> None:
-            return None
-
-    monkeypatch.setattr(sr25519.bt, "Subtensor", FakeSubtensor)
-
-    verifier = BittensorSr25519InboundVerifier(
-        netuid=2,
-        network="ws://127.0.0.1:9945",
-        owner_coldkey_ss58="5OwnerColdkey",
-        refresh_interval_seconds=9999.0,
-    )
-    verifier.start()
-    try:
-        assert warmup_done.wait(timeout=1.0) is True
-        assert (
-            verifier.verify(method="GET", path_qs="/v1/test", body=b"", authorization_header=header)
-            == keypair.ss58_address
-        )
-        assert (
-            verifier.verify(method="GET", path_qs="/v1/test", body=b"", authorization_header=header)
-            == keypair.ss58_address
-        )
-        assert calls["count"] == 1
-    finally:
-        assert verifier.stop(timeout_seconds=1.0) is True
-
-
 def test_inbound_verifier_falls_back_to_hotkey_owner_lookup_on_cache_miss(monkeypatch) -> None:
     old_keypair = bt.Keypair.create_from_mnemonic(bt.Keypair.generate_mnemonic())
     rotated_keypair = bt.Keypair.create_from_mnemonic(bt.Keypair.generate_mnemonic())

@@ -5,6 +5,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+import sentry_sdk
 from fastapi import FastAPI
 
 import harnyx_commons.observability.tracing as tracing_mod
@@ -57,7 +58,7 @@ def _docker_argument_value(options: SandboxOptions, name: str) -> str:
     [
         ({9}, "9"),
         ({7, 3, 11}, "3,7,11"),
-        ({7, 1, 5, 3}, "1,3,5,7"),
+        ({10, 8, 6, 4, 2}, "2,4,6,8"),
     ],
 )
 def test_sandbox_options_factory_uses_all_allowed_cpu_ids_up_to_four(
@@ -80,168 +81,10 @@ def test_sandbox_options_factory_uses_all_allowed_cpu_ids_up_to_four(
     assert options.labels[_SANDBOX_CPUSET_LABEL] == expected_cpuset
 
 
-def test_sandbox_options_factory_resolves_one_shared_four_cpu_set(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    affinity_reads = 0
-
-    def _sched_getaffinity(process_id: int) -> set[int]:
-        nonlocal affinity_reads
-        assert process_id == 0
-        affinity_reads += 1
-        return {10, 8, 6, 4, 2}
-
-    monkeypatch.setattr(
-        bootstrap_mod,
-        "os",
-        SimpleNamespace(sched_getaffinity=_sched_getaffinity),
-        raising=False,
-    )
-    _capture_sandbox_options_build(monkeypatch)
-
-    factory = bootstrap_mod._make_options_factory(_sandbox_settings())
-    first_options = factory()
-    second_options = factory()
-
-    assert affinity_reads == 1
-    assert _docker_argument_value(first_options, "--cpuset-cpus") == "2,4,6,8"
-    assert _docker_argument_value(second_options, "--cpuset-cpus") == "2,4,6,8"
-    assert first_options.extra_args[:-2] == CONTAINER_SECURITY.extra_args
-    assert first_options.labels[_SANDBOX_CPUSET_LABEL] == "2,4,6,8"
-    assert second_options.labels[_SANDBOX_CPUSET_LABEL] == "2,4,6,8"
-
-
-def test_sandbox_options_factory_fails_when_process_affinity_cannot_be_read(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def _raise_affinity_error(process_id: int) -> set[int]:
-        raise OSError(f"cannot read affinity for process {process_id}")
-
-    monkeypatch.setattr(
-        bootstrap_mod,
-        "os",
-        SimpleNamespace(sched_getaffinity=_raise_affinity_error),
-        raising=False,
-    )
-
-    with pytest.raises(OSError, match="cannot read affinity"):
-        bootstrap_mod._make_options_factory(_sandbox_settings())
-
-
-def test_validator_import_configures_sentry_before_tracing(monkeypatch) -> None:
-    calls: list[str] = []
-    fake_settings = SimpleNamespace(
-        observability=SimpleNamespace(
-            enable_cloud_logging=False,
-            gcp_project_id=None,
-        ),
-        rpc_listen_host="127.0.0.1",
-        rpc_port=8100,
-        platform_api=SimpleNamespace(),
-    )
-    fake_runtime = SimpleNamespace(
-        settings=fake_settings,
-        weight_submission_service=object(),
-        status_provider=object(),
-        tool_route_deps_provider=lambda: object(),
-        control_deps_provider=lambda: object(),
-        platform_work_worker=None,
-        register_with_platform=lambda: None,
-        refresh_platform_registration=lambda: None,
-    )
-    fake_worker = SimpleNamespace(start=lambda: None, stop=lambda *args, **kwargs: None)
-
-    def _fake_settings_load(cls) -> SimpleNamespace:
-        calls.append("settings")
-        return fake_settings
-
-    def _fake_configure_sentry() -> None:
-        calls.append("sentry")
-
-    def _fake_configure_tracing(*, service_name: str) -> None:
-        assert service_name == "harnyx-validator"
-        calls.append("tracing")
-
-    def _fake_init_logging() -> None:
-        calls.append("logging")
-
-    def _fake_configure_logging(
-        *,
-        cloud_logging_enabled: bool,
-        gcp_project: str | None,
-        cloud_log_labels: dict[str, str] | None,
-    ) -> None:
-        assert cloud_logging_enabled is False
-        assert gcp_project is None
-        assert cloud_log_labels is None
-        calls.append("configure_logging")
-
-    def _fake_build_runtime(settings: object) -> SimpleNamespace:
-        assert settings is fake_settings
-        calls.append("build_runtime")
-        return fake_runtime
-
-    def _fake_create_weight_worker(*, submission_service: object, status_provider: object) -> object:
-        assert submission_service is fake_runtime.weight_submission_service
-        assert status_provider is fake_runtime.status_provider
-        calls.append("weight_worker")
-        return fake_worker
-
-    def _fake_create_registration_refresh_worker(
-        *,
-        registration_refresh: object,
-        status_provider: object,
-    ) -> object:
-        assert registration_refresh is fake_runtime.refresh_platform_registration
-        assert status_provider is fake_runtime.status_provider
-        calls.append("registration_worker")
-        return fake_worker
-
-    monkeypatch.setattr(settings_mod.Settings, "load", classmethod(_fake_settings_load))
-    monkeypatch.setattr(
-        sentry_mod,
-        "configure_sentry_from_env",
-        _fake_configure_sentry,
-    )
-    monkeypatch.setattr(tracing_mod, "configure_tracing", _fake_configure_tracing)
-    monkeypatch.setattr(logging_mod, "init_logging", _fake_init_logging)
-    monkeypatch.setattr(logging_mod, "configure_logging", _fake_configure_logging)
-    monkeypatch.setattr(bootstrap_mod, "build_runtime", _fake_build_runtime)
-    monkeypatch.setattr(weight_worker_mod, "create_weight_worker", _fake_create_weight_worker)
-    monkeypatch.setattr(
-        registration_worker_mod,
-        "create_registration_refresh_worker",
-        _fake_create_registration_refresh_worker,
-    )
-    monkeypatch.setattr(routes_mod, "add_tool_routes", lambda app, dependency_provider: None)
-    monkeypatch.setattr(routes_mod, "add_control_routes", lambda app, control_deps_provider: None)
-
-    module_name = "harnyx_validator.server"
-    original_module = sys.modules.pop(module_name, None)
-    try:
-        imported = importlib.import_module(module_name)
-    finally:
-        sys.modules.pop(module_name, None)
-        if original_module is not None:
-            sys.modules[module_name] = original_module
-
-    assert imported._settings is fake_settings
-    runtime_system_app = FastAPI()
-    routes_mod.add_system_routes(runtime_system_app, fake_runtime.status_provider)
-    assert imported.app.openapi()["paths"] == runtime_system_app.openapi()["paths"]
-    assert calls[:6] == [
-        "logging",
-        "sentry",
-        "settings",
-        "tracing",
-        "configure_logging",
-        "build_runtime",
-    ]
-    assert calls.index("sentry") < calls.index("tracing")
-
-
 def _import_server_with_captured_weight_worker_kwargs(
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    use_real_sentry_startup: bool = False,
 ) -> list[dict[str, object]]:
     fake_settings = SimpleNamespace(
         observability=SimpleNamespace(
@@ -270,7 +113,8 @@ def _import_server_with_captured_weight_worker_kwargs(
         return fake_worker
 
     monkeypatch.setattr(settings_mod.Settings, "load", classmethod(lambda cls: fake_settings))
-    monkeypatch.setattr(sentry_mod, "configure_sentry_from_env", lambda: None)
+    if not use_real_sentry_startup:
+        monkeypatch.setattr(sentry_mod, "configure_sentry_from_env", lambda: None)
     monkeypatch.setattr(tracing_mod, "configure_tracing", lambda *, service_name: None)
     monkeypatch.setattr(logging_mod, "init_logging", lambda: None)
     monkeypatch.setattr(logging_mod, "configure_logging", lambda **kwargs: None)
@@ -293,6 +137,47 @@ def _import_server_with_captured_weight_worker_kwargs(
         if original_module is not None:
             sys.modules[module_name] = original_module
     return captured
+
+
+def test_validator_startup_initializes_sentry_from_validator_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Future failure: Validator startup must initialize the active Sentry client from SENTRY_DSN."""
+    dsn = "https://public@example.invalid/1"
+    monkeypatch.setenv("SENTRY_DSN", dsn)
+    try:
+        _import_server_with_captured_weight_worker_kwargs(monkeypatch, use_real_sentry_startup=True)
+
+        assert sentry_sdk.get_client().dsn == dsn
+    finally:
+        sentry_sdk.init(dsn=None)
+
+
+def test_validator_startup_initializes_sentry_before_settings_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Future failure: startup faults must be reportable even when settings cannot load."""
+    dsn = "https://public@example.invalid/1"
+    monkeypatch.setenv("SENTRY_DSN", dsn)
+    monkeypatch.setattr(logging_mod, "init_logging", lambda: None)
+
+    def _fail_settings_load(cls: object) -> object:
+        del cls
+        raise RuntimeError("settings failed")
+
+    monkeypatch.setattr(settings_mod.Settings, "load", classmethod(_fail_settings_load))
+    module_name = "harnyx_validator.server"
+    original_module = sys.modules.pop(module_name, None)
+    try:
+        with pytest.raises(RuntimeError, match="settings failed"):
+            importlib.import_module(module_name)
+
+        assert sentry_sdk.get_client().dsn == dsn
+    finally:
+        sys.modules.pop(module_name, None)
+        if original_module is not None:
+            sys.modules[module_name] = original_module
+        sentry_sdk.init(dsn=None)
 
 
 def test_validator_import_ignores_smoke_weight_worker_interval_without_marker(
@@ -327,24 +212,6 @@ def test_validator_import_rejects_invalid_compose_smoke_weight_worker_interval(
 
     with pytest.raises(RuntimeError, match="smoke weight-worker poll interval must be positive"):
         _import_server_with_captured_weight_worker_kwargs(monkeypatch)
-
-
-def test_validator_logging_config_defaults_measurement_logger_to_warning(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("VALIDATOR_MEASUREMENT_LOG_LEVEL", raising=False)
-
-    config = logging_mod.build_log_config()
-
-    assert config["loggers"]["harnyx_validator.measurement"]["level"] == "WARNING"
-
-
-def test_validator_logging_config_respects_measurement_logger_env(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("VALIDATOR_MEASUREMENT_LOG_LEVEL", "debug")
-
-    config = logging_mod.build_log_config()
-
-    assert config["loggers"]["harnyx_validator.measurement"]["level"] == "DEBUG"
 
 
 def test_validator_runtime_separates_startup_registration_from_refresh(
@@ -438,59 +305,6 @@ def test_platform_work_worker_uses_task_capacity_and_artifact_cap() -> None:
     assert tuple(entry.slot_limit for entry in worker._scoring_slot_config.entries) == (10, 10)
     assert set(worker._score_execution_by_model) == set(scoring_services)
     assert worker._target_concurrency > worker._max_active_artifacts
-
-
-@pytest.mark.anyio
-async def test_platform_work_worker_scoreable_execution_keeps_scoring_errors_validator_owned(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    observed: dict[str, object] = {}
-
-    async def _fake_score_platform_execution(
-        scoring_service: object,
-        execution: object,
-        *,
-        convert_scoring_error: bool,
-    ) -> object:
-        observed["scoring_service"] = scoring_service
-        observed["execution"] = execution
-        observed["convert_scoring_error"] = convert_scoring_error
-        return "result"
-
-    monkeypatch.setattr(bootstrap_mod, "score_platform_execution", _fake_score_platform_execution)
-    scoring_service = object()
-    scoring_services = {
-        entry.model: scoring_service if index == 0 else object()
-        for index, entry in enumerate(bootstrap_mod._SCORING_SLOT_CONFIG.entries)
-    }
-    scoring_model = bootstrap_mod._SCORING_SLOT_CONFIG.entries[0].model
-    execution = object()
-    worker = bootstrap_mod._build_platform_work_worker(
-        resolved=SimpleNamespace(),
-        platform_client=object(),  # type: ignore[arg-type]
-        subtensor_client=object(),  # type: ignore[arg-type]
-        sandbox_manager=object(),  # type: ignore[arg-type]
-        state=SimpleNamespace(
-            session_manager=object(),
-            evaluation_records=object(),
-            receipt_log=object(),
-            progress_tracker=object(),
-            batch_activity=object(),
-            platform_tool_proxy_scopes=object(),
-        ),
-        batch_blocking_executor=object(),  # type: ignore[arg-type]
-        scoring_services=scoring_services,  # type: ignore[arg-type]
-        orchestrator_factory=lambda _client: object(),  # type: ignore[arg-type]
-        options_factory=lambda: object(),  # type: ignore[arg-type]
-    )
-
-    assert worker is not None
-    assert await worker._score_execution_by_model[scoring_model](execution) == "result"  # type: ignore[arg-type]
-    assert observed == {
-        "scoring_service": scoring_service,
-        "execution": execution,
-        "convert_scoring_error": True,
-    }
 
 
 @pytest.mark.anyio

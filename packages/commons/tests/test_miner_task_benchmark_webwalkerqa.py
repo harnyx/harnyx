@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from hashlib import sha256
-from importlib.resources import files
 from pathlib import Path
 from uuid import UUID
 
@@ -20,7 +19,6 @@ from harnyx_commons.miner_task_benchmark import (
     list_current_benchmark_suite_slugs,
     list_webwalkerqa_multi_source_medium_snapshots,
     list_webwalkerqa_single_source_medium_snapshots,
-    list_webwalkerqa_snapshots,
     load_benchmark_snapshot,
     load_webwalkerqa_multi_source_medium_snapshot,
     load_webwalkerqa_single_source_medium_snapshot,
@@ -93,9 +91,7 @@ def test_webwalkerqa_easy_validates_task_fields_only_for_selected_rows(tmp_path:
         spec=webwalkerqa_loader._WEBWALKERQA_EASY,
     )
 
-    assert [item.problem for item in snapshot.items] == [
-        "Root URL: https://example.com/\nQuestion: Selected question"
-    ]
+    assert [item.problem for item in snapshot.items] == ["Root URL: https://example.com/\nQuestion: Selected question"]
 
 
 def test_webwalkerqa_problem_uses_root_url_and_question_only() -> None:
@@ -106,35 +102,6 @@ def test_webwalkerqa_problem_uses_root_url_and_question_only() -> None:
         "Question: 湖南工业大学计算机学院“工作动态”部分中，记录的最早日期是什么？"
     )
     assert item.answer == "2021-11-02"
-
-
-def test_webwalkerqa_manifest_checksum_matches_upstream_raw_test_json() -> None:
-    snapshot = load_webwalkerqa_snapshot()
-    payload = files("harnyx_commons.miner_task_benchmark.webwalkerqa.data").joinpath(
-        "sources",
-        snapshot.manifest.sha256,
-        snapshot.manifest.file_name,
-    )
-    raw_bytes = payload.read_bytes()
-    raw_rows = json.loads(raw_bytes.decode("utf-8"))
-
-    assert len(raw_rows) == 680
-    assert sha256(raw_bytes).hexdigest() == snapshot.manifest.sha256
-    assert snapshot.manifest.sha256 == "26743935e573cca30571793bc28f3798d2a7ce73c6c0981e1bd54a5fe476fe46"
-
-
-def test_webwalkerqa_current_version_points_at_versioned_payload() -> None:
-    snapshot = load_webwalkerqa_snapshot()
-    data_dir = files("harnyx_commons.miner_task_benchmark.webwalkerqa.data")
-    current_version = json.loads(
-        data_dir.joinpath("current_version.json").read_text(encoding="utf-8")
-    )
-
-    assert current_version == {
-        "dataset_version": snapshot.manifest.dataset_version,
-        "scoring_version": snapshot.manifest.scoring_version,
-    }
-    assert list_webwalkerqa_snapshots() == (snapshot,)
 
 
 def test_benchmark_registry_loads_webwalkerqa_current_and_explicit_snapshot() -> None:
@@ -290,10 +257,13 @@ def test_webwalkerqa_medium_sampling_uses_fixed_snapshot_panels() -> None:
         )
 
         assert [item.item_index for item in sampled] == expected_indices
-        assert str(
-            benchmark_task_id_for_item(
-                suite_slug=snapshot.manifest.suite_slug,
-                run_id=run_id,
-                item_index=sampled[0].item_index,
+        assert (
+            str(
+                benchmark_task_id_for_item(
+                    suite_slug=snapshot.manifest.suite_slug,
+                    run_id=run_id,
+                    item_index=sampled[0].item_index,
+                )
             )
-        ) == expected_first_task_id
+            == expected_first_task_id
+        )

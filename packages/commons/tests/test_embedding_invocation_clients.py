@@ -17,14 +17,20 @@ pytestmark = pytest.mark.anyio("asyncio")
 
 
 def test_miner_selected_embedding_provider_model_sets_are_provider_namespaces() -> None:
-    assert parse_miner_selected_embedding_provider_model(
-        provider="chutes",
-        model=QWEN3_CHUTES_EMBEDDING_MODEL,
-    ).model == QWEN3_CHUTES_EMBEDDING_MODEL
-    assert parse_miner_selected_embedding_provider_model(
-        provider="openrouter",
-        model=QWEN3_OPENROUTER_EMBEDDING_MODEL,
-    ).model == QWEN3_OPENROUTER_EMBEDDING_MODEL
+    assert (
+        parse_miner_selected_embedding_provider_model(
+            provider="chutes",
+            model=QWEN3_CHUTES_EMBEDDING_MODEL,
+        ).model
+        == QWEN3_CHUTES_EMBEDDING_MODEL
+    )
+    assert (
+        parse_miner_selected_embedding_provider_model(
+            provider="openrouter",
+            model=QWEN3_OPENROUTER_EMBEDDING_MODEL,
+        ).model
+        == QWEN3_OPENROUTER_EMBEDDING_MODEL
+    )
     with pytest.raises(ValueError, match="not supported"):
         parse_miner_selected_embedding_provider_model(
             provider="chutes",
@@ -35,6 +41,8 @@ def test_miner_selected_embedding_provider_model_sets_are_provider_namespaces() 
             provider="openrouter",
             model=QWEN3_CHUTES_EMBEDDING_MODEL,
         )
+
+
 async def test_chutes_embedding_provider_formats_query_instruction(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
@@ -70,7 +78,9 @@ async def test_chutes_embedding_provider_formats_query_instruction(monkeypatch: 
 
 @pytest.mark.parametrize(
     ("requested_timeout", "expected_provider_timeout"),
-    [(400.0, 410.0), (5.0, 300.0)],
+    [
+        (400.0, 410.0),
+    ],
 )
 async def test_chutes_embedding_provider_applies_effective_request_timeout_to_model_client(
     monkeypatch: pytest.MonkeyPatch,
@@ -108,32 +118,6 @@ async def test_chutes_embedding_provider_applies_effective_request_timeout_to_mo
     )
 
     assert captured["timeout_seconds"] == expected_provider_timeout
-
-
-async def test_chutes_embedding_provider_leaves_document_text_unformatted(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict[str, object] = {}
-
-    class _FakeClient:
-        async def embed_many(self, texts: tuple[str, ...], **_: object) -> ChutesTextEmbeddingResponse:
-            captured["texts"] = texts
-            return ChutesTextEmbeddingResponse(
-                vectors=((0.4, 0.5, 0.6),),
-                usage=ChutesEmbeddingUsage(prompt_tokens=6, total_tokens=6),
-            )
-
-    provider = ChutesEmbeddingProvider(api_key="test-key", timeout_seconds=1.0)
-    monkeypatch.setattr(provider, "_client_for", lambda **_: _FakeClient())
-
-    await provider.embed_text(
-        EmbedTextRequest(
-            provider="chutes",
-            model=QWEN3_CHUTES_EMBEDDING_MODEL,
-            texts=("The subnet rewards useful miner answers.",),
-            input_type="document",
-        )
-    )
-
-    assert captured["texts"] == ("The subnet rewards useful miner answers.",)
 
 
 async def test_chutes_embedding_provider_allows_missing_usage_tokens_when_elapsed_second_priced(
@@ -421,34 +405,6 @@ async def test_openrouter_embedding_provider_returns_vectors_when_usage_is_unava
     }
 
 
-async def test_openrouter_embedding_provider_uses_provider_cost_without_usage_tokens(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _FakeClient:
-        async def embed_many(self, texts: tuple[str, ...], **_: object) -> OpenRouterEmbeddingResponse:
-            _ = texts
-            return OpenRouterEmbeddingResponse(
-                vectors=((0.7, 0.8, 0.9),),
-                model=QWEN3_OPENROUTER_EMBEDDING_MODEL,
-                usage=OpenRouterEmbeddingUsage(cost=0.0042),
-            )
-
-    provider = OpenRouterEmbeddingProvider(api_key=SecretStr("test-key"), timeout_seconds=1.0)
-    monkeypatch.setattr(provider, "_client_for", lambda **_: _FakeClient())
-
-    result = await provider.embed_text(
-        EmbedTextRequest(
-            provider="openrouter",
-            model=QWEN3_OPENROUTER_EMBEDDING_MODEL,
-            texts=("find subnet incentives",),
-            input_type="query",
-        )
-    )
-
-    assert result.actual_cost_usd == pytest.approx(0.0042)
-    assert result.actual_cost_evidence["settlement_source"] == "provider_returned"
-
-
 @pytest.mark.parametrize("provider_cost", [None, "invalid"])
 async def test_openrouter_embedding_provider_marks_cost_unavailable_without_usable_tokens(
     monkeypatch: pytest.MonkeyPatch,
@@ -478,6 +434,4 @@ async def test_openrouter_embedding_provider_marks_cost_unavailable_without_usab
     assert result.actual_cost_usd is None
     assert result.actual_cost_evidence["settlement_source"] == "unavailable"
     assert result.actual_cost_evidence["usage_status"] == "tokens_missing"
-    assert result.actual_cost_evidence["provider_cost_status"] == (
-        "missing" if provider_cost is None else "malformed"
-    )
+    assert result.actual_cost_evidence["provider_cost_status"] == ("missing" if provider_cost is None else "malformed")

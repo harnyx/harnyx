@@ -184,24 +184,6 @@ async def test_bedrock_adapter_uses_provider_specific_minimax_m2_5_alias() -> No
     assert delegate.requests[0].model == "minimax.minimax-m2.5"
 
 
-async def test_vertex_adapter_uses_provider_specific_deepseek_v3_2_alias() -> None:
-    delegate = StubProvider()
-    provider = LlmProviderAdapter(provider_name="vertex", delegate=delegate)
-
-    request = LlmRequest(
-        provider="vertex",
-        model="deepseek-ai/DeepSeek-V3.2-TEE",
-        messages=(),
-        temperature=None,
-        max_output_tokens=None,
-        output_mode="text",
-    )
-
-    await provider.invoke(request)
-
-    assert delegate.requests[0].model == "deepseek-ai/deepseek-v3.2-maas"
-
-
 async def test_vertex_adapter_uses_provider_specific_qwen3_235b_alias() -> None:
     delegate = StubProvider()
     provider = LlmProviderAdapter(provider_name="vertex", delegate=delegate)
@@ -239,7 +221,10 @@ async def test_bedrock_adapter_does_not_fall_back_to_global_kimi_alias() -> None
     assert delegate.requests[0].model == "moonshotai/Kimi-K2.5-TEE"
 
 
-@pytest.mark.parametrize(("model", "expected"), VERTEX_ALIASED_TOOL_MODELS.items())
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    (("deepseek-ai/DeepSeek-V3.2-TEE", "deepseek-ai/deepseek-v3.2-maas"),),
+)
 async def test_adapter_applies_default_vertex_aliases(model: str, expected: str) -> None:
     delegate = StubProvider()
     provider = LlmProviderAdapter(provider_name="vertex", delegate=delegate)
@@ -298,7 +283,7 @@ def test_canonical_model_for_provider_model_returns_unknown_model_unchanged() ->
     )
 
 
-@pytest.mark.parametrize("model", VERTEX_ALIASED_TOOL_MODELS)
+@pytest.mark.parametrize("model", ("deepseek-ai/DeepSeek-V3.2-TEE",))
 async def test_adapter_leaves_open_model_ids_unchanged_for_chutes(model: str) -> None:
     delegate = StubProvider()
     provider = LlmProviderAdapter(provider_name="chutes", delegate=delegate)

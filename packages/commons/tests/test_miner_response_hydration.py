@@ -241,6 +241,7 @@ def test_public_slice_materializer_matches_official_hydration_for_raw_unicode_cr
 
 
 def test_hydrate_miner_response_payload_uses_unstripped_source_text_offsets() -> None:
+    """Future failure: citation offsets must address the original source text."""
     session_id = uuid4()
     source_text = f"  {_source_text(140)}"
 

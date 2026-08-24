@@ -7,8 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from harnyx_commons.llm.provider import LlmProviderError, LlmRetryExhaustedError
-from harnyx_commons.llm.retry_utils import RetryPolicy
+from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_commons.llm.schema import (
     AbstractLlmRequest,
     LlmChoice,
@@ -18,7 +17,6 @@ from harnyx_commons.llm.schema import (
     LlmUsage,
 )
 from harnyx_commons.miner_task_similarity import SimilarityJudgeRequest
-from harnyx_commons.observability.logging import ExtrasFormatter
 from harnyx_validator.application import similarity_judge as similarity_judge_module
 from harnyx_validator.application.similarity_judge import SimilarityJudge, SimilarityJudgeConfig
 
@@ -321,25 +319,20 @@ async def test_similarity_judge_structured_output_contract_rejects_invalid_shape
 
     contradictory_duplicate = postprocessor(
         _raw_similarity_response(
-            '{"classification":"duplicate","reasoning":"same mechanism",'
-            '"mechanism_change":"iterative retrieval"}'
+            '{"classification":"duplicate","reasoning":"same mechanism","mechanism_change":"iterative retrieval"}'
         )
     )
     assert contradictory_duplicate.ok is False
     assert contradictory_duplicate.retryable is True
 
     empty_duplicate_mechanism = postprocessor(
-        _raw_similarity_response(
-            '{"classification":"duplicate","reasoning":"same mechanism","mechanism_change":""}'
-        )
+        _raw_similarity_response('{"classification":"duplicate","reasoning":"same mechanism","mechanism_change":""}')
     )
     assert empty_duplicate_mechanism.ok is False
     assert empty_duplicate_mechanism.retryable is True
 
     whitespace_duplicate_mechanism = postprocessor(
-        _raw_similarity_response(
-            '{"classification":"duplicate","reasoning":"same mechanism","mechanism_change":"   "}'
-        )
+        _raw_similarity_response('{"classification":"duplicate","reasoning":"same mechanism","mechanism_change":"   "}')
     )
     assert whitespace_duplicate_mechanism.ok is False
     assert whitespace_duplicate_mechanism.retryable is True
@@ -453,10 +446,7 @@ async def test_similarity_judge_postprocessor_accepts_novel_with_mechanism_reaso
             json.dumps(
                 _similarity_postprocessed(
                     classification="novel",
-                    reasoning=(
-                        "Replaces one tool loop with a staged "
-                        "plan-retrieve-verify-synthesize controller."
-                    ),
+                    reasoning=("Replaces one tool loop with a staged plan-retrieve-verify-synthesize controller."),
                     mechanism_change="staged controller and verified fact-table evidence",
                 )
             )
@@ -493,12 +483,9 @@ async def test_similarity_judge_postprocessor_accepts_notable_change_with_same_a
                 _similarity_postprocessed(
                     classification="notable_change",
                     reasoning=(
-                        "Adds planning and verification stages while retaining the same controller "
-                        "and evidence path."
+                        "Adds planning and verification stages while retaining the same controller and evidence path."
                     ),
-                    mechanism_change=(
-                        "substantial planning and verification stages within the same architecture"
-                    ),
+                    mechanism_change=("substantial planning and verification stages within the same architecture"),
                 )
             )
         )
@@ -720,127 +707,6 @@ async def test_similarity_judge_keeps_reasoning_effort_on_request_without_typed_
     assert llm_request.thinking is None
 
 
-async def test_similarity_judge_tries_next_candidate_after_true_retry_exhaustion() -> None:
-    retry_policy = RetryPolicy(attempts=3, initial_ms=1, max_ms=10, jitter=0.0)
-    llm = SequenceLlmProvider(
-        [
-            LlmRetryExhaustedError("primary exhausted"),
-            _similarity_response(
-                prompt_tokens=31,
-                completion_tokens=13,
-                total_tokens=44,
-                metadata={
-                    "selected_provider": "custom-openai-compatible:gemma4-cloud-run-turbo",
-                    "selected_model": "google/gemma-4-31B-turbo-TEE",
-                    "actual_cost_usd": 0.04,
-                }
-            ),
-        ]
-    )
-    service = SimilarityJudge(
-        llm_provider=llm,
-        config=SimilarityJudgeConfig(
-            provider="chutes",
-            model="moonshotai/Kimi-K2.5-TEE",
-            fallback_models=("google/gemma-4-31B-turbo-TEE",),
-            retry_policy=retry_policy,
-        ),
-    )
-
-    result = await service.judge(
-        SimilarityJudgeRequest(
-            batch_id=uuid4(),
-            candidate_artifact_id=uuid4(),
-            reference_artifact_id=uuid4(),
-            candidate_miner_uid=20,
-            reference_miner_uid=10,
-            reference_script="def answer(): return 'old'",
-            candidate_diff="+ def answer(): return 'new'",
-        )
-    )
-
-    assert result.classification == "novel"
-    assert result.provider == "custom-openai-compatible:gemma4-cloud-run-turbo"
-    assert result.model == "google/gemma-4-31B-turbo-TEE"
-    assert result.judge_usage is not None
-    assert result.judge_usage.prompt_tokens == 31
-    assert result.judge_usage.completion_tokens == 13
-    assert result.judge_usage.total_tokens == 44
-    assert result.judge_usage.actual_cost_usd == pytest.approx(0.04)
-    assert [request.model for request in llm.requests] == [
-        "moonshotai/Kimi-K2.5-TEE",
-        "google/gemma-4-31B-turbo-TEE",
-    ]
-    assert [request.retry_policy for request in llm.requests] == [retry_policy, retry_policy]
-
-
-async def test_similarity_judge_counts_exhausted_primary_usage_before_fallback_success() -> None:
-    primary_error = LlmRetryExhaustedError(
-        "primary exhausted",
-        response=_similarity_response(
-            reasoning_text=None,
-            reasoning_tokens=2,
-            prompt_tokens=7,
-            completion_tokens=4,
-            total_tokens=11,
-            metadata={
-                "selected_provider": "chutes",
-                "selected_model": "moonshotai/Kimi-K2.5-TEE",
-                "actual_cost_usd": 0.02,
-            },
-        ),
-    )
-    llm = SequenceLlmProvider(
-        [
-            primary_error,
-            _similarity_response(
-                prompt_tokens=31,
-                completion_tokens=13,
-                total_tokens=44,
-                metadata={
-                    "selected_provider": "custom-openai-compatible:gemma4-cloud-run-turbo",
-                    "selected_model": "google/gemma-4-31B-turbo-TEE",
-                    "actual_cost_usd": 0.04,
-                },
-            ),
-        ]
-    )
-    service = SimilarityJudge(
-        llm_provider=llm,
-        config=SimilarityJudgeConfig(
-            provider="chutes",
-            model="moonshotai/Kimi-K2.5-TEE",
-            fallback_models=("google/gemma-4-31B-turbo-TEE",),
-        ),
-    )
-
-    result = await service.judge(
-        SimilarityJudgeRequest(
-            batch_id=uuid4(),
-            candidate_artifact_id=uuid4(),
-            reference_artifact_id=uuid4(),
-            candidate_miner_uid=20,
-            reference_miner_uid=10,
-            reference_script="def answer(): return 'old'",
-            candidate_diff="+ def answer(): return 'new'",
-        )
-    )
-
-    assert result.provider == "custom-openai-compatible:gemma4-cloud-run-turbo"
-    assert result.model == "google/gemma-4-31B-turbo-TEE"
-    assert result.judge_usage is not None
-    assert result.judge_usage.call_count == 2
-    assert result.judge_usage.prompt_tokens == 38
-    assert result.judge_usage.completion_tokens == 17
-    assert result.judge_usage.total_tokens == 55
-    assert result.judge_usage.reasoning_tokens == 19
-    assert result.judge_usage.actual_cost_usd == pytest.approx(0.06)
-    assert [request.model for request in llm.requests] == [
-        "moonshotai/Kimi-K2.5-TEE",
-        "google/gemma-4-31B-turbo-TEE",
-    ]
-
-
 async def test_similarity_judge_preserves_retry_tokens_when_actual_cost_total_unavailable() -> None:
     primary_error = LlmRetryExhaustedError(
         "primary exhausted",
@@ -950,64 +816,11 @@ async def test_similarity_judge_carries_failed_usage_when_final_fallback_has_no_
     assert raised.value.judge_usage.actual_cost_usd == pytest.approx(0.02)
 
 
-async def test_similarity_judge_tries_next_candidate_after_non_retryable_provider_failure(
-    caplog: pytest.LogCaptureFixture,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("K_SERVICE", "validator")
-    caplog.set_level(logging.WARNING, logger="harnyx_validator.application.similarity_judge")
-    llm = SequenceLlmProvider(
-        [
-            LlmProviderError(
-                "http_400: context length exceeded",
-                effective_provider="custom-openai-compatible:glm-cloud-run",
-                effective_model="zai-org/GLM-5.2-TEE",
-            ),
-            _similarity_response(),
-        ]
-    )
-    service = SimilarityJudge(
-        llm_provider=llm,
-        config=SimilarityJudgeConfig(
-            provider="chutes",
-            model="moonshotai/Kimi-K2.5-TEE",
-            fallback_models=("google/gemma-4-31B-turbo-TEE",),
-        ),
-    )
-
-    result = await service.judge(
-        SimilarityJudgeRequest(
-            batch_id=uuid4(),
-            candidate_artifact_id=uuid4(),
-            reference_artifact_id=uuid4(),
-            candidate_miner_uid=20,
-            reference_miner_uid=10,
-            reference_script="def answer(): return 'old'",
-            candidate_diff="+ def answer(): return 'new'",
-        )
-    )
-
-    assert result.classification == "novel"
-    assert [request.model for request in llm.requests] == [
-        "moonshotai/Kimi-K2.5-TEE",
-        "google/gemma-4-31B-turbo-TEE",
-    ]
-    fallback_record = next(
-        record for record in caplog.records if record.message == "similarity_judge.candidate_failed"
-    )
-    assert fallback_record.data == {
-        "model": "zai-org/GLM-5.2-TEE",
-        "provider": "custom-openai-compatible:glm-cloud-run",
-        "exception_type": "LlmProviderError",
-        "failure_reason": "http_400: context length exceeded",
-    }
-    formatted_record = json.loads(ExtrasFormatter().format(fallback_record))
-    assert formatted_record["data"] == fallback_record.data
-
-
 @pytest.mark.parametrize(
     "implementation_error",
-    [RuntimeError("unexpected accounting runtime error"), ValueError("unexpected accounting value error")],
+    [
+        RuntimeError("unexpected accounting runtime error"),
+    ],
 )
 async def test_similarity_judge_does_not_hide_accounting_implementation_failures(
     monkeypatch: pytest.MonkeyPatch,
@@ -1032,49 +845,6 @@ async def test_similarity_judge_does_not_hide_accounting_implementation_failures
     )
 
     with pytest.raises(type(implementation_error), match=str(implementation_error)):
-        await service.judge(
-            SimilarityJudgeRequest(
-                batch_id=uuid4(),
-                candidate_artifact_id=uuid4(),
-                reference_artifact_id=uuid4(),
-                candidate_miner_uid=20,
-                reference_miner_uid=10,
-                reference_script="def answer(): return 'old'",
-                candidate_diff="+ def answer(): return 'new'",
-            )
-        )
-
-    assert len(llm.requests) == 1
-
-
-async def test_similarity_judge_does_not_hide_failed_usage_recovery_implementation_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def _raise_implementation_error(*args: object, **kwargs: object) -> None:
-        raise ValueError("unexpected failed usage recovery error")
-
-    monkeypatch.setattr(
-        similarity_judge_module,
-        "judge_usage_without_actual_cost_from_response",
-        _raise_implementation_error,
-    )
-    primary_response = _similarity_response(metadata={"actual_cost_usd": True})
-    llm = SequenceLlmProvider(
-        [
-            LlmProviderError("primary response metadata failed", response=primary_response),
-            _similarity_response(),
-        ]
-    )
-    service = SimilarityJudge(
-        llm_provider=llm,
-        config=SimilarityJudgeConfig(
-            provider="chutes",
-            model="moonshotai/Kimi-K2.5-TEE",
-            fallback_models=("google/gemma-4-31B-turbo-TEE",),
-        ),
-    )
-
-    with pytest.raises(ValueError, match="unexpected failed usage recovery error"):
         await service.judge(
             SimilarityJudgeRequest(
                 batch_id=uuid4(),

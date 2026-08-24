@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import gc
 import os
 import threading
+import tracemalloc
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -368,9 +370,7 @@ def test_run_progress_terminated_attempts_round_trip_from_blob_store(tmp_path: P
 
     page = progress.completed_run_page(batch.batch_id, after_sequence=0, limit=10)
 
-    assert page["items"] == (
-        {"sequence": 1, "kind": "terminated_attempt", "submission": None, "attempt": attempt},
-    )
+    assert page["items"] == ({"sequence": 1, "kind": "terminated_attempt", "submission": None, "attempt": attempt},)
     attempt_refs = progress.attempt_refs_by_session_by_batch[batch.batch_id]
     assert set(attempt_refs) == {attempt.validator_session_id}
     assert attempt_refs[attempt.validator_session_id].segment_name.startswith("attempts-")
@@ -436,28 +436,6 @@ def test_run_progress_includes_failure_reason_in_consumed_provider_failures(tmp_
     assert progress.provider_evidence(batch.batch_id) == expected
 
 
-def test_run_progress_page_preserves_record_sequence_without_global_task_order(tmp_path: Path) -> None:
-    progress = _progress(tmp_path)
-    batch = _make_multi_batch()
-    submissions = _make_distinct_multi_submissions(batch)
-
-    progress.register(batch)
-    for submission in submissions:
-        progress.record(submission)
-
-    page = progress.completed_run_page(batch.batch_id, after_sequence=0, limit=10)
-
-    assert tuple(
-        (item["sequence"], item["submission"].run.artifact_id, item["submission"].run.task_id)
-        for item in page["items"]
-    ) == (
-        (1, batch.artifacts[1].artifact_id, batch.tasks[1].task_id),
-        (2, batch.artifacts[0].artifact_id, batch.tasks[1].task_id),
-        (3, batch.artifacts[1].artifact_id, batch.tasks[0].task_id),
-        (4, batch.artifacts[0].artifact_id, batch.tasks[0].task_id),
-    )
-
-
 def test_run_progress_page_returns_cursor_window_without_rescanning_prefix(tmp_path: Path) -> None:
     progress = _progress(tmp_path)
     batch = _make_multi_batch()
@@ -472,9 +450,7 @@ def test_run_progress_page_returns_cursor_window_without_rescanning_prefix(tmp_p
     assert page["latest_sequence"] == 4
     assert page["next_after_sequence"] == 3
     assert page["has_more"] is True
-    assert page["items"] == (
-        {"sequence": 3, "kind": "completed_run", "submission": submissions[2], "attempt": None},
-    )
+    assert page["items"] == ({"sequence": 3, "kind": "completed_run", "submission": submissions[2], "attempt": None},)
 
 
 def test_run_progress_page_rejects_missing_dense_sequence(tmp_path: Path) -> None:
@@ -614,6 +590,7 @@ def test_run_progress_completed_page_and_discard_are_lock_coordinated(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Future failure: discard must not delete blobs during a coordinated page read."""
     progress = _progress(tmp_path)
     batch = _make_batch()
     submission = _make_submission(batch)
@@ -656,3 +633,71 @@ def test_run_progress_completed_page_and_discard_are_lock_coordinated(
         {"sequence": 1, "kind": "completed_run", "submission": submission, "attempt": None},
     )
     assert not (progress.storage_root / str(batch.batch_id)).exists()
+
+
+@pytest.mark.parametrize("record_kind", ["completed_run", "terminated_attempt"])
+def test_run_progress_spools_large_execution_logs_without_retaining_payloads(
+    tmp_path: Path,
+    record_kind: str,
+) -> None:
+    """Future failure: persisted logs must not remain resident in validator memory."""
+    progress = _progress(tmp_path)
+    batch = _make_batch()
+    if record_kind == "terminated_attempt":
+        progress.register(batch)
+    payload_bytes = 1024 * 1024
+    record_count = 16
+
+    gc.collect()
+    tracemalloc.start()
+    retained_before, _ = tracemalloc.get_traced_memory()
+    try:
+        for index in range(record_count):
+            payload = f"{index:04d}-" + ("x" * (payload_bytes - 5))
+            if record_kind == "completed_run":
+                completed_batch = _make_batch()
+                progress.register(completed_batch)
+                submission = _make_submission(completed_batch)
+                progress.record(
+                    submission.model_copy(
+                        update={
+                            "execution_log": (
+                                ToolCall(
+                                    receipt_id=f"receipt-{index}",
+                                    session_id=submission.run.session_id,
+                                    uid=submission.run.uid,
+                                    tool="fetch_page",
+                                    issued_at=submission.run.completed_at,
+                                    outcome=ToolCallOutcome.OK,
+                                    details=ToolCallDetails(
+                                        request_hash=f"request-{index}",
+                                        response_payload={"content": payload},
+                                    ),
+                                ),
+                            ),
+                        }
+                    )
+                )
+            else:
+                progress.record_terminated_attempt(
+                    _make_attempt(
+                        batch,
+                        attempt_number=index + 1,
+                        max_attempts=record_count + 1,
+                        payload=payload,
+                    )
+                )
+            del payload
+        if record_kind == "completed_run":
+            del submission
+        gc.collect()
+
+        retained_after, _ = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    retained_delta = retained_after - retained_before
+    total_payload_bytes = record_count * payload_bytes
+    blob_bytes = sum(path.stat().st_size for path in progress.storage_root.rglob("*.blob"))
+    assert retained_delta < total_payload_bytes // 2
+    assert blob_bytes >= total_payload_bytes

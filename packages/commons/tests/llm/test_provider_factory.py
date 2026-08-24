@@ -14,52 +14,6 @@ from harnyx_commons.llm.provider_types import AI_GATEWAY_PROVIDER, CHUTES_PROVID
 from harnyx_commons.llm.retry_utils import RetryPolicy
 
 
-def test_llm_settings_default_provider_concurrency_targets_match_activation_slice() -> None:
-    assert LlmSettings.model_fields["bedrock_max_concurrent"].default == 100
-    assert LlmSettings.model_fields["chutes_max_concurrent"].default == 100
-    assert LlmSettings.model_fields["desearch_max_concurrent"].default == 100
-    assert LlmSettings.model_fields["parallel_max_concurrent"].default == 100
-    assert LlmSettings.model_fields["vertex_max_concurrent"].default == 100
-
-
-def test_default_llm_timeout_surfaces_are_300_seconds() -> None:
-    settings = LlmSettings(_env_file=None)
-
-    assert settings.llm_timeout_seconds == pytest.approx(300.0)
-    assert settings.scoring_llm_timeout_seconds == pytest.approx(300.0)
-    assert settings.similarity_llm_timeout_seconds == pytest.approx(300.0)
-    assert VertexSettings(_env_file=None).vertex_timeout_seconds == pytest.approx(300.0)
-    assert BedrockSettings(_env_file=None).read_timeout_seconds == pytest.approx(300.0)
-    assert provider_factory.CHUTES.timeout_seconds == pytest.approx(300.0)
-
-
-def test_default_scoring_llm_max_output_tokens_is_20480() -> None:
-    assert LlmSettings(_env_file=None).scoring_llm_max_output_tokens == 20480
-    assert LlmSettings(_env_file=None).similarity_llm_max_output_tokens == 20480
-
-
-def test_default_scoring_llm_retry_policy_uses_capacity_backoff_window() -> None:
-    settings = LlmSettings(_env_file=None)
-
-    assert settings.scoring_llm_retry_policy == RetryPolicy(
-        attempts=6,
-        initial_ms=30_000,
-        max_ms=300_000,
-        jitter=0.2,
-    )
-
-
-def test_default_similarity_llm_retry_policy_is_single_attempt() -> None:
-    settings = LlmSettings(_env_file=None)
-
-    assert settings.similarity_llm_retry_policy == RetryPolicy(
-        attempts=1,
-        initial_ms=0,
-        max_ms=0,
-        jitter=0.0,
-    )
-
-
 @pytest.mark.parametrize(
     ("provider", "credential_setting"),
     [

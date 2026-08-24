@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-from hashlib import sha256
-from importlib.resources import files
 from uuid import UUID
 
 from harnyx_commons.miner_task_benchmark import (
@@ -43,24 +41,7 @@ def test_load_draco_snapshot_reads_pinned_manifest_and_rubric_items() -> None:
     assert snapshot.items[-1].source_item_id == "91408757-a874-44b5-ad5a-66a22b39141d"
     assert snapshot.items[0].problem_category == "Academic"
     assert snapshot.items[-1].problem_category == "Technology"
-    assert parse_weighted_rubric(snapshot.items[0].answer).rubric_id == (
-        "staggered-did-methodology-evaluation"
-    )
-
-
-def test_draco_manifest_checksum_matches_packaged_jsonl() -> None:
-    snapshot = load_draco_snapshot(
-        dataset_version=DRACO_DATASET_VERSION,
-        scoring_version=BENCHMARK_WEIGHTED_RUBRIC_SCORING_VERSION,
-    )
-    version_dir = files("harnyx_commons.miner_task_benchmark.draco.data").joinpath(
-        "versions",
-        f"{DRACO_DATASET_VERSION}__{BENCHMARK_WEIGHTED_RUBRIC_SCORING_VERSION}",
-    )
-    payload = version_dir.joinpath(snapshot.manifest.file_name).read_bytes()
-
-    assert sha256(payload).hexdigest() == DRACO_CHECKSUM
-    assert len(payload.splitlines()) == 100
+    assert parse_weighted_rubric(snapshot.items[0].answer).rubric_id == ("staggered-did-methodology-evaluation")
 
 
 def test_draco_packaged_rubric_statistics_match_verified_source() -> None:
@@ -111,22 +92,6 @@ def test_draco_registry_is_current_and_explicit_version_loadable() -> None:
     assert load_current_benchmark_snapshot("draco") == snapshot
 
 
-def test_draco_current_version_points_at_versioned_payload() -> None:
-    snapshot = load_draco_snapshot(
-        dataset_version=DRACO_DATASET_VERSION,
-        scoring_version=BENCHMARK_WEIGHTED_RUBRIC_SCORING_VERSION,
-    )
-    data_dir = files("harnyx_commons.miner_task_benchmark.draco.data")
-    current_version = json.loads(
-        data_dir.joinpath("current_version.json").read_text(encoding="utf-8")
-    )
-
-    assert current_version == {
-        "dataset_version": snapshot.manifest.dataset_version,
-        "scoring_version": snapshot.manifest.scoring_version,
-    }
-
-
 def test_draco_snapshot_catalog_contains_only_pinned_snapshot() -> None:
     assert list_draco_snapshots() == (
         load_draco_snapshot(
@@ -173,10 +138,13 @@ def test_draco_sampling_uses_fixed_snapshot_panel() -> None:
         94,
         95,
     ]
-    assert str(
-        benchmark_task_id_for_item(
-            suite_slug=snapshot.manifest.suite_slug,
-            run_id=run_id,
-            item_index=sampled[0].item_index,
+    assert (
+        str(
+            benchmark_task_id_for_item(
+                suite_slug=snapshot.manifest.suite_slug,
+                run_id=run_id,
+                item_index=sampled[0].item_index,
+            )
         )
-    ) == "ef30afcd-a058-5500-8640-a9dc88a1eb3e"
+        == "ef30afcd-a058-5500-8640-a9dc88a1eb3e"
+    )

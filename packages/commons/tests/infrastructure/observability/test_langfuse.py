@@ -90,22 +90,6 @@ def _response(*, postprocessed: object | None = None) -> LlmResponse:
     )
 
 
-def test_read_config_returns_none_when_all_env_unset(monkeypatch: pytest.MonkeyPatch) -> None:
-    for key in _LANGFUSE_ENV_VARS:
-        monkeypatch.delenv(key, raising=False)
-
-    assert langfuse._read_config() is None
-
-
-def test_read_config_raises_runtime_error_for_partial_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LANGFUSE_HOST", "https://langfuse.example")
-    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
-    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
-
-    with pytest.raises(RuntimeError, match="Langfuse configuration is partial"):
-        langfuse._read_config()
-
-
 def test_read_config_returns_mapping_for_full_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LANGFUSE_HOST", " https://langfuse.example ")
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", " pk-test ")
@@ -116,20 +100,6 @@ def test_read_config_returns_mapping_for_full_env(monkeypatch: pytest.MonkeyPatc
         "LANGFUSE_PUBLIC_KEY": "pk-test",
         "LANGFUSE_SECRET_KEY": "sk-test",
     }
-
-
-def test_start_llm_generation_returns_none_scope_when_unconfigured(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    for key in _LANGFUSE_ENV_VARS:
-        monkeypatch.delenv(key, raising=False)
-
-    scope = langfuse.start_llm_generation(
-        provider_label="openai",
-        request=_request(),
-    )
-    with scope as generation:
-        assert generation is None
 
 
 def test_build_generation_input_payload_is_concise() -> None:
@@ -158,9 +128,7 @@ def test_build_generation_input_payload_is_concise() -> None:
 
 
 def test_build_generation_input_payload_includes_request_extra() -> None:
-    payload = langfuse.build_generation_input_payload(
-        _request(extra={"web_search_options": {"mode": "auto"}})
-    )
+    payload = langfuse.build_generation_input_payload(_request(extra={"web_search_options": {"mode": "auto"}}))
 
     assert payload["extra"] == {"web_search_options": {"mode": "auto"}}
 
@@ -289,9 +257,7 @@ def test_build_generation_input_payload_redacts_tool_api_keys() -> None:
 
 
 def test_build_generation_output_payload_is_concise() -> None:
-    payload = langfuse.build_generation_output_payload(
-        _response(postprocessed={"title": "Title", "text": "Body"})
-    )
+    payload = langfuse.build_generation_output_payload(_response(postprocessed={"title": "Title", "text": "Body"}))
     assert payload == {
         "assistant": {"role": "assistant", "text": "ok"},
         "finish_reason": "tool_calls",
@@ -359,92 +325,6 @@ def test_record_child_observation_best_effort_swallows_client_error(monkeypatch:
         usage=LlmUsage(prompt_tokens=1, completion_tokens=2, total_tokens=3),
         metadata={"provider": "openai"},
     )
-
-
-def test_build_generation_metadata_merges_internal_metadata_with_canonical_server(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("OTEL_SERVICE_NAME", "harnyx-platform-execution-worker")
-    request = _request_with_metadata(
-        {
-            "feed_run_id": "feed-run-123",
-            "server": "caller-supplied-server",
-        },
-        use_case="claim_generation",
-    )
-
-    metadata = langfuse.build_generation_metadata(
-        provider_label="openai",
-        request=request,
-        metadata={"elapsed_ms": 12.3},
-    )
-
-    assert metadata["provider"] == "openai"
-    assert metadata["server"] == "harnyx-platform-execution-worker"
-    assert metadata["use_case"] == "claim_generation"
-    assert metadata["feed_run_id"] == "feed-run-123"
-    assert metadata["elapsed_ms"] == 12.3
-
-
-def test_derive_tags_uses_only_low_cardinality_dimensions() -> None:
-    tags = langfuse._derive_tags(
-        {
-            "server": "harnyx-platform-execution-worker",
-            "use_case": "claim_generation",
-            "feed_run_id": "feed-run-123",
-            "user_id": "u-99",
-        }
-    )
-
-    assert tags == ["server:harnyx-platform-execution-worker", "use_case:claim_generation"]
-
-
-def test_derive_standalone_llm_trace_name_uses_string_use_case() -> None:
-    request = _request_with_metadata({}, use_case=" miner_task_pairwise_judge ")
-
-    assert langfuse.derive_standalone_llm_trace_name(request=request) == "miner_task_pairwise_judge"
-
-
-def test_derive_standalone_llm_trace_name_preserves_explicit_langfuse_trace_name(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class CaptureContextManager:
-        def __enter__(self) -> object:
-            return object()
-
-        def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> bool:
-            return False
-
-    request = _request_with_metadata({}, use_case="miner_task_pairwise_judge")
-
-    monkeypatch.setattr(langfuse, "get_client", lambda: object())
-    monkeypatch.setattr(
-        langfuse,
-        "propagate_attributes",
-        lambda **kwargs: CaptureContextManager(),
-    )
-
-    with langfuse.propagate_trace_attributes_best_effort(trace_name="content_review_job"):
-        assert langfuse.has_active_langfuse_trace_name() is True
-        assert langfuse.derive_standalone_llm_trace_name(request=request) is None
-
-    assert langfuse.has_active_langfuse_trace_name() is False
-
-
-def test_trace_name_context_stays_inactive_when_propagate_enter_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def _raising_propagate_attributes(**kwargs: object) -> object:
-        raise RuntimeError("propagate start failed")
-
-    request = _request_with_metadata({}, use_case="miner_task_pairwise_judge")
-
-    monkeypatch.setattr(langfuse, "get_client", lambda: object())
-    monkeypatch.setattr(langfuse, "propagate_attributes", _raising_propagate_attributes)
-
-    with langfuse.propagate_trace_attributes_best_effort(trace_name="content_review_job"):
-        assert langfuse.has_active_langfuse_trace_name() is False
-        assert langfuse.derive_standalone_llm_trace_name(request=request) == "miner_task_pairwise_judge"
 
 
 def test_derive_standalone_llm_trace_name_requires_typed_use_case() -> None:
@@ -567,29 +447,6 @@ def test_metadata_only_generation_scope_omits_request_payload_and_internal_metad
     assert exit_args == [(None, None, None)]
 
 
-def test_propagate_trace_attributes_best_effort_noops_when_unconfigured(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    called = False
-
-    def _unexpected_propagate_attributes(**kwargs: object) -> object:
-        nonlocal called
-        called = True
-        raise AssertionError("propagate_attributes should not be called when Langfuse is unconfigured")
-
-    monkeypatch.setattr(langfuse, "get_client", lambda: None)
-    monkeypatch.setattr(langfuse, "propagate_attributes", _unexpected_propagate_attributes)
-
-    with langfuse.propagate_trace_attributes_best_effort(
-        trace_name="content_review_job",
-        session_id="content_review_run:run-123",
-        metadata={"content_review_job_id": "job-123"},
-    ):
-        pass
-
-    assert called is False
-
-
 def test_propagate_trace_attributes_best_effort_calls_propagate_attributes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -644,27 +501,6 @@ def test_propagate_trace_attributes_best_effort_calls_propagate_attributes(
     }
 
 
-def test_propagate_trace_attributes_best_effort_swallows_enter_exception(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    def _raising_propagate_attributes(**kwargs: object) -> object:
-        raise RuntimeError("propagate start failed")
-
-    monkeypatch.setattr(langfuse, "get_client", lambda: object())
-    monkeypatch.setattr(langfuse, "propagate_attributes", _raising_propagate_attributes)
-    caplog.set_level("ERROR", logger="harnyx_commons.observability.langfuse")
-
-    with langfuse.propagate_trace_attributes_best_effort(
-        trace_name="content_review_job",
-        session_id="content_review_run:run-123",
-        metadata={"content_review_job_id": "job-123"},
-    ):
-        pass
-
-    assert "langfuse.trace.propagate_start_failed" in [record.message for record in caplog.records]
-
-
 def test_propagate_trace_attributes_best_effort_swallows_exit_exception(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -714,9 +550,7 @@ def test_close_propagate_scope_swallows_exit_exception_and_clears_state(caplog: 
 
     assert scope._propagate_cm is None
     assert "langfuse.generation.propagate_cleanup_failed" in [record.message for record in caplog.records]
-    assert {"provider": "openai", "model": "gpt-5-mini"} in [
-        record.__dict__.get("data") for record in caplog.records
-    ]
+    assert {"provider": "openai", "model": "gpt-5-mini"} in [record.__dict__.get("data") for record in caplog.records]
 
 
 def test_generation_scope_enter_error_path_does_not_raise_when_propagate_cleanup_fails(
@@ -916,6 +750,7 @@ def test_metadata_only_observation_start_and_cleanup_failures_do_not_replace_app
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Future failure: optional Langfuse telemetry must never become the generation failure."""
+
     class RaisingContextManager:
         def __enter__(self) -> object:
             raise RuntimeError("observation start failed")

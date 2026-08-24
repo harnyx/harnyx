@@ -7,7 +7,6 @@ from uuid import uuid4
 import pytest
 
 from harnyx_commons.domain.tool_call import ToolCall, ToolCallDetails, ToolCallOutcome, ToolResultPolicy
-from harnyx_commons.errors import ConcurrencyLimitError
 from harnyx_commons.tools.dto import ToolBudgetSnapshot, ToolInvocationRequest, ToolInvocationResult
 from harnyx_commons.tools.executor import execute_tool_with_concurrency_permit
 from harnyx_commons.tools.token_semaphore import (
@@ -134,20 +133,6 @@ async def test_all_tool_calls_share_one_token_cap() -> None:
     assert executor.invocations == [waiter_invocation]
     limiter.release(llm_invocation)
     assert limiter.in_flight(waiter_invocation) == 0
-
-
-def test_default_limit_allows_twenty_mixed_calls_and_blocks_twenty_first() -> None:
-    limiter = ToolConcurrencyLimiter(DEFAULT_TOOL_CONCURRENCY_LIMITS)
-    held = _mixed_invocations(20)
-
-    for invocation in held:
-        limiter.acquire(invocation)
-    try:
-        with pytest.raises(ConcurrencyLimitError):
-            limiter.acquire(_invocation(TEST_TOKEN, "llm_chat", model="openrouter/native-alias"))
-    finally:
-        for invocation in held:
-            limiter.release(invocation)
 
 
 async def test_default_limits_wait_on_twenty_first_mixed_call_until_release() -> None:

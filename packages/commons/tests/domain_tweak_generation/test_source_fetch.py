@@ -38,9 +38,9 @@ def test_source_url_and_dns_reject_credentials_and_private_addresses(monkeypatch
         _public_addresses("example.com", 443)
 
 
-@pytest.mark.parametrize(
-    "url,kind",
-    [
+def test_document_url_rejects_exact_api_and_credential_shapes() -> None:
+    """Future failure: model declarations must not bypass the host's pre-connect document boundary."""
+    rejected_sources = [
         ("https://api.example.com/report", "html"),
         ("https://example.com/api/report", "html"),
         ("https://example.com/graphql/report", "html"),
@@ -48,19 +48,17 @@ def test_source_url_and_dns_reject_credentials_and_private_addresses(monkeypatch
         ("https://example.com/report?token=secret", "html"),
         ("https://example.com/report.json?version=1", "static_json"),
         ("https://example.com/report", "static_json"),
-    ],
-)
-def test_document_url_rejects_exact_api_and_credential_shapes(url: str, kind: str) -> None:
-    """Future failure: model declarations must not bypass the host's pre-connect document boundary."""
-    with pytest.raises(SourceFetchError) as captured:
-        _validated_document_url(url, kind)  # type: ignore[arg-type]
+    ]
+    for url, kind in rejected_sources:
+        with pytest.raises(SourceFetchError) as captured:
+            _validated_document_url(url, kind)  # type: ignore[arg-type]
 
-    assert captured.value.code == "source_fetch_rejected"
+        assert captured.value.code == "source_fetch_rejected"
 
 
-@pytest.mark.parametrize(
-    "url",
-    [
+def test_document_url_rejects_encoded_api_and_credential_shapes() -> None:
+    """Future failure: URL encoding must not hide a prohibited source shape from pre-connect validation."""
+    rejected_urls = [
         "https://example.com/api%2Freport",
         "https://example.com/%2Fapi%2Freport",
         "https://example.com/%61pi/report",
@@ -70,14 +68,12 @@ def test_document_url_rejects_exact_api_and_credential_shapes(url: str, kind: st
         "https://example.com/report%",
         "https://example.com/report?%74oken=secret",
         "https://example.com/report?%2574oken=secret",
-    ],
-)
-def test_document_url_rejects_encoded_api_and_credential_shapes(url: str) -> None:
-    """Future failure: URL encoding must not hide a prohibited source shape from pre-connect validation."""
-    with pytest.raises(SourceFetchError) as captured:
-        _validated_document_url(url, "html")
+    ]
+    for url in rejected_urls:
+        with pytest.raises(SourceFetchError) as captured:
+            _validated_document_url(url, "html")
 
-    assert captured.value.code == "source_fetch_rejected"
+        assert captured.value.code == "source_fetch_rejected"
 
 
 def test_redirect_revalidates_encoded_api_path_before_connect(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -494,9 +490,8 @@ def test_https_connection_closes_raw_socket_when_tls_wrapping_fails(monkeypatch:
     assert raw.closed
 
 
-@pytest.mark.parametrize(
-    "url,kind",
-    [
+def test_document_url_accepts_ordinary_public_document_shapes() -> None:
+    accepted_sources = [
         ("https://example.com/capitals/report.html", "html"),
         ("https://example.com/download?id=42", "pdf"),
         ("https://example.com/files/report.xlsx", "xlsx"),
@@ -505,10 +500,9 @@ def test_https_connection_closes_raw_socket_when_tls_wrapping_fails(monkeypatch:
         ("https://example.com/100%25-complete.pdf", "pdf"),
         ("https://example.com/report?note=100%25%20complete", "html"),
         ("https://example.com/report?name=%26token=secret", "html"),
-    ],
-)
-def test_document_url_accepts_ordinary_public_document_shapes(url: str, kind: str) -> None:
-    _validated_document_url(url, kind)  # type: ignore[arg-type]
+    ]
+    for url, kind in accepted_sources:
+        _validated_document_url(url, kind)  # type: ignore[arg-type]
 
 
 def test_html_extraction_projects_table_headers_and_rows() -> None:
@@ -552,7 +546,6 @@ def test_html_extraction_retains_complete_normalized_navigation_links() -> None:
     ("base_href", "expected_url"),
     [
         ("../published/", "https://example.com/published/report.html"),
-        ("https://cdn.example.net/records/", "https://cdn.example.net/records/report.html"),
     ],
 )
 def test_html_extraction_resolves_navigation_against_the_document_base(

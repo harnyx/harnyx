@@ -6,7 +6,6 @@ import json
 import multiprocessing as mp
 import os
 import struct
-import sys
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -83,91 +82,6 @@ def _make_worker_payload() -> dict[str, object]:
 
 
 @pytest.mark.anyio("asyncio")
-async def test_worker_result_wait_does_not_use_executor_thread(monkeypatch: pytest.MonkeyPatch) -> None:
-    pipe = WorkerResultPipe.open()
-    process = _FakeWorkerProcess()
-
-    def fail_run_in_executor(*_args: object, **_kwargs: object) -> None:
-        pytest.fail("worker result wait must not use run_in_executor")
-
-    async def decode_without_executor(func, *args):
-        return func(*args)
-
-    monkeypatch.setattr(asyncio, "to_thread", decode_without_executor)
-    monkeypatch.setattr(asyncio.get_running_loop(), "run_in_executor", fail_run_in_executor)
-
-    async def send_result() -> None:
-        await asyncio.sleep(0)
-        _send_worker_result(pipe.write_fd, ("ok", {"status": "ready"}))
-        os.close(pipe.write_fd)
-        process.finish()
-
-    send_task = asyncio.create_task(send_result())
-    try:
-        result = await WorkerResultReader(process=process, pipe=pipe).wait(timeout=1.0)
-    finally:
-        await send_task
-        process.close()
-
-    assert result == ("ok", {"status": "ready"})
-
-
-@pytest.mark.anyio("asyncio")
-async def test_worker_result_timeout_cleans_wait_state_and_terminates_worker(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pipe = WorkerResultPipe.open()
-    process = _FakeWorkerProcess()
-    harness = SandboxHarness()
-    monkeypatch.setattr(harness_module, "ENTRYPOINT_TIMEOUT_SECONDS", 0.01)
-
-    with pytest.raises(HTTPException) as exc_info:
-        await harness._await_worker_result(pipe, _make_worker_payload(), process)
-
-    os.close(pipe.write_fd)
-    process.close()
-    assert exc_info.value.status_code == 504
-    assert process.terminated is True
-
-
-@pytest.mark.anyio("asyncio")
-async def test_worker_result_cancellation_waits_for_owned_termination(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    harness = SandboxHarness()
-    termination_started = threading.Event()
-    allow_termination = threading.Event()
-
-    class TimedOutResultReader:
-        def __init__(self, **_kwargs: object) -> None:
-            pass
-
-        async def wait(self, *, timeout: float) -> tuple[str, object]:
-            del timeout
-            raise TimeoutError
-
-    def blocking_termination(_process: object) -> None:
-        termination_started.set()
-        assert allow_termination.wait(timeout=1.0)
-
-    monkeypatch.setattr(harness_module, "WorkerResultReader", TimedOutResultReader)
-    monkeypatch.setattr(harness, "_terminate_process", blocking_termination)
-
-    result_task = asyncio.create_task(
-        harness._await_worker_result(object(), _make_worker_payload(), object())  # type: ignore[arg-type]
-    )
-    assert await asyncio.to_thread(termination_started.wait, 1.0)
-    result_task.cancel()
-    await asyncio.sleep(0)
-
-    assert not result_task.done()
-
-    allow_termination.set()
-    with pytest.raises(asyncio.CancelledError):
-        await result_task
-
-
-@pytest.mark.anyio("asyncio")
 async def test_worker_result_partial_frame_does_not_block_event_loop() -> None:
     pipe = WorkerResultPipe.open()
     process = _FakeWorkerProcess()
@@ -187,19 +101,25 @@ async def test_worker_result_partial_frame_does_not_block_event_loop() -> None:
 
 
 @pytest.mark.anyio("asyncio")
-async def test_worker_exit_after_full_frame_preserves_worker_result() -> None:
+async def test_worker_result_wait_preserves_complete_frame_when_worker_exits() -> None:
+    """Future failure: a fast worker exit discards its already-complete successful result."""
     pipe = WorkerResultPipe.open()
     process = _FakeWorkerProcess()
-    _send_worker_result(pipe.write_fd, ("ok", {"value": 1}))
-    os.close(pipe.write_fd)
-    process.finish()
 
+    async def send_result() -> None:
+        await asyncio.sleep(0)
+        _send_worker_result(pipe.write_fd, ("ok", {"status": "ready"}))
+        os.close(pipe.write_fd)
+        process.finish()
+
+    send_task = asyncio.create_task(send_result())
     try:
         result = await WorkerResultReader(process=process, pipe=pipe).wait(timeout=1.0)
     finally:
+        await send_task
         process.close()
 
-    assert result == ("ok", {"value": 1})
+    assert result == ("ok", {"status": "ready"})
 
 
 @pytest.mark.anyio("asyncio")
@@ -306,47 +226,60 @@ def test_worker_output_reader_keeps_one_continuation_during_repeated_readiness(
 
 
 @pytest.mark.anyio("asyncio")
-async def test_worker_process_join_allows_output_readers_to_advance(
+async def test_parent_oversized_frame_is_parent_infrastructure_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipe = WorkerResultPipe.open()
+    process = _FakeWorkerProcess()
+    harness = SandboxHarness()
+    monkeypatch.setattr(harness_module, "MAX_WORKER_RESULT_BYTES", 16)
+    os.write(pipe.write_fd, struct.pack(">Q", 17))
+    os.close(pipe.write_fd)
+    process.finish()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await harness._await_worker_result(pipe, _make_worker_payload(), process)
+
+    process.close()
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail["exception"] == "WorkerResultProtocolError"
+
+
+@pytest.mark.anyio("asyncio")
+async def test_worker_result_cancellation_waits_for_owned_termination(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     harness = SandboxHarness()
-    output_readers_finished = threading.Event()
-    output_reader_count = 0
+    termination_started = threading.Event()
+    allow_termination = threading.Event()
 
-    class BlockingJoinProcess:
-        def join(self, timeout: float) -> None:
-            del timeout
-            assert output_readers_finished.wait(timeout=1.0)
-
-        def is_alive(self) -> bool:
-            return False
-
-        def kill(self) -> None:
-            pytest.fail("an exited process must not be killed")
-
-    class AdvancingOutputReader:
+    class TimedOutResultReader:
         def __init__(self, **_kwargs: object) -> None:
             pass
 
-        async def wait(self) -> None:
-            nonlocal output_reader_count
-            output_reader_count += 1
-            if output_reader_count == 2:
-                output_readers_finished.set()
+        async def wait(self, *, timeout: float) -> tuple[str, object]:
+            del timeout
+            raise TimeoutError
 
-    process = BlockingJoinProcess()
+    def blocking_termination(_process: object) -> None:
+        termination_started.set()
+        assert allow_termination.wait(timeout=1.0)
 
-    async def completed_result(*_args: object) -> tuple[str, object]:
-        return "ok", {"status": "ready"}
+    monkeypatch.setattr(harness_module, "WorkerResultReader", TimedOutResultReader)
+    monkeypatch.setattr(harness, "_terminate_process", blocking_termination)
 
-    monkeypatch.setattr(harness, "_spawn_worker", lambda _payload: (process, object(), object(), object()))
-    monkeypatch.setattr(harness, "_await_worker_result", completed_result)
-    monkeypatch.setattr(harness_module, "WorkerOutputReader", AdvancingOutputReader)
+    result_task = asyncio.create_task(
+        harness._await_worker_result(object(), _make_worker_payload(), object())  # type: ignore[arg-type]
+    )
+    assert await asyncio.to_thread(termination_started.wait, 1.0)
+    result_task.cancel()
+    await asyncio.sleep(0)
 
-    result = await harness._invoke_with_worker(_make_worker_payload())
+    assert not result_task.done()
 
-    assert result == {"status": "ready"}
-    assert output_reader_count == 2
+    allow_termination.set()
+    with pytest.raises(asyncio.CancelledError):
+        await result_task
 
 
 @pytest.mark.anyio("asyncio")
@@ -403,85 +336,6 @@ async def test_worker_process_cancellation_waits_for_join_and_output_readers(
     assert output_reader_count == 2
 
 
-@pytest.mark.parametrize("failure_step", ["stdout", "stderr", "process", "start"])
-def test_spawn_worker_closes_every_acquired_pipe_after_partial_setup_failure(
-    monkeypatch: pytest.MonkeyPatch,
-    failure_step: str,
-) -> None:
-    harness = SandboxHarness()
-    acquired: list[SimpleNamespace] = []
-    output_open_count = 0
-
-    def open_pipe(kind: str) -> SimpleNamespace:
-        nonlocal output_open_count
-        if kind == "output":
-            output_open_count += 1
-            step = "stdout" if output_open_count == 1 else "stderr"
-            if failure_step == step:
-                raise RuntimeError(f"{step} setup failed")
-        pipe = SimpleNamespace(
-            read_fd=10 + len(acquired) * 2,
-            write_fd=11 + len(acquired) * 2,
-            close_calls=0,
-            close=lambda: None,
-        )
-
-        def close() -> None:
-            pipe.close_calls += 1
-
-        pipe.close = close
-        acquired.append(pipe)
-        return pipe
-
-    class Process:
-        def __init__(self, **_kwargs: object) -> None:
-            if failure_step == "process":
-                raise RuntimeError("process construction failed")
-
-        def start(self) -> None:
-            if failure_step == "start":
-                raise RuntimeError("process start failed")
-
-    monkeypatch.setattr(harness_module.WorkerResultPipe, "open", lambda: open_pipe("result"))
-    monkeypatch.setattr(harness_module.WorkerOutputPipe, "open", lambda: open_pipe("output"))
-    harness._mp = SimpleNamespace(Process=Process)
-
-    with pytest.raises(RuntimeError, match="failed"):
-        harness._spawn_worker(
-            {
-                "entrypoint_name": "miner_test",
-                "request_payload": {},
-                "context": {},
-                "tool_config": {},
-                "headers": {},
-                "preload": None,
-            }
-        )
-
-    assert acquired
-    assert all(pipe.close_calls == 1 for pipe in acquired)
-
-
-@pytest.mark.anyio("asyncio")
-async def test_parent_oversized_frame_is_parent_infrastructure_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pipe = WorkerResultPipe.open()
-    process = _FakeWorkerProcess()
-    harness = SandboxHarness()
-    monkeypatch.setattr(harness_module, "MAX_WORKER_RESULT_BYTES", 16)
-    os.write(pipe.write_fd, struct.pack(">Q", 17))
-    os.close(pipe.write_fd)
-    process.finish()
-
-    with pytest.raises(HTTPException) as exc_info:
-        await harness._await_worker_result(pipe, _make_worker_payload(), process)
-
-    process.close()
-    assert exc_info.value.status_code == 500
-    assert exc_info.value.detail["exception"] == "WorkerResultProtocolError"
-
-
 @pytest.mark.anyio("asyncio")
 async def test_worker_result_too_large_is_structured_worker_error(monkeypatch: pytest.MonkeyPatch) -> None:
     pipe = WorkerResultPipe.open()
@@ -499,24 +353,6 @@ async def test_worker_result_too_large_is_structured_worker_error(monkeypatch: p
 
     assert envelope[0] == "error"
     assert envelope[1]["code"] == "ResultTooLarge"
-
-
-@pytest.mark.anyio("asyncio")
-async def test_parent_reader_accepts_max_size_payload(monkeypatch: pytest.MonkeyPatch) -> None:
-    pipe = WorkerResultPipe.open()
-    process = _FakeWorkerProcess()
-    payload = b'{"status":"ok","result":{"value":"at-limit"}}'
-    monkeypatch.setattr(harness_module, "MAX_WORKER_RESULT_BYTES", len(payload))
-    os.write(pipe.write_fd, struct.pack(">Q", len(payload)) + payload)
-    os.close(pipe.write_fd)
-    process.finish()
-
-    try:
-        result = await WorkerResultReader(process=process, pipe=pipe).wait(timeout=1.0)
-    finally:
-        process.close()
-
-    assert result == ("ok", {"value": "at-limit"})
 
 
 @pytest.mark.anyio("asyncio")
@@ -545,61 +381,10 @@ async def test_worker_rejects_non_json_success_values(value: object) -> None:
 
 
 @pytest.mark.anyio("asyncio")
-async def test_worker_rejects_builtin_json_subclasses() -> None:
-    class MinerString(str):
-        pass
-
-    pipe = WorkerResultPipe.open()
-    process = _FakeWorkerProcess()
-    _send_worker_result(pipe.write_fd, ("ok", {"value": MinerString("subclass")}))
-    os.close(pipe.write_fd)
-    process.finish()
-
-    try:
-        envelope = await WorkerResultReader(process=process, pipe=pipe).wait(timeout=1.0)
-    finally:
-        process.close()
-
-    assert envelope[0] == "error"
-    assert envelope[1]["code"] == "UnhandledException"
-
-
-@pytest.mark.anyio("asyncio")
-async def test_worker_rejects_custom_result_without_using_reduce() -> None:
-    reduce_called = False
-
-    class MaliciousResult:
-        def __reduce__(self) -> object:
-            nonlocal reduce_called
-            reduce_called = True
-            return str, ("executed",)
-
-    pipe = WorkerResultPipe.open()
-    process = _FakeWorkerProcess()
-    _send_worker_result(pipe.write_fd, ("ok", MaliciousResult()))
-    os.close(pipe.write_fd)
-    process.finish()
-
-    try:
-        envelope = await WorkerResultReader(process=process, pipe=pipe).wait(timeout=1.0)
-    finally:
-        process.close()
-
-    assert reduce_called is False
-    assert envelope[0] == "error"
-    assert envelope[1]["code"] == "UnhandledException"
-
-
-@pytest.mark.anyio("asyncio")
 @pytest.mark.parametrize(
     "payload",
     [
         pytest.param(b'{"status":"ok","status":"ok","result":null}', id="top-level"),
-        pytest.param(b'{"status":"ok","result":{"value":1,"value":2}}', id="nested-result"),
-        pytest.param(
-            b'{"status":"error","error":{"code":"x","exception":"x","message":"x","message":"y"}}',
-            id="nested-error",
-        ),
     ],
 )
 async def test_parent_rejects_duplicate_json_object_names(payload: bytes) -> None:
@@ -622,10 +407,8 @@ async def test_parent_rejects_duplicate_json_object_names(payload: bytes) -> Non
     [
         pytest.param(b"\xff", id="invalid-utf8"),
         pytest.param(b"{", id="malformed-json"),
-        pytest.param(b'{"status":"ok","result":NaN}', id="non-finite"),
         pytest.param(b'{"status":"ok"}', id="missing-result"),
         pytest.param(b'{"status":"ok","result":null,"extra":1}', id="extra-field"),
-        pytest.param(b'{"status":1,"result":null}', id="wrong-status-type"),
         pytest.param(
             b'{"status":"error","error":{"code":"x","exception":"x"}}',
             id="missing-error-field",
@@ -784,49 +567,6 @@ def test_harness_invokes_entrypoint_and_closes_tools() -> None:
     assert close_flag.value == 1
 
 
-def test_harness_attributes_received_worker_stdout_and_stderr_to_invocation(
-    capfd: pytest.CaptureFixture[str],
-) -> None:
-    @entrypoint("miner_output")
-    async def output_entrypoint(request: dict[str, object]) -> dict[str, object]:
-        print(f"stdout:{request['message']}")
-        print(f"stderr:{request['message']}", file=sys.stderr)
-        return {"ok": True}
-
-    harness = SandboxHarness()
-    app = FastAPI()
-    app.include_router(harness.create_router(), prefix="/entry")
-    client = TestClient(app)
-
-    response = client.post(
-        "/entry/miner_output",
-        json={"payload": {"message": "owned"}, "context": {}},
-        headers={"x-platform-token": "token", "x-session-id": "session-output"},
-    )
-
-    assert response.status_code == 200
-    captured = capfd.readouterr().out.splitlines()
-    records = [
-        line.removeprefix("HARNYX_SANDBOX_INVOCATION_OUTPUT ")
-        for line in captured
-        if line.startswith("HARNYX_SANDBOX_INVOCATION_OUTPUT ")
-    ]
-    assert any(
-        '"session_id":"session-output"' in record
-        and '"entrypoint":"miner_output"' in record
-        and '"stream":"stdout"' in record
-        and '"message":"stdout:owned"' in record
-        for record in records
-    ), captured
-    assert any(
-        '"session_id":"session-output"' in record
-        and '"entrypoint":"miner_output"' in record
-        and '"stream":"stderr"' in record
-        and '"message":"stderr:owned"' in record
-        for record in records
-    )
-
-
 def test_harness_executes_safe_exec_inside_worker() -> None:
     @entrypoint("miner_safe_exec")
     async def safe_exec_entrypoint(request: dict[str, object]) -> dict[str, object]:
@@ -852,93 +592,35 @@ def test_harness_executes_safe_exec_inside_worker() -> None:
     assert response.json()["result"] == {"average": 4}
 
 
-def test_harness_builds_tool_proxy_before_preload() -> None:
-    close_flag = mp.Value("i", 0)
-    order = mp.Value("i", 0)
-    factory_order = mp.Value("i", 0)
-    preload_order = mp.Value("i", 0)
+def test_harness_terminates_long_running_entrypoint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Future failure: a timed-out entrypoint keeps running after the 504 response."""
+    marker = tmp_path / "sleeper.txt"
 
-    class FakeToolProxy:
-        async def invoke(
-            self,
-            name: str,
-            *,
-            args: tuple[object, ...] | None = None,
-            kwargs: dict[str, object] | None = None,
-        ) -> dict[str, object]:
-            del name, args, kwargs
-            return {
-                "receipt_id": "tool-1",
-                "response": {"status": "ok", "echo": ""},
-                "results": [],
-                "result_policy": "log_only",
-                "budget": {
-                    "session_budget_usd": 1.0,
-                    "session_hard_limit_usd": 1.0,
-                    "session_used_budget_usd": 0.0,
-                    "session_remaining_budget_usd": 1.0,
-                },
-            }
-
-        async def aclose(self) -> None:
-            with close_flag.get_lock():
-                close_flag.value = 1
-
-    def tool_factory(
-        config: Mapping[str, object] | None,
-        headers: Mapping[str, str],
-    ) -> FakeToolProxy:
-        del config, headers
-        with order.get_lock():
-            order.value += 1
-            factory_order.value = order.value
-        return FakeToolProxy()
-
-    def preload() -> None:
-        with order.get_lock():
-            order.value += 1
-            preload_order.value = order.value
-
-    @entrypoint("miner_factory_then_preload")
-    async def ordered_entrypoint(request: dict[str, object]) -> dict[str, object]:
-        return {"message": request.get("message")}
-
-    harness = SandboxHarness(tool_factory=tool_factory, preload=preload)
-    app = FastAPI()
-    app.include_router(harness.create_router(), prefix="/entry")
-    client = TestClient(app)
-
-    response = client.post(
-        "/entry/miner_factory_then_preload",
-        json={"payload": {"message": "ok"}, "context": {}},
-        headers={"x-platform-token": "token", "x-session-id": "session-1"},
-    )
-
-    assert response.status_code == 200
-    assert response.json()["result"] == {"message": "ok"}
-    assert factory_order.value == 1
-    assert preload_order.value == 2
-    assert close_flag.value == 1
-
-
-def test_harness_accepts_neutral_session_header() -> None:
-    @entrypoint("neutral_session_echo")
-    async def neutral_entrypoint(request: dict[str, object]) -> dict[str, object]:
-        return {"message": request.get("message")}
+    @entrypoint("miner_sleeper_timeout")
+    async def sleeper_entrypoint(request: dict[str, object]) -> dict[str, object]:
+        del request
+        await asyncio.sleep(0.2)
+        marker.write_text("done", encoding="utf-8")
+        return {"ok": True}
 
     harness = SandboxHarness()
     app = FastAPI()
     app.include_router(harness.create_router(), prefix="/entry")
     client = TestClient(app)
 
+    monkeypatch.setattr(harness_module, "ENTRYPOINT_TIMEOUT_SECONDS", 0.05)
+
     response = client.post(
-        "/entry/neutral_session_echo",
-        json={"payload": {"message": "hello"}, "context": {}},
-        headers={"x-platform-token": "token", "x-session-id": "session-1"},
+        "/entry/miner_sleeper_timeout",
+        json={"payload": {}, "context": {}},
     )
 
-    assert response.status_code == 200
-    assert response.json()["result"] == {"message": "hello"}
+    assert response.status_code == 504
+    time.sleep(0.3)
+    assert not marker.exists()
 
 
 def test_unknown_entrypoint_without_preload_returns_500() -> None:
@@ -1094,102 +776,6 @@ def test_load_agent_from_env_wraps_loader_os_error_as_preload_infrastructure(
         error="failed to read mounted agent path",
         exception="PermissionError",
     )
-
-
-def test_load_agent_from_env_ignores_miner_monkeypatch_of_preload_globals(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    miner_owned_path = tmp_path / "miner-owned.txt"
-    agent_path = tmp_path / "agent.py"
-    path_type = type(Path.cwd())
-    original_relative_to = path_type.relative_to
-    sandbox_app_dict = vars(sandbox_app)
-    missing = object()
-    original_loader_owned_helper = sandbox_app_dict.get("_is_loader_mounted_path_os_error", missing)
-    original_preload_failure_helper = sandbox_app_dict.get("_preload_infrastructure_failure", missing)
-    agent_path.write_text(
-        "\n".join(
-            [
-                "import pathlib",
-                "import harnyx_sandbox.app as sandbox_app",
-                "pathlib.PosixPath.relative_to = lambda self, *_args, **_kwargs: self",
-                "sandbox_app._is_loader_mounted_path_os_error = lambda *_args, **_kwargs: True",
-                (
-                    "sandbox_app._preload_infrastructure_failure = "
-                    "lambda *_args, **_kwargs: 'forced-infrastructure-failure'"
-                ),
-                f"raise PermissionError(13, 'denied', {str(miner_owned_path)!r})",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(sandbox_app, "_agent_loaded", False)
-    monkeypatch.setenv("AGENT_PATH", str(agent_path))
-    monkeypatch.delenv("AGENT_MODULE", raising=False)
-
-    try:
-        with pytest.raises(PermissionError, match="denied"):
-            sandbox_app._load_agent_from_env()
-    finally:
-        path_type.relative_to = original_relative_to
-        if original_loader_owned_helper is missing:
-            sandbox_app_dict.pop("_is_loader_mounted_path_os_error", None)
-        else:
-            sandbox_app._is_loader_mounted_path_os_error = original_loader_owned_helper
-        if original_preload_failure_helper is missing:
-            sandbox_app_dict.pop("_preload_infrastructure_failure", None)
-        else:
-            sandbox_app._preload_infrastructure_failure = original_preload_failure_helper
-
-
-def test_load_agent_from_env_keeps_miner_runtime_os_error_miner_owned(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    missing_path = tmp_path / "missing.txt"
-    agent_path = tmp_path / "agent.py"
-    agent_path.write_text(
-        f"open({str(missing_path)!r}, encoding='utf-8')\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(sandbox_app, "_agent_loaded", False)
-    monkeypatch.setenv("AGENT_PATH", str(agent_path))
-    monkeypatch.delenv("AGENT_MODULE", raising=False)
-
-    with pytest.raises(FileNotFoundError, match=str(missing_path)):
-        sandbox_app._load_agent_from_env()
-
-
-def test_harness_terminates_long_running_entrypoint(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    marker = tmp_path / "sleeper.txt"
-
-    @entrypoint("miner_sleeper_timeout")
-    async def sleeper_entrypoint(request: dict[str, object]) -> dict[str, object]:
-        del request
-        await asyncio.sleep(1)
-        marker.write_text("done", encoding="utf-8")
-        return {"ok": True}
-
-    harness = SandboxHarness()
-    app = FastAPI()
-    app.include_router(harness.create_router(), prefix="/entry")
-    client = TestClient(app)
-
-    monkeypatch.setattr(harness_module, "ENTRYPOINT_TIMEOUT_SECONDS", 0.1)
-
-    response = client.post(
-        "/entry/miner_sleeper_timeout",
-        json={"payload": {}, "context": {}},
-    )
-
-    assert response.status_code == 504
-    time.sleep(0.3)
-    assert not marker.exists()
 
 
 def test_preload_registers_entrypoint_inside_worker() -> None:

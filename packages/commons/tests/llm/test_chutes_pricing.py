@@ -11,9 +11,7 @@ pytestmark = pytest.mark.anyio("asyncio")
 
 
 async def test_chutes_pricing_cache_uses_cached_model_rate() -> None:
-    cache = ChutesModelPricingCache(
-        cached_pricing={"deepseek-ai/DeepSeek-V3.2-TEE": ModelPricing(0.10, 0.20, 0.0)}
-    )
+    cache = ChutesModelPricingCache(cached_pricing={"deepseek-ai/DeepSeek-V3.2-TEE": ModelPricing(0.10, 0.20, 0.0)})
     usage = LlmUsage(prompt_tokens=1_000, completion_tokens=2_000, total_tokens=3_000)
 
     first = await cache.price(model="deepseek-ai/DeepSeek-V3.2-TEE", usage=usage)
@@ -92,9 +90,7 @@ def test_static_model_pricing_includes_validator_judge_models() -> None:
 
     assert price_static_llm_model("moonshotai/Kimi-K2.5-TEE", usage) == pytest.approx(0.01044)
     assert price_static_llm_model("moonshotai/Kimi-K2.6-TEE", usage) == pytest.approx(0.01816)
-    assert price_static_llm_model(
-        "deepseek-ai/DeepSeek-V4-Flash-0731-TEE", usage
-    ) == pytest.approx(0.00154)
+    assert price_static_llm_model("deepseek-ai/DeepSeek-V4-Flash-0731-TEE", usage) == pytest.approx(0.00154)
     assert price_static_llm_model("moonshotai/Kimi-K3-TEE", usage) == pytest.approx(0.078)
 
 
@@ -124,9 +120,8 @@ async def test_chutes_pricing_cache_updated_empty_snapshot_uses_fallback_without
     assert actual_cost.cost_usd == pytest.approx(0.00086)
 
 
-@pytest.mark.parametrize(
-    ("model", "input_rate", "output_rate"),
-    (
+async def test_new_chutes_models_settle_from_approved_static_rates() -> None:
+    approved_rates = (
         ("deepseek-ai/DeepSeek-V4-Flash-0731-TEE", 0.14, 0.28),
         ("moonshotai/Kimi-K3-TEE", 3.00, 15.00),
         ("moonshotai/Kimi-K2.6-TEE", 0.66, 3.50),
@@ -134,20 +129,15 @@ async def test_chutes_pricing_cache_updated_empty_snapshot_uses_fallback_without
         ("zai-org/GLM-5.2-TEE", 1.40, 4.40),
         ("Qwen/Qwen3.5-397B-A17B-TEE", 0.45, 3.00),
         ("Qwen/Qwen3.8-27B-TEE", 0.40, 3.00),
-    ),
-)
-async def test_new_chutes_models_settle_from_approved_static_rates(
-    model: str,
-    input_rate: float,
-    output_rate: float,
-) -> None:
+    )
     usage = LlmUsage(prompt_tokens=1_000_000, completion_tokens=1_000_000, total_tokens=2_000_000)
 
-    actual_cost = await ChutesModelPricingCache().price(model=model, usage=usage)
+    for model, input_rate, output_rate in approved_rates:
+        actual_cost = await ChutesModelPricingCache().price(model=model, usage=usage)
 
-    assert actual_cost.cost_usd == pytest.approx(input_rate + output_rate)
-    assert actual_cost.evidence["model"] == model
-    assert actual_cost.evidence["input_per_million"] == pytest.approx(input_rate)
-    assert actual_cost.evidence["output_per_million"] == pytest.approx(output_rate)
-    assert actual_cost.evidence["settlement_source"] == "static_pricing"
-    assert actual_cost.evidence["pricing_origin"] == "chutes_repo_rates"
+        assert actual_cost.cost_usd == pytest.approx(input_rate + output_rate)
+        assert actual_cost.evidence["model"] == model
+        assert actual_cost.evidence["input_per_million"] == pytest.approx(input_rate)
+        assert actual_cost.evidence["output_per_million"] == pytest.approx(output_rate)
+        assert actual_cost.evidence["settlement_source"] == "static_pricing"
+        assert actual_cost.evidence["pricing_origin"] == "chutes_repo_rates"

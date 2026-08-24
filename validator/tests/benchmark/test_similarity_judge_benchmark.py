@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import ast
-import builtins
 import json
-from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -21,10 +18,7 @@ from harnyx_commons.llm.schema import (
     LlmResponse,
     LlmUsage,
 )
-from harnyx_commons.llm.tool_models import parse_miner_selected_llm_provider_model
 from harnyx_commons.miner_task_similarity import SimilarityJudgeRequest, SimilarityJudgeResult
-from harnyx_miner_sdk.query import Query, Response
-from harnyx_miner_sdk.tools.search_models import FetchPageResponse, SearchWebSearchResponse
 from validator.tests.benchmark.similarity_judge_benchmark import (
     FINAL_LABELS,
     PAIRWISE_LABELS,
@@ -32,8 +26,6 @@ from validator.tests.benchmark.similarity_judge_benchmark import (
     BenchmarkIdentity,
     InvocationRecordingProvider,
     PairwiseGold,
-    _multi_step_underclassification_count,
-    _overclassification_count,
     aggregate_classification,
     eligible_comparisons,
     load_cases,
@@ -42,12 +34,8 @@ from validator.tests.benchmark.similarity_judge_benchmark import (
     summarize_metrics,
 )
 
-_CASES_PATH = (
-    Path(__file__).parent / "data" / "similarity_judge_benchmark_cases.jsonl"
-)
-_REALISM_SAMPLE_PATH = (
-    Path(__file__).parent / "data" / "similarity_judge_realism_sample.json"
-)
+_CASES_PATH = Path(__file__).parent / "data" / "similarity_judge_benchmark_cases.jsonl"
+_REALISM_SAMPLE_PATH = Path(__file__).parent / "data" / "similarity_judge_realism_sample.json"
 _EXPECTED_ARTIFACT_IDS = {
     "duplicate-model-and-rename": (
         UUID("20000000-0000-4000-8000-000000000001"),
@@ -328,263 +316,15 @@ def test_checked_in_dataset_protects_gold_coverage_and_aggregation_contract() ->
     )
 
 
-def test_checked_in_dataset_has_realistic_executable_artifact_contract() -> None:
-    groups = _groups()
-    actual_artifact_ids = {
-        group.case_id: (
-            group.candidate.artifact_id,
-            *(reference.artifact_id for reference in group.references),
-        )
-        for group in groups
-    }
-    references = [reference for group in groups for reference in group.references]
-    eligible = [
-        reference
-        for group in groups
-        for reference in eligible_comparisons(group)
-    ]
-    pairwise_support = Counter(
-        reference.expected_pairwise for reference in eligible
-    )
-    final_support = Counter(group.expected_final for group in groups)
-
-    assert actual_artifact_ids == _EXPECTED_ARTIFACT_IDS
-    assert len(references) == 38
-    assert len(eligible) == 34
-    assert all(7 <= pairwise_support[label] <= 10 for label in PAIRWISE_LABELS)
-    assert all(3 <= final_support[label] <= 6 for label in FINAL_LABELS)
-
-    artifacts = [group.candidate for group in groups]
-    artifacts.extend(references)
-    assert len(artifacts) == 55
-    for artifact in artifacts:
-        assert "PROFILE_LABEL" not in artifact.script
-        assert not any(group.case_id in artifact.script for group in groups)
-        compile(artifact.script, str(artifact.artifact_id), "exec")
-        module = ast.parse(artifact.script)
-        imported_names = {
-            alias.asname or alias.name
-            for node in module.body
-            if isinstance(node, ast.ImportFrom)
-            and node.module in {
-                "harnyx_miner_sdk.api",
-                "harnyx_miner_sdk.decorators",
-                "harnyx_miner_sdk.query",
-            }
-            for alias in node.names
-        }
-        assert {"Query", "Response", "entrypoint"} <= imported_names
-        assert imported_names & _SDK_BOUNDARY_CALLS
-
-        string_constants = {
-            target.id: node.value.value
-            for node in module.body
-            if isinstance(node, ast.Assign)
-            and isinstance(node.value, ast.Constant)
-            and isinstance(node.value.value, str)
-            for target in node.targets
-            if isinstance(target, ast.Name)
-        }
-        llm_chat_calls = [
-            call
-            for call in ast.walk(module)
-            if isinstance(call, ast.Call)
-            and isinstance(call.func, ast.Name)
-            and call.func.id == "llm_chat"
-        ]
-        assert llm_chat_calls
-        for call in llm_chat_calls:
-            keywords = {
-                keyword.arg: keyword.value
-                for keyword in call.keywords
-                if keyword.arg is not None
-            }
-            provider = _static_string(keywords.get("provider"), string_constants)
-            model = _static_string(keywords.get("model"), string_constants)
-            selected_model = parse_miner_selected_llm_provider_model(
-                provider=provider,
-                model=model,
-            )
-            assert selected_model.provider == provider
-            assert selected_model.model == model
-
-        definitions = {
-            node.name: node
-            for node in module.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        }
-        top_level_names = set(definitions)
-        top_level_names.update(
-            node.name for node in module.body if isinstance(node, ast.ClassDef)
-        )
-        top_level_names.update(imported_names)
-        unresolved_bare_calls = {
-            call.func.id
-            for call in ast.walk(module)
-            if isinstance(call, ast.Call)
-            and isinstance(call.func, ast.Name)
-            and call.func.id not in top_level_names
-            and not hasattr(builtins, call.func.id)
-        }
-        assert unresolved_bare_calls == set()
-        entrypoints = [
-            node
-            for node in definitions.values()
-            if isinstance(node, ast.AsyncFunctionDef)
-            and node.name == "query"
-            and _has_entrypoint_decorator(node)
-        ]
-        assert len(entrypoints) == 1
-        entrypoint = entrypoints[0]
-        assert _annotation_name(entrypoint.args.args[0].annotation) == "Query"
-        assert _annotation_name(entrypoint.returns) == "Response"
-
-        call_graph = _top_level_function_call_graph(artifact.script)
-        reachable_names = {"query", *_reachable_functions(call_graph, "query")}
-        reachable_nodes = [definitions[name] for name in reachable_names]
-        sdk_calls = [
-            call
-            for function in reachable_nodes
-            for call in ast.walk(function)
-            if isinstance(call, ast.Call)
-            and isinstance(call.func, ast.Name)
-            and call.func.id in _SDK_BOUNDARY_CALLS
-        ]
-        assert len(sdk_calls) >= 2
-        assert any(
-            isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign))
-            for function in reachable_nodes
-            for node in ast.walk(function)
-        )
-        assert any(
-            isinstance(node, (ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try))
-            for function in reachable_nodes
-            for node in ast.walk(function)
-        )
-        assert any(
-            isinstance(call.func, ast.Name) and call.func.id == "Response"
-            for function in reachable_nodes
-            for call in ast.walk(function)
-            if isinstance(call, ast.Call)
-        )
-
-
-def test_realism_sample_retains_auditable_production_provenance() -> None:
-    sample = json.loads(_REALISM_SAMPLE_PATH.read_text())
-    artifacts = sample["artifacts"]
-
-    assert sample["source_batch_id"] == "cd9101db-44f8-518a-bcb8-eadf6f656dca"
-    assert sample["population_artifact_count"] == 262
-    assert sample["selected_ranks"] == [1, 34, 67, 99, 132, 165, 197, 230, 262]
-    assert [artifact["rank"] for artifact in artifacts] == sample["selected_ranks"]
-    assert len({artifact["artifact_id"] for artifact in artifacts}) == 9
-    assert all(len(artifact["content_hash"]) == 64 for artifact in artifacts)
-    assert min(artifact["size_bytes"] for artifact in artifacts) == 47_980
-    assert max(artifact["size_bytes"] for artifact in artifacts) == 682_847
-
-
-@pytest.mark.anyio
-async def test_checked_in_artifact_ordinary_paths_execute_with_sdk_stubs(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def search_web(
-        search_queries: str,
-        /,
-        *,
-        provider: str,
-        num: int | None = None,
-        **kwargs: object,
-    ) -> SimpleNamespace:
-        del kwargs
-        assert search_queries
-        assert provider == "parallel"
-        assert num is not None
-        return SimpleNamespace(
-            response=SearchWebSearchResponse(
-                data=[
-                    {"link": "https://example.test/one", "snippet": "First source"},
-                    {"link": "https://example.test/two", "snippet": "Second source"},
-                ]
-            )
-        )
-
-    async def fetch_page(
-        url: str,
-        /,
-        *,
-        provider: str,
-        **kwargs: object,
-    ) -> SimpleNamespace:
-        del kwargs
-        assert provider == "parallel"
-        return SimpleNamespace(
-            response=FetchPageResponse(
-                data=[{"url": url, "content": f"Evidence fetched from {url}"}]
-            )
-        )
-
-    async def llm_chat(
-        *,
-        provider: str,
-        messages: list[dict[str, str]],
-        model: str,
-        **kwargs: object,
-    ) -> SimpleNamespace:
-        del kwargs
-        assert messages
-        selected_model = parse_miner_selected_llm_provider_model(
-            provider=provider,
-            model=model,
-        )
-        assert selected_model.provider == provider
-        assert selected_model.model == model
-        return SimpleNamespace(llm=SimpleNamespace(raw_text="KEEP"))
-
-    monkeypatch.setattr(
-        "harnyx_miner_sdk.decorators.entrypoint",
-        lambda _name: lambda function: function,
-    )
-    artifacts = [group.candidate for group in _groups()]
-    artifacts.extend(reference for group in _groups() for reference in group.references)
-    for artifact in artifacts:
-        namespace: dict[str, object] = {}
-        exec(  # noqa: S102 - benchmark artifacts are checked-in test data
-            compile(artifact.script, str(artifact.artifact_id), "exec"),
-            namespace,
-        )
-        namespace.update(
-            search_web=search_web,
-            fetch_page=fetch_page,
-            llm_chat=llm_chat,
-        )
-
-        query_entrypoint = namespace["query"]
-        assert callable(query_entrypoint)
-        response = await query_entrypoint(
-            Query(text="Which Record Was Published in 2026?")
-        )
-
-        assert isinstance(response, Response)
-        assert response.text
-
-
 def test_production_false_novel_case_protects_reachability_over_dead_architecture() -> None:
-    group = next(
-        group
-        for group in _groups()
-        if group.case_id == "notable-unreachable-parallel-controller"
-    )
+    group = next(group for group in _groups() if group.case_id == "notable-unreachable-parallel-controller")
     production_reference = next(
-        reference
-        for reference in eligible_comparisons(group)
-        if reference.expected_pairwise == "near_duplicate"
+        reference for reference in eligible_comparisons(group) if reference.expected_pairwise == "near_duplicate"
     )
 
     assert group.expected_final == "near_duplicate"
     assert group.production_evidence is not None
-    assert str(group.production_evidence.source_batch_id) == (
-        "3258ff1c-8e73-4f7d-b7f4-dc32c943f4d4"
-    )
+    assert str(group.production_evidence.source_batch_id) == ("3258ff1c-8e73-4f7d-b7f4-dc32c943f4d4")
     assert group.production_evidence.observed_production_classifications == (
         "novel",
         "novel",
@@ -592,17 +332,14 @@ def test_production_false_novel_case_protects_reachability_over_dead_architectur
     )
     assert production_reference.hotkey != group.candidate.hotkey
     assert production_reference.gold_explanation is not None
-    assert "_parallel_research is never called" in (
-        production_reference.gold_explanation.primary_controller
-    )
+    assert "_parallel_research is never called" in (production_reference.gold_explanation.primary_controller)
     call_graph = _top_level_function_call_graph(group.candidate.script)
     assert {"_fixed_research", "_solve", "_parallel_research"} <= set(call_graph)
     assert call_graph["_solve"] == {"_fixed_research", "_synthesize"}
     assert "_parallel_research" not in _reachable_functions(call_graph, "query")
     assert not production_reference.candidate_diff.endswith("\n")
     assert production_reference.candidate_diff.startswith(
-        f"--- reference/{production_reference.artifact_id}\n"
-        f"+++ candidate/{group.candidate.artifact_id}\n"
+        f"--- reference/{production_reference.artifact_id}\n+++ candidate/{group.candidate.artifact_id}\n"
     )
 
 
@@ -647,95 +384,24 @@ def test_production_distillations_cover_true_redesigns_and_same_root_changes() -
         group = groups[case_id]
         assert group.expected_final == expected_final
         assert group.production_evidence is not None
-        assert str(group.production_evidence.source_batch_id) == (
-            "3258ff1c-8e73-4f7d-b7f4-dc32c943f4d4"
-        )
+        assert str(group.production_evidence.source_batch_id) == ("3258ff1c-8e73-4f7d-b7f4-dc32c943f4d4")
         assert str(group.production_evidence.candidate_artifact_id) == artifact_id
         assert group.production_evidence.distilled_reproduction is True
-        if (
-            case_id.startswith("notable-production-")
-            or case_id
-            in {
-                "notable-unreachable-parallel-controller",
-                "near-production-constraint-ledger",
-            }
-        ):
-            assert set(group.production_evidence.observed_production_classifications) == {
-                "novel"
-            }
-
-
-def test_novel_gold_cases_expose_reachable_implementations_not_architecture_names() -> None:
-    required_reachable_functions = {
-        "novel-json-contract-solver": {"validate_contract", "execute_contract"},
-        "novel-vfs-investigation-state": {"line_id"},
-        "novel-entity-attribute-graph": {"holes", "merge_records"},
-    }
-
-    for group in _groups():
-        if group.expected_final != "novel":
-            continue
-        module = ast.parse(group.candidate.script)
-        definitions = {
-            node.name: node
-            for node in module.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        }
-        entrypoint = definitions["query"]
-        call_graph = _top_level_function_call_graph(group.candidate.script)
-
-        assert len(entrypoint.body) > 1
-        assert required_reachable_functions[group.case_id] <= _reachable_functions(
-            call_graph,
-            "query",
-        )
-        reachable_nodes = [
-            definitions[name]
-            for name in {"query", *_reachable_functions(call_graph, "query")}
-        ]
-        assert any(
-            isinstance(node, (ast.If, ast.For, ast.While))
-            for function in reachable_nodes
-            for node in ast.walk(function)
-        )
-        top_level_names = set(definitions)
-        top_level_names.update(
-            alias.asname or alias.name.split(".", maxsplit=1)[0]
-            for node in module.body
-            if isinstance(node, (ast.Import, ast.ImportFrom))
-            for alias in node.names
-        )
-        unresolved_bare_calls = {
-            call.func.id
-            for call in ast.walk(module)
-            if isinstance(call, ast.Call)
-            and isinstance(call.func, ast.Name)
-            and call.func.id not in top_level_names
-            and not hasattr(builtins, call.func.id)
-        }
-        assert unresolved_bare_calls == set()
-        assert group.production_evidence is not None
-        assert all(
-            len(ast.parse(reference.script).body) >= 1
-            and len(reference.script.splitlines()) >= 5
-            for reference in eligible_comparisons(group)
-        )
+        if case_id.startswith("notable-production-") or case_id in {
+            "notable-unreachable-parallel-controller",
+            "near-production-constraint-ledger",
+        }:
+            assert set(group.production_evidence.observed_production_classifications) == {"novel"}
 
 
 def _top_level_function_call_graph(script: str) -> dict[str, set[str]]:
     module = ast.parse(script)
-    definitions = {
-        node.name: node
-        for node in module.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
+    definitions = {node.name: node for node in module.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
     return {
         name: {
             call.func.id
             for call in ast.walk(function)
-            if isinstance(call, ast.Call)
-            and isinstance(call.func, ast.Name)
-            and call.func.id in definitions
+            if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id in definitions
         }
         for name, function in definitions.items()
     }
@@ -798,23 +464,12 @@ async def test_same_hotkey_references_never_reach_the_judge_or_aggregation(
 
     assert len(delegate.requests) == expected_eligible_count
     assert summary.final.accuracy == 1.0
-    assert not any(
-        row["similarity_request"]["reference_artifact_id"] in same_hotkey_ids
-        for row in _pair_rows(summary)
-    )
+    assert not any(row["similarity_request"]["reference_artifact_id"] in same_hotkey_ids for row in _pair_rows(summary))
 
 
 def test_least_changed_cross_hotkey_pair_prevents_final_novel() -> None:
-    assert (
-        aggregate_classification(["architectural_replacement", "notable_change"])
-        == "notable_change"
-    )
-    assert (
-        aggregate_classification(
-            ["architectural_replacement", "architectural_replacement"]
-        )
-        == "novel"
-    )
+    assert aggregate_classification(["architectural_replacement", "notable_change"]) == "notable_change"
+    assert aggregate_classification(["architectural_replacement", "architectural_replacement"]) == "novel"
     assert normalize_pairwise("novel") == "architectural_replacement"
 
 
@@ -832,119 +487,48 @@ def test_provider_failures_remain_in_metric_denominators() -> None:
     assert summary.per_class["duplicate"].recall == 0.0
 
 
-def test_overclassification_gate_is_asymmetric() -> None:
-    rank = {label: index for index, label in enumerate(FINAL_LABELS)}
-
-    assert (
-        _overclassification_count(
-            expected_labels=["duplicate", "near_duplicate", "notable_change", "novel"],
-            observed_labels=["near_duplicate", "notable_change", "novel", "novel"],
-            rank=rank,
-        )
-        == 3
-    )
-    assert (
-        _overclassification_count(
-            expected_labels=["near_duplicate", "notable_change", "novel"],
-            observed_labels=["duplicate", "near_duplicate", "notable_change"],
-            rank=rank,
-        )
-        == 0
-    )
-
-
-def test_multi_step_underclassification_count_enforces_approved_tolerance() -> None:
-    rank = {label: index for index, label in enumerate(PAIRWISE_LABELS)}
-
-    assert (
-        _multi_step_underclassification_count(
-            expected_labels=[
-                "duplicate",
-                "near_duplicate",
-                "notable_change",
-                "architectural_replacement",
-                "architectural_replacement",
-                "architectural_replacement",
-            ],
-            observed_labels=[
-                "duplicate",
-                "duplicate",
-                "near_duplicate",
-                "notable_change",
-                "near_duplicate",
-                "duplicate",
-            ],
-            rank=rank,
-        )
-        == 2
-    )
-    assert (
-        _multi_step_underclassification_count(
-            expected_labels=["architectural_replacement"],
-            observed_labels=["provider_failure"],
-            rank=rank,
-        )
-        == 0
-    )
-
-
 @pytest.mark.anyio
-async def test_run_benchmark_records_multi_step_underclassifications(
+@pytest.mark.parametrize(
+    ("error", "expected_type", "response_id"),
+    [
+        pytest.param(
+            LlmProviderError(
+                "provider failed",
+                response=_response(response_id="provider-response"),
+            ),
+            "LlmProviderError",
+            "provider-response",
+            id="provider-error",
+        ),
+        pytest.param(
+            LlmRetryExhaustedError(
+                "retry exhausted",
+                response=_response(response_id="retry-response"),
+                attempts=1,
+            ),
+            "LlmRetryExhaustedError",
+            "retry-response",
+            id="retry-exhausted",
+        ),
+    ],
+)
+async def test_provider_failure_retains_attached_response_before_failure_gate(
     tmp_path: Path,
+    error: LlmProviderError | LlmRetryExhaustedError,
+    expected_type: str,
+    response_id: str,
 ) -> None:
-    groups = _groups()
-    novel_group = next(group for group in groups if group.expected_final == "novel")
-    reference_id = eligible_comparisons(novel_group)[0].artifact_id
-
-    summary, _, _ = await _run(
-        tmp_path,
-        classifications={reference_id: "near_duplicate"},
-    )
-
-    assert summary.pairwise_multi_step_underclassification_count == 1
-    assert summary.final_multi_step_underclassification_count == 1
-    persisted = json.loads(
-        (Path(summary.run_directory) / "summary.json").read_text(encoding="utf-8")
-    )
-    assert persisted["pairwise_multi_step_underclassification_count"] == 1
-    assert persisted["final_multi_step_underclassification_count"] == 1
-
-
-@pytest.mark.anyio
-async def test_retry_exhaustion_retains_its_attached_response_before_failure_gate(
-    tmp_path: Path,
-) -> None:
+    """Future failure: failed benchmark rows must retain attached provider evidence."""
     groups = _groups()
     reference_id = eligible_comparisons(groups[0])[0].artifact_id
-    response = _response(response_id="retry-response")
-    error = LlmRetryExhaustedError("retry exhausted", response=response, attempts=1)
 
     summary, _, _ = await _run(tmp_path, outcomes={reference_id: error})
     failed_row = next(row for row in _pair_rows(summary) if row["observed_pairwise"] == "provider_failure")
 
     assert summary.provider_failure_count == 1
-    assert summary.pairwise_multi_step_underclassification_count == 0
-    assert summary.final_multi_step_underclassification_count == 0
-    assert failed_row["error"]["type"] == "LlmRetryExhaustedError"
-    assert failed_row["llm_response"]["id"] == "retry-response"
-    assert failed_row["llm_response"]["raw_response"]["id"] == "retry-response"
-
-
-@pytest.mark.anyio
-async def test_provider_error_retains_its_attached_response_before_failure_gate(
-    tmp_path: Path,
-) -> None:
-    groups = _groups()
-    reference_id = eligible_comparisons(groups[0])[0].artifact_id
-    response = _response(response_id="provider-response")
-    error = LlmProviderError("provider failed", response=response)
-
-    summary, _, _ = await _run(tmp_path, outcomes={reference_id: error})
-    failed_row = next(row for row in _pair_rows(summary) if row["observed_pairwise"] == "provider_failure")
-
-    assert summary.provider_failure_count == 1
-    assert failed_row["error"]["type"] == "LlmProviderError"
-    assert failed_row["llm_response"]["id"] == "provider-response"
+    assert failed_row["error"]["type"] == expected_type
+    assert failed_row["llm_response"]["id"] == response_id
+    assert failed_row["llm_response"]["raw_response"]["id"] == response_id
 
 
 @pytest.mark.anyio

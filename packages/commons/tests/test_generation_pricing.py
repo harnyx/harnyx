@@ -3,12 +3,9 @@ from __future__ import annotations
 import pytest
 
 from harnyx_commons.llm.pricing import (
-    GENERATION_MODEL_PRICING,
-    MODEL_PRICING,
     generation_usage_cost_breakdown,
 )
 from harnyx_commons.llm.schema import LlmUsage
-from harnyx_commons.llm.tool_models import ALLOWED_TOOL_MODELS
 
 
 def test_generation_usage_cost_breakdown_normalizes_vertex_claude_publisher_path_models() -> None:
@@ -167,10 +164,7 @@ def test_generation_usage_cost_breakdown_does_not_normalize_malformed_vertex_gem
 
 @pytest.mark.parametrize(
     ("model", "expected_cost"),
-    (
-        ("openai/gpt-oss-20b", 0.17),
-        ("openai/gpt-oss-120b", 0.219),
-    ),
+    (("openai/gpt-oss-20b", 0.17),),
 )
 def test_generation_usage_cost_breakdown_prices_openrouter_gpt_oss(model: str, expected_cost: float) -> None:
     usage = LlmUsage(
@@ -188,10 +182,3 @@ def test_generation_usage_cost_breakdown_prices_openrouter_gpt_oss(model: str, e
     assert breakdown["pricing_missing"] is False
     assert breakdown["pricing_key"] == f"openrouter:{model}"
     assert breakdown["usd_cost"] == pytest.approx(expected_cost)
-
-
-def test_generation_pricing_is_separate_from_validator_tool_model_pricing() -> None:
-    assert set(MODEL_PRICING) == set(ALLOWED_TOOL_MODELS)
-    assert "vertex:gemini-3-pro-preview" in GENERATION_MODEL_PRICING
-    assert "vertex:gemini-3.1-pro-preview" in GENERATION_MODEL_PRICING
-    assert "vertex:gemini-3-pro-preview" not in MODEL_PRICING

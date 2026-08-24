@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import math
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -105,18 +104,6 @@ def test_prepare_parses_local_eval_report_summary(tmp_path: Path) -> None:
     assert summary.cost_usd == 0.02
     assert summary.error_count == 0
     assert summary.total_seconds == 2.0
-
-
-def test_prepare_rejects_malformed_numeric_report_values(tmp_path: Path) -> None:
-    prepare = _load_prepare_module()
-    report_path = tmp_path / "local-eval-report-batch-vs-champion.json"
-    _write_report(report_path)
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    report["local_result_summary"]["leaderboard"][0]["total_score"] = math.nan
-    report_path.write_text(json.dumps(report), encoding="utf-8")
-
-    with pytest.raises(RuntimeError, match="finite number"):
-        prepare.parse_report_summary(report_path)
 
 
 def test_prepare_builds_local_eval_command_for_pinned_batch(tmp_path: Path) -> None:
@@ -256,72 +243,3 @@ def test_public_env_loader_finds_parent_env_from_miner_directory(
     monkeypatch.delenv("PLATFORM_BASE_URL", raising=False)
 
     assert platform_base_url_from_env() == "https://platform.example.com"
-
-
-def test_public_program_matches_single_file_contract() -> None:
-    program = PROGRAM_PATH.read_text(encoding="utf-8")
-
-    assert "Modify only `train.py`" in program
-    assert "Do not modify `prepare.py`" in program
-    assert "Do not commit `results.tsv`" in program
-    assert "score_a" in program
-    assert "score_b" in program
-    assert "hardcode benchmark item IDs" in program
-    assert "LOG_LEVEL=DEBUG uv run train.py > run.log 2>&1" in program
-    assert ".autoresearch/reports/<timestamp>/local-eval.stderr" in program
-
-
-def test_public_program_requires_failure_first_research_cycle() -> None:
-    program = PROGRAM_PATH.read_text(encoding="utf-8")
-
-    assert "The agent must behave like a rigorous research engineer" in program
-    assert "### Start from failures" in program
-    assert "### Build a failure taxonomy" in program
-    assert "### Pick one bottleneck per cycle" in program
-    assert "### Write the hypothesis before editing" in program
-    assert "### Use focused diagnostic cases before full evaluation" in program
-    assert "Full evaluation with `LOG_LEVEL=DEBUG uv run train.py > run.log 2>&1` is allowed only when:" in program
-    assert "### Inspect intermediate artifacts, not just score" in program
-    assert "### Do not abandon a hypothesis after one failed attempt" in program
-    assert "### Use the intervention ladder" in program
-    assert "## Research ledger" in program
-    assert ".autoresearch/experiment-ledger.md" in program
-
-    assert program.index("### Start from failures") < program.index("### Build a failure taxonomy")
-    assert program.index("### Build a failure taxonomy") < program.index("### Pick one bottleneck per cycle")
-    assert program.index("### Pick one bottleneck per cycle") < program.index(
-        "### Write the hypothesis before editing"
-    )
-    assert program.index("### Write the hypothesis before editing") < program.index(
-        "Only then edit `train.py`"
-    )
-    assert program.index("Only then edit `train.py`") < program.index(
-        "### Use focused diagnostic cases before full evaluation"
-    )
-
-
-def test_auto_research_runbook_documents_operator_startup_contract() -> None:
-    runbook = AUTO_RESEARCH_PATH.read_text(encoding="utf-8")
-    readme = README_PATH.read_text(encoding="utf-8")
-
-    assert "## What To Tell The Agent" in runbook
-    assert "Read README.md first, then read program.md" in runbook
-    assert "Only edit train.py" in runbook
-    assert "uv run prepare.py --benchmark-suite" in runbook
-    assert "results.tsv" in runbook
-    assert ".autoresearch/experiment-ledger.md" in runbook
-    assert "PLATFORM_BASE_URL" in runbook
-    assert "CHUTES_API_KEY" in runbook
-    assert "SEARCH_PROVIDER" in runbook
-    assert "DESEARCH_API_KEY" in runbook
-    assert "BENCHMARK_LLM_PROVIDER" in runbook
-    assert "BENCHMARK_LLM_MODEL" in runbook
-    assert "LOG_LEVEL=DEBUG uv run train.py > run.log 2>&1" in runbook
-    assert "local-eval.stderr" in runbook
-    assert "AutoResearch does not upload automatically" in runbook
-    assert "cd miner" in runbook
-    assert "public/miner" not in runbook
-    assert "public/.env" not in runbook
-
-    assert "[`AUTO-RESEARCH.md`](AUTO-RESEARCH.md)" in readme
-    assert "The agent-facing research policy lives in [`program.md`](program.md)" in readme

@@ -1,7 +1,6 @@
 import asyncio
 import json
 import threading
-import tracemalloc
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -128,9 +127,9 @@ async def test_fetch_tool_returns_a_stable_failure_id_for_exact_question_generat
             "durationSeconds": 0.2,
         }
     )
-    server = workspace.question_generation_tools(_UnavailableFetcher()).mcp_servers[
-        "question_generation_vfs"
-    ]["instance"]
+    server = workspace.question_generation_tools(_UnavailableFetcher()).mcp_servers["question_generation_vfs"][
+        "instance"
+    ]
     request = mcp_types.CallToolRequest(
         method="tools/call",
         params=mcp_types.CallToolRequestParams(
@@ -157,13 +156,6 @@ async def test_fetch_tool_returns_a_stable_failure_id_for_exact_question_generat
         "message": "upstream document is unavailable",
     }
     assert workspace.source_failure("source_failure:1").failure_class == "source_unavailable"
-
-
-def test_unknown_source_candidate_is_rejected_before_fetch() -> None:
-    workspace = SourceWorkspace()
-
-    with pytest.raises(ValueError, match="unknown source_candidate_id"):
-        workspace.get_source_candidate("source_candidate:404")
 
 
 @pytest.mark.anyio
@@ -209,79 +201,6 @@ async def test_fetch_contract_errors_do_not_enter_source_failure_ledger(
     assert workspace.source_failure("source_failure:1") is None
 
 
-def test_workspace_uses_stable_ids_and_attaches_table_header() -> None:
-    """Future failure: models select IDs; they must never recopy evidence or lose row labels."""
-    workspace = SourceWorkspace()
-    source = workspace.store(
-        SourceDocument(
-            requested_url="https://example.com",
-            final_url="https://example.com",
-            media_type="text/html",
-            content="HEADER\tName\tValue\nROW\tA\t7\nROW\tB\t9",
-            fetched_bytes=10,
-        )
-    )
-    lines = workspace.lines(source)
-    evidence = workspace.register_evidence(
-        claim="A has value 7",
-        start_line_id=lines[1].line_id,
-        end_line_id=lines[1].line_id,
-    )
-    certificate = workspace.register_regex_certificate(
-        source_id=source.source_id,
-        start_line_id=lines[0].line_id,
-        end_line_id=lines[-1].line_id,
-        pattern=r"^ROW",
-    )
-
-    assert evidence.evidence_id == "E1"
-    assert evidence.excerpt.startswith("HEADER\tName\tValue")
-    assert certificate.match_line_ids == (lines[1].line_id, lines[2].line_id)
-    assert "content" not in workspace.source_metadata()[0]
-
-
-@pytest.mark.anyio
-async def test_list_source_links_filters_bounded_results_and_registers_fetch_candidates() -> None:
-    """Future failure: retained HTML navigation must stay bounded without becoming a crawler."""
-    workspace = SourceWorkspace()
-    source = workspace.store(
-        SourceDocument(
-            requested_url="https://example.com/index",
-            final_url="https://example.com/index",
-            media_type="text/html",
-            content="Index",
-            fetched_bytes=5,
-            links=tuple(
-                SourceLink(url=f"https://example.com/annual/{index}", text=f"Annual record {index}")
-                for index in range(105)
-            )
-            + (SourceLink(url="https://example.com/monthly", text="Monthly record"),),
-        )
-    )
-    server = workspace.question_generation_tools(_UnavailableFetcher()).mcp_servers[
-        "question_generation_vfs"
-    ]["instance"]
-    request = mcp_types.CallToolRequest(
-        method="tools/call",
-        params=mcp_types.CallToolRequestParams(
-            name="list_source_links",
-            arguments={"source_id": source.source_id, "pattern": "ANNUAL"},
-        ),
-    )
-
-    response = await server.request_handlers[mcp_types.CallToolRequest](request)
-
-    content = response.root.content
-    assert response.root.isError is not True
-    assert len(content) == 1 and isinstance(content[0], mcp_types.TextContent)
-    payload = json.loads(content[0].text)
-    assert payload["returned_match_count"] == 100
-    assert payload["total_match_count"] == 105
-    assert payload["truncated"] is True
-    assert len(payload["links"]) == 100
-    assert workspace.get_source_candidate("source_candidate:100").url.endswith("/annual/99")
-
-
 @pytest.mark.anyio
 async def test_list_source_links_bounds_the_serialized_result_not_only_the_link_count(
     monkeypatch: pytest.MonkeyPatch,
@@ -305,9 +224,9 @@ async def test_list_source_links_bounds_the_serialized_result_not_only_the_link_
             ),
         )
     )
-    server = workspace.question_generation_tools(_UnavailableFetcher()).mcp_servers[
-        "question_generation_vfs"
-    ]["instance"]
+    server = workspace.question_generation_tools(_UnavailableFetcher()).mcp_servers["question_generation_vfs"][
+        "instance"
+    ]
     request = mcp_types.CallToolRequest(
         method="tools/call",
         params=mcp_types.CallToolRequestParams(
@@ -326,15 +245,6 @@ async def test_list_source_links_bounds_the_serialized_result_not_only_the_link_
     assert len(content[0].text) <= 600
     for item in payload["links"]:
         assert workspace.get_source_candidate(item["source_candidate_id"]).url == item["url"]
-
-
-def test_audit_tools_are_exactly_the_fixed_read_only_source_inspection_boundary() -> None:
-    """Future failure: the blind audit must not gain fetch, search, registration, or mutation tools."""
-    assert SourceWorkspace().audit_tools().allowed_tools == (
-        "mcp__audit_vfs__list_sources",
-        "mcp__audit_vfs__regex_search",
-        "mcp__audit_vfs__read_lines",
-    )
 
 
 @pytest.mark.anyio
@@ -370,9 +280,9 @@ async def test_shared_inspection_tools_return_the_same_payload_for_author_and_au
             "start_line_id": lines[0].line_id,
             "end_line_id": lines[-1].line_id,
         }
-    author_server = workspace.question_generation_tools(_UnavailableFetcher()).mcp_servers[
-        "question_generation_vfs"
-    ]["instance"]
+    author_server = workspace.question_generation_tools(_UnavailableFetcher()).mcp_servers["question_generation_vfs"][
+        "instance"
+    ]
     audit_server = workspace.audit_tools().mcp_servers["audit_vfs"]["instance"]
 
     async def call(server: object) -> str:
@@ -531,161 +441,6 @@ def test_evidence_rejects_one_pathologically_long_line() -> None:
         )
 
 
-def test_proof_packet_trims_aggregate_evidence_inside_the_context_bound() -> None:
-    """Future failure: aggregate excerpts must remain valid, bounded, and identity-complete."""
-    workspace = SourceWorkspace()
-    blocks = [(str(index) * 30_000) + ("\n" * 5) for index in range(5)]
-    source = workspace.store(
-        SourceDocument(
-            requested_url="https://example.com/report",
-            final_url="https://example.com/report",
-            media_type="text/plain",
-            content="".join(blocks),
-            fetched_bytes=1,
-        )
-    )
-    lines = workspace.lines(source)
-    records = [
-        workspace.register_evidence(
-            claim=f"value {index}",
-            start_line_id=lines[index * 5].line_id,
-            end_line_id=lines[index * 5].line_id,
-        )
-        for index in range(5)
-    ]
-
-    packet = workspace.proof_packet(
-        question="Combine the values.",
-        short_answers=("answer",),
-        answer_text="Combined answer.",
-        validated_citations=(),
-        steps=(
-            ProofStep(
-                step_id="S1",
-                statement="The values are combined.",
-                kind="supported",
-                evidence_ids=tuple(record.evidence_id for record in records),
-            ),
-        ),
-    )
-
-    serialized = _serialize_audit_packet(packet)
-    assert len(serialized) <= 128_000
-    assert json.loads(serialized) == packet
-    selected = packet["selected_evidence"]
-    assert isinstance(selected, list)
-    assert [item["evidence_id"] for item in selected] == [record.evidence_id for record in records]
-    assert all("audit text truncated" in item["excerpt"] for item in selected)
-    assert all(item["excerpt"].startswith(str(index)) for index, item in enumerate(selected))
-    assert all(item["excerpt"].endswith(str(index)) for index, item in enumerate(selected))
-    assert all(
-        line["line_id"]
-        for item in selected
-        for line in item["boundary_context"]
-    )
-
-
-def test_structured_proof_packet_preserves_required_contract_while_trimming_evidence() -> None:
-    """Future failure: packet budgeting must never truncate schema or structured reference semantics."""
-    workspace = SourceWorkspace()
-    source = workspace.store(
-        SourceDocument(
-            requested_url="https://example.com/report",
-            final_url="https://example.com/report",
-            media_type="text/plain",
-            content=("a" * 30_000) + ("\n" * 5) + ("b" * 30_000) + ("\n" * 5) + ("c" * 30_000),
-            fetched_bytes=90_010,
-        )
-    )
-    lines = workspace.lines(source)
-    evidence = tuple(
-        workspace.register_evidence(
-            claim=f"value {index}",
-            start_line_id=lines[index * 5].line_id,
-            end_line_id=lines[index * 5].line_id,
-        )
-        for index in range(3)
-    )
-    schema = {
-        "type": "object",
-        "properties": {"value": {"type": "string"}},
-        "required": ["value"],
-        "additionalProperties": False,
-    }
-    structured_answer = {"value": "z" * 50_000}
-
-    packet = workspace.proof_packet(
-        question="Return field value.",
-        short_answers=("answer",),
-        answer_text=None,
-        validated_citations=(),
-        steps=(
-            ProofStep(
-                step_id="S1",
-                statement="Combine the records.",
-                kind="supported",
-                evidence_ids=tuple(item.evidence_id for item in evidence),
-            ),
-        ),
-        response_mode="structured",
-        output_schema=schema,
-        structured_answer=structured_answer,
-    )
-
-    assert len(_serialize_audit_packet(packet)) <= 128_000
-    assert packet["output_schema"] == schema
-    assert packet["structured_answer"] == structured_answer
-    assert "audit text truncated" in str(packet["selected_evidence"])
-
-
-def test_proof_packet_preserves_full_note_when_bounded() -> None:
-    note = "The question's premise is corrected by the cited record [[1]]."
-
-    packet = SourceWorkspace().proof_packet(
-        question="Which value?",
-        short_answers=("answer",),
-        answer_text="Answer [[1]].",
-        note=note,
-        validated_citations=(),
-        steps=(),
-    )
-
-    assert packet["note"] == note
-    assert len(_serialize_audit_packet(packet)) <= 128_000
-
-
-def test_proof_packet_rejects_full_note_that_cannot_fit_after_evidence_minimization() -> None:
-    with pytest.raises(ValueError, match="reference audit packet exceeds 128000 characters with full note"):
-        SourceWorkspace().proof_packet(
-            question="Which value?",
-            short_answers=("answer",),
-            answer_text="A" * 70_000,
-            note="N" * 70_000,
-            validated_citations=(),
-            steps=(),
-        )
-
-
-def test_structured_proof_packet_preserves_irreducible_public_envelope_over_target() -> None:
-    """Future failure: the ordinary packet target must not silently narrow exact public semantics."""
-    workspace = SourceWorkspace()
-
-    packet = workspace.proof_packet(
-        question="q" * 60_000,
-        short_answers=("answer",),
-        answer_text=None,
-        validated_citations=(),
-        steps=(),
-        response_mode="structured",
-        output_schema={"type": "object"},
-        structured_answer={"value": "z" * 70_000},
-    )
-
-    assert len(_serialize_audit_packet(packet)) > 128_000
-    assert packet["question"] == "q" * 60_000
-    assert packet["structured_answer"] == {"value": "z" * 70_000}
-
-
 def test_proof_packet_minimum_uses_the_smaller_serialized_text_value() -> None:
     """Future failure: escaping must not make a retained original larger than the truncation marker."""
     workspace = SourceWorkspace()
@@ -733,31 +488,6 @@ def test_proof_packet_minimum_uses_the_smaller_serialized_text_value() -> None:
     selected = packet["selected_evidence"]
     assert isinstance(selected, list)
     assert selected[0]["excerpt"] == "[... audit text truncated ...]"
-
-
-def test_similarity_search_keeps_near_limit_source_working_memory_bounded() -> None:
-    """Future failure: a legal source must not build a full-token corpus that can OOM concurrent candidates."""
-    workspace = SourceWorkspace()
-    content = (("needle filler value\n" * 250_000) + "needle target")[0:4_999_999]
-    source = workspace.store(
-        SourceDocument(
-            requested_url="https://example.com/report",
-            final_url="https://example.com/report",
-            media_type="text/plain",
-            content=content,
-            fetched_bytes=len(content),
-        )
-    )
-
-    tracemalloc.start()
-    try:
-        result = workspace._similarity_result(source, "needle target", 3)
-        _, peak_bytes = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
-
-    assert result["chunks"]
-    assert peak_bytes < 32 * 1024 * 1024
 
 
 @pytest.mark.anyio

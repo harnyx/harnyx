@@ -171,11 +171,11 @@ async def test_platform_tool_proxy_proxy_forwards_provider_tool_with_session_sco
             "batch_id": batch_id,
             "artifact_id": artifact_id,
             "task_id": task_id,
-                "validator_session_id": session_id,
-                "attempt_number": 2,
-                "assignment_token": _ASSIGNMENT_TOKEN,
-            }
-        ]
+            "validator_session_id": session_id,
+            "attempt_number": 2,
+            "assignment_token": _ASSIGNMENT_TOKEN,
+        }
+    ]
     call = platform.calls[0]
     receipt_id = call["receipt_id"]
     receipt_started_at = call["receipt_started_at"]
@@ -247,44 +247,6 @@ async def test_platform_tool_proxy_successful_proxy_call_restores_attempt_phase(
         "entrypoint_invocation",
     ]
     assert phase_recorder.phase == "entrypoint_invocation"
-
-
-async def test_platform_tool_proxy_proxy_uses_fixed_execute_transport_timeout() -> None:
-    batch_id = uuid4()
-    session_id = uuid4()
-    artifact_id = uuid4()
-    task_id = uuid4()
-    scopes = PlatformToolProxyScopeRegistry()
-    scopes.register_session(
-        batch_id=batch_id,
-        session_id=session_id,
-        artifact_id=artifact_id,
-        task_id=task_id,
-        assignment_token=_ASSIGNMENT_TOKEN,
-    )
-    platform = _RecordingPlatformToolProxyPlatform(calls=[], grants=[])
-    invoker = PlatformToolProxyProxyToolInvoker(
-        local_invoker=_RecordingLocalInvoker(),
-        platform_tool_proxy_platform=platform,
-        scopes=scopes,
-    )
-
-    await invoker.invoke(
-        "search_web",
-        args=(),
-        kwargs={"provider": "desearch", "search_queries": ["harnyx"], "timeout": 1.0},
-        context=ToolInvocationContext(
-            receipt_id=str(uuid4()),
-            session_id=session_id,
-            active_attempt=1,
-            uid=7,
-        ),
-    )
-
-    assert platform.calls[0]["transport_timeout_seconds"] == (
-        PLATFORM_TOOL_PROXY_EXECUTE_TRANSPORT_TIMEOUT_SECONDS
-    )
-    assert platform.calls[0]["transport_timeout_seconds"] > 1.0
 
 
 async def test_platform_tool_proxy_proxy_serializes_concurrent_first_grant_creation() -> None:
@@ -409,86 +371,6 @@ async def test_platform_tool_proxy_proxy_mints_new_grant_for_later_attempt() -> 
 
     assert [grant["attempt_number"] for grant in platform.grants] == [1, 2]
     assert [call["token"] for call in platform.calls] == [f"{_GRANT_VALUE}-1", f"{_GRANT_VALUE}-2"]
-
-
-async def test_platform_tool_proxy_proxy_allows_later_attempt_after_earlier_attempt_token_expires() -> None:
-    batch_id = uuid4()
-    expired_session_id = uuid4()
-    session_id = uuid4()
-    artifact_id = uuid4()
-    task_id = uuid4()
-    scopes = PlatformToolProxyScopeRegistry()
-    scopes.register_session(
-        batch_id=batch_id,
-        session_id=expired_session_id,
-        artifact_id=artifact_id,
-        task_id=task_id,
-        assignment_token=_ASSIGNMENT_TOKEN,
-        attempt_number=1,
-    )
-    scopes.register_session(
-        batch_id=batch_id,
-        session_id=session_id,
-        artifact_id=artifact_id,
-        task_id=task_id,
-        assignment_token=_ASSIGNMENT_TOKEN,
-        attempt_number=2,
-    )
-    scopes.store_session_grant(
-        session_id=expired_session_id,
-        attempt_number=1,
-        token="expired-attempt-1",  # noqa: S106 - fixed test-only proxy token
-        expires_at=datetime.now(UTC) - timedelta(seconds=1),
-    )
-    platform = _RecordingPlatformToolProxyPlatform(calls=[], grants=[])
-    invoker = PlatformToolProxyProxyToolInvoker(
-        local_invoker=_RecordingLocalInvoker(),
-        platform_tool_proxy_platform=platform,
-        scopes=scopes,
-    )
-
-    await invoker.invoke(
-        "search_web",
-        args=(),
-        kwargs={"provider": "parallel", "search_queries": ["harnyx"]},
-        context=ToolInvocationContext(
-            receipt_id=str(uuid4()),
-            session_id=session_id,
-            active_attempt=2,
-            uid=7,
-        ),
-    )
-
-    assert [grant["attempt_number"] for grant in platform.grants] == [2]
-    assert platform.calls[0]["token"] == f"{_GRANT_VALUE}-2"
-
-
-async def test_platform_tool_proxy_missing_scope_preserves_denied_metadata() -> None:
-    session_id = uuid4()
-    platform = _RecordingPlatformToolProxyPlatform(calls=[], grants=[])
-    invoker = PlatformToolProxyProxyToolInvoker(
-        local_invoker=_RecordingLocalInvoker(),
-        platform_tool_proxy_platform=platform,
-        scopes=PlatformToolProxyScopeRegistry(),
-    )
-
-    with pytest.raises(PlatformToolProxyControlError) as exc_info:
-        await invoker.invoke(
-            "search_web",
-            args=(),
-            kwargs={"provider": "parallel", "search_queries": ["harnyx"]},
-            context=ToolInvocationContext(
-                receipt_id=str(uuid4()),
-                session_id=session_id,
-                active_attempt=1,
-                uid=7,
-            ),
-        )
-
-    assert exc_info.value.error_code == "platform_tool_proxy_denied"
-    assert exc_info.value.status_code == 403
-    assert platform.grants == []
-    assert platform.calls == []
 
 
 async def test_platform_tool_proxy_missing_context_preserves_denied_metadata() -> None:

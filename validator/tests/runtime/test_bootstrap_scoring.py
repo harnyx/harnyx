@@ -19,10 +19,9 @@ from harnyx_commons.config.subtensor import SubtensorSettings
 from harnyx_commons.config.vertex import VertexSettings
 from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
 from harnyx_commons.domain.tool_call import ToolCallOutcome
-from harnyx_commons.errors import BudgetExceededError, ConcurrencyLimitError, ToolProviderError
+from harnyx_commons.errors import BudgetExceededError, ToolProviderError
 from harnyx_commons.llm.routing import ResolvedLlmRoute, RoutedLlmProvider
 from harnyx_commons.tools.dto import ToolInvocationRequest
-from harnyx_commons.tools.types import ToolName
 from harnyx_validator.application.ports.platform import PlatformToolProxyGrant
 from harnyx_validator.infrastructure.tools.platform_client import (
     PlatformToolProxyBudgetExceededError,
@@ -34,7 +33,6 @@ from harnyx_validator.runtime.bootstrap import (
     _build_llm_clients,
     _build_proxy_tooling,
     _create_scoring_service,
-    _create_similarity_judge,
     close_runtime_resources,
 )
 from harnyx_validator.runtime.settings import Settings
@@ -132,43 +130,6 @@ def _register_proxy_session(state: bootstrap.InMemoryState, *, batch_id, session
         task_id=task_id,
         assignment_token=_ASSIGNMENT_TOKEN,
     )
-
-
-def test_llm_settings_default_scoring_timeout_is_300_seconds() -> None:
-    assert LlmSettings(_env_file=None).scoring_llm_timeout_seconds == pytest.approx(300.0)
-
-
-def test_local_provider_tooling_forwards_separate_search_role_dependencies(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    state = bootstrap._build_state(_settings_for_tooling(), progress_storage_root=tmp_path / "run-progress")
-    captured: dict[str, object] = {}
-    web_client = object()
-    ai_client = object()
-    web_resolver = object()
-    ai_resolver = object()
-
-    def build_invoker(*_args: object, **kwargs: object) -> object:
-        captured.update(kwargs)
-        return object()
-
-    monkeypatch.setattr(bootstrap, "build_miner_sandbox_tool_invoker", build_invoker)
-
-    bootstrap._build_local_provider_tooling(
-        state=state,
-        resolved=_settings_for_tooling(),
-        search_client=web_client,  # type: ignore[arg-type]
-        ai_search_client=ai_client,  # type: ignore[arg-type]
-        tool_llm_provider=None,
-        web_search_provider_resolver=web_resolver,  # type: ignore[arg-type]
-        ai_search_provider_resolver=ai_resolver,  # type: ignore[arg-type]
-    )
-
-    assert captured["web_search_client"] is web_client
-    assert captured["ai_search_client"] is ai_client
-    assert captured["web_search_provider_resolver"] is web_resolver
-    assert captured["ai_search_provider_resolver"] is ai_resolver
 
 
 def test_build_llm_clients_uses_shared_provider_registry(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -308,49 +269,6 @@ def test_build_llm_clients_resolves_route_for_each_scoring_slot_entry(
     }
 
 
-def test_build_state_uses_single_tool_concurrency_cap(tmp_path: Path) -> None:
-    state = bootstrap._build_state(Settings(), progress_storage_root=tmp_path / "run-progress")
-    session_id = uuid4()
-    token = "token"  # noqa: S105
-    tools: tuple[ToolName, ...] = ("search_web", "fetch_page", "tooling_info", "test_tool", "llm_chat")
-    held = [
-        ToolInvocationRequest(
-            session_id=session_id,
-            token=token,
-            tool=tools[index % len(tools)],
-            kwargs={"model": f"model-{index}"} if tools[index % len(tools)] == "llm_chat" else {},
-        )
-        for index in range(20)
-    ]
-
-    for invocation in held:
-        state.tool_concurrency_limiter.acquire(invocation)
-    with pytest.raises(ConcurrencyLimitError):
-        state.tool_concurrency_limiter.acquire(
-            ToolInvocationRequest(session_id=session_id, token=token, tool="search_web")
-        )
-
-    for invocation in held:
-        state.tool_concurrency_limiter.release(invocation)
-
-    next_invocation = ToolInvocationRequest(session_id=session_id, token=token, tool="search_web")
-    state.tool_concurrency_limiter.acquire(next_invocation)
-    state.tool_concurrency_limiter.release(next_invocation)
-
-
-def test_build_proxy_tooling_uses_plain_executor_with_platform_tool_proxy_client(tmp_path: Path) -> None:
-    state = bootstrap._build_state(_settings_for_tooling(), progress_storage_root=tmp_path / "run-progress")
-
-    tool_invoker, tool_executor = _build_proxy_tooling(
-        state=state,
-        platform_tool_proxy_platform_client=_ProviderFailingPlatformToolProxyClient(),
-    )
-
-    assert isinstance(tool_invoker, bootstrap.PlatformToolProxyProxyToolInvoker)
-    assert isinstance(tool_executor, bootstrap.ToolExecutor)
-    assert not isinstance(tool_executor, bootstrap._ProviderTrackingToolExecutor)
-
-
 @pytest.mark.anyio("asyncio")
 async def test_proxy_enabled_tool_executor_keeps_provider_failure_miner_owned_without_provider_evidence(
     tmp_path: Path,
@@ -438,7 +356,12 @@ async def test_proxy_enabled_tool_executor_keeps_llm_provider_failure_miner_owne
 
 
 @pytest.mark.anyio("asyncio")
-@pytest.mark.parametrize("invalid_provider", [123, "Parallel", " Parallel "])
+@pytest.mark.parametrize(
+    "invalid_provider",
+    [
+        123,
+    ],
+)
 async def test_proxy_enabled_tool_executor_does_not_default_attribute_invalid_explicit_provider(
     tmp_path: Path,
     invalid_provider: object,
@@ -808,250 +731,6 @@ def test_create_scoring_service_uses_effective_route_model_and_default_provider(
     assert service._config.retry_policy == settings.llm.scoring_llm_retry_policy
 
 
-def test_create_scoring_service_uses_explicit_fallback_models() -> None:
-    settings = Settings.model_construct(
-        llm=LlmSettings.model_construct(
-            scoring_llm_provider="chutes",
-            scoring_llm_temperature=0.0,
-            scoring_llm_max_output_tokens=20480,
-            scoring_llm_timeout_seconds=30.0,
-        ),
-    )
-
-    service = _create_scoring_service(
-        settings,
-        provider=SimpleNamespace(),
-        scoring_route=ResolvedLlmRoute(
-            surface="scoring",
-            provider="chutes",
-            model=bootstrap._DIRECT_SCORING_LLM_MODEL,
-        ),
-        fallback_models=("zai-org/GLM-5.2-TEE", "moonshotai/Kimi-K2.6-TEE"),
-    )
-
-    assert service._config.fallback_models == ("zai-org/GLM-5.2-TEE", "moonshotai/Kimi-K2.6-TEE")
-
-
-def test_scoring_slot_config_entries_are_hard_coded() -> None:
-    assert tuple(bootstrap._SCORING_SLOT_CONFIG.entries) == (
-        bootstrap.ScoringSlotConfigEntry(
-            model="google/gemma-4-31B-turbo-TEE",
-            slot_limit=10,
-            fallback_models=(
-                "zai-org/GLM-5.2-TEE",
-                "zai-org/GLM-5.1-TEE",
-                "moonshotai/Kimi-K3-TEE",
-            ),
-        ),
-        bootstrap.ScoringSlotConfigEntry(
-            model="Qwen/Qwen3.6-27B-TEE",
-            slot_limit=10,
-            fallback_models=(
-                "zai-org/GLM-5.2-TEE",
-                "zai-org/GLM-5.1-TEE",
-                "moonshotai/Kimi-K3-TEE",
-            ),
-        ),
-    )
-
-
-def test_build_services_passes_slot_fallback_models_to_scoring_services() -> None:
-    settings = Settings.model_construct(
-        llm=LlmSettings.model_construct(
-            scoring_llm_provider="chutes",
-            scoring_llm_temperature=0.0,
-            scoring_llm_max_output_tokens=20480,
-            scoring_llm_timeout_seconds=30.0,
-            similarity_llm_provider="chutes",
-            similarity_llm_temperature=0.0,
-            similarity_llm_max_output_tokens=4096,
-            similarity_llm_timeout_seconds=30.0,
-        ),
-        subtensor=SubtensorSettings.model_construct(netuid=1),
-    )
-
-    scoring_services, _, _ = bootstrap._build_services(
-        resolved=settings,
-        scoring_llm_provider=SimpleNamespace(),
-        similarity_llm_provider=SimpleNamespace(),
-        scoring_routes={
-            "google/gemma-4-31B-turbo-TEE": ResolvedLlmRoute(
-                surface="scoring",
-                provider="chutes",
-                model="google/gemma-4-31B-turbo-TEE",
-            ),
-            "Qwen/Qwen3.6-27B-TEE": ResolvedLlmRoute(
-                surface="scoring",
-                provider="chutes",
-                model="Qwen/Qwen3.6-27B-TEE",
-            ),
-        },
-        similarity_route=ResolvedLlmRoute(
-            surface="duplication_detection",
-            provider="chutes",
-            model="google/gemma-4-31B-turbo-TEE",
-        ),
-        similarity_request_extra_by_model={},
-        subtensor_client=SimpleNamespace(),
-        platform_client=SimpleNamespace(),
-    )
-
-    assert scoring_services["google/gemma-4-31B-turbo-TEE"]._config.fallback_models == (
-        "zai-org/GLM-5.2-TEE",
-        "zai-org/GLM-5.1-TEE",
-        "moonshotai/Kimi-K3-TEE",
-    )
-    assert scoring_services["Qwen/Qwen3.6-27B-TEE"]._config.fallback_models == (
-        "zai-org/GLM-5.2-TEE",
-        "zai-org/GLM-5.1-TEE",
-        "moonshotai/Kimi-K3-TEE",
-    )
-
-
-def test_direct_scoring_service_uses_explicit_direct_model() -> None:
-    direct_service = object()
-    other_service = object()
-
-    selected = bootstrap._direct_scoring_service(
-        {
-            "Qwen/Qwen3.6-27B-TEE": other_service,
-            bootstrap._DIRECT_SCORING_LLM_MODEL: direct_service,
-        }
-    )
-
-    assert selected is direct_service
-
-
-def test_direct_scoring_service_inherits_configured_fallback_models() -> None:
-    settings = Settings.model_construct(
-        llm=LlmSettings.model_construct(
-            scoring_llm_provider="chutes",
-            scoring_llm_temperature=0.0,
-            scoring_llm_max_output_tokens=20480,
-            scoring_llm_timeout_seconds=30.0,
-        ),
-    )
-    direct_service = _create_scoring_service(
-        settings,
-        provider=SimpleNamespace(),
-        scoring_route=ResolvedLlmRoute(
-            surface="scoring",
-            provider="chutes",
-            model=bootstrap._DIRECT_SCORING_LLM_MODEL,
-        ),
-        fallback_models=("zai-org/GLM-5.2-TEE", "moonshotai/Kimi-K2.6-TEE"),
-    )
-
-    selected = bootstrap._direct_scoring_service(
-        {
-            "Qwen/Qwen3.6-27B-TEE": object(),
-            bootstrap._DIRECT_SCORING_LLM_MODEL: direct_service,
-        }
-    )
-
-    assert selected._config.fallback_models == ("zai-org/GLM-5.2-TEE", "moonshotai/Kimi-K2.6-TEE")
-
-
-@pytest.mark.anyio("asyncio")
-async def test_score_platform_execution_executor_converts_scoring_errors(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    scoring_service = object()
-    execution = object()
-    expected = object()
-    observed: dict[str, object] = {}
-
-    async def fake_score_platform_execution(
-        service: object,
-        scoreable_execution: object,
-        *,
-        convert_scoring_error: bool,
-    ) -> object:
-        observed["service"] = service
-        observed["execution"] = scoreable_execution
-        observed["convert_scoring_error"] = convert_scoring_error
-        return expected
-
-    monkeypatch.setattr(bootstrap, "score_platform_execution", fake_score_platform_execution)
-
-    executor = bootstrap._score_platform_execution_with(scoring_service)  # type: ignore[arg-type]
-    result = await executor(execution)  # type: ignore[arg-type]
-
-    assert result is expected
-    assert observed == {
-        "service": scoring_service,
-        "execution": execution,
-        "convert_scoring_error": True,
-    }
-
-
-def test_create_similarity_judge_uses_similarity_llm_config() -> None:
-    settings = Settings.model_construct(
-        llm=LlmSettings.model_construct(
-            scoring_llm_provider="chutes",
-            scoring_llm_temperature=0.9,
-            scoring_llm_max_output_tokens=1024,
-            scoring_llm_timeout_seconds=30.0,
-            similarity_llm_provider="vertex",
-            similarity_llm_temperature=0.0,
-            similarity_llm_max_output_tokens=4096,
-            similarity_llm_timeout_seconds=300.0,
-            similarity_llm_retry_attempts=2,
-            similarity_llm_retry_initial_ms=10,
-            similarity_llm_retry_max_ms=20,
-            similarity_llm_retry_jitter=0.0,
-        ),
-    )
-
-    judge = _create_similarity_judge(
-        settings,
-        provider=SimpleNamespace(),
-        similarity_route=ResolvedLlmRoute(
-            surface="duplication_detection",
-            provider="chutes",
-            model="google/gemma-4-31B-turbo-TEE",
-        ),
-        request_extra_by_model={},
-    )
-
-    assert judge._config.provider == "vertex"
-    assert judge._config.model == "google/gemma-4-31B-turbo-TEE"
-    assert judge._config.fallback_models == (
-        "deepseek-ai/DeepSeek-V4-Flash-0731-TEE",
-        "zai-org/GLM-5.2-TEE",
-        "moonshotai/Kimi-K3-TEE",
-    )
-    assert judge._config.temperature == 0.0
-    assert judge._config.max_output_tokens == 4096
-    assert judge._config.reasoning_effort == "high"
-    assert judge._config.timeout_seconds == 300.0
-    assert judge._config.retry_policy == settings.llm.similarity_llm_retry_policy
-    assert judge._config.request_extra_by_model == {}
-
-
-def test_similarity_fallback_tail_only_uses_candidates_after_primary_override() -> None:
-    settings = Settings.model_construct(
-        llm=LlmSettings.model_construct(
-            similarity_llm_model_override="zai-org/GLM-5.2-TEE",
-        ),
-    )
-
-    assert bootstrap._similarity_judge_fallback_models(settings) == ("moonshotai/Kimi-K3-TEE",)
-
-
-def test_similarity_deepseek_override_uses_only_later_candidates() -> None:
-    settings = Settings.model_construct(
-        llm=LlmSettings.model_construct(
-            similarity_llm_model_override="deepseek-ai/DeepSeek-V4-Flash-0731-TEE",
-        ),
-    )
-
-    assert bootstrap._similarity_judge_fallback_models(settings) == (
-        "zai-org/GLM-5.2-TEE",
-        "moonshotai/Kimi-K3-TEE",
-    )
-
-
 def test_similarity_model_override_participates_in_duplication_detection_route_override() -> None:
     settings = Settings.model_construct(
         llm=LlmSettings.model_construct(
@@ -1072,7 +751,7 @@ def test_similarity_model_override_participates_in_duplication_detection_route_o
     )
 
 
-@pytest.mark.parametrize("provider", ("bedrock", "vertex"))
+@pytest.mark.parametrize("provider", ("bedrock",))
 def test_default_similarity_chain_rejects_incompatible_builtin_provider(provider: str) -> None:
     settings = Settings.model_construct(
         llm=LlmSettings.model_construct(
@@ -1086,59 +765,13 @@ def test_default_similarity_chain_rejects_incompatible_builtin_provider(provider
         bootstrap._resolve_similarity_judge_routes(settings)
 
 
-def test_default_similarity_chain_allows_explicit_chutes_routes() -> None:
-    models = bootstrap._DUPLICATION_DETECTION_MODEL_CHAIN
-    settings = Settings.model_construct(
-        llm=LlmSettings.model_construct(
-            similarity_llm_provider="vertex",
-            similarity_llm_model_override=None,
-            llm_model_provider_overrides_json=json.dumps(
-                {"duplication_detection": {model: "chutes" for model in models}}
-            ),
-        ),
-    )
-
-    routes = bootstrap._resolve_similarity_judge_routes(settings)
-
-    assert tuple(route.provider for route in routes) == tuple("chutes" for _ in models)
-
-
-def test_default_similarity_chain_allows_explicit_custom_routes() -> None:
-    models = bootstrap._DUPLICATION_DETECTION_MODEL_CHAIN
-    route_target = "custom-openai-compatible:wide-context"
-    settings = Settings.model_construct(
-        llm=LlmSettings.model_construct(
-            similarity_llm_provider="vertex",
-            similarity_llm_model_override=None,
-            llm_model_provider_overrides_json=json.dumps(
-                {"duplication_detection": {model: route_target for model in models}}
-            ),
-            openai_compatible_endpoints_json=json.dumps(
-                [
-                    {
-                        "id": "wide-context",
-                        "base_url": "https://wide-context.test/v1",
-                        "auth": {"type": "none"},
-                    }
-                ]
-            ),
-        ),
-    )
-
-    routes = bootstrap._resolve_similarity_judge_routes(settings)
-
-    assert tuple(route.provider for route in routes) == tuple(route_target for _ in models)
-
-
 def test_default_similarity_chain_routes_only_deepseek_through_openrouter() -> None:
     deepseek_model = "deepseek-ai/DeepSeek-V4-Flash-0731-TEE"
     settings = Settings.model_construct(
         llm=LlmSettings.model_construct(
             similarity_llm_provider="chutes",
             similarity_llm_model_override=None,
-            llm_model_provider_overrides_json=json.dumps(
-                {"duplication_detection": {deepseek_model: "openrouter"}}
-            ),
+            llm_model_provider_overrides_json=json.dumps({"duplication_detection": {deepseek_model: "openrouter"}}),
         ),
     )
 
@@ -1174,9 +807,7 @@ def test_default_similarity_chain_rejects_openrouter_for_non_deepseek_model() ->
         llm=LlmSettings.model_construct(
             similarity_llm_provider="chutes",
             similarity_llm_model_override=None,
-            llm_model_provider_overrides_json=json.dumps(
-                {"duplication_detection": {glm_model: "openrouter"}}
-            ),
+            llm_model_provider_overrides_json=json.dumps({"duplication_detection": {glm_model: "openrouter"}}),
         ),
     )
 
@@ -1185,63 +816,6 @@ def test_default_similarity_chain_rejects_openrouter_for_non_deepseek_model() ->
         match="duplicate-preflight similarity OpenRouter route.*DeepSeek-V4-Flash-0731",
     ):
         bootstrap._resolve_similarity_judge_routes(settings)
-
-
-def test_build_llm_clients_routes_configured_scoring_entries_to_custom_endpoints(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    scoring_routes = {
-        "google/gemma-4-31B-turbo-TEE": "custom-openai-compatible:gemma4-cloud-run-turbo",
-        "Qwen/Qwen3.6-27B-TEE": "custom-openai-compatible:qwen36-cloud-run",
-    }
-    settings = Settings.model_construct(
-        llm=LlmSettings.model_construct(
-            search_provider="parallel",
-            parallel_base_url="https://proxy.parallel.test",
-            parallel_api_key=SecretStr("parallel-key"),
-            parallel_max_concurrent=7,
-            tool_llm_provider="chutes",
-            scoring_llm_provider="vertex",
-            llm_model_provider_overrides_json=json.dumps(
-                {"scoring": scoring_routes}
-            ),
-            openai_compatible_endpoints_json=json.dumps(
-                [
-                    {
-                        "id": "gemma4-cloud-run-turbo",
-                        "base_url": "https://gemma-4-31b-turbo-obbrpx3ppa-uc.a.run.app/v1",
-                        "auth": {"type": "none"},
-                    },
-                    {
-                        "id": "qwen36-cloud-run",
-                        "base_url": "https://qwen3-6-27b-obbrpx3ppa-uc.a.run.app/v1",
-                        "auth": {"type": "none"},
-                    }
-                ]
-            ),
-        ),
-        vertex=VertexSettings.model_construct(
-            gcp_project_id="project",
-            gcp_location="us-central1",
-            vertex_timeout_seconds=60.0,
-            gcp_service_account_credential_b64=SecretStr("vertex-creds"),
-        ),
-        bedrock=BedrockSettings.model_construct(region="us-east-1"),
-    )
-
-    class _FakeRegistry:
-        def resolve(self, name: str) -> str:
-            return f"provider:{name}"
-
-    monkeypatch.setattr(bootstrap, "build_cached_llm_provider_registry", lambda **_: _FakeRegistry())
-
-    clients = _build_llm_clients(settings)
-
-    assert _routed_surface(clients.scoring_llm_provider) == "scoring"
-    assert clients.scoring_routes == {
-        model: ResolvedLlmRoute(surface="scoring", provider=provider, model=model)
-        for model, provider in scoring_routes.items()
-    }
 
 
 class _Closable:

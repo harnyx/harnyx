@@ -1,4 +1,4 @@
-from harnyx_commons.llm.schema import LlmUsage
+from harnyx_miner_sdk.llm import LlmUsage
 
 
 def test_add_sums_fields_and_cost() -> None:

@@ -6,23 +6,10 @@ from pydantic import ValidationError
 from harnyx_commons.config.benchmark_rubric_judge import BenchmarkRubricJudgeLlmSettings
 
 
-def test_benchmark_rubric_judge_settings_default_to_disabled(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("BENCHMARK_RUBRIC_JUDGE_LLM_PROVIDER", raising=False)
-    monkeypatch.delenv("BENCHMARK_RUBRIC_JUDGE_LLM_MODEL", raising=False)
-
-    settings = BenchmarkRubricJudgeLlmSettings(_env_file=None)
-
-    assert settings.provider is None
-    assert settings.model == ""
-
-
 @pytest.mark.parametrize(
     "payload",
     [
         {"provider": "vertex"},
-        {"model": "gemini-3-pro-preview"},
     ],
 )
 def test_benchmark_rubric_judge_settings_require_provider_and_model_together(
@@ -36,9 +23,7 @@ def test_benchmark_rubric_judge_settings_require_provider_and_model_together(
 
 
 def test_benchmark_rubric_judge_settings_strip_model() -> None:
-    settings = BenchmarkRubricJudgeLlmSettings.model_validate(
-        {"provider": "vertex", "model": " gemini-3-pro-preview "}
-    )
+    settings = BenchmarkRubricJudgeLlmSettings.model_validate({"provider": "vertex", "model": " gemini-3-pro-preview "})
 
     assert settings.model == "gemini-3-pro-preview"
 

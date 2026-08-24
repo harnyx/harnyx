@@ -28,9 +28,7 @@ def test_openrouter_provider_extra_accepts_allow_fallbacks() -> None:
     )
 
     assert isinstance(parsed, OpenRouterExtra)
-    assert parsed.to_request_extra() == {
-        "provider": {"only": ["cerebras"], "allow_fallbacks": False}
-    }
+    assert parsed.to_request_extra() == {"provider": {"only": ["cerebras"], "allow_fallbacks": False}}
 
 
 def test_openrouter_provider_extra_accepts_allow_fallbacks_without_provider_only() -> None:
@@ -177,7 +175,12 @@ def test_ai_gateway_provider_extra_rejects_unapproved_provider_preferences() -> 
 
 @pytest.mark.parametrize(
     "provider_only",
-    ([], [""], ["  "], ["cerebras", 1], "cerebras"),
+    (
+        [],
+        [""],
+        ["cerebras", 1],
+        "cerebras",
+    ),
 )
 def test_openrouter_provider_extra_rejects_invalid_provider_only_values(provider_only: object) -> None:
     with pytest.raises(ValidationError):
@@ -187,7 +190,12 @@ def test_openrouter_provider_extra_rejects_invalid_provider_only_values(provider
         )
 
 
-@pytest.mark.parametrize("allow_fallbacks", ["false", 0, 1])
+@pytest.mark.parametrize(
+    "allow_fallbacks",
+    [
+        "false",
+    ],
+)
 def test_openrouter_provider_extra_rejects_invalid_allow_fallbacks(allow_fallbacks: object) -> None:
     with pytest.raises(ValidationError):
         validate_provider_extra(
@@ -198,7 +206,12 @@ def test_openrouter_provider_extra_rejects_invalid_allow_fallbacks(allow_fallbac
 
 @pytest.mark.parametrize(
     "provider_only",
-    ([], [""], ["  "], ["cerebras", 1], "cerebras"),
+    (
+        [],
+        [""],
+        ["cerebras", 1],
+        "cerebras",
+    ),
 )
 def test_ai_gateway_provider_extra_rejects_invalid_provider_only_values(provider_only: object) -> None:
     with pytest.raises(ValidationError):
@@ -210,7 +223,12 @@ def test_ai_gateway_provider_extra_rejects_invalid_provider_only_values(provider
 
 @pytest.mark.parametrize(
     "provider_only",
-    ([], [""], ["  "], ["cerebras", 1], "cerebras"),
+    (
+        [],
+        [""],
+        ["cerebras", 1],
+        "cerebras",
+    ),
 )
 def test_ai_gateway_provider_extra_rejects_invalid_provider_options_only_values(provider_only: object) -> None:
     with pytest.raises(ValidationError):

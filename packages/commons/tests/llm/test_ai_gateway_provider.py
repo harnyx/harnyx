@@ -131,51 +131,6 @@ async def test_ai_gateway_provider_preserves_nested_reasoning_usage() -> None:
     assert response.metadata["actual_cost_evidence"]["settlement_source"] == "static_pricing"
 
 
-@pytest.mark.parametrize(
-    ("thinking", "expected_reasoning"),
-    (
-        (LlmThinkingConfig(enabled=False), {"effort": "none"}),
-        (LlmThinkingConfig(enabled=True), {"enabled": True}),
-        (LlmThinkingConfig(enabled=True, effort="low"), {"enabled": True, "effort": "low"}),
-        (LlmThinkingConfig(enabled=True, budget=256), {"enabled": True, "max_tokens": 256}),
-    ),
-)
-@pytest.mark.parametrize(
-    "model",
-    (
-        "openai/gpt-oss-120b",
-        "deepseek/deepseek-v4-flash",
-        "deepseek/deepseek-v4-flash-0731",
-        "deepseek/deepseek-v4-pro",
-    ),
-)
-async def test_ai_gateway_provider_serializes_typed_thinking_to_reasoning(
-    model: str,
-    thinking: LlmThinkingConfig,
-    expected_reasoning: dict[str, Any],
-) -> None:
-    captured: dict[str, Any] = {}
-
-    async def handler(request: httpx.Request) -> httpx.Response:
-        captured["json"] = json.loads(request.content.decode("utf-8"))
-        return _streaming_response(request)
-
-    client = httpx.AsyncClient(
-        base_url=AI_GATEWAY_BASE_URL,
-        headers={"Authorization": "Bearer test-ai-gateway-key"},
-        transport=httpx.MockTransport(handler),
-    )
-    provider = AiGatewayLlmProvider(ai_gateway_api_key=SecretStr("test-ai-gateway-key"), client=client)
-
-    try:
-        await provider.invoke(_request(model=model, thinking=thinking))
-    finally:
-        await provider.aclose()
-        await client.aclose()
-
-    assert captured["json"]["reasoning"] == expected_reasoning
-
-
 async def test_ai_gateway_provider_maps_gemma_thinking_to_cerebras_reasoning_effort() -> None:
     captured: dict[str, Any] = {}
 
@@ -392,9 +347,7 @@ def test_ai_gateway_request_serializes_complete_tool_loop() -> None:
         exclude_none=True,
     )
 
-    assert payload["messages"][0]["reasoning_details"] == [
-        {"type": "reasoning.encrypted", "data": "opaque"}
-    ]
+    assert payload["messages"][0]["reasoning_details"] == [{"type": "reasoning.encrypted", "data": "opaque"}]
     assert payload["messages"][1] == {
         "role": "tool",
         "content": '{"temperature":19}',

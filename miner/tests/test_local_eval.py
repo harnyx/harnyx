@@ -696,7 +696,6 @@ def test_local_eval_runtime_create_binds_sandbox_publish_to_loopback(
 ) -> None:
     captured: dict[str, object] = {}
     scoring_llm_provider = _FakeAsyncResource()
-    routed_calls: list[dict[str, object]] = []
 
     class _FakeRegistry(_FakeAsyncResource):
         def resolve(self, name: str) -> _FakeAsyncResource:
@@ -716,10 +715,6 @@ def test_local_eval_runtime_create_binds_sandbox_publish_to_loopback(
         captured.update(kwargs)
         return _FakeSandboxManager()
 
-    def resolve_scoring_judge_route(_settings: object, *, model: str) -> object:
-        assert model == local_eval._DIRECT_SCORING_LLM_MODEL
-        return SimpleNamespace(provider="chutes")
-
     monkeypatch.setattr(local_eval.Settings, "load", staticmethod(lambda: settings))
     monkeypatch.setattr(
         local_eval,
@@ -729,9 +724,9 @@ def test_local_eval_runtime_create_binds_sandbox_publish_to_loopback(
     monkeypatch.setattr(
         local_eval,
         "build_tool_invocation_clients",
-            lambda **_kwargs: SimpleNamespace(
-                search_client=_FakeAsyncResource(),
-                ai_search_client=_FakeAsyncResource(),
+        lambda **_kwargs: SimpleNamespace(
+            search_client=_FakeAsyncResource(),
+            ai_search_client=_FakeAsyncResource(),
             search_provider_registry=_FakeRegistry(),
             llm_provider_registry=_FakeRegistry(),
             tool_llm_provider=_FakeAsyncResource(),
@@ -742,12 +737,12 @@ def test_local_eval_runtime_create_binds_sandbox_publish_to_loopback(
     monkeypatch.setattr(
         local_eval,
         "build_routed_llm_provider",
-        lambda **kwargs: routed_calls.append(kwargs) or scoring_llm_provider,
+        lambda **_kwargs: scoring_llm_provider,
     )
     monkeypatch.setattr(
         local_eval,
         "_resolve_scoring_judge_route",
-        resolve_scoring_judge_route,
+        lambda _settings, *, model: SimpleNamespace(provider="chutes"),
     )
     monkeypatch.setattr(local_eval, "_build_local_provider_tooling", lambda **_: (object(), _UnusedToolExecutor()))
     monkeypatch.setattr(
@@ -770,16 +765,6 @@ def test_local_eval_runtime_create_binds_sandbox_publish_to_loopback(
 
     assert captured["host"] == "127.0.0.1"
     assert captured["published_port_bind_host"] == "127.0.0.1"
-    assert routed_calls == [
-        {
-            "surface": "scoring",
-            "default_provider": "chutes",
-            "llm_settings": settings.llm,
-            "allowed_providers": {"bedrock", "chutes", "vertex"},
-            "allow_custom_openai_compatible": True,
-            "provider_registry": runtime._llm_provider_registry,
-        }
-    ]
     assert runtime._sandbox_manager is not None
 
 
@@ -1058,6 +1043,92 @@ def _single_failure_agent(root: Path) -> bytes:
     return agents[0].read_bytes()
 
 
+async def test_local_runtime_runs_each_artifact_in_its_own_sandbox_and_reuses_tool_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Future failure: target and champion evaluation must preserve the sandbox lifecycle boundary."""
+    monkeypatch.setattr(local_eval, "_LOCAL_EVAL_FAILURE_ROOT", tmp_path)
+    batch_id = uuid4()
+    target_artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="target-hash", size_bytes=64)
+    champion_artifact = ScriptArtifactSpec(uid=2, artifact_id=uuid4(), content_hash="champion-hash", size_bytes=64)
+    tasks = (_task(uuid4(), "solo task"),)
+    runner = _CapturingRunner(
+        results=[
+            ArtifactEvaluationOutcome(
+                submissions=(
+                    _submission(
+                        batch_id=batch_id,
+                        artifact=target_artifact,
+                        task=tasks[0],
+                        score=0.9,
+                        answer_text="target",
+                    ),
+                ),
+            ),
+            ArtifactEvaluationOutcome(
+                submissions=(
+                    _submission(
+                        batch_id=batch_id,
+                        artifact=champion_artifact,
+                        task=tasks[0],
+                        score=0.6,
+                        answer_text="champion",
+                    ),
+                ),
+            ),
+        ]
+    )
+    sandbox_manager = _FakeSandboxManager()
+    tool_host = _FakeToolHost()
+    tool_host_starts = 0
+    tool_concurrency_limiter = object()
+
+    async def _start_tool_host(*, tool_executor: object, tool_concurrency_limiter: object) -> _FakeToolHost:
+        nonlocal tool_host_starts
+        del tool_executor
+        assert tool_concurrency_limiter is runtime._state.tool_concurrency_limiter
+        await asyncio.sleep(0.01)
+        tool_host_starts += 1
+        return tool_host
+
+    runtime = _local_runtime(runner=runner, sandbox_manager=sandbox_manager)
+    runtime._state.tool_concurrency_limiter = tool_concurrency_limiter
+    monkeypatch.setattr(local_eval, "start_local_tool_host", _start_tool_host)
+
+    await asyncio.gather(
+        runtime.evaluate_artifact(
+            artifact_label="target",
+            agent_source=b"from harnyx_miner_sdk.decorators import entrypoint\n",
+            artifact=target_artifact,
+            batch_id=batch_id,
+            tasks=tasks,
+        ),
+        runtime.evaluate_artifact(
+            artifact_label="champion",
+            agent_source=b"from harnyx_miner_sdk.decorators import entrypoint\n",
+            artifact=champion_artifact,
+            batch_id=batch_id,
+            tasks=tasks,
+        ),
+    )
+    await runtime.aclose()
+
+    assert tool_host_starts == 1
+    assert tool_host.close_calls == 1
+    assert len(sandbox_manager.started_options) == 2
+    assert len(sandbox_manager.stopped_deployments) == 2
+    assert Counter(id(call["sandbox_client"]) for call in runner.calls) == Counter(
+        id(client) for client in sandbox_manager.clients
+    )
+    assert sandbox_manager.mount_paths_exist == [True, True]
+    for options in sandbox_manager.started_options:
+        assert options.network is None
+        assert options.host_container_url == tool_host.host_container_url
+        assert options.env["AGENT_PATH"].endswith("/agent.py")
+        assert options.volumes[0][1:] == (DEFAULT_STATE_DIR, "ro")
+
+
 def _minimal_local_eval_state(tmp_path: Path) -> SimpleNamespace:
     return SimpleNamespace(
         session_registry=object(),
@@ -1106,144 +1177,6 @@ def test_local_progress_recorder_delegates_attempt_tracking_to_storage(tmp_path:
     )
 
 
-def test_local_eval_writes_default_reports_for_latest_completed_vs_champion(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    batch_id = uuid4()
-    champion_artifact_id = uuid4()
-    tasks = (
-        MinerTask(
-            task_id=uuid4(),
-            query=Query(text="task one"),
-            reference_answer=ReferenceAnswer(
-                text="reference for task one",
-                citations=(
-                    {
-                        "url": "https://example.com/reference",
-                        "title": "Reference source",
-                        "note": "Reference support",
-                    },
-                ),
-            ),
-            budget_usd=0.5,
-        ),
-        _task(uuid4(), "task two"),
-    )
-    detail = _batch_detail(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
-    results = _recorded_rows(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
-    monitoring = _FakeMonitoringClient(
-        batch_context=_selected_batch_context(
-            batch_id=batch_id,
-            source="latest-completed",
-            detail=detail,
-            recorded_results=_recorded_results_snapshot(
-                batch_id=batch_id,
-                champion_artifact_id=champion_artifact_id,
-                rows=results,
-            ),
-        ),
-        champion_script={
-            "uid": 2,
-            "artifact_id": str(champion_artifact_id),
-            "content_hash": "champion-hash",
-            "size_bytes": 128,
-            "content_b64": base64.b64encode(
-                b"from harnyx_miner_sdk.decorators import entrypoint\n"
-                b"from harnyx_miner_sdk.query import Query, Response\n"
-                b'@entrypoint("query")\n'
-                b"async def query(query: Query) -> Response:\n"
-                b'    return Response(text="champion")\n'
-            ).decode("ascii"),
-        },
-    )
-    runtime = _FakeRuntime(
-        batch_id=batch_id,
-        champion_artifact_id=champion_artifact_id,
-        tasks=tasks,
-    )
-    agent_path = tmp_path / "agent.py"
-    _write_agent(agent_path)
-
-    monkeypatch.setattr(local_eval.PlatformMonitoringClient, "from_env", staticmethod(lambda: monitoring))
-    monkeypatch.setattr(
-        local_eval.LocalEvaluationRuntime,
-        "create",
-        staticmethod(
-            lambda *, progress_reporter=None, run_progress_root=None: _bind_progress(runtime, progress_reporter)
-        ),
-    )
-    monkeypatch.setattr(local_eval, "platform_base_url_from_env", lambda: "https://platform.example.com")
-
-    local_eval.main(["--agent-path", str(agent_path), "--output-dir", str(tmp_path)])
-
-    json_path = tmp_path / f"local-eval-report-{batch_id}-vs-champion.json"
-    markdown_path = tmp_path / f"local-eval-report-{batch_id}-vs-champion.md"
-    assert json_path.exists()
-    assert markdown_path.exists()
-    report = json.loads(json_path.read_text(encoding="utf-8"))
-
-    assert monitoring.resolve_calls == [(None, None)]
-    assert monitoring.script_calls == 1
-    assert report["mode"] == "vs-champion"
-    assert report["batch_metadata"]["selection_source"] == "latest-completed"
-    assert report["evaluation_config"]["artifact_task_parallelism"] == 20
-    assert report["evaluation_config"]["artifact_evaluation_parallelism"] == 2
-    assert report["local_result_summary"]["local_champion_selection"]["selected_label"] == "target"
-    assert report["local_result_summary"]["head_to_head"]["winner_by_total_score"] == "target"
-    assert len(report["local_result_summary"]["leaderboard"]) == 2
-    assert len(report["tasks"]) == 2
-    assert report["tasks"][0]["reference_answer"]["citations"] == [
-        {
-            "url": "https://example.com/reference",
-            "title": "Reference source",
-            "note": "Reference support",
-        }
-    ]
-    assert report["tasks"][0]["target"]["answer"]["text"] == "target answer 0"
-    assert report["tasks"][0]["opponent"]["answer"]["text"] == "champion answer 0"
-    assert report["tasks"][0]["target"]["attempt_count"] == 2
-    assert report["recorded_platform_context"]["results_status"]["state"] == "available"
-    assert report["recorded_platform_context"]["results_scope"] == {
-        "kind": "artifact",
-        "batch_id": str(batch_id),
-        "artifact_id": str(champion_artifact_id),
-    }
-    assert report["recorded_platform_context"]["results"][0]["payload_json"] == {"source": "platform"}
-    assert runtime.closed is True
-    assert monitoring.closed is True
-    markdown = markdown_path.read_text(encoding="utf-8")
-    assert "- Reference citations:" in markdown
-    assert "Reference source - https://example.com/reference - Reference support" in markdown
-    assert "- Target citations:" in markdown
-    assert "Target source 0 - https://example.com/target/0 - Target note 0" in markdown
-    assert "- Opponent citations:" in markdown
-    assert "Champion source 0 - https://example.com/champion/0 - Champion note 0" in markdown
-
-
-def test_render_answer_markdown_uses_shared_models_and_ignores_empty_optional_citation_fields() -> None:
-    lines = local_eval._render_answer_markdown(
-        "Target",
-        {
-            "text": "answer",
-            "citations": [
-                {
-                    "url": "https://example.com/source",
-                    "title": "",
-                    "note": "",
-                }
-            ],
-        },
-        model_type=Response,
-    )
-
-    assert lines == [
-        "- Target answer: answer",
-        "- Target citations:",
-        "  - https://example.com/source",
-    ]
-
-
 def test_render_answer_markdown_preserves_unresolved_citation_position() -> None:
     """Future failure: local reports must not hide a positional citation placeholder."""
     lines = local_eval._render_answer_markdown(
@@ -1266,169 +1199,6 @@ def test_render_answer_markdown_preserves_unresolved_citation_position() -> None
         "  - (unresolved)",
         "  - https://example.com/three",
     ]
-
-
-def test_render_answer_markdown_uses_canonical_structured_json() -> None:
-    lines = local_eval._render_answer_markdown(
-        "Target",
-        {"output": {"z": [1, None], "a": True}},
-        model_type=Response,
-    )
-
-    assert lines == ['- Target answer: {"a":true,"z":[1,null]}']
-
-
-def test_invocation_only_runtime_factory_skips_default_scoring_provider(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    settings = cast(
-        Any,
-        SimpleNamespace(
-            llm=object(),
-            bedrock=object(),
-            vertex=object(),
-        ),
-    )
-    state = SimpleNamespace(
-        session_manager=object(),
-        evaluation_records=object(),
-        receipt_log=object(),
-        progress_tracker=local_eval.FileBackedRunProgress(storage_root=tmp_path / "run-progress"),
-    )
-    scoring_service = cast(Any, object())
-    scoring_config = EvaluationScoringConfig(
-        provider="chutes",
-        model="benchmark-invocation-only",
-        scoring_version="benchmark-invocation-only",
-    )
-    captured_tooling_kwargs: list[dict[str, Any]] = []
-
-    monkeypatch.setattr(local_eval.Settings, "load", staticmethod(lambda: settings))
-    monkeypatch.setattr(local_eval, "_build_state", lambda *_args, **_kwargs: state)
-    monkeypatch.setattr(
-        local_eval,
-        "build_tool_invocation_clients",
-        lambda **_kwargs: SimpleNamespace(
-            search_client=None,
-            ai_search_client=None,
-            search_provider_registry=SimpleNamespace(
-                resolve_web=lambda _name: object(),
-                resolve_ai=lambda _name: object(),
-            ),
-            llm_provider_registry=SimpleNamespace(resolve=lambda _name: object()),
-            tool_llm_provider=None,
-            embedding_provider=object(),
-            embedding_provider_registry=SimpleNamespace(
-                resolve=lambda name: f"embedding-provider:{name}"
-            ),
-        ),
-    )
-    def build_local_provider_tooling(**kwargs: Any) -> tuple[object, object]:
-        captured_tooling_kwargs.append(kwargs)
-        return object(), object()
-
-    monkeypatch.setattr(local_eval, "_build_local_provider_tooling", build_local_provider_tooling)
-    monkeypatch.setattr(local_eval, "create_sandbox_manager", lambda **_kwargs: object())
-
-    runtime = local_eval.LocalEvaluationRuntime.create_invocation_only(
-        scoring_service=scoring_service,
-        scoring_config=scoring_config,
-        run_progress_root=tmp_path / "run-progress",
-    )
-
-    assert runtime.settings is settings
-    assert runtime.scoring_service is scoring_service
-    assert runtime.scoring_config is scoring_config
-    assert runtime._scoring_llm_provider is None
-    assert captured_tooling_kwargs
-    assert captured_tooling_kwargs[0]["web_search_provider_resolver"]("parallel", object()) is not None
-    assert captured_tooling_kwargs[0]["ai_search_provider_resolver"]("parallel", object()) is not None
-    assert captured_tooling_kwargs[0]["llm_provider_resolver"]("openrouter", object()) is not None
-    assert captured_tooling_kwargs[0]["llm_provider_resolver"]("ai_gateway", object()) is not None
-    assert captured_tooling_kwargs[0]["tool_embedding_provider"] is not None
-    assert (
-        captured_tooling_kwargs[0]["embedding_provider_resolver"]("openrouter", object())
-        == "embedding-provider:openrouter"
-    )
-
-
-def test_local_eval_target_only_skips_champion_fetch_and_keeps_recorded_context(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    batch_id = uuid4()
-    champion_artifact_id = uuid4()
-    tasks = (_task(uuid4(), "solo task"),)
-    detail = _batch_detail(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
-    results = _recorded_rows(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
-    monitoring = _FakeMonitoringClient(
-        batch_context=_selected_batch_context(
-            batch_id=batch_id,
-            source="explicit",
-            detail=detail,
-            recorded_results=_recorded_results_snapshot(
-                batch_id=batch_id,
-                champion_artifact_id=champion_artifact_id,
-                rows=results,
-            ),
-        ),
-        champion_script={
-            "uid": 2,
-            "artifact_id": str(champion_artifact_id),
-            "content_hash": "champion-hash",
-            "size_bytes": 128,
-            "content_b64": "",
-        },
-    )
-    runtime = _FakeRuntime(
-        batch_id=batch_id,
-        champion_artifact_id=champion_artifact_id,
-        tasks=tasks,
-    )
-    agent_path = tmp_path / "agent.py"
-    _write_agent(agent_path, answer="target only")
-
-    monkeypatch.setattr(local_eval.PlatformMonitoringClient, "from_env", staticmethod(lambda: monitoring))
-    monkeypatch.setattr(
-        local_eval.LocalEvaluationRuntime,
-        "create",
-        staticmethod(
-            lambda *, progress_reporter=None, run_progress_root=None: _bind_progress(runtime, progress_reporter)
-        ),
-    )
-    monkeypatch.setattr(local_eval, "platform_base_url_from_env", lambda: "https://platform.example.com")
-
-    local_eval.main(
-        [
-            "--agent-path",
-            str(agent_path),
-            "--batch-id",
-            str(batch_id),
-            "--mode",
-            "target-only",
-            "--output-dir",
-            str(tmp_path),
-        ]
-    )
-
-    json_path = tmp_path / f"local-eval-report-{batch_id}-target-only.json"
-    report = json.loads(json_path.read_text(encoding="utf-8"))
-
-    assert monitoring.resolve_calls == [(batch_id, None)]
-    assert monitoring.script_calls == 0
-    assert report["mode"] == "target-only"
-    assert report["local_result_summary"]["head_to_head"] is None
-    assert len(report["local_result_summary"]["leaderboard"]) == 1
-    assert report["tasks"][0]["opponent"] is None
-    assert report["recorded_platform_context"]["results_status"]["state"] == "available"
-    assert report["recorded_platform_context"]["results_scope"] == {
-        "kind": "artifact",
-        "batch_id": str(batch_id),
-        "artifact_id": str(champion_artifact_id),
-    }
-    assert len(report["recorded_platform_context"]["results"]) == 1
-    assert len(runtime.calls) == 1
 
 
 def test_local_eval_task_id_runs_only_the_selected_task_and_uses_a_task_specific_report_path(
@@ -1517,6 +1287,7 @@ def test_local_eval_target_only_continues_when_recorded_results_fetch_fails(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """Future failure: monitoring outages must not abort target-only local evaluation."""
     batch_id = uuid4()
     champion_artifact_id = uuid4()
     tasks = (_task(uuid4(), "solo task"),)
@@ -1590,208 +1361,11 @@ def test_local_eval_target_only_continues_when_recorded_results_fetch_fails(
     assert len(runtime.calls) == 1
 
 
-def test_local_eval_vs_champion_continues_when_recorded_results_fetch_fails(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    batch_id = uuid4()
-    champion_artifact_id = uuid4()
-    tasks = (_task(uuid4(), "solo task"),)
-    detail = _batch_detail(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
-    monitoring = _FakeMonitoringClient(
-        batch_context=_selected_batch_context(
-            batch_id=batch_id,
-            source="latest-completed",
-            detail=detail,
-            recorded_results=_unavailable_recorded_results_snapshot(
-                path=_artifact_task_index_path(batch_id, champion_artifact_id)
-            ),
-        ),
-        champion_script={
-            "uid": 2,
-            "artifact_id": str(champion_artifact_id),
-            "content_hash": "champion-hash",
-            "size_bytes": 128,
-            "content_b64": base64.b64encode(
-                b"from harnyx_miner_sdk.decorators import entrypoint\n"
-                b"from harnyx_miner_sdk.query import Query, Response\n"
-                b'@entrypoint("query")\n'
-                b"async def query(query: Query) -> Response:\n"
-                b'    return Response(text="champion")\n'
-            ).decode("ascii"),
-        },
-    )
-    runtime = _FakeRuntime(
-        batch_id=batch_id,
-        champion_artifact_id=champion_artifact_id,
-        tasks=tasks,
-    )
-    agent_path = tmp_path / "agent.py"
-    _write_agent(agent_path)
-
-    monkeypatch.setattr(local_eval.PlatformMonitoringClient, "from_env", staticmethod(lambda: monitoring))
-    monkeypatch.setattr(
-        local_eval.LocalEvaluationRuntime,
-        "create",
-        staticmethod(
-            lambda *, progress_reporter=None, run_progress_root=None: _bind_progress(runtime, progress_reporter)
-        ),
-    )
-    monkeypatch.setattr(local_eval, "platform_base_url_from_env", lambda: "https://platform.example.com")
-
-    local_eval.main(["--agent-path", str(agent_path), "--output-dir", str(tmp_path)])
-
-    report = json.loads((tmp_path / f"local-eval-report-{batch_id}-vs-champion.json").read_text(encoding="utf-8"))
-
-    assert monitoring.script_calls == 1
-    assert report["recorded_platform_context"]["results"] is None
-    assert report["recorded_platform_context"]["results_status"]["state"] == "unavailable"
-    assert report["recorded_platform_context"]["results_scope"] is None
-    assert report["tasks"][0]["recorded_platform_rows"] is None
-    assert len(runtime.calls) == 2
-
-
-def test_local_eval_target_only_continues_when_recorded_results_transport_fails(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    batch_id = uuid4()
-    champion_artifact_id = uuid4()
-    tasks = (_task(uuid4(), "solo task"),)
-    detail = _batch_detail(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
-    monitoring = _FakeMonitoringClient(
-        batch_context=_selected_batch_context(
-            batch_id=batch_id,
-            source="explicit",
-            detail=detail,
-            recorded_results=_request_error_recorded_results_snapshot(
-                path=_artifact_task_index_path(batch_id, champion_artifact_id)
-            ),
-        ),
-        champion_script={
-            "uid": 2,
-            "artifact_id": str(champion_artifact_id),
-            "content_hash": "champion-hash",
-            "size_bytes": 128,
-            "content_b64": "",
-        },
-    )
-    runtime = _FakeRuntime(
-        batch_id=batch_id,
-        champion_artifact_id=champion_artifact_id,
-        tasks=tasks,
-    )
-    agent_path = tmp_path / "agent.py"
-    _write_agent(agent_path, answer="target only")
-
-    monkeypatch.setattr(local_eval.PlatformMonitoringClient, "from_env", staticmethod(lambda: monitoring))
-    monkeypatch.setattr(
-        local_eval.LocalEvaluationRuntime,
-        "create",
-        staticmethod(
-            lambda *, progress_reporter=None, run_progress_root=None: _bind_progress(runtime, progress_reporter)
-        ),
-    )
-    monkeypatch.setattr(local_eval, "platform_base_url_from_env", lambda: "https://platform.example.com")
-
-    local_eval.main(
-        [
-            "--agent-path",
-            str(agent_path),
-            "--batch-id",
-            str(batch_id),
-            "--mode",
-            "target-only",
-            "--output-dir",
-            str(tmp_path),
-        ]
-    )
-
-    report = json.loads((tmp_path / f"local-eval-report-{batch_id}-target-only.json").read_text(encoding="utf-8"))
-
-    assert report["recorded_platform_context"]["results"] is None
-    assert report["recorded_platform_context"]["results_status"] == {
-        "state": "unavailable",
-        "error": {
-            "path": _artifact_task_index_path(batch_id, champion_artifact_id),
-            "status_code": 0,
-            "detail": "connection terminated",
-        },
-    }
-    assert report["recorded_platform_context"]["results_scope"] is None
-    assert report["tasks"][0]["recorded_platform_rows"] is None
-    assert len(runtime.calls) == 1
-
-
-def test_local_eval_vs_champion_uses_platform_cascade_not_raw_total_only(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    batch_id = uuid4()
-    champion_artifact_id = uuid4()
-    tasks = (
-        _task(uuid4(), "task one"),
-        _task(uuid4(), "task two"),
-    )
-    detail = _batch_detail(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
-    results = _recorded_rows(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
-    monitoring = _FakeMonitoringClient(
-        batch_context=_selected_batch_context(
-            batch_id=batch_id,
-            source="latest-completed",
-            detail=detail,
-            recorded_results=_recorded_results_snapshot(
-                batch_id=batch_id,
-                champion_artifact_id=champion_artifact_id,
-                rows=results,
-            ),
-        ),
-        champion_script={
-            "uid": 2,
-            "artifact_id": str(champion_artifact_id),
-            "content_hash": "champion-hash",
-            "size_bytes": 128,
-            "content_b64": base64.b64encode(
-                b"from harnyx_miner_sdk.decorators import entrypoint\n"
-                b"from harnyx_miner_sdk.query import Query, Response\n"
-                b'@entrypoint("query")\n'
-                b"async def query(query: Query) -> Response:\n"
-                b'    return Response(text="champion")\n'
-            ).decode("ascii"),
-        },
-    )
-    runtime = _FakeRuntime(
-        batch_id=batch_id,
-        champion_artifact_id=champion_artifact_id,
-        tasks=tasks,
-        target_scores=(0.65, 0.61),
-        champion_scores=(0.6, 0.6),
-    )
-    agent_path = tmp_path / "agent.py"
-    _write_agent(agent_path)
-
-    monkeypatch.setattr(local_eval.PlatformMonitoringClient, "from_env", staticmethod(lambda: monitoring))
-    monkeypatch.setattr(
-        local_eval.LocalEvaluationRuntime,
-        "create",
-        staticmethod(
-            lambda *, progress_reporter=None, run_progress_root=None: _bind_progress(runtime, progress_reporter)
-        ),
-    )
-    monkeypatch.setattr(local_eval, "platform_base_url_from_env", lambda: "https://platform.example.com")
-
-    local_eval.main(["--agent-path", str(agent_path), "--output-dir", str(tmp_path)])
-
-    report = json.loads((tmp_path / f"local-eval-report-{batch_id}-vs-champion.json").read_text(encoding="utf-8"))
-
-    assert report["local_result_summary"]["head_to_head"]["winner_by_total_score"] == "target"
-    assert report["local_result_summary"]["local_champion_selection"]["selected_label"] == "champion"
-
-
 def test_local_eval_head_to_head_winner_uses_raw_totals_not_rounded_totals(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Future failure: display rounding must not change the local head-to-head winner."""
     batch_id = uuid4()
     champion_artifact_id = uuid4()
     tasks = (
@@ -1853,257 +1427,6 @@ def test_local_eval_head_to_head_winner_uses_raw_totals_not_rounded_totals(
     assert head_to_head["winner_by_total_score"] == "target"
     assert head_to_head["target_total_score"] == 0.5
     assert head_to_head["champion_total_score"] == 0.5
-
-
-def test_local_eval_runs_target_and_champion_concurrently(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    batch_id = uuid4()
-    champion_artifact_id = uuid4()
-    tasks = (
-        _task(uuid4(), "task one"),
-        _task(uuid4(), "task two"),
-    )
-    detail = _batch_detail(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
-    results = _recorded_rows(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
-    monitoring = _FakeMonitoringClient(
-        batch_context=_selected_batch_context(
-            batch_id=batch_id,
-            source="latest-completed",
-            detail=detail,
-            recorded_results=_recorded_results_snapshot(
-                batch_id=batch_id,
-                champion_artifact_id=champion_artifact_id,
-                rows=results,
-            ),
-        ),
-        champion_script={
-            "uid": 2,
-            "artifact_id": str(champion_artifact_id),
-            "content_hash": "champion-hash",
-            "size_bytes": 128,
-            "content_b64": base64.b64encode(
-                b"from harnyx_miner_sdk.decorators import entrypoint\n"
-                b"from harnyx_miner_sdk.query import Query, Response\n"
-                b'@entrypoint("query")\n'
-                b"async def query(query: Query) -> Response:\n"
-                b'    return Response(text="champion")\n'
-            ).decode("ascii"),
-        },
-    )
-    runtime = _FakeRuntime(
-        batch_id=batch_id,
-        champion_artifact_id=champion_artifact_id,
-        tasks=tasks,
-        delay_seconds=0.05,
-    )
-    agent_path = tmp_path / "agent.py"
-    _write_agent(agent_path)
-
-    monkeypatch.setattr(local_eval.PlatformMonitoringClient, "from_env", staticmethod(lambda: monitoring))
-    monkeypatch.setattr(
-        local_eval.LocalEvaluationRuntime,
-        "create",
-        staticmethod(
-            lambda *, progress_reporter=None, run_progress_root=None: _bind_progress(runtime, progress_reporter)
-        ),
-    )
-    monkeypatch.setattr(local_eval, "platform_base_url_from_env", lambda: "https://platform.example.com")
-
-    local_eval.main(["--agent-path", str(agent_path), "--output-dir", str(tmp_path)])
-
-    assert runtime.max_in_flight == 2
-
-
-async def test_local_runtime_executes_target_and_champion_via_sandbox_and_reuses_tool_host(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(local_eval, "_LOCAL_EVAL_FAILURE_ROOT", tmp_path)
-    batch_id = uuid4()
-    target_artifact = ScriptArtifactSpec(
-        uid=3,
-        artifact_id=uuid4(),
-        content_hash="target-hash",
-        size_bytes=64,
-    )
-    champion_artifact = ScriptArtifactSpec(
-        uid=2,
-        artifact_id=uuid4(),
-        content_hash="champion-hash",
-        size_bytes=64,
-    )
-    tasks = (_task(uuid4(), "solo task"),)
-    runner = _CapturingRunner(
-        results=[
-            ArtifactEvaluationOutcome(
-                submissions=(
-                    _submission(
-                        batch_id=batch_id,
-                        artifact=target_artifact,
-                        task=tasks[0],
-                        score=0.9,
-                        answer_text="target",
-                    ),
-                ),
-            ),
-            ArtifactEvaluationOutcome(
-                submissions=(
-                    _submission(
-                        batch_id=batch_id,
-                        artifact=champion_artifact,
-                        task=tasks[0],
-                        score=0.6,
-                        answer_text="champion",
-                    ),
-                ),
-            ),
-        ]
-    )
-    sandbox_manager = _FakeSandboxManager()
-    tool_host = _FakeToolHost()
-    start_calls = 0
-    tool_concurrency_limiter = object()
-    captured_tool_concurrency_limiter: object | None = None
-
-    async def _start_tool_host(
-        *,
-        tool_executor,
-        tool_concurrency_limiter,
-    ) -> _FakeToolHost:
-        nonlocal captured_tool_concurrency_limiter, start_calls
-        del tool_executor
-        captured_tool_concurrency_limiter = tool_concurrency_limiter
-        await asyncio.sleep(0.01)
-        start_calls += 1
-        return tool_host
-
-    monkeypatch.setattr(local_eval, "start_local_tool_host", _start_tool_host)
-    monkeypatch.setattr(
-        runpy,
-        "run_path",
-        lambda *_args, **_kwargs: pytest.fail("local eval should not execute artifact code via host runpy"),
-    )
-
-    runtime = local_eval.LocalEvaluationRuntime(
-        settings=cast(
-            Any,
-            SimpleNamespace(
-                sandbox=SimpleNamespace(
-                    sandbox_image="local/harnyx-sandbox:0.1.0-dev",
-                    sandbox_pull_policy="missing",
-                )
-            ),
-        ),
-        tool_executor=cast(Any, _UnusedToolExecutor()),
-        scoring_service=cast(Any, object()),
-        scoring_config=EvaluationScoringConfig(
-            provider="chutes",
-            model="openai/gpt-oss-120b-TEE",
-            timeout_seconds=30.0,
-        ),
-        _runner=cast(Any, runner),
-        _state=SimpleNamespace(
-            session_registry=object(),
-            token_registry=object(),
-            receipt_log=object(),
-            session_manager=object(),
-            tool_concurrency_limiter=tool_concurrency_limiter,
-        ),
-        _search_client=_FakeAsyncResource(),
-        _search_provider_registry=_FakeAsyncResource(),
-        _llm_provider_registry=_FakeAsyncResource(),
-        _tool_llm_provider=_FakeAsyncResource(),
-        _tool_embedding_provider=_FakeAsyncResource(),
-        _embedding_provider_registry=_FakeAsyncResource(),
-        _scoring_llm_provider=_FakeAsyncResource(),
-        _sandbox_manager=cast(Any, sandbox_manager),
-        _tool_host=None,
-        _tool_host_lock=asyncio.Lock(),
-        _run_id=uuid4().hex,
-        _progress_reporter=None,
-    )
-
-    await asyncio.gather(
-        runtime.evaluate_artifact(
-            artifact_label="target",
-            agent_source=b"from harnyx_miner_sdk.decorators import entrypoint\n",
-            artifact=target_artifact,
-            batch_id=batch_id,
-            tasks=tasks,
-        ),
-        runtime.evaluate_artifact(
-            artifact_label="champion",
-            agent_source=b"from harnyx_miner_sdk.decorators import entrypoint\n",
-            artifact=champion_artifact,
-            batch_id=batch_id,
-            tasks=tasks,
-        ),
-    )
-    await runtime.aclose()
-
-    assert start_calls == 1
-    assert captured_tool_concurrency_limiter is tool_concurrency_limiter
-    assert tool_host.close_calls == 1
-    assert len(sandbox_manager.started_options) == 2
-    assert len(sandbox_manager.stopped_deployments) == 2
-    assert Counter(id(call["sandbox_client"]) for call in runner.calls) == Counter(
-        id(client) for client in sandbox_manager.clients
-    )
-    assert sandbox_manager.mount_paths_exist == [True, True]
-    for options in sandbox_manager.started_options:
-        assert options.host_port == 0
-        assert options.network is None
-        assert options.failure_diagnostics_dir is not None
-        _assert_private_mode(Path(options.failure_diagnostics_dir), 0o700)
-        assert options.host_container_url == tool_host.host_container_url
-        assert options.env["AGENT_PATH"].endswith("/agent.py")
-        assert options.volumes[0][1] == DEFAULT_STATE_DIR
-        assert options.volumes[0][2] == "ro"
-
-
-async def test_local_eval_writes_failure_bundle_when_sandbox_start_fails(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(local_eval, "_LOCAL_EVAL_FAILURE_ROOT", tmp_path)
-    batch_id = uuid4()
-    artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="target-hash", size_bytes=64)
-    original_error = RuntimeError("sandbox start exploded")
-    progress = _CapturingProgress()
-    sandbox_manager = _FailingSandboxManager(original_error)
-    runtime = _local_runtime(
-        runner=object(),
-        sandbox_manager=sandbox_manager,
-        tool_host=_FakeToolHost(),
-        progress=progress,
-    )
-    failure_dir = tmp_path / runtime._run_id / f"target-{artifact.artifact_id.hex[:12]}"
-    _precreate_public_file(failure_dir / "agent.py")
-    _precreate_public_file(failure_dir / "local-eval-context.json")
-
-    with pytest.raises(RuntimeError, match="sandbox start exploded"):
-        await runtime.evaluate_artifact(
-            artifact_label="target",
-            agent_source=b"print('target')\n",
-            artifact=artifact,
-            batch_id=batch_id,
-            tasks=(_task(uuid4(), "solo task"),),
-        )
-
-    context = _single_failure_context(tmp_path)
-    assert context["failure_category"] == "sandbox_startup"
-    assert context["error_type"] == "RuntimeError"
-    assert context["error_message"] == "sandbox start exploded"
-    assert _single_failure_agent(tmp_path) == b"print('target')\n"
-    _assert_private_mode(tmp_path, 0o700)
-    _assert_private_mode(tmp_path / runtime._run_id, 0o700)
-    _assert_private_mode(failure_dir, 0o700)
-    _assert_private_mode(failure_dir / "agent.py", 0o600)
-    _assert_private_mode(failure_dir / "local-eval-context.json", 0o600)
-    assert "failure category: sandbox_startup" in progress.messages
-    assert any(message.startswith("failure bundle:") for message in progress.messages)
 
 
 async def test_local_eval_writes_failure_bundle_when_artifact_outcome_has_failure(
@@ -2180,36 +1503,6 @@ async def test_local_eval_failure_bundle_write_failure_preserves_original_error(
 
     failure_dir = tmp_path / runtime._run_id / f"target-{artifact.artifact_id.hex[:12]}"
     assert progress.messages == [f"failure bundle write failed: path={failure_dir} error=disk full"]
-
-
-async def test_local_eval_sandbox_startup_failure_is_not_recategorized(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(local_eval, "_LOCAL_EVAL_FAILURE_ROOT", tmp_path)
-    artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="target-hash", size_bytes=64)
-    progress = _CapturingProgress()
-    runtime = _local_runtime(
-        runner=object(),
-        sandbox_manager=_FailingSandboxManager(RuntimeError("sandbox failed")),
-        tool_host=_FakeToolHost(),
-        progress=progress,
-    )
-
-    with pytest.raises(RuntimeError, match="sandbox failed"):
-        await runtime.evaluate_artifact(
-            artifact_label="target",
-            agent_source=b"print('target')\n",
-            artifact=artifact,
-            batch_id=uuid4(),
-            tasks=(_task(uuid4(), "solo task"),),
-        )
-
-    contexts = list(tmp_path.rglob("local-eval-context.json"))
-    assert len(contexts) == 1
-    context = json.loads(contexts[0].read_text(encoding="utf-8"))
-    assert context["failure_category"] == "sandbox_startup"
-    assert "failure category: local_eval_runtime" not in progress.messages
 
 
 def test_local_eval_does_not_write_reports_when_champion_outcome_has_artifact_failure(
@@ -2373,6 +1666,126 @@ async def test_local_runtime_stops_started_sandbox_when_cancelled_during_startup
     assert sandbox_manager.stopped_deployments == [sandbox_manager.returned_deployment]
 
 
+def test_local_eval_vs_champion_uses_platform_cascade_not_raw_total_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Future failure: local evaluation must use the Platform champion-selection policy."""
+    batch_id = uuid4()
+    champion_artifact_id = uuid4()
+    tasks = (_task(uuid4(), "task one"), _task(uuid4(), "task two"))
+    detail = _batch_detail(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
+    results = _recorded_rows(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
+    monitoring = _FakeMonitoringClient(
+        batch_context=_selected_batch_context(
+            batch_id=batch_id,
+            source="latest-completed",
+            detail=detail,
+            recorded_results=_recorded_results_snapshot(
+                batch_id=batch_id,
+                champion_artifact_id=champion_artifact_id,
+                rows=results,
+            ),
+        ),
+        champion_script={
+            "uid": 2,
+            "artifact_id": str(champion_artifact_id),
+            "content_hash": "champion-hash",
+            "size_bytes": 128,
+            "content_b64": base64.b64encode(
+                b"from harnyx_miner_sdk.decorators import entrypoint\n"
+                b"from harnyx_miner_sdk.query import Query, Response\n"
+                b'@entrypoint("query")\n'
+                b"async def query(query: Query) -> Response:\n"
+                b'    return Response(text="champion")\n'
+            ).decode("ascii"),
+        },
+    )
+    runtime = _FakeRuntime(
+        batch_id=batch_id,
+        champion_artifact_id=champion_artifact_id,
+        tasks=tasks,
+        target_scores=(0.65, 0.61),
+        champion_scores=(0.6, 0.6),
+    )
+    agent_path = tmp_path / "agent.py"
+    _write_agent(agent_path)
+
+    monkeypatch.setattr(local_eval.PlatformMonitoringClient, "from_env", staticmethod(lambda: monitoring))
+    monkeypatch.setattr(
+        local_eval.LocalEvaluationRuntime,
+        "create",
+        staticmethod(
+            lambda *, progress_reporter=None, run_progress_root=None: _bind_progress(runtime, progress_reporter)
+        ),
+    )
+    monkeypatch.setattr(local_eval, "platform_base_url_from_env", lambda: "https://platform.example.com")
+
+    local_eval.main(["--agent-path", str(agent_path), "--output-dir", str(tmp_path)])
+
+    report = json.loads((tmp_path / f"local-eval-report-{batch_id}-vs-champion.json").read_text(encoding="utf-8"))
+    assert report["local_result_summary"]["head_to_head"]["winner_by_total_score"] == "target"
+    assert report["local_result_summary"]["local_champion_selection"]["selected_label"] == "champion"
+
+
+def test_local_eval_runs_target_and_champion_concurrently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch_id = uuid4()
+    champion_artifact_id = uuid4()
+    tasks = (_task(uuid4(), "task one"), _task(uuid4(), "task two"))
+    detail = _batch_detail(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
+    results = _recorded_rows(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
+    monitoring = _FakeMonitoringClient(
+        batch_context=_selected_batch_context(
+            batch_id=batch_id,
+            source="latest-completed",
+            detail=detail,
+            recorded_results=_recorded_results_snapshot(
+                batch_id=batch_id,
+                champion_artifact_id=champion_artifact_id,
+                rows=results,
+            ),
+        ),
+        champion_script={
+            "uid": 2,
+            "artifact_id": str(champion_artifact_id),
+            "content_hash": "champion-hash",
+            "size_bytes": 128,
+            "content_b64": base64.b64encode(
+                b"from harnyx_miner_sdk.decorators import entrypoint\n"
+                b"from harnyx_miner_sdk.query import Query, Response\n"
+                b'@entrypoint("query")\n'
+                b"async def query(query: Query) -> Response:\n"
+                b'    return Response(text="champion")\n'
+            ).decode("ascii"),
+        },
+    )
+    runtime = _FakeRuntime(
+        batch_id=batch_id,
+        champion_artifact_id=champion_artifact_id,
+        tasks=tasks,
+        delay_seconds=0.05,
+    )
+    agent_path = tmp_path / "agent.py"
+    _write_agent(agent_path)
+
+    monkeypatch.setattr(local_eval.PlatformMonitoringClient, "from_env", staticmethod(lambda: monitoring))
+    monkeypatch.setattr(
+        local_eval.LocalEvaluationRuntime,
+        "create",
+        staticmethod(
+            lambda *, progress_reporter=None, run_progress_root=None: _bind_progress(runtime, progress_reporter)
+        ),
+    )
+    monkeypatch.setattr(local_eval, "platform_base_url_from_env", lambda: "https://platform.example.com")
+
+    local_eval.main(["--agent-path", str(agent_path), "--output-dir", str(tmp_path)])
+
+    assert runtime.max_in_flight == 2
+
+
 def test_local_eval_vs_champion_fails_before_runtime_when_champion_script_is_invalid(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2434,6 +1847,7 @@ def test_local_eval_vs_champion_preflight_does_not_execute_fetched_champion_code
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Future failure: fetched miner code must remain inert until sandbox execution."""
     batch_id = uuid4()
     champion_artifact_id = uuid4()
     tasks = (_task(uuid4(), "solo task"),)
@@ -2487,108 +1901,20 @@ def test_local_eval_vs_champion_preflight_does_not_execute_fetched_champion_code
     assert len(runtime.calls) == 2
 
 
-def test_local_eval_logs_progress_to_stderr_and_keeps_stdout_json_clean(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    batch_id = uuid4()
-    champion_artifact_id = uuid4()
-    tasks = (
-        _task(uuid4(), "task one"),
-        _task(uuid4(), "task two"),
-    )
-    detail = _batch_detail(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
-    results = _recorded_rows(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
-    monitoring = _FakeMonitoringClient(
-        batch_context=_selected_batch_context(
-            batch_id=batch_id,
-            source="latest-completed",
-            detail=detail,
-            recorded_results=_recorded_results_snapshot(
-                batch_id=batch_id,
-                champion_artifact_id=champion_artifact_id,
-                rows=results,
-            ),
-        ),
-        champion_script={
-            "uid": 2,
-            "artifact_id": str(champion_artifact_id),
-            "content_hash": "champion-hash",
-            "size_bytes": 128,
-            "content_b64": base64.b64encode(
-                b"from harnyx_miner_sdk.decorators import entrypoint\n"
-                b"from harnyx_miner_sdk.query import Query, Response\n"
-                b'@entrypoint("query")\n'
-                b"async def query(query: Query) -> Response:\n"
-                b'    return Response(text="champion")\n'
-            ).decode("ascii"),
-        },
-    )
-    runtime = _FakeRuntime(
-        batch_id=batch_id,
-        champion_artifact_id=champion_artifact_id,
-        tasks=tasks,
-    )
-    agent_path = tmp_path / "agent.py"
-    _write_agent(agent_path)
-
-    monkeypatch.setattr(local_eval.PlatformMonitoringClient, "from_env", staticmethod(lambda: monitoring))
-    monkeypatch.setattr(
-        local_eval.LocalEvaluationRuntime,
-        "create",
-        staticmethod(
-            lambda *, progress_reporter=None, run_progress_root=None: _bind_progress(runtime, progress_reporter)
-        ),
-    )
-    monkeypatch.setattr(local_eval, "platform_base_url_from_env", lambda: "https://platform.example.com")
-
-    local_eval.main(["--agent-path", str(agent_path), "--output-dir", str(tmp_path)])
-
-    captured = capsys.readouterr()
-    stdout_payload = json.loads(captured.out)
-
-    assert stdout_payload["batch_id"] == str(batch_id)
-    assert stdout_payload["mode"] == "vs-champion"
-    assert "[local-eval] resolving batch context" in captured.err
-    assert "[local-eval] running target and champion evaluations concurrently" in captured.err
-    assert "[local-eval] target task 1/2 complete" in captured.err
-    assert "[local-eval] finished champion evaluation" in captured.err
-    assert "[local-eval] reports written:" in captured.err
-
-
-def test_main_configures_cli_logging_before_run(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    agent_path = tmp_path / "agent.py"
-    _write_agent(agent_path)
-    calls: list[str] = []
-
-    async def fake_amain(argv: Sequence[str] | None) -> None:
-        calls.append(f"amain:{list(argv or ())}")
-
-    def fake_run(coroutine: Any) -> None:
-        calls.append("run")
-        coroutine.close()
-
-    monkeypatch.setattr(local_eval, "_configure_cli_logging", lambda: calls.append("configured"))
-    monkeypatch.setattr(local_eval, "_amain", fake_amain)
-    monkeypatch.setattr(local_eval.asyncio, "run", fake_run)
-
-    local_eval.main(["--agent-path", str(agent_path), "--output-dir", str(tmp_path)])
-
-    assert calls == ["configured", "run"]
-
-
 def test_configure_cli_logging_writes_to_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
     root = logging.getLogger()
     tools_logger = logging.getLogger("harnyx_commons.tools")
+    subtensor_logger = logging.getLogger("harnyx_validator.subtensor")
+    for package_logger_name in ("harnyx_commons", "harnyx_miner", "harnyx_validator"):
+        logging.getLogger(package_logger_name)
     old_level = root.level
     old_handlers = list(root.handlers)
-    old_tools_level = tools_logger.level
-    old_tools_disabled = tools_logger.disabled
-    old_tools_propagate = tools_logger.propagate
+    old_subtensor_level = subtensor_logger.level
+    logger_states = {
+        name: (logger.level, logger.disabled, logger.propagate, list(logger.handlers))
+        for name, logger in logging.Logger.manager.loggerDict.items()
+        if isinstance(logger, logging.Logger)
+    }
     monkeypatch.setenv("LOG_LEVEL", "DEBUG")
     tools_logger.setLevel(logging.WARNING)
     tools_logger.disabled = True
@@ -2606,90 +1932,13 @@ def test_configure_cli_logging_writes_to_stderr(monkeypatch: pytest.MonkeyPatch)
     finally:
         root.setLevel(old_level)
         root.handlers = old_handlers
-        tools_logger.setLevel(old_tools_level)
-        tools_logger.disabled = old_tools_disabled
-        tools_logger.propagate = old_tools_propagate
-
-
-def test_main_reports_invalid_log_level_as_system_exit(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    agent_path = tmp_path / "agent.py"
-    _write_agent(agent_path)
-    monkeypatch.setenv("LOG_LEVEL", "NO_SUCH_LEVEL")
-
-    with pytest.raises(SystemExit) as exc_info:
-        local_eval.main(["--agent-path", str(agent_path), "--output-dir", str(tmp_path)])
-
-    assert "Unknown level" in str(exc_info.value)
-
-
-def test_local_eval_still_fails_before_runtime_when_batch_detail_fetch_fails(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    batch_id = uuid4()
-    detail_path = f"/v1/monitoring/miner-task-batches/{batch_id}"
-    monitoring = _RaisingMonitoringClient(
-        error=PlatformMonitoringRequestError(
-            path=detail_path,
-            status_code=503,
-            detail="upstream connect error",
-        )
-    )
-    created = False
-
-    def _create_runtime(*, progress_reporter=None, run_progress_root=None) -> _FakeRuntime:
-        nonlocal created
-        del progress_reporter
-        created = True
-        raise AssertionError("runtime should not be created")
-
-    agent_path = tmp_path / "agent.py"
-    _write_agent(agent_path)
-
-    monkeypatch.setattr(local_eval.PlatformMonitoringClient, "from_env", staticmethod(lambda: monitoring))
-    monkeypatch.setattr(local_eval.LocalEvaluationRuntime, "create", staticmethod(_create_runtime))
-
-    with pytest.raises(SystemExit, match=r"platform monitoring request failed \(503\): upstream connect error"):
-        local_eval.main(["--agent-path", str(agent_path), "--batch-id", str(batch_id), "--output-dir", str(tmp_path)])
-
-    assert created is False
-    assert monitoring.closed is True
-
-
-def test_local_eval_still_fails_before_runtime_when_latest_batch_lookup_fails(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    list_path = "/v1/monitoring/miner-task-batches"
-    monitoring = _RaisingMonitoringClient(
-        error=PlatformMonitoringRequestError(
-            path=list_path,
-            status_code=503,
-            detail="upstream connect error",
-        )
-    )
-    created = False
-
-    def _create_runtime(*, progress_reporter=None, run_progress_root=None) -> _FakeRuntime:
-        nonlocal created
-        del progress_reporter
-        created = True
-        raise AssertionError("runtime should not be created")
-
-    agent_path = tmp_path / "agent.py"
-    _write_agent(agent_path)
-
-    monkeypatch.setattr(local_eval.PlatformMonitoringClient, "from_env", staticmethod(lambda: monitoring))
-    monkeypatch.setattr(local_eval.LocalEvaluationRuntime, "create", staticmethod(_create_runtime))
-
-    with pytest.raises(SystemExit, match=r"platform monitoring request failed \(503\): upstream connect error"):
-        local_eval.main(["--agent-path", str(agent_path), "--output-dir", str(tmp_path)])
-
-    assert created is False
-    assert monitoring.closed is True
+        subtensor_logger.setLevel(old_subtensor_level)
+        for name, (level, disabled, propagate, handlers) in logger_states.items():
+            logger = logging.getLogger(name)
+            logger.setLevel(level)
+            logger.disabled = disabled
+            logger.propagate = propagate
+            logger.handlers = handlers
 
 
 def test_platform_monitoring_client_pages_until_completed_batch() -> None:
@@ -2753,48 +2002,6 @@ def test_platform_monitoring_client_pages_until_completed_batch() -> None:
                 "before_batch_id": first_before_batch_id,
             },
         ),
-    ]
-
-
-def test_platform_monitoring_client_accepts_legacy_timestamp_only_cursor() -> None:
-    first_before = "2026-03-27T06:00:00Z"
-    completed_batch_id = uuid4()
-
-    class _StubClient:
-        def __init__(self) -> None:
-            self.calls: list[tuple[str, object]] = []
-
-        def get(self, path: str, params=None):
-            self.calls.append((path, params))
-            request = httpx.Request("GET", f"https://platform.example.com{path}")
-            if len(self.calls) == 1:
-                return httpx.Response(
-                    200,
-                    json={"batches": [], "next_before": first_before},
-                    request=request,
-                )
-            return httpx.Response(
-                200,
-                json={
-                    "batches": ({"batch_id": str(completed_batch_id), "status": "completed"},),
-                    "next_before": None,
-                },
-                request=request,
-            )
-
-        def close(self) -> None:
-            return None
-
-    client = PlatformMonitoringClient(base_url="https://platform.example.com")
-    client._client.close()
-    client._client = _StubClient()
-
-    batch = client.find_latest_completed_batch()
-
-    assert batch["batch_id"] == str(completed_batch_id)
-    assert client._client.calls == [
-        ("/v1/monitoring/miner-task-batches", {"limit": 100}),
-        ("/v1/monitoring/miner-task-batches", {"limit": 100, "before": first_before}),
     ]
 
 

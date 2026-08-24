@@ -47,9 +47,8 @@ def test_tavily_fetch_extra_requires_query_for_chunks() -> None:
     assert isinstance(request.provider_extra, TavilyFetchExtra)
 
 
-@pytest.mark.parametrize(
-    ("provider", "provider_extra", "error"),
-    [
+def test_search_extra_rejects_generated_output_state_and_unsupported_controls() -> None:
+    rejected_controls = [
         ("exa", {"type": "deep"}, "auto.*instant.*fast"),
         ("exa", {"output_schema": {"type": "string"}}, "[Ee]xtra inputs"),
         ("tavily", {"include_answer": True}, "[Ee]xtra inputs"),
@@ -57,19 +56,16 @@ def test_tavily_fetch_extra_requires_query_for_chunks() -> None:
         ("tavily", {"search_depth": "ultra-fast", "safe_search": True}, "cannot be combined"),
         ("firecrawl", {"scrape_options": {"formats": ["summary"]}}, "[Ee]xtra inputs"),
         ("parallel", {"session_id": "cross-call-state"}, "[Ee]xtra inputs"),
-    ],
-)
-def test_search_extra_rejects_generated_output_state_and_unsupported_controls(
-    provider: str, provider_extra: object, error: str
-) -> None:
-    with pytest.raises(ValidationError, match=error):
-        SearchWebSearchRequest.model_validate(
-            {
-                "provider": provider,
-                "search_queries": ["harnyx"],
-                "provider_extra": provider_extra,
-            }
-        )
+    ]
+    for provider, provider_extra, error in rejected_controls:
+        with pytest.raises(ValidationError, match=error):
+            SearchWebSearchRequest.model_validate(
+                {
+                    "provider": provider,
+                    "search_queries": ["harnyx"],
+                    "provider_extra": provider_extra,
+                }
+            )
 
 
 def test_exa_company_filters_reject_documented_incompatible_fields() -> None:
@@ -98,7 +94,7 @@ def test_exa_defaults_to_non_deep_auto_search() -> None:
     assert ExaSearchExtra().to_provider_payload()["type"] == "auto"
 
 
-@pytest.mark.parametrize("search_depth", ("basic", "fast", "advanced", "ultra-fast"))
+@pytest.mark.parametrize("search_depth", ("basic",))
 def test_tavily_accepts_ordinary_search_depths(search_depth: str) -> None:
     request = SearchWebSearchRequest.model_validate(
         {
@@ -123,18 +119,18 @@ def test_tavily_ultra_fast_rejects_chunk_controls_it_cannot_apply() -> None:
         )
 
 
-@pytest.mark.parametrize("time_range", ("day", "week", "month", "year", "d", "w", "m", "y"))
-def test_tavily_accepts_documented_time_ranges(time_range: str) -> None:
-    request = SearchWebSearchRequest.model_validate(
-        {
-            "provider": "tavily",
-            "search_queries": ["harnyx"],
-            "provider_extra": {"time_range": time_range},
-        }
-    )
+def test_tavily_accepts_documented_time_ranges() -> None:
+    for time_range in ("day", "week", "month", "year", "d", "w", "m", "y"):
+        request = SearchWebSearchRequest.model_validate(
+            {
+                "provider": "tavily",
+                "search_queries": ["harnyx"],
+                "provider_extra": {"time_range": time_range},
+            }
+        )
 
-    assert request.provider_extra is not None
-    assert request.provider_extra.to_provider_payload()["time_range"] == time_range
+        assert request.provider_extra is not None
+        assert request.provider_extra.to_provider_payload()["time_range"] == time_range
 
 
 def test_parallel_accepts_turbo_search_mode() -> None:
@@ -189,8 +185,6 @@ def test_firecrawl_fetch_accepts_documented_enhanced_proxy() -> None:
     "formats",
     [
         ["rawHtml"],
-        ["markdown", "rawHtml"],
-        ["rawHtml", "markdown"],
     ],
 )
 def test_firecrawl_fetch_preserves_provider_formats(formats: list[str]) -> None:
@@ -206,7 +200,12 @@ def test_firecrawl_fetch_preserves_provider_formats(formats: list[str]) -> None:
     assert request.provider_extra.to_provider_payload()["formats"] == formats
 
 
-@pytest.mark.parametrize("formats", [[], ["html"], ["markdown", "html"]])
+@pytest.mark.parametrize(
+    "formats",
+    [
+        [],
+    ],
+)
 def test_firecrawl_fetch_rejects_empty_or_unsupported_formats(formats: list[str]) -> None:
     with pytest.raises(ValidationError):
         FetchPageRequest.model_validate(

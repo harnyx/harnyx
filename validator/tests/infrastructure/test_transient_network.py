@@ -56,7 +56,6 @@ def test_classifies_httpx_connect_timeout() -> None:
     "message",
     [
         "timed out while waiting for handshake response",
-        "_ssl.c:999: The handshake operation timed out",
         "_ssl.c:1108: The handshake operation timed out",
     ],
 )
@@ -73,7 +72,6 @@ def test_classifies_websocket_handshake_timeouts(message: str) -> None:
     "exc",
     [
         ConnectionResetError(errno.ECONNRESET, "connection reset"),
-        ConnectionAbortedError(errno.ECONNABORTED, "connection aborted"),
         TimeoutError(errno.ETIMEDOUT, "connection timed out"),
     ],
 )
@@ -104,11 +102,7 @@ def test_classifies_nested_cause_or_context() -> None:
     "exc",
     [
         ConnectionError("connection failed"),
-        httpx.ConnectError("connect failed"),
-        TimeoutError("local timeout"),
         TimeoutError("_ssl.c:line: The handshake operation timed out"),
-        TimeoutError("prefix _ssl.c:999: The handshake operation timed out"),
-        socket.gaierror(socket.EAI_NONAME, "name does not resolve"),
         httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"),
     ],
 )

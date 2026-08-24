@@ -771,7 +771,10 @@ class RuntimeToolInvoker(ToolInvoker):
             resolver = self._llm_provider_resolver
             if resolver is None:
                 raise LookupError("miner llm provider resolver is not configured")
-            return await _resolve_maybe_awaitable(resolver(requested_provider, context))
+            try:
+                return await _resolve_maybe_awaitable(resolver(requested_provider, context))
+            except ProviderCredentialUnavailableError as exc:
+                raise _credential_unavailable(exc.provider) from exc
         llm_provider = self._llm_provider
         if llm_provider is None:
             raise LookupError("llm provider is not configured")

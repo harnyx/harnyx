@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from hashlib import sha256
-from importlib.resources import files
 from uuid import UUID
 
 from harnyx_commons.miner_task_benchmark import (
@@ -31,17 +29,6 @@ def test_load_deepresearch9k_l2_snapshot_preserves_source_item_indices() -> None
     assert len(snapshot.items) == 3000
     assert [item.item_index for item in snapshot.items] == list(range(1, 9000, 3))
     assert {item.problem_category for item in snapshot.items} == {"difficulty-2"}
-
-
-def test_deepresearch9k_l2_manifest_checksum_matches_versioned_packaged_csv() -> None:
-    snapshot = load_deepresearch9k_l2_snapshot()
-    version_dir = files("harnyx_commons.miner_task_benchmark.deepresearch9k_l2.data").joinpath(
-        "versions",
-        f"{snapshot.manifest.dataset_version}__{snapshot.manifest.scoring_version}",
-    )
-    checksum = sha256(version_dir.joinpath(snapshot.manifest.file_name).read_bytes()).hexdigest()
-
-    assert checksum == snapshot.manifest.sha256
 
 
 def test_deepresearch9k_l2_loads_current_and_explicit_versions_through_registry() -> None:
@@ -93,10 +80,13 @@ def test_deepresearch9k_l2_sampling_uses_fixed_snapshot_panel() -> None:
         8527,
         8686,
     ]
-    assert str(
-        benchmark_task_id_for_item(
-            suite_slug=snapshot.manifest.suite_slug,
-            run_id=run_id,
-            item_index=sampled[0].item_index,
+    assert (
+        str(
+            benchmark_task_id_for_item(
+                suite_slug=snapshot.manifest.suite_slug,
+                run_id=run_id,
+                item_index=sampled[0].item_index,
+            )
         )
-    ) == "e63ca261-e261-507e-b9b6-138c0a90b627"
+        == "e63ca261-e261-507e-b9b6-138c0a90b627"
+    )

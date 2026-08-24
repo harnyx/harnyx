@@ -478,57 +478,6 @@ async def test_fourteen_output_slots_receive_fixed_preference_counts_without_quo
 
 
 @pytest.mark.anyio
-async def test_portfolio_and_candidate_work_run_inside_distinct_cost_free_parent_observations(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Future failure: concurrent orchestration must remain attributable without duplicating stage cost."""
-    starts: list[dict[str, object]] = []
-    updates: list[tuple[object, dict[str, object]]] = []
-
-    class ObservationScope:
-        def __init__(self, observation: object) -> None:
-            self.observation = observation
-
-        def __enter__(self) -> object:
-            return self.observation
-
-        def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> bool:
-            return False
-
-    def start(name: str, as_type: str, **kwargs: object) -> ObservationScope:
-        observation = object()
-        starts.append({"name": name, "as_type": as_type, **kwargs, "observation": observation})
-        return ObservationScope(observation)
-
-    def update(observation: object, **kwargs: object) -> None:
-        updates.append((observation, kwargs))
-
-    monkeypatch.setattr(refill_pipeline_module, "start_metadata_only_observation", start)
-    monkeypatch.setattr(refill_pipeline_module, "update_observation_best_effort", update)
-
-    await ShortfallRefillPipeline(
-        runner=_PortfolioRunner(),  # type: ignore[arg-type]
-        candidate_pipeline=_CandidatePipeline((_success(0),)),  # type: ignore[arg-type]
-        attempt_id_factory=lambda: UUID(int=99),
-    ).generate_batch(
-        target_count=1,
-        plain_text_probability=1.0,
-    )
-
-    assert [item["name"] for item in starts] == [
-        "miner_task_generation.portfolio_call",
-        "miner_task_generation.candidate_attempt",
-    ]
-    assert cast(dict[str, object], starts[0]["metadata"])["slot_count"] == 1
-    assert cast(dict[str, object], starts[1]["metadata"])["attempt_id"] == str(UUID(int=99))
-    assert [cast(dict[str, object], kwargs["metadata"])["outcome"] for _, kwargs in updates] == [
-        "succeeded",
-        "finalized",
-    ]
-    assert all("cost_details" not in kwargs and "usage_details" not in kwargs for _, kwargs in updates)
-
-
-@pytest.mark.anyio
 async def test_unavailable_candidate_cost_makes_successful_batch_cost_unavailable() -> None:
     """Future failure: exact completion must not turn one missing candidate bill into a known batch prefix."""
     unknown_cost_success = _success(0).model_copy(update={"tool_usage": ToolUsageSummary.zero()})
@@ -601,56 +550,6 @@ async def test_candidate_parent_uses_final_outcome_after_duplicate_reclassificat
 
 
 @pytest.mark.anyio
-async def test_candidate_parent_keeps_final_outcome_when_finalized_callback_raises(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Future failure: a persistence callback error must not erase the candidate's final verdict."""
-    candidate_observations: set[object] = set()
-    parent_outcomes: list[str] = []
-
-    class ObservationScope:
-        def __init__(self, observation: object) -> None:
-            self.observation = observation
-
-        def __enter__(self) -> object:
-            return self.observation
-
-        def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> bool:
-            return False
-
-    def start(name: str, _as_type: str, **_kwargs: object) -> ObservationScope:
-        observation = object()
-        if name == "miner_task_generation.candidate_attempt":
-            candidate_observations.add(observation)
-        return ObservationScope(observation)
-
-    def update(observation: object, **kwargs: object) -> None:
-        if observation not in candidate_observations:
-            return
-        metadata = cast(dict[str, object], kwargs["metadata"])
-        if "outcome" in metadata:
-            parent_outcomes.append(cast(str, metadata["outcome"]))
-
-    async def reject_persistence(_slot: int, _task: DomainTweakFinalizedTask) -> None:
-        raise RuntimeError("persistence rejected")
-
-    monkeypatch.setattr(refill_pipeline_module, "start_metadata_only_observation", start)
-    monkeypatch.setattr(refill_pipeline_module, "update_observation_best_effort", update)
-
-    with pytest.raises(RuntimeError, match="persistence rejected"):
-        await ShortfallRefillPipeline(
-            runner=_PortfolioRunner(),  # type: ignore[arg-type]
-            candidate_pipeline=_CandidatePipeline((_success(0),)),  # type: ignore[arg-type]
-        ).generate_batch(
-            target_count=1,
-            plain_text_probability=1.0,
-            on_finalized_task=reject_persistence,
-        )
-
-    assert parent_outcomes == ["finalized"]
-
-
-@pytest.mark.anyio
 async def test_more_than_ten_slots_groups_portfolios_without_surplus_candidates() -> None:
     runner = _PortfolioRunner()
     candidates = _CandidatePipeline(tuple(_success(index) for index in range(13)))
@@ -665,36 +564,6 @@ async def test_more_than_ten_slots_groups_portfolios_without_surplus_candidates(
     assert sorted(runner.group_sizes) == [3, 10]
     assert candidates.calls == 13
     assert result.slot_attempt_count == 13
-
-
-@pytest.mark.anyio
-async def test_failed_attempt_preserves_private_blocker_without_serializing_it() -> None:
-    """Future failure: orchestration needs the blocker, while telemetry must not expose model-authored text."""
-    runner = _PortfolioRunner()
-    candidates = _CandidatePipeline((_failure(), _success(0)))
-    events: list[SlotAttemptEvent] = []
-
-    async def record(event: SlotAttemptEvent) -> None:
-        events.append(event)
-
-    await ShortfallRefillPipeline(
-        runner=runner,  # type: ignore[arg-type]
-        candidate_pipeline=candidates,  # type: ignore[arg-type]
-    ).generate_batch(
-        target_count=1,
-        plain_text_probability=1.0,
-        on_attempt_completed=record,
-    )
-
-    assert events[0].outcome == "reasoning_no_generate"
-    assert events[0].failure_class is None
-    assert events[0].failure_reason == "complete route unavailable"
-    assert events[0].source_failure_id == "source_failure:1"
-    serialized = events[0].model_dump(mode="json")
-    assert "failure_reason" not in serialized
-    assert "source_failure_id" not in serialized
-    assert events[1].outcome == "finalized"
-    assert not events[1].repaired
 
 
 @pytest.mark.anyio

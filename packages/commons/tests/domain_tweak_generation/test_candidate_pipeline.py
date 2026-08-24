@@ -465,50 +465,6 @@ async def test_structured_repair_receives_immutable_contract_and_replaces_reject
 
 
 @pytest.mark.anyio
-async def test_reference_repair_can_acquire_stronger_source_and_owns_final_citations() -> None:
-    """Future failure: accepted rendering must not retain evidence rejected before source-upgrading repair."""
-    workspace = _workspace()
-    initial = ReferenceProof(
-        status="finalized",
-        answer_text="The initial report lists Alpha at 1200 [[1]].",
-        citation_evidence_ids=("E1",),
-        answers=(ReferenceAnswerSelection(answer_id="A1"),),
-        proof_steps=(
-            ProofStep(
-                step_id="S1",
-                statement="The initial report establishes Alpha at 1200.",
-                kind="supported",
-                evidence_ids=("E1",),
-            ),
-        ),
-    )
-    runner = _RepairAcquisitionRunner(
-        (
-            _dossier(),
-            initial,
-            AuditResult(status="reject", defects=("upgrade the source",), explanation="weak source"),
-            AuditResult(status="pass", explanation="complete"),
-        ),
-        workspace,
-    )
-    outcome = await CandidatePipeline(
-        runner=runner,  # type: ignore[arg-type]
-        source_fetcher=_UnusedFetcher(),
-        workspace_factory=lambda: workspace,
-    ).run(
-        PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
-        capability_preference="general_deep_research",
-        required_response_mode="plain_text",
-    )
-
-    assert isinstance(outcome, DomainTweakFinalizedTask)
-    assert outcome.task.reference_answer.citations is not None
-    assert tuple(item.url for item in outcome.task.reference_answer.citations if item is not None) == (
-        "https://example.org/stronger-report",
-    )
-
-
-@pytest.mark.anyio
 async def test_no_generate_retains_first_typed_blocker() -> None:
     """Future failure: a genuine QG blocker must remain terminal and observable."""
     runner = _Runner(

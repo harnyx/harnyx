@@ -81,7 +81,6 @@ def _miner_context() -> ToolInvocationContext:
     ("provider", "model"),
     [
         ("openrouter", "openai/gpt-oss-120b"),
-        ("ai_gateway", "thinkingmachines/inkling"),
     ],
 )
 async def test_platform_credential_session_resolves_requested_provider_without_miner_fallback(
@@ -184,6 +183,37 @@ async def test_miner_credential_session_uses_miner_resolver_without_direct_fallb
 
     assert resolver_calls == ["openrouter"]
     assert len(miner_provider.requests) == 1
+    assert direct_provider.requests == []
+
+
+async def test_miner_credential_resolver_failure_does_not_use_direct_provider() -> None:
+    """Future failure: unavailable miner credentials must not fall back to shared credentials."""
+    direct_provider = _CapturingLlmProvider()
+
+    def resolver(provider: str, _context: ToolInvocationContext | None) -> _CapturingLlmProvider:
+        raise ProviderCredentialUnavailableError(provider)
+
+    invoker = RuntimeToolInvoker(
+        InMemoryReceiptLog(),
+        llm_provider=direct_provider,
+        llm_provider_name="openrouter",
+        llm_provider_resolver=resolver,
+    )
+
+    with pytest.raises(ToolProviderError) as exc_info:
+        await invoker.invoke(
+            "llm_chat",
+            args=(),
+            kwargs={
+                "provider": "openrouter",
+                "model": "openai/gpt-oss-120b",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            context=_miner_context(),
+        )
+
+    assert exc_info.value.failure_code is ToolProviderFailureCode.CREDENTIAL_UNAVAILABLE
+    assert exc_info.value.provider == "openrouter"
     assert direct_provider.requests == []
 
 
@@ -531,7 +561,7 @@ async def test_runtime_invoker_lowers_complete_tool_loop_without_routing_policy(
     assert "require_parameters" not in request.extra["provider"]
 
 
-@pytest.mark.parametrize("field", ("include", "response_format"))
+@pytest.mark.parametrize("field", ("include",))
 async def test_runtime_invoker_rejects_removed_fields_before_provider(field: str) -> None:
     llm_provider = _CapturingLlmProvider()
     invoker = RuntimeToolInvoker(

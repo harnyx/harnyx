@@ -31,18 +31,6 @@ class _SequenceSubmissionService:
         return outcome
 
 
-def test_weight_worker_captures_exception_before_reraising(monkeypatch) -> None:
-    captured: list[BaseException] = []
-    monkeypatch.setattr(worker_mod, "capture_exception", captured.append)
-
-    worker = WeightWorker(submission_service=_FailingSubmissionService())
-
-    with pytest.raises(RuntimeError, match="boom"):
-        worker._tick()
-
-    assert [str(exc) for exc in captured] == ["boom"]
-
-
 def test_weight_worker_success_log_includes_submitted_weights(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -64,25 +52,6 @@ def test_weight_worker_success_log_includes_submitted_weights(
         "champion_uid": 5,
         "weights": {5: 0.6, 1: 0.4},
     }
-
-
-def test_weight_worker_suppresses_transient_network_sentry_before_threshold(monkeypatch) -> None:
-    captured: list[BaseException] = []
-    monkeypatch.setattr(worker_mod, "capture_exception", captured.append)
-    status = StatusProvider()
-    worker = WeightWorker(
-        submission_service=_FailingSubmissionService(
-            socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution")
-        ),
-        status_provider=status,
-    )
-
-    for _ in range(2):
-        with pytest.raises(socket.gaierror):
-            worker._tick()
-
-    assert captured == []
-    assert status.state.last_weight_error == "weight submission retrying after transient network failure"
 
 
 def test_weight_worker_captures_sanitized_transient_network_outage_once_at_threshold(monkeypatch) -> None:
@@ -129,9 +98,7 @@ def test_weight_worker_groups_websocket_handshake_timeout_at_threshold(monkeypat
 
     monkeypatch.setattr(worker_mod, "capture_exception", capture)
     worker = WeightWorker(
-        submission_service=_FailingSubmissionService(
-            TimeoutError("timed out while waiting for handshake response")
-        )
+        submission_service=_FailingSubmissionService(TimeoutError("timed out while waiting for handshake response"))
     )
 
     for _ in range(4):

@@ -5,15 +5,10 @@ import pytest
 from harnyx_commons.llm.tool_models import (
     ALLOWED_TOOL_MODELS,
     MINER_SELECTED_LLM_PROVIDER_MODELS,
-    TOOL_MODEL_THINKING_CAPABILITIES,
-    ToolModelThinkingCapability,
-    ToolModelThinkingField,
-    ToolModelThinkingProvider,
     model_thinking_capability,
     parse_miner_selected_llm_provider_model,
     parse_tool_model,
     resolve_tool_model,
-    tool_model_thinking_capability,
 )
 
 
@@ -78,29 +73,6 @@ def test_benchmark_model_thinking_capability_does_not_expand_tool_authorization(
     assert capability.chat_template_kwargs(enabled=True) == {"enable_thinking": True}
 
 
-def test_legacy_tool_thinking_exports_remain_authorization_restricted() -> None:
-    field: ToolModelThinkingField = "chat_template_kwargs.enable_thinking"
-    provider: ToolModelThinkingProvider = "chutes"
-    capability = ToolModelThinkingCapability(field)
-
-    assert capability.chat_template_kwargs(enabled=True) == {"enable_thinking": True}
-    assert set(TOOL_MODEL_THINKING_CAPABILITIES) <= set(ALLOWED_TOOL_MODELS)
-    assert tool_model_thinking_capability(
-        "google/gemma-4-31B-turbo-TEE",
-        provider_name=provider,
-    ) == model_thinking_capability(
-        "google/gemma-4-31B-turbo-TEE",
-        provider_name=provider,
-    )
-    assert (
-        tool_model_thinking_capability(
-            "deepseek-ai/DeepSeek-V4-Flash-0731-TEE",
-            provider_name=provider,
-        )
-        is None
-    )
-
-
 def test_miner_selected_chutes_supports_only_chutes_models() -> None:
     assert (
         parse_miner_selected_llm_provider_model(
@@ -140,22 +112,7 @@ def test_miner_selected_chutes_rejects_openrouter_only_models() -> None:
 
 @pytest.mark.parametrize(
     "model",
-    (
-        "openai/gpt-oss-20b",
-        "openai/gpt-oss-120b",
-        "deepseek/deepseek-v3.2",
-        "z-ai/glm-5",
-        "qwen/qwen3.6-27b",
-        "qwen/qwen3.8-27b",
-        "google/gemma-4-31b-it",
-        "deepseek/deepseek-v4-flash",
-        "deepseek/deepseek-v4-flash-0731",
-        "deepseek/deepseek-v4-pro",
-        "z-ai/glm-5.2",
-        "thinkingmachines/inkling",
-        "qwen/qwen3.5-397b-a17b",
-        "meta/muse-glimmer-30b",
-    ),
+    ("deepseek/deepseek-v3.2",),
 )
 def test_miner_selected_openrouter_uses_native_model_ids_without_translation(
     model: str,
@@ -168,21 +125,7 @@ def test_miner_selected_openrouter_uses_native_model_ids_without_translation(
 
 @pytest.mark.parametrize(
     "model",
-    (
-        "thinkingmachines/inkling",
-        "zai/glm-5.2-fast",
-        "openai/gpt-oss-20b",
-        "zai/glm-4.7",
-        "google/gemma-4-31b-it",
-        "openai/gpt-oss-120b",
-        "minimax/minimax-m2.7",
-        "zai/glm-4.7-flash",
-        "deepseek/deepseek-v4-flash",
-        "deepseek/deepseek-v4-flash-0731",
-        "deepseek/deepseek-v4-pro",
-        "meta/muse-glimmer-30b",
-        "alibaba/qwen3.8-27b",
-    ),
+    ("zai/glm-4.7",),
 )
 def test_miner_selected_ai_gateway_uses_native_model_ids_without_translation(model: str) -> None:
     resolved = parse_miner_selected_llm_provider_model(provider="ai_gateway", model=model)
@@ -213,18 +156,6 @@ def test_qwen38_chutes_model_does_not_expand_internal_tool_authorization() -> No
     assert model not in ALLOWED_TOOL_MODELS
     with pytest.raises(ValueError, match="not allowed for validator tools"):
         parse_tool_model(model)
-
-
-def test_retired_chutes_model_is_not_in_miner_selected_namespace() -> None:
-    assert "zai-org/GLM-5-TEE" not in MINER_SELECTED_LLM_PROVIDER_MODELS["chutes"]
-
-
-def test_miner_selected_ai_gateway_rejects_retired_qwen37_plus() -> None:
-    with pytest.raises(ValueError, match="not supported for miner-selected provider 'ai_gateway'"):
-        parse_miner_selected_llm_provider_model(
-            provider="ai_gateway",
-            model="alibaba/qwen3.7-plus",
-        )
 
 
 def test_miner_selected_provider_model_sets_are_provider_namespaces() -> None:

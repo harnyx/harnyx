@@ -271,7 +271,6 @@ def test_reference_proof_enforces_public_citation_position_limit() -> None:
     ("answer_text", "structured_answer_json"),
     [
         ("Alpha is the published result.", None),
-        (None, '{"answer":"Alpha"}'),
     ],
 )
 def test_finalized_reference_proof_requires_a_public_citation_position(

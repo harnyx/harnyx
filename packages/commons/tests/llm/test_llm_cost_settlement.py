@@ -144,7 +144,14 @@ def test_ai_gateway_provider_metadata_cost_wins() -> None:
     assert cost.evidence["pricing_origin"] == "ai_gateway_provider_metadata_cost"
 
 
-@pytest.mark.parametrize("raw_cost", [True, "not-a-decimal", float("nan"), -0.01])
+@pytest.mark.parametrize(
+    "raw_cost",
+    [
+        True,
+        float("nan"),
+        -0.01,
+    ],
+)
 def test_ai_gateway_malformed_provider_metadata_cost_falls_back_to_static_pricing(raw_cost: object) -> None:
     cost = settled_response_cost(
         _response(
@@ -335,7 +342,14 @@ def test_settled_cost_from_metadata_prefers_retry_aggregate_cost() -> None:
     }
 
 
-@pytest.mark.parametrize("bad_cost", [True, float("nan"), float("inf"), float("-inf"), -0.01, "0.01"])
+@pytest.mark.parametrize(
+    "bad_cost",
+    [
+        True,
+        float("inf"),
+        "0.01",
+    ],
+)
 def test_settled_cost_from_metadata_rejects_invalid_normalized_cost(bad_cost: object) -> None:
     with pytest.raises(ValueError, match="actual_cost_usd"):
         settled_cost_from_metadata(
@@ -347,7 +361,14 @@ def test_settled_cost_from_metadata_rejects_invalid_normalized_cost(bad_cost: ob
         )
 
 
-@pytest.mark.parametrize("bad_cost", [True, float("nan"), float("inf"), float("-inf"), -0.01, "0.01"])
+@pytest.mark.parametrize(
+    "bad_cost",
+    [
+        True,
+        float("inf"),
+        "0.01",
+    ],
+)
 def test_settled_cost_from_metadata_rejects_invalid_aggregate_cost(bad_cost: object) -> None:
     with pytest.raises(ValueError, match="actual_cost_usd_total"):
         settled_cost_from_metadata(

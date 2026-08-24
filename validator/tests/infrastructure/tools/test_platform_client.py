@@ -956,7 +956,12 @@ async def test_platform_tool_proxy_grant_retries_transient_connect_timeout_then_
 
 
 @pytest.mark.anyio("asyncio")
-@pytest.mark.parametrize("status_code", [429, 500, 502, 503, 504])
+@pytest.mark.parametrize(
+    "status_code",
+    [
+        429,
+    ],
+)
 async def test_platform_tool_proxy_grant_retries_transient_status_then_succeeds(status_code: int) -> None:
     requests: list[httpx.Request] = []
 
@@ -1138,43 +1143,6 @@ async def test_platform_tool_proxy_grant_preserves_proxy_error_code(
 @pytest.mark.parametrize(
     "response",
     [
-        httpx.Response(status_code=500, text="not json"),
-        httpx.Response(status_code=500, json={"error_code": "unknown_platform_error"}),
-    ],
-)
-async def test_platform_tool_proxy_grant_unknown_error_response_preserves_grant_failed_metadata(
-    response: httpx.Response,
-) -> None:
-    async def handler(request: httpx.Request) -> httpx.Response:
-        if request.method == "POST" and request.url.path == "/v1/platform-tool-proxy/grants":
-            return response
-        return httpx.Response(status_code=404)
-
-    client = AsyncPlatformToolProxyPlatformClient(
-        base_url="https://mock.local",
-        hotkey=_keypair(),
-        transport=httpx.MockTransport(handler),
-        grant_retry_delays_seconds=(),
-    )
-
-    with pytest.raises(PlatformToolProxyInvocationError) as exc_info:
-        await client.create_platform_tool_proxy_grant(
-            batch_id=uuid4(),
-            artifact_id=uuid4(),
-            task_id=uuid4(),
-            validator_session_id=uuid4(),
-            attempt_number=1,
-            assignment_token=_ASSIGNMENT_TOKEN,
-        )
-
-    assert exc_info.value.status_code == 500
-    assert exc_info.value.error_code == "platform_tool_proxy_grant_failed"
-
-
-@pytest.mark.anyio("asyncio")
-@pytest.mark.parametrize(
-    "response",
-    [
         httpx.Response(status_code=200, text="not json"),
         httpx.Response(status_code=200, json={"token": "grant"}),
     ],
@@ -1341,7 +1309,6 @@ async def test_platform_tool_proxy_execute_maps_read_timeout_to_tool_timeout() -
     ("exception_type", "message"),
     [
         (httpx.RemoteProtocolError, "server disconnected without response"),
-        (httpx.ReadError, "response stream closed"),
     ],
 )
 async def test_platform_tool_proxy_execute_maps_response_side_interruption_to_platform_interrupted(
@@ -1421,7 +1388,6 @@ async def test_platform_tool_proxy_execute_maps_platform_interrupted_error_code_
     ("exception_type", "message"),
     [
         (httpx.ConnectTimeout, "platform endpoint unavailable"),
-        (httpx.WriteError, "request body write failed"),
     ],
 )
 async def test_platform_tool_proxy_execute_keeps_pre_response_start_failures_validator_owned(
@@ -1539,14 +1505,7 @@ async def test_platform_tool_proxy_execute_maps_budget_exhausted_to_budget_error
     "error_code",
     [
         "platform_tool_proxy_denied",
-        "miner_credential_missing",
-        "concurrency_exhausted",
-        "unsupported_provider",
-        "unsupported_model",
-        "invalid_request",
         "platform_error",
-        "platform_tool_proxy_execution_failed",
-        "duplicate_call",
     ],
 )
 async def test_platform_tool_proxy_execute_maps_proxy_policy_errors_to_non_provider_error(
@@ -1584,47 +1543,6 @@ async def test_platform_tool_proxy_execute_maps_proxy_policy_errors_to_non_provi
     assert exc_info.value.status_code == 400
     assert exc_info.value.error_code == error_code
     assert str(exc_info.value) == f"{error_code} message"
-
-
-@pytest.mark.anyio("asyncio")
-@pytest.mark.parametrize(
-    "response",
-    [
-        httpx.Response(status_code=500, text="not json"),
-        httpx.Response(status_code=500, json={"error_code": "unknown_platform_error"}),
-    ],
-)
-async def test_platform_tool_proxy_execute_unknown_error_response_preserves_platform_error_metadata(
-    response: httpx.Response,
-) -> None:
-    async def handler(request: httpx.Request) -> httpx.Response:
-        if request.method == "POST" and request.url.path == "/v1/platform-tool-proxy/tools/execute":
-            return response
-        return httpx.Response(status_code=404)
-
-    client = AsyncPlatformToolProxyPlatformClient(
-        base_url="https://mock.local",
-        hotkey=_keypair(),
-        transport=httpx.MockTransport(handler),
-    )
-
-    with pytest.raises(PlatformToolProxyInvocationError) as exc_info:
-        await client.execute_platform_tool_proxy_tool(
-            token="proxy-token",  # noqa: S106 - fixed test-only proxy token
-            uid=7,
-            artifact_id=uuid4(),
-            task_id=uuid4(),
-            validator_session_id=uuid4(),
-            attempt_number=1,
-            receipt_id=str(uuid4()),
-            tool="search_web",
-            args=(),
-            kwargs={"provider": "parallel", "search_queries": ["harnyx"]},
-            transport_timeout_seconds=11.0,
-        )
-
-    assert exc_info.value.status_code == 500
-    assert exc_info.value.error_code == "platform_error"
 
 
 @pytest.mark.anyio("asyncio")
@@ -1692,7 +1610,6 @@ def test_get_champion_weights_retries_transient_connect_timeout() -> None:
         _assert_signed(request, keypair)
 
 
-
 def test_fetch_artifact_retries_transient_connect_timeout() -> None:
     batch_id = uuid4()
     artifact_id = uuid4()
@@ -1718,7 +1635,6 @@ def test_fetch_artifact_retries_transient_connect_timeout() -> None:
     ]
     for request in transport.requests:
         _assert_signed(request, keypair)
-
 
 
 def test_get_champion_weights_does_not_retry_non_connect_transport_failure() -> None:

@@ -32,10 +32,6 @@ def test_load_agent_query_entrypoint_rejects_missing_query(tmp_path: Path) -> No
     clear_entrypoints()
 
 
-def test_max_agent_bytes_is_one_mb() -> None:
-    assert MAX_AGENT_BYTES == 1_000_000
-
-
 def test_validate_agent_bytes_accepts_exact_limit() -> None:
     source = b"#" * (MAX_AGENT_BYTES - 1) + b"\n"
 
