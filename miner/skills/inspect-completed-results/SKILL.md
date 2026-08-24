@@ -7,7 +7,7 @@ description: Inspect completed batch comparison and artifact-scoped result rows.
 
 ## Goal
 
-Collect completed-batch evidence for one submitted artifact.
+Collect completed-batch results for one submitted artifact.
 
 ## Inputs
 
