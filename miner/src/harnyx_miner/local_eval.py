@@ -1098,7 +1098,9 @@ def _load_batch_tasks(detail: Mapping[str, object]) -> tuple[MinerTask, ...]:
         if isinstance(raw_task, MinerTask):
             parsed.append(raw_task)
             continue
-        parsed.append(MinerTask.model_validate_json(json.dumps(raw_task)))
+        miner_task_payload = dict(_require_mapping(raw_task, label="batch task"))
+        miner_task_payload.pop("evaluation_stage", None)
+        parsed.append(MinerTask.model_validate_json(json.dumps(miner_task_payload)))
     return tuple(parsed)
 
 

@@ -12,11 +12,12 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from harnyx_commons.domain.miner_task import (
     EvaluationDetails,
@@ -275,7 +276,17 @@ def _attempt_for_local_progress(
     )
 
 
-def _batch_detail(*, batch_id, champion_artifact_id, tasks: tuple[MinerTask, ...]) -> dict[str, object]:
+def _batch_detail(
+    *,
+    batch_id,
+    champion_artifact_id,
+    tasks: tuple[MinerTask, ...],
+    evaluation_stages: tuple[Literal["qualifying", "main"], ...] | None = None,
+) -> dict[str, object]:
+    if evaluation_stages is None:
+        evaluation_stages = ("qualifying",) * len(tasks)
+    if len(evaluation_stages) != len(tasks):
+        raise ValueError("evaluation stages must match batch tasks")
     return {
         "summary": {
             "batch_id": str(batch_id),
@@ -295,7 +306,13 @@ def _batch_detail(*, batch_id, champion_artifact_id, tasks: tuple[MinerTask, ...
             "completed_at": "2026-03-27T06:02:00Z",
             "failed_at": None,
             "champion_artifact_id": str(champion_artifact_id),
-            "tasks": tuple(task.model_dump(mode="json") for task in tasks),
+            "tasks": tuple(
+                {
+                    **task.model_dump(mode="json"),
+                    "evaluation_stage": evaluation_stage,
+                }
+                for task, evaluation_stage in zip(tasks, evaluation_stages, strict=True)
+            ),
             "artifacts": (
                 {
                     "uid": 2,
@@ -335,6 +352,51 @@ def _batch_detail(*, batch_id, champion_artifact_id, tasks: tuple[MinerTask, ...
             "embedding_call_count": 0,
         },
     }
+
+
+def test_load_batch_tasks_projects_monitoring_evaluation_stage() -> None:
+    tasks = (
+        _task(uuid4(), "Qualifying task"),
+        _task(uuid4(), "Main task"),
+    )
+    detail = _batch_detail(
+        batch_id=uuid4(),
+        champion_artifact_id=uuid4(),
+        tasks=tasks,
+        evaluation_stages=("qualifying", "main"),
+    )
+
+    assert local_eval._load_batch_tasks(detail) == tasks
+
+
+def test_load_batch_tasks_still_requires_miner_task_fields() -> None:
+    task = _task(uuid4(), "Missing query task")
+    detail = _batch_detail(
+        batch_id=uuid4(),
+        champion_artifact_id=uuid4(),
+        tasks=(task,),
+    )
+    batch = cast(dict[str, object], detail["batch"])
+    raw_task = cast(dict[str, object], cast(tuple[object, ...], batch["tasks"])[0])
+    del raw_task["query"]
+
+    with pytest.raises(ValidationError, match="query"):
+        local_eval._load_batch_tasks(detail)
+
+
+def test_load_batch_tasks_rejects_unrecognized_fields() -> None:
+    task = _task(uuid4(), "Misspelled budget task")
+    detail = _batch_detail(
+        batch_id=uuid4(),
+        champion_artifact_id=uuid4(),
+        tasks=(task,),
+    )
+    batch = cast(dict[str, object], detail["batch"])
+    raw_task = cast(dict[str, object], cast(tuple[object, ...], batch["tasks"])[0])
+    raw_task["budegt_usd"] = raw_task.pop("budget_usd")
+
+    with pytest.raises(ValidationError, match="budegt_usd"):
+        local_eval._load_batch_tasks(detail)
 
 
 def _recorded_rows(*, batch_id, champion_artifact_id, tasks: tuple[MinerTask, ...]) -> tuple[dict[str, object], ...]:
