@@ -37,6 +37,7 @@ NEW_OPENROUTER_MODELS = (
     "deepseek/deepseek-v4-flash-0731",
     "deepseek/deepseek-v4-pro",
     "z-ai/glm-5.2",
+    "z-ai/glm-5.3-flash",
     "thinkingmachines/inkling",
     "qwen/qwen3.5-397b-a17b",
     "meta/muse-glimmer-30b",

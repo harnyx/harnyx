@@ -26,6 +26,7 @@ NEW_AI_GATEWAY_MODELS = (
     "deepseek/deepseek-v4-flash",
     "deepseek/deepseek-v4-flash-0731",
     "deepseek/deepseek-v4-pro",
+    "zai/glm-5.3-flash",
     "meta/muse-glimmer-30b",
     "alibaba/qwen3.8-27b",
 )

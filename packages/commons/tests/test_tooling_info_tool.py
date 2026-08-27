@@ -132,11 +132,15 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
     assert model in provider_models["chutes"]
     assert "deepseek/deepseek-v3.2" in provider_models["openrouter"]
     assert model_prices["openrouter"]["deepseek/deepseek-v3.2"]["input_per_million"] == pytest.approx(0.269)
+    assert model_prices["openrouter"]["z-ai/glm-5.3-flash"]["input_per_million"] == pytest.approx(0.075)
+    assert model_prices["openrouter"]["z-ai/glm-5.3-flash"]["output_per_million"] == pytest.approx(0.25)
     assert provider_models["ai_gateway"] == list(MINER_SELECTED_LLM_PROVIDER_MODELS["ai_gateway"])
     assert model_prices["ai_gateway"]["thinkingmachines/inkling"]["input_per_million"] == pytest.approx(1.00)
     assert model_prices["ai_gateway"]["thinkingmachines/inkling"]["output_per_million"] == pytest.approx(4.05)
     assert model_prices["ai_gateway"]["zai/glm-5.2-fast"]["input_per_million"] == pytest.approx(2.10)
     assert model_prices["ai_gateway"]["zai/glm-5.2-fast"]["output_per_million"] == pytest.approx(6.60)
+    assert model_prices["ai_gateway"]["zai/glm-5.3-flash"]["input_per_million"] == pytest.approx(0.15)
+    assert model_prices["ai_gateway"]["zai/glm-5.3-flash"]["output_per_million"] == pytest.approx(0.50)
     assert model_prices["ai_gateway"]["openai/gpt-oss-20b"]["input_per_million"] == pytest.approx(0.05)
     assert model_prices["ai_gateway"]["openai/gpt-oss-20b"]["output_per_million"] == pytest.approx(0.20)
     assert model_prices["ai_gateway"]["zai/glm-4.7"]["input_per_million"] == pytest.approx(0.60)
@@ -199,6 +203,8 @@ def test_zero_reasoning_price_falls_back_to_output_price() -> None:
     assert price_miner_llm("chutes", "deepseek-ai/DeepSeek-V3.2-TEE", usage) == pytest.approx(3.00)
     assert price_miner_llm("ai_gateway", "openai/gpt-oss-20b", usage) == pytest.approx(0.45)
     assert price_miner_llm("ai_gateway", "zai/glm-5.2-fast", usage) == pytest.approx(15.30)
+    assert price_miner_llm("openrouter", "z-ai/glm-5.3-flash", usage) == pytest.approx(0.575)
+    assert price_miner_llm("ai_gateway", "zai/glm-5.3-flash", usage) == pytest.approx(1.15)
 
 
 @pytest.mark.parametrize(
