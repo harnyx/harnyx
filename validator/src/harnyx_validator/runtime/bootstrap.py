@@ -1276,6 +1276,7 @@ def _create_similarity_judge(
     return SimilarityJudge(
         llm_provider=provider,
         config=config,
+        clock=_clock,
     )
 
 

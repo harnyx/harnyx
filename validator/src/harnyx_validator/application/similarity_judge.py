@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -50,8 +51,21 @@ _SYSTEM_PROMPT = (
     "The labels are ordered: duplicate < near_duplicate < notable_change < novel. Use the lowest "
     "classification fully supported by the code. Over-classification is more harmful than "
     "under-classification. Do not choose a higher label because it is merely plausible. Each upward "
-    "classification requires affirmative evidence; when evidence is incomplete, ambiguous, or "
-    "borderline, choose the lower label.\n\n"
+    "classification requires affirmative evidence of a substantive change to deep research. "
+    "Before tracing reachability, inspect every candidate-only condition that controls changed "
+    "behavior. Assess a controlling condition only from the values it reads and the decision it "
+    "makes. The purpose or usefulness of dependent code is not evidence that the condition has a "
+    "deep-research role. Require the code itself to demonstrate how the condition's alternative "
+    "outcomes correspond to a substantive difference in deep research. Do not infer or supply a "
+    "purpose that the code does not demonstrate. Familiarity, common software practice, operational "
+    "usefulness, and plausible intent are not evidence of a deep-research role. If the condition's "
+    "purpose is unclear, unexplained, or merely plausible, treat its deep-research role as not "
+    "established. Do not evaluate or assume its current outcome for this test. If that role is not "
+    "established, ignore every change whose execution depends exclusively on the condition, even when "
+    "the dependent code appears meaningful or executable. This decision is final: stop analyzing the "
+    "dependent path, and do not let the apparent usefulness of dependent code override its exclusion. "
+    "Reachability, complexity, and useful-looking dependent code are not affirmative evidence by "
+    "themselves. When evidence is incomplete, ambiguous, or borderline, choose the lower label.\n\n"
     "Analyze only code reachable from the public entrypoint on an ordinary successful request. "
     "Ignore dead or unreachable code, comments, names, architectural claims, fallback-only and "
     "error-recovery paths, retries, provider changes, optional components that do not coordinate "
@@ -71,8 +85,9 @@ _SYSTEM_PROMPT = (
     "- `localized_change`: the causal mechanism remains, with a bounded policy change inside the "
     "same existing traversal. This includes ranking, per-item filtering, query or prompt wording, "
     "parallel execution inside one stage, and a ledger that only modifies an existing loop's query "
-    "or exit condition. An unconditional extra preprocessing, audit, or model-call step is also "
-    "localized when its output only flows forward once into the same final answer authority.\n"
+    "or exit condition. Only after every condition controlling the path has passed the research-role "
+    "test, an unconditional extra preprocessing, audit, or model-call step is localized when its "
+    "output only flows forward once into the same final answer authority.\n"
     "- `substantial_same_root_change`: a reference mechanism remains causally active, and the "
     "candidate adds a conditional cross-stage cycle that the reference did not have. The cycle must "
     "use an intermediate audit, ledger, or review result to conditionally re-enter an earlier major "
@@ -144,8 +159,9 @@ _SYSTEM_PROMPT = (
     "adds a leaf filter but no feedback into research or answer generation.\n"
     "- An existing research loop whose constraint ledger only changes the next query and break guard "
     "is near_duplicate: the loop already revisited retrieval, so no new cross-stage cycle exists.\n"
-    "- Search -> audit -> final synthesis is near_duplicate when the audit always flows forward once "
-    "and cannot cause fresh research or regenerate an already-produced draft.\n"
+    "- Only after every controlling condition has passed the research-role test, Search -> audit -> "
+    "final synthesis is near_duplicate when the audit always flows forward once and cannot cause "
+    "fresh research or regenerate an already-produced draft.\n"
     "- Search -> draft -> audit -> conditional new search -> regenerated draft is notable_change: "
     "the audit creates a new feedback edge, while the research corpus and final synthesis root "
     "remain.\n"
@@ -157,7 +173,11 @@ _SYSTEM_PROMPT = (
     "`mechanism_change`, `ordinary_case_path`, and `architecture_assessment`; do not include "
     "analysis or prose outside that object.\n"
     "- `classification` is the single category selected by the rules above.\n"
-    "- `reasoning` briefly explains why the evidence meets that category rather than an adjacent one.\n"
+    "- `reasoning` briefly explains why the evidence meets that category rather than an adjacent one. "
+    "For every candidate-only controlling condition needed to support a non-duplicate label, it must "
+    "state the concrete code relationship between that condition and the deep-research task. A generic "
+    "software or operational purpose is insufficient. If it cannot state that relationship, the "
+    "dependent change must be excluded from the classification.\n"
     "- For `duplicate`, `mechanism_change` is JSON null.\n"
     "- For every other label, `mechanism_change` briefly names the concrete reachable change.\n"
     "- `ordinary_case_path` names the entrypoint-to-answer path actually used for the decision.\n"
@@ -188,6 +208,19 @@ _USER_PROMPT_PREFIX = (
     "near_duplicate, notable_change, or novel.\n\n"
     "Payload:\n"
 )
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _system_prompt_at(current_datetime: datetime) -> str:
+    current_utc_datetime = current_datetime.astimezone(UTC)
+    return (
+        f"Current datetime in UTC: {current_utc_datetime.isoformat()}\n"
+        f"Current Unix timestamp: {int(current_utc_datetime.timestamp())}\n\n"
+        f"{_SYSTEM_PROMPT}"
+    )
 
 
 _ArchitectureDimensionStatus = Literal[
@@ -287,15 +320,22 @@ class SimilarityJudge:
         *,
         llm_provider: LlmProviderPort,
         config: SimilarityJudgeConfig,
+        clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         self._llm = llm_provider
         self._config = config
+        self._clock = clock
 
     async def judge(self, request: SimilarityJudgeRequest) -> SimilarityJudgeResult:
         last_error: LlmProviderError | LlmRetryExhaustedError | None = None
         failed_candidate_usage: list[JudgeUsageSummary] = []
+        current_datetime = self._clock()
         for model in _judge_candidate_models(self._config):
-            llm_request = self._build_request(request, model=model)
+            llm_request = self._build_request(
+                request,
+                model=model,
+                current_datetime=current_datetime,
+            )
             try:
                 response = await self._llm.invoke(llm_request)
                 (
@@ -344,14 +384,22 @@ class SimilarityJudge:
             _attach_similarity_judge_usage(last_error, merge_judge_usage(failed_candidate_usage))
         raise last_error
 
-    def _build_request(self, request: SimilarityJudgeRequest, *, model: str) -> LlmRequest:
+    def _build_request(
+        self,
+        request: SimilarityJudgeRequest,
+        *,
+        model: str,
+        current_datetime: datetime,
+    ) -> LlmRequest:
         return LlmRequest(
             provider=self._config.provider,
             model=model,
             messages=(
                 LlmMessage(
                     role="system",
-                    content=(LlmMessageContentPart.input_text(_SYSTEM_PROMPT),),
+                    content=(
+                        LlmMessageContentPart.input_text(_system_prompt_at(current_datetime)),
+                    ),
                 ),
                 LlmMessage(
                     role="user",

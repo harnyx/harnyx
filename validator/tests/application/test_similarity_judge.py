@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime
 from typing import cast
 from uuid import uuid4
 
@@ -239,6 +240,90 @@ async def test_similarity_judge_returns_classification_and_validator_reasoning()
     assert {"type": "string"} in mechanism_change_schema["anyOf"]
     assert {"type": "null"} in mechanism_change_schema["anyOf"]
     assert llm_request.postprocessor is not None
+
+
+async def test_similarity_judge_includes_current_time_in_system_message() -> None:
+    current_datetime = datetime(2026, 8, 27, 4, 30, tzinfo=UTC)
+    llm = StubLlmProvider()
+    service = SimilarityJudge(
+        llm_provider=llm,
+        config=SimilarityJudgeConfig(
+            provider="chutes",
+            model="google/gemma-4-31B-turbo-TEE",
+        ),
+        clock=lambda: current_datetime,
+    )
+
+    await service.judge(
+        SimilarityJudgeRequest(
+            batch_id=uuid4(),
+            candidate_artifact_id=uuid4(),
+            reference_artifact_id=uuid4(),
+            candidate_miner_uid=20,
+            reference_miner_uid=10,
+            reference_script="def answer(): return 'old'",
+            candidate_diff="+ def answer(): return 'new'",
+        )
+    )
+
+    system_prompt = llm.requests[0].messages[0].content[0].text
+    assert system_prompt.startswith(
+        "Current datetime in UTC: 2026-08-27T04:30:00+00:00\n"
+        "Current Unix timestamp: 1787805000\n\n"
+    )
+
+
+async def test_similarity_judge_snapshots_datetime_before_trying_fallback_models() -> None:
+    first_datetime = datetime(2026, 8, 27, 4, 30, tzinfo=UTC)
+    later_datetime = datetime(2026, 8, 27, 4, 35, tzinfo=UTC)
+    clock_calls = 0
+
+    def clock() -> datetime:
+        nonlocal clock_calls
+        clock_calls += 1
+        return first_datetime if clock_calls == 1 else later_datetime
+
+    llm = SequenceLlmProvider(
+        [
+            _similarity_response(
+                classification="novel",
+                reasoning="Adds verification.",
+                mechanism_change="",
+            ),
+            _similarity_response(),
+        ]
+    )
+    service = SimilarityJudge(
+        llm_provider=llm,
+        config=SimilarityJudgeConfig(
+            provider="chutes",
+            model="google/gemma-4-31B-turbo-TEE",
+            fallback_models=("moonshotai/Kimi-K3-TEE",),
+        ),
+        clock=clock,
+    )
+
+    await service.judge(
+        SimilarityJudgeRequest(
+            batch_id=uuid4(),
+            candidate_artifact_id=uuid4(),
+            reference_artifact_id=uuid4(),
+            candidate_miner_uid=20,
+            reference_miner_uid=10,
+            reference_script="def answer(): return 'old'",
+            candidate_diff="+ def answer(): return 'new'",
+        )
+    )
+
+    system_prompts = [request.messages[0].content[0].text for request in llm.requests]
+    assert clock_calls == 1
+    assert all(
+        prompt.startswith(
+            "Current datetime in UTC: 2026-08-27T04:30:00+00:00\n"
+            "Current Unix timestamp: 1787805000\n\n"
+        )
+        for prompt in system_prompts
+    )
 
 
 async def test_similarity_judge_forwards_configured_request_extra_for_selected_model() -> None:
