@@ -51,10 +51,12 @@ class RecordingProvider(LlmProviderPort):
 
 
 @pytest.mark.parametrize(
-    ("model", "endpoint_id", "route_target", "service_url"),
+    ("model", "endpoint_id", "route_target", "service_url", "fast", "request_count"),
     (
-        (_GEMMA_MODEL, _GEMMA_ENDPOINT_ID, _GEMMA_ROUTE_TARGET, _GEMMA_SERVICE_URL),
-        (_QWEN36_MODEL, _QWEN36_ENDPOINT_ID, _QWEN36_ROUTE_TARGET, _QWEN36_SERVICE_URL),
+        (_GEMMA_MODEL, _GEMMA_ENDPOINT_ID, _GEMMA_ROUTE_TARGET, _GEMMA_SERVICE_URL, False, 2),
+        (_GEMMA_MODEL, _GEMMA_ENDPOINT_ID, _GEMMA_ROUTE_TARGET, _GEMMA_SERVICE_URL, True, 1),
+        (_QWEN36_MODEL, _QWEN36_ENDPOINT_ID, _QWEN36_ROUTE_TARGET, _QWEN36_SERVICE_URL, False, 2),
+        (_QWEN36_MODEL, _QWEN36_ENDPOINT_ID, _QWEN36_ROUTE_TARGET, _QWEN36_SERVICE_URL, True, 1),
     ),
 )
 async def test_evaluation_scoring_live_uses_real_structured_runtime_flow(
@@ -62,6 +64,8 @@ async def test_evaluation_scoring_live_uses_real_structured_runtime_flow(
     endpoint_id: str,
     route_target: str,
     service_url: str,
+    fast: bool,
+    request_count: int,
 ) -> None:
     base_settings = Settings.load()
     settings = base_settings.model_copy(
@@ -110,6 +114,7 @@ async def test_evaluation_scoring_live_uses_real_structured_runtime_flow(
         task_id=uuid4(),
         query=Query(
             text="Return the capital of France.",
+            fast=fast,
             output_schema={
                 "type": "object",
                 "properties": {"capital": {"type": "string"}},
@@ -128,7 +133,7 @@ async def test_evaluation_scoring_live_uses_real_structured_runtime_flow(
     finally:
         await registry.aclose()
 
-    assert len(llm_provider.requests) == 2
+    assert len(llm_provider.requests) == request_count
     assert all(request.output_mode == "structured" for request in llm_provider.requests)
     assert all(request.provider == settings.llm.scoring_llm_provider for request in llm_provider.requests)
     assert all(request.model == scoring_route.model for request in llm_provider.requests)
@@ -136,7 +141,7 @@ async def test_evaluation_scoring_live_uses_real_structured_runtime_flow(
     assert all(response.metadata is not None for response in llm_provider.responses)
     assert all(response.metadata["selected_provider"] == scoring_route.provider for response in llm_provider.responses)
     assert all(response.metadata["selected_model"] == scoring_route.model for response in llm_provider.responses)
-    assert score.scoring_version == "v1"
+    assert score.scoring_version == ("deepsearchqa-f1-v1" if fast else "v1")
     assert 0.0 <= score.comparison_score <= 1.0
     assert score.total_score == pytest.approx(score.comparison_score)
     observed_reasoning = [

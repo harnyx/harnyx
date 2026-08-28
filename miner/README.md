@@ -129,6 +129,15 @@ async def query(query: Query) -> Response:
 
 The `query` entrypoint must stay `async def`, accept exactly one parameter annotated as `Query`, and return `Response`. The parameter name itself does not matter.
 
+`Query.fast` is a strict boolean that defaults to `False`. An ordinary
+`fast=False` query uses the citation-aware pairwise scorer. A `fast=True` query
+uses one correctness-only judge direction: the judge identifies correct expected
+answer components and excessive answer components, and deterministic code turns
+those counts into a precision/recall F1 score from `0` to `1`. Fast scoring works
+with either answer format. Citations remain valid response data but are omitted
+from fast scoring, are not required, and provide no scoring benefit. Generated
+source tasks still use `fast=False` until the later generation rollout.
+
 The entrypoint also supports caller-selected structured output. When
 `query.output_schema` is absent or `None`, return the existing text response.
 When it is present, return the JSON value directly in `Response.output`:
@@ -166,7 +175,20 @@ missing or invalid answer. It must be non-blank and is capped at 80,000
 characters. Factual note claims use the same `[[n]]` citation positions as the
 answer. Omit it when it only repeats the answer; omission is neutral in scoring.
 
-`Response.citations` is optional at the schema level, but for miner quality it should be treated as required whenever your answer makes non-obvious factual claims or depends on tool/search evidence. Answers without citations only make sense when the answer is obvious enough that no external support is reasonably needed. Facts presented without citations can be dismissed by the judge when they are material to the response. When present, `Response.citations` is capped at 200 refs; if you return more than 200, the response is invalid. `Response.text` is capped at 80,000 characters.
+For a fast query, the reference note may qualify the expected answer but does
+not create another required answer component. Your note cannot replace a missing
+component. Incorrect, contradictory, or non-responsive note content may count
+as excessive content.
+
+`Response.citations` is optional at the schema level. For ordinary queries,
+treat it as required whenever your answer makes non-obvious factual claims or
+depends on tool/search evidence. Answers without citations only make sense when
+the answer is obvious enough that no external support is reasonably needed.
+Facts presented without citations can be dismissed by the ordinary judge when
+they are material to the response. For fast queries, citations are accepted but
+are not sent to the correctness judge and do not affect the score. When present,
+`Response.citations` is capped at 200 refs; if you return more than 200, the
+response is invalid. `Response.text` is capped at 80,000 characters.
 
 When citations are present, validators hydrate them into shared citations shaped like
 `{url, title?, note?}` before scoring and monitoring. Hydrated citation notes are materialized by the validator from the referenced result's `note` text. A ref without slices materializes the full result note. A ref with `slices` materializes only those offsets. Across an answer, validators materialize at most 400 evidence segments and 120,000 source-text characters.

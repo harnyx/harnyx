@@ -17,7 +17,15 @@ from harnyx_commons.domain.miner_task import (
 )
 from harnyx_commons.llm.provider import BaseLlmProvider, LlmRetryExhaustedError
 from harnyx_commons.llm.retry_utils import RetryPolicy
-from harnyx_commons.llm.schema import AbstractLlmRequest, LlmChoice, LlmChoiceMessage, LlmResponse, LlmUsage
+from harnyx_commons.llm.schema import (
+    AbstractLlmRequest,
+    LlmChoice,
+    LlmChoiceMessage,
+    LlmMessageContentPart,
+    LlmResponse,
+    LlmUsage,
+)
+from harnyx_commons.miner_task_fast_scoring import FastJudgeAssessment
 from harnyx_commons.miner_task_scoring import (
     _MAX_RENDERED_CITATIONS,
     EvaluationScoringConfig,
@@ -94,6 +102,21 @@ class SequenceLlmProvider:
             raise RuntimeError("missing pairwise outcome")
         outcome = self._outcomes.pop(0)
         return _resolve_llm_outcome(outcome)
+
+    async def aclose(self) -> None:
+        return None
+
+
+class FastSequenceLlmProvider:
+    def __init__(self, outcomes: list[LlmResponse | Exception]) -> None:
+        self._outcomes = outcomes
+        self.requests: list[AbstractLlmRequest] = []
+
+    async def invoke(self, request: AbstractLlmRequest) -> LlmResponse:
+        self.requests.append(request)
+        if not self._outcomes:
+            raise RuntimeError("missing fast scoring outcome")
+        return _resolve_llm_outcome(self._outcomes.pop(0))
 
     async def aclose(self) -> None:
         return None
@@ -199,6 +222,12 @@ def _pairwise_payload(request: object) -> dict[str, object]:
     return json.loads(payload_json)
 
 
+def _fast_payload(request: AbstractLlmRequest) -> dict[str, object]:
+    user_prompt = request.messages[1].content[0].text
+    _, payload_json = user_prompt.split("Payload:\n", 1)
+    return json.loads(payload_json)
+
+
 def _pairwise_side(request: object) -> str:
     payload = _pairwise_payload(request)
     first_answer = payload["answers"][0]["answer_text"]
@@ -235,6 +264,59 @@ def _pairwise_response(
         ),
         postprocessed={"preferred_position": preferred_position},
         metadata=metadata,
+    )
+
+
+def _fast_response(
+    *,
+    expected_components: list[dict[str, object]],
+    excessive_components: list[dict[str, object]],
+    reasoning_text: str | None = None,
+    reasoning_tokens: int | None = None,
+    prompt_tokens: int | None = None,
+    completion_tokens: int | None = None,
+    total_tokens: int | None = None,
+    metadata: dict[str, object] | None = None,
+) -> LlmResponse:
+    return LlmResponse(
+        id="fast-stub-response",
+        choices=(
+            LlmChoice(
+                index=0,
+                message=LlmChoiceMessage(
+                    role="assistant",
+                    content=(),
+                    reasoning=reasoning_text,
+                ),
+            ),
+        ),
+        usage=LlmUsage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            reasoning_tokens=reasoning_tokens,
+        ),
+        postprocessed={
+            "expected_components": expected_components,
+            "excessive_components": excessive_components,
+        },
+        metadata=metadata,
+    )
+
+
+def _raw_structured_response(payload: object) -> LlmResponse:
+    return LlmResponse(
+        id="raw-structured-response",
+        choices=(
+            LlmChoice(
+                index=0,
+                message=LlmChoiceMessage(
+                    role="assistant",
+                    content=(LlmMessageContentPart(type="text", text=json.dumps(payload)),),
+                ),
+            ),
+        ),
+        usage=LlmUsage(),
     )
 
 
@@ -1232,3 +1314,266 @@ async def test_scoring_service_accepts_chosen_answer_alias_from_live_shape() -> 
 
     assert score.comparison_score == pytest.approx(1.0)
     assert score.total_score == pytest.approx(1.0)
+
+
+async def test_fast_scoring_uses_one_citation_free_component_judgment() -> None:
+    """Future failure: fast scoring must stay correctness-only and one-directional."""
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="Name all four required values.", fast=True),
+        reference_answer=ReferenceAnswer(
+            text="Alpha, beta, gamma, delta.",
+            note="The order is not significant.",
+            citations=(AnswerCitation(url="https://reference.example"),),
+        ),
+    )
+    llm = FastSequenceLlmProvider(
+        [
+            _fast_response(
+                expected_components=[
+                    {"component_id": "alpha", "is_correct": True},
+                    {"component_id": "beta", "is_correct": True},
+                    {"component_id": "gamma", "is_correct": False},
+                    {"component_id": "delta", "is_correct": False},
+                ],
+                excessive_components=[{"component_id": "epsilon"}],
+                reasoning_text="Component comparison complete.",
+                reasoning_tokens=9,
+            )
+        ]
+    )
+    service = EvaluationScoringService(
+        llm_provider=llm,
+        config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
+    )
+
+    score = await service.score(
+        task=task,
+        response=Response(
+            text="Alpha, beta, epsilon.",
+            note="Gamma may also apply.",
+            citations=(AnswerCitation(url="https://miner.example"),),
+        ),
+    )
+
+    assert len(llm.requests) == 1
+    request = llm.requests[0]
+    assert tuple(message.role for message in request.messages) == ("system", "user")
+    assert request.use_case == "miner_task_fast_correctness_judge"
+    assert request.output_schema is FastJudgeAssessment
+    payload = _fast_payload(request)
+    assert payload == {
+        "query": "Name all four required values.",
+        "reference_answer": "Alpha, beta, gamma, delta.",
+        "reference_note": "The order is not significant.",
+        "miner_answer": "Alpha, beta, epsilon.",
+        "miner_note": "Gamma may also apply.",
+    }
+    assert "citation" not in json.dumps(payload).lower()
+    assert score.comparison_score == pytest.approx(round(4 / 7, 6))
+    assert score.total_score == pytest.approx(round(4 / 7, 6))
+    assert score.scoring_version == "deepsearchqa-f1-v1"
+    assert score.reasoning == ScorerReasoning(text="Component comparison complete.", reasoning_tokens=9)
+
+
+async def test_fast_scoring_returns_zero_when_no_expected_component_is_correct() -> None:
+    """Future failure: zero correct components must produce a deterministic zero score."""
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="Name the first two planets from the Sun.", fast=True),
+        reference_answer=ReferenceAnswer(text="Mercury and Venus."),
+    )
+    llm = FastSequenceLlmProvider(
+        [
+            _fast_response(
+                expected_components=[
+                    {"component_id": "Mercury", "is_correct": False},
+                    {"component_id": "Venus", "is_correct": False},
+                ],
+                excessive_components=[{"component_id": "Mars"}],
+            )
+        ]
+    )
+    service = EvaluationScoringService(
+        llm_provider=llm,
+        config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
+    )
+
+    score = await service.score(task=task, response=Response(text="Mars."))
+
+    assert score.comparison_score == 0.0
+    assert score.total_score == 0.0
+    assert score.scoring_version == "deepsearchqa-f1-v1"
+
+
+async def test_fast_scoring_preserves_structured_answer_contract_and_note_rules() -> None:
+    """Future failure: structured fast answers and public notes must retain their exact roles."""
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(
+            text="Return the capital.",
+            output_schema={
+                "type": "object",
+                "properties": {"capital": {"type": "string"}},
+                "required": ["capital"],
+                "additionalProperties": False,
+            },
+            fast=True,
+        ),
+        reference_answer=ReferenceAnswer(text='{"capital":"Paris"}', note="Use the English city name."),
+    )
+    llm = FastSequenceLlmProvider(
+        [
+            _fast_response(
+                expected_components=[{"component_id": "capital", "is_correct": True}],
+                excessive_components=[],
+            )
+        ]
+    )
+    service = EvaluationScoringService(
+        llm_provider=llm,
+        config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
+    )
+
+    score = await service.score(
+        task=task,
+        response=Response(output={"capital": "Paris"}, note="No regional qualifier is needed."),
+    )
+
+    request = llm.requests[0]
+    payload = _fast_payload(request)
+    assert payload["output_contract"] == task.query.output_schema
+    assert payload["miner_answer"] == '{"capital":"Paris"}'
+    system_prompt = request.messages[0].content[0].text
+    assert "Use `reference_note` only to qualify" in system_prompt
+    assert "`miner_note` is optional supplementary correctness content" in system_prompt
+    assert "cannot replace a missing component" in system_prompt
+    assert request.messages[1].content[0].text.startswith("Payload:\n{")
+    assert score.total_score == pytest.approx(1.0)
+
+
+async def test_fast_scoring_schema_rejects_invalid_component_sets_with_retry_feedback() -> None:
+    """Future failure: malformed component judgments must enter structured-output recovery."""
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="Return the answer.", fast=True),
+        reference_answer=ReferenceAnswer(text="Expected."),
+    )
+    llm = FastSequenceLlmProvider(
+        [
+            _fast_response(
+                expected_components=[{"component_id": "expected", "is_correct": True}],
+                excessive_components=[],
+            )
+        ]
+    )
+    service = EvaluationScoringService(
+        llm_provider=llm,
+        config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
+    )
+    await service.score(task=task, response=Response(text="Expected."))
+    request = llm.requests[0]
+    invalid_payloads = (
+        {
+            "expected_components": [{"component_id": "expected", "is_correct": True, "extra": "no"}],
+            "excessive_components": [],
+        },
+        {
+            "expected_components": [{"component_id": "expected", "is_correct": 1}],
+            "excessive_components": [],
+        },
+        {
+            "expected_components": [{"component_id": "   ", "is_correct": True}],
+            "excessive_components": [],
+        },
+        {
+            "expected_components": [
+                {"component_id": "Expected", "is_correct": True},
+                {"component_id": " expected ", "is_correct": False},
+            ],
+            "excessive_components": [],
+        },
+        {
+            "expected_components": [{"component_id": "expected", "is_correct": True}],
+            "excessive_components": [
+                {"component_id": "Extra"},
+                {"component_id": " extra "},
+            ],
+        },
+        {
+            "expected_components": [{"component_id": "Expected", "is_correct": True}],
+            "excessive_components": [{"component_id": " expected "}],
+        },
+    )
+
+    for invalid_payload in invalid_payloads:
+        result = request.postprocessor(_raw_structured_response(invalid_payload))
+        assert result.ok is False
+        assert result.retryable is True
+        assert result.recovery is not None
+        assert result.recovery.kind == "retry_with_feedback"
+
+
+async def test_fast_scoring_reuses_fallback_usage_trace_and_terminal_failure() -> None:
+    """Future failure: fast mode must retain scorer fallback accounting and exhaustion."""
+    primary_error = LlmRetryExhaustedError(
+        "primary exhausted",
+        response=_fast_response(
+            expected_components=[{"component_id": "answer", "is_correct": False}],
+            excessive_components=[],
+            prompt_tokens=7,
+            completion_tokens=3,
+            total_tokens=10,
+            metadata={"selected_provider": "chutes", "selected_model": "primary-judge"},
+        ),
+        attempts=2,
+        retry_reasons=("structured output invalid",),
+    )
+    fallback_response = _fast_response(
+        expected_components=[{"component_id": "answer", "is_correct": True}],
+        excessive_components=[],
+        prompt_tokens=11,
+        completion_tokens=4,
+        total_tokens=15,
+        metadata={"selected_provider": "chutes", "selected_model": "fallback-judge"},
+    )
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="Return the answer.", fast=True),
+        reference_answer=ReferenceAnswer(text="Answer."),
+    )
+    llm = FastSequenceLlmProvider([primary_error, fallback_response])
+    service = EvaluationScoringService(
+        llm_provider=llm,
+        config=EvaluationScoringConfig(
+            provider="chutes",
+            model="primary-judge",
+            fallback_models=("fallback-judge",),
+        ),
+    )
+
+    result = await service.score(task=task, response=Response(text="Answer."))
+
+    assert [request.model for request in llm.requests] == ["primary-judge", "fallback-judge"]
+    assert result.judge_usage.call_count == 2
+    assert result.judge_usage.total_tokens == 25
+    assert result.evaluation_trace is not None
+    assert result.evaluation_trace.scoring_judge_selected_routes == (
+        "chutes/primary-judge",
+        "chutes/fallback-judge",
+    )
+    assert result.evaluation_trace.scoring_judge_status == "ok"
+
+    terminal_llm = FastSequenceLlmProvider(
+        [LlmRetryExhaustedError("primary exhausted"), LlmRetryExhaustedError("fallback exhausted")]
+    )
+    terminal_service = EvaluationScoringService(
+        llm_provider=terminal_llm,
+        config=EvaluationScoringConfig(
+            provider="chutes",
+            model="primary-judge",
+            fallback_models=("fallback-judge",),
+        ),
+    )
+    with pytest.raises(LlmRetryExhaustedError, match="fallback exhausted"):
+        await terminal_service.score(task=task, response=Response(text="Answer."))

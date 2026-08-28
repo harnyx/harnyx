@@ -16,7 +16,8 @@ from harnyx_commons.llm.routing import LlmModelProviderOverrides, parse_llm_mode
 from harnyx_commons.tools.embedding_models import EmbeddingProviderName
 
 DEFAULT_MAX_OUTPUT_TOKENS = 1024
-DEFAULT_SCORING_MAX_OUTPUT_TOKENS = 20480
+DEFAULT_SCORING_MAX_OUTPUT_TOKENS = 32768
+DEFAULT_SIMILARITY_MAX_OUTPUT_TOKENS = 20480
 DEFAULT_SCORING_LLM_RETRY_ATTEMPTS = 6
 DEFAULT_SCORING_LLM_RETRY_INITIAL_MS = 30_000
 DEFAULT_SCORING_LLM_RETRY_MAX_MS = 300_000
@@ -247,7 +248,7 @@ class LlmSettings(BaseSettings):
     similarity_llm_provider: LlmProviderName = Field(default="chutes", alias="SIMILARITY_LLM_PROVIDER")
     similarity_llm_temperature: float | None = Field(default=None, alias="SIMILARITY_LLM_TEMPERATURE")
     similarity_llm_max_output_tokens: int = Field(
-        default=DEFAULT_SCORING_MAX_OUTPUT_TOKENS, alias="SIMILARITY_LLM_MAX_OUTPUT_TOKENS"
+        default=DEFAULT_SIMILARITY_MAX_OUTPUT_TOKENS, alias="SIMILARITY_LLM_MAX_OUTPUT_TOKENS"
     )
     similarity_llm_model_override: str | None = Field(default=None, alias="SIMILARITY_LLM_MODEL_OVERRIDE")
     similarity_llm_retry_attempts: int = Field(
@@ -402,6 +403,7 @@ __all__ = [
     "LlmSettings",
     "DEFAULT_MAX_OUTPUT_TOKENS",
     "DEFAULT_SCORING_MAX_OUTPUT_TOKENS",
+    "DEFAULT_SIMILARITY_MAX_OUTPUT_TOKENS",
     "OpenAiCompatibleAuthConfig",
     "OpenAiCompatibleBearerTokenEnvAuthConfig",
     "OpenAiCompatibleEndpointConfig",

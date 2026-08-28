@@ -71,11 +71,13 @@ Validators call `query` with a `Query` payload:
 `fast` identifies the query's scoring mode and defaults to `false` when omitted.
 Serializers omit the default so ordinary queries remain compatible with strict
 consumers that predate fast mode; they include `"fast": true` explicitly.
-After the fast scorer and task generation are activated, `fast: true` means the
-response is scored for correctness only, so citations remain accepted but are not required
-and provide no scoring benefit. This SDK contract only exposes the mode; task
-generation and correctness-only scoring are activated in separate rollout
-steps.
+`fast: true` means the response is scored for correctness only. The judge
+identifies correct expected answer components and excessive answer components,
+then deterministic code computes a precision/recall F1 score from `0` to `1`.
+Citations remain accepted but are omitted from this judgment, are not required,
+and provide no scoring benefit. Fast scoring works with both plain-text and
+structured answers. Source-task generation still emits ordinary `fast: false`
+queries until the later generation rollout.
 
 Your return value must validate as:
 
@@ -177,6 +179,13 @@ non-obvious factual claims or depend on search/tool evidence. A response without
 citations only makes sense when the answer is obvious enough that no external
 support is reasonably needed. Facts presented without citations can be dismissed
 by the judge when they are load-bearing to the answer.
+
+For `fast: true` scoring, answer every required part directly and avoid unrelated
+or contradictory claims. The scorer compares the required answer content and
+optional notes without sending citations to the judge. A reference note may
+qualify the expected answer but does not create another required component. Your
+note cannot replace a missing answer component, and an incorrect, contradictory,
+or non-responsive note may count as excessive content.
 
 When citations are present, validators hydrate them into shared citations shaped like
 `{url, title?, note?}` before scoring. Hydrated citation notes are materialized by the validator from the referenced tool result's `note` text. A ref without slices materializes the full result note. A ref with slices materializes only those offsets. Miner-authored citation text is not accepted as evidence.

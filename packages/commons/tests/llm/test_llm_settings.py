@@ -24,6 +24,13 @@ def test_tool_embedding_provider_can_be_openrouter() -> None:
     assert settings.tool_embedding_provider == "openrouter"
 
 
+def test_scoring_and_similarity_output_budgets_have_independent_defaults() -> None:
+    settings = LlmSettings(_env_file=None)
+
+    assert settings.scoring_llm_max_output_tokens == 32768
+    assert settings.similarity_llm_max_output_tokens == 20480
+
+
 def test_ai_gateway_api_key_value_strips_secret() -> None:
     settings = LlmSettings(AI_GATEWAY_API_KEY=" test-ai-gateway-key ")
 
