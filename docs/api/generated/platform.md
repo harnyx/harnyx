@@ -370,6 +370,7 @@ Body: [MinerTaskBatchModel](#model-minertaskbatchmodel)
 | `tasks` |  |  | req | array[[MinerTask](#model-minertask)] |
 |  | `budget_usd` |  | opt | `number` (default: 0.5) |
 |  | `query` |  | req | [Query](#model-query) |
+|  |  | `fast` | opt | `boolean` (default: False) |
 |  |  | `output_schema` | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
@@ -3362,6 +3363,7 @@ Body: [StatusResponse](#model-statusresponse)
 | --- | --- | --- | --- | --- |
 | `budget_usd` |  |  | opt | `number` (default: 0.5) |
 | `query` |  |  | req | [Query](#model-query) |
+|  | `fast` |  | opt | `boolean` (default: False) |
 |  | `output_schema` |  | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
 |  | `text` |  | req | `string` |
 | `reference_answer` |  |  | req | [ReferenceAnswer](#model-referenceanswer) |
@@ -3925,6 +3927,7 @@ Body: [StatusResponse](#model-statusresponse)
 | `tasks` |  |  | req | array[[MinerTask](#model-minertask)] |
 |  | `budget_usd` |  | opt | `number` (default: 0.5) |
 |  | `query` |  | req | [Query](#model-query) |
+|  |  | `fast` | opt | `boolean` (default: False) |
 |  |  | `output_schema` | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
@@ -4405,6 +4408,7 @@ Body: [StatusResponse](#model-statusresponse)
 | `task` |  |  | req | [MinerTask](#model-minertask) |
 |  | `budget_usd` |  | opt | `number` (default: 0.5) |
 |  | `query` |  | req | [Query](#model-query) |
+|  |  | `fast` | opt | `boolean` (default: False) |
 |  |  | `output_schema` | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
@@ -5244,6 +5248,7 @@ Body: [StatusResponse](#model-statusresponse)
 | `task` |  |  | req | [MinerTask](#model-minertask) |
 |  | `budget_usd` |  | opt | `number` (default: 0.5) |
 |  | `query` |  | req | [Query](#model-query) |
+|  |  | `fast` | opt | `boolean` (default: False) |
 |  |  | `output_schema` | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
@@ -5758,6 +5763,7 @@ Body: [StatusResponse](#model-statusresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `fast` |  |  | opt | `boolean` (default: False) |
 | `output_schema` |  |  | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
 | `text` |  |  | req | `string` |
 
@@ -5768,6 +5774,12 @@ Body: [StatusResponse](#model-statusresponse)
 {
   "additionalProperties": false,
   "properties": {
+    "fast": {
+      "default": false,
+      "description": "Whether the query uses correctness-only fast-mode scoring.",
+      "title": "Fast",
+      "type": "boolean"
+    },
     "output_schema": {
       "anyOf": [
         {
