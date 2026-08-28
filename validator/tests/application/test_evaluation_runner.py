@@ -816,6 +816,52 @@ async def test_evaluation_runner_assigned_task_final_validator_failure_becomes_a
     assert result.terminal_attempt.delivery_failure_detail is None
 
 
+async def test_evaluation_runner_assigned_proxy_grant_failure_closes_delivery_with_exact_code(
+    tmp_path: Path,
+) -> None:
+    """Prevent a known proxy-control failure from becoming an unexpected attempt failure."""
+
+    runner, batch_id, artifact, task, session_registry, receipt_log, _, _ = _assigned_task_test_context(tmp_path)
+    assignment = MinerTaskWorkAssignment(
+        batch_id=batch_id,
+        artifact=artifact,
+        task=task,
+        attempt_number=1,
+        max_attempts=1,
+        assignment_token=_ASSIGNMENT_TOKEN,
+    )
+    result_queue: asyncio.Queue[PlatformOwnedTaskResult] = asyncio.Queue()
+    results = await _run_assigned_task_queue_until_results(
+        runner,
+        batch_id=batch_id,
+        artifact=artifact,
+        initial_assignments=(assignment,),
+        assigned_work=_AssignedWork(),
+        result_queue=result_queue,
+        orchestrator=cast(
+            TaskRunOrchestrator,
+            _PlatformToolProxyReceiptOrchestrator(
+                sessions=session_registry,
+                receipt_log=receipt_log,
+                error_code="platform_tool_proxy_grant_failed",
+                caught_by_miner=True,
+            ),
+        ),
+        expected_result_count=1,
+    )
+
+    (result,) = results
+    attempt = result.terminal_attempt
+    assert result.result is None
+    assert attempt.error_code == "platform_tool_proxy_grant_failed"
+    assert attempt.error_summary_code == "platform_tool_proxy_grant_failed"
+    assert attempt.terminal_effect is MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE
+    assert attempt.delivery_failure_detail is not None
+    assert attempt.delivery_failure_detail.error_code == "platform_tool_proxy_grant_failed"
+    assert attempt.diagnostics is not None
+    assert attempt.diagnostics.failure_owner == "platform_tool_proxy_grant_failed"
+
+
 async def test_evaluate_assigned_task_queue_invocation_timeout_records_phase_owned_diagnostics(
     tmp_path: Path,
 ) -> None:
@@ -2685,7 +2731,6 @@ async def test_evaluation_runner_records_exhausted_submission(tmp_path: Path) ->
     session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
     evaluation_store = _RecordingEvaluationStore()
     receipt_log = FakeReceiptLog()
-    progress = _progress(tmp_path)
     runner = EvaluationRunner(
         subtensor_client=subtensor,
         session_manager=session_manager,
@@ -2696,7 +2741,7 @@ async def test_evaluation_runner_records_exhausted_submission(tmp_path: Path) ->
             datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
             datetime(2025, 10, 17, 12, 2, tzinfo=UTC),
         ),
-        progress=progress,
+        progress=_progress(tmp_path),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -3245,7 +3290,7 @@ async def test_evaluation_runner_assigned_task_final_sandbox_invocation_failure_
     )
 
 
-async def test_evaluation_runner_proxy_control_receipt_overrides_later_budget_exhaustion(
+async def test_evaluation_runner_identifies_proxy_control_failure_before_later_budget_exhaustion(
     tmp_path: Path,
 ) -> None:
     subtensor = FakeSubtensorClient()
@@ -3287,7 +3332,8 @@ async def test_evaluation_runner_proxy_control_receipt_overrides_later_budget_ex
             tasks=(task,),
             orchestrator=cast(TaskRunOrchestrator, orchestrator),
         )
-    assert exc_info.value.error_code == "unexpected_validator_failure"
+    assert exc_info.value.error_code == "platform_tool_proxy_denied"
+    assert exc_info.value.failure_detail.error_code == "platform_tool_proxy_denied"
     assert exc_info.value.failure_detail.exception_type == "PlatformToolProxyInvocationError"
     assert exc_info.value.failure_detail.error_message == (
         "platform tool proxy control failure: platform_tool_proxy_denied"
@@ -3999,6 +4045,7 @@ async def test_evaluation_runner_keeps_valid_response_when_provider_failure_stay
     "error_code",
     [
         "platform_tool_proxy_denied",
+        "platform_tool_proxy_grant_failed",
     ],
 )
 async def test_evaluation_runner_platform_proxy_control_categories_fail_validator(
@@ -4040,7 +4087,8 @@ async def test_evaluation_runner_platform_proxy_control_categories_fail_validato
             tasks=(task,),
             orchestrator=cast(TaskRunOrchestrator, orchestrator),
         )
-    assert exc_info.value.error_code == "unexpected_validator_failure"
+    assert exc_info.value.error_code == error_code
+    assert exc_info.value.failure_detail.error_code == error_code
     assert exc_info.value.failure_detail.exception_type == "PlatformToolProxyInvocationError"
     assert orchestrator.calls == 1
     assert evaluation_store.records == []
@@ -4050,6 +4098,7 @@ async def test_evaluation_runner_platform_proxy_control_categories_fail_validato
     "error_code",
     [
         "platform_tool_proxy_execution_failed",
+        "provider_failed",
     ],
 )
 async def test_evaluation_runner_platform_proxy_execution_categories_do_not_fail_validator_when_caught(
@@ -4101,6 +4150,7 @@ async def test_evaluation_runner_platform_proxy_execution_categories_do_not_fail
     "error_code",
     [
         "platform_tool_proxy_execution_failed",
+        "provider_failed",
     ],
 )
 async def test_evaluation_runner_platform_proxy_execution_categories_are_pair_scoped_when_uncaught(
@@ -4113,6 +4163,7 @@ async def test_evaluation_runner_platform_proxy_execution_categories_are_pair_sc
     session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
     evaluation_store = _RecordingEvaluationStore()
     receipt_log = FakeReceiptLog()
+    progress = _progress(tmp_path)
     runner = EvaluationRunner(
         subtensor_client=subtensor,
         session_manager=session_manager,
@@ -4120,7 +4171,7 @@ async def test_evaluation_runner_platform_proxy_execution_categories_are_pair_sc
         receipt_log=receipt_log,
         config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
-        progress=_progress(tmp_path),
+        progress=progress,
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -4135,8 +4186,9 @@ async def test_evaluation_runner_platform_proxy_execution_categories_are_pair_sc
         caught_by_miner=False,
     )
 
+    batch_id = uuid4()
     result = await runner.evaluate_artifact_with_state(
-        batch_id=uuid4(),
+        batch_id=batch_id,
         artifact=artifact,
         tasks=(task,),
         orchestrator=cast(TaskRunOrchestrator, orchestrator),
@@ -4146,6 +4198,16 @@ async def test_evaluation_runner_platform_proxy_execution_categories_are_pair_sc
     assert len(result.submissions) == 1
     assert result.submissions[0].run.details.error is not None
     assert result.submissions[0].run.details.error.code is MinerTaskErrorCode.MINER_UNHANDLED_EXCEPTION
+    page = progress.completed_run_page(batch_id, after_sequence=0, limit=10)
+    attempts = [
+        item["attempt"]
+        for item in page["items"]
+        if item["kind"] == "terminated_attempt" and item["attempt"] is not None
+    ]
+    assert len(attempts) == 1
+    assert attempts[0].error_code == "miner_unhandled_exception"
+    assert attempts[0].execution_log[0].details.extra is not None
+    assert attempts[0].execution_log[0].details.extra["platform_tool_proxy_error_code"] == error_code
     assert evaluation_store.records == list(result.submissions)
 
 
@@ -4315,6 +4377,7 @@ async def test_evaluation_runner_timeout_owned_path_ignores_earlier_proxy_contro
     ]
     assert len(terminated_attempts) == 1
     attempt = terminated_attempts[0]
+    assert attempt.error_code == "timeout_miner_owned"
     assert attempt.terminal_effect is MinerTaskAttemptTerminalEffect.TASK_RESULT
     assert {receipt.receipt_id for receipt in attempt.execution_log} == {
         "platform-tool-proxy-grant-failed",

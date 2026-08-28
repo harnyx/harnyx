@@ -36,6 +36,7 @@ from harnyx_commons.domain.tool_usage import ToolUsageSummary
 from harnyx_commons.errors import SessionBudgetExhaustedError
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_commons.miner_task_failure_policy import (
+    PLATFORM_TOOL_PROXY_TIMEOUT_ERROR_CODE,
     SANDBOX_DETAIL_CODE_UNHANDLED_EXCEPTION,
     TERMINAL_TIMEOUT_ERROR_MESSAGE,
     ProviderFailureEvidence,
@@ -171,7 +172,7 @@ class _AssignedTaskFinalization:
 
 @dataclass(frozen=True, slots=True)
 class _PlatformToolProxyControlFailure:
-    error_code: str
+    error_code: MinerTaskErrorCode
     error_message: str
     occurred_at: datetime
     exception_type: str | None = None
@@ -2250,7 +2251,11 @@ class EvaluationRunner:
         ):
             return None
         if not final_attempt:
-            return _retry_decision(exc, timeout_owner="platform_tool_proxy_execute")
+            return _retry_decision(
+                exc,
+                timeout_owner="platform_tool_proxy_execute",
+                attempt_error_code=PLATFORM_TOOL_PROXY_TIMEOUT_ERROR_CODE,
+            )
         return _submission_decision(
             self._build_task_failure(
                 batch_id=batch_id,
@@ -2391,10 +2396,10 @@ class EvaluationRunner:
         message = f"platform tool proxy control failure: {failure.error_code}"
         return _validator_batch_failure_decision(
             ValidatorBatchFailedError(
-                error_code=MinerTaskErrorCode.UNEXPECTED_VALIDATOR_FAILURE,
+                error_code=failure.error_code,
                 message=message,
                 failure_detail=ValidatorBatchFailureDetail(
-                    error_code=MinerTaskErrorCode.UNEXPECTED_VALIDATOR_FAILURE,
+                    error_code=failure.error_code,
                     error_message=message,
                     occurred_at=failure.occurred_at,
                     artifact_id=artifact.artifact_id,
@@ -2421,7 +2426,7 @@ class EvaluationRunner:
             error_message = extra.get("error_message") or f"platform tool proxy error: {error_code}"
             occurred_at = receipt.details.execution.finished_at if receipt.details.execution is not None else None
             return _PlatformToolProxyControlFailure(
-                error_code=error_code,
+                error_code=MinerTaskErrorCode(error_code),
                 error_message=error_message,
                 occurred_at=occurred_at or self._clock(),
                 exception_type=extra.get("error_type"),
@@ -2521,11 +2526,7 @@ class EvaluationRunner:
 
         if decision.kind in {AttemptControlKind.RETRY, AttemptControlKind.REVIEW_TIMEOUT}:
             terminal_outcome = decision.kind.value
-            error_code = _attempt_error_code(
-                decision,
-                execution_log=decision.attempt_execution_log
-                or tuple(self._receipts.for_session(issued.session.session_id)),
-            )
+            error_code = _attempt_error_code(decision)
             attempt = self._build_terminated_attempt_record(
                 batch_id=batch_id,
                 artifact=artifact,
@@ -2734,7 +2735,7 @@ class EvaluationRunner:
         attempt_receipts = decision.attempt_execution_log or tuple(
             self._receipts.for_session(issued.session.session_id)
         )
-        error_code = _attempt_error_code(decision, execution_log=attempt_receipts)
+        error_code = _attempt_error_code(decision)
         if decision.submission is not None and decision.submission.run.details.error is None:
             status = MinerTaskAttemptStatus.SUCCEEDED
             error_code = None
@@ -3128,9 +3129,15 @@ def _submission_decision(
     )
 
 
-def _retry_decision(exc: Exception, *, timeout_owner: str | None = None) -> TaskAttemptDecision:
+def _retry_decision(
+    exc: Exception,
+    *,
+    timeout_owner: str | None = None,
+    attempt_error_code: MinerTaskErrorCode | str | None = None,
+) -> TaskAttemptDecision:
     return TaskAttemptDecision(
         kind=AttemptControlKind.RETRY,
+        attempt_error_code=attempt_error_code,
         timeout_owner=timeout_owner,
         retry_exc=exc,
     )
@@ -3219,12 +3226,7 @@ def _submission_error_code_or_none(submission: MinerTaskRunSubmission) -> MinerT
 
 def _attempt_error_code(
     decision: TaskAttemptDecision,
-    *,
-    execution_log: Sequence[ToolCall] = (),
 ) -> str | None:
-    proxy_error_code = _platform_tool_proxy_error_code_or_none(execution_log)
-    if proxy_error_code is not None:
-        return proxy_error_code
     if decision.submission is not None:
         error_code = _submission_error_code_or_none(decision.submission)
         return None if error_code is None else str(error_code)
@@ -3277,17 +3279,6 @@ def _orchestrator_accepts_phase_recorder(orchestrator: TaskRunOrchestrator) -> b
         parameter.kind is inspect.Parameter.VAR_KEYWORD
         for parameter in parameters.values()
     )
-
-
-def _platform_tool_proxy_error_code_or_none(execution_log: Sequence[ToolCall]) -> str | None:
-    for receipt in reversed(tuple(execution_log)):
-        extra = receipt.details.extra
-        if extra is None:
-            continue
-        error_code = extra.get("platform_tool_proxy_error_code")
-        if error_code is not None:
-            return str(error_code)
-    return None
 
 
 def _validator_batch_failed_from_existing_submission(

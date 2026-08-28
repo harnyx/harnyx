@@ -241,6 +241,8 @@ class MinerTaskErrorCode(StrEnum):
     MINER_RESPONSE_INVALID = "miner_response_invalid"
     MINER_UNHANDLED_EXCEPTION = "miner_unhandled_exception"
     NEVER_RAN = "never_ran"
+    PLATFORM_TOOL_PROXY_DENIED = "platform_tool_proxy_denied"
+    PLATFORM_TOOL_PROXY_GRANT_FAILED = "platform_tool_proxy_grant_failed"
     PROGRESS_SNAPSHOT_FAILED = "progress_snapshot_failed"
     # Historical delivery failure code. Active validator runtime no longer emits it.
     PROVIDER_BATCH_FAILURE = "provider_batch_failure"
@@ -268,6 +270,8 @@ DELIVERY_DISQUALIFYING_VALIDATOR_PAIR_ERROR_CODES: frozenset[MinerTaskErrorCode]
         MinerTaskErrorCode.ARTIFACT_SETUP_FAILED,
         MinerTaskErrorCode.SANDBOX_START_FAILED,
         MinerTaskErrorCode.SANDBOX_INVOCATION_FAILED,
+        MinerTaskErrorCode.PLATFORM_TOOL_PROXY_DENIED,
+        MinerTaskErrorCode.PLATFORM_TOOL_PROXY_GRANT_FAILED,
     )
 )
 

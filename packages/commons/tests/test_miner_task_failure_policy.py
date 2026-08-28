@@ -4,7 +4,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from harnyx_commons.domain.miner_task import EvaluationError, MinerTaskErrorCode
+from harnyx_commons.domain.miner_task import (
+    EvaluationError,
+    MinerTaskErrorCode,
+    is_delivery_disqualifying_validator_pair_error,
+)
 from harnyx_commons.domain.tool_call import ToolCall, ToolCallDetails, ToolCallOutcome
 from harnyx_commons.miner_task_failure_policy import (
     delivery_exclusion_from_completed_pair_results,
@@ -105,6 +109,11 @@ def test_delivery_exclusion_ignores_miner_owned_pair_failures() -> None:
     )
 
     assert decision is None
+
+
+def test_platform_tool_proxy_control_failures_disqualify_validator_delivery() -> None:
+    assert is_delivery_disqualifying_validator_pair_error(MinerTaskErrorCode.PLATFORM_TOOL_PROXY_DENIED)
+    assert is_delivery_disqualifying_validator_pair_error(MinerTaskErrorCode.PLATFORM_TOOL_PROXY_GRANT_FAILED)
 
 
 def test_sandbox_failure_shape_classifiers_expose_validator_attribution_policy() -> None:

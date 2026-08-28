@@ -4044,6 +4044,8 @@ Body: [StatusResponse](#model-statusresponse)
     "miner_response_invalid",
     "miner_unhandled_exception",
     "never_ran",
+    "platform_tool_proxy_denied",
+    "platform_tool_proxy_grant_failed",
     "progress_snapshot_failed",
     "provider_batch_failure",
     "sandbox_failed",
