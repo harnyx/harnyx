@@ -16,6 +16,39 @@ def test_query_forbids_extra_fields() -> None:
         Query.model_validate({"text": "hello", "other": "nope"})
 
 
+@pytest.mark.parametrize(
+    ("payload", "expected_fast"),
+    [
+        ({"text": "question"}, False),
+        ({"text": "question", "fast": False}, False),
+        ({"text": "question", "fast": True}, True),
+    ],
+)
+def test_query_accepts_fast_mode_as_a_strict_boolean(
+    payload: dict[str, object],
+    expected_fast: bool,
+) -> None:
+    query = Query.model_validate(payload)
+
+    assert query.fast is expected_fast
+
+
+def test_query_omits_compatibility_default_but_serializes_fast_mode() -> None:
+    """Future failure: ordinary queries must remain readable by pre-fast-mode consumers."""
+    assert Query(text="question").model_dump(mode="json") == {"text": "question"}
+    assert Query(text="question", fast=False).model_dump(mode="json") == {"text": "question"}
+    assert Query(text="question", fast=True).model_dump(mode="json") == {
+        "text": "question",
+        "fast": True,
+    }
+
+
+@pytest.mark.parametrize("fast", [None, 0, 1, "false", "true"])
+def test_query_rejects_non_boolean_fast_mode(fast: object) -> None:
+    with pytest.raises(ValidationError):
+        Query.model_validate({"text": "question", "fast": fast})
+
+
 def test_query_accepts_draft_2020_12_schema_and_preserves_nested_strings() -> None:
     schema = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",

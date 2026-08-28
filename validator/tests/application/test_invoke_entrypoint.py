@@ -106,7 +106,7 @@ async def test_invoke_entrypoint_calls_query_with_query_payload() -> None:
             session_id=session_id,
             token=token,
             uid=42,
-            query=Query(text="harnyx subnet"),
+            query=Query(text="harnyx subnet", fast=True),
         ),
     )
 
@@ -114,7 +114,7 @@ async def test_invoke_entrypoint_calls_query_with_query_payload() -> None:
     assert sandbox.invocations == [
         (
             "query",
-            {"text": "harnyx subnet"},
+            {"text": "harnyx subnet", "fast": True},
             {},
             token,
             session_id,
@@ -142,7 +142,10 @@ async def test_invoke_entrypoint_returns_structured_output() -> None:
     )
 
     assert result.response == Response(output={"answer": [1, None]})
-    assert sandbox.invocations[0][1] == {"text": "question", "output_schema": schema}
+    assert sandbox.invocations[0][1] == {
+        "text": "question",
+        "output_schema": schema,
+    }
 
 
 async def test_invoke_entrypoint_maps_schema_mismatch_as_miner_response_invalid() -> None:

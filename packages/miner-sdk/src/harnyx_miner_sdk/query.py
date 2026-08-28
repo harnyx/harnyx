@@ -38,6 +38,11 @@ class Query(BaseModel):
     model_config = _MINER_SDK_STRICT_CONFIG
 
     text: str = Field(min_length=1)
+    fast: bool = Field(
+        default=False,
+        description="Whether the query uses correctness-only fast-mode scoring.",
+        exclude_if=lambda value: value is False,
+    )
     output_schema: JsonObject | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @field_validator("text")

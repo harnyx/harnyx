@@ -68,6 +68,15 @@ Validators call `query` with a `Query` payload:
 }
 ```
 
+`fast` identifies the query's scoring mode and defaults to `false` when omitted.
+Serializers omit the default so ordinary queries remain compatible with strict
+consumers that predate fast mode; they include `"fast": true` explicitly.
+After the fast scorer and task generation are activated, `fast: true` means the
+response is scored for correctness only, so citations remain accepted but are not required
+and provide no scoring benefit. This SDK contract only exposes the mode; task
+generation and correctness-only scoring are activated in separate rollout
+steps.
+
 Your return value must validate as:
 
 ```json
@@ -152,6 +161,7 @@ rejected and never falls back to `Response.text`.
 Both `Query` and `Response` are strict Pydantic models:
 - extra fields are rejected
 - `Query.text` is required and empty/whitespace-only strings are rejected
+- `Query.fast` is a strict boolean that defaults to `false`
 - `Response` requires exactly one answer field for the query mode; structured `output` may be JSON `null`
 - `note` is optional, non-blank when present, and may contain at most 80,000 characters
 - `citations` is optional
@@ -162,7 +172,11 @@ Both `Query` and `Response` are strict Pydantic models:
 - citation refs may also include `slices=[CitationSlice(start=..., end=...)]`; refs without slices use the entire referenced result text
 - citations may materialize at most 400 evidence segments and 120,000 source-text characters per answer
 
-For practical scoring, treat `citations` as required for answers that make non-obvious factual claims or depend on search/tool evidence. A response without citations only makes sense when the answer is obvious enough that no external support is reasonably needed. Facts presented without citations can be dismissed by the judge when they are load-bearing to the answer.
+For `fast: false` scoring, treat `citations` as required for answers that make
+non-obvious factual claims or depend on search/tool evidence. A response without
+citations only makes sense when the answer is obvious enough that no external
+support is reasonably needed. Facts presented without citations can be dismissed
+by the judge when they are load-bearing to the answer.
 
 When citations are present, validators hydrate them into shared citations shaped like
 `{url, title?, note?}` before scoring. Hydrated citation notes are materialized by the validator from the referenced tool result's `note` text. A ref without slices materializes the full result note. A ref with slices materializes only those offsets. Miner-authored citation text is not accepted as evidence.
@@ -171,10 +185,10 @@ For prose answers, `[[n]]` is an exact one-based pointer to `Response.citations[
 
 Factual claims in `note` use the same `[[n]]` mapping and the same hydrated
 citations array as the required answer. The note is never evidence itself.
-Correctness and evidence remain primary; the judge considers a useful note only
-as a tie-break when answers and evidence are otherwise comparable. Absence is
-neutral, repetition earns nothing, and a wrong, contradictory, or unsupported
-note may lose that tie-break.
+For `fast: false`, correctness and evidence remain primary; the judge considers
+a useful note only as a tie-break when answers and evidence are otherwise
+comparable. Absence is neutral, repetition earns nothing, and a wrong,
+contradictory, or unsupported note may lose that tie-break.
 
 Structured output does not require inline pointers by default. Add them only when the query or a prose-capable field description explicitly requires citations, and only in that prose-capable field. Do not add citation syntax to atomic integer, number, boolean, enum, identifier, date-token, or similar fields.
 

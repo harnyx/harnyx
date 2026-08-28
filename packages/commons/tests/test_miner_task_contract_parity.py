@@ -27,6 +27,12 @@ def test_query_contract_matches_miner_sdk_boundary() -> None:
     assert CommonsQuery is MinerSdkQuery
     schema = {"type": "string", "const": "  exact  "}
     assert CommonsQuery(text=" question ", output_schema=schema).output_schema == schema
+    assert CommonsQuery(text="question").fast is False
+    assert CommonsQuery(text="question", fast=True) == MinerSdkQuery(text="question", fast=True)
+
+    for model in (CommonsQuery, MinerSdkQuery):
+        with pytest.raises(ValidationError):
+            model.model_validate({"text": "question", "fast": 1})
 
 
 def test_response_contract_matches_miner_sdk_boundary() -> None:
