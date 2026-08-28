@@ -136,7 +136,8 @@ answer components and excessive answer components, and deterministic code turns
 those counts into a precision/recall F1 score from `0` to `1`. Fast scoring works
 with either answer format. Citations remain valid response data but are omitted
 from fast scoring, are not required, and provide no scoring benefit. Generated
-source tasks still use `fast=False` until the later generation rollout.
+source tasks independently use `fast=True` with probability `0.5` per output
+slot. There is no per-batch mode quota, so a finite batch may contain any mix.
 
 The entrypoint also supports caller-selected structured output. When
 `query.output_schema` is absent or `None`, return the existing text response.

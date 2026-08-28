@@ -12,7 +12,7 @@ dependencies = [
   "python-dotenv>=1.1.1",
   "bittensor==10.4.1",
   "harnyx-miner-sdk>=0.1.16",
-  "harnyx-commons>=0.1.18",
+  "harnyx-commons>=0.1.19",
   "harnyx-validator>=20260506.post0",
 ]
 

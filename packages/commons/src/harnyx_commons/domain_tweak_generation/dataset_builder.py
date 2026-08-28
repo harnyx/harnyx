@@ -39,9 +39,12 @@ class DomainTweakMinerTaskDatasetBuilder:
             raise ValueError("domain-tweak generation requires request.created_at")
         if request.plain_text_probability is None:
             raise ValueError("domain-tweak generation requires plain_text_probability")
+        if request.fast_probability is None:
+            raise ValueError("domain-tweak generation requires fast_probability")
         return await self._refill_pipeline.generate_batch(
             target_count=request.minimum_task_total,
             plain_text_probability=request.plain_text_probability,
+            fast_probability=request.fast_probability,
             on_finalized_task=on_finalized_task,
             on_portfolio_completed=self._on_portfolio_completed,
             on_attempt_completed=self._on_attempt_completed,

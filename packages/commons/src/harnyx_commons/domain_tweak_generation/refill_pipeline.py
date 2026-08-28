@@ -56,6 +56,7 @@ class _SlotInput:
     output_slot: int
     capability_preference: CapabilityPreference
     required_response_mode: ResponseMode
+    required_fast: bool
 
 
 def _capability_preferences(target_count: int) -> tuple[CapabilityPreference, ...]:
@@ -80,11 +81,25 @@ def _required_response_modes(
     )
 
 
-def _validate_batch_request(target_count: int, plain_text_probability: float) -> None:
+def _required_fast_modes(
+    target_count: int,
+    fast_probability: float,
+    random_value: Callable[[], float],
+) -> tuple[bool, ...]:
+    return tuple(random_value() < fast_probability for _ in range(target_count))
+
+
+def _validate_batch_request(
+    target_count: int,
+    plain_text_probability: float,
+    fast_probability: float,
+) -> None:
     if target_count <= 0:
         raise ValueError("target_count must be positive")
     if not 0.0 <= plain_text_probability <= 1.0:
         raise ValueError("plain_text_probability must be between 0 and 1")
+    if not 0.0 <= fast_probability <= 1.0:
+        raise ValueError("fast_probability must be between 0 and 1")
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,11 +154,12 @@ class ShortfallRefillPipeline:
         *,
         target_count: int,
         plain_text_probability: float,
+        fast_probability: float,
         on_finalized_task: DomainTweakFinalizedTaskCallback | None = None,
         on_portfolio_completed: PortfolioCallCallback | None = None,
         on_attempt_completed: SlotAttemptCallback | None = None,
     ) -> DomainTweakBatchGenerationResult:
-        _validate_batch_request(target_count, plain_text_probability)
+        _validate_batch_request(target_count, plain_text_probability, fast_probability)
         started = time.perf_counter()
         open_slots = list(range(target_count))
         preference_by_slot = _capability_preferences(target_count)
@@ -152,6 +168,7 @@ class ShortfallRefillPipeline:
             plain_text_probability,
             self._random_value,
         )
+        fast_by_slot = _required_fast_modes(target_count, fast_probability, self._random_value)
         finalized_by_slot: dict[int, DomainTweakFinalizedTask] = {}
         canonical_questions: set[str] = set()
         accepted_route_contexts: list[AcceptedRouteContext] = []
@@ -167,7 +184,8 @@ class ShortfallRefillPipeline:
         while open_slots:
             round_index += 1
             slot_inputs = tuple(
-                _SlotInput(slot, preference_by_slot[slot], mode_by_slot[slot]) for slot in open_slots
+                _SlotInput(slot, preference_by_slot[slot], mode_by_slot[slot], fast_by_slot[slot])
+                for slot in open_slots
             )
             groups = tuple(
                 slot_inputs[start : start + _MAX_PORTFOLIO_GROUP_SIZE]
@@ -290,6 +308,7 @@ class ShortfallRefillPipeline:
                                 allocation,
                                 capability_preference=item.capability_preference,
                                 required_response_mode=item.required_response_mode,
+                                required_fast=item.required_fast,
                             )
                         except BatchTerminalGenerationError as exc:
                             result = exc

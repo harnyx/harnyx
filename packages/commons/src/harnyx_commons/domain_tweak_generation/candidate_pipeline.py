@@ -72,6 +72,7 @@ class CandidatePipeline:
         *,
         capability_preference: CapabilityPreference,
         required_response_mode: ResponseMode,
+        required_fast: bool,
     ) -> CandidateOutcome:
         started = time.perf_counter()
         workspace = self._workspace_factory()
@@ -199,7 +200,11 @@ class CandidatePipeline:
             return DomainTweakFinalizedTask(
                 task=MinerTask(
                     task_id=self._task_id_factory(),
-                    query=Query(text=dossier.question, output_schema=validated.output_schema),
+                    query=Query(
+                        text=dossier.question,
+                        output_schema=validated.output_schema,
+                        fast=required_fast,
+                    ),
                     reference_answer=validated.reference_answer,
                 ),
                 stage_summaries=tuple(summaries),

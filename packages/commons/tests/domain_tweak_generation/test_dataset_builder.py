@@ -13,12 +13,14 @@ class _Refill:
     def __init__(self) -> None:
         self.target_count: int | None = None
         self.plain_text_probability: float | None = None
+        self.fast_probability: float | None = None
 
     async def generate_batch(self, **kwargs: object) -> DomainTweakBatchGenerationResult:
         target_count = kwargs["target_count"]
         assert isinstance(target_count, int)
         self.target_count = target_count
         self.plain_text_probability = kwargs.get("plain_text_probability")  # type: ignore[assignment]
+        self.fast_probability = kwargs.get("fast_probability")  # type: ignore[assignment]
         return DomainTweakBatchGenerationResult(
             target_count=self.target_count,
             finalized_tasks=tuple(_finalized(index) for index in range(target_count)),
@@ -59,6 +61,7 @@ async def test_builder_delegates_exact_requested_count_without_attempt_multiplie
             minimum_task_total=7,
             generation_task_buffer=0,
             plain_text_probability=0.7,
+            fast_probability=0.5,
             generation_spec=spec,
             reference_spec=spec,
         )
@@ -66,6 +69,7 @@ async def test_builder_delegates_exact_requested_count_without_attempt_multiplie
 
     assert refill.target_count == 7
     assert refill.plain_text_probability == 0.7
+    assert refill.fast_probability == 0.5
     assert result.target_count == 7
 
 
@@ -83,4 +87,22 @@ async def test_domain_tweak_builder_rejects_missing_plain_text_probability() -> 
     )
 
     with pytest.raises(ValueError, match="plain_text_probability"):
+        await DomainTweakMinerTaskDatasetBuilder(refill_pipeline=_Refill()).build_with_result(request)  # type: ignore[arg-type]
+
+
+@pytest.mark.anyio
+async def test_domain_tweak_builder_rejects_missing_fast_probability() -> None:
+    """Future failure: active generation must not invent a fast-mode probability."""
+    spec = MinerTaskModelSpec(provider="vertex", model="unused", temperature=None, max_output_tokens=None)
+    request = MinerTaskDatasetRequest(
+        batch_id=UUID(int=3),
+        created_at=datetime.now(UTC),
+        minimum_task_total=1,
+        generation_task_buffer=0,
+        plain_text_probability=0.7,
+        generation_spec=spec,
+        reference_spec=spec,
+    )
+
+    with pytest.raises(ValueError, match="fast_probability"):
         await DomainTweakMinerTaskDatasetBuilder(refill_pipeline=_Refill()).build_with_result(request)  # type: ignore[arg-type]

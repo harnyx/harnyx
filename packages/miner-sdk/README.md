@@ -76,8 +76,8 @@ identifies correct expected answer components and excessive answer components,
 then deterministic code computes a precision/recall F1 score from `0` to `1`.
 Citations remain accepted but are omitted from this judgment, are not required,
 and provide no scoring benefit. Fast scoring works with both plain-text and
-structured answers. Source-task generation still emits ordinary `fast: false`
-queries until the later generation rollout.
+structured answers. Each source-generation slot independently selects
+`fast: true` with probability `0.5`; a finite batch may contain any mix of modes.
 
 Your return value must validate as:
 

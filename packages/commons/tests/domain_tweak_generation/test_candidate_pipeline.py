@@ -203,6 +203,7 @@ async def test_single_question_generation_call_owns_question_and_dossier() -> No
         PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
         capability_preference="general_deep_research",
         required_response_mode="plain_text",
+        required_fast=False,
     )
 
     assert isinstance(outcome, DomainTweakFinalizedTask)
@@ -231,6 +232,7 @@ async def test_capability_preference_does_not_override_required_response_mode() 
         PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
         capability_preference="evidence_grounded_calculation_or_proof",
         required_response_mode="structured",
+        required_fast=True,
     )
     plain_runner = _Runner((_dossier(), _proof(), AuditResult(status="pass", explanation="complete")))
     plain = await CandidatePipeline(
@@ -241,12 +243,15 @@ async def test_capability_preference_does_not_override_required_response_mode() 
         PortfolioAllocation(slot=1, ecosystems=("a", "b", "c", "d", "e")),
         capability_preference="structured_field_semantics",
         required_response_mode="plain_text",
+        required_fast=False,
     )
 
     assert isinstance(structured, DomainTweakFinalizedTask)
+    assert structured.task.query.fast is True
     assert structured.task.query.output_schema is not None
     assert structured.task.reference_answer.text == '{"value":1200}'
     assert isinstance(plain, DomainTweakFinalizedTask)
+    assert plain.task.query.fast is False
     assert plain.task.query.output_schema is None
     assert [call["stage"] for call in structured_runner.calls] == ["question_generation", "reference", "audit"]
     assert [call["stage"] for call in plain_runner.calls] == ["question_generation", "reference", "audit"]
@@ -268,6 +273,7 @@ async def test_ready_dossier_in_wrong_required_mode_fails_before_reference() -> 
         PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
         capability_preference="general_deep_research",
         required_response_mode="structured",
+        required_fast=False,
     )
 
     assert isinstance(outcome, CandidateFailure)
@@ -322,6 +328,7 @@ async def test_answer_disclosing_structured_schema_cannot_finalize_candidate() -
         PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
         capability_preference="structured_field_semantics",
         required_response_mode="structured",
+        required_fast=False,
     )
 
     assert isinstance(outcome, CandidateFailure)
@@ -359,6 +366,7 @@ async def test_semantic_schema_disclosure_rejected_by_audit_cannot_finalize_cand
         PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
         capability_preference="structured_field_semantics",
         required_response_mode="structured",
+        required_fast=False,
     )
 
     assert isinstance(outcome, CandidateFailure)
@@ -387,6 +395,7 @@ async def test_audit_execution_failure_cannot_finalize_candidate() -> None:
         PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
         capability_preference="general_deep_research",
         required_response_mode="plain_text",
+        required_fast=False,
     )
 
     assert isinstance(outcome, CandidateFailure)
@@ -417,6 +426,7 @@ async def test_audit_rejection_gets_one_reference_repair_and_second_read_only_au
         PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
         capability_preference="general_deep_research",
         required_response_mode="plain_text",
+        required_fast=False,
     )
 
     assert isinstance(outcome, DomainTweakFinalizedTask)
@@ -453,6 +463,7 @@ async def test_structured_repair_receives_immutable_contract_and_replaces_reject
         PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
         capability_preference="general_deep_research",
         required_response_mode="structured",
+        required_fast=False,
     )
 
     assert isinstance(outcome, DomainTweakFinalizedTask)
@@ -484,6 +495,7 @@ async def test_no_generate_retains_first_typed_blocker() -> None:
         PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
         capability_preference="general_deep_research",
         required_response_mode="plain_text",
+        required_fast=False,
     )
 
     assert isinstance(outcome, CandidateFailure)
@@ -536,6 +548,7 @@ async def test_wrong_internal_stage_output_becomes_batch_terminal() -> None:
             PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
             capability_preference="general_deep_research",
             required_response_mode="plain_text",
+            required_fast=False,
         )
     assert captured.value.failure_class == "unexpected_pipeline_failure"
     assert captured.value.stage == "question_generation"
@@ -554,6 +567,7 @@ async def test_unexpected_pipeline_exception_becomes_typed_batch_terminal_fault(
             PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
             capability_preference="general_deep_research",
             required_response_mode="plain_text",
+            required_fast=False,
         )
     assert captured.value.stage == "question_generation"
 
@@ -571,6 +585,7 @@ async def test_public_question_over_ordinary_audit_target_reaches_finalized_task
         PortfolioAllocation(slot=0, ecosystems=("a", "b", "c", "d", "e")),
         capability_preference="general_deep_research",
         required_response_mode="plain_text",
+        required_fast=False,
     )
 
     assert isinstance(outcome, DomainTweakFinalizedTask)

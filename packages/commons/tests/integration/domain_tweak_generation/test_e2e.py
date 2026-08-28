@@ -106,9 +106,10 @@ async def test_composed_pipeline_reaches_plain_miner_task_without_hidden_form_le
     result = await ShortfallRefillPipeline(
         runner=runner,  # type: ignore[arg-type]
         candidate_pipeline=candidate,
-    ).generate_batch(target_count=1, plain_text_probability=1.0)
+    ).generate_batch(target_count=1, plain_text_probability=1.0, fast_probability=1.0)
 
     assert result.finalized_tasks[0].task.query.output_schema is None
+    assert result.finalized_tasks[0].task.query.fast is True
     assert result.finalized_tasks[0].task.reference_answer.citations
     assert result.slot_attempt_count == 1
     assert result.finalized_tasks[0].task.task_id.int != 0
@@ -160,7 +161,7 @@ async def test_composed_pipeline_reaches_structured_miner_task_on_the_same_share
             source_fetcher=_NoFetch(),
             workspace_factory=_workspace,
         ),
-    ).generate_batch(target_count=1, plain_text_probability=0.0)
+    ).generate_batch(target_count=1, plain_text_probability=0.0, fast_probability=0.0)
 
     task = result.finalized_tasks[0].task
     assert task.query.output_schema is not None
@@ -225,7 +226,7 @@ async def test_production_reference_positions_and_rich_schema_reach_judge_payloa
             source_fetcher=_NoFetch(),
             workspace_factory=_workspace,
         ),
-    ).generate_batch(target_count=1, plain_text_probability=0.0)
+    ).generate_batch(target_count=1, plain_text_probability=0.0, fast_probability=0.0)
     task = result.finalized_tasks[0].task
     assert result.required_response_mode_counts == {"plain_text": 0, "structured": 1}
     assert result.finalized_response_mode_counts == {"plain_text": 0, "structured": 1}
