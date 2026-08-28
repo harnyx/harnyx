@@ -14,6 +14,10 @@ COPY sandbox ./sandbox
 RUN pip install --no-cache-dir --upgrade pip \
   && pip install --no-cache-dir ./packages/miner-sdk ./sandbox
 
+ARG SOURCE_REVISION=""
+
+ENV SOURCE_REVISION="${SOURCE_REVISION}"
+
 USER harnyx
 
 ENTRYPOINT ["harnyx-sandbox"]
