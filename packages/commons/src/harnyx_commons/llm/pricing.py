@@ -117,6 +117,7 @@ MINER_TOOL_LLM_PRICING: Mapping[MinerSelectedLlmProviderName, Mapping[str, Model
         "thinkingmachines/inkling": ModelPricing(1.00, 4.05, 0.0),
         "qwen/qwen3.5-397b-a17b": ModelPricing(0.39, 2.34, 0.0),
         "meta/muse-glimmer-30b": ModelPricing(0.35, 1.50, 0.0),
+        "tencent/hy4-preview": ModelPricing(0.834, 2.501, 0.0),
     },
     AI_GATEWAY_PROVIDER: {
         "thinkingmachines/inkling": ModelPricing(1.00, 4.05, 0.0),
@@ -133,6 +134,7 @@ MINER_TOOL_LLM_PRICING: Mapping[MinerSelectedLlmProviderName, Mapping[str, Model
         "deepseek/deepseek-v4-pro": ModelPricing(0.435, 0.87, 0.0),
         "meta/muse-glimmer-30b": ModelPricing(0.35, 1.50, 0.0),
         "alibaba/qwen3.8-27b": ModelPricing(0.10, 0.40, 0.0),
+        "tencent/hy4-preview": ModelPricing(0.834, 2.501, 0.0),
     },
 }
 

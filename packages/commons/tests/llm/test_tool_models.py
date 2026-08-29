@@ -112,7 +112,7 @@ def test_miner_selected_chutes_rejects_openrouter_only_models() -> None:
 
 @pytest.mark.parametrize(
     "model",
-    ("deepseek/deepseek-v3.2", "z-ai/glm-5.3-flash"),
+    ("deepseek/deepseek-v3.2", "z-ai/glm-5.3-flash", "tencent/hy4-preview"),
 )
 def test_miner_selected_openrouter_uses_native_model_ids_without_translation(
     model: str,
@@ -125,7 +125,7 @@ def test_miner_selected_openrouter_uses_native_model_ids_without_translation(
 
 @pytest.mark.parametrize(
     "model",
-    ("zai/glm-4.7", "zai/glm-5.3-flash"),
+    ("zai/glm-4.7", "zai/glm-5.3-flash", "tencent/hy4-preview"),
 )
 def test_miner_selected_ai_gateway_uses_native_model_ids_without_translation(model: str) -> None:
     resolved = parse_miner_selected_llm_provider_model(provider="ai_gateway", model=model)

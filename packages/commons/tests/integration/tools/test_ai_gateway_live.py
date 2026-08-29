@@ -29,6 +29,7 @@ NEW_AI_GATEWAY_MODELS = (
     "zai/glm-5.3-flash",
     "meta/muse-glimmer-30b",
     "alibaba/qwen3.8-27b",
+    "tencent/hy4-preview",
 )
 
 

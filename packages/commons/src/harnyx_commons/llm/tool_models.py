@@ -77,6 +77,7 @@ MINER_SELECTED_LLM_PROVIDER_MODELS: Mapping[
         "thinkingmachines/inkling",
         "qwen/qwen3.5-397b-a17b",
         "meta/muse-glimmer-30b",
+        "tencent/hy4-preview",
     ),
     AI_GATEWAY_PROVIDER: (
         "thinkingmachines/inkling",
@@ -93,6 +94,7 @@ MINER_SELECTED_LLM_PROVIDER_MODELS: Mapping[
         "deepseek/deepseek-v4-pro",
         "meta/muse-glimmer-30b",
         "alibaba/qwen3.8-27b",
+        "tencent/hy4-preview",
     ),
 }
 

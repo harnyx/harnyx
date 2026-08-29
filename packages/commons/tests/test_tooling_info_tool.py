@@ -134,6 +134,9 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
     assert model_prices["openrouter"]["deepseek/deepseek-v3.2"]["input_per_million"] == pytest.approx(0.269)
     assert model_prices["openrouter"]["z-ai/glm-5.3-flash"]["input_per_million"] == pytest.approx(0.075)
     assert model_prices["openrouter"]["z-ai/glm-5.3-flash"]["output_per_million"] == pytest.approx(0.25)
+    assert "tencent/hy4-preview" in provider_models["openrouter"]
+    assert model_prices["openrouter"]["tencent/hy4-preview"]["input_per_million"] == pytest.approx(0.834)
+    assert model_prices["openrouter"]["tencent/hy4-preview"]["output_per_million"] == pytest.approx(2.501)
     assert provider_models["ai_gateway"] == list(MINER_SELECTED_LLM_PROVIDER_MODELS["ai_gateway"])
     assert model_prices["ai_gateway"]["thinkingmachines/inkling"]["input_per_million"] == pytest.approx(1.00)
     assert model_prices["ai_gateway"]["thinkingmachines/inkling"]["output_per_million"] == pytest.approx(4.05)
@@ -157,6 +160,9 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
     assert model_prices["ai_gateway"]["zai/glm-4.7-flash"]["output_per_million"] == pytest.approx(0.40)
     assert model_prices["ai_gateway"]["alibaba/qwen3.8-27b"]["input_per_million"] == pytest.approx(0.10)
     assert model_prices["ai_gateway"]["alibaba/qwen3.8-27b"]["output_per_million"] == pytest.approx(0.40)
+    assert "tencent/hy4-preview" in provider_models["ai_gateway"]
+    assert model_prices["ai_gateway"]["tencent/hy4-preview"]["input_per_million"] == pytest.approx(0.834)
+    assert model_prices["ai_gateway"]["tencent/hy4-preview"]["output_per_million"] == pytest.approx(2.501)
 
     assert payload["pricing"]["embed_text"]["kind"] == "provider_specific_static"
     embedding_provider_models = payload["allowed_embedding_provider_models"]
