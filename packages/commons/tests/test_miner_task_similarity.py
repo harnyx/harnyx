@@ -1,4 +1,27 @@
-from harnyx_commons.miner_task_similarity import SimilarityVoteInput, tally_similarity_votes
+import pytest
+
+from harnyx_commons.miner_task_similarity import (
+    EligibleSimilarityClassification,
+    SimilarityVoteInput,
+    lower_similarity_classification,
+    tally_similarity_votes,
+)
+
+
+@pytest.mark.parametrize(
+    ("primary", "challenge", "expected"),
+    (
+        ("novel", "near_duplicate", "near_duplicate"),
+        ("notable_change", "novel", "notable_change"),
+        ("near_duplicate", "near_duplicate", "near_duplicate"),
+    ),
+)
+def test_lower_similarity_classification_keeps_the_more_conservative_round(
+    primary: EligibleSimilarityClassification,
+    challenge: EligibleSimilarityClassification,
+    expected: EligibleSimilarityClassification,
+) -> None:
+    assert lower_similarity_classification(primary, challenge) == expected
 
 
 def test_similarity_vote_tally_passes_and_uses_lower_median_classification() -> None:

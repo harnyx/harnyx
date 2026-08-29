@@ -28,13 +28,14 @@ from validator.tests.benchmark.similarity_judge_benchmark import (
     PairwiseGold,
     aggregate_classification,
     eligible_comparisons,
-    load_cases,
+    load_case_files,
     normalize_pairwise,
     run_benchmark,
     summarize_metrics,
 )
 
 _CASES_PATH = Path(__file__).parent / "data" / "similarity_judge_benchmark_cases.jsonl"
+_HASH_ROUTER_CASES_PATH = Path(__file__).parent / "data" / "similarity_judge_hash_router_cases.jsonl"
 _REALISM_SAMPLE_PATH = Path(__file__).parent / "data" / "similarity_judge_realism_sample.json"
 _EXPECTED_ARTIFACT_IDS = {
     "duplicate-model-and-rename": (
@@ -250,7 +251,7 @@ def _identity() -> BenchmarkIdentity:
 
 
 def _groups() -> tuple[BenchmarkCandidateGroup, ...]:
-    return load_cases(_CASES_PATH)
+    return load_case_files((_CASES_PATH, _HASH_ROUTER_CASES_PATH))
 
 
 def _classifications(
@@ -314,6 +315,12 @@ def test_checked_in_dataset_protects_gold_coverage_and_aggregation_contract() ->
         )
         for group in groups
     )
+    hash_router_groups = {group.case_id: group for group in groups if group.case_id.startswith("notable-hash-router-")}
+    assert set(hash_router_groups) == {
+        "notable-hash-router-1-of-2",
+        "notable-hash-router-1-of-8",
+    }
+    assert all(group.expected_final == "notable_change" for group in hash_router_groups.values())
 
 
 def test_production_false_novel_case_protects_reachability_over_dead_architecture() -> None:

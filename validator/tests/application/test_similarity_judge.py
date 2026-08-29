@@ -230,6 +230,10 @@ async def test_similarity_judge_returns_classification_and_validator_reasoning()
     payload = _similarity_payload(llm_request)
     assert payload["reference"]["script"] == "def answer(): return 'old'"
     assert payload["candidate"]["diff_against_reference"] == "+ def answer(): return 'new'"
+    system_prompt = llm_request.messages[0].content[0].text
+    assert "every reachable non-error path for valid requests" in system_prompt
+    assert "query hash, schema hash" in system_prompt
+    assert "regardless of branch frequency" in system_prompt
     output_schema = llm_request.output_schema
     assert output_schema.__name__ == "_SimilarityClassificationModel"
     json_schema = output_schema.model_json_schema()

@@ -97,9 +97,7 @@ class ProductionEvidence(BaseModel):
     source_batch_id: UUID
     candidate_artifact_id: UUID
     selected_reference_artifact_id: UUID
-    observed_production_classifications: tuple[SimilarityClassification, ...] = Field(
-        min_length=1
-    )
+    observed_production_classifications: tuple[SimilarityClassification, ...] = Field(min_length=1)
     distilled_reproduction: bool
     evidence_summary: str = Field(min_length=1)
 
@@ -138,14 +136,10 @@ class BenchmarkCandidateGroup(BaseModel):
                 )
             if reference.hotkey == self.candidate.hotkey:
                 if reference.expected_pairwise is not None or reference.gold_explanation is not None:
-                    raise ValueError(
-                        f"{self.case_id}: same-hotkey decoys must not carry gold labels"
-                    )
+                    raise ValueError(f"{self.case_id}: same-hotkey decoys must not carry gold labels")
                 continue
             if reference.expected_pairwise is None or reference.gold_explanation is None:
-                raise ValueError(
-                    f"{self.case_id}: different-hotkey references require gold labels and explanations"
-                )
+                raise ValueError(f"{self.case_id}: different-hotkey references require gold labels and explanations")
             eligible_gold.append(reference.expected_pairwise)
 
         if len(eligible_gold) < 2:
@@ -270,11 +264,7 @@ def build_candidate_diff(
 
 
 def eligible_comparisons(group: BenchmarkCandidateGroup) -> tuple[BenchmarkReference, ...]:
-    comparisons = tuple(
-        reference
-        for reference in group.references
-        if reference.hotkey != group.candidate.hotkey
-    )
+    comparisons = tuple(reference for reference in group.references if reference.hotkey != group.candidate.hotkey)
     if not comparisons:
         raise ValueError(f"{group.case_id}: no different-hotkey references")
     return comparisons
@@ -296,17 +286,25 @@ def aggregate_classification(labels: Sequence[PairwiseGold]) -> FinalGold:
 
 
 def load_cases(path: Path) -> tuple[BenchmarkCandidateGroup, ...]:
+    return load_case_files((path,))
+
+
+def load_case_files(paths: Sequence[Path]) -> tuple[BenchmarkCandidateGroup, ...]:
     groups: list[BenchmarkCandidateGroup] = []
     seen_case_ids: set[str] = set()
-    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        normalized = line.strip()
-        if not normalized:
-            continue
-        group = BenchmarkCandidateGroup.model_validate_json(normalized)
-        if group.case_id in seen_case_ids:
-            raise ValueError(f"duplicate benchmark case_id on line {line_number}: {group.case_id}")
-        seen_case_ids.add(group.case_id)
-        groups.append(group)
+    for path in paths:
+        for line_number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(),
+            1,
+        ):
+            normalized = line.strip()
+            if not normalized:
+                continue
+            group = BenchmarkCandidateGroup.model_validate_json(normalized)
+            if group.case_id in seen_case_ids:
+                raise ValueError(f"duplicate benchmark case_id in {path} on line {line_number}: {group.case_id}")
+            seen_case_ids.add(group.case_id)
+            groups.append(group)
     validate_case_collection(groups)
     return tuple(groups)
 
@@ -316,9 +314,7 @@ def validate_case_collection(groups: Sequence[BenchmarkCandidateGroup]) -> None:
         raise ValueError("benchmark dataset requires at least 12 candidate groups")
 
     final_counts = Counter(group.expected_final for group in groups)
-    missing_final_support = {
-        label: 3 - final_counts[label] for label in FINAL_LABELS if final_counts[label] < 3
-    }
+    missing_final_support = {label: 3 - final_counts[label] for label in FINAL_LABELS if final_counts[label] < 3}
     if missing_final_support:
         raise ValueError(f"benchmark final-class support is incomplete: {missing_final_support}")
 
@@ -330,16 +326,13 @@ def validate_case_collection(groups: Sequence[BenchmarkCandidateGroup]) -> None:
         if any(reference.hotkey == group.candidate.hotkey for reference in group.references):
             same_hotkey_group_count += 1
         pairwise_counts.update(
-            cast(PairwiseGold, reference.expected_pairwise)
-            for reference in eligible_comparisons(group)
+            cast(PairwiseGold, reference.expected_pairwise) for reference in eligible_comparisons(group)
         )
     missing_pairwise_support = {
         label: 4 - pairwise_counts[label] for label in PAIRWISE_LABELS if pairwise_counts[label] < 4
     }
     if missing_pairwise_support:
-        raise ValueError(
-            f"benchmark pairwise-class support is incomplete: {missing_pairwise_support}"
-        )
+        raise ValueError(f"benchmark pairwise-class support is incomplete: {missing_pairwise_support}")
     if same_hotkey_group_count < 4:
         raise ValueError("benchmark dataset requires at least four same-hotkey decoy groups")
     missing_boundaries = sorted(_REQUIRED_BOUNDARY_TAGS - boundary_tags)
@@ -356,9 +349,7 @@ def summarize_metrics(
     if len(expected_labels) != len(observed_labels):
         raise ValueError("expected and observed label counts differ")
     observed_columns = (*class_labels, "provider_failure")
-    confusion = {
-        expected: {observed: 0 for observed in observed_columns} for expected in class_labels
-    }
+    confusion = {expected: {observed: 0 for observed in observed_columns} for expected in class_labels}
     for expected, observed in zip(expected_labels, observed_labels, strict=True):
         if expected not in confusion:
             raise ValueError(f"unsupported expected label: {expected}")
@@ -371,12 +362,8 @@ def summarize_metrics(
     per_class: dict[str, ClassMetrics] = {}
     for label in class_labels:
         true_positive = confusion[label][label]
-        false_positive = sum(
-            confusion[expected][label] for expected in class_labels if expected != label
-        )
-        false_negative = sum(
-            count for observed, count in confusion[label].items() if observed != label
-        )
+        false_positive = sum(confusion[expected][label] for expected in class_labels if expected != label)
+        false_negative = sum(count for observed, count in confusion[label].items() if observed != label)
         support = sum(confusion[label].values())
         precision = _safe_ratio(true_positive, true_positive + false_positive)
         recall = _safe_ratio(true_positive, true_positive + false_negative)
@@ -572,12 +559,8 @@ async def run_benchmark(
             final_overclassification_count,
             len(final_expected),
         ),
-        pairwise_multi_step_underclassification_count=(
-            pairwise_multi_step_underclassification_count
-        ),
-        final_multi_step_underclassification_count=(
-            final_multi_step_underclassification_count
-        ),
+        pairwise_multi_step_underclassification_count=(pairwise_multi_step_underclassification_count),
+        final_multi_step_underclassification_count=(final_multi_step_underclassification_count),
         false_novel_count=false_novel_count,
         false_novel_rate=_safe_ratio(false_novel_count, non_novel_count),
         missed_novel_count=missed_novel_count,
@@ -718,9 +701,7 @@ def _llm_request_payload(request: AbstractLlmRequest | None) -> dict[str, object
         "model": request.model,
         "messages": _json_safe(request.messages),
         "output_mode": request.output_mode,
-        "output_schema": (
-            request.output_schema.__name__ if request.output_schema is not None else None
-        ),
+        "output_schema": (request.output_schema.__name__ if request.output_schema is not None else None),
         "temperature": request.temperature,
         "max_output_tokens": request.max_output_tokens,
         "reasoning_effort": request.reasoning_effort,
@@ -750,17 +731,13 @@ def _llm_response_payload(response: LlmResponse | None) -> dict[str, object] | N
 
 def _prompt_sha256(request: AbstractLlmRequest) -> str:
     first_message = request.messages[0]
-    return hashlib.sha256(
-        json.dumps(_json_safe(first_message), sort_keys=True).encode("utf-8")
-    ).hexdigest()
+    return hashlib.sha256(json.dumps(_json_safe(first_message), sort_keys=True).encode("utf-8")).hexdigest()
 
 
 def _sha256_json(payload: object) -> str | None:
     if payload is None:
         return None
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
-    ).hexdigest()
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
 def _json_safe(value: object) -> Any:

@@ -73,6 +73,7 @@ Notes:
 - One successful validator delivery is enough to satisfy the validator quorum. Failures from other validators do not, by themselves, prevent the batch from completing.
 - Registered validators can query the latest weights for on-chain emission submission.
 - Miner emission keeps champion emission active and adds participant emission from the latest terminal source batch with finalized tasks and artifacts. Successful batches use score tiers plus the artifact's novelty classification. Failed batches divide the entire post-champion remainder equally among distinct participant hotkeys. The exact allocations are described below. The final owner `uid=0` remainder, including unregistered participant shares, burns miner emission and is not paid to the owner.
+- Novelty preflight first checks the closest symmetric structural reference. Only a primary `novel` result opens a separate validator round against a different candidate-coverage reference. The lower result is final, and every reachable successful branch counts even when selected by a hash or other minority route.
 - The [live benchmark page](https://dashboard.harnyx.ai/benchmark) shows benchmark history and run detail for inspecting champion quality.
 
 **Roles**

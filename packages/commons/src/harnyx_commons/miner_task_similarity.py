@@ -121,6 +121,18 @@ def tally_similarity_votes(votes: tuple[SimilarityVoteInput, ...]) -> Similarity
     )
 
 
+def lower_similarity_classification(
+    first: EligibleSimilarityClassification,
+    second: EligibleSimilarityClassification,
+) -> EligibleSimilarityClassification:
+    """Return the more conservative of two independently supported labels."""
+
+    return min(
+        (first, second),
+        key=_ELIGIBLE_CLASSIFICATION_RANK.__getitem__,
+    )
+
+
 def _aggregate_eligible_classification(
     classifications: list[StoredSimilarityClassification],
 ) -> EligibleSimilarityClassification | None:
@@ -146,5 +158,6 @@ __all__ = [
     "SimilarityVoteInput",
     "SimilarityVoteStatus",
     "SimilarityVoteTally",
+    "lower_similarity_classification",
     "tally_similarity_votes",
 ]

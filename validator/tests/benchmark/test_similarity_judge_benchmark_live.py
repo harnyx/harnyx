@@ -26,7 +26,7 @@ from harnyx_validator.runtime.settings import Settings
 from validator.tests.benchmark.similarity_judge_benchmark import (
     BenchmarkIdentity,
     InvocationRecordingProvider,
-    load_cases,
+    load_case_files,
     run_benchmark,
 )
 
@@ -37,9 +37,8 @@ pytestmark = [
     pytest.mark.anyio("asyncio"),
 ]
 
-_CASES_PATH = (
-    Path(__file__).parent / "data" / "similarity_judge_benchmark_cases.jsonl"
-)
+_CASES_PATH = Path(__file__).parent / "data" / "similarity_judge_benchmark_cases.jsonl"
+_HASH_ROUTER_CASES_PATH = Path(__file__).parent / "data" / "similarity_judge_hash_router_cases.jsonl"
 _OUTPUT_ROOT = Path(".localdev/similarity-judge-benchmark")
 _GEMMA_MODEL = "google/gemma-4-31B-turbo-TEE"
 _GEMMA_ENDPOINT_ID = "gemma4-cloud-run-turbo"
@@ -153,13 +152,11 @@ def _benchmark_source_hashes() -> dict[str, str]:
         "public/validator/src/harnyx_validator/application/similarity_judge.py",
         "public/validator/src/harnyx_validator/runtime/bootstrap.py",
         "public/validator/tests/benchmark/data/similarity_judge_benchmark_cases.jsonl",
+        "public/validator/tests/benchmark/data/similarity_judge_hash_router_cases.jsonl",
         "public/validator/tests/benchmark/similarity_judge_benchmark.py",
         "public/validator/tests/benchmark/test_similarity_judge_benchmark_live.py",
     )
-    return {
-        relative_path: _file_sha256(repo_root / relative_path)
-        for relative_path in relative_paths
-    }
+    return {relative_path: _file_sha256(repo_root / relative_path) for relative_path in relative_paths}
 
 
 @pytest.mark.parametrize(
@@ -176,9 +173,7 @@ async def test_fixed_dataset_similarity_benchmark(target: BenchmarkTarget) -> No
                     "openai_compatible_endpoints_json": json.dumps(
                         [] if target.endpoint_config is None else [target.endpoint_config]
                     ),
-                    "llm_model_provider_overrides_json": json.dumps(
-                        target.provider_overrides
-                    ),
+                    "llm_model_provider_overrides_json": json.dumps(target.provider_overrides),
                     "similarity_llm_provider": "chutes",
                     "similarity_llm_model_override": target.model,
                 }
@@ -219,9 +214,7 @@ async def test_fixed_dataset_similarity_benchmark(target: BenchmarkTarget) -> No
                 max_ms=0,
                 jitter=0.0,
             ),
-            request_extra_by_model=bootstrap._similarity_request_extra_by_model(
-                (similarity_route,)
-            ),
+            request_extra_by_model=bootstrap._similarity_request_extra_by_model((similarity_route,)),
         ),
     )
     identity = BenchmarkIdentity(
@@ -240,7 +233,7 @@ async def test_fixed_dataset_similarity_benchmark(target: BenchmarkTarget) -> No
 
     try:
         summary = await run_benchmark(
-            groups=load_cases(_CASES_PATH),
+            groups=load_case_files((_CASES_PATH, _HASH_ROUTER_CASES_PATH)),
             judge=judge,
             recording_provider=recording_provider,
             output_root=_OUTPUT_ROOT,
