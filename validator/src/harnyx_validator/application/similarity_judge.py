@@ -8,6 +8,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -33,6 +34,7 @@ from harnyx_commons.llm.schema import (
     LlmRequest,
     LlmResponse,
 )
+from harnyx_commons.llm.similarity_observability import similarity_judge_observability_metadata
 from harnyx_commons.miner_task_similarity import SimilarityJudgeRequest, SimilarityJudgeResult
 
 logger = logging.getLogger(__name__)
@@ -339,11 +341,23 @@ class SimilarityJudge:
         last_error: LlmProviderError | LlmRetryExhaustedError | None = None
         failed_candidate_usage: list[JudgeUsageSummary] = []
         current_datetime = self._clock()
-        for model in _judge_candidate_models(self._config):
+        similarity_invocation_id = uuid4().hex
+        candidate_models = _judge_candidate_models(self._config)
+        for candidate_position, model in enumerate(candidate_models, start=1):
+            observability_metadata = similarity_judge_observability_metadata(
+                similarity_invocation_id=similarity_invocation_id,
+                batch_id=request.batch_id,
+                candidate_artifact_id=request.candidate_artifact_id,
+                reference_artifact_id=request.reference_artifact_id,
+                candidate_model=model,
+                candidate_position=candidate_position,
+                candidate_count=len(candidate_models),
+            )
             llm_request = self._build_request(
                 request,
                 model=model,
                 current_datetime=current_datetime,
+                observability_metadata=observability_metadata,
             )
             try:
                 response = await self._llm.invoke(llm_request)
@@ -367,19 +381,31 @@ class SimilarityJudge:
                     failed_candidate_usage.append(failed_usage)
                 if failed_candidate_usage:
                     _attach_similarity_judge_usage(exc, merge_judge_usage(failed_candidate_usage))
-                logger.warning(
+                _log_similarity_event_best_effort(
+                    logging.WARNING,
                     "similarity_judge.candidate_failed",
-                    extra={
-                        "data": _failure_log_data(
-                            model,
-                            self._config.provider,
-                            exc,
-                            response=exc.response,
-                        )
-                    },
+                    observability_metadata
+                    | _failure_log_data(
+                        model,
+                        self._config.provider,
+                        exc,
+                        response=exc.response,
+                        include_failure_message=False,
+                    ),
                 )
                 last_error = exc
                 continue
+            _log_similarity_event_best_effort(
+                logging.INFO,
+                "similarity_judge.candidate_succeeded",
+                observability_metadata
+                | {
+                    "provider": str(selected_provider),
+                    "model": selected_model,
+                    "classification": classification_model.classification,
+                    "finish_reason": response.finish_reason,
+                },
+            )
             return SimilarityJudgeResult(
                 classification=classification_model.classification,
                 reasoning=_similarity_reasoning_text(classification_model),
@@ -399,6 +425,7 @@ class SimilarityJudge:
         *,
         model: str,
         current_datetime: datetime,
+        observability_metadata: Mapping[str, object],
     ) -> LlmRequest:
         return LlmRequest(
             provider=self._config.provider,
@@ -434,6 +461,8 @@ class SimilarityJudge:
             retry_policy=self._config.retry_policy,
             use_case="miner_task_similarity_judge",
             extra=self._config.request_extra_by_model.get(model),
+            internal_metadata=dict(observability_metadata),
+            include_payloads_in_observability=False,
         )
 
 
@@ -553,28 +582,28 @@ def _judge_usage_from_failure_response(
                 default_model=default_model,
             )
         except JudgeUsageMetadataError as usage_exc:
-            logger.warning(
+            _log_similarity_event_best_effort(
+                logging.WARNING,
                 "similarity_judge.failed_candidate_usage_unavailable",
-                extra={
-                    "data": _failure_log_data(
-                        default_model,
-                        default_provider,
-                        usage_exc,
-                        response=response,
-                    )
-                },
-            )
-            return None
-        logger.warning(
-            "similarity_judge.failed_candidate_actual_cost_unavailable",
-            extra={
-                "data": _failure_log_data(
+                _failure_log_data(
                     default_model,
                     default_provider,
-                    exc,
+                    usage_exc,
                     response=response,
-                )
-            },
+                    include_failure_message=False,
+                ),
+            )
+            return None
+        _log_similarity_event_best_effort(
+            logging.WARNING,
+            "similarity_judge.failed_candidate_actual_cost_unavailable",
+            _failure_log_data(
+                default_model,
+                default_provider,
+                exc,
+                response=response,
+                include_failure_message=False,
+            ),
         )
         return usage
 
@@ -585,6 +614,7 @@ def _failure_log_data(
     exc: Exception,
     *,
     response: LlmResponse | None = None,
+    include_failure_message: bool = True,
 ) -> dict[str, object]:
     effective_provider = getattr(exc, "effective_provider", None)
     effective_model = getattr(exc, "effective_model", None)
@@ -600,8 +630,20 @@ def _failure_log_data(
         "model": effective_model or model,
         "provider": str(effective_provider or provider),
         "exception_type": type(exc).__name__,
-        "failure_reason": str(exc),
+        "failure_reason": str(exc) if include_failure_message else type(exc).__name__,
     }
+
+
+def _log_similarity_event_best_effort(
+    level: int,
+    message: str,
+    data: Mapping[str, object],
+) -> None:
+    try:
+        logger.log(level, message, extra={"data": dict(data)})
+    except Exception:
+        # Monitoring must never alter similarity classification or fallback.
+        return
 
 
 def _attach_similarity_judge_usage(exc: Exception, judge_usage: JudgeUsageSummary) -> Exception:

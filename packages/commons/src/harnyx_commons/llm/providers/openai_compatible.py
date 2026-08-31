@@ -46,6 +46,10 @@ from harnyx_commons.llm.schema import (
     LlmResponse,
     LlmUsage,
 )
+from harnyx_commons.llm.similarity_observability import (
+    record_similarity_stream_event,
+    record_similarity_stream_headers_received,
+)
 
 OpenAiCompatibleResponseMetadataExtractor = Callable[[Mapping[str, Any]], JsonObject | None]
 
@@ -138,6 +142,7 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
         response_metadata: JsonObject | None = None
         ttft_ms: float | None = None
         async with self._client.stream("POST", self._chat_completions_url, **request_kwargs) as response:
+            record_similarity_stream_headers_received()
             if response.is_error:
                 await response.aread()
             response.raise_for_status()
@@ -156,11 +161,13 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
                         error_type="server_error",
                         code=502,
                     ) from exc
-                if state.merge_event(
+                saw_output = state.merge_event(
                     event,
                     reasoning_keys=("reasoning", "reasoning_content", "reasoning_details"),
                     normalize_reasoning_fragment=normalize_openai_reasoning_fragments,
-                ):
+                )
+                record_similarity_stream_event(saw_output=saw_output)
+                if saw_output:
                     if ttft_ms is None:
                         ttft_ms = round((time.perf_counter() - started_at) * 1000, 2)
         return _OpenAiCompatibleChatResponse.from_stream_state(

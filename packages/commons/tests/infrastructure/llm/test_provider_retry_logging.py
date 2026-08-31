@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 
 import pytest
@@ -16,6 +17,11 @@ from harnyx_commons.llm.schema import (
     LlmResponse,
     LlmUsage,
 )
+from harnyx_commons.llm.similarity_observability import (
+    SimilarityLlmAttemptObservation,
+    record_similarity_stream_event,
+    record_similarity_stream_headers_received,
+)
 
 pytestmark = pytest.mark.anyio("asyncio")
 
@@ -29,6 +35,8 @@ class _RetryOnceExceptionProvider(BaseLlmProvider):
     async def _invoke(self, request: AbstractLlmRequest) -> LlmResponse:
         del request
         self._attempt += 1
+        record_similarity_stream_headers_received()
+        record_similarity_stream_event(saw_output=True)
         if self._attempt == 1:
             try:
                 raise ValueError("dns lookup failed")
@@ -151,6 +159,108 @@ async def test_retry_success_exposes_safe_retry_metadata() -> None:
     assert result.metadata["latency_ms_total"] >= 0
     assert "prompt_tokens" not in result.metadata
     assert "actual_cost_usd" not in result.metadata
+
+
+async def test_similarity_retry_logs_each_stream_attempt_without_content(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Future failure: a slow similarity fallback cannot be separated from a stalled retry."""
+    provider = _RetryOnceExceptionProvider()
+    request = replace(
+        _request(use_case="miner_task_similarity_judge"),
+        internal_metadata={
+            "batch_id": "batch-1",
+            "candidate_artifact_id": "candidate-1",
+            "reference_artifact_id": "reference-1",
+            "candidate_model": "configured-model",
+            "candidate_position": 1,
+            "candidate_count": 2,
+            "private_sentinel": "must-not-be-logged",
+        },
+        include_payloads_in_observability=False,
+    )
+    caplog.set_level(logging.INFO, logger="harnyx_commons.llm.calls")
+
+    await provider.invoke_with_retry(request)
+
+    records = [record for record in caplog.records if record.message.startswith("similarity_judge.llm_attempt.")]
+    assert [record.message for record in records] == [
+        "similarity_judge.llm_attempt.started",
+        "similarity_judge.llm_attempt.headers_received",
+        "similarity_judge.llm_attempt.progress",
+        "similarity_judge.llm_attempt.finished",
+        "similarity_judge.llm_attempt.started",
+        "similarity_judge.llm_attempt.headers_received",
+        "similarity_judge.llm_attempt.progress",
+        "similarity_judge.llm_attempt.finished",
+    ]
+    data = [record.data for record in records]
+    assert {item["attempt_number"] for item in data} == {1, 2}
+    assert len({item["attempt_id"] for item in data}) == 2
+    assert {item["attempt_limit"] for item in data} == {2}
+    assert all(item["batch_id"] == "batch-1" for item in data)
+    assert data[3]["outcome"] == "failed"
+    assert data[3]["exception_type"] == "RuntimeError"
+    assert data[3]["retryable"] is True
+    assert data[7]["outcome"] == "response_received"
+    assert data[7]["finish_reason"] == "stop"
+    assert data[7]["completion_tokens"] == 7
+    rendered_data = repr(data)
+    assert "must-not-be-logged" not in rendered_data
+    assert not any(value in {"hello", "ok"} for item in data for value in item.values())
+
+
+async def test_similarity_stream_reports_first_output_and_periodic_progress(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Future failure: metadata-only events hide when productive model output actually starts."""
+    clock_values = iter((0.0, 0.1, 1.0, 2.0, 61.0, 62.0, 70.0))
+    caplog.set_level(logging.INFO, logger="harnyx_commons.llm.calls")
+    observation = SimilarityLlmAttemptObservation(
+        provider="openrouter",
+        model="deepseek/deepseek-v4-flash",
+        attempt_number=1,
+        attempt_limit=1,
+        identity={},
+        clock=lambda: next(clock_values),
+    )
+
+    observation.headers_received()
+    observation.stream_event(saw_output=False)
+    observation.stream_event(saw_output=True)
+    observation.stream_event(saw_output=True)
+    observation.stream_event(saw_output=True)
+    observation.finish_response(_response())
+
+    progress = [record.data for record in caplog.records if record.message.endswith(".progress")]
+    assert [item["stream_event_count"] for item in progress] == [1, 2, 4]
+    assert progress[0]["first_output_ms"] is None
+    assert progress[1]["first_output_ms"] == 2000.0
+    finished = next(record.data for record in caplog.records if record.message.endswith(".finished"))
+    assert finished["max_stream_event_gap_ms"] == 59000.0
+    assert finished["time_since_last_stream_event_ms"] == 8000.0
+
+
+async def test_similarity_attempt_logging_failure_does_not_change_provider_result() -> None:
+    """Future failure: an observability handler outage breaks an otherwise valid LLM call."""
+
+    class _ExplodingLogger(logging.Logger):
+        def info(self, msg: object, *args: object, **kwargs: object) -> None:
+            del msg, args, kwargs
+            raise RuntimeError("log sink unavailable")
+
+    observation = SimilarityLlmAttemptObservation(
+        provider="openrouter",
+        model="deepseek/deepseek-v4-flash",
+        attempt_number=1,
+        attempt_limit=1,
+        identity={},
+        logger=_ExplodingLogger("exploding"),
+    )
+
+    observation.headers_received()
+    observation.stream_event(saw_output=True)
+    observation.finish_response(_response())
 
 
 async def test_non_retryable_exception_raises_provider_error_without_retry_exhaustion() -> None:

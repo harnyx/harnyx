@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -10,6 +11,7 @@ import pytest
 
 from harnyx_commons.config.llm import LlmSettings, parse_openai_compatible_endpoints_json
 from harnyx_commons.llm.adapter import LlmProviderAdapter
+from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_commons.llm.providers import openai_compatible
 from harnyx_commons.llm.providers.openai_compatible import OpenAiCompatibleLlmProvider
 from harnyx_commons.llm.retry_utils import RetryPolicy
@@ -186,6 +188,54 @@ async def test_openai_compatible_provider_normalizes_streamed_chat_response() ->
     assert response.metadata["actual_cost_evidence"]["settlement_source"] == "static_pricing"
     assert isinstance(response.metadata["ttft_ms"], float)
     assert response.metadata["ttft_ms"] >= 0.0
+
+
+async def test_openai_compatible_similarity_stream_emits_content_free_progress(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Future failure: OpenRouter streams are visible only as one outer request duration."""
+    provider = OpenAiCompatibleLlmProvider(
+        endpoint=_endpoint(endpoint_id="openrouter", auth={"type": "none"}),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(lambda _: _streaming_response())),
+    )
+    request = replace(
+        _request(
+            provider="custom-openai-compatible:openrouter",
+            model="deepseek/deepseek-v4-flash",
+        ),
+        use_case="miner_task_similarity_judge",
+        internal_metadata={
+            "batch_id": "batch-1",
+            "candidate_artifact_id": "candidate-1",
+            "reference_artifact_id": "reference-1",
+            "candidate_model": "deepseek/deepseek-v4-flash",
+            "candidate_position": 1,
+            "candidate_count": 1,
+        },
+        include_payloads_in_observability=False,
+    )
+    caplog.set_level(logging.INFO, logger="harnyx_commons.llm.calls")
+
+    try:
+        await provider.invoke(request)
+    finally:
+        await provider.aclose()
+
+    records = [record for record in caplog.records if record.message.startswith("similarity_judge.llm_attempt.")]
+    assert [record.message for record in records] == [
+        "similarity_judge.llm_attempt.started",
+        "similarity_judge.llm_attempt.headers_received",
+        "similarity_judge.llm_attempt.progress",
+        "similarity_judge.llm_attempt.finished",
+    ]
+    finished = records[-1].data
+    assert finished["provider"] == "custom-openai-compatible:openrouter"
+    assert finished["model"] == "deepseek/deepseek-v4-flash"
+    assert finished["stream_event_count"] == 2
+    assert finished["output_event_count"] == 1
+    assert finished["first_output_ms"] is not None
+    assert finished["outcome"] == "response_received"
+    assert 'Reply with only "ok".' not in repr([record.data for record in records])
 
 
 async def test_openai_compatible_provider_attaches_openrouter_usage_cost() -> None:
@@ -562,6 +612,44 @@ async def test_openai_compatible_provider_uses_request_retry_policy_over_default
 
     assert calls == 2
     assert response.raw_text == "ok"
+
+
+async def test_openai_compatible_similarity_http_error_still_records_received_headers(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Future failure: a provider status error looks like no connection was established."""
+    provider = OpenAiCompatibleLlmProvider(
+        endpoint=_endpoint(endpoint_id="openrouter", auth={"type": "none"}),
+        client=httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _: httpx.Response(429, json={"error": "capacity"}))
+        ),
+    )
+    request = replace(
+        _request(
+            provider="custom-openai-compatible:openrouter",
+            model="deepseek/deepseek-v4-flash",
+        ),
+        retry_policy=RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0.0),
+        use_case="miner_task_similarity_judge",
+        internal_metadata={"similarity_invocation_id": "invocation-1"},
+        include_payloads_in_observability=False,
+    )
+    caplog.set_level(logging.INFO, logger="harnyx_commons.llm.calls")
+
+    try:
+        with pytest.raises(LlmRetryExhaustedError, match="http_429"):
+            await provider.invoke(request)
+    finally:
+        await provider.aclose()
+
+    records = [record for record in caplog.records if record.message.startswith("similarity_judge.llm_attempt.")]
+    assert [record.message for record in records] == [
+        "similarity_judge.llm_attempt.started",
+        "similarity_judge.llm_attempt.headers_received",
+        "similarity_judge.llm_attempt.finished",
+    ]
+    assert records[-1].data["headers_received_ms"] is not None
+    assert records[-1].data["exception_type"] == "HTTPStatusError"
 
 
 async def test_openai_compatible_provider_retries_malformed_tool_call_response() -> None:

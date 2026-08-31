@@ -32,6 +32,10 @@ from harnyx_commons.llm.schema import (
     LlmMessageToolCall,
     LlmResponse,
 )
+from harnyx_commons.llm.similarity_observability import (
+    record_similarity_stream_event,
+    record_similarity_stream_headers_received,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +156,7 @@ class ChutesLlmProvider(BaseLlmProvider):
         reasoning_state = _ChutesReasoningStreamState()
         ttft_ms: float | None = None
         async with self._client.stream("POST", "v1/chat/completions", **request_kwargs) as response:
+            record_similarity_stream_headers_received()
             if response.is_error:
                 await response.aread()
             response.raise_for_status()
@@ -164,6 +169,7 @@ class ChutesLlmProvider(BaseLlmProvider):
                     ttft_ms = round((time.perf_counter() - started_at) * 1000, 2)
                 reasoning_state.merge_event(event)
                 state.merge_event(event, reasoning_keys=())
+                record_similarity_stream_event(saw_output=True)
         return _ChutesChatResponse.from_stream_state(state, reasoning_state=reasoning_state), ttft_ms
 
     def _log_stream_ttft(self, *, model: str, response_id: str, ttft_ms: float | None) -> None:

@@ -227,6 +227,18 @@ async def test_similarity_judge_returns_classification_and_validator_reasoning()
     assert llm_request.reasoning_effort == "high"
     assert llm_request.timeout_seconds == 300.0
     assert llm_request.use_case == "miner_task_similarity_judge"
+    assert llm_request.include_payloads_in_observability is False
+    assert llm_request.internal_metadata is not None
+    assert len(llm_request.internal_metadata["similarity_invocation_id"]) == 32
+    assert llm_request.internal_metadata | {"similarity_invocation_id": "ignored"} == {
+        "similarity_invocation_id": "ignored",
+        "batch_id": str(request.batch_id),
+        "candidate_artifact_id": str(request.candidate_artifact_id),
+        "reference_artifact_id": str(request.reference_artifact_id),
+        "candidate_model": "moonshotai/Kimi-K2.5-TEE",
+        "candidate_position": 1,
+        "candidate_count": 1,
+    }
     payload = _similarity_payload(llm_request)
     assert payload["reference"]["script"] == "def answer(): return 'old'"
     assert payload["candidate"]["diff_against_reference"] == "+ def answer(): return 'new'"
@@ -275,6 +287,33 @@ async def test_similarity_judge_includes_current_time_in_system_message() -> Non
         "Current datetime in UTC: 2026-08-27T04:30:00+00:00\n"
         "Current Unix timestamp: 1787805000\n\n"
     )
+
+
+async def test_similarity_judge_gives_repeated_comparisons_distinct_invocation_ids() -> None:
+    """Future failure: overlapping retries of one artifact pair cannot be separated in logs."""
+    llm = StubLlmProvider()
+    service = SimilarityJudge(
+        llm_provider=llm,
+        config=SimilarityJudgeConfig(
+            provider="chutes",
+            model="google/gemma-4-31B-turbo-TEE",
+        ),
+    )
+    request = SimilarityJudgeRequest(
+        batch_id=uuid4(),
+        candidate_artifact_id=uuid4(),
+        reference_artifact_id=uuid4(),
+        candidate_miner_uid=20,
+        reference_miner_uid=10,
+        reference_script="def answer(): return 'old'",
+        candidate_diff="+ def answer(): return 'new'",
+    )
+
+    await service.judge(request)
+    await service.judge(request)
+
+    invocation_ids = [request.internal_metadata["similarity_invocation_id"] for request in llm.requests]
+    assert len(set(invocation_ids)) == 2
 
 
 async def test_similarity_judge_snapshots_datetime_before_trying_fallback_models() -> None:
@@ -620,6 +659,57 @@ async def test_similarity_judge_tries_next_candidate_after_invalid_structured_re
         "google/gemma-4-31B-turbo-TEE",
         "moonshotai/Kimi-K3-TEE",
     ]
+    assert [request.internal_metadata["candidate_position"] for request in llm.requests] == [1, 2]
+    assert [request.internal_metadata["candidate_count"] for request in llm.requests] == [2, 2]
+    assert len({request.internal_metadata["similarity_invocation_id"] for request in llm.requests}) == 1
+
+
+async def test_similarity_observability_failure_does_not_block_model_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Future failure: a log sink outage changes the similarity result or fallback path."""
+    llm = SequenceLlmProvider(
+        [
+            _similarity_response(
+                classification="novel",
+                reasoning="Adds verification.",
+                mechanism_change="",
+            ),
+            _similarity_response(),
+        ]
+    )
+    service = SimilarityJudge(
+        llm_provider=llm,
+        config=SimilarityJudgeConfig(
+            provider="chutes",
+            model="google/gemma-4-31B-turbo-TEE",
+            fallback_models=("moonshotai/Kimi-K3-TEE",),
+        ),
+    )
+
+    def fail_logging(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise RuntimeError("log sink unavailable")
+
+    monkeypatch.setattr(similarity_judge_module.logger, "log", fail_logging)
+
+    result = await service.judge(
+        SimilarityJudgeRequest(
+            batch_id=uuid4(),
+            candidate_artifact_id=uuid4(),
+            reference_artifact_id=uuid4(),
+            candidate_miner_uid=20,
+            reference_miner_uid=10,
+            reference_script="def answer(): return 'old'",
+            candidate_diff="+ def answer(): return 'new'",
+        )
+    )
+
+    assert result.classification == "novel"
+    assert [request.model for request in llm.requests] == [
+        "google/gemma-4-31B-turbo-TEE",
+        "moonshotai/Kimi-K3-TEE",
+    ]
 
 
 async def test_similarity_judge_tries_next_candidate_after_incomplete_response() -> None:
@@ -718,7 +808,7 @@ async def test_similarity_judge_retains_tokens_after_invalid_actual_cost_metadat
         if record.message == "similarity_judge.failed_candidate_actual_cost_unavailable"
     )
     assert degraded_record.data["model"] == "google/gemma-4-31B-turbo-TEE"
-    assert degraded_record.data["failure_reason"] == "actual_cost_usd must be numeric when supplied"
+    assert degraded_record.data["failure_reason"] == "JudgeUsageMetadataError"
 
 
 async def test_similarity_judge_omits_unusable_failed_usage_and_still_advances() -> None:

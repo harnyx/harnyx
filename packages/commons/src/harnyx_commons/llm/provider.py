@@ -48,6 +48,7 @@ from harnyx_commons.llm.schema import (
     PostprocessResult,
     supports_tool_result_messages,
 )
+from harnyx_commons.llm.similarity_observability import observe_similarity_llm_attempt
 from harnyx_commons.observability.langfuse import (
     build_generation_metadata,
     build_generation_output_payload,
@@ -458,30 +459,42 @@ class BaseLlmProvider(ABC, LlmProviderPort):
     ) -> LlmResponse | None:
         """Attempt the LLM call. Returns None if retry needed."""
         start = time.perf_counter()
-        try:
-            response = await call_coro(request)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            latency_ms = (time.perf_counter() - start) * 1000
-            ctx.total_latency_ms += latency_ms
-            retryable, reason = classify_exception(exc) if classify_exception else (False, str(exc))
-            await self._handle_failure(
-                attempt,
-                ctx,
-                request,
-                "exception",
-                RetryFailureDetail(
-                    reason=reason,
-                    exception_type=type(exc).__name__,
-                    exception_message=str(exc),
-                    exception_repr=repr(exc),
-                    cause_chain=_exception_cause_chain(exc),
-                ),
-                retryable,
-                source_exception=exc,
-            )
-            return None
+        with observe_similarity_llm_attempt(
+            provider=self._provider_label,
+            request=request,
+            attempt_number=attempt + 1,
+            attempt_limit=ctx.policy.attempts,
+        ) as observation:
+            try:
+                response = await call_coro(request)
+            except asyncio.CancelledError:
+                if observation is not None:
+                    observation.finish_cancelled()
+                raise
+            except Exception as exc:
+                latency_ms = (time.perf_counter() - start) * 1000
+                ctx.total_latency_ms += latency_ms
+                retryable, reason = classify_exception(exc) if classify_exception else (False, str(exc))
+                if observation is not None:
+                    observation.finish_failure(exc, retryable=retryable)
+                await self._handle_failure(
+                    attempt,
+                    ctx,
+                    request,
+                    "exception",
+                    RetryFailureDetail(
+                        reason=reason,
+                        exception_type=type(exc).__name__,
+                        exception_message=str(exc),
+                        exception_repr=repr(exc),
+                        cause_chain=_exception_cause_chain(exc),
+                    ),
+                    retryable,
+                    source_exception=exc,
+                )
+                return None
+            if observation is not None:
+                observation.finish_response(response)
 
         response = await self._annotate_response_cost(request, response)
         latency_ms = (time.perf_counter() - start) * 1000
