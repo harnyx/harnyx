@@ -309,6 +309,12 @@ def unsupported_benchmark_scoring_version_error(scoring_version: str) -> Runtime
     )
 
 
+def benchmark_scoring_uses_fast_queries(scoring_version: str) -> bool:
+    if not is_supported_benchmark_scoring_version(scoring_version):
+        raise unsupported_benchmark_scoring_version_error(scoring_version)
+    return scoring_version == BENCHMARK_CORRECTNESS_SCORING_VERSION
+
+
 def sample_benchmark_items(
     *,
     items: tuple[_SampleItemT, ...],
@@ -353,6 +359,7 @@ __all__ = [
     "SUPPORTED_BENCHMARK_SCORING_VERSIONS",
     "aggregate_benchmark_metrics",
     "benchmark_backing_batch_terminalizes_unfinished_items",
+    "benchmark_scoring_uses_fast_queries",
     "derive_benchmark_run_state",
     "is_defined_benchmark_scoring_version",
     "is_supported_benchmark_scoring_version",

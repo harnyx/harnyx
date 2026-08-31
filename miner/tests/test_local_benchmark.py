@@ -197,6 +197,7 @@ def _tool_usage_with_embedding() -> ToolUsageSummary:
 
 
 def test_local_benchmark_builds_platform_compatible_tasks() -> None:
+    """Future failure: canonical-answer local benchmarks must invoke fast mode."""
     snapshot = _snapshot()
     source_batch_id = UUID("00000000-0000-4000-8000-00000000b501")
     run_id = benchmark_run_id_for_source_batch(
@@ -216,7 +217,24 @@ def test_local_benchmark_builds_platform_compatible_tasks() -> None:
         "The benchmark authors.",
         "Alpha, Beta",
     ]
+    assert all(task.query.fast for task in tasks)
     assert tasks[0].task_id != tasks[1].task_id
+
+
+def test_local_benchmark_keeps_weighted_rubric_tasks_in_ordinary_mode() -> None:
+    """Future failure: rubric benchmarks must retain evidence-sensitive ordinary mode."""
+    snapshot = _weighted_rubric_snapshot()
+    source_batch_id = UUID("00000000-0000-4000-8000-00000000b501")
+    run_id = benchmark_run_id_for_source_batch(
+        suite_slug=snapshot.manifest.suite_slug,
+        source_batch_id=source_batch_id,
+        dataset_version=snapshot.manifest.dataset_version,
+        scoring_version=snapshot.manifest.scoring_version,
+    )
+
+    tasks = local_benchmark._build_tasks(run_id=run_id, snapshot=snapshot, items=snapshot.items)
+
+    assert all(not task.query.fast for task in tasks)
 
 
 def test_local_benchmark_help_uses_benchmark_parser(capsys: pytest.CaptureFixture[str]) -> None:

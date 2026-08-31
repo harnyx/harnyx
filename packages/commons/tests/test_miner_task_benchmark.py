@@ -15,6 +15,7 @@ from harnyx_commons.miner_task_benchmark import (
     BenchmarkItemState,
     BenchmarkRunState,
     aggregate_benchmark_metrics,
+    benchmark_scoring_uses_fast_queries,
     is_defined_benchmark_scoring_version,
     is_supported_benchmark_scoring_version,
     project_benchmark_run_state,
@@ -26,6 +27,24 @@ from harnyx_commons.miner_task_benchmark import (
 class _SampleItem:
     def __init__(self, item_index: int) -> None:
         self.item_index = item_index
+
+
+@pytest.mark.parametrize(
+    ("scoring_version", "expected_fast"),
+    [
+        (BENCHMARK_CORRECTNESS_SCORING_VERSION, True),
+        (BENCHMARK_WEIGHTED_RUBRIC_SCORING_VERSION, False),
+    ],
+)
+def test_benchmark_scoring_selects_query_mode(scoring_version: str, expected_fast: bool) -> None:
+    """Future failure: query mode must follow benchmark scoring semantics."""
+    assert benchmark_scoring_uses_fast_queries(scoring_version) is expected_fast
+
+
+def test_benchmark_query_mode_rejects_unsupported_scoring_version() -> None:
+    """Future failure: an unknown benchmark scorer must not silently use ordinary mode."""
+    with pytest.raises(RuntimeError, match="unsupported benchmark scoring_version"):
+        benchmark_scoring_uses_fast_queries("unknown-v1")
 
 
 def test_benchmark_correctness_scoring_config_default_timeout_is_300_seconds() -> None:

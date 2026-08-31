@@ -43,6 +43,7 @@ from harnyx_commons.miner_task_benchmark import (
     aggregate_benchmark_metrics,
     benchmark_backing_batch_id_for_run,
     benchmark_run_id_for_source_batch,
+    benchmark_scoring_uses_fast_queries,
     benchmark_task_id_for_item,
     is_supported_benchmark_scoring_version,
     list_current_benchmark_snapshots,
@@ -412,7 +413,10 @@ def _build_tasks(
                 run_id=run_id,
                 item_index=item.item_index,
             ),
-            query=Query(text=item.problem),
+            query=Query(
+                text=item.problem,
+                fast=benchmark_scoring_uses_fast_queries(snapshot.manifest.scoring_version),
+            ),
             reference_answer=ReferenceAnswer(text=item.answer),
             budget_usd=DEFAULT_MINER_TASK_BUDGET_USD,
         )
