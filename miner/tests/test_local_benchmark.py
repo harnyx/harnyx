@@ -38,6 +38,20 @@ from harnyx_validator.application.dto.evaluation import (
 from harnyx_validator.domain.evaluation import MinerTaskRun
 
 
+def test_local_benchmark_execution_time_limit_defaults_to_current_five_minutes() -> None:
+    args = local_benchmark._parse_args([])
+
+    assert args.query_execution_time_limit_seconds == 300.0
+
+
+def test_local_benchmark_execution_time_limit_can_be_selected_explicitly() -> None:
+    args = local_benchmark._parse_args(
+        ["--query-execution-time-limit-seconds", "450"]
+    )
+
+    assert args.query_execution_time_limit_seconds == 450.0
+
+
 def _snapshot() -> BenchmarkDatasetSnapshot:
     return BenchmarkDatasetSnapshot(
         manifest=BenchmarkDatasetManifest(
@@ -415,8 +429,10 @@ def test_local_benchmark_report_includes_answers_and_summary(tmp_path: Path) -> 
         output_dir=tmp_path,
         elapsed_seconds=12.5,
         parallelism=1,
+        query_execution_time_limit_seconds=450.0,
     )
 
+    assert report["evaluation_config"]["query_execution_time_limit_seconds"] == 450.0
     assert report["summary"]["item_count"] == 2
     assert report["summary"]["completed_item_count"] == 1
     assert report["summary"]["failed_item_count"] == 1
@@ -484,6 +500,7 @@ def test_local_benchmark_cost_totals_preserve_embedding_breakdown(tmp_path: Path
         output_dir=tmp_path,
         elapsed_seconds=12.5,
         parallelism=1,
+        query_execution_time_limit_seconds=300.0,
     )
 
     summary_totals = report["summary"]["cost_totals"]
@@ -570,6 +587,7 @@ def test_weighted_rubric_local_benchmark_report_uses_numeric_score_detail(tmp_pa
         output_dir=tmp_path,
         elapsed_seconds=12.5,
         parallelism=1,
+        query_execution_time_limit_seconds=300.0,
     )
 
     assert report["summary"]["completed_item_count"] == 1
@@ -635,6 +653,7 @@ def test_weighted_rubric_report_keeps_correct_item_count_na_when_all_items_fail(
         output_dir=tmp_path,
         elapsed_seconds=12.5,
         parallelism=1,
+        query_execution_time_limit_seconds=300.0,
     )
 
     assert report["summary"]["completed_item_count"] == 0
@@ -699,6 +718,7 @@ def test_weighted_rubric_judge_exception_fails_item_without_partial_score(tmp_pa
         output_dir=tmp_path,
         elapsed_seconds=12.5,
         parallelism=1,
+        query_execution_time_limit_seconds=300.0,
     )
 
     assert result.score is None

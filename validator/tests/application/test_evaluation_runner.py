@@ -234,7 +234,7 @@ def _assigned_task_test_context(
         session_manager=session_manager,
         evaluation_records=evaluation_records,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=clock or _ClockSequence(datetime(2025, 10, 17, 12, 0, tzinfo=UTC)),
         progress=progress,
     )
@@ -559,6 +559,7 @@ async def test_evaluate_assigned_task_queue_success_queues_execution_before_scor
     class _ExecutionOnlyOrchestrator:
         async def execute(self, request: MinerTaskRunRequest, *, phase_recorder=None) -> TaskExecutionOutcome:
             _ = phase_recorder
+            assert request.execution_time_limit_seconds == 300.0
             return TaskExecutionOutcome(
                 batch_id=request.batch_id,
                 artifact_id=request.artifact_id,
@@ -1378,7 +1379,7 @@ async def test_evaluate_assigned_task_queue_internal_issue_registration_failure_
         session_manager=SessionManager(session_registry, token_registry),
         evaluation_records=_RecordingEvaluationStore(),
         receipt_log=FakeReceiptLog(),
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=_ClockSequence(datetime(2025, 10, 17, 12, 0, tzinfo=UTC)),
         progress=progress,
         platform_tool_proxy_scopes=platform_tool_proxy_scopes,
@@ -2736,7 +2737,7 @@ async def test_evaluation_runner_records_exhausted_submission(tmp_path: Path) ->
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=_ClockSequence(
             datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
             datetime(2025, 10, 17, 12, 2, tzinfo=UTC),
@@ -2794,7 +2795,7 @@ async def test_evaluation_runner_assigned_final_timeout_returns_terminal_failed_
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=_ClockSequence(
             datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
             datetime(2025, 10, 17, 12, 1, tzinfo=UTC),
@@ -3154,7 +3155,7 @@ async def test_evaluation_runner_assigned_task_final_scoring_failure_stays_task_
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=_progress(tmp_path),
     )
@@ -3245,7 +3246,7 @@ async def test_evaluation_runner_assigned_task_final_sandbox_invocation_failure_
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=_progress(tmp_path),
     )
@@ -3305,7 +3306,7 @@ async def test_evaluation_runner_identifies_proxy_control_failure_before_later_b
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=progress,
     )
@@ -3356,7 +3357,7 @@ async def test_evaluation_runner_retries_transient_invocation_with_new_session_a
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=progress,
     )
@@ -3416,7 +3417,7 @@ async def test_evaluation_runner_fails_batch_on_generic_post_invoke_failure(tmp_
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=_progress(tmp_path),
     )
@@ -3462,7 +3463,7 @@ async def test_evaluation_runner_sandbox_timeout_terminalizes_without_scheduler_
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=_progress(tmp_path),
     )
@@ -3513,7 +3514,7 @@ async def test_evaluation_runner_fails_batch_after_scoring_timeout_retry_exhaust
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=_progress(tmp_path),
     )
@@ -3558,7 +3559,7 @@ async def test_evaluation_runner_records_sandbox_boundary_timeout_as_miner_owned
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=_progress(tmp_path),
     )
@@ -3605,7 +3606,7 @@ async def test_evaluation_runner_treats_http_client_timeoutexception_as_sandbox_
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=_progress(tmp_path),
     )
@@ -3653,7 +3654,7 @@ async def test_evaluation_runner_does_not_treat_non_504_timeouterror_as_sandbox_
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=_progress(tmp_path),
     )
@@ -3709,7 +3710,7 @@ async def test_evaluation_runner_terminalizes_sandbox_timeout_without_receipts(t
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=_progress(tmp_path),
     )
@@ -3756,7 +3757,7 @@ async def test_evaluation_runner_records_current_attempt_receipts_for_terminal_t
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=_progress(tmp_path),
     )
@@ -3802,7 +3803,7 @@ async def test_evaluation_runner_records_zero_score_for_invalid_miner_response(t
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=_progress(tmp_path),
     )
@@ -3847,7 +3848,7 @@ async def test_evaluation_runner_records_zero_score_for_scoring_retry_exhaustion
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=_progress(tmp_path),
     )
@@ -3893,7 +3894,7 @@ async def test_evaluation_runner_records_embedding_retry_exhausted_submission(tm
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=_progress(tmp_path),
     )
@@ -3939,7 +3940,7 @@ async def test_evaluation_runner_records_budget_exhausted_when_retry_starts_near
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=_ClockSequence(
             datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
             datetime(2025, 10, 17, 12, 2, tzinfo=UTC),
@@ -4000,7 +4001,7 @@ async def test_evaluation_runner_keeps_valid_response_when_provider_failure_stay
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=progress,
     )
@@ -4063,7 +4064,7 @@ async def test_evaluation_runner_platform_proxy_control_categories_fail_validato
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=_progress(tmp_path),
     )
@@ -4116,7 +4117,7 @@ async def test_evaluation_runner_platform_proxy_execution_categories_do_not_fail
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=_progress(tmp_path),
     )
@@ -4169,7 +4170,7 @@ async def test_evaluation_runner_platform_proxy_execution_categories_are_pair_sc
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=progress,
     )
@@ -4226,7 +4227,7 @@ async def test_evaluation_runner_keeps_miner_owned_proxy_failure_with_the_miner(
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=_progress(tmp_path),
     )
@@ -4269,7 +4270,7 @@ async def test_evaluation_runner_retries_platform_tool_proxy_timeout_with_task_r
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=progress,
     )
@@ -4335,7 +4336,7 @@ async def test_evaluation_runner_timeout_owned_path_ignores_earlier_proxy_contro
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=progress,
     )
@@ -4400,7 +4401,7 @@ async def test_evaluation_runner_does_not_rewrite_different_miner_exception_afte
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=_progress(tmp_path),
     )
@@ -4460,7 +4461,7 @@ async def test_evaluation_runner_records_success_when_successful_fallback_crosse
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=progress,
     )
@@ -4549,7 +4550,7 @@ async def test_evaluation_runner_keeps_provider_caused_terminal_failure_pair_sco
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=progress,
     )
@@ -4595,7 +4596,7 @@ async def test_evaluation_runner_records_zero_score_for_unhandled_miner_exceptio
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=_ClockSequence(
             datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
             datetime(2025, 10, 17, 12, 2, tzinfo=UTC),
@@ -4640,7 +4641,7 @@ async def test_evaluation_runner_keeps_query_runtime_type_error_as_miner_unhandl
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=_ClockSequence(
             datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
             datetime(2025, 10, 17, 12, 2, tzinfo=UTC),
@@ -4693,7 +4694,7 @@ async def test_evaluation_runner_records_zero_score_for_script_validation_failur
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=_ClockSequence(
             datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
             datetime(2025, 10, 17, 12, 2, tzinfo=UTC),
@@ -4749,7 +4750,7 @@ async def test_evaluate_artifact_with_state_preserves_sandbox_infrastructure_fai
         receipt_log=receipt_log,
         config=SchedulerConfig(
             token_secret_bytes=8,
-            session_ttl=timedelta(minutes=5),
+            execution_time_limit_seconds=300.0,
             artifact_task_parallelism=1,
         ),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
@@ -4794,7 +4795,7 @@ async def test_evaluation_runner_does_not_let_stale_provider_marker_poison_later
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=progress,
     )
@@ -4847,7 +4848,7 @@ async def test_evaluation_runner_uses_bounded_continuous_worker_pool(tmp_path: P
         receipt_log=receipt_log,
         config=SchedulerConfig(
             token_secret_bytes=8,
-            session_ttl=timedelta(minutes=5),
+            execution_time_limit_seconds=300.0,
             artifact_task_parallelism=5,
         ),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
@@ -4935,7 +4936,7 @@ async def test_evaluate_artifact_with_state_preserves_earlier_submissions_for_co
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=_progress(tmp_path),
     )
@@ -5002,7 +5003,7 @@ async def test_evaluate_artifact_with_state_preserves_partial_submissions_for_va
         receipt_log=receipt_log,
         config=SchedulerConfig(
             token_secret_bytes=8,
-            session_ttl=timedelta(minutes=5),
+            execution_time_limit_seconds=300.0,
             artifact_task_parallelism=1,
         ),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
@@ -5082,7 +5083,7 @@ async def test_evaluate_task_retry_loop_records_validator_batch_failure_detail(
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=progress,
     )
@@ -5152,7 +5153,7 @@ async def test_evaluate_artifact_with_state_preserves_partial_submissions_for_un
         receipt_log=receipt_log,
         config=SchedulerConfig(
             token_secret_bytes=8,
-            session_ttl=timedelta(minutes=5),
+            execution_time_limit_seconds=300.0,
             artifact_task_parallelism=1,
         ),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
@@ -5214,7 +5215,7 @@ async def test_record_failure_for_artifact_preserves_partial_submissions_when_re
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
         progress=_progress(tmp_path),
     )
@@ -5265,7 +5266,7 @@ async def test_evaluation_runner_supports_serialized_artifact_execution(tmp_path
         receipt_log=receipt_log,
         config=SchedulerConfig(
             token_secret_bytes=8,
-            session_ttl=timedelta(minutes=5),
+            execution_time_limit_seconds=300.0,
             artifact_task_parallelism=1,
         ),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),

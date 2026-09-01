@@ -72,10 +72,11 @@ def _write_agent(path: Path, *, answer: str = "local answer") -> None:
         "\n".join(
             (
                 "from harnyx_miner_sdk.decorators import entrypoint",
+                "from harnyx_miner_sdk.context import ContextSnapshot",
                 "from harnyx_miner_sdk.query import Query, Response",
                 "",
                 '@entrypoint("query")',
-                "async def query(query: Query) -> Response:",
+                "async def query(query: Query, _context: ContextSnapshot) -> Response:",
                 f'    return Response(text="{answer}")',
                 "",
             )
@@ -90,10 +91,11 @@ def _write_sleeping_agent(path: Path) -> None:
             (
                 "import asyncio",
                 "from harnyx_miner_sdk.decorators import entrypoint",
+                "from harnyx_miner_sdk.context import ContextSnapshot",
                 "from harnyx_miner_sdk.query import Query, Response",
                 "",
                 '@entrypoint("query")',
-                "async def query(query: Query) -> Response:",
+                "async def query(query: Query, _context: ContextSnapshot) -> Response:",
                 "    await asyncio.sleep(60)",
                 '    return Response(text="never")',
                 "",
@@ -599,6 +601,10 @@ class _FakeRuntime:
         self.closed = False
         self.progress_reporter: Any | None = None
 
+    @property
+    def session_ttl(self) -> timedelta:
+        return timedelta(seconds=360)
+
     async def evaluate_artifact(
         self,
         *,
@@ -766,6 +772,7 @@ def test_local_eval_runtime_create_binds_sandbox_publish_to_loopback(
     assert captured["host"] == "127.0.0.1"
     assert captured["published_port_bind_host"] == "127.0.0.1"
     assert runtime._sandbox_manager is not None
+    assert runtime._runner._config.execution_time_limit_seconds == 300.0
 
 
 async def test_local_runtime_closes_llm_provider_registry_not_routed_wrappers() -> None:
@@ -858,8 +865,9 @@ class _FakeSandboxClient(SandboxClient):
         context: Mapping[str, JsonValue],
         token: str,
         session_id: UUID,
+        include_failure_details: bool = True,
     ) -> Mapping[str, JsonValue]:
-        del payload, context, token, session_id
+        del payload, context, token, session_id, include_failure_details
         raise AssertionError(f"sandbox client invoke should not be reached in this unit test: entrypoint={entrypoint}")
 
     def close(self) -> None:
@@ -1273,6 +1281,7 @@ def test_local_eval_task_id_runs_only_the_selected_task_and_uses_a_task_specific
     assert markdown_path.exists()
     assert not (tmp_path / f"local-eval-report-{batch_id}-target-only.json").exists()
     assert report["evaluation_config"]["selected_task_ids"] == [str(selected_task.task_id)]
+    assert report["evaluation_config"]["session_ttl_seconds"] == 360
     assert [task["task_id"] for task in report["tasks"]] == [str(selected_task.task_id)]
     assert report["recorded_platform_context"]["results_scope"] == {
         "kind": "task",
@@ -1392,9 +1401,10 @@ def test_local_eval_head_to_head_winner_uses_raw_totals_not_rounded_totals(
             "size_bytes": 128,
             "content_b64": base64.b64encode(
                 b"from harnyx_miner_sdk.decorators import entrypoint\n"
+                b"from harnyx_miner_sdk.context import ContextSnapshot\n"
                 b"from harnyx_miner_sdk.query import Query, Response\n"
                 b'@entrypoint("query")\n'
-                b"async def query(query: Query) -> Response:\n"
+                b"async def query(query: Query, _context: ContextSnapshot) -> Response:\n"
                 b'    return Response(text="champion")\n'
             ).decode("ascii"),
         },
@@ -1532,9 +1542,10 @@ def test_local_eval_does_not_write_reports_when_champion_outcome_has_artifact_fa
             "size_bytes": 128,
             "content_b64": base64.b64encode(
                 b"from harnyx_miner_sdk.decorators import entrypoint\n"
+                b"from harnyx_miner_sdk.context import ContextSnapshot\n"
                 b"from harnyx_miner_sdk.query import Query, Response\n"
                 b'@entrypoint("query")\n'
-                b"async def query(query: Query) -> Response:\n"
+                b"async def query(query: Query, _context: ContextSnapshot) -> Response:\n"
                 b'    return Response(text="champion")\n'
             ).decode("ascii"),
         },
@@ -1694,9 +1705,10 @@ def test_local_eval_vs_champion_uses_platform_cascade_not_raw_total_only(
             "size_bytes": 128,
             "content_b64": base64.b64encode(
                 b"from harnyx_miner_sdk.decorators import entrypoint\n"
+                b"from harnyx_miner_sdk.context import ContextSnapshot\n"
                 b"from harnyx_miner_sdk.query import Query, Response\n"
                 b'@entrypoint("query")\n'
-                b"async def query(query: Query) -> Response:\n"
+                b"async def query(query: Query, _context: ContextSnapshot) -> Response:\n"
                 b'    return Response(text="champion")\n'
             ).decode("ascii"),
         },
@@ -1755,9 +1767,10 @@ def test_local_eval_runs_target_and_champion_concurrently(
             "size_bytes": 128,
             "content_b64": base64.b64encode(
                 b"from harnyx_miner_sdk.decorators import entrypoint\n"
+                b"from harnyx_miner_sdk.context import ContextSnapshot\n"
                 b"from harnyx_miner_sdk.query import Query, Response\n"
                 b'@entrypoint("query")\n'
-                b"async def query(query: Query) -> Response:\n"
+                b"async def query(query: Query, _context: ContextSnapshot) -> Response:\n"
                 b'    return Response(text="champion")\n'
             ).decode("ascii"),
         },

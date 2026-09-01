@@ -99,35 +99,44 @@ You submit **one UTF-8 Python source file** (<= 1,000,000 bytes / 1 MB). Validat
 
 1. Stage it as `agent.py`
 2. Load it via `runpy.run_path`
-3. Call your `query` entrypoint with a strict `Query` JSON payload
+3. Call your `query` entrypoint with a strict `Query` payload and immutable `ContextSnapshot`
 
 You are encouraged to learn from previous solutions and build on mechanisms that work. Shared ideas are allowed. Duplicate preflight uses four classifications. Cosmetic, slot, timestamp or parameter-only changes without changed behavior remain `duplicate`. Localized behavior changes inside substantially the same pipeline are `near_duplicate`. A substantial reorganization or extension that retains at least one part of the same architectural root is `notable_change`. Platform checks the closest symmetric primary reference first. A primary `novel` result may open a separate challenge round against a different reference that covers more of the candidate's own structure; the lower result wins. `Novel` therefore requires replacement of the primary controller, evidence state and flow, and answer-production path across both checked references when a challenge exists. Every reachable successful branch counts, including minority hash-routed branches. These pairwise labels do not claim global uniqueness. If structural selection finds no eligible primary reference, Platform assigns `novel` automatically. Eligible artifacts enter task scoring, where quality, cost and execution time determine performance.
 
 If `./agent.py` does not exist yet, start with a minimal stub:
 
 ```python
+from harnyx_miner_sdk.context import ContextSnapshot
 from harnyx_miner_sdk.decorators import entrypoint
 from harnyx_miner_sdk.query import Query, Response
 
 
 @entrypoint("query")
-async def query(query: Query) -> Response:
+async def query(query: Query, _context: ContextSnapshot) -> Response:
     return Response(text=query.text)
 ```
 
 Your script must define this entrypoint:
 
 ```python
+from harnyx_miner_sdk.context import ContextSnapshot
 from harnyx_miner_sdk.decorators import entrypoint
 from harnyx_miner_sdk.query import Query, Response
 
 @entrypoint("query")
-async def query(query: Query) -> Response:
+async def query(query: Query, context: ContextSnapshot) -> Response:
     # ... call tools (search_web, llm_chat)
     return Response(text="...")
 ```
 
-The `query` entrypoint must stay `async def`, accept exactly one parameter annotated as `Query`, and return `Response`. The parameter name itself does not matter.
+The `query` entrypoint must stay `async def` and return `Response`. It may use
+the legacy one-parameter form `(Query) -> Response` or the context-aware form
+`(Query, ContextSnapshot) -> Response`; parameter names do not matter. Use the
+context-aware form for new artifacts. Its `context.cost_budget` is the initial
+monetary snapshot, and `context.time_budget.limit_seconds` is the configured
+full invocation limit. The sandbox validates the context and enforces the same
+cost and time limits for legacy artifacts, but a one-parameter function cannot
+inspect those budgets directly.
 
 `Query.fast` is a strict boolean that defaults to `False`. An ordinary
 `fast=False` query uses the citation-aware pairwise scorer. A `fast=True` query
@@ -144,11 +153,12 @@ The entrypoint also supports caller-selected structured output. When
 When it is present, return the JSON value directly in `Response.output`:
 
 ```python
+from harnyx_miner_sdk.context import ContextSnapshot
 from harnyx_miner_sdk.query import CitationRef
 
 
 @entrypoint("query")
-async def query(query: Query) -> Response:
+async def query(query: Query, _context: ContextSnapshot) -> Response:
     refs = [CitationRef(receipt_id="receipt-123", result_id="result-abc")]
     if query.output_schema is None:
         return Response(text="The researched result is supported [[1]].", citations=refs)
@@ -203,11 +213,12 @@ When the query does not request a conflicting form, prefer a clear, self-contain
 When your answer depends on a tool result that should be carried forward into scoring or monitoring, return receipt refs rather than freeform URLs:
 
 ```python
+from harnyx_miner_sdk.context import ContextSnapshot
 from harnyx_miner_sdk.query import CitationRef, Query, Response
 
 
 @entrypoint("query")
-async def query(query: Query) -> Response:
+async def query(query: Query, _context: ContextSnapshot) -> Response:
     return Response(
         text="The researched result is supported by the cited source [[1]].",
         citations=[CitationRef(receipt_id="receipt-123", result_id="result-abc")],
@@ -227,11 +238,12 @@ Example with `search_web`:
 
 ```python
 from harnyx_miner_sdk.api import search_web
+from harnyx_miner_sdk.context import ContextSnapshot
 from harnyx_miner_sdk.query import CitationRef, CitationSlice, Query, Response
 
 
 @entrypoint("query")
-async def query(query: Query) -> Response:
+async def query(query: Query, _context: ContextSnapshot) -> Response:
     search = await search_web(query.text, provider="parallel", num=5)
     result = search.results[0]
     return Response(
@@ -288,6 +300,14 @@ Tool calls return a budget snapshot:
 `session_budget_usd` is the communicated budget for the evaluation. `session_hard_limit_usd` is the actual enforcement ceiling for the session. `session_remaining_budget_usd` is clamped at `0` once usage exceeds the communicated budget, even if the hard limit is still higher.
 
 For miner-task batch evaluation, the run is strict: if execution hits the hard limit, validators record the run as `session_budget_exhausted` and stop before scoring/finalization. Return a best-effort `Response` before that point if you can.
+
+The query context reports the initial monetary snapshot as `context.cost_budget`
+and the configured full execution limit as
+`context.time_budget.limit_seconds`. Worker startup and artifact preload consume
+that limit, so it is not remaining time. Tool-call responses continue to report
+the authoritative post-call monetary `budget`. A tool helper's `timeout` applies
+only to that individual call; it does not reset or extend the artifact invocation
+deadline.
 
 Tool calls are also concurrency-limited per evaluation session. For one session/token, validators allow up to 20 in-flight tool calls total across the registered miner tools. The cap is shared across the whole miner script session; it is not split by tool type, provider, or `llm_chat` model. If your agent starts another call after the shared cap is full, that extra call waits for a free slot instead of failing immediately.
 
@@ -525,10 +545,15 @@ uv run --package harnyx-miner harnyx-miner-local-benchmark --list-suites
 uv run --package harnyx-miner harnyx-miner-local-benchmark \
   --suite webwalkerqa \
   --agent-path ./agent.py \
-  --source-batch-id <completed-batch-id>
+  --source-batch-id <completed-batch-id> \
+  --query-execution-time-limit-seconds 300
 ```
 
 This writes a structured JSON report with the decoded benchmark question, reference answer or rubric payload, generated answer, score, optional `score_detail`, cost, runtime, and errors for each item.
+The query execution limit defaults to 300 seconds. The explicit benchmark-only
+flag accepts any positive finite number, so an operator can run a later
+benchmark with a longer limit without changing ordinary batch or local-eval
+policy.
 The local benchmark uses the public `harnyx_commons.miner_task_benchmark` boundary for packaged benchmark data, deterministic benchmark IDs, scoring, sampling, metric aggregation, and scoring-version checks. Sampling selects the same fixed 20 source item indices for every run of the same dataset/scoring snapshot; a new dataset or scoring version may select a new panel, and populations of 20 or fewer use every item. `--source-batch-id` still derives run, backing-batch, and task identities, but it does not change panel membership. Miners must pass `--suite` so the report names the exact benchmark suite and version under test; there is no default suite. Current-suite listing shows active public benchmark suites, including DRACO. DRACO local runs require dedicated `BENCHMARK_RUBRIC_JUDGE_LLM_*` settings and use the current weighted-rubric snapshot when dataset/scoring flags are omitted. The command does not depend on private platform internals.
 
 BrowseComp local reports contain decoded questions, reference answers, and model responses. Keep those reports private: do not post their JSON, Markdown, screenshots, or extracted examples online. Public Platform monitoring omits BrowseComp content and exact execution logs, but the local command intentionally keeps plaintext so miners can diagnose their own runs.

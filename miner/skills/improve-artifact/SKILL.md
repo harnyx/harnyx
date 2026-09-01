@@ -22,7 +22,7 @@ report.
 2. Keep the public contract stable:
    - one Python file
    - `@entrypoint("query")`
-   - `Query -> Response`
+   - `async def query(query: Query, context: ContextSnapshot) -> Response`
 3. Prefer changes that can be tested against the failing or weak tasks you already identified.
 4. Preserve graceful failure behavior for tools and budgets.
 5. Record what changed and what you expect to improve in the next report.
@@ -31,7 +31,8 @@ report.
 
 - Stop if there is no specific hypothesis.
 - Stop if the change would rewrite the artifact without task-level evidence.
-- Stop if the change breaks the one-file `Query -> Response` contract.
+- Stop if the change breaks the one-file
+  `query(Query, ContextSnapshot) -> Response` contract.
 
 ## Output
 

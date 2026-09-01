@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 from harnyx_miner_sdk.api import LlmChatResult, ToolCallResponse
+from harnyx_miner_sdk.context import ContextSnapshot
 from harnyx_miner_sdk.llm import (
     LlmChoice,
     LlmChoiceMessage,
@@ -15,6 +16,7 @@ from harnyx_miner_sdk.llm import (
 from harnyx_miner_sdk.query import Query
 from harnyx_miner_sdk.tools.http_models import ToolBudgetDTO, ToolResultDTO
 from harnyx_miner_sdk.tools.search_models import SearchWebSearchResponse
+from harnyx_miner_sdk.tools.time_budget import ExecutionTimeBudgetDTO
 from miner.tests import docker_sandbox_entrypoint as agent
 
 pytestmark = pytest.mark.anyio("asyncio")
@@ -26,6 +28,13 @@ def _fake_budget() -> ToolBudgetDTO:
         session_hard_limit_usd=1.0,
         session_used_budget_usd=0.0,
         session_remaining_budget_usd=1.0,
+    )
+
+
+def _fake_context() -> ContextSnapshot:
+    return ContextSnapshot(
+        cost_budget=_fake_budget(),
+        time_budget=ExecutionTimeBudgetDTO(limit_seconds=300.0),
     )
 
 
@@ -102,7 +111,10 @@ async def test_query_builds_supported_response(monkeypatch: pytest.MonkeyPatch) 
         fake_llm_chat,
     )
 
-    result = await agent.query(Query(text="Harnyx Subnet validators manage sandboxed miners."))
+    result = await agent.query(
+        Query(text="Harnyx Subnet validators manage sandboxed miners."),
+        _fake_context(),
+    )
 
     assert "Evidence [1]" in result.text
     assert "Alpha evidence" in result.text
@@ -116,4 +128,4 @@ async def test_query_raises_when_no_results(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(agent, "search_web", fake_search_web)
 
     with pytest.raises(RuntimeError):
-        await agent.query(Query(text="Test"))
+        await agent.query(Query(text="Test"), _fake_context())

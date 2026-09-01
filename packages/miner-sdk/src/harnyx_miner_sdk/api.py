@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from typing import Any, Generic, Literal, TypeVar, cast, overload
 
@@ -52,6 +52,7 @@ from harnyx_miner_sdk.tools.search_provider_extra import (
 from harnyx_miner_sdk.tools.types import ToolInvocationTimeout
 
 TResponse = TypeVar("TResponse")
+TToolCallResponse = TypeVar("TToolCallResponse", bound="ToolCallResponse[Any]")
 
 
 @dataclass(frozen=True)
@@ -109,6 +110,22 @@ def _require_response_mapping(response_payload: object, *, label: str) -> Mappin
     return cast(Mapping[str, Any], response_payload)
 
 
+def _build_tool_call_response(
+    response_type: Callable[..., TToolCallResponse],
+    dto: ToolExecuteResponseDTO,
+    response: object,
+) -> TToolCallResponse:
+    return response_type(
+        receipt_id=dto.receipt_id,
+        response=response,
+        results=dto.results,
+        result_policy=dto.result_policy,
+        cost_usd=dto.cost_usd,
+        usage=dto.usage,
+        budget=dto.budget,
+    )
+
+
 async def test_tool(
     message: str,
     *,
@@ -125,15 +142,7 @@ async def test_tool(
     dto = _parse_execute_response(raw_response)
     response_payload = _require_response_mapping(dto.response, label="test_tool response payload must be a mapping")
     response = TestToolResponse.model_validate(response_payload)
-    return ToolCallResponse(
-        receipt_id=dto.receipt_id,
-        response=response,
-        results=dto.results,
-        result_policy=dto.result_policy,
-        cost_usd=dto.cost_usd,
-        usage=dto.usage,
-        budget=dto.budget,
-    )
+    return _build_tool_call_response(ToolCallResponse, dto, response)
 
 
 async def tooling_info(
@@ -150,15 +159,7 @@ async def tooling_info(
     dto = _parse_execute_response(raw_response)
     response_payload = _require_response_mapping(dto.response, label="tooling_info response payload must be a mapping")
     response = dict(response_payload)
-    return ToolCallResponse(
-        receipt_id=dto.receipt_id,
-        response=response,
-        results=dto.results,
-        result_policy=dto.result_policy,
-        cost_usd=dto.cost_usd,
-        usage=dto.usage,
-        budget=dto.budget,
-    )
+    return _build_tool_call_response(ToolCallResponse, dto, response)
 
 
 async def search_web(
@@ -187,15 +188,7 @@ async def search_web(
     dto = _parse_execute_response(raw_response)
     response_payload = _require_response_mapping(dto.response, label="search_web response payload must be a mapping")
     response = SearchWebSearchResponse.model_validate(response_payload)
-    return ToolCallResponse(
-        receipt_id=dto.receipt_id,
-        response=response,
-        results=dto.results,
-        result_policy=dto.result_policy,
-        cost_usd=dto.cost_usd,
-        usage=dto.usage,
-        budget=dto.budget,
-    )
+    return _build_tool_call_response(ToolCallResponse, dto, response)
 
 
 async def fetch_page(
@@ -217,15 +210,7 @@ async def fetch_page(
     dto = _parse_execute_response(raw_response)
     response_payload = _require_response_mapping(dto.response, label="fetch_page response payload must be a mapping")
     response = FetchPageResponse.model_validate(response_payload)
-    return ToolCallResponse(
-        receipt_id=dto.receipt_id,
-        response=response,
-        results=dto.results,
-        result_policy=dto.result_policy,
-        cost_usd=dto.cost_usd,
-        usage=dto.usage,
-        budget=dto.budget,
-    )
+    return _build_tool_call_response(ToolCallResponse, dto, response)
 
 
 @overload
@@ -290,15 +275,7 @@ async def embed_text(
     dto = _parse_execute_response(raw_response)
     response_payload = _require_response_mapping(dto.response, label="embed_text response payload must be a mapping")
     response = EmbedTextResponse.model_validate(response_payload)
-    return ToolCallResponse(
-        receipt_id=dto.receipt_id,
-        response=response,
-        results=dto.results,
-        result_policy=dto.result_policy,
-        cost_usd=dto.cost_usd,
-        usage=dto.usage,
-        budget=dto.budget,
-    )
+    return _build_tool_call_response(ToolCallResponse, dto, response)
 
 
 @overload
@@ -414,15 +391,7 @@ async def llm_chat(
     dto = _parse_execute_response(raw_response)
     response_payload = _require_response_mapping(dto.response, label="llm_chat response missing 'response' payload")
     llm = LlmResponse.from_payload(response_payload)
-    return LlmChatResult(
-        receipt_id=dto.receipt_id,
-        response=llm,
-        results=dto.results,
-        result_policy=dto.result_policy,
-        cost_usd=dto.cost_usd,
-        usage=dto.usage,
-        budget=dto.budget,
-    )
+    return _build_tool_call_response(LlmChatResult, dto, llm)
 
 
 def _llm_chat_message_input(message: Mapping[str, Any] | LlmChatMessage | LlmMessage) -> object:

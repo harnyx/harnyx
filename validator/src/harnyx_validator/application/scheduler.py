@@ -23,6 +23,7 @@ from harnyx_commons.domain.miner_task import (
 from harnyx_commons.sandbox.client import SandboxClient
 from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager
 from harnyx_commons.sandbox.options import SandboxOptions
+from harnyx_commons.tools.session_lifetime import tool_session_ttl_for_execution_limit
 from harnyx_validator.application.assigned_work import AssignedArtifactWork
 from harnyx_validator.application.dto.evaluation import (
     DIAGNOSTIC_ID_MAX_LENGTH,
@@ -75,9 +76,16 @@ class SchedulerConfig:
     """Static configuration used for session issuance."""
 
     token_secret_bytes: int
-    session_ttl: timedelta
+    execution_time_limit_seconds: float
     artifact_parallelism: int = 4
     artifact_task_parallelism: int = 20
+
+    def __post_init__(self) -> None:
+        tool_session_ttl_for_execution_limit(self.execution_time_limit_seconds)
+
+    @property
+    def session_ttl(self) -> timedelta:
+        return tool_session_ttl_for_execution_limit(self.execution_time_limit_seconds)
 
 
 class EvaluationScheduler:

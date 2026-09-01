@@ -1556,6 +1556,7 @@ class EvaluationRunner:
             uid=artifact.uid,
             artifact_id=artifact.artifact_id,
             task=task,
+            execution_time_limit_seconds=self._config.execution_time_limit_seconds,
         )
         try:
             if phase_recorder is None or not _orchestrator_accepts_phase_recorder(orchestrator):
@@ -1691,6 +1692,7 @@ class EvaluationRunner:
             uid=artifact.uid,
             artifact_id=artifact.artifact_id,
             task=task,
+            execution_time_limit_seconds=self._config.execution_time_limit_seconds,
         )
         try:
             if phase_recorder is None:

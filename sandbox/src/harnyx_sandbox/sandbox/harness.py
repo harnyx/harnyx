@@ -14,33 +14,44 @@ import multiprocessing
 import os
 import struct
 import sys
+import time
 from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 
 import pyseccomp as seccomp
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from harnyx_miner_sdk._internal.tool_invoker import bind_tool_invoker
+from harnyx_miner_sdk.context import ContextSnapshot
 from harnyx_miner_sdk.decorators import (
     EntrypointRegistry,
     get_entrypoint,
     get_entrypoint_registry,
 )
 from harnyx_miner_sdk.sandbox_headers import read_session_id_header
-from harnyx_sandbox.context.snapshot import ContextSnapshot
-from harnyx_sandbox.sandbox.timeout import ENTRYPOINT_TIMEOUT_SECONDS
+from harnyx_miner_sdk.tools.http_models import ToolBudgetDTO
+from harnyx_miner_sdk.tools.time_budget import ExecutionTimeBudgetDTO
 
 ToolConfig = Mapping[str, Any] | None
 ToolHeaders = Mapping[str, str]
 ToolFactory = Callable[[ToolConfig, ToolHeaders], Any]
 
 
+class _EntrypointContext(BaseModel):
+    """Validated sandbox-boundary context for every entrypoint invocation."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    time_budget: ExecutionTimeBudgetDTO
+    cost_budget: ToolBudgetDTO | None = None
+
+
 @dataclass
 class EntrypointRequest:
+    context: _EntrypointContext
     payload: dict[str, Any] = field(default_factory=dict)
-    context: dict[str, Any] = field(default_factory=dict)
     tool_config: dict[str, Any] | None = None
 
 
@@ -390,15 +401,26 @@ class SandboxHarness:
     ) -> Any:
         request_payload = body.payload
         tool_config = body.tool_config
-        context_snapshot = ContextSnapshot(body.context or {})
+        context_data = body.context.model_dump(mode="json", exclude_none=True)
+        if entrypoint_name == "query":
+            try:
+                ContextSnapshot.model_validate(context_data)
+            except ValidationError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail=exc.errors(include_input=False),
+                ) from exc
+        limit_seconds = body.context.time_budget.limit_seconds
+        deadline_monotonic_ns = time.monotonic_ns() + int(limit_seconds * 1_000_000_000)
 
         call_kwargs = {
             "entrypoint_name": entrypoint_name,
             "request_payload": request_payload,
-            "context": context_snapshot.to_dict(),
+            "context": context_data,
             "tool_config": tool_config,
             "headers": dict(headers or {}),
             "preload": self._preload,
+            "deadline_monotonic_ns": deadline_monotonic_ns,
         }
 
         return await self._invoke_with_worker(call_kwargs)
@@ -446,12 +468,15 @@ class SandboxHarness:
 
     @staticmethod
     def _build_call_kwargs(
-        func: Callable[..., Any],
+        entrypoint_name: str,
         request_payload: Any,
-        context_snapshot: ContextSnapshot,
-        tool_proxy: Any,
+        context_data: Mapping[str, Any],
     ) -> dict[str, Any]:
-        del func, context_snapshot, tool_proxy
+        if entrypoint_name == "query":
+            return {
+                "request": request_payload,
+                "context": ContextSnapshot.model_validate(context_data),
+            }
         return {"request": request_payload}
 
     async def _invoke_with_worker(self, payload: Mapping[str, Any]) -> Any:
@@ -555,7 +580,8 @@ class SandboxHarness:
     ) -> tuple[str, Any]:
         reader = WorkerResultReader(process=process, pipe=result_pipe)
         try:
-            return await reader.wait(timeout=ENTRYPOINT_TIMEOUT_SECONDS)
+            remaining_seconds = max(payload["deadline_monotonic_ns"] - time.monotonic_ns(), 0) / 1_000_000_000
+            return await reader.wait(timeout=remaining_seconds)
         except TimeoutError as exc:  # pragma: no cover - integration timing
             terminate_task = asyncio.create_task(asyncio.to_thread(self._terminate_process, process))
             await self._await_owned_cleanup(terminate_task)
@@ -579,18 +605,21 @@ class SandboxHarness:
         exc: TimeoutError,
     ) -> tuple[str, Any]:
         session_id = read_session_id_header(payload["headers"])
+        context = cast(Mapping[str, Any], payload["context"])
+        time_budget = ExecutionTimeBudgetDTO.model_validate(context.get("time_budget"))
+        limit_seconds = time_budget.limit_seconds
         logger.exception(
             "sandbox entrypoint timed out",
             extra={
                 "entrypoint": payload["entrypoint_name"],
                 "session_id": session_id,
-                "timeout_seconds": ENTRYPOINT_TIMEOUT_SECONDS,
+                "timeout_seconds": limit_seconds,
             },
         )
         raise HTTPException(
             status_code=504,
             detail={
-                "error": f"entrypoint exceeded {ENTRYPOINT_TIMEOUT_SECONDS}s",
+                "error": f"entrypoint exceeded {limit_seconds}s",
                 "exception": "TimeoutError",
             },
         ) from exc
@@ -614,6 +643,38 @@ class SandboxHarness:
 
 
 def _entrypoint_worker(
+    entrypoint_name: str,
+    request_payload: Mapping[str, Any],
+    context_data: Mapping[str, Any],
+    tool_config: Mapping[str, Any] | None,
+    headers: Mapping[str, str],
+    tool_factory: ToolFactory | None,
+    preload: Callable[[], SandboxPreloadFailure | None] | None,
+    read_fd: int,
+    result_fd: int,
+    stdout_read_fd: int,
+    stdout_write_fd: int,
+    stderr_read_fd: int,
+    stderr_write_fd: int,
+) -> None:
+    _run_entrypoint_worker(
+        entrypoint_name,
+        request_payload,
+        context_data,
+        tool_config,
+        headers,
+        tool_factory,
+        preload,
+        read_fd,
+        result_fd,
+        stdout_read_fd,
+        stdout_write_fd,
+        stderr_read_fd,
+        stderr_write_fd,
+    )
+
+
+def _run_entrypoint_worker(
     entrypoint_name: str,
     request_payload: Mapping[str, Any],
     context_data: Mapping[str, Any],
@@ -661,12 +722,10 @@ def _entrypoint_worker(
             detail_code = "MissingEntrypoint" if preload_completed else "EntrypointUnavailable"
             _send_worker_error(result_fd, detail_code, exc)
             return
-        context_snapshot = ContextSnapshot(context_data or {})
         call_kwargs = SandboxHarness._build_call_kwargs(
-            func,
+            entrypoint_name,
             request_payload,
-            context_snapshot,
-            tool_proxy,
+            context_data,
         )
         if tool_proxy is not None:
             with bind_tool_invoker(tool_proxy):

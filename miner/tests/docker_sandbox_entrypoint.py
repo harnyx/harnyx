@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from harnyx_miner_sdk.api import LlmChatResult, llm_chat, search_web
+from harnyx_miner_sdk.context import ContextSnapshot
 from harnyx_miner_sdk.decorators import entrypoint
 from harnyx_miner_sdk.llm import LlmMessageContentPart
 from harnyx_miner_sdk.query import Query, Response
@@ -27,7 +28,7 @@ class EvidenceBundle:
     items: tuple[EvidenceItem, ...]
 
 @entrypoint("query")
-async def query(query: Query) -> Response:
+async def query(query: Query, _context: ContextSnapshot) -> Response:
     evidence = await _gather_evidence(query.text)
     answer = await _answer_query(
         query_text=query.text,

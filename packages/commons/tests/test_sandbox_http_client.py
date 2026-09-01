@@ -21,6 +21,10 @@ def _request_json(request: httpx.Request) -> object:
     return json.loads(request.content.decode("utf-8"))
 
 
+def _context(limit_seconds: object = 300.0) -> dict[str, object]:
+    return {"time_budget": {"limit_seconds": limit_seconds}}
+
+
 @pytest.mark.anyio("asyncio")
 async def test_http_sandbox_client_retries_connect_error_with_same_session_and_connection_close() -> None:
     session_id = uuid4()
@@ -39,7 +43,7 @@ async def test_http_sandbox_client_retries_connect_error_with_same_session_and_c
         result = await HttpSandboxClient("http://sandbox.local", client=http_client).invoke(
             "query",
             payload={"question": "hello"},
-            context={"trace": "same"},
+            context=_context(123.0),
             token="session-token",  # noqa: S106 - fixed test-only sandbox token
             session_id=session_id,
         )
@@ -50,9 +54,67 @@ async def test_http_sandbox_client_retries_connect_error_with_same_session_and_c
     assert {request.headers[SESSION_ID_HEADER] for request in requests} == {str(session_id)}
     assert {request.headers["Connection"] for request in requests} == {"close"}
     assert [_request_json(request) for request in requests] == [
-        {"payload": {"question": "hello"}, "context": {"trace": "same"}},
-        {"payload": {"question": "hello"}, "context": {"trace": "same"}},
+        {
+            "payload": {"question": "hello"},
+            "context": _context(123.0),
+        },
+        {
+            "payload": {"question": "hello"},
+            "context": _context(123.0),
+        },
     ]
+    assert {request.extensions["timeout"]["read"] for request in requests} == {133.0}
+
+
+@pytest.mark.anyio("asyncio")
+@pytest.mark.parametrize("limit", [True, 0.0, -1.0, float("nan"), float("inf")])
+async def test_http_sandbox_client_rejects_invalid_execution_time_limit_before_network(limit: object) -> None:
+    request_count = 0
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        return httpx.Response(200, json={"result": {}})
+
+    async with httpx.AsyncClient(
+        base_url="http://sandbox.local",
+        transport=httpx.MockTransport(handler),
+    ) as http_client:
+        with pytest.raises((TypeError, ValueError)):
+            await HttpSandboxClient("http://sandbox.local", client=http_client).invoke(
+                "query",
+                payload={},
+                context=_context(limit),
+                token="session-token",  # noqa: S106
+                session_id=uuid4(),
+            )
+
+    assert request_count == 0
+
+
+@pytest.mark.anyio("asyncio")
+async def test_http_sandbox_client_rejects_missing_time_budget_before_network() -> None:
+    request_count = 0
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        return httpx.Response(200, json={"result": {}})
+
+    async with httpx.AsyncClient(
+        base_url="http://sandbox.local",
+        transport=httpx.MockTransport(handler),
+    ) as http_client:
+        with pytest.raises(ValueError):
+            await HttpSandboxClient("http://sandbox.local", client=http_client).invoke(
+                "diagnostic",
+                payload={},
+                context={},
+                token="session-token",  # noqa: S106
+                session_id=uuid4(),
+            )
+
+    assert request_count == 0
 
 
 @pytest.mark.anyio("asyncio")
@@ -80,7 +142,7 @@ async def test_http_sandbox_client_does_not_retry_errors_that_may_have_reached_s
             await HttpSandboxClient("http://sandbox.local", client=http_client).invoke(
                 "query",
                 payload={"question": "hello"},
-                context={},
+                context=_context(),
                 token="session-token",  # noqa: S106 - fixed test-only sandbox token
                 session_id=uuid4(),
             )
@@ -116,7 +178,7 @@ async def test_http_sandbox_client_does_not_retry_timeout_errors(
             await HttpSandboxClient("http://sandbox.local", client=http_client).invoke(
                 "query",
                 payload={"question": "hello"},
-                context={},
+                context=_context(),
                 token="session-token",  # noqa: S106 - fixed test-only sandbox token
                 session_id=uuid4(),
             )
@@ -146,7 +208,7 @@ async def test_http_sandbox_client_does_not_retry_sandbox_http_status_error() ->
             await HttpSandboxClient("http://sandbox.local", client=http_client).invoke(
                 "query",
                 payload={"question": "hello"},
-                context={},
+                context=_context(),
                 token="session-token",  # noqa: S106 - fixed test-only sandbox token
                 session_id=uuid4(),
             )
@@ -177,7 +239,7 @@ async def test_http_sandbox_client_reports_malformed_success_as_invalid_response
             await HttpSandboxClient("http://sandbox.local", client=http_client).invoke(
                 "query",
                 payload={"question": "hello"},
-                context={},
+                context=_context(),
                 token="session-token",  # noqa: S106 - fixed test-only sandbox token
                 session_id=uuid4(),
             )
@@ -201,7 +263,7 @@ async def test_http_sandbox_client_distinguishes_unexpected_post_response_proces
             await HttpSandboxClient("http://sandbox.local", client=http_client).invoke(
                 "query",
                 payload={"question": "hello"},
-                context={},
+                context=_context(),
                 token="session-token",  # noqa: S106 - fixed test-only sandbox token
                 session_id=uuid4(),
             )
@@ -228,7 +290,7 @@ async def test_http_sandbox_client_preserves_failed_response_settlement_on_proce
             await HttpSandboxClient("http://sandbox.local", client=http_client).invoke(
                 "query",
                 payload={"question": "hello"},
-                context={},
+                context=_context(),
                 token="session-token",  # noqa: S106 - fixed test-only sandbox token
                 session_id=uuid4(),
             )
@@ -259,7 +321,7 @@ async def test_http_sandbox_client_metadata_only_failure_omits_raw_detail_and_ca
             await HttpSandboxClient("http://sandbox.local", client=http_client).invoke(
                 "query",
                 payload={"question": "query-sentinel"},
-                context={},
+                context=_context(),
                 token="session-token",  # noqa: S106 - fixed test-only sandbox token
                 session_id=uuid4(),
                 include_failure_details=False,

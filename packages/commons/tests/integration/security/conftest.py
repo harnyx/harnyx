@@ -160,7 +160,6 @@ def sandbox(attacker_agent_path: Path):
             "SANDBOX_HOST": "0.0.0.0",  # noqa: S104 - container needs to bind all interfaces
             "SANDBOX_PORT": "8000",
             "AGENT_PATH": "/sandbox/agent.py",
-            "ENTRYPOINT_TIMEOUT_SECONDS": "5",
             "SANDBOX_PIDS_PROBE_LIMIT": str(CONTAINER_SECURITY.pids_limit + 100),
         },
         volumes=((str(artifact.host_path), "/sandbox/agent.py", "ro"),),

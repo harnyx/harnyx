@@ -19,8 +19,8 @@ from harnyx_miner_sdk.sandbox_headers import (
     read_platform_token_header,
     read_session_id_header,
 )
+from harnyx_miner_sdk.tools.proxy import PLATFORM_TOOL_PROXY_SANDBOX_REQUEST_TIMEOUT_SECONDS
 from harnyx_sandbox.sandbox.harness import (
-    ENTRYPOINT_TIMEOUT_SECONDS,
     SandboxHarness,
     SandboxPreloadFailure,
 )
@@ -50,7 +50,7 @@ def _tool_factory(config: Mapping[str, object] | None, headers: Mapping[str, str
         base_url=base_url,
         token=token,
         session_id=session_id,
-        timeout=ENTRYPOINT_TIMEOUT_SECONDS,
+        timeout=PLATFORM_TOOL_PROXY_SANDBOX_REQUEST_TIMEOUT_SECONDS,
     )
 
 

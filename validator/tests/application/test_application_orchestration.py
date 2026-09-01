@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
+from pydantic import ValidationError
 
 import harnyx_validator.application.evaluate_task_run as evaluate_task_run_module
 from harnyx_commons.application.dto.session import SessionTokenRequest
@@ -42,6 +43,22 @@ from validator.tests.fixtures.fakes import FakeReceiptLog, FakeSessionRegistry
 pytestmark = pytest.mark.anyio("asyncio")
 
 TEST_SESSION_TOKEN = uuid4().hex
+
+
+async def test_miner_task_run_request_requires_execution_time_limit() -> None:
+    with pytest.raises(ValidationError, match="execution_time_limit_seconds"):
+        MinerTaskRunRequest(
+            batch_id=uuid4(),
+            session_id=uuid4(),
+            token=TEST_SESSION_TOKEN,
+            uid=7,
+            artifact_id=uuid4(),
+            task=MinerTask(
+                task_id=uuid4(),
+                query=Query(text="Harnyx Subnet demo"),
+                reference_answer=ReferenceAnswer(text="A direct answer"),
+            ),
+        )
 
 
 class StubSandboxClient:
@@ -426,6 +443,7 @@ async def test_application_use_cases_cooperate_for_single_task_run() -> None:
             token=TEST_SESSION_TOKEN,
             uid=7,
             artifact_id=uuid4(),
+            execution_time_limit_seconds=300.0,
             task=task,
         ),
     )
@@ -440,7 +458,15 @@ async def test_application_use_cases_cooperate_for_single_task_run() -> None:
         (
             "query",
             {"text": "Harnyx Subnet demo"},
-            {},
+            {
+                "cost_budget": {
+                    "session_budget_usd": 0.5,
+                    "session_hard_limit_usd": 0.5,
+                    "session_used_budget_usd": 0.01,
+                    "session_remaining_budget_usd": 0.49,
+                },
+                "time_budget": {"limit_seconds": 300.0},
+            },
             TEST_SESSION_TOKEN,
             session_request.session_id,
         ),
@@ -505,6 +531,7 @@ async def test_task_orchestration_success_persists_consolidated_evaluation_trace
             token=TEST_SESSION_TOKEN,
             uid=7,
             artifact_id=uuid4(),
+            execution_time_limit_seconds=300.0,
             task=task,
         ),
     )

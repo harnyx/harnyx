@@ -37,12 +37,14 @@ from harnyx_commons.sandbox.diagnostic_files import (
 )
 from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager, SandboxStartError
 from harnyx_commons.sandbox.options import DEFAULT_TOKEN_HEADER, SandboxOptions
+from harnyx_miner_sdk.tools.time_budget import ExecutionTimeBudgetDTO
 
 logger = logging.getLogger(__name__)
 
 _MOUNTINFO_CONTAINER_ID_PATTERN = re.compile(r"/containers/([0-9a-f]{12,64})/(?:hostname|hosts|resolv\.conf)(?:\s|$)")
 _NON_SENSITIVE_DIAGNOSTIC_ENV_KEYS = frozenset({"SANDBOX_HOST", "SANDBOX_PORT"})
 _SANDBOX_ENTRYPOINT_CONNECT_ATTEMPTS = 2
+_SANDBOX_RESPONSE_HEADROOM_SECONDS = 10.0
 _CONTAINER_IP_READY_TIMEOUT_SECONDS = 5.0
 _CONTAINER_IP_READY_POLL_INTERVAL_SECONDS = 0.1
 _IMAGE_PULL_ATTEMPTS = 3
@@ -116,6 +118,8 @@ class HttpSandboxClient(SandboxClient):
         session_id: UUID,
         include_failure_details: bool = True,
     ) -> Mapping[str, JsonValue]:
+        context_payload = dict(context)
+        time_budget = ExecutionTimeBudgetDTO.model_validate(context_payload.get("time_budget"))
         headers: dict[str, str] = {
             self._token_header: token,
             SESSION_ID_HEADER: str(session_id),
@@ -126,9 +130,10 @@ class HttpSandboxClient(SandboxClient):
             response = await self._post_entrypoint_with_connect_retry(
                 entrypoint=entrypoint,
                 payload=payload,
-                context=context,
+                context=context_payload,
                 headers=headers,
                 session_id=session_id,
+                limit_seconds=time_budget.limit_seconds,
             )
             response.raise_for_status()
         except httpx.TimeoutException as exc:
@@ -242,6 +247,7 @@ class HttpSandboxClient(SandboxClient):
         context: Mapping[str, JsonValue],
         headers: Mapping[str, str],
         session_id: UUID,
+        limit_seconds: float,
     ) -> httpx.Response:
         for attempt_number in range(1, self._connect_attempts + 1):
             try:
@@ -252,6 +258,7 @@ class HttpSandboxClient(SandboxClient):
                         "context": dict(context),
                     },
                     headers=headers,
+                    timeout=limit_seconds + _SANDBOX_RESPONSE_HEADROOM_SECONDS,
                 )
             except _RETRYABLE_SANDBOX_ENTRYPOINT_CONNECTION_NOT_ESTABLISHED_ERRORS as exc:
                 if attempt_number == self._connect_attempts:

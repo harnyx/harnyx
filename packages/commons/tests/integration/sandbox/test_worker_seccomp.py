@@ -17,7 +17,7 @@ async def test_worker_seccomp_blocks_thread_creation(sandbox_launcher) -> None:
         await client.invoke(
             "spawn_thread",
             payload={},
-            context={},
+            context={"time_budget": {"limit_seconds": 300.0}},
             token=str(uuid.uuid4()),
             session_id=uuid.uuid4(),
         )

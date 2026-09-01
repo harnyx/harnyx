@@ -9,10 +9,18 @@ from harnyx_commons.sandbox.client import SandboxInvokeError
 
 
 async def _invoke(sandbox, payload: dict[str, object], *, entrypoint: str = "probe"):
+    context: dict[str, object] = {"time_budget": {"limit_seconds": 5.0}}
+    if entrypoint == "query":
+        context["cost_budget"] = {
+            "session_budget_usd": 1.0,
+            "session_hard_limit_usd": 1.0,
+            "session_used_budget_usd": 0.0,
+            "session_remaining_budget_usd": 1.0,
+        }
     return await sandbox.invoke(
         entrypoint,
         payload=payload,
-        context={},
+        context=context,
         token=str(uuid.uuid4()),
         session_id=uuid.uuid4(),
     )

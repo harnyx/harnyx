@@ -213,12 +213,13 @@ diagnosis.
 If `./agent.py` does not exist yet, create a minimal working stub first and then start the loop:
 
 ```python
+from harnyx_miner_sdk.context import ContextSnapshot
 from harnyx_miner_sdk.decorators import entrypoint
 from harnyx_miner_sdk.query import Query, Response
 
 
 @entrypoint("query")
-async def query(query: Query) -> Response:
+async def query(query: Query, _context: ContextSnapshot) -> Response:
     return Response(text=query.text)
 ```
 

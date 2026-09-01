@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from uuid import UUID
 
+from harnyx_commons.domain.session import Session
 from harnyx_commons.domain.tool_call import ToolCall
 from harnyx_commons.json_types import JsonValue
 from harnyx_commons.tools.types import ToolName
@@ -14,7 +15,7 @@ from harnyx_commons.tools.usage_tracker import ToolCallUsage
 
 @dataclass(frozen=True, slots=True)
 class ToolBudgetSnapshot:
-    """Session budget snapshot captured after executing a tool call."""
+    """Budget values captured from a tool session at one point in time."""
 
     session_budget_usd: float
     session_hard_limit_usd: float
@@ -38,6 +39,18 @@ class ToolBudgetSnapshot:
                 "session_remaining_budget_usd must equal "
                 "max(session_budget_usd - session_used_budget_usd, 0)"
             )
+
+
+def session_budget_snapshot(session: Session) -> ToolBudgetSnapshot:
+    """Project the current authoritative values from a tool session."""
+
+    used_budget_usd = session.usage.total_cost_usd
+    return ToolBudgetSnapshot(
+        session_budget_usd=session.budget_usd,
+        session_hard_limit_usd=session.effective_hard_limit_usd,
+        session_used_budget_usd=used_budget_usd,
+        session_remaining_budget_usd=max(session.budget_usd - used_budget_usd, 0.0),
+    )
 
 
 @dataclass(frozen=True)
@@ -86,6 +99,7 @@ __all__ = [
     "ToolBudgetSnapshot",
     "ToolInvocationRequest",
     "ToolInvocationResult",
+    "session_budget_snapshot",
     "tool_payload_for_invocation",
     "tool_payload_from_args_kwargs",
 ]

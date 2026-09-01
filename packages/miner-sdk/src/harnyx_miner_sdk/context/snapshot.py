@@ -1,35 +1,20 @@
-"""Read-only context snapshot primitives used by sandboxed agents."""
+"""Typed invocation context exposed to sandboxed miner queries."""
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from pydantic import BaseModel, ConfigDict
 
-from harnyx_miner_sdk.json_types import JsonValue
+from harnyx_miner_sdk.tools.http_models import ToolBudgetDTO
+from harnyx_miner_sdk.tools.time_budget import ExecutionTimeBudgetDTO
 
 
-class ContextSnapshot(Mapping[str, JsonValue]):
-    """Lightweight read-only mapping exposed to sandboxed miners."""
+class ContextSnapshot(BaseModel):
+    """Immutable cost and time budgets supplied to one miner query."""
 
-    __slots__ = ("_data",)
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
-    def __init__(self, data: Mapping[str, JsonValue] | None = None) -> None:
-        self._data: dict[str, JsonValue] = dict(data or {})
-
-    def __getitem__(self, key: str) -> JsonValue:
-        return self._data[key]
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._data)
-
-    def __len__(self) -> int:
-        return len(self._data)
-
-    def to_dict(self) -> dict[str, JsonValue]:
-        """Return a shallow copy for serialization."""
-        return dict(self._data)
-
-    def __repr__(self) -> str:  # pragma: no cover - trivial representation
-        return f"ContextSnapshot({self._data!r})"
+    cost_budget: ToolBudgetDTO
+    time_budget: ExecutionTimeBudgetDTO
 
 
 __all__ = ["ContextSnapshot"]

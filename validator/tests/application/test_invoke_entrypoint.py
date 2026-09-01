@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
+from pydantic import ValidationError
 
 from harnyx_commons.application.dto.session import SessionTokenRequest
 from harnyx_commons.application.session_manager import SessionManager
@@ -69,6 +70,16 @@ def _make_session_request(token: str) -> SessionTokenRequest:
     )
 
 
+async def test_entrypoint_invocation_request_requires_execution_time_limit() -> None:
+    with pytest.raises(ValidationError, match="execution_time_limit_seconds"):
+        EntrypointInvocationRequest(
+            session_id=uuid4(),
+            token=uuid4().hex,
+            uid=42,
+            query=Query(text="harnyx subnet"),
+        )
+
+
 def _build_invoker(token: str) -> tuple[
     EntrypointInvoker,
     RecordingSandbox,
@@ -106,6 +117,7 @@ async def test_invoke_entrypoint_calls_query_with_query_payload() -> None:
             session_id=session_id,
             token=token,
             uid=42,
+            execution_time_limit_seconds=300.0,
             query=Query(text="harnyx subnet", fast=True),
         ),
     )
@@ -115,7 +127,15 @@ async def test_invoke_entrypoint_calls_query_with_query_payload() -> None:
         (
             "query",
             {"text": "harnyx subnet", "fast": True},
-            {},
+            {
+                "cost_budget": {
+                    "session_budget_usd": 0.1,
+                    "session_hard_limit_usd": 0.1,
+                    "session_used_budget_usd": 0.0,
+                    "session_remaining_budget_usd": 0.1,
+                },
+                "time_budget": {"limit_seconds": 300.0},
+            },
             token,
             session_id,
         ),
@@ -137,6 +157,7 @@ async def test_invoke_entrypoint_returns_structured_output() -> None:
             session_id=session_id,
             token=token,
             uid=42,
+            execution_time_limit_seconds=300.0,
             query=Query(text="question", output_schema=schema),
         )
     )
@@ -159,6 +180,7 @@ async def test_invoke_entrypoint_maps_schema_mismatch_as_miner_response_invalid(
                 session_id=session_id,
                 token=token,
                 uid=42,
+                execution_time_limit_seconds=300.0,
                 query=Query(text="question", output_schema={"type": "array"}),
             )
         )
@@ -184,6 +206,7 @@ async def test_invoke_entrypoint_returns_tool_receipts() -> None:
             session_id=session_id,
             token=token,
             uid=42,
+            execution_time_limit_seconds=300.0,
             query=Query(text="hello"),
         ),
     )
@@ -228,6 +251,7 @@ async def test_invoke_entrypoint_hydrates_same_session_citations() -> None:
             session_id=session_id,
             token=token,
             uid=42,
+            execution_time_limit_seconds=300.0,
             query=Query(text="hello"),
         ),
     )
@@ -288,6 +312,7 @@ async def test_invoke_entrypoint_hydrates_same_session_citation_slices() -> None
             session_id=session_id,
             token=token,
             uid=42,
+            execution_time_limit_seconds=300.0,
             query=Query(text="hello"),
         ),
     )
@@ -306,6 +331,7 @@ async def test_invoke_entrypoint_normalizes_null_citations_to_absent() -> None:
             session_id=session_id,
             token=token,
             uid=42,
+            execution_time_limit_seconds=300.0,
             query=Query(text="hello"),
         ),
     )
@@ -324,6 +350,7 @@ async def test_invoke_entrypoint_rejects_extra_top_level_response_fields() -> No
                 session_id=session_id,
                 token=token,
                 uid=42,
+                execution_time_limit_seconds=300.0,
                 query=Query(text="hello"),
             ),
         )
@@ -340,6 +367,7 @@ async def test_invoke_entrypoint_rejects_invalid_token() -> None:
                 session_id=session_id,
                 token=invalid_token,
                 uid=42,
+                execution_time_limit_seconds=300.0,
                 query=Query(text="demo"),
             ),
         )
@@ -356,6 +384,7 @@ async def test_invoke_entrypoint_rejects_whitespace_only_response_text() -> None
                 session_id=session_id,
                 token=token,
                 uid=42,
+                execution_time_limit_seconds=300.0,
                 query=Query(text="hello"),
             ),
         )
@@ -378,6 +407,7 @@ async def test_invoke_entrypoint_rejects_more_than_two_hundred_citations() -> No
                 session_id=session_id,
                 token=token,
                 uid=42,
+                execution_time_limit_seconds=300.0,
                 query=Query(text="hello"),
             ),
         )
@@ -426,6 +456,7 @@ async def test_invoke_entrypoint_rejects_source_dependent_invalid_slice() -> Non
                 session_id=session_id,
                 token=token,
                 uid=42,
+                execution_time_limit_seconds=300.0,
                 query=Query(text="hello"),
             ),
         )
@@ -442,6 +473,7 @@ async def test_invoke_entrypoint_recovers_after_sandbox_error() -> None:
                 session_id=session_id,
                 token=token,
                 uid=42,
+                execution_time_limit_seconds=300.0,
                 query=Query(text="demo"),
             ),
         )
@@ -452,6 +484,7 @@ async def test_invoke_entrypoint_recovers_after_sandbox_error() -> None:
             session_id=session_id,
             token=token,
             uid=42,
+            execution_time_limit_seconds=300.0,
             query=Query(text="demo"),
         ),
     )
@@ -472,6 +505,7 @@ async def test_invoke_entrypoint_rejects_inactive_session() -> None:
                 session_id=session_id,
                 token=token,
                 uid=42,
+                execution_time_limit_seconds=300.0,
                 query=Query(text="demo"),
             ),
         )
@@ -494,6 +528,7 @@ async def test_invoke_entrypoint_raises_when_session_exhausts_after_successful_r
                 session_id=session_id,
                 token=token,
                 uid=42,
+                execution_time_limit_seconds=300.0,
                 query=Query(text="demo"),
             ),
         )
@@ -517,6 +552,7 @@ async def test_invoke_entrypoint_raises_exhausted_when_sandbox_errors_after_exha
                 session_id=session_id,
                 token=token,
                 uid=42,
+                execution_time_limit_seconds=300.0,
                 query=Query(text="demo"),
             ),
         )
@@ -539,6 +575,7 @@ async def test_invoke_entrypoint_preserves_structured_sandbox_error_metadata() -
                 session_id=session_id,
                 token=token,
                 uid=42,
+                execution_time_limit_seconds=300.0,
                 query=Query(text="demo"),
             ),
         )

@@ -407,6 +407,7 @@ class TaskRunOrchestrator:
                 token=request.token,
                 uid=request.uid,
                 query=request.task.query,
+                execution_time_limit_seconds=request.execution_time_limit_seconds,
             ),
         )
         invocation_ms = _monotonic_elapsed_ms(

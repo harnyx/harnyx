@@ -9,7 +9,7 @@ def test_entry_route_requires_x_platform_token_header() -> None:
 
     response = client.post(
         "/entry/missing",
-        json={},
+        json={"context": {"time_budget": {"limit_seconds": 300.0}}},
     )
 
     assert response.status_code == 401
@@ -26,7 +26,7 @@ def test_entry_route_accepts_neutral_platform_token_header() -> None:
 
     response = client.post(
         "/entry/missing",
-        json={},
+        json={"context": {"time_budget": {"limit_seconds": 300.0}}},
         headers={"x-platform-token": "token"},
     )
 

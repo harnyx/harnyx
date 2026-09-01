@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import sys
 import time
 from collections.abc import Mapping, Sequence
@@ -204,6 +205,7 @@ def _create_invocation_only_runtime(
     scoring_service: EvaluationScoringService,
     scoring_config: EvaluationScoringConfig,
     run_progress_root: Path,
+    execution_time_limit_seconds: float,
 ) -> LocalEvaluationRuntime:
     from harnyx_miner.local_eval import LocalEvaluationRuntime
 
@@ -211,6 +213,7 @@ def _create_invocation_only_runtime(
         scoring_service=scoring_service,
         scoring_config=scoring_config,
         run_progress_root=run_progress_root,
+        execution_time_limit_seconds=execution_time_limit_seconds,
     )
 
 
@@ -250,11 +253,24 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         help=f"Concurrent benchmark item sandboxes. Default: {_DEFAULT_PARALLELISM}.",
     )
     parser.add_argument(
+        "--query-execution-time-limit-seconds",
+        type=_positive_finite_seconds,
+        default=300.0,
+        help="Maximum seconds for each miner artifact invocation. Default: 300.",
+    )
+    parser.add_argument(
         "--output-dir",
         default=str(Path.cwd()),
         help="Directory for the JSON report. Default: current working directory.",
     )
     return parser.parse_args(list(argv) if argv is not None else None)
+
+
+def _positive_finite_seconds(raw: str) -> float:
+    value = float(raw)
+    if not math.isfinite(value) or value <= 0:
+        raise argparse.ArgumentTypeError("value must be finite and greater than zero")
+    return value
 
 
 async def _amain(argv: Sequence[str] | None) -> None:
@@ -331,6 +347,7 @@ async def _amain(argv: Sequence[str] | None) -> None:
             scoring_service=invocation_scoring,
             scoring_config=_INVOCATION_ONLY_SCORING_CONFIG,
             run_progress_root=run_progress_root,
+            execution_time_limit_seconds=args.query_execution_time_limit_seconds,
         )
         scoring = _build_benchmark_scoring_bundle(snapshot.manifest.scoring_version)
         _emit_progress(
@@ -370,6 +387,7 @@ async def _amain(argv: Sequence[str] | None) -> None:
         output_dir=output_dir,
         elapsed_seconds=elapsed_seconds,
         parallelism=args.parallelism,
+        query_execution_time_limit_seconds=args.query_execution_time_limit_seconds,
     )
     json_path = _write_report(
         report=report,
@@ -694,6 +712,7 @@ def _build_report(
     output_dir: Path,
     elapsed_seconds: float,
     parallelism: int,
+    query_execution_time_limit_seconds: float,
 ) -> dict[str, object]:
     metrics = _aggregate_local_report_metrics(results=results, scoring=scoring)
     cost_totals = _aggregate_cost_totals(
@@ -730,6 +749,7 @@ def _build_report(
             "execution_boundary": "docker-sandbox",
             "sandbox_item_parallelism": 1,
             "benchmark_item_parallelism": parallelism,
+            "query_execution_time_limit_seconds": query_execution_time_limit_seconds,
             "scoring_boundary": scoring.scoring_boundary,
         },
         "scoring_context": {

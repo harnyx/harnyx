@@ -48,10 +48,11 @@ def test_validate_agent_bytes_rejects_limit_plus_one() -> None:
 def test_load_agent_query_entrypoint_keeps_registered_query_available(tmp_path: Path) -> None:
     agent_path = _write_agent(
         tmp_path / "agent.py",
+        "from harnyx_miner_sdk.context import ContextSnapshot\n"
         "from harnyx_miner_sdk.decorators import entrypoint\n"
         "from harnyx_miner_sdk.query import Query, Response\n"
         "@entrypoint('query')\n"
-        "async def query(query: Query) -> Response:\n"
+        "async def query(query: Query, _context: ContextSnapshot) -> Response:\n"
         "    return Response(text=query.text)\n",
     )
 
@@ -65,10 +66,11 @@ def test_load_agent_query_entrypoint_keeps_registered_query_available(tmp_path: 
 def test_validate_agent_query_entrypoint_rejects_invalid_query_signature(tmp_path: Path) -> None:
     agent_path = _write_agent(
         tmp_path / "agent.py",
+        "from harnyx_miner_sdk.context import ContextSnapshot\n"
         "from harnyx_miner_sdk.decorators import entrypoint\n"
         "from harnyx_miner_sdk.query import Response\n"
         "@entrypoint('query')\n"
-        "async def query(query: str) -> Response:\n"
+        "async def query(query: str, _context: ContextSnapshot) -> Response:\n"
         "    return Response(text=query)\n",
     )
 
@@ -76,13 +78,29 @@ def test_validate_agent_query_entrypoint_rejects_invalid_query_signature(tmp_pat
         validate_agent_query_entrypoint(agent_path)
 
 
-def test_validate_agent_query_entrypoint_clears_registry_after_submit_preflight(tmp_path: Path) -> None:
+def test_validate_agent_query_entrypoint_accepts_one_parameter_signature(tmp_path: Path) -> None:
     agent_path = _write_agent(
         tmp_path / "agent.py",
         "from harnyx_miner_sdk.decorators import entrypoint\n"
         "from harnyx_miner_sdk.query import Query, Response\n"
         "@entrypoint('query')\n"
         "async def query(query: Query) -> Response:\n"
+        "    return Response(text=query.text)\n",
+    )
+
+    validate_agent_query_entrypoint(agent_path)
+
+    assert not entrypoint_exists("query")
+
+
+def test_validate_agent_query_entrypoint_clears_registry_after_submit_preflight(tmp_path: Path) -> None:
+    agent_path = _write_agent(
+        tmp_path / "agent.py",
+        "from harnyx_miner_sdk.context import ContextSnapshot\n"
+        "from harnyx_miner_sdk.decorators import entrypoint\n"
+        "from harnyx_miner_sdk.query import Query, Response\n"
+        "@entrypoint('query')\n"
+        "async def query(query: Query, _context: ContextSnapshot) -> Response:\n"
         "    return Response(text=query.text)\n",
     )
 

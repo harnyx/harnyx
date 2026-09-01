@@ -12,7 +12,7 @@ async def test_timeout_kills_long_handler(sandbox) -> None:
         await sandbox.invoke(
             "probe",
             payload={"mode": "sleep", "secs": 30},
-            context={},
+            context={"time_budget": {"limit_seconds": 5.0}},
             token=str(uuid.uuid4()),
             session_id=uuid.uuid4(),
         )

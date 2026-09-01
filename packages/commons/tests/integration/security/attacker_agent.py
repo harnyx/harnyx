@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from harnyx_miner_sdk.context import ContextSnapshot
 from harnyx_miner_sdk.decorators import entrypoint
 from harnyx_miner_sdk.query import Query, Response
 
@@ -27,7 +28,7 @@ class _MaliciousResult:
 
 
 @entrypoint("query")
-async def query(request: Query) -> Response:
+async def query(request: Query, _context: ContextSnapshot) -> Response:
     return Response(text=request.text)
 
 

@@ -144,6 +144,7 @@ class EntrypointInvocationRequest(BaseModel):
     token: str = Field(min_length=1)
     uid: int = Field(ge=0)
     query: Query
+    execution_time_limit_seconds: float = Field(strict=True, gt=0, allow_inf_nan=False)
 
 
 class EntrypointInvocationResult(BaseModel):
@@ -166,6 +167,7 @@ class MinerTaskRunRequest(BaseModel):
     uid: int = Field(ge=0)
     artifact_id: UUID
     task: MinerTask
+    execution_time_limit_seconds: float = Field(strict=True, gt=0, allow_inf_nan=False)
 
 
 class TaskRunOutcome(BaseModel):

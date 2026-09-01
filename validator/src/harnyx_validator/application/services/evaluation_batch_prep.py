@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from concurrent.futures import Executor
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 from uuid import UUID, uuid4
@@ -140,7 +140,7 @@ class BatchExecutionPlanner:
             clock=lambda: datetime.now(UTC),
             config=SchedulerConfig(
                 token_secret_bytes=run_ctx.config.token_secret_bytes,
-                session_ttl=timedelta(minutes=5),
+                execution_time_limit_seconds=300.0,
                 artifact_parallelism=run_ctx.config.artifact_parallelism,
                 artifact_task_parallelism=run_ctx.config.artifact_task_parallelism,
             ),

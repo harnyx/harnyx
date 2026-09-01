@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 
 import harnyx_sandbox.app as app_module
-import harnyx_sandbox.sandbox.harness as harness_module
 import httpx
 import pytest
 from harnyx_sandbox.tools.proxy import ToolInvocationError, ToolProxy
@@ -12,6 +11,7 @@ from pydantic import ValidationError
 from harnyx_miner_sdk._internal.tool_invoker import bind_tool_invoker
 from harnyx_miner_sdk.api import LlmChatResult, llm_chat, search_web
 from harnyx_miner_sdk.sandbox_headers import SESSION_ID_HEADER
+from harnyx_miner_sdk.tools.proxy import PLATFORM_TOOL_PROXY_SANDBOX_REQUEST_TIMEOUT_SECONDS
 
 TEST_TOKEN = "token-123"  # noqa: S105
 ERROR_TOKEN = "bad-token"  # noqa: S105
@@ -20,7 +20,7 @@ SESSION_ID = "00000000-0000-0000-0000-000000000001"
 pytestmark = pytest.mark.anyio("asyncio")
 
 
-def test_tool_factory_uses_entrypoint_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_tool_factory_uses_independent_hosted_tool_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
     class CapturingProxy:
@@ -57,7 +57,7 @@ def test_tool_factory_uses_entrypoint_timeout(monkeypatch: pytest.MonkeyPatch) -
         "base_url": "http://validator",
         "token": TEST_TOKEN,
         "session_id": SESSION_ID,
-        "timeout": harness_module.ENTRYPOINT_TIMEOUT_SECONDS,
+        "timeout": PLATFORM_TOOL_PROXY_SANDBOX_REQUEST_TIMEOUT_SECONDS,
     }
 
 

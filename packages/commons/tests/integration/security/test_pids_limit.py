@@ -11,7 +11,7 @@ async def test_pids_limit_enforced(sandbox) -> None:
     response = await sandbox.invoke(
         "probe",
         payload={"mode": "pids"},
-        context={},
+        context={"time_budget": {"limit_seconds": 5.0}},
         token=str(uuid.uuid4()),
         session_id=uuid.uuid4(),
     )

@@ -158,7 +158,7 @@ sequenceDiagram
   P-->>V: 200 <application/octet-stream>
 
   Note over V,S: Headers: x-session-id + x-platform-token + x-host-container-url
-  V->>S: POST /entry/query<br/>{ payload:{ text:"..." }, context:{} }
+  V->>S: POST /entry/query<br/>{ payload:{ text:"..." },<br/>context:{ cost_budget:{ session_budget_usd:0.1,<br/>session_hard_limit_usd:0.1, session_used_budget_usd:0,<br/>session_remaining_budget_usd:0.1 },<br/>time_budget:{ limit_seconds:300 } } }
 
   Note over S,VA: Headers: x-session-id + x-platform-token
   S->>VA: POST /v1/tools/execute<br/>ToolExecuteRequestDTO (0+ times)

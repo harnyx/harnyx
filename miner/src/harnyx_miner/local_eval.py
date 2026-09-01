@@ -92,10 +92,10 @@ _CLI_LOGGER_ROOTS = (
     "harnyx_miner",
     "harnyx_validator",
 )
-_LOCAL_SESSION_TTL = timedelta(minutes=30)
 _LOCAL_VALIDATOR_UID = 0
 _LOCAL_SELECTION_VALIDATOR_ID = UUID(int=0)
 _DEFAULT_OUTPUT_PREFIX = "local-eval-report"
+_LOCAL_EVALUATION_EXECUTION_TIME_LIMIT_SECONDS = 300.0
 _DEFAULT_LOCAL_ARTIFACT_TASK_PARALLELISM = SchedulerConfig.artifact_task_parallelism
 _LOCAL_SANDBOX_HOST_PROBE_ADDRESS = "127.0.0.1"
 _LOCAL_EVAL_FAILURE_ROOT = Path(tempfile.gettempdir()) / "harnyx-local-eval-failures"
@@ -348,6 +348,10 @@ class LocalEvaluationRuntime:
     _run_id: str
     _progress_reporter: _CliProgressReporter | None
 
+    @property
+    def session_ttl(self) -> timedelta:
+        return self._runner._config.session_ttl
+
     @classmethod
     def create(
         cls,
@@ -391,6 +395,7 @@ class LocalEvaluationRuntime:
             scoring_llm_provider=scoring_llm_provider,
             scoring_service=scoring_service,
             scoring_config=scoring_config,
+            execution_time_limit_seconds=_LOCAL_EVALUATION_EXECUTION_TIME_LIMIT_SECONDS,
             progress_reporter=progress_reporter,
         )
 
@@ -401,6 +406,7 @@ class LocalEvaluationRuntime:
         scoring_service: EvaluationScoringService,
         scoring_config: EvaluationScoringConfig,
         run_progress_root: Path,
+        execution_time_limit_seconds: float,
         progress_reporter: _CliProgressReporter | None = None,
     ) -> LocalEvaluationRuntime:
         settings = Settings.load()
@@ -424,6 +430,7 @@ class LocalEvaluationRuntime:
             scoring_llm_provider=None,
             scoring_service=scoring_service,
             scoring_config=scoring_config,
+            execution_time_limit_seconds=execution_time_limit_seconds,
             progress_reporter=progress_reporter,
         )
 
@@ -443,6 +450,7 @@ class LocalEvaluationRuntime:
         scoring_llm_provider: Any | None,
         scoring_service: EvaluationScoringService,
         scoring_config: EvaluationScoringConfig,
+        execution_time_limit_seconds: float,
         progress_reporter: _CliProgressReporter | None,
     ) -> LocalEvaluationRuntime:
         _, tool_executor = _build_local_provider_tooling(
@@ -476,7 +484,7 @@ class LocalEvaluationRuntime:
             receipt_log=state.receipt_log,
             config=SchedulerConfig(
                 token_secret_bytes=32,
-                session_ttl=_LOCAL_SESSION_TTL,
+                execution_time_limit_seconds=execution_time_limit_seconds,
                 artifact_task_parallelism=_DEFAULT_LOCAL_ARTIFACT_TASK_PARALLELISM,
             ),
             clock=_utcnow,
@@ -985,6 +993,7 @@ async def _amain(argv: Sequence[str] | None) -> None:
             sandbox_pull_policy=runtime.settings.sandbox.sandbox_pull_policy,
             scoring_config=runtime.scoring_config,
             validator_version=VALIDATOR_RELEASE_VERSION,
+            session_ttl=runtime.session_ttl,
         )
         json_path, markdown_path = _write_reports(
             report=report,
@@ -1176,6 +1185,7 @@ def _build_report(
     sandbox_pull_policy: str,
     scoring_config: EvaluationScoringConfig,
     validator_version: str,
+    session_ttl: timedelta,
 ) -> dict[str, object]:
     target_by_task = {submission.run.task_id: submission for submission in target_submissions}
     champion_by_task = (
@@ -1229,7 +1239,7 @@ def _build_report(
             "tool_host_mode": "ephemeral-local-http",
             "sandbox_image": sandbox_image,
             "sandbox_pull_policy": sandbox_pull_policy,
-            "session_ttl_seconds": int(_LOCAL_SESSION_TTL.total_seconds()),
+            "session_ttl_seconds": int(session_ttl.total_seconds()),
             "local_validator_uid": _LOCAL_VALIDATOR_UID,
             "selected_task_ids": [str(task.task_id) for task in tasks],
         },

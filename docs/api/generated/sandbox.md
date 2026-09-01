@@ -28,7 +28,14 @@ Body: [EntrypointRequest](#model-entrypointrequest)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `context` |  |  | opt | `object` |
+| `context` |  |  | req | [_EntrypointContext](#model-_entrypointcontext) |
+|  | `cost_budget` |  | opt | [ToolBudgetDTO](#model-toolbudgetdto) (nullable) |
+|  |  | `session_budget_usd` | req | `number` |
+|  |  | `session_hard_limit_usd` | req | `number` |
+|  |  | `session_remaining_budget_usd` | req | `number` |
+|  |  | `session_used_budget_usd` | req | `number` |
+|  | `time_budget` |  | req | [ExecutionTimeBudgetDTO](#model-executiontimebudgetdto) |
+|  |  | `limit_seconds` | req | `number` |
 | `payload` |  |  | opt | `object` |
 | `tool_config` |  |  | opt | `object` (nullable) |
 
@@ -76,12 +83,64 @@ Body: `object`
 
 ## Models
 
+<a id="model-_entrypointcontext"></a>
+### Model: _EntrypointContext
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `cost_budget` |  |  | opt | [ToolBudgetDTO](#model-toolbudgetdto) (nullable) |
+|  | `session_budget_usd` |  | req | `number` |
+|  | `session_hard_limit_usd` |  | req | `number` |
+|  | `session_remaining_budget_usd` |  | req | `number` |
+|  | `session_used_budget_usd` |  | req | `number` |
+| `time_budget` |  |  | req | [ExecutionTimeBudgetDTO](#model-executiontimebudgetdto) |
+|  | `limit_seconds` |  | req | `number` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "description": "Validated sandbox-boundary context for every entrypoint invocation.",
+  "properties": {
+    "cost_budget": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/ToolBudgetDTO"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "time_budget": {
+      "$ref": "#/components/schemas/ExecutionTimeBudgetDTO"
+    }
+  },
+  "required": [
+    "time_budget"
+  ],
+  "title": "_EntrypointContext",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-entrypointrequest"></a>
 ### Model: EntrypointRequest
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `context` |  |  | opt | `object` |
+| `context` |  |  | req | [_EntrypointContext](#model-_entrypointcontext) |
+|  | `cost_budget` |  | opt | [ToolBudgetDTO](#model-toolbudgetdto) (nullable) |
+|  |  | `session_budget_usd` | req | `number` |
+|  |  | `session_hard_limit_usd` | req | `number` |
+|  |  | `session_remaining_budget_usd` | req | `number` |
+|  |  | `session_used_budget_usd` | req | `number` |
+|  | `time_budget` |  | req | [ExecutionTimeBudgetDTO](#model-executiontimebudgetdto) |
+|  |  | `limit_seconds` | req | `number` |
 | `payload` |  |  | opt | `object` |
 | `tool_config` |  |  | opt | `object` (nullable) |
 
@@ -92,9 +151,7 @@ Body: `object`
 {
   "properties": {
     "context": {
-      "additionalProperties": true,
-      "title": "Context",
-      "type": "object"
+      "$ref": "#/components/schemas/_EntrypointContext"
     },
     "payload": {
       "additionalProperties": true,
@@ -114,7 +171,41 @@ Body: `object`
       "title": "Tool Config"
     }
   },
+  "required": [
+    "context"
+  ],
   "title": "EntrypointRequest",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-executiontimebudgetdto"></a>
+### Model: ExecutionTimeBudgetDTO
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `limit_seconds` |  |  | req | `number` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "description": "Configured full time limit for one miner invocation.",
+  "properties": {
+    "limit_seconds": {
+      "exclusiveMinimum": 0.0,
+      "title": "Limit Seconds",
+      "type": "number"
+    }
+  },
+  "required": [
+    "limit_seconds"
+  ],
+  "title": "ExecutionTimeBudgetDTO",
   "type": "object"
 }
 ```
@@ -148,6 +239,56 @@ Body: `object`
     }
   },
   "title": "HTTPValidationError",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-toolbudgetdto"></a>
+### Model: ToolBudgetDTO
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `session_budget_usd` |  |  | req | `number` |
+| `session_hard_limit_usd` |  |  | req | `number` |
+| `session_remaining_budget_usd` |  |  | req | `number` |
+| `session_used_budget_usd` |  |  | req | `number` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "session_budget_usd": {
+      "minimum": 0.0,
+      "title": "Session Budget Usd",
+      "type": "number"
+    },
+    "session_hard_limit_usd": {
+      "minimum": 0.0,
+      "title": "Session Hard Limit Usd",
+      "type": "number"
+    },
+    "session_remaining_budget_usd": {
+      "minimum": 0.0,
+      "title": "Session Remaining Budget Usd",
+      "type": "number"
+    },
+    "session_used_budget_usd": {
+      "minimum": 0.0,
+      "title": "Session Used Budget Usd",
+      "type": "number"
+    }
+  },
+  "required": [
+    "session_budget_usd",
+    "session_hard_limit_usd",
+    "session_used_budget_usd",
+    "session_remaining_budget_usd"
+  ],
+  "title": "ToolBudgetDTO",
   "type": "object"
 }
 ```

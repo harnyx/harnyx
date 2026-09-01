@@ -36,6 +36,7 @@ from harnyx_commons.tools.dto import (
     ToolBudgetSnapshot,
     ToolInvocationRequest,
     ToolInvocationResult,
+    session_budget_snapshot,
     tool_payload_for_invocation,
 )
 from harnyx_commons.tools.token_semaphore import ToolConcurrencyLimiter
@@ -396,7 +397,7 @@ class ToolExecutor:
             raise RuntimeError("tool completion arrived after pending receipt was abandoned")
         updated_session, should_raise_budget_exhausted = completion
         await self._observe_tool_call(updated_session, receipt)
-        budget_snapshot = _build_budget_snapshot(updated_session)
+        budget_snapshot = session_budget_snapshot(updated_session)
         result = _ExecutionResult(
             receipt=receipt,
             response_payload=invocation_output.public_payload,
@@ -715,16 +716,6 @@ def _normalize_payload(value: object) -> JsonValue | None:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return [_normalize_payload(item) for item in value]
     return str(value)
-
-
-def _build_budget_snapshot(session: Session) -> ToolBudgetSnapshot:
-    used_budget_usd = session.usage.total_cost_usd
-    return ToolBudgetSnapshot(
-        session_budget_usd=session.budget_usd,
-        session_hard_limit_usd=session.effective_hard_limit_usd,
-        session_used_budget_usd=used_budget_usd,
-        session_remaining_budget_usd=max(session.budget_usd - used_budget_usd, 0.0),
-    )
 
 
 def _mark_session_exhausted_if_needed(session: Session) -> Session:

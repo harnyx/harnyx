@@ -29,6 +29,7 @@ from harnyx_sandbox.sandbox.harness import (
 )
 
 from harnyx_miner_sdk.api import test_tool as invoke_test_tool
+from harnyx_miner_sdk.context import ContextSnapshot
 from harnyx_miner_sdk.decorators import clear_entrypoints, entrypoint, entrypoint_exists
 from harnyx_miner_sdk.query import Query, Response
 from harnyx_miner_sdk.safe_exec import safe_exec
@@ -36,6 +37,22 @@ from harnyx_miner_sdk.safe_exec import safe_exec
 
 def _detail_code(response) -> str:
     return response.json()["detail"]["code"]
+
+
+def _time_context(limit_seconds: float = 300.0) -> dict[str, object]:
+    return {"time_budget": {"limit_seconds": limit_seconds}}
+
+
+def _query_context(limit_seconds: float = 300.0) -> dict[str, object]:
+    return {
+        "cost_budget": {
+            "session_budget_usd": 1.0,
+            "session_hard_limit_usd": 1.0,
+            "session_used_budget_usd": 0.0,
+            "session_remaining_budget_usd": 1.0,
+        },
+        **_time_context(limit_seconds),
+    }
 
 
 class _FakeWorkerProcess:
@@ -78,6 +95,8 @@ def _make_worker_payload() -> dict[str, object]:
     return {
         "entrypoint_name": "miner_test",
         "headers": {},
+        "context": _time_context(),
+        "deadline_monotonic_ns": time.monotonic_ns() + 300_000_000_000,
     }
 
 
@@ -437,7 +456,8 @@ def test_harness_round_trips_miner_sdk_response_as_json_object() -> None:
     clear_entrypoints()
 
     @entrypoint("query")
-    async def response_entrypoint(query: Query) -> Response:
+    async def response_entrypoint(query: Query, context: ContextSnapshot) -> Response:
+        assert context.time_budget.limit_seconds == 300.0
         return Response(text=query.text, note="Public scope correction")
 
     harness = SandboxHarness()
@@ -446,7 +466,7 @@ def test_harness_round_trips_miner_sdk_response_as_json_object() -> None:
 
     response = TestClient(app).post(
         "/entry/query",
-        json={"payload": {"text": "answer"}, "context": {}},
+        json={"payload": {"text": "answer"}, "context": _query_context()},
         headers={"x-platform-token": "token", "x-session-id": "session-response"},
     )
     clear_entrypoints()
@@ -466,7 +486,7 @@ def test_harness_preserves_explicit_structured_null_output() -> None:
     clear_entrypoints()
 
     @entrypoint("query")
-    async def response_entrypoint(_query: Query) -> Response:
+    async def response_entrypoint(_query: Query, _context: ContextSnapshot) -> Response:
         return Response(output=None)
 
     harness = SandboxHarness()
@@ -475,7 +495,10 @@ def test_harness_preserves_explicit_structured_null_output() -> None:
 
     response = TestClient(app).post(
         "/entry/query",
-        json={"payload": {"text": "question", "output_schema": {"type": "null"}}, "context": {}},
+        json={
+            "payload": {"text": "question", "output_schema": {"type": "null"}},
+            "context": _query_context(),
+        },
         headers={"x-platform-token": "token", "x-session-id": "session-null-response"},
     )
     clear_entrypoints()
@@ -551,7 +574,7 @@ def test_harness_invokes_entrypoint_and_closes_tools() -> None:
         "/entry/miner_echo",
         json={
             "payload": {"message": "hello"},
-            "context": {"run_id": "abc"},
+            "context": _time_context(),
         },
         headers={"x-platform-token": "token", "x-session-id": "session-1"},
     )
@@ -584,7 +607,7 @@ def test_harness_executes_safe_exec_inside_worker() -> None:
 
     response = client.post(
         "/entry/miner_safe_exec",
-        json={"payload": {"values": [2, 4, 6]}, "context": {}},
+        json={"payload": {"values": [2, 4, 6]}, "context": _time_context()},
         headers={"x-platform-token": "token", "x-session-id": "session-1"},
     )
 
@@ -593,7 +616,6 @@ def test_harness_executes_safe_exec_inside_worker() -> None:
 
 
 def test_harness_terminates_long_running_entrypoint(
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     """Future failure: a timed-out entrypoint keeps running after the 504 response."""
@@ -611,16 +633,49 @@ def test_harness_terminates_long_running_entrypoint(
     app.include_router(harness.create_router(), prefix="/entry")
     client = TestClient(app)
 
-    monkeypatch.setattr(harness_module, "ENTRYPOINT_TIMEOUT_SECONDS", 0.05)
-
     response = client.post(
         "/entry/miner_sleeper_timeout",
-        json={"payload": {}, "context": {}},
+        json={"payload": {}, "context": _time_context(0.05)},
     )
 
     assert response.status_code == 504
     time.sleep(0.3)
     assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"context": {}},
+        {"context": {"time_budget": {"limit_seconds": True}}},
+        {"context": {"time_budget": {"limit_seconds": 0}}},
+        {"context": {"time_budget": {"limit_seconds": -1}}},
+        {"context": {"time_budget": {"limit_seconds": "NaN"}}},
+        {"context": {"time_budget": {"limit_seconds": "Infinity"}}},
+    ],
+)
+def test_harness_rejects_invalid_execution_time_limit(body: dict[str, object]) -> None:
+    harness = SandboxHarness()
+    app = FastAPI()
+    app.include_router(harness.create_router(), prefix="/entry")
+
+    response = TestClient(app).post("/entry/query", json=body)
+
+    assert response.status_code == 422
+
+
+def test_query_rejects_missing_cost_budget_before_worker_start() -> None:
+    harness = SandboxHarness()
+    app = FastAPI()
+    app.include_router(harness.create_router(), prefix="/entry")
+
+    response = TestClient(app).post(
+        "/entry/query",
+        json={"payload": {"text": "question"}, "context": _time_context()},
+    )
+
+    assert response.status_code == 422
 
 
 def test_unknown_entrypoint_without_preload_returns_500() -> None:
@@ -629,7 +684,7 @@ def test_unknown_entrypoint_without_preload_returns_500() -> None:
     app.include_router(harness.create_router(), prefix="/entry")
     client = TestClient(app)
 
-    response = client.post("/entry/missing", json={})
+    response = client.post("/entry/missing", json={"context": _time_context()})
     assert response.status_code == 500
     assert _detail_code(response) == "EntrypointUnavailable"
 
@@ -643,7 +698,7 @@ def test_unknown_entrypoint_returns_404_with_preload() -> None:
     app.include_router(harness.create_router(), prefix="/entry")
     client = TestClient(app)
 
-    response = client.post("/entry/missing", json={})
+    response = client.post("/entry/missing", json={"context": _time_context()})
     assert response.status_code == 404
     assert _detail_code(response) == "MissingEntrypoint"
 
@@ -659,7 +714,7 @@ def test_worker_reports_preload_failure_with_phase_specific_code() -> None:
     app.include_router(harness.create_router(), prefix="/entry")
     client = TestClient(app)
 
-    response = client.post("/entry/missing", json={})
+    response = client.post("/entry/missing", json={"context": _time_context()})
 
     assert response.status_code == 500
     assert _detail_code(response) == "PreloadFailed"
@@ -681,7 +736,7 @@ def test_worker_reports_preload_infrastructure_failure_with_explicit_code() -> N
     app.include_router(harness.create_router(), prefix="/entry")
     client = TestClient(app)
 
-    response = client.post("/entry/missing", json={})
+    response = client.post("/entry/missing", json={"context": _time_context()})
 
     assert response.status_code == 500
     assert _detail_code(response) == "PreloadInfrastructureFailed"
@@ -702,7 +757,7 @@ def test_worker_does_not_trust_miner_exception_named_like_infrastructure_error()
     app.include_router(harness.create_router(), prefix="/entry")
     client = TestClient(app)
 
-    response = client.post("/entry/missing", json={})
+    response = client.post("/entry/missing", json={"context": _time_context()})
 
     assert response.status_code == 500
     assert _detail_code(response) == "PreloadFailed"
@@ -721,7 +776,10 @@ def test_worker_reports_query_runtime_type_error_as_unhandled_exception() -> Non
     app.include_router(harness.create_router(), prefix="/entry")
     client = TestClient(app)
 
-    response = client.post("/entry/miner_runtime_type_error", json={"payload": {}, "context": {}})
+    response = client.post(
+        "/entry/miner_runtime_type_error",
+        json={"payload": {}, "context": _time_context()},
+    )
 
     assert response.status_code == 500
     assert _detail_code(response) == "UnhandledException"
@@ -798,13 +856,49 @@ def test_preload_registers_entrypoint_inside_worker() -> None:
         "/entry/miner_lazy_preload",
         json={
             "payload": {"message": "hi"},
-            "context": {"tenant": "abc"},
+            "context": _time_context(),
         },
     )
 
     assert response.status_code == 200
     assert response.json()["result"] == {
         "message": "hi",
+    }
+
+
+def test_worker_preload_executes_legacy_query_entrypoint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    clear_entrypoints()
+    agent_path = tmp_path / "legacy_agent.py"
+    agent_path.write_text(
+        "from harnyx_miner_sdk.decorators import entrypoint\n"
+        "from harnyx_miner_sdk.query import Query, Response\n"
+        "@entrypoint('query')\n"
+        "async def query(query: Query) -> Response:\n"
+        "    return Response(text=query.text)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sandbox_app, "_agent_loaded", False)
+    monkeypatch.setenv("AGENT_PATH", str(agent_path))
+    monkeypatch.delenv("AGENT_MODULE", raising=False)
+
+    harness = SandboxHarness(preload=sandbox_app._load_agent_from_env)
+    app = FastAPI()
+    app.include_router(harness.create_router(), prefix="/entry")
+
+    response = TestClient(app).post(
+        "/entry/query",
+        json={"payload": {"text": "answer"}, "context": _query_context()},
+        headers={"x-platform-token": "token", "x-session-id": "legacy-query"},
+    )
+    clear_entrypoints()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "result": {"text": "answer", "citations": None},
     }
 
 
@@ -821,7 +915,7 @@ def test_entrypoint_key_error_returns_500() -> None:
 
     response = client.post(
         "/entry/miner_key_error",
-        json={"payload": {}, "context": {}},
+        json={"payload": {}, "context": _time_context()},
     )
 
     assert response.status_code == 500

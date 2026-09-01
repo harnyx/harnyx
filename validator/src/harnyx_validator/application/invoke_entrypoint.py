@@ -16,6 +16,8 @@ from harnyx_commons.application.ports.token_registry import TokenRegistryPort
 from harnyx_commons.domain.session import Session, SessionStatus
 from harnyx_commons.errors import SessionBudgetExhaustedError
 from harnyx_commons.sandbox.client import SandboxClient, SandboxInvokeError
+from harnyx_commons.tools.dto import session_budget_snapshot
+from harnyx_commons.tools.http_serialization import serialize_tool_budget
 from harnyx_validator.application.dto.evaluation import EntrypointInvocationRequest, EntrypointInvocationResult
 
 QUERY_ENTRYPOINT = "query"
@@ -87,11 +89,17 @@ class EntrypointInvoker:
         session: Session,
     ) -> object:
         token = request.token
+        cost_budget = serialize_tool_budget(session_budget_snapshot(session))
         try:
             return await self._sandbox.invoke(
                 QUERY_ENTRYPOINT,
                 payload=request.query.model_dump(mode="json"),
-                context={},
+                context={
+                    "cost_budget": cost_budget.model_dump(mode="json"),
+                    "time_budget": {
+                        "limit_seconds": request.execution_time_limit_seconds,
+                    },
+                },
                 token=token,
                 session_id=session.session_id,
             )

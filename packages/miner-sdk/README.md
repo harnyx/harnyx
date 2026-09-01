@@ -38,29 +38,44 @@ responsibility of the sandbox and execution lifecycle.
 
 ## Entrypoints
 
-Register entrypoints with `@entrypoint(...)`.
+Register entrypoints with `@entrypoint(...)`. The public `query` entrypoint has
+the following contract:
 
 Rules:
 - Must be `async def`
-- Must accept exactly one parameter
-- That parameter must be annotated as `harnyx_miner_sdk.query.Query`
+- May use the legacy one-parameter form or the context-aware two-parameter form
+- The first parameter must be annotated as `harnyx_miner_sdk.query.Query`
+- When present, the second parameter must be annotated as `harnyx_miner_sdk.context.ContextSnapshot`
 - The return type must be `harnyx_miner_sdk.query.Response`
+
+Non-query diagnostic entrypoints remain `async def` functions with exactly one
+annotated request parameter and an annotated return type. They do not receive
+`ContextSnapshot`.
+
+Use the context-aware form for new artifacts. The sandbox validates the context
+and enforces the same cost and time limits for both forms. A legacy entrypoint
+continues to run, but it cannot inspect those budgets because its function does
+not receive the context.
 
 Example:
 
 ```python
+from harnyx_miner_sdk.context import ContextSnapshot
 from harnyx_miner_sdk.decorators import entrypoint
 from harnyx_miner_sdk.query import Query, Response
 
 
 @entrypoint("query")
-async def query(query: Query) -> Response:
+async def query(query: Query, context: ContextSnapshot) -> Response:
+    print(f"time limit: {context.time_budget.limit_seconds}s")
     return Response(text=query.text)
 ```
 
 ## Query contract
 
-Validators call `query` with a `Query` payload:
+Validators call `query` with a `Query` payload and an immutable
+`ContextSnapshot`. The context contains the initial `cost_budget` and configured
+full `time_budget.limit_seconds`; it does not contain remaining time.
 
 ```json
 {
@@ -214,10 +229,11 @@ Your `Response.citations` must point at the exact result(s) that support your an
 
 ```python
 from harnyx_miner_sdk.api import search_web
+from harnyx_miner_sdk.context import ContextSnapshot
 from harnyx_miner_sdk.query import CitationRef, Query, Response
 
 
-async def query(query: Query) -> Response:
+async def query(query: Query, _context: ContextSnapshot) -> Response:
     search = await search_web(query.text, provider="parallel", num=5)
     top_result = search.results[0]
     return Response(
@@ -301,6 +317,18 @@ Use `provider_extra={"formats": ["rawHtml"]}` when only raw HTML is needed. If F
 - `test_tool(message, timeout=...)`
 
 Every hosted tool helper accepts an optional positive finite `timeout` in seconds. For provider-backed tools other than `llm_chat`, the tool host bounds the complete provider-backed invocation, including host-owned retries/backoff, and raises a tool invocation error if the deadline expires. `llm_chat` makes one provider attempt per SDK call; retry loops belong in miner script code when desired. `tooling_info` and `test_tool` accept the same parameter for interface consistency, but they complete locally and do not perform provider deadline enforcement.
+
+Every successful hosted-tool helper response includes `budget`, which reports
+the evaluation session's monetary budget and settled spend after that call.
+
+The query's immutable `ContextSnapshot` supplies the initial monetary budget and
+the configured full execution limit as `context.cost_budget` and
+`context.time_budget.limit_seconds`. The limit starts before the sandbox worker
+loads the miner artifact, so it is a configured capacity, not remaining time.
+A helper's optional `timeout` still bounds only that hosted tool call. The host
+derives its internal tool-session authorization lifetime from the invocation
+limit and normally revokes it as soon as the invocation completes; it does not
+enforce the miner entrypoint deadline.
 
 Firecrawl is an ordinary-web provider: it supports `search_web` and `fetch_page`.
 

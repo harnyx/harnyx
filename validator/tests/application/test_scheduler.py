@@ -55,6 +55,30 @@ _ASSIGNMENT_TOKEN_1 = "assignment-token-1"  # noqa: S105 - fixed test-only assig
 _ASSIGNMENT_TOKEN_2 = "assignment-token-2"  # noqa: S105 - fixed test-only assignment token
 
 
+def test_scheduler_config_derives_session_ttl_from_execution_time_limit() -> None:
+    config = SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=3_600.0)
+
+    assert config.session_ttl == timedelta(seconds=3_660)
+
+
+@pytest.mark.parametrize("value", [True, "300"])
+def test_scheduler_config_rejects_non_numeric_execution_time_limit(value: object) -> None:
+    with pytest.raises(TypeError, match="must be a finite number"):
+        SchedulerConfig(
+            token_secret_bytes=8,
+            execution_time_limit_seconds=value,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize("value", [0.0, -1.0, float("nan"), float("inf")])
+def test_scheduler_config_rejects_non_positive_or_non_finite_execution_time_limit(value: float) -> None:
+    with pytest.raises(ValueError, match="must be finite and greater than zero"):
+        SchedulerConfig(
+            token_secret_bytes=8,
+            execution_time_limit_seconds=value,
+        )
+
+
 def test_sandbox_failure_diagnostics_reads_docker_command_error_files(tmp_path) -> None:
     options = SandboxOptions(
         image="harnyx/sandbox:test",
@@ -386,7 +410,7 @@ async def test_scheduler_runs_multiple_platform_assignments_in_one_artifact_sand
         orchestrator_factory=orchestrator_factory,
         sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
         clock=lambda: now,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         progress=DummyProgressRecorder(),
     )
 
@@ -447,7 +471,7 @@ async def test_scheduler_returns_pair_results_for_assigned_artifact_script_valid
         orchestrator_factory=lambda _client: object(),
         sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
         clock=lambda: now,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         progress=progress,
     )
     artifact = ScriptArtifactSpec(
@@ -541,7 +565,7 @@ async def test_scheduler_stops_assigned_artifact_sandbox_when_queue_execution_is
         orchestrator_factory=lambda client: client,
         sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
         clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         progress=DummyProgressRecorder(),
     )
     artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
@@ -597,7 +621,7 @@ async def test_scheduler_returns_single_delivery_failure_for_assigned_artifact_s
         orchestrator_factory=lambda _client: object(),
         sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
         clock=lambda: now,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         progress=progress,
     )
     artifact = ScriptArtifactSpec(
@@ -688,7 +712,7 @@ async def test_scheduler_assigned_setup_failure_survives_progress_write_failure(
         orchestrator_factory=lambda _client: object(),
         sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
         clock=lambda: now,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         progress=FailingTerminatedAttemptProgressRecorder(),
     )
     artifact = ScriptArtifactSpec(
@@ -791,7 +815,7 @@ async def test_scheduler_assigned_results_survive_teardown_and_activity_failures
         orchestrator_factory=orchestrator_factory,
         sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
         clock=lambda: now,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
         progress=DummyProgressRecorder(),
         activity=FailingActivity(),
     )
@@ -843,7 +867,7 @@ async def test_evaluation_runner_issues_session_with_task_budget(
         clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
         config=SchedulerConfig(
             token_secret_bytes=8,
-            session_ttl=timedelta(minutes=5),
+            execution_time_limit_seconds=300.0,
         ),
         progress=DummyProgressRecorder(),
     )
