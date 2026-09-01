@@ -76,7 +76,10 @@ def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
 
     manager = DockerSandboxManager(docker_binary=docker_bin, host="127.0.0.1")
     deployments = []
-    state_dir = Path(tempfile.mkdtemp(prefix="harnyx-validator-int-state-"))
+    workspace_root = Path(os.getenv("HOST_WORKSPACE", str(_REPO_ROOT)))
+    state_dir = Path(
+        tempfile.mkdtemp(prefix=".harnyx-validator-int-state-", dir=workspace_root)
+    )
 
     def _start(agent_module: str):
         module_rel_path = Path(*agent_module.split(".")).with_suffix(".py")
