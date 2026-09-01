@@ -11,7 +11,13 @@ import httpx
 import pytest
 
 from harnyx_commons.bittensor import build_canonical_request
-from harnyx_commons.domain.miner_task import EvaluationDetails, Response, ScoreBreakdown
+from harnyx_commons.domain.miner_task import (
+    EvaluationDetails,
+    FastScoreEvidence,
+    FastScoreExpectedComponent,
+    Response,
+    ScoreBreakdown,
+)
 from harnyx_commons.domain.session import Session, SessionStatus
 from harnyx_commons.domain.tool_call import ToolCall, ToolCallDetails, ToolCallOutcome
 from harnyx_commons.errors import BudgetExceededError, ToolInvocationTimeoutError, ToolProviderError
@@ -479,7 +485,10 @@ def test_submit_miner_task_work_results_posts_delivery_failure_detail() -> None:
     )
 
 
-def test_submit_miner_task_work_results_omits_run_execution_log() -> None:
+@pytest.mark.parametrize("include_fast_evidence", (False, True))
+def test_submit_miner_task_work_results_serializes_score_evidence_contract(
+    include_fast_evidence: bool,
+) -> None:
     keypair = _keypair()
     batch_id = uuid4()
     artifact_id = uuid4()
@@ -544,7 +553,22 @@ def test_submit_miner_task_work_results_omits_run_execution_log() -> None:
                     score_breakdown=ScoreBreakdown(
                         comparison_score=1.0,
                         total_score=1.0,
-                        scoring_version="v1",
+                        scoring_version=("deepsearchqa-f1-v1" if include_fast_evidence else "v1"),
+                        fast_score_evidence=(
+                            FastScoreEvidence(
+                                expected_components=(
+                                    FastScoreExpectedComponent(
+                                        component_id="answer",
+                                        is_correct=True,
+                                    ),
+                                ),
+                                excessive_components=(),
+                                precision=1.0,
+                                recall=1.0,
+                            )
+                            if include_fast_evidence
+                            else None
+                        ),
                     ),
                 ),
                 completed_at=started_at + timedelta(seconds=1),
@@ -581,6 +605,16 @@ def test_submit_miner_task_work_results_omits_run_execution_log() -> None:
     assert "validator" not in item["result"]
     assert "execution_log" not in item["result"]
     assert "execution_log" not in item["terminal_attempt"]
+    breakdown = item["result"]["specifics"]["score_breakdown"]
+    if include_fast_evidence:
+        assert breakdown["fast_score_evidence"] == {
+            "expected_components": [{"component_id": "answer", "is_correct": True}],
+            "excessive_components": [],
+            "precision": 1.0,
+            "recall": 1.0,
+        }
+    else:
+        assert "fast_score_evidence" not in breakdown
     assert acknowledgements[0].outcome == "accepted"
     assert acknowledgements[0].canonical is True
 

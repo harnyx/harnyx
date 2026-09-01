@@ -6,7 +6,14 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from harnyx_commons.domain.miner_task import EvaluationDetails, EvaluationError, Response, ScoreBreakdown
+from harnyx_commons.domain.miner_task import (
+    EvaluationDetails,
+    EvaluationError,
+    FastScoreEvidence,
+    FastScoreExpectedComponent,
+    Response,
+    ScoreBreakdown,
+)
 from harnyx_validator.domain.evaluation import MinerTaskRun
 
 _NOW = datetime.now(UTC)
@@ -85,6 +92,44 @@ def test_score_breakdown_rejects_total_that_differs_from_comparison() -> None:
             total_score=0.9,
             scoring_version="v1",
         )
+
+
+def test_fast_score_evidence_rejects_inconsistent_metrics() -> None:
+    with pytest.raises(ValidationError, match="precision"):
+        FastScoreEvidence(
+            expected_components=(FastScoreExpectedComponent(component_id="answer", is_correct=True),),
+            excessive_components=(),
+            precision=0.5,
+            recall=1.0,
+        )
+
+
+def test_score_breakdown_rejects_score_that_differs_from_fast_f1() -> None:
+    evidence = FastScoreEvidence(
+        expected_components=(FastScoreExpectedComponent(component_id="answer", is_correct=True),),
+        excessive_components=(),
+        precision=1.0,
+        recall=1.0,
+    )
+
+    with pytest.raises(ValidationError, match="fast score evidence"):
+        ScoreBreakdown(
+            comparison_score=0.5,
+            total_score=0.5,
+            scoring_version="deepsearchqa-f1-v1",
+            fast_score_evidence=evidence,
+        )
+
+
+def test_score_breakdown_omits_absent_fast_evidence_from_legacy_payloads() -> None:
+    breakdown = ScoreBreakdown(
+        comparison_score=0.8,
+        total_score=0.8,
+        scoring_version="v1",
+    )
+
+    assert breakdown.fast_score_evidence is None
+    assert "fast_score_evidence" not in breakdown.model_dump(mode="json")
 
 
 def test_evaluation_details_normalizes_legacy_similarity_score_payload() -> None:

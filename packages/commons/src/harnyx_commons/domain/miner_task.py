@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+from collections.abc import Iterable
 from enum import StrEnum
 from typing import Literal, cast
 from uuid import UUID
@@ -202,6 +204,76 @@ class ScorerReasoning(BaseModel):
     reasoning_tokens: int | None = Field(default=None, ge=0)
 
 
+class FastScoreExpectedComponent(BaseModel):
+    """One required answer component retained as fast-score evidence."""
+
+    model_config = COMMONS_STRICT_CONFIG
+
+    component_id: str = Field(min_length=1)
+    is_correct: bool
+
+
+class FastScoreExcessiveComponent(BaseModel):
+    """One excessive answer component retained as fast-score evidence."""
+
+    model_config = COMMONS_STRICT_CONFIG
+
+    component_id: str = Field(min_length=1)
+
+
+class FastScoreEvidence(BaseModel):
+    """Persisted component judgment and deterministic metrics for one fast score."""
+
+    model_config = COMMONS_STRICT_CONFIG
+
+    expected_components: tuple[FastScoreExpectedComponent, ...] = Field(min_length=1)
+    excessive_components: tuple[FastScoreExcessiveComponent, ...]
+    precision: float = Field(ge=0.0, le=1.0)
+    recall: float = Field(ge=0.0, le=1.0)
+
+    @field_validator("expected_components", "excessive_components", mode="before")
+    @classmethod
+    def _normalize_component_arrays(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @model_validator(mode="after")
+    def _validate_evidence(self) -> FastScoreEvidence:
+        expected_ids = _normalized_fast_score_component_ids(
+            component.component_id for component in self.expected_components
+        )
+        excessive_ids = _normalized_fast_score_component_ids(
+            component.component_id for component in self.excessive_components
+        )
+        if len(expected_ids) != len(set(expected_ids)):
+            raise ValueError("fast score expected component identities must be unique")
+        if len(excessive_ids) != len(set(excessive_ids)):
+            raise ValueError("fast score excessive component identities must be unique")
+        if set(expected_ids) & set(excessive_ids):
+            raise ValueError("fast score expected and excessive component identities must be disjoint")
+
+        correct = sum(component.is_correct for component in self.expected_components)
+        expected_precision = 0.0 if correct == 0 else correct / (correct + len(self.excessive_components))
+        expected_recall = correct / len(self.expected_components)
+        if not math.isclose(self.precision, expected_precision, rel_tol=1e-12, abs_tol=1e-12):
+            raise ValueError("fast score evidence precision must match component outcomes")
+        if not math.isclose(self.recall, expected_recall, rel_tol=1e-12, abs_tol=1e-12):
+            raise ValueError("fast score evidence recall must match component outcomes")
+        return self
+
+    @property
+    def computed_f1(self) -> float:
+        if self.precision == 0.0 or self.recall == 0.0:
+            return 0.0
+        return round(2 * self.precision * self.recall / (self.precision + self.recall), 6)
+
+
+def _normalized_fast_score_component_ids(component_ids: Iterable[str]) -> tuple[str, ...]:
+    normalized = tuple(component_id.strip().casefold() for component_id in component_ids)
+    if any(not component_id for component_id in normalized):
+        raise ValueError("fast score component identities must not be blank")
+    return normalized
+
+
 class ScoreBreakdown(BaseModel):
     model_config = COMMONS_STRICT_CONFIG
 
@@ -209,6 +281,10 @@ class ScoreBreakdown(BaseModel):
     total_score: float = Field(ge=0.0, le=1.0)
     scoring_version: str = Field(min_length=1)
     reasoning: ScorerReasoning | None = None
+    fast_score_evidence: FastScoreEvidence | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -226,6 +302,11 @@ class ScoreBreakdown(BaseModel):
     def _validate_total_matches_comparison(self) -> ScoreBreakdown:
         if self.total_score != self.comparison_score:
             raise ValueError("score breakdown total_score must equal comparison_score")
+        if (
+            self.fast_score_evidence is not None
+            and self.total_score != self.fast_score_evidence.computed_f1
+        ):
+            raise ValueError("score breakdown total_score must match fast score evidence F1")
         return self
 
 
@@ -380,6 +461,9 @@ __all__ = [
     "EvaluationDetails",
     "EvaluationTrace",
     "EvaluationError",
+    "FastScoreEvidence",
+    "FastScoreExcessiveComponent",
+    "FastScoreExpectedComponent",
     "MINER_ATTRIBUTED_PAIR_ERROR_CODES",
     "MinerTask",
     "MinerTaskErrorCode",

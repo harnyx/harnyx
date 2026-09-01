@@ -1374,6 +1374,8 @@ async def test_fast_scoring_uses_one_citation_free_component_judgment() -> None:
     assert score.total_score == pytest.approx(round(4 / 7, 6))
     assert score.scoring_version == "deepsearchqa-f1-v1"
     assert score.reasoning == ScorerReasoning(text="Component comparison complete.", reasoning_tokens=9)
+    assert score.score_breakdown.fast_score_evidence is None
+    assert "fast_score_evidence" not in score.score_breakdown.model_dump(mode="json")
 
 
 async def test_fast_scoring_returns_zero_when_no_expected_component_is_correct() -> None:
@@ -1404,6 +1406,26 @@ async def test_fast_scoring_returns_zero_when_no_expected_component_is_correct()
     assert score.comparison_score == 0.0
     assert score.total_score == 0.0
     assert score.scoring_version == "deepsearchqa-f1-v1"
+    assert score.score_breakdown.fast_score_evidence is None
+    assert "fast_score_evidence" not in score.score_breakdown.model_dump(mode="json")
+
+
+async def test_pairwise_scoring_omits_fast_score_evidence() -> None:
+    """Future failure: ordinary score payloads must not gain a null fast-evidence field."""
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="What is the answer?"),
+        reference_answer=ReferenceAnswer(text="The answer is 42."),
+    )
+    service = EvaluationScoringService(
+        llm_provider=StubLlmProvider([("first", None, None), ("second", None, None)]),
+        config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
+    )
+
+    score = await service.score(task=task, response=Response(text="Miner says 42."))
+
+    assert score.score_breakdown.fast_score_evidence is None
+    assert "fast_score_evidence" not in score.score_breakdown.model_dump(mode="json")
 
 
 async def test_fast_scoring_preserves_structured_answer_contract_and_note_rules() -> None:

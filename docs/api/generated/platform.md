@@ -1714,6 +1714,11 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `message` |  | req | `string` |
 | `score_breakdown` |  |  | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
 |  | `comparison_score` |  | req | `number` |
+|  | `fast_score_evidence` |  | opt | [FastScoreEvidence](#model-fastscoreevidence) (nullable) |
+|  |  | `excessive_components` | req | array[[FastScoreExcessiveComponent](#model-fastscoreexcessivecomponent)] |
+|  |  | `expected_components` | req | array[[FastScoreExpectedComponent](#model-fastscoreexpectedcomponent)] |
+|  |  | `precision` | req | `number` |
+|  |  | `recall` | req | `number` |
 |  | `reasoning` |  | opt | [ScorerReasoning](#model-scorerreasoning) (nullable) |
 |  |  | `reasoning_tokens` | opt | `integer` (nullable) |
 |  |  | `text` | opt | `string` (nullable) |
@@ -2210,6 +2215,136 @@ Body: [StatusResponse](#model-statusresponse)
     "occurred_at"
   ],
   "title": "FailureDetailPayload",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-fastscoreevidence"></a>
+### Model: FastScoreEvidence
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `excessive_components` |  |  | req | array[[FastScoreExcessiveComponent](#model-fastscoreexcessivecomponent)] |
+|  | `component_id` |  | req | `string` |
+| `expected_components` |  |  | req | array[[FastScoreExpectedComponent](#model-fastscoreexpectedcomponent)] |
+|  | `component_id` |  | req | `string` |
+|  | `is_correct` |  | req | `boolean` |
+| `precision` |  |  | req | `number` |
+| `recall` |  |  | req | `number` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "description": "Persisted component judgment and deterministic metrics for one fast score.",
+  "properties": {
+    "excessive_components": {
+      "items": {
+        "$ref": "#/components/schemas/FastScoreExcessiveComponent"
+      },
+      "title": "Excessive Components",
+      "type": "array"
+    },
+    "expected_components": {
+      "items": {
+        "$ref": "#/components/schemas/FastScoreExpectedComponent"
+      },
+      "minItems": 1,
+      "title": "Expected Components",
+      "type": "array"
+    },
+    "precision": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Precision",
+      "type": "number"
+    },
+    "recall": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Recall",
+      "type": "number"
+    }
+  },
+  "required": [
+    "expected_components",
+    "excessive_components",
+    "precision",
+    "recall"
+  ],
+  "title": "FastScoreEvidence",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-fastscoreexcessivecomponent"></a>
+### Model: FastScoreExcessiveComponent
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `component_id` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "description": "One excessive answer component retained as fast-score evidence.",
+  "properties": {
+    "component_id": {
+      "minLength": 1,
+      "title": "Component Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "component_id"
+  ],
+  "title": "FastScoreExcessiveComponent",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-fastscoreexpectedcomponent"></a>
+### Model: FastScoreExpectedComponent
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `component_id` |  |  | req | `string` |
+| `is_correct` |  |  | req | `boolean` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "description": "One required answer component retained as fast-score evidence.",
+  "properties": {
+    "component_id": {
+      "minLength": 1,
+      "title": "Component Id",
+      "type": "string"
+    },
+    "is_correct": {
+      "title": "Is Correct",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "component_id",
+    "is_correct"
+  ],
+  "title": "FastScoreExpectedComponent",
   "type": "object"
 }
 ```
@@ -4163,6 +4298,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `message` | req | `string` |
 |  | `score_breakdown` |  | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
 |  |  | `comparison_score` | req | `number` |
+|  |  | `fast_score_evidence` | opt | [FastScoreEvidence](#model-fastscoreevidence) (nullable) |
 |  |  | `reasoning` | opt | [ScorerReasoning](#model-scorerreasoning) (nullable) |
 |  |  | `scoring_version` | req | `string` |
 |  |  | `total_score` | req | `number` |
@@ -6338,6 +6474,14 @@ Body: [StatusResponse](#model-statusresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `comparison_score` |  |  | req | `number` |
+| `fast_score_evidence` |  |  | opt | [FastScoreEvidence](#model-fastscoreevidence) (nullable) |
+|  | `excessive_components` |  | req | array[[FastScoreExcessiveComponent](#model-fastscoreexcessivecomponent)] |
+|  |  | `component_id` | req | `string` |
+|  | `expected_components` |  | req | array[[FastScoreExpectedComponent](#model-fastscoreexpectedcomponent)] |
+|  |  | `component_id` | req | `string` |
+|  |  | `is_correct` | req | `boolean` |
+|  | `precision` |  | req | `number` |
+|  | `recall` |  | req | `number` |
 | `reasoning` |  |  | opt | [ScorerReasoning](#model-scorerreasoning) (nullable) |
 |  | `reasoning_tokens` |  | opt | `integer` (nullable) |
 |  | `text` |  | opt | `string` (nullable) |
@@ -6356,6 +6500,16 @@ Body: [StatusResponse](#model-statusresponse)
       "minimum": 0.0,
       "title": "Comparison Score",
       "type": "number"
+    },
+    "fast_score_evidence": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/FastScoreEvidence"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "reasoning": {
       "anyOf": [

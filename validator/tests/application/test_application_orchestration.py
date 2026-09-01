@@ -15,6 +15,8 @@ from harnyx_commons.domain.judge_usage import JudgeModelUsage, JudgeUsageSummary
 from harnyx_commons.domain.miner_task import (
     EvaluationError,
     EvaluationTrace,
+    FastScoreEvidence,
+    FastScoreExpectedComponent,
     MinerTask,
     MinerTaskErrorCode,
     Query,
@@ -175,6 +177,40 @@ class TracingScoringService:
                 scoring_judge_retry_reasons=("transport_error",),
                 scoring_judge_duration_ms=250.0,
                 scoring_judge_status="ok",
+            ),
+        )
+
+
+class FastEvidenceScoringService:
+    async def score(
+        self,
+        *,
+        task: MinerTask,
+        response: Response,
+    ) -> EvaluationScoringResult:
+        assert task.query.fast is True
+        assert response.text == "A direct answer"
+        evidence = FastScoreEvidence(
+            expected_components=(FastScoreExpectedComponent(component_id="answer", is_correct=True),),
+            excessive_components=(),
+            precision=1.0,
+            recall=1.0,
+        )
+        return EvaluationScoringResult(
+            score_breakdown=ScoreBreakdown(
+                comparison_score=1.0,
+                total_score=1.0,
+                scoring_version="deepsearchqa-f1-v1",
+                fast_score_evidence=evidence,
+            ),
+            judge_usage=JudgeUsageSummary(
+                call_count=0,
+                prompt_tokens=0,
+                completion_tokens=0,
+                total_tokens=0,
+                reasoning_tokens=0,
+                actual_cost_usd=0.0,
+                models=(),
             ),
         )
 
@@ -348,6 +384,26 @@ async def test_score_platform_execution_does_not_convert_unexpected_scoring_fail
             _platform_execution(task),
             convert_scoring_error=True,
         )
+
+
+async def test_score_platform_execution_preserves_fast_score_evidence() -> None:
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="Harnyx Subnet demo", fast=True),
+        reference_answer=ReferenceAnswer(text="A direct answer"),
+    )
+
+    outcome = await score_platform_execution(
+        FastEvidenceScoringService(),
+        _platform_execution(task),
+        convert_scoring_error=True,
+    )
+
+    assert outcome.result is not None
+    breakdown = outcome.result.run.details.score_breakdown
+    assert breakdown is not None
+    assert breakdown.fast_score_evidence is not None
+    assert breakdown.fast_score_evidence.expected_components[0].component_id == "answer"
 
 
 async def test_application_use_cases_cooperate_for_single_task_run() -> None:

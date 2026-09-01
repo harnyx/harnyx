@@ -8,7 +8,14 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from harnyx_commons.domain.miner_task import Query, ReferenceAnswer, Response
+from harnyx_commons.domain.miner_task import (
+    FastScoreEvidence,
+    FastScoreExcessiveComponent,
+    FastScoreExpectedComponent,
+    Query,
+    ReferenceAnswer,
+    Response,
+)
 
 FAST_SCORING_VERSION = "deepsearchqa-f1-v1"
 
@@ -163,15 +170,32 @@ def build_fast_judge_messages(
     )
 
 
+def build_fast_score_evidence(assessment: FastJudgeAssessment) -> FastScoreEvidence:
+    """Retain a validated judgment with its deterministic precision and recall."""
+    correct = sum(component.is_correct for component in assessment.expected_components)
+    precision = 0.0 if correct == 0 else correct / (correct + len(assessment.excessive_components))
+    recall = correct / len(assessment.expected_components)
+    return FastScoreEvidence(
+        expected_components=tuple(
+            FastScoreExpectedComponent(
+                component_id=component.component_id,
+                is_correct=component.is_correct,
+            )
+            for component in assessment.expected_components
+        ),
+        excessive_components=tuple(
+            FastScoreExcessiveComponent(component_id=component.component_id)
+            for component in assessment.excessive_components
+        ),
+        precision=precision,
+        recall=recall,
+    )
+
+
 def calculate_fast_f1(assessment: FastJudgeAssessment) -> float:
     """Compute DeepSearchQA-style component F1 from a validated judgment."""
 
-    correct = sum(component.is_correct for component in assessment.expected_components)
-    if correct == 0:
-        return 0.0
-    precision = correct / (correct + len(assessment.excessive_components))
-    recall = correct / len(assessment.expected_components)
-    return round(2 * precision * recall / (precision + recall), 6)
+    return build_fast_score_evidence(assessment).computed_f1
 
 
 def _normalized_component_ids(component_ids: Iterable[str]) -> tuple[str, ...]:
@@ -188,5 +212,6 @@ __all__ = [
     "FastJudgeAssessment",
     "FastJudgeMessages",
     "build_fast_judge_messages",
+    "build_fast_score_evidence",
     "calculate_fast_f1",
 ]
