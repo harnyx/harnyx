@@ -19,7 +19,10 @@ from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequ
 pytestmark = [pytest.mark.integration, pytest.mark.anyio("asyncio")]
 
 
-async def test_custom_openai_compatible_provider_contract_against_local_server() -> None:
+@pytest.mark.parametrize("stream_options", (None, {}, {"include_usage": False, "continuous_usage_stats": False}))
+async def test_custom_openai_compatible_provider_contract_against_local_server(
+    stream_options: dict[str, bool] | None,
+) -> None:
     seen_payloads: list[dict[str, object]] = []
     server, base_url = _start_openai_compatible_server(seen_payloads)
     settings = LlmSettings(
@@ -62,6 +65,7 @@ async def test_custom_openai_compatible_provider_contract_against_local_server()
                 ),
                 temperature=0.0,
                 max_output_tokens=16,
+                extra={"stream_options": stream_options},
             )
         )
     finally:
@@ -75,6 +79,7 @@ async def test_custom_openai_compatible_provider_contract_against_local_server()
     assert seen_payloads
     assert seen_payloads[0]["model"] == "nvidia/Gemma-4-31B-IT-NVFP4"
     assert seen_payloads[0]["stream"] is True
+    assert seen_payloads[0]["stream_options"] == {"include_usage": True, "continuous_usage_stats": True}
 
 
 async def test_qwen36_custom_openai_compatible_provider_contract_against_local_server() -> None:
@@ -133,6 +138,7 @@ async def test_qwen36_custom_openai_compatible_provider_contract_against_local_s
     assert seen_payloads
     assert seen_payloads[0]["model"] == "Qwen/Qwen3.6-27B-FP8"
     assert seen_payloads[0]["stream"] is True
+    assert seen_payloads[0]["stream_options"] == {"include_usage": True, "continuous_usage_stats": True}
 
 
 def _start_openai_compatible_server(seen_payloads: list[dict[str, object]]) -> tuple[uvicorn.Server, str]:

@@ -36,7 +36,10 @@ class _RetryOnceExceptionProvider(BaseLlmProvider):
         del request
         self._attempt += 1
         record_similarity_stream_headers_received()
-        record_similarity_stream_event(saw_output=True)
+        record_similarity_stream_event(
+            saw_output=True,
+            usage=LlmUsage(prompt_tokens=100, completion_tokens=10) if self._attempt == 1 else None,
+        )
         if self._attempt == 1:
             try:
                 raise ValueError("dns lookup failed")
@@ -202,9 +205,14 @@ async def test_similarity_retry_logs_each_stream_attempt_without_content(
     assert data[3]["outcome"] == "failed"
     assert data[3]["exception_type"] == "RuntimeError"
     assert data[3]["retryable"] is True
+    assert data[3]["usage_status"] == "partial"
+    assert data[3]["completion_tokens"] == 10
+    assert data[6]["usage_status"] == "unavailable"
+    assert data[6]["completion_tokens"] is None
     assert data[7]["outcome"] == "response_received"
     assert data[7]["finish_reason"] == "stop"
     assert data[7]["completion_tokens"] == 7
+    assert data[7]["usage_status"] == "final"
     rendered_data = repr(data)
     assert "must-not-be-logged" not in rendered_data
     assert not any(value in {"hello", "ok"} for item in data for value in item.values())
@@ -261,6 +269,39 @@ async def test_similarity_attempt_logging_failure_does_not_change_provider_resul
     observation.headers_received()
     observation.stream_event(saw_output=True)
     observation.finish_response(_response())
+
+
+@pytest.mark.parametrize("outcome", ("failed", "cancelled", "response_received"))
+async def test_similarity_usage_timestamp_stays_at_last_counter_update(
+    outcome: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Future failure: a stall moves the usage timestamp or partial zero counters disappear as missing."""
+    times = iter((0.0, 1.0, 2.0, 20.0, 100.0))
+    caplog.set_level(logging.INFO, logger="harnyx_commons.llm.calls")
+    observation = SimilarityLlmAttemptObservation(
+        provider="chutes", model="model", attempt_number=1, attempt_limit=1, identity={}, clock=lambda: next(times)
+    )
+    observation.stream_event(saw_output=False, usage=LlmUsage(prompt_tokens=11, completion_tokens=0))
+    observation.stream_event(saw_output=True, usage=_response().usage)
+    observation.stream_event(saw_output=False)
+    if outcome == "failed":
+        observation.finish_failure(TimeoutError(), retryable=True)
+    elif outcome == "cancelled":
+        observation.finish_cancelled()
+    else:
+        observation.finish_response(_response())
+
+    progress = [r.data for r in caplog.records if r.message == "similarity_judge.llm_attempt.progress"]
+    assert progress[0]["usage_status"] == "partial"
+    assert progress[0]["completion_tokens"] == 0
+    assert progress[0]["reasoning_tokens"] is None
+    finished = next(r.data for r in caplog.records if r.message == "similarity_judge.llm_attempt.finished")
+    assert finished["outcome"] == outcome
+    assert finished["usage_status"] == ("final" if outcome == "response_received" else "partial")
+    assert finished["completion_tokens"] == 7
+    assert finished["last_usage_ms"] == 2000.0
+    assert finished["last_stream_event_ms"] == 20000.0
+    assert finished["elapsed_ms"] == 100000.0
 
 
 async def test_non_retryable_exception_raises_provider_error_without_retry_exhaustion() -> None:

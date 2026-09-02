@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Mapping
 from pathlib import Path
@@ -14,6 +15,7 @@ from harnyx_commons.config.llm import LlmSettings, OpenAiCompatibleGoogleIdToken
 from harnyx_commons.config.vertex import VertexSettings
 from harnyx_commons.llm.json_utils import pydantic_postprocessor
 from harnyx_commons.llm.provider_factory import build_cached_llm_provider_registry, build_routed_llm_provider
+from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import (
     LlmMessage,
     LlmMessageContentPart,
@@ -76,6 +78,42 @@ async def test_gemma_cloud_run_custom_openai_compatible_live() -> None:
     assert response.metadata is not None
     assert response.metadata["effective_provider"] == _GEMMA_ROUTE_TARGET
     assert response.metadata["effective_model"] == _GEMMA_MODEL
+
+
+@pytest.mark.expensive
+@pytest.mark.anyio("asyncio")
+async def test_gemma_similarity_receives_usage_before_stream_completion_live(caplog: pytest.LogCaptureFixture) -> None:
+    """Future failure: Gemma withholds the streaming counters needed on interrupted attempts."""
+    caplog.set_level(logging.INFO, logger="harnyx_commons.llm.calls")
+    response = await _invoke_live_gemma(
+        LlmRequest(
+            provider="chutes",
+            model=_GEMMA_MODEL,
+            messages=(
+                LlmMessage(
+                    role="user",
+                    content=(LlmMessageContentPart.input_text("Reply with numbers 1 through 30 separated by spaces."),),
+                ),
+            ),
+            thinking=LlmThinkingConfig(enabled=False),
+            temperature=0.0,
+            max_output_tokens=None,
+            timeout_seconds=180.0,
+            retry_policy=RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0.0),
+            use_case="miner_task_similarity_judge",
+            include_payloads_in_observability=False,
+        ),
+        surface="duplication_detection",
+    )
+    progress = [r.data for r in caplog.records if r.message == "similarity_judge.llm_attempt.progress"]
+    partial = [item for item in progress if item["usage_status"] == "partial"]
+    assert partial, "Gemma did not supply usage with its initial stream events"
+    assert partial[0]["prompt_tokens"] > 0
+    assert partial[0]["completion_tokens"] < response.usage.completion_tokens
+    finished = next(r.data for r in caplog.records if r.message == "similarity_judge.llm_attempt.finished")
+    assert finished["usage_status"] == "final"
+    assert finished["completion_tokens"] == response.usage.completion_tokens
+    assert partial[0]["last_usage_ms"] <= finished["last_usage_ms"] <= finished["elapsed_ms"]
 
 
 @pytest.mark.expensive

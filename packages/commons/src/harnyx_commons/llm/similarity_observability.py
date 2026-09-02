@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
-from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
+from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse, LlmUsage
 
 SIMILARITY_JUDGE_USE_CASE = "miner_task_similarity_judge"
 _PROGRESS_LOG_INTERVAL_SECONDS = 60.0
@@ -69,13 +69,19 @@ class SimilarityLlmAttemptObservation:
     _max_stream_event_gap_ms: float = field(default=0.0, init=False)
     _stream_event_count: int = field(default=0, init=False)
     _output_event_count: int = field(default=0, init=False)
+    _usage: LlmUsage | None = field(default=None, init=False)
+    _last_usage_at: float | None = field(default=None, init=False)
+    _usage_is_final: bool = field(default=False, init=False)
+    _response_id: str | None = field(default=None, init=False)
+    _upstream_provider: str | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self._started_at = self.clock()
         self._log("started", self._common_data())
 
-    def headers_received(self) -> None:
+    def headers_received(self, *, response_id: str | None = None) -> None:
         now = self.clock()
+        self._response_id = response_id or self._response_id
         if self._headers_received_at is None:
             self._headers_received_at = now
             self._log(
@@ -83,8 +89,20 @@ class SimilarityLlmAttemptObservation:
                 self._common_data() | {"headers_received_ms": self._elapsed_ms(now)},
             )
 
-    def stream_event(self, *, saw_output: bool) -> None:
+    def stream_event(
+        self,
+        *,
+        saw_output: bool,
+        usage: LlmUsage | None = None,
+        response_id: str | None = None,
+        upstream_provider: str | None = None,
+    ) -> None:
         now = self.clock()
+        self._response_id = response_id or self._response_id
+        self._upstream_provider = upstream_provider or self._upstream_provider
+        if usage is not None and usage != LlmUsage():
+            self._usage = usage
+            self._last_usage_at = now
         if self._last_stream_event_at is not None:
             gap_ms = (now - self._last_stream_event_at) * 1000
             self._max_stream_event_gap_ms = max(self._max_stream_event_gap_ms, gap_ms)
@@ -104,16 +122,12 @@ class SimilarityLlmAttemptObservation:
             self._log("progress", self._common_data() | self._progress_data(now))
 
     def finish_response(self, response: LlmResponse) -> None:
-        usage = response.usage
+        self._response_id = response.id or self._response_id
+        if response.usage is not None and response.usage != LlmUsage():
+            self._usage = response.usage
+            self._usage_is_final = True
         data = self._common_data() | self._terminal_data("response_received")
-        data |= {
-            "response_id": response.id,
-            "finish_reason": response.finish_reason,
-            "prompt_tokens": usage.prompt_tokens if usage is not None else None,
-            "completion_tokens": usage.completion_tokens if usage is not None else None,
-            "reasoning_tokens": usage.reasoning_tokens if usage is not None else None,
-            "total_tokens": usage.total_tokens if usage is not None else None,
-        }
+        data["finish_reason"] = response.finish_reason
         self._log("finished", data)
 
     def finish_failure(self, exc: Exception, *, retryable: bool) -> None:
@@ -139,6 +153,8 @@ class SimilarityLlmAttemptObservation:
 
     def _terminal_data(self, outcome: str) -> dict[str, object]:
         now = self.clock()
+        if self._usage is not None and self._last_usage_at is None:
+            self._last_usage_at = now
         return {"outcome": outcome, "elapsed_ms": self._elapsed_ms(now)} | self._progress_data(now)
 
     def _progress_data(self, now: float) -> dict[str, object]:
@@ -152,6 +168,14 @@ class SimilarityLlmAttemptObservation:
             "max_stream_event_gap_ms": round(self._max_stream_event_gap_ms, 2),
             "stream_event_count": self._stream_event_count,
             "output_event_count": self._output_event_count,
+            "response_id": self._response_id,
+            "upstream_provider": self._upstream_provider,
+            "usage_status": "unavailable" if self._usage is None else "final" if self._usage_is_final else "partial",
+            "last_usage_ms": self._since_start_ms(self._last_usage_at),
+            "prompt_tokens": self._usage.prompt_tokens if self._usage is not None else None,
+            "completion_tokens": self._usage.completion_tokens if self._usage is not None else None,
+            "reasoning_tokens": self._usage.reasoning_tokens if self._usage is not None else None,
+            "total_tokens": self._usage.total_tokens if self._usage is not None else None,
         }
 
     def _since_start_ms(self, observed_at: float | None) -> float | None:
@@ -203,16 +227,27 @@ def observe_similarity_llm_attempt(
         _ACTIVE_ATTEMPT.reset(token)
 
 
-def record_similarity_stream_headers_received() -> None:
+def record_similarity_stream_headers_received(*, response_id: str | None = None) -> None:
     observation = _ACTIVE_ATTEMPT.get()
     if observation is not None:
-        observation.headers_received()
+        observation.headers_received(response_id=response_id)
 
 
-def record_similarity_stream_event(*, saw_output: bool) -> None:
+def record_similarity_stream_event(
+    *,
+    saw_output: bool,
+    usage: LlmUsage | None = None,
+    response_id: str | None = None,
+    upstream_provider: str | None = None,
+) -> None:
     observation = _ACTIVE_ATTEMPT.get()
     if observation is not None:
-        observation.stream_event(saw_output=saw_output)
+        observation.stream_event(
+            saw_output=saw_output,
+            usage=usage,
+            response_id=response_id,
+            upstream_provider=upstream_provider,
+        )
 
 
 def _safe_identity(metadata: Mapping[str, Any]) -> dict[str, object]:

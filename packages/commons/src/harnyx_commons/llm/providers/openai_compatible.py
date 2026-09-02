@@ -142,7 +142,7 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
         response_metadata: JsonObject | None = None
         ttft_ms: float | None = None
         async with self._client.stream("POST", self._chat_completions_url, **request_kwargs) as response:
-            record_similarity_stream_headers_received()
+            record_similarity_stream_headers_received(response_id=response.headers.get("x-generation-id"))
             if response.is_error:
                 await response.aread()
             response.raise_for_status()
@@ -166,7 +166,26 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
                     reasoning_keys=("reasoning", "reasoning_content", "reasoning_details"),
                     normalize_reasoning_fragment=normalize_openai_reasoning_fragments,
                 )
-                record_similarity_stream_event(saw_output=saw_output)
+                try:
+                    usage = (
+                        _OpenAiCompatibleUsagePayload.model_validate(event.usage)
+                        if event.usage is not None
+                        else None
+                    )
+                except ValidationError:
+                    self._llm_logger.warning("openai_compatible.stream.invalid_usage")
+                    usage = None
+                try:
+                    stream_identity = _OpenAiCompatibleStreamIdentity.model_validate(payload)
+                except ValidationError:
+                    self._llm_logger.warning("openai_compatible.stream.invalid_identity")
+                    stream_identity = _OpenAiCompatibleStreamIdentity()
+                record_similarity_stream_event(
+                    saw_output=saw_output,
+                    usage=usage.to_usage() if usage is not None else None,
+                    response_id=event.id,
+                    upstream_provider=stream_identity.provider,
+                )
                 if saw_output:
                     if ttft_ms is None:
                         ttft_ms = round((time.perf_counter() - started_at) * 1000, 2)
@@ -218,7 +237,7 @@ class _OpenAiCompatibleChatRequest(BaseModel):
     model: str
     messages: list[dict[str, Any]]
     stream: bool = True
-    stream_options: dict[str, bool] = Field(default_factory=lambda: {"include_usage": True})
+    stream_options: dict[str, bool] | None = Field(default_factory=lambda: {"include_usage": True})
     temperature: float | None = None
     max_tokens: int | None = None
     tools: list[dict[str, Any]] | None = None
@@ -261,7 +280,13 @@ class _OpenAiCompatibleChatRequest(BaseModel):
         payload = _apply_openai_compatible_thinking(payload, request, provider_name=provider_name)
         if request.extra:
             payload = payload.model_copy(update=dict(request.extra))
-        return payload.model_copy(update={"stream": True})
+        stream_options = {} if payload.stream_options is None else payload.stream_options
+        return payload.model_copy(
+            update={
+                "stream": True,
+                "stream_options": {**stream_options, "include_usage": True, "continuous_usage_stats": True},
+            }
+        )
 
 
 def _apply_openai_compatible_thinking(
@@ -292,6 +317,12 @@ def _with_chat_template_kwargs(
     merged = dict(payload.chat_template_kwargs or {})
     merged.update(updates)
     return payload.model_copy(update={"chat_template_kwargs": merged})
+
+
+class _OpenAiCompatibleStreamIdentity(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    provider: str | None = None
 
 
 class _OpenAiCompatibleUsageDetails(BaseModel):

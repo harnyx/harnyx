@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from harnyx_commons.llm.cost_settlement import SettledLlmCost, with_settled_llm_cost
 from harnyx_commons.llm.provider import BaseLlmProvider
@@ -169,7 +169,17 @@ class ChutesLlmProvider(BaseLlmProvider):
                     ttft_ms = round((time.perf_counter() - started_at) * 1000, 2)
                 reasoning_state.merge_event(event)
                 state.merge_event(event, reasoning_keys=())
-                record_similarity_stream_event(saw_output=True)
+                try:
+                    usage = reasoning_state.normalized_usage_payload(event.usage)
+                except ValidationError:
+                    # Optional monitoring cannot turn an intermediate usage error into a failed generation.
+                    logger.warning("chutes.stream.invalid_usage")
+                    usage = None
+                record_similarity_stream_event(
+                    saw_output=True,
+                    usage=usage.to_usage() if usage is not None else None,
+                    response_id=event.id,
+                )
         return _ChutesChatResponse.from_stream_state(state, reasoning_state=reasoning_state), ttft_ms
 
     def _log_stream_ttft(self, *, model: str, response_id: str, ttft_ms: float | None) -> None:
