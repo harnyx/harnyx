@@ -33,7 +33,9 @@ from harnyx_commons.llm.schema import (
     LlmThinkingConfig,
     LlmUsage,
 )
+from harnyx_commons.llm.timeout import record_output_progress, streaming_transport_timeout
 from harnyx_commons.llm.tool_models import MINER_SELECTED_LLM_PROVIDER_MODELS
+from harnyx_miner_sdk.llm import Timeout
 
 AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
 AI_GATEWAY_SUPPORTED_MODELS = MINER_SELECTED_LLM_PROVIDER_MODELS[AI_GATEWAY_PROVIDER]
@@ -63,7 +65,7 @@ class AiGatewayLlmProvider(BaseLlmProvider):
             request,
             call_coro=lambda current_request: self._request_chat(
                 _AiGatewayChatRequest.from_request(current_request),
-                timeout_seconds=current_request.timeout_seconds,
+                timeout=current_request.timeout,
             ),
             verifier=self._verify_response,
             classify_exception=self._classify_exception,
@@ -88,13 +90,13 @@ class AiGatewayLlmProvider(BaseLlmProvider):
         self,
         payload: _AiGatewayChatRequest,
         *,
-        timeout_seconds: float | None,
+        timeout: float | Timeout | None,
     ) -> LlmResponse:
         request_kwargs: dict[str, Any] = {
             "json": payload.model_dump(mode="json", by_alias=True, exclude_none=True),
         }
-        if timeout_seconds is not None:
-            request_kwargs["timeout"] = timeout_seconds
+        if timeout is not None:
+            request_kwargs["timeout"] = streaming_transport_timeout(timeout)
         body, ttft_ms = await self._stream_chat_completions(**request_kwargs)
         response = body.to_llm_response()
         metadata = dict(response.metadata or {})
@@ -140,6 +142,7 @@ class AiGatewayLlmProvider(BaseLlmProvider):
                     reasoning_keys=("reasoning", "reasoning_content", "reasoning_details"),
                     normalize_reasoning_fragment=normalize_openai_reasoning_fragments,
                 ):
+                    record_output_progress()
                     if ttft_ms is None:
                         ttft_ms = round((time.perf_counter() - started_at) * 1000, 2)
         return _AiGatewayChatResponse.from_stream_state(state, provider_metadata=provider_metadata), ttft_ms

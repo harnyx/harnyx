@@ -211,6 +211,8 @@ class TextDelta(BaseModel):
     text: str
 
     def apply_to(self, accumulator: BedrockStreamAccumulator, *, content_block_index: int) -> bool:
+        if not self.text:
+            return False
         accumulator.append_text(content_block_index, self.text)
         return True
 
@@ -221,7 +223,8 @@ class ReasoningDelta(BaseModel):
     reasoning_content: _BedrockReasoningContentPayload
 
     def apply_to(self, accumulator: BedrockStreamAccumulator, *, content_block_index: int) -> bool:
-        return accumulator.append_reasoning(self.reasoning_content.text)
+        produced_text = accumulator.append_reasoning(self.reasoning_content.text)
+        return produced_text or bool(self.reasoning_content.redacted_content)
 
 
 class CitationDelta(BaseModel):

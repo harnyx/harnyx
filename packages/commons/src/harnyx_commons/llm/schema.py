@@ -30,6 +30,7 @@ from harnyx_miner_sdk.llm import (
     LlmUsage,
     PostprocessRecovery,
     PostprocessResult,
+    Timeout,
     ToolLlmRequest,
 )
 
@@ -49,7 +50,7 @@ class AbstractLlmRequest(ToolLlmRequest, ABC):
     extra: Mapping[str, Any] | None = None
     reasoning_effort: str | None = None
     include: Sequence[str] | None = None
-    timeout_seconds: float | None = None
+    timeout: float | Timeout | None = None
     retry_policy: RetryPolicy | None = None
     allow_postprocess_recovery: bool = True
     include_payloads_in_observability: bool = True

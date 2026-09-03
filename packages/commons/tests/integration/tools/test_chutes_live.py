@@ -67,7 +67,7 @@ def _completion_request(*, model: str) -> LlmRequest:
         ),
         temperature=0.0,
         max_output_tokens=32,
-        timeout_seconds=180.0,
+        timeout=180.0,
     )
 
 
@@ -79,18 +79,12 @@ def _scoring_fallback_request(*, model: str) -> LlmRequest:
             LlmMessage(
                 role="system",
                 content=(
-                    LlmMessageContentPart.input_text(
-                        "Return JSON only with exactly one key, preferred_position."
-                    ),
+                    LlmMessageContentPart.input_text("Return JSON only with exactly one key, preferred_position."),
                 ),
             ),
             LlmMessage(
                 role="user",
-                content=(
-                    LlmMessageContentPart.input_text(
-                        'Set preferred_position to "first".'
-                    ),
-                ),
+                content=(LlmMessageContentPart.input_text('Set preferred_position to "first".'),),
             ),
         ),
         output_mode="structured",
@@ -99,7 +93,7 @@ def _scoring_fallback_request(*, model: str) -> LlmRequest:
         temperature=0.0,
         max_output_tokens=128,
         reasoning_effort="high",
-        timeout_seconds=180.0,
+        timeout=180.0,
         use_case="miner_task_pairwise_judge",
     )
 
@@ -116,7 +110,7 @@ def _thinking_request(*, model: str, enabled: bool) -> LlmRequest:
         ),
         temperature=0.0,
         max_output_tokens=96,
-        timeout_seconds=180.0,
+        timeout=180.0,
         thinking=LlmThinkingConfig(enabled=enabled),
     )
 
@@ -189,7 +183,7 @@ async def test_chutes_deepseek_v4_flash_reasoning_effort_live() -> None:
         ),
         temperature=0.0,
         max_output_tokens=96,
-        timeout_seconds=180.0,
+        timeout=180.0,
         reasoning_effort="high",
     )
 
@@ -248,7 +242,7 @@ async def test_chutes_two_turn_function_tool_loop_live(model: str) -> None:
         max_output_tokens=128,
         tools=(tool,),
         tool_choice={"type": "function", "function": {"name": "lookup_weather"}},
-        timeout_seconds=180.0,
+        timeout=180.0,
     )
 
     try:
@@ -281,7 +275,7 @@ async def test_chutes_two_turn_function_tool_loop_live(model: str) -> None:
                 max_output_tokens=128,
                 tools=(tool,),
                 tool_choice="none",
-                timeout_seconds=180.0,
+                timeout=180.0,
             )
         )
     finally:

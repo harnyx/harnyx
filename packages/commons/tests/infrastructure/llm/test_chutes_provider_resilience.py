@@ -526,12 +526,12 @@ async def test_chutes_provider_enforces_request_timeout_as_total_stream_deadline
     )
     request = replace(
         _basic_chutes_request(),
-        timeout_seconds=0.01,
+        timeout=0.01,
         retry_policy=RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0.0),
     )
 
     try:
-        with pytest.raises(LlmRetryExhaustedError, match="TimeoutError"):
+        with pytest.raises(LlmRetryExhaustedError, match="total_timeout"):
             await asyncio.wait_for(provider.invoke(request), timeout=0.5)
     finally:
         await provider.aclose()

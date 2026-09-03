@@ -499,7 +499,7 @@ class _ChutesReasoningStreamState(BaseModel):
             self.choices[index] = state
         return state
 
-    def merge_event(self, event: _OpenAiStreamEvent) -> None:
+    def merge_event(self, event: _OpenAiStreamEvent) -> bool:
         reasoning_delta_observed = False
         for fallback_index, choice_payload in enumerate(event.choices):
             index = choice_payload.index if choice_payload.index is not None else fallback_index
@@ -519,6 +519,7 @@ class _ChutesReasoningStreamState(BaseModel):
                 self.choice(index).merge(reasoning_fragment)
                 reasoning_delta_observed = True
         self.usage_progress.observe(event.usage, reasoning_delta_observed=reasoning_delta_observed)
+        return reasoning_delta_observed
 
     def normalized_usage_payload(self, raw_usage: dict[str, Any] | None) -> _ChutesUsagePayload | None:
         if raw_usage is None:

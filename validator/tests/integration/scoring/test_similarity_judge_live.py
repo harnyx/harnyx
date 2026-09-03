@@ -95,6 +95,8 @@ class RecordingProvider(LlmProviderPort):
         (_DEEPSEEK_MODEL, _DEEPSEEK_OPENROUTER_ROUTE_TARGET),
         (_KIMI_MODEL, _KIMI_ROUTE_TARGET),
         (_GLM_MODEL, _GLM_ROUTE_TARGET),
+        ("zai-org/GLM-5.2-TEE", "chutes"),
+        ("moonshotai/Kimi-K3-TEE", "chutes"),
     ),
 )
 async def test_similarity_judge_live_supports_production_provider_contract(
@@ -114,11 +116,7 @@ async def test_similarity_judge_live_supports_production_provider_contract(
             "llm": base_settings.llm.model_copy(
                 update={
                     "openai_compatible_endpoints_json": json.dumps([_gemma_cloud_run_endpoint_config()]),
-                    "llm_model_provider_overrides_json": json.dumps(
-                        {
-                            "duplication_detection": route_overrides
-                        }
-                    ),
+                    "llm_model_provider_overrides_json": json.dumps({"duplication_detection": route_overrides}),
                     "similarity_llm_model_override": model,
                 }
             )
@@ -150,11 +148,9 @@ async def test_similarity_judge_live_supports_production_provider_contract(
             reasoning_effort=bootstrap._SCORING_LLM_REASONING_EFFORT,
             temperature=settings.llm.similarity_llm_temperature,
             max_output_tokens=settings.llm.similarity_llm_max_output_tokens,
-            timeout_seconds=float(settings.llm.similarity_llm_timeout_seconds),
+            timeout=settings.llm.similarity_llm_timeout,
             retry_policy=settings.llm.similarity_llm_retry_policy,
-            request_extra_by_model=bootstrap._similarity_request_extra_by_model(
-                (similarity_route,)
-            ),
+            request_extra_by_model=bootstrap._similarity_request_extra_by_model((similarity_route,)),
         ),
     )
     request = SimilarityJudgeRequest(
@@ -197,13 +193,11 @@ async def test_similarity_judge_live_supports_production_provider_contract(
     assert llm_request.model == similarity_route.model
     assert llm_request.reasoning_effort == "high"
     assert llm_request.max_output_tokens == settings.llm.similarity_llm_max_output_tokens
-    assert llm_request.timeout_seconds == settings.llm.similarity_llm_timeout_seconds
+    assert llm_request.timeout == settings.llm.similarity_llm_timeout
     assert llm_request.retry_policy == settings.llm.similarity_llm_retry_policy
     assert llm_request.thinking is None
     assert llm_request.use_case == "miner_task_similarity_judge"
-    expected_extra_by_model = bootstrap._similarity_request_extra_by_model(
-        (similarity_route,)
-    )
+    expected_extra_by_model = bootstrap._similarity_request_extra_by_model((similarity_route,))
     assert llm_request.extra == expected_extra_by_model.get(model)
     if model == _DEEPSEEK_MODEL:
         assert response.choices[0].message.reasoning

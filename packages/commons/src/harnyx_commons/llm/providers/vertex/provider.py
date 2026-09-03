@@ -6,12 +6,21 @@ import asyncio
 import logging
 import math
 import time
-from collections.abc import Callable, Mapping
-from typing import Any
+from collections.abc import AsyncGenerator, Callable, Mapping
+from contextlib import aclosing
+from typing import Any, cast
 
 import google.auth
 import httpx
 from anthropic import AsyncAnthropicVertex
+from anthropic.types import (
+    InputJSONDelta,
+    RawContentBlockDeltaEvent,
+    RawContentBlockStartEvent,
+    RedactedThinkingBlock,
+    TextDelta,
+    ThinkingDelta,
+)
 from google import genai
 from google.auth.credentials import Credentials as GoogleCredentials
 from google.auth.transport.requests import Request as GoogleAuthRequest
@@ -32,6 +41,7 @@ from harnyx_commons.llm.schema import (
     LlmResponse,
     LlmUsage,
 )
+from harnyx_commons.llm.timeout import record_output_progress, resolve_timeout, streaming_transport_timeout
 
 from .anthropic import (
     CLAUDE_WEB_SEARCH_BETA,
@@ -242,10 +252,14 @@ class VertexLlmProvider(BaseLlmProvider):
             contents=contents,
             config=generation_config,
         )
-        async for chunk in stream:
-            latest_response = chunk
-            if _merge_gemini_chunk(accumulated, chunk) and ttft_ms is None:
-                ttft_ms = round((time.perf_counter() - started_at) * 1000, 2)
+        # The installed GenAI SDK returns an async generator, despite its AsyncIterator annotation.
+        async with aclosing(cast(AsyncGenerator[types.GenerateContentResponse, None], stream)):
+            async for chunk in stream:
+                latest_response = chunk
+                if _merge_gemini_chunk(accumulated, chunk):
+                    record_output_progress()
+                    if ttft_ms is None:
+                        ttft_ms = round((time.perf_counter() - started_at) * 1000, 2)
         if latest_response is None:
             raise _VertexProviderProtocolError("vertex streaming generation returned no response chunks")
 
@@ -293,8 +307,8 @@ class VertexLlmProvider(BaseLlmProvider):
             },
             "json": payload.model_dump(mode="json", exclude_none=True),
         }
-        if request.timeout_seconds is not None:
-            request_kwargs["timeout"] = request.timeout_seconds
+        if request.timeout is not None:
+            request_kwargs["timeout"] = streaming_transport_timeout(request.timeout)
 
         started_at = time.perf_counter()
         state = OpenAiStreamState()
@@ -316,6 +330,7 @@ class VertexLlmProvider(BaseLlmProvider):
                     normalize_content_fragment=_vertex_stream_text_fragments,
                     normalize_reasoning_fragment=_vertex_stream_text_fragments,
                 ):
+                    record_output_progress()
                     if ttft_ms is None:
                         ttft_ms = round((time.perf_counter() - started_at) * 1000, 2)
         response_body = _VertexMaasChatResponse.from_stream_state(state, model=request.model)
@@ -407,13 +422,28 @@ class VertexLlmProvider(BaseLlmProvider):
 
         started_at = time.perf_counter()
         ttft_ms: float | None = None
+        timeout = resolve_timeout(request.timeout)
         async with self._anthropic_client.messages.stream(
-            timeout=request.timeout_seconds if request.timeout_seconds is not None else self._timeout,
+            timeout=timeout.total if timeout is not None else self._timeout,
             **kwargs,
         ) as stream:
-            async for text in stream.text_stream:
-                if text and ttft_ms is None:
-                    ttft_ms = round((time.perf_counter() - started_at) * 1000, 2)
+            async for event in stream:
+                produced_output = False
+                if isinstance(event, RawContentBlockDeltaEvent):
+                    delta = event.delta
+                    produced_output = bool(
+                        (isinstance(delta, TextDelta) and delta.text)
+                        or (isinstance(delta, ThinkingDelta) and delta.thinking)
+                        or (isinstance(delta, InputJSONDelta) and delta.partial_json)
+                    )
+                elif isinstance(event, RawContentBlockStartEvent) and isinstance(
+                    event.content_block, RedactedThinkingBlock
+                ):
+                    produced_output = bool(event.content_block.data)
+                if produced_output:
+                    record_output_progress()
+                    if ttft_ms is None:
+                        ttft_ms = round((time.perf_counter() - started_at) * 1000, 2)
             response = await stream.get_final_message()
         llm_response = build_anthropic_response(response)
 
@@ -522,7 +552,8 @@ def _vertex_maas_location_for(*, model: str) -> str:
 
 def _request_http_options(request: AbstractLlmRequest) -> types.HttpOptions | None:
     headers = _request_http_headers(request)
-    timeout = request.timeout_seconds
+    policy = resolve_timeout(request.timeout)
+    timeout = policy.total if policy is not None else None
     if headers is None and timeout is None:
         return None
     http_timeout = math.ceil(timeout * 1000) if timeout is not None and timeout > 0 else None
@@ -550,9 +581,7 @@ def _request_http_headers(request: AbstractLlmRequest) -> dict[str, str] | None:
 
 def _vertex_maas_chat_completions_url(*, project: str, location: str) -> str:
     host = "aiplatform.googleapis.com" if location == "global" else f"{location}-aiplatform.googleapis.com"
-    return (
-        f"https://{host}/v1/projects/{project}/locations/{location}/endpoints/openapi/chat/completions"
-    )
+    return f"https://{host}/v1/projects/{project}/locations/{location}/endpoints/openapi/chat/completions"
 
 
 def _anthropic_messages_from_request(

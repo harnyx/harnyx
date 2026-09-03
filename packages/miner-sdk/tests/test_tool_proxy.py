@@ -54,6 +54,24 @@ class _ResponseInvoker:
         }
 
 
+async def test_llm_chat_forwards_detailed_timeout_without_changing_scalar_payload() -> None:
+    from harnyx_miner_sdk.api import Timeout
+
+    captured: list[object] = []
+
+    class Invoker(_ResponseInvoker):
+        async def invoke(self, name: str, *, args=(), kwargs=None):
+            captured.append(kwargs["timeout"])
+            return await super().invoke(name, args=args, kwargs=kwargs)
+
+    with bind_tool_invoker(Invoker()):
+        for timeout in (120, Timeout(120, prefill=60, inactivity=30)):
+            await llm_chat(
+                provider="chutes", model="demo-model", messages=[{"role": "user", "content": "hi"}], timeout=timeout
+            )
+    assert captured == [120, {"total": 120, "prefill": 60, "inactivity": 30}]
+
+
 async def test_all_tool_helpers_return_monetary_budget_without_time_budget() -> None:
     invoker = _ResponseInvoker()
     with bind_tool_invoker(invoker):

@@ -14,14 +14,16 @@ from harnyx_commons.llm.providers.chutes import ChutesLlmProvider
 from harnyx_commons.llm.providers.openai_compatible import OpenAiCompatibleLlmProvider
 from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest
+from harnyx_miner_sdk.llm import Timeout
 
 pytestmark = pytest.mark.anyio("asyncio")
 
 
 class _InterruptedStream(httpx.AsyncByteStream):
-    def __init__(self, *, cancel: bool, include_usage: bool) -> None:
-        self.cancel = cancel
+    def __init__(self, *, wait_for_interrupt: bool, include_usage: bool, include_output: bool) -> None:
+        self.wait_for_interrupt = wait_for_interrupt
         self.include_usage = include_usage
+        self.include_output = include_output
         self.consumed = asyncio.Event()
         self.closed = False
 
@@ -30,8 +32,9 @@ class _InterruptedStream(httpx.AsyncByteStream):
             event = {
                 "id": "gen-stream",
                 "provider": "Makora",
-                "choices": [{"index": 0, "delta": {"reasoning_content": "private reasoning"}}],
             }
+            if self.include_output:
+                event["choices"] = [{"index": 0, "delta": {"reasoning_content": "private reasoning"}}]
             if self.include_usage:
                 event["usage"] = {
                     "prompt_tokens": 100,
@@ -43,9 +46,10 @@ class _InterruptedStream(httpx.AsyncByteStream):
         if self.include_usage:
             # A malformed update must not erase the last usable counters or replace the transport failure.
             yield b'data: {"usage": {"completion_tokens": "invalid"}}\n\n'
-        yield b'data: {"choices": [{"delta": {"content": "private output"}}]}\n\n'
+        if self.include_output:
+            yield b'data: {"choices": [{"delta": {"content": "private output"}}]}\n\n'
         self.consumed.set()
-        if self.cancel:
+        if self.wait_for_interrupt:
             await asyncio.Event().wait()
         raise httpx.ReadTimeout("stream stalled")
 
@@ -54,13 +58,22 @@ class _InterruptedStream(httpx.AsyncByteStream):
 
 
 @pytest.mark.parametrize("provider_name", ("chutes", "openai-compatible"))
-@pytest.mark.parametrize("cancel", (False, True), ids=("timeout", "cancelled"))
+@pytest.mark.parametrize("failure", ("transport-timeout", "cancelled", "prefill", "inactivity", "total"))
 @pytest.mark.parametrize("include_usage", (False, True), ids=("missing-usage", "partial-usage"))
 async def test_interrupted_similarity_stream_retains_available_usage_and_closes(
-    provider_name: str, cancel: bool, include_usage: bool, caplog: pytest.LogCaptureFixture
+    provider_name: str, failure: str, include_usage: bool, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Future failure: interrupted calls lose counters, invent zero usage, or return a partial verdict."""
-    stream = _InterruptedStream(cancel=cancel, include_usage=include_usage)
+    stream = _InterruptedStream(
+        wait_for_interrupt=failure != "transport-timeout",
+        include_usage=include_usage,
+        include_output=failure != "prefill",
+    )
+    timeout = {
+        "prefill": Timeout(1, prefill=0.1),
+        "inactivity": Timeout(1, prefill=0.5, inactivity=0.1),
+        "total": Timeout(0.1, prefill=0.5, inactivity=0.5),
+    }.get(failure)
     client = httpx.AsyncClient(
         base_url="https://example.com",
         transport=httpx.MockTransport(
@@ -82,6 +95,7 @@ async def test_interrupted_similarity_stream_retains_available_usage_and_closes(
         messages=(LlmMessage(role="user", content=(LlmMessageContentPart.input_text("private prompt"),)),),
         temperature=0.0,
         max_output_tokens=None,
+        timeout=timeout,
         use_case="miner_task_similarity_judge",
         retry_policy=RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0.0),
         include_payloads_in_observability=False,
@@ -89,7 +103,7 @@ async def test_interrupted_similarity_stream_retains_available_usage_and_closes(
     caplog.set_level(logging.INFO, logger="harnyx_commons.llm.calls")
     invocation = asyncio.create_task(provider.invoke(request))
     try:
-        if cancel:
+        if failure == "cancelled":
             await asyncio.wait_for(stream.consumed.wait(), timeout=5)
             invocation.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -107,7 +121,15 @@ async def test_interrupted_similarity_stream_retains_available_usage_and_closes(
     finished = [r.data for r in caplog.records if r.message == "similarity_judge.llm_attempt.finished"]
     assert len(finished) == 1
     result = finished[0]
-    assert result["outcome"] == ("cancelled" if cancel else "failed")
+    assert result["outcome"] == ("cancelled" if failure == "cancelled" else "failed")
+    if timeout is not None:
+        assert result["timeout_phase"] == failure
+        if failure == "prefill":
+            assert result["first_output_ms"] is None
+            assert result["last_output_ms"] is None
+        else:
+            assert result["first_output_ms"] is not None
+            assert result["last_output_ms"] is not None
     assert result["response_id"] == "gen-stream"
     assert result["upstream_provider"] == ("Makora" if provider_name == "openai-compatible" else None)
     assert stream.closed

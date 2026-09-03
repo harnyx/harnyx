@@ -111,7 +111,7 @@ def test_build_generation_input_payload_is_concise() -> None:
         "output_mode": "text",
         "max_output_tokens": 64,
         "temperature": None,
-        "timeout_seconds": None,
+        "timeout": None,
         "tool_choice": None,
         "parallel_tool_calls": None,
         "reasoning_effort": None,

@@ -705,7 +705,7 @@ def _llm_request_payload(request: AbstractLlmRequest | None) -> dict[str, object
         "temperature": request.temperature,
         "max_output_tokens": request.max_output_tokens,
         "reasoning_effort": request.reasoning_effort,
-        "timeout_seconds": request.timeout_seconds,
+        "timeout": _json_safe(request.timeout),
         "retry_policy": _json_safe(request.retry_policy),
         "use_case": request.use_case,
     }

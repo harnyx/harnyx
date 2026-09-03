@@ -13,6 +13,7 @@ from harnyx_miner_sdk.llm import (
     LlmMessage,
     LlmResponse,
     LlmThinkingConfig,
+    Timeout,
 )
 from harnyx_miner_sdk.tools.embedding_models import (
     EmbeddingInputType,
@@ -292,7 +293,7 @@ async def llm_chat(
     parallel_tool_calls: bool | None = None,
     thinking: Mapping[str, Any] | LlmChatThinking | LlmThinkingConfig | None = None,
     provider_extra: Mapping[str, Any] | OpenRouterExtra | None = None,
-    timeout: float | None = None,
+    timeout: float | Timeout | None = None,
 ) -> LlmChatResult: ...
 
 
@@ -310,7 +311,7 @@ async def llm_chat(
     parallel_tool_calls: bool | None = None,
     thinking: Mapping[str, Any] | LlmChatThinking | LlmThinkingConfig | None = None,
     provider_extra: Mapping[str, Any] | AiGatewayExtra | None = None,
-    timeout: float | None = None,
+    timeout: float | Timeout | None = None,
 ) -> LlmChatResult: ...
 
 
@@ -328,7 +329,7 @@ async def llm_chat(
     parallel_tool_calls: bool | None = None,
     thinking: Mapping[str, Any] | LlmChatThinking | LlmThinkingConfig | None = None,
     provider_extra: None = None,
-    timeout: float | None = None,
+    timeout: float | Timeout | None = None,
 ) -> LlmChatResult: ...
 
 
@@ -345,7 +346,7 @@ async def llm_chat(
     parallel_tool_calls: bool | None = None,
     thinking: Mapping[str, Any] | LlmChatThinking | LlmThinkingConfig | None = None,
     provider_extra: Mapping[str, Any] | ProviderExtra | None = None,
-    timeout: float | None = None,
+    timeout: float | Timeout | None = None,
     **params: Any,
 ) -> LlmChatResult:
     """Invoke the validator-hosted LLM chat tool and return its response payload."""
@@ -371,7 +372,7 @@ async def llm_chat(
         else:
             payload_raw["provider_extra"] = provider_extra
     if timeout is not None:
-        payload_raw["timeout"] = timeout
+        payload_raw["timeout"] = asdict(timeout) if isinstance(timeout, Timeout) else timeout
     if params:
         payload_raw.update(params)
     request = LlmChatRequest.model_validate(payload_raw)
@@ -427,6 +428,7 @@ def _llm_chat_message_input(message: Mapping[str, Any] | LlmChatMessage | LlmMes
 
 
 __all__ = [
+    "Timeout",
     "embed_text",
     "fetch_page",
     "llm_chat",

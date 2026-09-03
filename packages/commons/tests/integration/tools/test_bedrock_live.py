@@ -6,6 +6,7 @@ from harnyx_commons.config.bedrock import BedrockSettings
 from harnyx_commons.llm.adapter import LlmProviderAdapter
 from harnyx_commons.llm.providers.bedrock import BedrockLlmProvider
 from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest
+from harnyx_miner_sdk.llm import Timeout
 
 pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
 
@@ -62,6 +63,7 @@ async def test_bedrock_openai_tee_reasoning_effort_live() -> None:
         temperature=0.0,
         max_output_tokens=256,
         reasoning_effort="high",
+        timeout=Timeout(_LIVE_READ_TIMEOUT_SECONDS, prefill=300, inactivity=60),
     )
 
     try:

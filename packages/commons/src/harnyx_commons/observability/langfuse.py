@@ -540,7 +540,7 @@ def build_generation_input_payload(request: AbstractLlmRequest) -> dict[str, obj
             "output_mode": request.output_mode,
             "max_output_tokens": request.max_output_tokens,
             "temperature": request.temperature,
-            "timeout_seconds": request.timeout_seconds,
+            "timeout": _sanitize_for_json(request.timeout),
             "tool_choice": _sanitize_for_json(request.tool_choice),
             "parallel_tool_calls": request.parallel_tool_calls,
             "reasoning_effort": request.reasoning_effort,
@@ -740,7 +740,7 @@ def _model_parameters(request: AbstractLlmRequest) -> dict[str, str | None | int
         "grounded": request.grounded,
         "output_mode": request.output_mode,
         "reasoning_effort": request.reasoning_effort,
-        "timeout_seconds": None if request.timeout_seconds is None else str(request.timeout_seconds),
+        "timeout": None if request.timeout is None else str(request.timeout),
     }
     if request.include is not None:
         params["include"] = [str(item) for item in request.include]

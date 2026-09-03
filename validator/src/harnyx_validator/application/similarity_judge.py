@@ -33,6 +33,7 @@ from harnyx_commons.llm.schema import (
     LlmMessageContentPart,
     LlmRequest,
     LlmResponse,
+    Timeout,
 )
 from harnyx_commons.llm.similarity_observability import similarity_judge_observability_metadata
 from harnyx_commons.miner_task_similarity import SimilarityJudgeRequest, SimilarityJudgeResult
@@ -295,18 +296,13 @@ class _SimilarityClassificationModel(BaseModel):
         if self.classification == "duplicate" and statuses != {"preserved"}:
             raise ValueError("duplicate requires every architectural dimension to be preserved")
         if self.classification == "near_duplicate" and (
-            "localized_change" not in statuses
-            or not statuses <= {"preserved", "localized_change"}
+            "localized_change" not in statuses or not statuses <= {"preserved", "localized_change"}
         ):
-            raise ValueError(
-                "near_duplicate requires a localized change and permits no higher dimension status"
-            )
+            raise ValueError("near_duplicate requires a localized change and permits no higher dimension status")
         if self.classification == "notable_change" and (
             statuses <= {"preserved", "localized_change"} or statuses == {"replaced"}
         ):
-            raise ValueError(
-                "notable_change requires a substantial same-root change or a partial replacement"
-            )
+            raise ValueError("notable_change requires a substantial same-root change or a partial replacement")
         if self.classification == "novel" and statuses != {"replaced"}:
             raise ValueError("novel requires all three architectural dimensions to be replaced")
         return self
@@ -320,7 +316,7 @@ class SimilarityJudgeConfig:
     temperature: float | None = None
     max_output_tokens: int | None = 20480
     reasoning_effort: str | None = "high"
-    timeout_seconds: float = 300.0
+    timeout: float | Timeout = Timeout(900, prefill=300, inactivity=60)
     retry_policy: RetryPolicy | None = None
     request_extra_by_model: Mapping[str, JsonObject] = field(default_factory=dict)
 
@@ -433,9 +429,7 @@ class SimilarityJudge:
             messages=(
                 LlmMessage(
                     role="system",
-                    content=(
-                        LlmMessageContentPart.input_text(_system_prompt_at(current_datetime)),
-                    ),
+                    content=(LlmMessageContentPart.input_text(_system_prompt_at(current_datetime)),),
                 ),
                 LlmMessage(
                     role="user",
@@ -457,7 +451,7 @@ class SimilarityJudge:
             temperature=self._config.temperature,
             max_output_tokens=self._config.max_output_tokens,
             reasoning_effort=self._config.reasoning_effort,
-            timeout_seconds=self._config.timeout_seconds,
+            timeout=self._config.timeout,
             retry_policy=self._config.retry_policy,
             use_case="miner_task_similarity_judge",
             extra=self._config.request_extra_by_model.get(model),
@@ -528,10 +522,7 @@ def _similarity_reasoning_text(classification_model: _SimilarityClassificationMo
         classification_model.reasoning,
         f"Ordinary successful path: {classification_model.ordinary_case_path}",
         "Architecture assessment:",
-        (
-            f"- Primary controller [{assessment.primary_controller.status}]: "
-            f"{assessment.primary_controller.evidence}"
-        ),
+        (f"- Primary controller [{assessment.primary_controller.status}]: {assessment.primary_controller.evidence}"),
         (
             f"- Evidence state and flow [{assessment.evidence_state_and_flow.status}]: "
             f"{assessment.evidence_state_and_flow.evidence}"

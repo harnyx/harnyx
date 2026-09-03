@@ -18,6 +18,7 @@ from harnyx_commons.llm.schema import (
     LlmRequest,
     LlmResponse,
     LlmUsage,
+    Timeout,
 )
 from harnyx_commons.platform_tool_proxy import platform_tool_proxy_provider_timeout_seconds
 from harnyx_commons.tools.executor import ToolInvocationContext, ToolInvocationOutput
@@ -65,6 +66,27 @@ def _platform_context() -> ToolInvocationContext:
         uid=1,
         provider_credential_source=ProviderCredentialSource.PLATFORM,
     )
+
+
+async def test_detailed_llm_timeout_preserves_phases_and_outer_deadline_headroom() -> None:
+    provider = _CapturingLlmProvider()
+    invoker = RuntimeToolInvoker(InMemoryReceiptLog(), llm_provider=provider, llm_provider_name="chutes")
+    await invoker.invoke(
+        "llm_chat",
+        args=(),
+        kwargs={
+            "provider": "chutes",
+            "model": "google/gemma-4-31B-turbo-TEE",
+            "messages": [{"role": "user", "content": "hello"}],
+            "timeout": {"total": 180, "prefill": 60, "inactivity": 30},
+        },
+    )
+    assert provider.requests[0].timeout == Timeout(
+        platform_tool_proxy_provider_timeout_seconds(180),
+        prefill=60,
+        inactivity=30,
+    )
+    assert provider.requests[0].retry_policy.attempts == 1
 
 
 def _miner_context() -> ToolInvocationContext:
@@ -118,8 +140,8 @@ async def test_platform_credential_session_resolves_requested_provider_without_m
 
     assert len(platform_provider.requests) == 1
     assert platform_provider.requests[0].include_payloads_in_observability is False
-    assert platform_provider.requests[0].timeout_seconds == platform_tool_proxy_provider_timeout_seconds(
-        DEFAULT_TOOL_LLM_TIMEOUT_SECONDS
+    assert platform_provider.requests[0].timeout == Timeout(
+        platform_tool_proxy_provider_timeout_seconds(DEFAULT_TOOL_LLM_TIMEOUT_SECONDS)
     )
     assert platform_resolver_calls == [provider]
     assert miner_resolver_calls == []

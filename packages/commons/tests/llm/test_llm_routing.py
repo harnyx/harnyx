@@ -4,7 +4,9 @@ from dataclasses import dataclass
 
 import pytest
 
+from harnyx_commons.config.llm import LlmSettings
 from harnyx_commons.llm.provider import LlmProviderError, LlmRetryExhaustedError
+from harnyx_commons.llm.provider_factory import build_routed_llm_provider
 from harnyx_commons.llm.routing import (
     ResolvedLlmRoute,
     RoutedLlmProvider,
@@ -19,6 +21,7 @@ from harnyx_commons.llm.schema import (
     LlmResponse,
     LlmUsage,
 )
+from harnyx_miner_sdk.llm import Timeout
 
 
 def test_parse_llm_model_provider_overrides_accepts_surface_scoped_json() -> None:
@@ -475,3 +478,50 @@ async def test_routed_provider_preserves_selected_route_metadata(model: str) -> 
     assert response.metadata["effective_model"] == model
     assert response.metadata["selected_provider"] == "chutes"
     assert response.metadata["selected_model"] == model
+
+
+@pytest.mark.anyio("asyncio")
+@pytest.mark.parametrize("surface", ["duplication_detection", "scoring"])
+@pytest.mark.parametrize("requested", [None, 120, Timeout(120, inactivity=10)])
+async def test_routed_timeout_defaults_are_similarity_scoped_and_overridable(
+    surface: str,
+    requested: float | Timeout | None,
+) -> None:
+    delegate = _RecordingProvider(seen_requests=[])
+
+    class Registry:
+        def resolve(self, provider: str) -> _RecordingProvider:
+            return delegate
+
+    settings = LlmSettings(
+        similarity_llm_timeout_seconds=700,
+        similarity_llm_prefill_timeout_seconds=200,
+        similarity_llm_inactivity_timeout_seconds=20,
+    )
+    provider = build_routed_llm_provider(
+        surface=surface,
+        default_provider="chutes",
+        llm_settings=settings,
+        allowed_providers={"chutes"},
+        provider_registry=Registry(),
+    )
+    request = LlmRequest(
+        provider="chutes",
+        model="sample-model",
+        messages=(),
+        temperature=None,
+        max_output_tokens=None,
+        timeout=requested,
+    )
+    await provider.invoke(request)
+    actual = delegate.seen_requests[0].timeout
+    if surface == "duplication_detection":
+        expected = (
+            Timeout(700, prefill=200, inactivity=20)
+            if requested is None
+            else (Timeout(120, prefill=200, inactivity=10 if isinstance(requested, Timeout) else 20))
+        )
+    else:
+        expected = Timeout(120) if requested == 120 else requested
+    assert actual == expected
+    assert request.timeout == requested

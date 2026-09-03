@@ -45,12 +45,20 @@ Edit `.env` and set at least:
 | `SCORING_LLM_RETRY_JITTER` | Optional miner-task scoring LLM request retry jitter ratio; defaults to `0.2` |
 | `SIMILARITY_LLM_PROVIDER` | Optional duplicate-preflight similarity provider selector; defaults to `chutes` |
 | `SIMILARITY_LLM_TEMPERATURE` | Optional duplicate-preflight similarity request temperature; defaults to provider default |
-| `SIMILARITY_LLM_TIMEOUT_SECONDS` | Optional duplicate-preflight similarity LLM request timeout; defaults to `300` |
+| `SIMILARITY_LLM_TIMEOUT_SECONDS` | Total duration per similarity model attempt; defaults to `900` seconds |
+| `SIMILARITY_LLM_PREFILL_TIMEOUT_SECONDS` | Time until the first actual text or reasoning output; defaults to `300` seconds |
+| `SIMILARITY_LLM_INACTIVITY_TIMEOUT_SECONDS` | Maximum gap between outputs after the first output; defaults to `60` seconds |
 | `SIMILARITY_LLM_MAX_OUTPUT_TOKENS` | Optional duplicate-preflight similarity max output tokens; defaults to `20480` |
 | `SIMILARITY_LLM_RETRY_ATTEMPTS` | Optional duplicate-preflight similarity LLM request retry attempts; defaults to `1` |
 | `SIMILARITY_LLM_RETRY_INITIAL_MS` | Optional duplicate-preflight similarity LLM request retry initial backoff; defaults to `0` |
 | `SIMILARITY_LLM_RETRY_MAX_MS` | Optional duplicate-preflight similarity LLM request retry maximum backoff; defaults to `0` |
 | `SIMILARITY_LLM_RETRY_JITTER` | Optional duplicate-preflight similarity LLM request retry jitter ratio; defaults to `0.0` |
+
+Similarity limits apply separately to each provider attempt. Headers,
+heartbeats, and empty metadata do not count as output. The total does not restart
+when output begins. Existing explicit environment values override these defaults.
+The Platform request budget remains independent, so a 900-second attempt can
+leave no time for a fallback to finish within that budget.
 
 The defaults in `.env.example` already target mainnet (`finney`) and netuid `67`. Validator sandbox execution defaults to `harnyx/harnyx-subnet-sandbox:finney`; set `SANDBOX_IMAGE=harnyx/harnyx-subnet-sandbox:testnet` for staging/testnet, or use another explicit value only when you intentionally want to test or pin a different sandbox image. Validator miner-task execution uses fixed runtime concurrency: 4 concurrent artifact sandboxes and 20 task-attempt slots across active artifacts. Each sandbox retains a one-CPU limit. All validator-owned sandbox processes share at most 4 allowed logical CPUs; validators exposing 4 or fewer CPU IDs use all of them.
 

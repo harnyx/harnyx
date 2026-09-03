@@ -52,7 +52,7 @@ def _request() -> LlmRequest:
         temperature=0.0,
         max_output_tokens=64,
         thinking=LlmThinkingConfig(enabled=False),
-        timeout_seconds=180.0,
+        timeout=180.0,
         extra={"providerOptions": {"gateway": {"only": ["groq"]}}},
     )
 
@@ -97,7 +97,7 @@ async def test_miner_paid_ai_gateway_inkling_live() -> None:
         temperature=None,
         max_output_tokens=None,
         thinking=LlmThinkingConfig(enabled=True, effort="low"),
-        timeout_seconds=180.0,
+        timeout=180.0,
         extra=None,
     )
 
@@ -141,7 +141,7 @@ async def test_ai_gateway_cerebras_gemma_reasoning_live() -> None:
         temperature=None,
         max_output_tokens=None,
         thinking=LlmThinkingConfig(enabled=True, effort="medium"),
-        timeout_seconds=180.0,
+        timeout=180.0,
         extra={"providerOptions": {"gateway": {"only": ["cerebras"]}}},
     )
 

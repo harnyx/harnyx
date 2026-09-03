@@ -114,6 +114,7 @@ def build_routed_llm_provider(
         allowed_providers=allowed_providers,
         allow_custom_openai_compatible=allow_custom_openai_compatible,
         resolve_provider=provider_registry.resolve,
+        timeout=llm_settings.similarity_llm_timeout if surface == "duplication_detection" else None,
     )
 
 

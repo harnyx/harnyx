@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Any, cast
 
+import httpx
 import pytest
+from anthropic import AsyncAnthropicVertex
+from anthropic.types.raw_content_block_delta_event import RawContentBlockDeltaEvent
 from anthropic.types.text_block import TextBlock
+from anthropic.types.text_delta import TextDelta
 from anthropic.types.thinking_block import ThinkingBlock
 from google.genai import errors, types
 from pydantic import BaseModel
@@ -52,8 +57,171 @@ from harnyx_commons.llm.schema import (
     LlmTool,
     LlmUsage,
 )
+from harnyx_commons.llm.timeout import LlmAttemptTimeoutError
+from harnyx_miner_sdk.llm import Timeout
 
 pytestmark = pytest.mark.anyio("asyncio")
+
+
+def _anthropic_sse(event_type: str, **payload: object) -> bytes:
+    return f"event: {event_type}\ndata: {json.dumps({'type': event_type, **payload})}\n\n".encode()
+
+
+@pytest.mark.parametrize(
+    ("output_kind", "outcome"),
+    [(kind, outcome) for kind in ("json", "redacted") for outcome in ("complete", "total")]
+    + [
+        (kind, phase)
+        for kind in ("empty-json", "empty-redacted", "signature", "ping")
+        for phase in ("prefill", "inactivity")
+    ],
+)
+async def test_claude_stream_output_controls_deadlines_through_anthropic_sdk(
+    monkeypatch: pytest.MonkeyPatch, output_kind: str, outcome: str
+) -> None:
+    _patch_google_client(monkeypatch, {})
+
+    class ClaudeStream(httpx.AsyncByteStream):
+        closed = False
+
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            yield _anthropic_sse(
+                "message_start",
+                message={
+                    "id": "msg-timeout",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "claude-haiku-4-5@20251001",
+                    "content": [],
+                    "stop_reason": None,
+                    "stop_sequence": None,
+                    "usage": {"input_tokens": 10, "output_tokens": 0},
+                },
+            )
+            index = 0
+            if outcome == "inactivity":
+                yield _anthropic_sse("content_block_start", index=index, content_block={"type": "text", "text": ""})
+                yield _anthropic_sse(
+                    "content_block_delta", index=index, delta={"type": "text_delta", "text": "started"}
+                )
+                yield _anthropic_sse("content_block_stop", index=index)
+                index += 1
+            if output_kind in ("json", "empty-json"):
+                yield _anthropic_sse(
+                    "content_block_start",
+                    index=index,
+                    content_block={
+                        "type": "server_tool_use",
+                        "id": "srvtoolu_search",
+                        "name": "web_search",
+                        "input": {},
+                    },
+                )
+                if output_kind == "json":
+                    yield _anthropic_sse(
+                        "content_block_delta",
+                        index=index,
+                        delta={"type": "input_json_delta", "partial_json": '{"query":"'},
+                    )
+            elif output_kind == "signature":
+                yield _anthropic_sse(
+                    "content_block_start",
+                    index=index,
+                    content_block={"type": "thinking", "thinking": "", "signature": ""},
+                )
+
+            for _ in range(12):
+                if output_kind in ("json", "empty-json"):
+                    yield _anthropic_sse(
+                        "content_block_delta",
+                        index=index,
+                        delta={"type": "input_json_delta", "partial_json": "weather " if output_kind == "json" else ""},
+                    )
+                elif output_kind in ("redacted", "empty-redacted"):
+                    yield _anthropic_sse(
+                        "content_block_start",
+                        index=index,
+                        content_block={
+                            "type": "redacted_thinking",
+                            "data": "opaque" if output_kind == "redacted" else "",
+                        },
+                    )
+                    yield _anthropic_sse("content_block_stop", index=index)
+                    index += 1
+                elif output_kind == "signature":
+                    yield _anthropic_sse(
+                        "content_block_delta",
+                        index=index,
+                        delta={"type": "signature_delta", "signature": "verification"},
+                    )
+                else:
+                    yield _anthropic_sse("ping")
+                await asyncio.sleep(0.02)
+
+            if outcome != "complete":
+                raise AssertionError("The configured deadline should expire before the stream finishes")
+            if output_kind == "json":
+                yield _anthropic_sse(
+                    "content_block_delta", index=index, delta={"type": "input_json_delta", "partial_json": '"}'}
+                )
+                yield _anthropic_sse("content_block_stop", index=index)
+                index += 1
+            yield _anthropic_sse("content_block_start", index=index, content_block={"type": "text", "text": ""})
+            yield _anthropic_sse("content_block_delta", index=index, delta={"type": "text_delta", "text": "done"})
+            yield _anthropic_sse("content_block_stop", index=index)
+            yield _anthropic_sse(
+                "message_delta",
+                delta={"stop_reason": "end_turn", "stop_sequence": None},
+                usage={"output_tokens": 12, "server_tool_use": {"web_search_requests": int(output_kind == "json")}},
+            )
+            yield _anthropic_sse("message_stop")
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    body = ClaudeStream()
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=body)
+
+    client = AsyncAnthropicVertex(
+        project_id="demo-project",
+        region="us-central1",
+        access_token="test-token",  # noqa: S106
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle_request)),
+        max_retries=0,
+    )
+    monkeypatch.setattr("harnyx_commons.llm.providers.vertex.provider.AsyncAnthropicVertex", lambda **kwargs: client)
+    provider = VertexLlmProvider(project="demo-project", location="us-central1")
+    request = GroundedLlmRequest(
+        provider="vertex",
+        model="claude-haiku-4-5@20251001",
+        messages=(LlmMessage(role="user", content=(LlmMessageContentPart.input_text("Search the web."),)),),
+        temperature=None,
+        max_output_tokens=None,
+        timeout=Timeout(0.2 if outcome == "total" else 1, prefill=0.1, inactivity=0.1),
+        retry_policy=RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0),
+    )
+    try:
+        if outcome == "complete":
+            response = await provider.invoke(request)
+            assert response.raw_text == "done"
+            assert response.finish_reason == "end_turn"
+            assert response.usage.completion_tokens == 12
+            blocks = response.metadata["raw_response"]["content"]
+            if output_kind == "redacted":
+                assert [block["data"] for block in blocks if block["type"] == "redacted_thinking"] == ["opaque"] * 12
+            else:
+                assert blocks[0]["input"]["query"] == "weather " * 12
+                assert response.usage.web_search_calls == 1
+        else:
+            with pytest.raises(LlmRetryExhaustedError) as exc:
+                await provider.invoke(request)
+            assert isinstance(exc.value.__cause__, LlmAttemptTimeoutError)
+            assert exc.value.__cause__.phase == outcome
+        assert body.closed
+    finally:
+        await provider.aclose()
 
 
 class FakeUsage:
@@ -503,7 +671,7 @@ async def test_vertex_provider_merges_request_http_headers_with_timeout(
         temperature=None,
         max_output_tokens=64,
         output_mode="text",
-        timeout_seconds=12.5,
+        timeout=12.5,
         extra={"http_headers": headers},
     )
 
@@ -1326,12 +1494,10 @@ async def test_vertex_claude_stream_default_reconstructs_final_response(
         async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
             return False
 
-        @property
-        def text_stream(self) -> Any:
-            async def _iter() -> Any:
-                yield "ok"
-
-            return _iter()
+        async def __aiter__(self) -> AsyncIterator[RawContentBlockDeltaEvent]:
+            yield RawContentBlockDeltaEvent(
+                type="content_block_delta", index=0, delta=TextDelta(type="text_delta", text="ok")
+            )
 
         async def get_final_message(self) -> _FakeFinalAnthropicMessage:
             return self._final_message
@@ -1419,12 +1585,10 @@ async def test_vertex_claude_thinking_forces_temperature_one(monkeypatch: pytest
         async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
             return False
 
-        @property
-        def text_stream(self) -> Any:
-            async def _iter() -> Any:
-                yield "ok"
-
-            return _iter()
+        async def __aiter__(self) -> AsyncIterator[RawContentBlockDeltaEvent]:
+            yield RawContentBlockDeltaEvent(
+                type="content_block_delta", index=0, delta=TextDelta(type="text_delta", text="ok")
+            )
 
         async def get_final_message(self) -> _FakeFinalAnthropicMessage:
             return _FakeFinalAnthropicMessage()
@@ -1683,3 +1847,59 @@ def test_vertex_verify_accepts_tool_call_only_choice() -> None:
     assert ok is True
     assert retryable is False
     assert reason is None
+
+
+@pytest.mark.parametrize("failure", ["overdue_output", "cancelled"])
+async def test_vertex_closes_gemini_stream_before_failed_attempt_returns(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    from harnyx_commons.llm import timeout as deadline_module
+    from harnyx_commons.llm.timeout import LlmAttemptTimeoutError, enforce_attempt_deadlines
+    from harnyx_miner_sdk.llm import Timeout
+
+    captured: dict[str, Any] = {}
+    _patch_google_client(monkeypatch, captured)
+    provider = VertexLlmProvider(project="test-project", location="us-central1")
+    closed = False
+    started = asyncio.Event()
+
+    async def chunks() -> AsyncIterator[FakeResponse]:
+        nonlocal closed
+        try:
+            started.set()
+            if failure == "cancelled":
+                await asyncio.Event().wait()
+            else:
+                attempt = deadline_module._current_attempt.get()
+                assert attempt is not None
+                monkeypatch.setattr(attempt, "now", lambda: attempt.started_at + 6)
+            yield FakeResponse()
+        finally:
+            closed = True
+
+    async def generate(**kwargs: Any) -> AsyncIterator[FakeResponse]:
+        return chunks()
+
+    monkeypatch.setattr(provider._genai_async_client.models, "generate_content_stream", generate)
+    request = LlmRequest(
+        provider="vertex", model="gemini-2.5-flash", messages=(), temperature=None, max_output_tokens=None
+    )
+
+    async def invoke() -> None:
+        async with enforce_attempt_deadlines(Timeout(10, prefill=5)):
+            await provider._call_vertex(request, [], None)
+
+    try:
+        if failure == "cancelled":
+            task = asyncio.create_task(invoke())
+            await started.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            with pytest.raises(LlmAttemptTimeoutError):
+                await invoke()
+        assert closed
+    finally:
+        await provider.aclose()

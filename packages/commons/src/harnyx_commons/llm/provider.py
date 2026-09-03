@@ -49,6 +49,7 @@ from harnyx_commons.llm.schema import (
     supports_tool_result_messages,
 )
 from harnyx_commons.llm.similarity_observability import observe_similarity_llm_attempt
+from harnyx_commons.llm.timeout import LlmAttemptTimeoutError, enforce_attempt_deadlines, resolve_timeout
 from harnyx_commons.observability.langfuse import (
     build_generation_metadata,
     build_generation_output_payload,
@@ -217,7 +218,7 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             "model": request.model,
             "max_output_tokens": request.max_output_tokens,
             "reasoning_effort": request.reasoning_effort,
-            "timeout_seconds": request.timeout_seconds,
+            "timeout": request.timeout,
         }
         if request.use_case is not None:
             data["use_case"] = request.use_case
@@ -466,7 +467,8 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             attempt_limit=ctx.policy.attempts,
         ) as observation:
             try:
-                response = await call_coro(request)
+                async with enforce_attempt_deadlines(resolve_timeout(request.timeout)):
+                    response = await call_coro(request)
             except asyncio.CancelledError:
                 if observation is not None:
                     observation.finish_cancelled()
@@ -474,7 +476,10 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             except Exception as exc:
                 latency_ms = (time.perf_counter() - start) * 1000
                 ctx.total_latency_ms += latency_ms
-                retryable, reason = classify_exception(exc) if classify_exception else (False, str(exc))
+                if isinstance(exc, LlmAttemptTimeoutError):
+                    retryable, reason = True, f"{exc.phase}_timeout"
+                else:
+                    retryable, reason = classify_exception(exc) if classify_exception else (False, str(exc))
                 if observation is not None:
                     observation.finish_failure(exc, retryable=retryable)
                 await self._handle_failure(
@@ -654,7 +659,7 @@ class BaseLlmProvider(ABC, LlmProviderPort):
                 attempts=len(ctx.reasons) + 1,
                 retry_reasons=tuple(ctx.reasons),
                 latency_ms_total=round(ctx.total_latency_ms, 2),
-            )
+            ) from source_exception
         if not retryable:
             if source_exception is not None:
                 if isinstance(source_exception, LlmProviderError):

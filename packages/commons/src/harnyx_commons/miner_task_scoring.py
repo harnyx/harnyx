@@ -495,7 +495,7 @@ class EvaluationScoringService:
             temperature=self._config.temperature,
             max_output_tokens=self._config.max_output_tokens,
             reasoning_effort=self._config.reasoning_effort,
-            timeout_seconds=self._config.timeout_seconds,
+            timeout=self._config.timeout_seconds,
             retry_policy=self._config.retry_policy,
             use_case=use_case,
         )

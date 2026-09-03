@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
@@ -36,6 +35,8 @@ from harnyx_commons.llm.similarity_observability import (
     record_similarity_stream_event,
     record_similarity_stream_headers_received,
 )
+from harnyx_commons.llm.timeout import record_output_progress, streaming_transport_timeout
+from harnyx_miner_sdk.llm import Timeout
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +80,7 @@ class ChutesLlmProvider(BaseLlmProvider):
             call_coro=lambda current_request: self._request_chutes(
                 self._build_request(current_request),
                 headers,
-                timeout_seconds=current_request.timeout_seconds,
+                timeout=current_request.timeout,
             ),
             verifier=self._verify_response,
             classify_exception=self._classify_exception,
@@ -97,19 +98,15 @@ class ChutesLlmProvider(BaseLlmProvider):
         payload: _ChutesChatRequest,
         headers: Mapping[str, str],
         *,
-        timeout_seconds: float | None,
+        timeout: float | Timeout | None,
     ) -> LlmResponse:
         request_kwargs: dict[str, Any] = {
             "json": payload.model_dump(mode="json", exclude_none=True),
             "headers": headers,
         }
-        if timeout_seconds is not None:
-            request_kwargs["timeout"] = timeout_seconds
-        if timeout_seconds is None:
-            body, ttft_ms = await self._stream_chat_completions(**request_kwargs)
-        else:
-            async with asyncio.timeout(timeout_seconds):
-                body, ttft_ms = await self._stream_chat_completions(**request_kwargs)
+        if timeout is not None:
+            request_kwargs["timeout"] = streaming_transport_timeout(timeout)
+        body, ttft_ms = await self._stream_chat_completions(**request_kwargs)
         llm_response = body.to_llm_response()
         metadata = dict(llm_response.metadata or {})
         metadata.setdefault("raw_response", body.model_dump(mode="python", exclude_none=True))
@@ -165,10 +162,8 @@ class ChutesLlmProvider(BaseLlmProvider):
                 invalid_data_message="streamed chat completions returned non-JSON SSE data",
                 invalid_event_message="streamed chat completions SSE event must be a JSON object",
             ):
-                if ttft_ms is None:
-                    ttft_ms = round((time.perf_counter() - started_at) * 1000, 2)
-                reasoning_state.merge_event(event)
-                state.merge_event(event, reasoning_keys=())
+                reasoning_output = reasoning_state.merge_event(event)
+                saw_output = state.merge_event(event, reasoning_keys=()) or reasoning_output
                 try:
                     usage = reasoning_state.normalized_usage_payload(event.usage)
                 except ValidationError:
@@ -176,10 +171,14 @@ class ChutesLlmProvider(BaseLlmProvider):
                     logger.warning("chutes.stream.invalid_usage")
                     usage = None
                 record_similarity_stream_event(
-                    saw_output=True,
+                    saw_output=saw_output,
                     usage=usage.to_usage() if usage is not None else None,
                     response_id=event.id,
                 )
+                if saw_output:
+                    record_output_progress()
+                    if ttft_ms is None:
+                        ttft_ms = round((time.perf_counter() - started_at) * 1000, 2)
         return _ChutesChatResponse.from_stream_state(state, reasoning_state=reasoning_state), ttft_ms
 
     def _log_stream_ttft(self, *, model: str, response_id: str, ttft_ms: float | None) -> None:
@@ -337,9 +336,7 @@ class ChutesTextEmbeddingClient:
                 raise RuntimeError("chutes embedding response count does not match single-text request")
             vector = response_vectors[0]
             if self.dimensions is not None and len(vector) != self.dimensions:
-                raise RuntimeError(
-                    f"embedding dimensions mismatch: expected={self.dimensions} actual={len(vector)}"
-                )
+                raise RuntimeError(f"embedding dimensions mismatch: expected={self.dimensions} actual={len(vector)}")
             vectors.append(vector)
             if payload.usage is not None:
                 saw_usage = True

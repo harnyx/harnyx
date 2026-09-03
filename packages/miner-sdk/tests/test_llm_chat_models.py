@@ -15,6 +15,26 @@ from harnyx_miner_sdk.llm import (
 from harnyx_miner_sdk.tools.llm_chat_models import LlmChatRequest
 
 
+@pytest.mark.parametrize("timeout", [120, {"total": 120, "prefill": 60, "inactivity": 30}, {"total": 120}])
+def test_timeout_wire_round_trip_preserves_scalar_and_supplied_phases(timeout: object) -> None:
+    payload = _request_payload() | {"timeout": timeout}
+    parsed = LlmChatRequest.model_validate(payload)
+    assert parsed.model_dump(mode="json", exclude_none=True)["timeout"] == timeout
+
+
+@pytest.mark.parametrize("value", [0, -1, True, "10", float("nan"), float("inf")])
+@pytest.mark.parametrize("phase", ["total", "prefill", "inactivity"])
+def test_timeout_wire_rejects_invalid_durations(phase: str, value: object) -> None:
+    timeout = {"total": 120, phase: value}
+    with pytest.raises(ValidationError):
+        LlmChatRequest.model_validate(_request_payload() | {"timeout": timeout})
+
+
+def test_timeout_wire_rejects_unknown_phase() -> None:
+    with pytest.raises(ValidationError):
+        LlmChatRequest.model_validate(_request_payload() | {"timeout": {"total": 120, "read": 10}})
+
+
 def _tool() -> dict[str, object]:
     return {
         "type": "function",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
@@ -11,6 +12,29 @@ from pydantic import TypeAdapter
 INPUT_TEXT_PART_TYPE: Final[Literal["input_text"]] = "input_text"
 INPUT_IMAGE_PART_TYPE: Final[Literal["input_image"]] = "input_image"
 INPUT_TOOL_RESULT_PART_TYPE: Final[Literal["input_tool_result"]] = "input_tool_result"
+
+
+@dataclass(frozen=True)
+class Timeout:
+    """LLM deadlines in seconds; omitted phase limits inherit caller defaults."""
+
+    total: float
+    prefill: float | None = field(default=None, kw_only=True)
+    inactivity: float | None = field(default=None, kw_only=True)
+
+    def __post_init__(self) -> None:
+        for name, value in (("total", self.total), ("prefill", self.prefill), ("inactivity", self.inactivity)):
+            if value is None and name != "total":
+                continue
+            if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} timeout must be a positive finite number of seconds")
+
+    def with_defaults(self, defaults: Timeout) -> Timeout:
+        return Timeout(
+            self.total,
+            prefill=self.prefill if self.prefill is not None else defaults.prefill,
+            inactivity=self.inactivity if self.inactivity is not None else defaults.inactivity,
+        )
 
 
 @dataclass(frozen=True)
@@ -189,9 +213,7 @@ class LlmChoiceMessage:
         if self.role != "assistant":
             raise ValueError("only assistant choice messages can be replayed as input")
         content = tuple(
-            LlmInputTextPart(text=part.text)
-            for part in self.content
-            if part.text is not None and part.text
+            LlmInputTextPart(text=part.text) for part in self.content if part.text is not None and part.text
         )
         return LlmMessage(
             role="assistant",
@@ -356,6 +378,7 @@ _LLM_RESPONSE_ADAPTER = TypeAdapter(LlmResponse)
 
 
 __all__ = [
+    "Timeout",
     "LlmInputContentPart",
     "LlmInputImageData",
     "LlmInputImagePart",

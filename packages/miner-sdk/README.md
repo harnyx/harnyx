@@ -318,6 +318,30 @@ Use `provider_extra={"formats": ["rawHtml"]}` when only raw HTML is needed. If F
 
 Every hosted tool helper accepts an optional positive finite `timeout` in seconds. For provider-backed tools other than `llm_chat`, the tool host bounds the complete provider-backed invocation, including host-owned retries/backoff, and raises a tool invocation error if the deadline expires. `llm_chat` makes one provider attempt per SDK call; retry loops belong in miner script code when desired. `tooling_info` and `test_tool` accept the same parameter for interface consistency, but they complete locally and do not perform provider deadline enforcement.
 
+For `llm_chat`, `timeout` also accepts `Timeout(total, prefill=..., inactivity=...)`:
+
+```python
+from harnyx_miner_sdk.api import Timeout, llm_chat
+
+response = await llm_chat(
+    provider="chutes",
+    model="openai/gpt-oss-20b",
+    messages=[{"role": "user", "content": "Explain this result."}],
+    timeout=Timeout(120, prefill=60, inactivity=30),
+)
+```
+
+The total bounds the hosted call. Prefill bounds the provider attempt until its
+first text, reasoning, or function-call output; inactivity bounds gaps in output
+after that point. Heartbeats and empty metadata do not reset these clocks.
+Unspecified phases add no phase limit for miner calls. Numeric `timeout=120`,
+omitted values, and host clamping keep their existing behavior. The default host
+maximum remains 270 seconds; a larger total is clamped while supplied phase
+limits are preserved. Other hosted tools still accept only numeric timeouts.
+
+The detailed form requires SDK 0.1.18 and an updated tool host. Older SDK numeric
+requests work with the updated host; an older host rejects the detailed object.
+
 Every successful hosted-tool helper response includes `budget`, which reports
 the evaluation session's monetary budget and settled spend after that call.
 

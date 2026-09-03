@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator, Sequence
 from contextlib import AbstractAsyncContextManager
@@ -23,6 +24,8 @@ from harnyx_commons.llm.providers.bedrock_codec import (
 )
 from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import GroundedLlmRequest, LlmMessage, LlmMessageContentPart, LlmRequest, LlmTool
+from harnyx_commons.llm.timeout import LlmAttemptTimeoutError
+from harnyx_miner_sdk.llm import Timeout
 
 pytestmark = pytest.mark.anyio("asyncio")
 
@@ -48,6 +51,7 @@ class _FakeClient:
     events: Sequence[dict[str, object]]
     calls: list[dict[str, object]]
     failures: list[Exception]
+    closed: bool = False
 
     async def converse_stream(self, **kwargs: object) -> dict[str, object]:
         self.calls.append(dict(kwargs))
@@ -70,6 +74,7 @@ class _FakeClientContext(AbstractAsyncContextManager[_FakeClient]):
         return self._client
 
     async def __aexit__(self, exc_type, exc, tb) -> bool:
+        self._client.closed = True
         return False
 
 
@@ -165,6 +170,93 @@ async def test_bedrock_provider_maps_stream_response_and_logs_ttft(
     ttft_records = [record for record in caplog.records if record.message == "llm.bedrock.stream.ttft"]
     assert ttft_records
     assert ttft_records[0].__dict__["data"]["ttft_ms"] >= 0
+
+
+@pytest.mark.parametrize("phase", ["prefill", "inactivity"])
+@pytest.mark.parametrize(
+    "delta",
+    [
+        {"text": ""},
+        {"reasoningContent": {"text": ""}},
+        {"reasoningContent": {"redactedContent": b""}},
+        {"reasoningContent": {"signature": "verification-only"}},
+    ],
+    ids=["empty-text", "empty-reasoning", "empty-redacted-reasoning", "signature"],
+)
+async def test_empty_bedrock_output_cannot_extend_phase_deadlines(
+    monkeypatch: pytest.MonkeyPatch, phase: str, delta: dict[str, object]
+) -> None:
+    session, _ = _patch_session(monkeypatch, events=())
+
+    async def stream_empty_text(self: _FakeEventStream) -> AsyncIterator[dict[str, object]]:
+        if phase == "inactivity":
+            yield {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "started"}}}
+        while True:
+            yield {"contentBlockDelta": {"contentBlockIndex": 0, "delta": delta}}
+            await asyncio.sleep(0.005)
+
+    monkeypatch.setattr(_FakeEventStream, "_iterate", stream_empty_text)
+    request = replace(
+        _base_request(),
+        timeout=Timeout(0.2, prefill=0.05, inactivity=0.05),
+        retry_policy=RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0),
+    )
+    provider = _provider()
+    try:
+        with pytest.raises(LlmRetryExhaustedError) as exc:
+            await provider.invoke(request)
+        assert isinstance(exc.value.__cause__, LlmAttemptTimeoutError)
+        assert exc.value.__cause__.phase == phase
+        assert session._client.closed
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.parametrize("finish", [True, False], ids=["complete", "total-timeout"])
+async def test_bedrock_redacted_reasoning_keeps_attempt_active_within_total_deadline(
+    monkeypatch: pytest.MonkeyPatch, finish: bool
+) -> None:
+    session, _ = _patch_session(monkeypatch, events=())
+    redacted_event = {
+        "contentBlockDelta": {"contentBlockIndex": 0, "delta": {"reasoningContent": {"redactedContent": b"opaque"}}}
+    }
+
+    async def stream_reasoning(self: _FakeEventStream) -> AsyncIterator[dict[str, object]]:
+        for _ in range(12):
+            yield redacted_event
+            await asyncio.sleep(0.02)
+        if finish:
+            yield {"contentBlockDelta": {"contentBlockIndex": 1, "delta": {"text": "56"}}}
+            yield {"messageStop": {"stopReason": "end_turn"}}
+        else:
+            while True:
+                yield redacted_event
+                await asyncio.sleep(0.02)
+
+    monkeypatch.setattr(_FakeEventStream, "_iterate", stream_reasoning)
+    request = replace(
+        _base_request(),
+        timeout=Timeout(1 if finish else 0.3, prefill=0.1, inactivity=0.1),
+        retry_policy=RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0),
+    )
+    provider = _provider()
+    try:
+        if finish:
+            response = await provider.invoke(request)
+            assert response.raw_text == "56"
+            assert response.choices[0].message.reasoning is None
+            assert response.finish_reason == "end_turn"
+            assert response.metadata["raw_response"]["events"][:12] == [redacted_event] * 12
+        else:
+            with pytest.raises(LlmRetryExhaustedError) as exc:
+                await provider.invoke(request)
+            assert isinstance(exc.value.__cause__, LlmAttemptTimeoutError)
+            assert exc.value.__cause__.phase == "total"
+            assert exc.value.__cause__.first_output_seconds is not None
+            assert exc.value.__cause__.last_output_seconds > exc.value.__cause__.first_output_seconds
+        assert session._client.closed
+    finally:
+        await provider.aclose()
 
 
 async def test_bedrock_provider_builds_structured_output_config(monkeypatch: pytest.MonkeyPatch) -> None:

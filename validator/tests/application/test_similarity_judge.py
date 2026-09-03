@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import UTC, datetime
@@ -187,7 +188,7 @@ async def test_similarity_judge_returns_classification_and_validator_reasoning()
             temperature=None,
             max_output_tokens=20480,
             reasoning_effort="high",
-            timeout_seconds=300.0,
+            timeout=300.0,
         ),
     )
     request = SimilarityJudgeRequest(
@@ -225,7 +226,7 @@ async def test_similarity_judge_returns_classification_and_validator_reasoning()
     assert llm_request.model == "moonshotai/Kimi-K2.5-TEE"
     assert llm_request.output_mode == "structured"
     assert llm_request.reasoning_effort == "high"
-    assert llm_request.timeout_seconds == 300.0
+    assert llm_request.timeout == 300.0
     assert llm_request.use_case == "miner_task_similarity_judge"
     assert llm_request.include_payloads_in_observability is False
     assert llm_request.internal_metadata is not None
@@ -284,8 +285,7 @@ async def test_similarity_judge_includes_current_time_in_system_message() -> Non
 
     system_prompt = llm.requests[0].messages[0].content[0].text
     assert system_prompt.startswith(
-        "Current datetime in UTC: 2026-08-27T04:30:00+00:00\n"
-        "Current Unix timestamp: 1787805000\n\n"
+        "Current datetime in UTC: 2026-08-27T04:30:00+00:00\nCurrent Unix timestamp: 1787805000\n\n"
     )
 
 
@@ -361,10 +361,7 @@ async def test_similarity_judge_snapshots_datetime_before_trying_fallback_models
     system_prompts = [request.messages[0].content[0].text for request in llm.requests]
     assert clock_calls == 1
     assert all(
-        prompt.startswith(
-            "Current datetime in UTC: 2026-08-27T04:30:00+00:00\n"
-            "Current Unix timestamp: 1787805000\n\n"
-        )
+        prompt.startswith("Current datetime in UTC: 2026-08-27T04:30:00+00:00\nCurrent Unix timestamp: 1787805000\n\n")
         for prompt in system_prompts
     )
 
@@ -1064,3 +1061,42 @@ async def test_similarity_judge_does_not_hide_programming_failures_with_model_fa
         )
 
     assert [request.model for request in llm.requests] == ["moonshotai/Kimi-K2.5-TEE"]
+
+
+async def test_similarity_judge_cancellation_starts_no_fallback() -> None:
+    started = asyncio.Event()
+
+    class Provider(StubLlmProvider):
+        async def invoke(self, request: AbstractLlmRequest) -> LlmResponse:
+            self.requests.append(request)
+            started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("cancelled provider must not return")
+
+    provider = Provider()
+    judge = SimilarityJudge(
+        llm_provider=provider,
+        config=SimilarityJudgeConfig(
+            provider="chutes",
+            model="google/gemma-4-31B-turbo-TEE",
+            fallback_models=("moonshotai/Kimi-K3-TEE",),
+        ),
+    )
+    task = asyncio.create_task(
+        judge.judge(
+            SimilarityJudgeRequest(
+                batch_id=uuid4(),
+                candidate_artifact_id=uuid4(),
+                reference_artifact_id=uuid4(),
+                candidate_miner_uid=20,
+                reference_miner_uid=10,
+                reference_script="def answer(): return 'old'",
+                candidate_diff="+ def answer(): return 'new'",
+            )
+        )
+    )
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(provider.requests) == 1

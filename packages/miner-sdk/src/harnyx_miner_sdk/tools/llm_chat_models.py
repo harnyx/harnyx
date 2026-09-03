@@ -236,13 +236,21 @@ class LlmChatThinking(_StrictModel):
         return LlmThinkingConfig(enabled=self.enabled, budget=self.budget, effort=self.effort)
 
 
+class LlmChatTimeout(_StrictModel):
+    """Wire representation of the optional LLM phase deadlines."""
+
+    total: ToolInvocationTimeout
+    prefill: ToolInvocationTimeout | None = None
+    inactivity: ToolInvocationTimeout | None = None
+
+
 class LlmChatRequest(_StrictModel):
     """Canonical SDK-owned JSON request boundary for ``llm_chat``."""
 
     provider: LlmChatProviderName
     model: str = Field(min_length=1)
     messages: tuple[LlmChatMessage, ...] = Field(min_length=1)
-    timeout: ToolInvocationTimeout | None = None
+    timeout: ToolInvocationTimeout | LlmChatTimeout | None = None
     temperature: float | None = None
     max_output_tokens: int | None = Field(default=None, ge=1)
     tools: tuple[LlmChatFunctionTool, ...] | None = None

@@ -644,7 +644,7 @@ def build_miner_task_model_request(
             temperature=spec.temperature,
             max_output_tokens=spec.max_output_tokens,
             reasoning_effort=spec.reasoning_effort,
-            timeout_seconds=spec.timeout_seconds,
+            timeout=spec.timeout_seconds,
             use_case=use_case,
             postprocessor=resolved_postprocessor,
         )
@@ -655,7 +655,7 @@ def build_miner_task_model_request(
         temperature=spec.temperature,
         max_output_tokens=spec.max_output_tokens,
         reasoning_effort=spec.reasoning_effort,
-        timeout_seconds=spec.timeout_seconds,
+        timeout=spec.timeout_seconds,
         use_case=use_case,
         output_mode=output_mode,
         output_schema=output_schema,

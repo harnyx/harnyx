@@ -48,6 +48,7 @@ from harnyx_commons.llm.schema import (
     LlmRequest,
     LlmResponse,
 )
+from harnyx_commons.llm.timeout import LlmAttemptTimeoutError
 from harnyx_commons.llm.tool_models import (
     ALLOWED_TOOL_MODELS,
     MINER_SELECTED_LLM_PROVIDER_MODELS,
@@ -88,7 +89,8 @@ from harnyx_commons.tools.types import (
     is_search_tool,
 )
 from harnyx_commons.tools.usage_tracker import ToolCallUsage  # noqa: F401 - compatibility
-from harnyx_miner_sdk.tools.llm_chat_models import LlmChatRequest
+from harnyx_miner_sdk.llm import Timeout
+from harnyx_miner_sdk.tools.llm_chat_models import LlmChatRequest, LlmChatTimeout
 
 MINER_SANDBOX_TOOL_NAMES: tuple[ToolName, ...] = tuple(sorted(MINER_TOOL_NAMES))
 DEFAULT_TOOL_LLM_TIMEOUT_SECONDS = PLATFORM_TOOL_PROXY_LLM_CHAT_DEFAULT_TIMEOUT_SECONDS
@@ -198,6 +200,9 @@ def effective_tool_timeout_seconds(
 ) -> float:
     payload = tool_payload_from_args_kwargs(args, kwargs)
     if tool_name == "llm_chat":
+        raw_timeout = payload.get("timeout")
+        if isinstance(raw_timeout, Mapping):
+            return LlmChatTimeout.model_validate(raw_timeout).total
         return _effective_timeout_from_payload(payload, default=DEFAULT_TOOL_LLM_TIMEOUT_SECONDS)
     if tool_name in {"search_web", "search_ai", "fetch_page"}:
         return _effective_timeout_from_payload(payload, default=DEFAULT_SEARCH_TOOL_TIMEOUT_SECONDS)
@@ -585,7 +590,7 @@ class RuntimeToolInvoker(ToolInvoker):
             started_at = time.perf_counter()
             llm_response = await _invoke_with_optional_timeout(
                 "llm_chat",
-                invocation.timeout,
+                invocation.timeout.total if isinstance(invocation.timeout, LlmChatTimeout) else invocation.timeout,
                 lambda: llm_provider.invoke(request),
             )
             elapsed_ms = (time.perf_counter() - started_at) * 1000.0
@@ -600,6 +605,8 @@ class RuntimeToolInvoker(ToolInvoker):
         except LlmProviderConfigurationError as exc:
             raise _credential_unavailable(invocation.provider) from exc
         except (LlmProviderError, LlmRetryExhaustedError) as exc:
+            if isinstance(exc.__cause__, LlmAttemptTimeoutError):
+                raise ToolInvocationTimeoutError(str(exc.__cause__)) from exc
             raise _typed_provider_error(exc, provider=invocation.provider) from exc
         try:
             actual_cost = _require_settled_llm_cost(llm_response)
@@ -823,6 +830,16 @@ class RuntimeToolInvoker(ToolInvoker):
         context: ToolInvocationContext | None,
     ) -> LlmRequest:
         normalized = invocation.to_tool_request()
+        if isinstance(invocation.timeout, LlmChatTimeout):
+            total = invocation.timeout.total
+            prefill = invocation.timeout.prefill
+            inactivity = invocation.timeout.inactivity
+        else:
+            total, prefill, inactivity = invocation.timeout, None, None
+        provider_total = _provider_request_timeout_seconds(
+            default=DEFAULT_TOOL_LLM_TIMEOUT_SECONDS,
+            effective_timeout=total,
+        )
         return LlmRequest(
             provider=normalized.provider,
             model=normalized.model,
@@ -833,10 +850,7 @@ class RuntimeToolInvoker(ToolInvoker):
             tools=normalized.tools,
             tool_choice=normalized.tool_choice,
             parallel_tool_calls=normalized.parallel_tool_calls,
-            timeout_seconds=_provider_request_timeout_seconds(
-                default=DEFAULT_TOOL_LLM_TIMEOUT_SECONDS,
-                effective_timeout=invocation.timeout,
-            ),
+            timeout=Timeout(provider_total, prefill=prefill, inactivity=inactivity),
             thinking=normalized.thinking,
             extra=invocation.provider_extra_payload(),
             use_case="tool_runtime_invoker",

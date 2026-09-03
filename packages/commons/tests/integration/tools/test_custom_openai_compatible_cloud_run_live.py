@@ -70,7 +70,7 @@ async def test_gemma_cloud_run_custom_openai_compatible_live() -> None:
             ),
             temperature=0.0,
             max_output_tokens=32,
-            timeout_seconds=180.0,
+            timeout=180.0,
         )
     )
 
@@ -98,7 +98,7 @@ async def test_gemma_similarity_receives_usage_before_stream_completion_live(cap
             thinking=LlmThinkingConfig(enabled=False),
             temperature=0.0,
             max_output_tokens=None,
-            timeout_seconds=180.0,
+            timeout=180.0,
             retry_policy=RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0.0),
             use_case="miner_task_similarity_judge",
             include_payloads_in_observability=False,
@@ -131,7 +131,7 @@ async def test_gemma_cloud_run_custom_openai_compatible_scoring_route_live() -> 
             ),
             temperature=0.0,
             max_output_tokens=32,
-            timeout_seconds=180.0,
+            timeout=180.0,
         ),
         surface="scoring",
     )
@@ -157,7 +157,7 @@ async def test_gemma_cloud_run_reasoning_effort_live() -> None:
             ),
             temperature=0.0,
             max_output_tokens=128,
-            timeout_seconds=180.0,
+            timeout=180.0,
             reasoning_effort="high",
         )
     )
@@ -240,7 +240,7 @@ async def test_gemma_cloud_run_json_object_live() -> None:
             ),
             temperature=0.0,
             max_output_tokens=128,
-            timeout_seconds=180.0,
+            timeout=180.0,
             output_mode="json_object",
             postprocessor=pydantic_postprocessor(JsonObjectAnswer),
         )
@@ -274,7 +274,7 @@ async def test_gemma_cloud_run_json_schema_live_with_throwaway_schema() -> None:
             ),
             temperature=0.0,
             max_output_tokens=128,
-            timeout_seconds=180.0,
+            timeout=180.0,
             output_mode="structured",
             output_schema=ThrowawayStructuredAnswer,
             postprocessor=pydantic_postprocessor(ThrowawayStructuredAnswer),
@@ -440,7 +440,7 @@ async def _invoke_live_tool_model(
         temperature=0.0,
         max_output_tokens=max_output_tokens,
         thinking=thinking or LlmThinkingConfig(enabled=False),
-        timeout_seconds=180.0,
+        timeout=180.0,
     )
     settings = _build_live_settings(
         os.environ,

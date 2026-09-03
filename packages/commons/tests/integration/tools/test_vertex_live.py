@@ -12,6 +12,7 @@ from harnyx_commons.llm.schema import (
     LlmMessageContentPart,
     LlmRequest,
 )
+from harnyx_miner_sdk.llm import Timeout
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio("asyncio")]
 
@@ -190,6 +191,9 @@ async def test_vertex_claude_web_search_live() -> None:
             temperature=1.0,
             max_output_tokens=3072,
             reasoning_effort="2048",
+            timeout=Timeout(
+                float(vertex.vertex_timeout_seconds or PLATFORM.timeout_seconds), prefill=300, inactivity=60
+            ),
         )
 
         response = await provider.invoke(request)

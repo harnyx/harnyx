@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import replace
 
@@ -345,3 +346,45 @@ async def test_request_retry_policy_attempts_one_disables_retry() -> None:
         await provider.invoke_with_retry(request)
 
     assert raised.value.attempts == 1
+
+
+async def test_owned_timeout_retries_with_fresh_budget_despite_logging_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from harnyx_commons.llm import similarity_observability
+    from harnyx_commons.llm.timeout import record_output_progress
+    from harnyx_miner_sdk.llm import Timeout
+
+    class _ExplodingLogger(logging.Logger):
+        def info(self, msg: object, *args: object, **kwargs: object) -> None:
+            raise RuntimeError("log sink unavailable")
+
+    from functools import partial
+
+    monkeypatch.setattr(
+        similarity_observability,
+        "SimilarityLlmAttemptObservation",
+        partial(SimilarityLlmAttemptObservation, logger=_ExplodingLogger("exploding")),
+    )
+
+    class Provider(_RetryOnceExceptionProvider):
+        async def _invoke(self, request: AbstractLlmRequest) -> LlmResponse:
+            self._attempt += 1
+            if self._attempt == 1:
+                await asyncio.sleep(1)
+            await asyncio.sleep(0.02)
+            record_output_progress()
+            return _response()
+
+    provider = Provider()
+    response = await provider.invoke_with_retry(
+        replace(
+            _request(use_case="miner_task_similarity_judge"),
+            timeout=Timeout(0.1, prefill=0.06),
+            retry_policy=RetryPolicy(attempts=2, initial_ms=0, max_ms=0, jitter=0),
+        )
+    )
+    assert response.choices == _response().choices
+    assert response.metadata is not None
+    assert response.metadata["retry_reasons"] == ("prefill_timeout",)
+    assert provider._attempt == 2

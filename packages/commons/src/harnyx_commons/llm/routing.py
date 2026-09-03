@@ -15,6 +15,8 @@ from harnyx_commons.llm.provider_types import (
     parse_provider_route_target,
 )
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
+from harnyx_commons.llm.timeout import resolve_timeout
+from harnyx_miner_sdk.llm import Timeout
 
 LlmRouteSurface = Literal[
     "generator",
@@ -80,9 +82,7 @@ def parse_llm_model_provider_overrides(
             if model in model_overrides:
                 raise ValueError(f"LLM_MODEL_PROVIDER_OVERRIDES_JSON.{surface}.{model} is duplicated")
             if not isinstance(provider_raw, str):
-                raise ValueError(
-                    f"LLM_MODEL_PROVIDER_OVERRIDES_JSON.{surface}.{model} provider labels must be strings"
-                )
+                raise ValueError(f"LLM_MODEL_PROVIDER_OVERRIDES_JSON.{surface}.{model} provider labels must be strings")
             route_target = parse_provider_route_target(
                 provider_raw,
                 component=f"LLM_MODEL_PROVIDER_OVERRIDES_JSON.{surface}.{model}",
@@ -141,6 +141,7 @@ class RoutedLlmProvider(LlmProviderPort):
         allowed_providers: Set[LlmRouteTarget],
         allow_custom_openai_compatible: bool = False,
         resolve_provider: Callable[[str], LlmProviderPort],
+        timeout: Timeout | None = None,
     ) -> None:
         self._surface = surface
         self._default_provider = default_provider
@@ -148,6 +149,7 @@ class RoutedLlmProvider(LlmProviderPort):
         self._allowed_providers = allowed_providers
         self._allow_custom_openai_compatible = allow_custom_openai_compatible
         self._resolve_provider = resolve_provider
+        self._timeout = timeout
 
     async def invoke(self, request: AbstractLlmRequest) -> LlmResponse:
         route = resolve_llm_route(
@@ -158,7 +160,12 @@ class RoutedLlmProvider(LlmProviderPort):
             allowed_providers=self._allowed_providers,
             allow_custom_openai_compatible=self._allow_custom_openai_compatible,
         )
-        routed_request = replace(request, provider=route.provider, model=route.model)
+        routed_request = replace(
+            request,
+            provider=route.provider,
+            model=route.model,
+            timeout=resolve_timeout(request.timeout, self._timeout),
+        )
         try:
             response = await self._resolve_provider(route.provider).invoke(routed_request)
         except (LlmProviderError, LlmRetryExhaustedError) as exc:

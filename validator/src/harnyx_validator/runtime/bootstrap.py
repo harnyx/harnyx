@@ -1269,7 +1269,7 @@ def _create_similarity_judge(
         temperature=settings.llm.similarity_llm_temperature,
         max_output_tokens=settings.llm.similarity_llm_max_output_tokens,
         reasoning_effort=_SCORING_LLM_REASONING_EFFORT,
-        timeout_seconds=settings.llm.similarity_llm_timeout_seconds,
+        timeout=settings.llm.similarity_llm_timeout,
         retry_policy=settings.llm.similarity_llm_retry_policy,
         request_extra_by_model=request_extra_by_model,
     )

@@ -61,18 +61,14 @@ def _openrouter_request(*, model: str) -> LlmRequest:
         messages=(
             LlmMessage(
                 role="user",
-                content=(
-                    LlmMessageContentPart.input_text(
-                        f'Reply with only "ok". Request nonce: {uuid4().hex}.'
-                    ),
-                ),
+                content=(LlmMessageContentPart.input_text(f'Reply with only "ok". Request nonce: {uuid4().hex}.'),),
             ),
         ),
         temperature=0.0,
         max_output_tokens=256,
         extra=_openrouter_reasoning_provider_extra(model=model),
         thinking=LlmThinkingConfig(enabled=True, effort="low"),
-        timeout_seconds=180.0,
+        timeout=180.0,
     )
 
 
@@ -90,7 +86,7 @@ def _openrouter_reasoning_request(*, model: str) -> LlmRequest:
         max_output_tokens=256,
         extra=_openrouter_reasoning_provider_extra(model=model),
         thinking=LlmThinkingConfig(enabled=True, effort="low"),
-        timeout_seconds=180.0,
+        timeout=180.0,
     )
 
 
@@ -107,7 +103,7 @@ def _openrouter_byok_request() -> LlmRequest:
         temperature=0.0,
         max_output_tokens=128,
         extra={"provider": {"only": ["cerebras"], "allow_fallbacks": False}},
-        timeout_seconds=180.0,
+        timeout=180.0,
         retry_policy=RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0.0),
     )
 
@@ -173,9 +169,7 @@ async def test_openrouter_byok_completion_settles_original_response_cost_live() 
     cost_details = usage.get("cost_details")
     assert isinstance(cost_details, Mapping)
     upstream_inference_cost = cost_details.get("upstream_inference_cost")
-    assert isinstance(upstream_inference_cost, int | float) and not isinstance(
-        upstream_inference_cost, bool
-    )
+    assert isinstance(upstream_inference_cost, int | float) and not isinstance(upstream_inference_cost, bool)
     assert upstream_inference_cost >= 0.0
     assert response.metadata["actual_cost_usd"] == pytest.approx(
         float(openrouter_cost) + float(upstream_inference_cost)
@@ -296,7 +290,7 @@ async def test_openrouter_two_turn_function_tool_loop_with_reasoning_replay_live
                 tool_choice={"type": "function", "function": {"name": "lookup_weather"}},
                 thinking=LlmThinkingConfig(enabled=True, effort="low"),
                 extra=_openrouter_reasoning_provider_extra(model=model),
-                timeout_seconds=180.0,
+                timeout=180.0,
             )
         )
         first_message = first.choices[0].message
@@ -332,7 +326,7 @@ async def test_openrouter_two_turn_function_tool_loop_with_reasoning_replay_live
                 tool_choice="none",
                 thinking=LlmThinkingConfig(enabled=True, effort="low"),
                 extra=_openrouter_reasoning_provider_extra(model=model),
-                timeout_seconds=180.0,
+                timeout=180.0,
             )
         )
     finally:

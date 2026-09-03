@@ -7,11 +7,12 @@ import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any
 from uuid import uuid4
 
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse, LlmUsage
+from harnyx_commons.llm.timeout import LlmAttemptTimeoutError
 
 SIMILARITY_JUDGE_USE_CASE = "miner_task_similarity_judge"
 _PROGRESS_LOG_INTERVAL_SECONDS = 60.0
@@ -131,11 +132,19 @@ class SimilarityLlmAttemptObservation:
         self._log("finished", data)
 
     def finish_failure(self, exc: Exception, *, retryable: bool) -> None:
+        timeout_data: dict[str, object] = {}
+        if isinstance(exc, LlmAttemptTimeoutError):
+            timeout_data = {
+                "timeout_phase": exc.phase,
+                "timeout": asdict(exc.timeout),
+                "last_output_ms": (exc.last_output_seconds * 1000 if exc.last_output_seconds is not None else None),
+            }
         self._log(
             "finished",
             self._common_data()
             | self._terminal_data("failed")
-            | {"exception_type": type(exc).__name__, "retryable": retryable},
+            | {"exception_type": type(exc).__name__, "retryable": retryable}
+            | timeout_data,
         )
 
     def finish_cancelled(self) -> None:

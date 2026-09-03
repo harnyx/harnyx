@@ -155,7 +155,7 @@ class OpenAiToolCallState(BaseModel):
         *,
         complete_snapshot: bool = False,
     ) -> bool:
-        saw_output = False
+        previous_output = (self.id or "", self.name or "", self.arguments_text)
         if payload.id is not None:
             if complete_snapshot:
                 if self.id is not None and payload.id != self.id:
@@ -169,7 +169,7 @@ class OpenAiToolCallState(BaseModel):
             self.type = payload.type
         function = payload.function
         if function is None:
-            return bool(self.id or self.name)
+            return previous_output != (self.id or "", self.name or "", self.arguments_text)
         if function.name is not None:
             if complete_snapshot:
                 if self.name is not None and function.name != self.name:
@@ -183,13 +183,9 @@ class OpenAiToolCallState(BaseModel):
                     self.arguments_text = arguments
                 else:
                     self.arguments_text += arguments
-                saw_output = True
             case dict() as arguments:
                 self.arguments_text = json.dumps(arguments, allow_nan=False)
-                saw_output = True
-            case _ if self.id or self.name:
-                saw_output = True
-        return saw_output or bool(self.id or self.name)
+        return previous_output != (self.id or "", self.name or "", self.arguments_text)
 
     def to_tool_call(self, *, index: int) -> OpenAiToolCall:
         _ = index
@@ -262,8 +258,12 @@ class OpenAiChoiceState(BaseModel):
             saw_output = True
         extra = message_payload.model_extra or {}
         if "reasoning_details" in reasoning_keys and extra.get("reasoning_details") is not None:
-            self.reasoning_details.extend(_REASONING_DETAILS_ADAPTER.validate_python(extra["reasoning_details"]))
-            saw_output = True
+            details = _REASONING_DETAILS_ADAPTER.validate_python(extra["reasoning_details"])
+            self.reasoning_details.extend(details)
+            for detail in details:
+                match detail:
+                    case {"type": "reasoning.encrypted", "data": str() as data} if data:
+                        saw_output = True
         appended_reasoning: set[str] = set()
         for key in reasoning_keys:
             for reasoning in normalize_reasoning_fragment(extra.get(key)):
@@ -285,9 +285,7 @@ class OpenAiChoiceState(BaseModel):
         if not self.tool_calls:
             return None
         try:
-            tool_calls = [
-                self.tool_calls[index].to_tool_call(index=index) for index in sorted(self.tool_calls)
-            ]
+            tool_calls = [self.tool_calls[index].to_tool_call(index=index) for index in sorted(self.tool_calls)]
             call_ids = [tool_call.id for tool_call in tool_calls]
             if len(call_ids) != len(set(call_ids)):
                 raise ValueError("completed tool call IDs must be unique within each assistant block")

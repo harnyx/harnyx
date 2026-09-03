@@ -175,7 +175,7 @@ class BenchmarkCorrectnessScoringService:
             temperature=self._config.temperature,
             max_output_tokens=self._config.max_output_tokens,
             reasoning_effort=self._config.reasoning_effort,
-            timeout_seconds=self._config.timeout_seconds,
+            timeout=self._config.timeout_seconds,
             use_case="benchmark_correctness_judge",
         )
         response = await self._llm.invoke(request)

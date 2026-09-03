@@ -12,6 +12,7 @@ from botocore.exceptions import BotoCoreError, ClientError, ParamValidationError
 from harnyx_commons.llm.cost_settlement import settled_response_cost, with_settled_llm_cost
 from harnyx_commons.llm.provider import BaseLlmProvider
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmRequest, LlmResponse
+from harnyx_commons.llm.timeout import record_output_progress, resolve_timeout
 
 from .bedrock_codec import BEDROCK_STREAM_EVENT_ADAPTER, BedrockConverseStreamRequest, BedrockStreamAccumulator
 
@@ -87,10 +88,11 @@ class BedrockLlmProvider(BaseLlmProvider):
 
     async def _call_bedrock(self, request: LlmRequest) -> LlmResponse:
         bedrock_request = BedrockConverseStreamRequest.from_llm_request(request)
+        timeout = resolve_timeout(request.timeout)
         client_config = _build_client_config(
             connect_timeout_seconds=self._connect_timeout_seconds,
             default_read_timeout_seconds=self._read_timeout_seconds,
-            request_timeout_seconds=request.timeout_seconds,
+            request_timeout_seconds=timeout.total if timeout is not None else None,
         )
         started_at = time.perf_counter()
         ttft_ms: float | None = None
@@ -106,8 +108,10 @@ class BedrockLlmProvider(BaseLlmProvider):
             async for raw_event in response["stream"]:
                 event = BEDROCK_STREAM_EVENT_ADAPTER.validate_python(raw_event)
                 produced_output = accumulator.apply(event, raw_event=raw_event)
-                if produced_output and ttft_ms is None:
-                    ttft_ms = round((time.perf_counter() - started_at) * 1000, 2)
+                if produced_output:
+                    record_output_progress()
+                    if ttft_ms is None:
+                        ttft_ms = round((time.perf_counter() - started_at) * 1000, 2)
 
         response_id = accumulator.response_id()
         self._log_stream_ttft(model=request.model, response_id=response_id, ttft_ms=ttft_ms)

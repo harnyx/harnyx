@@ -14,6 +14,7 @@ from harnyx_commons.llm.provider_types import LlmProviderName
 from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.routing import LlmModelProviderOverrides, parse_llm_model_provider_overrides
 from harnyx_commons.tools.embedding_models import EmbeddingProviderName
+from harnyx_miner_sdk.llm import Timeout
 
 DEFAULT_MAX_OUTPUT_TOKENS = 1024
 DEFAULT_SCORING_MAX_OUTPUT_TOKENS = 32768
@@ -78,9 +79,7 @@ class OpenAiCompatibleGoogleIdTokenAuthConfig(BaseModel):
 
 
 OpenAiCompatibleAuthConfig = Annotated[
-    OpenAiCompatibleNoAuthConfig
-    | OpenAiCompatibleBearerTokenEnvAuthConfig
-    | OpenAiCompatibleGoogleIdTokenAuthConfig,
+    OpenAiCompatibleNoAuthConfig | OpenAiCompatibleBearerTokenEnvAuthConfig | OpenAiCompatibleGoogleIdTokenAuthConfig,
     Field(discriminator="type"),
 ]
 
@@ -128,9 +127,7 @@ class OpenAiCompatibleEndpointConfig(BaseModel):
 _OPENAI_COMPATIBLE_ENDPOINTS_ADAPTER = TypeAdapter(list[OpenAiCompatibleEndpointConfig])
 
 SearchProviderName = Literal["desearch", "parallel", "firecrawl", "exa", "tavily"]
-SEARCH_PROVIDER_NAMES: tuple[SearchProviderName, ...] = (
-    "desearch", "parallel", "firecrawl", "exa", "tavily"
-)
+SEARCH_PROVIDER_NAMES: tuple[SearchProviderName, ...] = ("desearch", "parallel", "firecrawl", "exa", "tavily")
 AiSearchProviderName = Literal["desearch", "parallel"]
 AI_SEARCH_PROVIDER_NAMES: tuple[AiSearchProviderName, ...] = ("desearch", "parallel")
 
@@ -214,7 +211,15 @@ class LlmSettings(BaseSettings):
     benchmark_llm_timeout_seconds: float | None = Field(default=None, alias="BENCHMARK_LLM_TIMEOUT_SECONDS")
     digest_llm_timeout_seconds: float | None = Field(default=None, alias="DIGEST_LLM_TIMEOUT_SECONDS")
     scoring_llm_timeout_seconds: float = Field(default=300.0, alias="SCORING_LLM_TIMEOUT_SECONDS")
-    similarity_llm_timeout_seconds: float = Field(default=300.0, alias="SIMILARITY_LLM_TIMEOUT_SECONDS")
+    similarity_llm_timeout_seconds: float = Field(
+        default=900.0, alias="SIMILARITY_LLM_TIMEOUT_SECONDS", gt=0, allow_inf_nan=False
+    )
+    similarity_llm_prefill_timeout_seconds: float = Field(
+        default=300.0, alias="SIMILARITY_LLM_PREFILL_TIMEOUT_SECONDS", gt=0, allow_inf_nan=False
+    )
+    similarity_llm_inactivity_timeout_seconds: float = Field(
+        default=60.0, alias="SIMILARITY_LLM_INACTIVITY_TIMEOUT_SECONDS", gt=0, allow_inf_nan=False
+    )
 
     # --- Scoring (validator) ---
     scoring_llm_provider: LlmProviderName = Field(default="chutes", alias="SCORING_LLM_PROVIDER")
@@ -357,6 +362,14 @@ class LlmSettings(BaseSettings):
             initial_ms=self.scoring_llm_retry_initial_ms,
             max_ms=self.scoring_llm_retry_max_ms,
             jitter=self.scoring_llm_retry_jitter,
+        )
+
+    @property
+    def similarity_llm_timeout(self) -> Timeout:
+        return Timeout(
+            self.similarity_llm_timeout_seconds,
+            prefill=self.similarity_llm_prefill_timeout_seconds,
+            inactivity=self.similarity_llm_inactivity_timeout_seconds,
         )
 
     @property

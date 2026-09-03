@@ -207,7 +207,7 @@ async def test_fixed_dataset_similarity_benchmark(target: BenchmarkTarget) -> No
             temperature=0.0,
             max_output_tokens=None,
             reasoning_effort=bootstrap._SCORING_LLM_REASONING_EFFORT,
-            timeout_seconds=float(settings.llm.similarity_llm_timeout_seconds),
+            timeout=float(settings.llm.similarity_llm_timeout_seconds),
             retry_policy=RetryPolicy(
                 attempts=1,
                 initial_ms=0,

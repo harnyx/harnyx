@@ -50,6 +50,8 @@ from harnyx_commons.llm.similarity_observability import (
     record_similarity_stream_event,
     record_similarity_stream_headers_received,
 )
+from harnyx_commons.llm.timeout import record_output_progress, streaming_transport_timeout
+from harnyx_miner_sdk.llm import Timeout
 
 OpenAiCompatibleResponseMetadataExtractor = Callable[[Mapping[str, Any]], JsonObject | None]
 
@@ -79,7 +81,7 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
             request,
             call_coro=lambda current_request: self._request_chat(
                 self._build_request(current_request),
-                timeout_seconds=current_request.timeout_seconds,
+                timeout=current_request.timeout,
             ),
             verifier=self._verify_response,
             classify_exception=self._classify_exception,
@@ -111,14 +113,14 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
         self,
         payload: _OpenAiCompatibleChatRequest,
         *,
-        timeout_seconds: float | None,
+        timeout: float | Timeout | None,
     ) -> LlmResponse:
         request_kwargs: dict[str, Any] = {
             "json": payload.model_dump(mode="json", exclude_none=True),
             "headers": await self._authenticator.headers(),
         }
-        if timeout_seconds is not None:
-            request_kwargs["timeout"] = timeout_seconds
+        if timeout is not None:
+            request_kwargs["timeout"] = streaming_transport_timeout(timeout)
         body, ttft_ms = await self._stream_chat_completions(**request_kwargs)
         response = body.to_llm_response()
         metadata = dict(response.metadata or {})
@@ -187,6 +189,7 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
                     upstream_provider=stream_identity.provider,
                 )
                 if saw_output:
+                    record_output_progress()
                     if ttft_ms is None:
                         ttft_ms = round((time.perf_counter() - started_at) * 1000, 2)
         return _OpenAiCompatibleChatResponse.from_stream_state(
