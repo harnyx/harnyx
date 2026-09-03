@@ -31,7 +31,9 @@ the next workflow action.
 5. If timeout, crash, or budget is suspected, inspect attempts, `elapsed_ms`,
    `execution_log`, `specifics.error`, and cost totals:
    - use `get_miner_task_batch_results(batch_id, artifact_id, ...)` to find the
-     affected `task_id`
+     affected `task_id`; follow `next_cursor` with the same filters until it is
+     `null` before concluding that no matching error exists. Report incomplete
+     collection if a page fails or repeats a cursor.
    - call `get_task_results(batch_id, artifact_id, task_id)` for full task
      result detail and ordered execution-log summaries
    - when a summary entry needs payload inspection, call

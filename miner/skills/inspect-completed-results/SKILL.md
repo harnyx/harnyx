@@ -36,7 +36,11 @@ Collect completed-batch results for one submitted artifact.
    `get_miner_task_batch_similarity_round(batch_id, artifact_id)` only when the
    selected artifact needs rule-evaluation or duplicate-vote evidence.
 6. Call `get_miner_task_batch_results(batch_id, artifact_id, ...)` for
-   artifact-scoped result rows, then read those rows from `results[]`.
+   artifact-scoped result rows (default 50 per page, maximum 200). Collect
+   `results[]`, then repeat with the returned `next_cursor` as `cursor` until
+   `next_cursor` is `null`. Keep the batch, artifact, filters, and limit fixed
+   across pages and append every page before analyzing the complete set.
+   A short or empty page with a cursor is not completion.
 7. Call `get_task_results(batch_id, artifact_id, task_id)` when attempts or
    ordered `execution_log` summaries are needed for one task, then read those
    rows from `results[]`.
@@ -51,6 +55,8 @@ Collect completed-batch results for one submitted artifact.
 - Stop if the batch is not completed.
 - Stop if `artifact_id` is unknown; find it from submit evidence or completed
   batch artifact visibility first.
+- If a result page fails or repeats a cursor, stop and report incomplete
+  collection; do not treat the collected subset as the complete result set.
 
 ## Output
 

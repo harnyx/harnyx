@@ -46,6 +46,15 @@ Workflow tools used below:
 For `get_miner_task_batch_results` and `get_task_results`, read the returned
 rows from `results[]`.
 
+`get_miner_task_batch_results` returns one page (default 50 rows, maximum 200).
+To collect the complete result set, repeat the call with the returned
+`next_cursor` as `cursor`, keeping the batch, artifact, filters, and limit
+unchanged. Append each page's `results[]` and stop only when `next_cursor` is
+`null`. Do not treat a short or empty page as completion if a cursor remains.
+If a page fails or repeats a cursor, report incomplete collection instead of
+drawing conclusions from partial results. `get_task_results` does not use this
+pagination contract.
+
 Call `get_validators` and read `runtime.next_scheduled_batch_at` when you need
 the next configured batch time. The value is UTC on the wire; `null` means
 automatic miner-task batch scheduling is disabled.
@@ -219,8 +228,9 @@ Use completed-batch tools by purpose:
   when full validator votes, reasoning, errors, and judge usage are needed for
   one candidate.
 - `get_miner_task_batch_results(batch_id, artifact_id, ...)` for
-  artifact-scoped result rows in `results[]`. Add `task_id`, `validator_hotkey`, or
-  `miner_uid` only when narrowing the query.
+  artifact-scoped result rows in `results[]`. Follow `next_cursor` until `null`
+  before analyzing the complete set. Add `task_id`, `validator_hotkey`, or
+  `miner_uid` only when narrowing the query; keep those filters fixed across pages.
 - `get_task_results(batch_id, artifact_id, task_id)` for full result detail,
   attempts, and ordered `execution_log` summaries for one task in `results[]`.
 - `get_task_execution_log_entry(batch_id, artifact_id, task_id,
