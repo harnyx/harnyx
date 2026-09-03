@@ -193,7 +193,7 @@ async def test_ai_gateway_two_turn_function_tool_loop_live() -> None:
         "max_output_tokens": 128,
         "tools": (tool,),
         "thinking": LlmThinkingConfig(enabled=False),
-        "timeout_seconds": 180.0,
+        "timeout": 180.0,
         "extra": {"providerOptions": {"gateway": {"only": ["groq"]}}},
     }
 
@@ -275,7 +275,7 @@ async def test_new_ai_gateway_model_exact_route_contract_live(model: str) -> Non
         "temperature": 0.0,
         "max_output_tokens": 256,
         "thinking": LlmThinkingConfig(enabled=True),
-        "timeout_seconds": 180.0,
+        "timeout": 180.0,
     }
 
     try:

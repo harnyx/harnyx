@@ -369,7 +369,7 @@ async def test_new_openrouter_model_exact_route_contract_live(model: str) -> Non
         "temperature": 0.0,
         "max_output_tokens": 1024,
         "thinking": LlmThinkingConfig(enabled=True),
-        "timeout_seconds": 180.0,
+        "timeout": 180.0,
     }
 
     try:
