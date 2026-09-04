@@ -44,6 +44,85 @@ batch monitoring, and score diagnosis, start with the
 
 ---
 
+## Black-box endpoint registration
+
+Register your hotkey on the subnet, then expose an HTTPS base URL with a valid certificate. Implement `POST <base-url>/verify` before calling Platform's `POST /v1/miners/register`. The URL may include a path or port, but must not include credentials, a query, or a fragment. Platform uses its standard HTTP client DNS, TCP, and TLS behavior and does not follow redirects or use proxies. DNS, connection, TLS, or proof failure rejects registration.
+
+Out-of-range ports return HTTP 422 with `error_code="invalid_miner_registration"` before Platform contacts the endpoint.
+
+Each hotkey can start one registration attempt every 15 seconds. Additional attempts return HTTP 429 with `error_code="concurrency_exhausted"` and are not queued. A retry must use a new signed request nonce.
+
+Platform sends this ownership challenge as JSON:
+
+```json
+{
+  "purpose": "harnyx.miner_endpoint_ownership.v1",
+  "nonce": "<random 64-character hex nonce>",
+  "hotkey": "<your hotkey SS58 address>",
+  "url": "https://miner.example/base",
+  "block_at_registration": 12345,
+  "expires_at": "2026-09-03T12:00:30+00:00"
+}
+```
+
+Check that the purpose, hotkey, canonical URL, and registration block match your endpoint, and that the challenge has not expired. Sign the **raw received body**, using the actual verification path. For example, for `/base/verify`:
+
+```python
+from harnyx_commons.bittensor import build_canonical_request
+
+signature = hotkey.sign(build_canonical_request("POST", "/base/verify", raw_body))
+response = {"signature": signature.hex()}
+```
+
+Return HTTP 200 with only that JSON field: a 64-byte sr25519 signature encoded as 128 hexadecimal characters. Do not reserialize the challenge before signing. The challenge expires after 30 seconds; Platform allows 10 seconds for the whole probe and at most 8 KiB of response data. Ownership is verified once per registration request, including URL updates.
+
+Read your hotkey's `BlockAtRegistration` from the finalized metagraph, then submit a signed request. Platform may still be using an earlier finalized snapshot; retry a registration mismatch after its next refresh. This example uses an existing local wallet:
+
+```python
+import json
+import secrets
+from datetime import UTC, datetime
+
+import bittensor as bt
+import httpx
+from harnyx_commons.bittensor import build_canonical_request
+
+hotkey = bt.wallet(name="default", hotkey="default").hotkey
+body = json.dumps({
+    "url": "https://miner.example/base",
+    "block_at_registration": 12345,  # Your actual finalized registration block.
+    "timestamp": datetime.now(UTC).isoformat(),
+    "nonce": secrets.token_hex(32),
+}, separators=(",", ":")).encode()
+path = "/v1/miners/register"
+signature = hotkey.sign(build_canonical_request("POST", path, body)).hex()
+response = httpx.post(
+    "https://api.harnyx.ai" + path,
+    content=body,
+    headers={
+        "Content-Type": "application/json",
+        "Authorization": f'Bittensor ss58="{hotkey.ss58_address}",sig="{signature}"',
+    },
+    timeout=30,
+)
+response.raise_for_status()
+print(response.json())
+```
+
+Success returns `miner_id`, `miner_registration_id`, and the normalized `url`; the miner immediately appears in prepared eligibility. A URL update preserves the current registration and rating. A new chain registration block resets rating state while preserving historical rows. Finalized deregistration releases the URL. Returning after endpoint cleanup requires a new ownership verification.
+
+Use a fresh timestamp and nonce for every retry. Timestamps must use UTC and be within five minutes; used nonces are rejected. Registration errors always use `{"error_code": "...", "message": "..."}`:
+
+| Status | Meaning |
+| --- | --- |
+| 401 | Missing or invalid Bittensor authentication. |
+| 403 | The hotkey is not in accepted membership. |
+| 409 | Another miner owns the URL (`miner_endpoint_conflict`). |
+| 422 | Invalid JSON/body schema (`validation_failed`), or registration mismatch, stale/replayed request, or failed proof (`invalid_miner_registration`). |
+| 503 | Authentication data or registration is unavailable (`auth_unavailable` or `registration_unavailable`). Retry with a fresh timestamp and nonce. |
+
+A 503 can follow a successful commit whose publication acknowledgement was lost. Finalization stalls and database outages delay recognition of both new and removed miners. Endpoint registration does not require uploading a script or storing provider API keys.
+
 ## Write → Local Eval → Submit
 
 ### Step 1: Setup

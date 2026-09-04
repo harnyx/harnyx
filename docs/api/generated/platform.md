@@ -20,6 +20,7 @@ Generated from FastAPI OpenAPI.
   - [POST /v2/miner-task-work/scoreable-executions](#endpoint-post-v2-miner-task-work-scoreable-executions)
   - [POST /v2/miner-task-work/tasks](#endpoint-post-v2-miner-task-work-tasks)
 - [miners](#miners)
+  - [POST /v1/miners/register](#endpoint-post-v1-miners-register)
   - [POST /v1/miners/scripts](#endpoint-post-v1-miners-scripts)
 - [platform-tool-proxy](#platform-tool-proxy)
   - [POST /v1/platform-tool-proxy/grants](#endpoint-post-v1-platform-tool-proxy-grants)
@@ -785,6 +786,92 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 
 ## miners
+
+### register
+
+<a id="endpoint-post-v1-miners-register"></a>
+#### POST /v1/miners/register
+
+Register Miner
+
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
+
+**Request**
+Content-Type: `application/json`
+Body: [RegisterMinerRequest](#model-registerminerrequest)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `block_at_registration` |  |  | req | `integer` |
+| `nonce` |  |  | req | `string` |
+| `timestamp` |  |  | req | `string` (format: date-time) |
+| `url` |  |  | req | `string` |
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: [RegisterMinerResponse](#model-registerminerresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `miner_id` |  |  | req | `string` (format: uuid) |
+| `miner_registration_id` |  |  | req | `string` (format: uuid) |
+| `url` |  |  | req | `string` |
+
+`401` Missing or invalid Bittensor authentication.
+Content-Type: `application/json`
+Body: [ErrorResponse](#model-errorresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `error_code` |  |  | req | `string` |
+| `message` |  |  | req | `string` |
+
+`403` Hotkey is not in accepted membership.
+Content-Type: `application/json`
+Body: [ErrorResponse](#model-errorresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `error_code` |  |  | req | `string` |
+| `message` |  |  | req | `string` |
+
+`409` Endpoint is already registered to another miner.
+Content-Type: `application/json`
+Body: [ErrorResponse](#model-errorresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `error_code` |  |  | req | `string` |
+| `message` |  |  | req | `string` |
+
+`422` Request validation or endpoint registration failed.
+Content-Type: `application/json`
+Body: [ErrorResponse](#model-errorresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `error_code` |  |  | req | `string` |
+| `message` |  |  | req | `string` |
+
+`429` The hotkey recently attempted registration.
+Content-Type: `application/json`
+Body: [ErrorResponse](#model-errorresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `error_code` |  |  | req | `string` |
+| `message` |  |  | req | `string` |
+
+`503` Authentication or registration is temporarily unavailable.
+Content-Type: `application/json`
+Body: [ErrorResponse](#model-errorresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `error_code` |  |  | req | `string` |
+| `message` |  |  | req | `string` |
+
 
 ### scripts
 
@@ -6008,6 +6095,101 @@ Body: [StatusResponse](#model-statusresponse)
     "text"
   ],
   "title": "ReferenceAnswer",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-registerminerrequest"></a>
+### Model: RegisterMinerRequest
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `block_at_registration` |  |  | req | `integer` |
+| `nonce` |  |  | req | `string` |
+| `timestamp` |  |  | req | `string` (format: date-time) |
+| `url` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "block_at_registration": {
+      "minimum": 0.0,
+      "title": "Block At Registration",
+      "type": "integer"
+    },
+    "nonce": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Nonce",
+      "type": "string"
+    },
+    "timestamp": {
+      "format": "date-time",
+      "title": "Timestamp",
+      "type": "string"
+    },
+    "url": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Url",
+      "type": "string"
+    }
+  },
+  "required": [
+    "url",
+    "block_at_registration",
+    "timestamp",
+    "nonce"
+  ],
+  "title": "RegisterMinerRequest",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-registerminerresponse"></a>
+### Model: RegisterMinerResponse
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `miner_id` |  |  | req | `string` (format: uuid) |
+| `miner_registration_id` |  |  | req | `string` (format: uuid) |
+| `url` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "miner_id": {
+      "format": "uuid",
+      "title": "Miner Id",
+      "type": "string"
+    },
+    "miner_registration_id": {
+      "format": "uuid",
+      "title": "Miner Registration Id",
+      "type": "string"
+    },
+    "url": {
+      "title": "Url",
+      "type": "string"
+    }
+  },
+  "required": [
+    "miner_id",
+    "miner_registration_id",
+    "url"
+  ],
+  "title": "RegisterMinerResponse",
   "type": "object"
 }
 ```

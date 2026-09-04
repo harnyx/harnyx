@@ -80,11 +80,16 @@ async def test_claude_stream_output_controls_deadlines_through_anthropic_sdk(
     monkeypatch: pytest.MonkeyPatch, output_kind: str, outcome: str
 ) -> None:
     _patch_google_client(monkeypatch, {})
+    loop = asyncio.get_running_loop()
+    stream_time = loop.time()
+    # Advance only at stream boundaries; SDK parsing and runner load consume no test time.
+    monkeypatch.setattr(loop, "time", lambda: stream_time)
 
     class ClaudeStream(httpx.AsyncByteStream):
         closed = False
 
         async def __aiter__(self) -> AsyncIterator[bytes]:
+            nonlocal stream_time
             yield _anthropic_sse(
                 "message_start",
                 message={
@@ -156,7 +161,8 @@ async def test_claude_stream_output_controls_deadlines_through_anthropic_sdk(
                     )
                 else:
                     yield _anthropic_sse("ping")
-                await asyncio.sleep(0.02)
+                stream_time += 0.02
+                await asyncio.sleep(0)
 
             if outcome != "complete":
                 raise AssertionError("The configured deadline should expire before the stream finishes")
