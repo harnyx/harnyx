@@ -214,8 +214,10 @@ def _llm_request(request: SimilarityJudgeRequest) -> LlmRequest:
         output_mode="text",
         temperature=0.0,
         max_output_tokens=256,
+        reasoning_effort="high",
         retry_policy=None,
         use_case="miner_task_similarity_judge",
+        extra={"reasoning_effort": "high"},
     )
 
 
@@ -239,6 +241,11 @@ def _identity() -> BenchmarkIdentity:
         repository_sha="test-sha",
         validator_package_version="test-version",
         requested_model="google/gemma-4-31B-turbo-TEE",
+        reasoning_profile="current",
+        reasoning_control={
+            "reasoning_effort": "high",
+            "request_extra": {"reasoning_effort": "high"},
+        },
         route_target="custom-openai-compatible:gemma4-cloud-run-turbo",
         endpoint_id="gemma4-cloud-run-turbo",
         normalized_base_url="https://gemma.example/v1",
@@ -539,7 +546,7 @@ async def test_provider_failure_retains_attached_response_before_failure_gate(
 
 
 @pytest.mark.anyio
-async def test_structured_output_failure_retains_current_invocation_response(
+async def test_structured_output_failure_retains_current_invocation_evidence(
     tmp_path: Path,
 ) -> None:
     groups = _groups()
@@ -560,8 +567,17 @@ async def test_structured_output_failure_retains_current_invocation_response(
     }
     assert failed_row["llm_response"]["id"] == "malformed-response"
     assert failed_row["llm_response"]["raw_response"]["model"] == "served-gemma-revision"
+    assert failed_row["llm_request"]["reasoning_effort"] == "high"
+    assert failed_row["llm_request"]["extra"] == {"reasoning_effort": "high"}
     run_directory = Path(summary.run_directory)
-    assert (run_directory / "manifest.json").is_file()
+    manifest_path = run_directory / "manifest.json"
+    assert manifest_path.is_file()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["reasoning_profile"] == "current"
+    assert manifest["reasoning_control"] == {
+        "reasoning_effort": "high",
+        "request_extra": {"reasoning_effort": "high"},
+    }
     assert (run_directory / "candidate_results.jsonl").is_file()
     assert (run_directory / "summary.json").is_file()
 

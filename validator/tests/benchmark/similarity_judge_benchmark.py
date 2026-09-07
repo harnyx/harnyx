@@ -17,6 +17,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from harnyx_commons.json_types import JsonObject
 from harnyx_commons.llm.provider import (
     LlmProviderError,
     LlmProviderPort,
@@ -155,6 +156,8 @@ class BenchmarkIdentity(BaseModel):
     repository_sha: str = Field(min_length=1)
     validator_package_version: str = Field(min_length=1)
     requested_model: str = Field(min_length=1)
+    reasoning_profile: str = Field(min_length=1)
+    reasoning_control: JsonObject
     route_target: str = Field(min_length=1)
     endpoint_id: str = Field(min_length=1)
     normalized_base_url: str = Field(min_length=1)
@@ -705,6 +708,7 @@ def _llm_request_payload(request: AbstractLlmRequest | None) -> dict[str, object
         "temperature": request.temperature,
         "max_output_tokens": request.max_output_tokens,
         "reasoning_effort": request.reasoning_effort,
+        "extra": _json_safe(request.extra),
         "timeout": _json_safe(request.timeout),
         "retry_policy": _json_safe(request.retry_policy),
         "use_case": request.use_case,

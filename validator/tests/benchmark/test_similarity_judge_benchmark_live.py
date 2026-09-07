@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from harnyx_commons.clients import CHUTES
+from harnyx_commons.json_types import JsonObject
 from harnyx_commons.llm.provider_factory import (
     build_cached_llm_provider_registry,
     build_routed_llm_provider,
@@ -58,6 +59,9 @@ class BenchmarkTarget:
     endpoint_id: str
     normalized_base_url: str
     endpoint_config: dict[str, object] | None = None
+    reasoning_profile: str = "current"
+    reasoning_effort: str | None = bootstrap._SCORING_LLM_REASONING_EFFORT
+    request_extra: JsonObject | None = None
 
     @property
     def provider_overrides(self) -> dict[str, object]:
@@ -79,6 +83,27 @@ def _gemma_cloud_run_endpoint_config() -> dict[str, object]:
     }
 
 
+def _chutes_reasoning_targets(
+    *,
+    test_id_prefix: str,
+    model: str,
+    explicit_profiles: tuple[str, ...],
+) -> tuple[BenchmarkTarget, ...]:
+    return tuple(
+        BenchmarkTarget(
+            test_id=f"{test_id_prefix}-{profile}",
+            model=model,
+            route_target="chutes",
+            endpoint_id="chutes",
+            normalized_base_url=CHUTES.base_url,
+            reasoning_profile=profile,
+            reasoning_effort=None,
+            request_extra={"reasoning_effort": profile},
+        )
+        for profile in explicit_profiles
+    )
+
+
 _BENCHMARK_TARGETS = (
     BenchmarkTarget(
         test_id="gemma4-cloud-run",
@@ -88,26 +113,53 @@ _BENCHMARK_TARGETS = (
         normalized_base_url=f"{_GEMMA_SERVICE_URL}/v1",
         endpoint_config=_gemma_cloud_run_endpoint_config(),
     ),
-    BenchmarkTarget(
-        test_id="glm-5.2-chutes",
+    *_chutes_reasoning_targets(
+        test_id_prefix="glm-5.2-chutes",
         model=_GLM_MODEL,
-        route_target="chutes",
-        endpoint_id="chutes",
-        normalized_base_url=CHUTES.base_url,
+        explicit_profiles=("none", "high", "max"),
     ),
-    BenchmarkTarget(
-        test_id="kimi-k3-chutes",
+    *_chutes_reasoning_targets(
+        test_id_prefix="kimi-k3-chutes",
         model=_KIMI_MODEL,
-        route_target="chutes",
-        endpoint_id="chutes",
-        normalized_base_url=CHUTES.base_url,
+        explicit_profiles=("low", "high", "max"),
     ),
     BenchmarkTarget(
-        test_id="deepseek-v4-flash-0731-openrouter",
+        test_id="deepseek-v4-flash-0731-openrouter-none",
         model=_DEEPSEEK_MODEL,
         route_target="openrouter",
         endpoint_id="openrouter",
         normalized_base_url=OPENROUTER_BASE_URL,
+        reasoning_profile="none",
+        reasoning_effort=None,
+        request_extra={"reasoning": {"effort": "none"}},
+    ),
+    BenchmarkTarget(
+        test_id="deepseek-v4-flash-0731-openrouter-low",
+        model=_DEEPSEEK_MODEL,
+        route_target="openrouter",
+        endpoint_id="openrouter",
+        normalized_base_url=OPENROUTER_BASE_URL,
+        reasoning_profile="low",
+        reasoning_effort="low",
+    ),
+    BenchmarkTarget(
+        test_id="deepseek-v4-flash-0731-openrouter-high",
+        model=_DEEPSEEK_MODEL,
+        route_target="openrouter",
+        endpoint_id="openrouter",
+        normalized_base_url=OPENROUTER_BASE_URL,
+        reasoning_profile="high",
+        reasoning_effort="high",
+    ),
+    BenchmarkTarget(
+        test_id="deepseek-v4-flash-0731-openrouter-max",
+        model=_DEEPSEEK_MODEL,
+        route_target="openrouter",
+        endpoint_id="openrouter",
+        normalized_base_url=OPENROUTER_BASE_URL,
+        reasoning_profile="max",
+        reasoning_effort=None,
+        request_extra={"reasoning": {"effort": "max"}},
     ),
     BenchmarkTarget(
         test_id="muse-glimmer-30b-openrouter",
@@ -184,6 +236,20 @@ async def test_fixed_dataset_similarity_benchmark(target: BenchmarkTarget) -> No
     assert similarity_route.provider == target.route_target
     assert similarity_route.model == target.model
 
+    request_extra_by_model = bootstrap._similarity_request_extra_by_model((similarity_route,))
+    if target.request_extra is not None:
+        base_model_extra = request_extra_by_model.get(target.model, {})
+        overlapping_keys = set(base_model_extra) & set(target.request_extra)
+        if overlapping_keys:
+            raise ValueError(
+                f"benchmark reasoning profile {target.reasoning_profile!r} conflicts with "
+                f"production request-extra keys: {sorted(overlapping_keys)}"
+            )
+        request_extra_by_model[target.model] = {
+            **base_model_extra,
+            **target.request_extra,
+        }
+
     registry = build_cached_llm_provider_registry(
         llm_settings=settings.llm,
         bedrock_settings=settings.bedrock,
@@ -206,7 +272,7 @@ async def test_fixed_dataset_similarity_benchmark(target: BenchmarkTarget) -> No
             fallback_models=(),
             temperature=0.0,
             max_output_tokens=None,
-            reasoning_effort=bootstrap._SCORING_LLM_REASONING_EFFORT,
+            reasoning_effort=target.reasoning_effort,
             timeout=float(settings.llm.similarity_llm_timeout_seconds),
             retry_policy=RetryPolicy(
                 attempts=1,
@@ -214,13 +280,18 @@ async def test_fixed_dataset_similarity_benchmark(target: BenchmarkTarget) -> No
                 max_ms=0,
                 jitter=0.0,
             ),
-            request_extra_by_model=bootstrap._similarity_request_extra_by_model((similarity_route,)),
+            request_extra_by_model=request_extra_by_model,
         ),
     )
     identity = BenchmarkIdentity(
         repository_sha=_repository_sha(),
         validator_package_version=version("harnyx-validator"),
         requested_model=target.model,
+        reasoning_profile=target.reasoning_profile,
+        reasoning_control={
+            "reasoning_effort": target.reasoning_effort,
+            "request_extra": target.request_extra,
+        },
         route_target=target.route_target,
         endpoint_id=target.endpoint_id,
         normalized_base_url=target.normalized_base_url,
