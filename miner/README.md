@@ -46,6 +46,11 @@ batch monitoring, and score diagnosis, start with the
 
 ## Black-box endpoint registration
 
+> **Not yet released:** Black-box mining is in preparation and is not ready yet.
+> Official release will follow sufficient internal testing. These instructions
+> are for preparation; endpoint registration does not mean black-box mining is
+> officially available. Black-box emission remains zero initially.
+
 Register your hotkey on the subnet, then expose an HTTPS base URL with a valid certificate. Implement `POST <base-url>/verify` before calling Platform's `POST /v1/miners/register`. The URL may include a path or port, but must not include credentials, a query, or a fragment. Platform uses its standard HTTP client DNS, TCP, and TLS behavior and does not follow redirects or use proxies. DNS, connection, TLS, or proof failure rejects registration.
 
 Out-of-range ports return HTTP 422 with `error_code="invalid_miner_registration"` before Platform contacts the endpoint.
