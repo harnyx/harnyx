@@ -208,26 +208,33 @@ async def test_claude_stream_output_controls_deadlines_through_anthropic_sdk(
         timeout=Timeout(0.2 if outcome == "total" else 1, prefill=0.1, inactivity=0.1),
         retry_policy=RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0),
     )
-    try:
-        if outcome == "complete":
-            response = await provider.invoke(request)
-            assert response.raw_text == "done"
-            assert response.finish_reason == "end_turn"
-            assert response.usage.completion_tokens == 12
-            blocks = response.metadata["raw_response"]["content"]
-            if output_kind == "redacted":
-                assert [block["data"] for block in blocks if block["type"] == "redacted_thinking"] == ["opaque"] * 12
+    loop = asyncio.get_running_loop()
+    stream_time = loop.time()
+    # The stream owns elapsed time; SDK decoding speed must not decide which deadline expires.
+    with monkeypatch.context() as clock:
+        clock.setattr(loop, "time", lambda: stream_time)
+        try:
+            if outcome == "complete":
+                response = await provider.invoke(request)
+                assert response.raw_text == "done"
+                assert response.finish_reason == "end_turn"
+                assert response.usage.completion_tokens == 12
+                blocks = response.metadata["raw_response"]["content"]
+                if output_kind == "redacted":
+                    assert [
+                        block["data"] for block in blocks if block["type"] == "redacted_thinking"
+                    ] == ["opaque"] * 12
+                else:
+                    assert blocks[0]["input"]["query"] == "weather " * 12
+                    assert response.usage.web_search_calls == 1
             else:
-                assert blocks[0]["input"]["query"] == "weather " * 12
-                assert response.usage.web_search_calls == 1
-        else:
-            with pytest.raises(LlmRetryExhaustedError) as exc:
-                await provider.invoke(request)
-            assert isinstance(exc.value.__cause__, LlmAttemptTimeoutError)
-            assert exc.value.__cause__.phase == outcome
-        assert body.closed
-    finally:
-        await provider.aclose()
+                with pytest.raises(LlmRetryExhaustedError) as exc:
+                    await provider.invoke(request)
+                assert isinstance(exc.value.__cause__, LlmAttemptTimeoutError)
+                assert exc.value.__cause__.phase == outcome
+            assert body.closed
+        finally:
+            await provider.aclose()
 
 
 class FakeUsage:

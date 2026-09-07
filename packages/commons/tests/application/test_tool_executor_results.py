@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import cast
 from uuid import uuid4
@@ -10,14 +10,20 @@ from uuid import uuid4
 import pytest
 
 from harnyx_commons.domain.session import ProviderCredentialSource, Session, SessionStatus
-from harnyx_commons.domain.tool_call import SearchToolResult, ToolCallOutcome, ToolResultPolicy
+from harnyx_commons.domain.tool_call import (
+    SearchToolResult,
+    StartedToolCall,
+    ToolCall,
+    ToolCallOutcome,
+    ToolResultPolicy,
+)
 from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
 from harnyx_commons.infrastructure.state.session_registry import InMemorySessionRegistry
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.llm.schema import LlmChoice, LlmChoiceMessage, LlmMessageContentPart, LlmResponse, LlmUsage
 from harnyx_commons.tools.dto import ToolInvocationRequest
-from harnyx_commons.tools.executor import ToolExecutor, ToolInvocationContext, ToolInvocationOutput
+from harnyx_commons.tools.executor import ToolCallRecorder, ToolExecutor, ToolInvocationContext, ToolInvocationOutput
 from harnyx_commons.tools.types import SearchToolName, ToolName
 from harnyx_commons.tools.usage_tracker import UsageTracker
 
@@ -91,6 +97,7 @@ def _build_search_executor(
     expires_at: datetime,
     payload: JsonObject,
     provider_credential_source: ProviderCredentialSource = ProviderCredentialSource.MINER,
+    recorder: ToolCallRecorder | None = None,
 ) -> tuple[ToolExecutor, InMemoryReceiptLog, Session, str]:
     token = uuid4().hex
     session = Session(
@@ -114,8 +121,133 @@ def _build_search_executor(
         tool_invoker=StaticSearchInvoker(payload),
         token_registry=tokens,
         clock=lambda: now,
+        tool_call_recorder=recorder,
     )
     return executor, receipts, session, token
+
+
+class RecordingEvidence:
+    def __init__(self) -> None:
+        self.starts: list[StartedToolCall] = []
+        self.terminals: list[ToolCall] = []
+        self.start_entered = asyncio.Event()
+        self.release_start = asyncio.Event()
+        self.release_start.set()
+        self.fail_start = False
+        self.fail_terminal = False
+
+    async def record_started(
+        self, session: Session, call: StartedToolCall, *, on_recorded: Callable[[], None]
+    ) -> None:
+        self.start_entered.set()
+        await self.release_start.wait()
+        if self.fail_start:
+            raise RuntimeError("start storage failed")
+        self.starts.append(call)
+        on_recorded()
+
+    async def record_terminal(self, session: Session, call: ToolCall) -> None:
+        self.terminals.append(call)
+        if self.fail_terminal:
+            raise RuntimeError("terminal acknowledgement lost")
+
+
+@pytest.mark.parametrize("rejection", ["expiry", "revocation", "budget"])
+async def test_durable_start_revalidates_admission_before_dispatch(rejection: str) -> None:
+    """A delayed storage write must not permit a paid call after admission ends."""
+    now = datetime.now(UTC)
+    recorder = RecordingEvidence()
+    recorder.release_start.clear()
+    executor, _, session, token = _build_search_executor(
+        now=now,
+        expires_at=now + timedelta(minutes=1),
+        payload={"data": []},
+        recorder=recorder,
+    )
+    invoked = False
+
+    async def provider(*args, **kwargs):
+        nonlocal invoked
+        invoked = True
+        raise AssertionError("provider must not run")
+
+    executor._tool_invoker.invoke = provider
+    work = asyncio.create_task(
+        executor.execute(
+            ToolInvocationRequest(
+                session_id=session.session_id,
+                token=token,
+                tool="search_web",
+                args=(),
+                kwargs={"query": "q"},
+            )
+        )
+    )
+    await recorder.start_entered.wait()
+    if rejection == "expiry":
+        executor._clock = lambda: now + timedelta(minutes=2)
+    elif rejection == "revocation":
+        executor._tokens.revoke(session.session_id)
+    else:
+        executor._sessions.mutate(session.session_id, lambda current: current.mark_exhausted())
+    recorder.release_start.set()
+    with pytest.raises((RuntimeError, PermissionError)):
+        await work
+    assert not invoked
+    assert len(recorder.terminals) == 1
+    assert recorder.terminals[0].details.actual_cost_usd == 0
+
+
+async def test_start_storage_failure_prevents_paid_dispatch() -> None:
+    now = datetime.now(UTC)
+    recorder = RecordingEvidence()
+    recorder.fail_start = True
+    executor, _, session, token = _build_search_executor(
+        now=now,
+        expires_at=now + timedelta(minutes=1),
+        payload={"data": []},
+        recorder=recorder,
+    )
+    with pytest.raises(RuntimeError, match="start storage failed"):
+        await executor.execute(ToolInvocationRequest(session.session_id, token, "search_web", (), {"query": "q"}))
+    assert recorder.terminals == []
+    assert executor._sessions.get(session.session_id).status is SessionStatus.ERROR
+
+
+async def test_charged_parse_failure_retains_cost_and_original_local_failure() -> None:
+    now = datetime.now(UTC)
+    recorder = RecordingEvidence()
+    executor, receipts, session, token = _build_search_executor(
+        now=now,
+        expires_at=now + timedelta(minutes=1),
+        payload={},
+        recorder=recorder,
+    )
+    with pytest.raises(ValueError):
+        await executor.execute(
+            ToolInvocationRequest(session.session_id, token, "llm_chat", (), {"provider": "test", "model": "model"})
+        )
+    assert len(recorder.terminals) == 1
+    assert recorder.terminals[0].details.actual_cost_usd == 0.001
+    assert recorder.terminals[0].outcome is ToolCallOutcome.INTERNAL_ERROR
+    assert receipts.lookup(recorder.terminals[0].receipt_id).details.cost_usd is None
+
+
+async def test_ambiguous_terminal_commit_never_replaces_evidence() -> None:
+    now = datetime.now(UTC)
+    recorder = RecordingEvidence()
+    recorder.fail_terminal = True
+    executor, _, session, token = _build_search_executor(
+        now=now,
+        expires_at=now + timedelta(minutes=1),
+        payload={"data": []},
+        recorder=recorder,
+    )
+    with pytest.raises(RuntimeError, match="terminal acknowledgement lost"):
+        await executor.execute(ToolInvocationRequest(session.session_id, token, "search_web", (), {"query": "q"}))
+    assert len(recorder.starts) == len(recorder.terminals) == 1
+    assert recorder.terminals[0].outcome is ToolCallOutcome.OK
+    assert recorder.terminals[0].details.cost_usd == 0.001
 
 
 async def test_tool_executor_rejects_an_expired_session() -> None:
@@ -226,9 +358,7 @@ async def test_tool_executor_rejects_invalid_provider_cost_before_settling_usage
     )
 
     with pytest.raises(ValueError, match=error_match):
-        await executor.execute(
-            ToolInvocationRequest(session_id=session.session_id, token=token, tool="search_web")
-        )
+        await executor.execute(ToolInvocationRequest(session_id=session.session_id, token=token, tool="search_web"))
 
     stored_session = sessions.get(session.session_id)
     assert stored_session is not None

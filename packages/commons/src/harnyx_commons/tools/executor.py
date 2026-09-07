@@ -125,6 +125,28 @@ class ToolInvocationContext:
 ToolCallObserver = Callable[[Session, ToolCall], Awaitable[None]]
 
 
+class ToolCallRecorder(Protocol):
+    """Durable call evidence, independent of local settlement and publication."""
+
+    async def record_started(
+        self, session: Session, call: StartedToolCall, *, on_recorded: Callable[[], None]
+    ) -> None:
+        """Acknowledge a successful write before cancellation can propagate."""
+
+    async def record_terminal(self, session: Session, call: ToolCall) -> None: ...
+
+
+@dataclass(slots=True)
+class _CallRecording:
+    started: bool = False
+    dispatched: bool = False
+    terminal_attempted: bool = False
+    output: ToolInvocationOutput | None = None
+
+    def mark_started(self) -> None:
+        self.started = True
+
+
 class ToolExecutor:
     """Coordinates budget enforcement and receipt recording for tool calls."""
 
@@ -138,6 +160,7 @@ class ToolExecutor:
         token_registry: TokenRegistryPort,
         clock: Callable[[], datetime],
         tool_call_observer: ToolCallObserver | None = None,
+        tool_call_recorder: ToolCallRecorder | None = None,
     ) -> None:
         self._sessions = session_registry
         self._receipts = receipt_log
@@ -146,6 +169,7 @@ class ToolExecutor:
         self._tokens = token_registry
         self._clock = clock
         self._tool_call_observer = tool_call_observer
+        self._tool_call_recorder = tool_call_recorder
 
     async def execute(self, request: ToolInvocationRequest) -> ToolInvocationResult:
         """Execute a tool call on behalf of the supplied session."""
@@ -307,7 +331,15 @@ class ToolExecutor:
             miner_hotkey_ss58=session.miner_hotkey_ss58,
             provider_credential_source=session.provider_credential_source,
         )
+        recording = _CallRecording()
         try:
+            if self._tool_call_recorder is not None:
+                await self._record_started(session, started_call, on_recorded=recording.mark_started)
+                # Storage can outlive admission. Recheck immediately before paid I/O.
+                session = self._load_session(request.session_id)
+                self._validate_token(session.session_id, request.token)
+                if session.usage.total_cost_usd >= session.effective_hard_limit_usd:
+                    raise BudgetExceededError("session budget exhausted before provider dispatch")
             result = await self._execute_pending_receipt_async(
                 session,
                 request,
@@ -316,6 +348,7 @@ class ToolExecutor:
                 debug_call_id=debug_call_id,
                 request_payload=request_payload,
                 invocation_context=invocation_context,
+                recording=recording,
             )
         except asyncio.CancelledError as exc:
             await self._try_materialize_failed_pending_receipt(
@@ -323,6 +356,7 @@ class ToolExecutor:
                 started_call=started_call,
                 started_at=started_at,
                 exc=exc,
+                recording=recording,
             )
             raise
         except Exception as exc:
@@ -331,6 +365,7 @@ class ToolExecutor:
                 started_call=started_call,
                 started_at=started_at,
                 exc=exc,
+                recording=recording,
             )
             raise
         return result
@@ -345,8 +380,11 @@ class ToolExecutor:
         debug_call_id: str,
         request_payload: JsonValue | None,
         invocation_context: ToolInvocationContext,
+        recording: _CallRecording,
     ) -> _ExecutionResult:
+        recording.dispatched = True
         invocation_output = await self._invoke_tool_output_async(request, context=invocation_context)
+        recording.output = invocation_output
         finished_at = self._clock()
         results, result_policy = self._build_results(request, invocation_output.public_payload)
         llm_tokens, usage_details = self._extract_usage(
@@ -381,6 +419,9 @@ class ToolExecutor:
                 finished_at=finished_at,
             ),
         )
+        if self._tool_call_recorder is not None:
+            recording.terminal_attempted = True
+            await self._record_terminal(session, receipt)
         completion = self._receipts.complete_pending_receipt(
             receipt,
             settle_usage=lambda: self._settle_usage(
@@ -434,6 +475,7 @@ class ToolExecutor:
         started_call: StartedToolCall,
         started_at: datetime,
         exc: BaseException,
+        recording: _CallRecording,
     ) -> None:
         finished_at = self._clock()
         error_extra = _failed_receipt_error_extra(
@@ -452,6 +494,27 @@ class ToolExecutor:
                 finished_at=finished_at,
             ),
         )
+        if self._tool_call_recorder is not None and recording.started and not recording.terminal_attempted:
+            durable_receipt = failed_receipt
+            cost = _known_failure_cost(recording)
+            if cost is not None:
+                durable_receipt = replace(
+                    failed_receipt,
+                    details=replace(
+                        failed_receipt.details,
+                        cost_usd=cost,
+                        reference_cost_usd=cost,
+                        actual_cost_usd=cost,
+                        actual_cost_provider=(
+                            None if recording.output is None else recording.output.actual_cost_provider
+                        ),
+                    ),
+                )
+            recording.terminal_attempted = True
+            await self._record_terminal(session, durable_receipt)
+            publish_failure = True
+        else:
+            publish_failure = self._tool_call_recorder is None
         completion = self._receipts.complete_pending_receipt(
             failed_receipt,
             settle_usage=lambda: (session, False),
@@ -459,7 +522,8 @@ class ToolExecutor:
         if completion is None:
             return
         updated_session, _ = completion
-        await self._observe_tool_call(updated_session, failed_receipt)
+        if publish_failure:
+            await self._observe_tool_call(updated_session, failed_receipt)
         if (
             session.provider_credential_source is ProviderCredentialSource.PLATFORM
             and isinstance(exc, ToolProviderError)
@@ -478,6 +542,28 @@ class ToolExecutor:
                 session.session_id,
                 lambda current: current.mark_failure_code(failure_code).mark_error(),
             )
+
+    async def _record_started(
+        self, session: Session, call: StartedToolCall, *, on_recorded: Callable[[], None]
+    ) -> None:
+        assert self._tool_call_recorder is not None
+        try:
+            await self._tool_call_recorder.record_started(session, call, on_recorded=on_recorded)
+        except Exception:
+            self._mark_recording_error(session)
+            raise
+
+    async def _record_terminal(self, session: Session, call: ToolCall) -> None:
+        assert self._tool_call_recorder is not None
+        try:
+            await self._tool_call_recorder.record_terminal(session, call)
+        except Exception:
+            self._mark_recording_error(session)
+            raise
+
+    def _mark_recording_error(self, session: Session) -> None:
+        if self._sessions.get(session.session_id) is not None:
+            self._sessions.mutate(session.session_id, lambda current: current.mark_error())
 
     async def _observe_tool_call(self, session: Session, tool_call: ToolCall) -> None:
         if self._tool_call_observer is None:
@@ -592,6 +678,17 @@ class ToolExecutor:
     def _validate_token(self, session_id: UUID, presented: str) -> None:
         if not self._tokens.verify(session_id, presented):
             raise PermissionError("invalid session token presented for tool execution")
+
+
+def _known_failure_cost(recording: _CallRecording) -> float | None:
+    if not recording.dispatched:
+        return 0.0
+    if recording.output is None:
+        return None
+    cost = recording.output.actual_cost_usd
+    if isinstance(cost, bool) or not isinstance(cost, int | float) or not math.isfinite(cost) or cost < 0:
+        return None
+    return cost
 
 
 def _normalize_invocation_output(value: object) -> ToolInvocationOutput:
