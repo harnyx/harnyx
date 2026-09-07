@@ -13,6 +13,7 @@ from harnyx_commons.miner_task_emission import (
     compose_artifact_participant_distribution_weights,
     compose_emission_weights,
     compose_equal_participant_emission_allocations,
+    compose_failed_batch_emission_allocations,
     compose_flat_participant_emission_allocations,
     compose_novelty_distribution_weights,
     compose_novelty_emission_allocations,
@@ -522,7 +523,7 @@ def test_weighted_participant_allocations_divide_the_entire_pool() -> None:
     assert fsum(allocations.values()) == pytest.approx(0.8)
 
 
-def test_equal_participant_emission_divides_entire_remaining_fraction() -> None:
+def test_equal_participant_emission_preserves_public_remaining_fraction_contract() -> None:
     allocations = compose_equal_participant_emission_allocations(
         ("hotkey-a", "hotkey-b", "hotkey-a", "hotkey-c"),
         remaining_emission_fraction=0.7,
@@ -534,6 +535,19 @@ def test_equal_participant_emission_divides_entire_remaining_fraction() -> None:
         "hotkey-c": pytest.approx(0.7 / 3.0),
     }
     assert fsum(allocations.values()) == pytest.approx(0.7)
+
+
+def test_failed_batch_emission_divides_full_pool_once_per_hotkey() -> None:
+    allocations = compose_failed_batch_emission_allocations(
+        ("hotkey-a", "hotkey-b", "hotkey-a", "hotkey-c"),
+    )
+
+    assert allocations == {
+        "hotkey-a": pytest.approx(1.0 / 3.0),
+        "hotkey-b": pytest.approx(1.0 / 3.0),
+        "hotkey-c": pytest.approx(1.0 / 3.0),
+    }
+    assert fsum(allocations.values()) == pytest.approx(1.0)
 
 
 def test_participant_selection_keeps_score_and_classification_on_same_artifact() -> None:

@@ -39,13 +39,14 @@ class UnavailablePlatform:
         raise PlatformWeightsUnavailableError("participant emission unavailable")
 
 
-def test_submission_service_submits_platform_weights() -> None:
+@pytest.mark.parametrize("champion_uid", [5, None])
+def test_submission_service_submits_platform_weights(champion_uid: int | None) -> None:
     fake = FakeSubtensorClient()
     fake.validator_metadata = ValidatorNodeInfo(uid=7, version_key=None)
     fake.current_block_height = 1_234
     netuid = 1
     fake.tempo_by_netuid[netuid] = 360
-    platform = StubPlatform(weights={5: 0.6, 1: 0.4}, champion_uid=5)
+    platform = StubPlatform(weights={5: 0.6, 1: 0.4}, champion_uid=champion_uid)
     service = WeightSubmissionService(
         subtensor=fake,
         netuid=netuid,
@@ -55,7 +56,7 @@ def test_submission_service_submits_platform_weights() -> None:
 
     result = service.submit()
 
-    assert result.champion_uid == 5
+    assert result.champion_uid == champion_uid
     assert fake.weight_updates[-1] == result.weights
     assert pytest.approx(result.weights[5], rel=1e-6) == 0.6
     assert pytest.approx(result.weights[1], rel=1e-6) == 0.4

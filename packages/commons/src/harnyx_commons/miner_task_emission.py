@@ -317,6 +317,17 @@ def compose_equal_participant_emission_allocations(
     )
 
 
+def compose_failed_batch_emission_allocations(
+    participant_keys: Sequence[_ParticipantKey],
+) -> dict[_ParticipantKey, float]:
+    """Divide all failed-batch emission equally, including the champion as a participant."""
+
+    return compose_equal_participant_emission_allocations(
+        participant_keys,
+        remaining_emission_fraction=TOTAL_EMISSION_FRACTION,
+    )
+
+
 def _compose_proportional_emission_allocations(
     distribution_weights: Mapping[_ParticipantKey, float],
     *,
@@ -626,6 +637,7 @@ __all__ = [
     "compose_base_participant_emission_allocations",
     "compose_emission_weights",
     "compose_equal_participant_emission_allocations",
+    "compose_failed_batch_emission_allocations",
     "compose_flat_participant_emission_allocations",
     "compose_novelty_distribution_weights",
     "compose_novelty_emission_allocations",

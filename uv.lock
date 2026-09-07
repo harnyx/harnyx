@@ -773,7 +773,7 @@ wheels = [
 
 [[package]]
 name = "harnyx-commons"
-version = "0.1.21"
+version = "0.1.22"
 source = { editable = "packages/commons" }
 dependencies = [
     { name = "aiobotocore" },
