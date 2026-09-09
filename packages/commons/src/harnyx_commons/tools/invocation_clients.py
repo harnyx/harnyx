@@ -311,6 +311,8 @@ def build_miner_paid_web_search_provider(
     api_key: SecretStr | str,
     llm_settings: LlmSettings,
     timeout: float | None = None,
+    max_response_bytes: int | None = None,
+    include_payloads_in_logs: bool = True,
 ) -> WebSearchProviderPort:
     """Build an uncached miner-paid search provider from an explicit miner credential."""
 
@@ -322,6 +324,8 @@ def build_miner_paid_web_search_provider(
             api_key=explicit_key,
             timeout=_effective_client_timeout(DESEARCH.timeout_seconds, timeout),
             max_concurrent=None,
+            max_response_bytes=max_response_bytes,
+            include_payloads_in_logs=include_payloads_in_logs,
         )
     if provider_name == "parallel":
         return ParallelClient(
@@ -329,6 +333,8 @@ def build_miner_paid_web_search_provider(
             api_key=explicit_key,
             timeout=_effective_client_timeout(PARALLEL.timeout_seconds, timeout),
             max_concurrent=None,
+            max_response_bytes=max_response_bytes,
+            include_payloads_in_logs=include_payloads_in_logs,
         )
     if provider_name == "firecrawl":
         return FirecrawlClient(
@@ -336,6 +342,8 @@ def build_miner_paid_web_search_provider(
             api_key=explicit_key,
             timeout=_effective_client_timeout(FIRECRAWL.timeout_seconds, timeout),
             max_concurrent=None,
+            max_response_bytes=max_response_bytes,
+            include_payloads_in_logs=include_payloads_in_logs,
         )
     if provider_name == "exa":
         return ExaClient(
@@ -343,6 +351,8 @@ def build_miner_paid_web_search_provider(
             api_key=explicit_key,
             timeout=_effective_client_timeout(EXA.timeout_seconds, timeout),
             max_concurrent=None,
+            max_response_bytes=max_response_bytes,
+            include_payloads_in_logs=include_payloads_in_logs,
         )
     if provider_name == "tavily":
         return TavilyClient(
@@ -350,6 +360,8 @@ def build_miner_paid_web_search_provider(
             api_key=explicit_key,
             timeout=_effective_client_timeout(TAVILY.timeout_seconds, timeout),
             max_concurrent=None,
+            max_response_bytes=max_response_bytes,
+            include_payloads_in_logs=include_payloads_in_logs,
         )
     raise AssertionError(f"unsupported parsed miner-paid search provider: {provider_name}")
 
@@ -360,6 +372,8 @@ def build_miner_paid_ai_search_provider(
     api_key: SecretStr | str,
     llm_settings: LlmSettings,
     timeout: float | None = None,
+    max_response_bytes: int | None = None,
+    include_payloads_in_logs: bool = True,
 ) -> AiSearchProviderPort:
     """Build an uncached miner-paid AI-search provider from an explicit credential."""
 
@@ -371,6 +385,8 @@ def build_miner_paid_ai_search_provider(
             api_key=api_key,
             llm_settings=llm_settings,
             timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            include_payloads_in_logs=include_payloads_in_logs,
         ),
     )
 

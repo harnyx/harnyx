@@ -3,6 +3,9 @@
 Generated from FastAPI OpenAPI.
 
 ## Domains
+- [endpoint-assignments](#endpoint-assignments)
+  - [POST /v1/endpoint-assignments/{assignment_id}/callback](#endpoint-post-v1-endpoint-assignments-assignment_id-callback)
+  - [POST /v1/endpoint-assignments/{assignment_id}/search](#endpoint-post-v1-endpoint-assignments-assignment_id-search)
 - [feeds](#feeds)
   - [POST /v1/feeds/search](#endpoint-post-v1-feeds-search)
   - [POST /v1/feeds/{feed_id}/tool/search](#endpoint-post-v1-feeds-feed_id-tool-search)
@@ -37,6 +40,193 @@ Generated from FastAPI OpenAPI.
 - [Misc](#misc)
   - [GET /healthz](#endpoint-get-healthz)
   - [GET /readyz](#endpoint-get-readyz)
+
+## endpoint-assignments
+
+### {assignment_id}
+
+#### callback
+
+<a id="endpoint-post-v1-endpoint-assignments-assignment_id-callback"></a>
+##### POST /v1/endpoint-assignments/{assignment_id}/callback
+
+Accept Callback
+
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
+
+**Parameters**
+| Param | In | Req | Notes |
+| --- | --- | --- | --- |
+| `assignment_id` | path | req | `string` (format: uuid) |
+
+**Request**
+Content-Type: `application/json`
+Body: [EndpointCallback](#model-endpointcallback)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `assignment_id` |  |  | req | `string` (format: uuid) |
+| `expires_at` |  |  | req | `string` (format: date-time) |
+| `nonce` |  |  | req | `string` |
+| `query_digest` |  |  | req | `string` |
+| `response` |  |  | req | [EndpointCallbackResponse](#model-endpointcallbackresponse) |
+|  | `citations` |  | opt | array[[EndpointCallbackCitationRef](#model-endpointcallbackcitationref)] (nullable) |
+|  |  | `receipt_id` | req | `string` |
+|  |  | `result_id` | req | `string` |
+|  |  | `slices` | opt | array[[EndpointCallbackCitationSlice](#model-endpointcallbackcitationslice)] |
+|  | `note` |  | opt | `string` (nullable) |
+|  | `output` |  | opt | [EndpointCallbackJsonValue](#model-endpointcallbackjsonvalue) (nullable) |
+|  | `text` |  | opt | `string` (nullable) |
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: [EndpointCallbackAcknowledgement](#model-endpointcallbackacknowledgement)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `durable_terminal_result` |  |  | req | [EndpointDurableTerminalResult](#model-endpointdurableterminalresult) |
+
+`401` Missing or invalid authentication.
+Content-Type: `application/json`
+Body: `object`
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | req | `string` |
+
+`404` Assignment not found.
+Content-Type: `application/json`
+Body: `object`
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | req | `string` |
+
+`413` Request body exceeds the size limit.
+Content-Type: `application/json`
+Body: `object`
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | req | `string` |
+
+`422` Invalid assignment path, request body, or binding.
+Content-Type: `application/json`
+Body: anyOf: `object` OR `object`
+
+(no documented fields)
+
+`503` Endpoint execution is unavailable.
+Content-Type: `application/json`
+Body: `object`
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | req | `string` |
+
+
+#### search
+
+<a id="endpoint-post-v1-endpoint-assignments-assignment_id-search"></a>
+##### POST /v1/endpoint-assignments/{assignment_id}/search
+
+Execute Search
+
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
+
+**Headers**
+| Header | Req | Notes |
+| --- | --- | --- |
+| `X-Provider-Api-Key` | req | `string` — Required transient provider credential; missing or empty values return 401. Platform does not persist it. |
+
+**Parameters**
+| Param | In | Req | Notes |
+| --- | --- | --- | --- |
+| `assignment_id` | path | req | `string` (format: uuid) |
+
+**Request**
+Content-Type: `application/json`
+Body: [EndpointSearchRequest](#model-endpointsearchrequest)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `args` |  |  | opt | array[[EndpointSearchRequestJsonValue](#model-endpointsearchrequestjsonvalue)] |
+| `kwargs` |  |  | opt | [EndpointSearchRequestJsonObject](#model-endpointsearchrequestjsonobject) |
+| `provider` |  |  | req | `string` |
+| `receipt_id` |  |  | req | `string` |
+| `tool` |  |  | req | [EndpointSearchRequestEndpointSearchTool](#model-endpointsearchrequestendpointsearchtool) |
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: [EndpointSearchResponse](#model-endpointsearchresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `receipt_id` |  |  | req | `string` |
+| `response` |  |  | req | [JsonObject-Input](#model-jsonobject-input) |
+| `results` |  |  | req | array[[EndpointSearchResult](#model-endpointsearchresult)] |
+|  | `note` |  | opt | `string` (nullable) |
+|  | `result_id` |  | req | `string` |
+|  | `title` |  | opt | `string` (nullable) |
+|  | `url` |  | req | `string` |
+
+`400` Search rejected or provider execution failed.
+Content-Type: `application/json`
+Body: `object`
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | req | `string` |
+
+`401` Missing or invalid authentication.
+Content-Type: `application/json`
+Body: `object`
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | req | `string` |
+
+`403` Assignment search is not authorized.
+Content-Type: `application/json`
+Body: `object`
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | req | `string` |
+
+`404` Assignment not found.
+Content-Type: `application/json`
+Body: `object`
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | req | `string` |
+
+`413` Request body exceeds the size limit.
+Content-Type: `application/json`
+Body: `object`
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | req | `string` |
+
+`422` Invalid assignment path, request body, or binding.
+Content-Type: `application/json`
+Body: anyOf: `object` OR `object`
+
+(no documented fields)
+
+`503` Endpoint execution is unavailable.
+Content-Type: `application/json`
+Body: `object`
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | req | `string` |
+
+
 
 ## feeds
 
@@ -1750,6 +1940,616 @@ Body: [StatusResponse](#model-statusresponse)
     }
   },
   "title": "EmbeddingToolUsageSummary",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-endpointcallback"></a>
+### Model: EndpointCallback
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `assignment_id` |  |  | req | `string` (format: uuid) |
+| `expires_at` |  |  | req | `string` (format: date-time) |
+| `nonce` |  |  | req | `string` |
+| `query_digest` |  |  | req | `string` |
+| `response` |  |  | req | [EndpointCallbackResponse](#model-endpointcallbackresponse) |
+|  | `citations` |  | opt | array[[EndpointCallbackCitationRef](#model-endpointcallbackcitationref)] (nullable) |
+|  |  | `receipt_id` | req | `string` |
+|  |  | `result_id` | req | `string` |
+|  |  | `slices` | opt | array[[EndpointCallbackCitationSlice](#model-endpointcallbackcitationslice)] |
+|  | `note` |  | opt | `string` (nullable) |
+|  | `output` |  | opt | [EndpointCallbackJsonValue](#model-endpointcallbackjsonvalue) (nullable) |
+|  | `text` |  | opt | `string` (nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "assignment_id": {
+      "format": "uuid",
+      "title": "Assignment Id",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "nonce": {
+      "maxLength": 128,
+      "minLength": 32,
+      "title": "Nonce",
+      "type": "string"
+    },
+    "query_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Query Digest",
+      "type": "string"
+    },
+    "response": {
+      "$ref": "#/components/schemas/EndpointCallbackResponse"
+    }
+  },
+  "required": [
+    "assignment_id",
+    "query_digest",
+    "nonce",
+    "expires_at",
+    "response"
+  ],
+  "title": "EndpointCallback",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-endpointcallbackacknowledgement"></a>
+### Model: EndpointCallbackAcknowledgement
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `durable_terminal_result` |  |  | req | [EndpointDurableTerminalResult](#model-endpointdurableterminalresult) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "durable_terminal_result": {
+      "$ref": "#/components/schemas/EndpointDurableTerminalResult"
+    }
+  },
+  "required": [
+    "durable_terminal_result"
+  ],
+  "title": "EndpointCallbackAcknowledgement",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-endpointcallbackcitationref"></a>
+### Model: EndpointCallbackCitationRef
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `receipt_id` |  |  | req | `string` |
+| `result_id` |  |  | req | `string` |
+| `slices` |  |  | opt | array[[EndpointCallbackCitationSlice](#model-endpointcallbackcitationslice)] |
+|  | `end` |  | req | `integer` |
+|  | `start` |  | req | `integer` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "receipt_id": {
+      "minLength": 1,
+      "title": "Receipt Id",
+      "type": "string"
+    },
+    "result_id": {
+      "minLength": 1,
+      "title": "Result Id",
+      "type": "string"
+    },
+    "slices": {
+      "items": {
+        "$ref": "#/components/schemas/EndpointCallbackCitationSlice"
+      },
+      "title": "Slices",
+      "type": "array"
+    }
+  },
+  "required": [
+    "receipt_id",
+    "result_id"
+  ],
+  "title": "CitationRef",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-endpointcallbackcitationslice"></a>
+### Model: EndpointCallbackCitationSlice
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `end` |  |  | req | `integer` |
+| `start` |  |  | req | `integer` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "end": {
+      "exclusiveMinimum": 0,
+      "title": "End",
+      "type": "integer"
+    },
+    "start": {
+      "minimum": 0,
+      "title": "Start",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "start",
+    "end"
+  ],
+  "title": "CitationSlice",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-endpointcallbackjsonvalue"></a>
+### Model: EndpointCallbackJsonValue
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "anyOf": [
+    {
+      "type": "string"
+    },
+    {
+      "type": "integer"
+    },
+    {
+      "type": "number"
+    },
+    {
+      "type": "boolean"
+    },
+    {
+      "items": {
+        "$ref": "#/components/schemas/EndpointCallbackJsonValue"
+      },
+      "type": "array"
+    },
+    {
+      "additionalProperties": {
+        "$ref": "#/components/schemas/EndpointCallbackJsonValue"
+      },
+      "type": "object"
+    },
+    {
+      "type": "null"
+    }
+  ]
+}
+```
+
+</details>
+
+<a id="model-endpointcallbackresponse"></a>
+### Model: EndpointCallbackResponse
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `citations` |  |  | opt | array[[EndpointCallbackCitationRef](#model-endpointcallbackcitationref)] (nullable) |
+|  | `receipt_id` |  | req | `string` |
+|  | `result_id` |  | req | `string` |
+|  | `slices` |  | opt | array[[EndpointCallbackCitationSlice](#model-endpointcallbackcitationslice)] |
+|  |  | `end` | req | `integer` |
+|  |  | `start` | req | `integer` |
+| `note` |  |  | opt | `string` (nullable) |
+| `output` |  |  | opt | [EndpointCallbackJsonValue](#model-endpointcallbackjsonvalue) (nullable) |
+| `text` |  |  | opt | `string` (nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "properties": {
+        "output": {
+          "type": "null"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ]
+    },
+    {
+      "properties": {
+        "output": {},
+        "text": {
+          "allOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        }
+      },
+      "required": [
+        "output"
+      ]
+    }
+  ],
+  "properties": {
+    "citations": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/components/schemas/EndpointCallbackCitationRef"
+          },
+          "maxItems": 200,
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Citations"
+    },
+    "note": {
+      "anyOf": [
+        {
+          "maxLength": 80000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional public supplementary content that may explain, qualify, support, or correct the required answer. It cannot replace or repair a missing or invalid answer. Factual claims use the same citations array.",
+      "title": "Note"
+    },
+    "output": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/EndpointCallbackJsonValue"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "text": {
+      "anyOf": [
+        {
+          "maxLength": 80000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Text"
+    }
+  },
+  "title": "Response",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-endpointdurableterminalresult"></a>
+### Model: EndpointDurableTerminalResult
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "enum": [
+    "persisted",
+    "closed"
+  ],
+  "title": "EndpointDurableTerminalResult",
+  "type": "string"
+}
+```
+
+</details>
+
+<a id="model-endpointsearchrequest"></a>
+### Model: EndpointSearchRequest
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `args` |  |  | opt | array[[EndpointSearchRequestJsonValue](#model-endpointsearchrequestjsonvalue)] |
+| `kwargs` |  |  | opt | [EndpointSearchRequestJsonObject](#model-endpointsearchrequestjsonobject) |
+| `provider` |  |  | req | `string` |
+| `receipt_id` |  |  | req | `string` |
+| `tool` |  |  | req | [EndpointSearchRequestEndpointSearchTool](#model-endpointsearchrequestendpointsearchtool) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "args": {
+      "items": {
+        "$ref": "#/components/schemas/EndpointSearchRequestJsonValue"
+      },
+      "maxItems": 32,
+      "title": "Args",
+      "type": "array"
+    },
+    "kwargs": {
+      "$ref": "#/components/schemas/EndpointSearchRequestJsonObject"
+    },
+    "provider": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Provider",
+      "type": "string"
+    },
+    "receipt_id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^[^\\x00]+$",
+      "title": "Receipt Id",
+      "type": "string"
+    },
+    "tool": {
+      "$ref": "#/components/schemas/EndpointSearchRequestEndpointSearchTool"
+    }
+  },
+  "required": [
+    "receipt_id",
+    "provider",
+    "tool"
+  ],
+  "title": "EndpointSearchRequest",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-endpointsearchrequestendpointsearchtool"></a>
+### Model: EndpointSearchRequestEndpointSearchTool
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "enum": [
+    "search_web",
+    "fetch_page"
+  ],
+  "title": "EndpointSearchTool",
+  "type": "string"
+}
+```
+
+</details>
+
+<a id="model-endpointsearchrequestjsonobject"></a>
+### Model: EndpointSearchRequestJsonObject
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": {
+    "$ref": "#/components/schemas/EndpointSearchRequestJsonValue"
+  },
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-endpointsearchrequestjsonvalue"></a>
+### Model: EndpointSearchRequestJsonValue
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "anyOf": [
+    {
+      "type": "string"
+    },
+    {
+      "type": "integer"
+    },
+    {
+      "type": "number"
+    },
+    {
+      "type": "boolean"
+    },
+    {
+      "items": {
+        "$ref": "#/components/schemas/EndpointSearchRequestJsonValue"
+      },
+      "type": "array"
+    },
+    {
+      "additionalProperties": {
+        "$ref": "#/components/schemas/EndpointSearchRequestJsonValue"
+      },
+      "type": "object"
+    },
+    {
+      "type": "null"
+    }
+  ]
+}
+```
+
+</details>
+
+<a id="model-endpointsearchresponse"></a>
+### Model: EndpointSearchResponse
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `receipt_id` |  |  | req | `string` |
+| `response` |  |  | req | [JsonObject-Input](#model-jsonobject-input) |
+| `results` |  |  | req | array[[EndpointSearchResult](#model-endpointsearchresult)] |
+|  | `note` |  | opt | `string` (nullable) |
+|  | `result_id` |  | req | `string` |
+|  | `title` |  | opt | `string` (nullable) |
+|  | `url` |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "receipt_id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Receipt Id",
+      "type": "string"
+    },
+    "response": {
+      "$ref": "#/components/schemas/JsonObject-Input"
+    },
+    "results": {
+      "items": {
+        "$ref": "#/components/schemas/EndpointSearchResult"
+      },
+      "title": "Results",
+      "type": "array"
+    }
+  },
+  "required": [
+    "receipt_id",
+    "response",
+    "results"
+  ],
+  "title": "EndpointSearchResponse",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-endpointsearchresult"></a>
+### Model: EndpointSearchResult
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `note` |  |  | opt | `string` (nullable) |
+| `result_id` |  |  | req | `string` |
+| `title` |  |  | opt | `string` (nullable) |
+| `url` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "note": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Note"
+    },
+    "result_id": {
+      "minLength": 1,
+      "title": "Result Id",
+      "type": "string"
+    },
+    "title": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Title"
+    },
+    "url": {
+      "minLength": 1,
+      "title": "Url",
+      "type": "string"
+    }
+  },
+  "required": [
+    "result_id",
+    "url"
+  ],
+  "title": "EndpointSearchResult",
   "type": "object"
 }
 ```

@@ -9,10 +9,13 @@ authors = [
 ]
 dependencies = [
   "httpx>=0.27",
+  "fastapi==0.136.3",
+  "uvicorn>=0.30",
+  "pydantic>=2.12",
   "python-dotenv>=1.1.1",
   "bittensor==10.4.1",
-  "harnyx-miner-sdk>=0.1.18",
-  "harnyx-commons>=0.1.21",
+  "harnyx-miner-sdk>=0.1.22",
+  "harnyx-commons>=0.1.24",
   "harnyx-validator>=20260506.post0",
 ]
 
@@ -22,6 +25,7 @@ harnyx-miner-local-eval = "harnyx_miner.local_eval:main"
 harnyx-miner-local-benchmark = "harnyx_miner.local_benchmark:main"
 harnyx-miner-submit = "harnyx_miner.submit:main"
 harnyx-miner-config = "harnyx_miner.miner_config:main"
+harnyx-miner-endpoint-test = "harnyx_miner.endpoint_test_server:main"
 
 [project.optional-dependencies]
 dev = [

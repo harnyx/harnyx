@@ -65,6 +65,7 @@ class _AttemptDeadline:
     def progress(self) -> None:
         now = self.now()
         if now >= self.deadline_at:
+            self.timer.reschedule(None)
             raise LlmAttemptTimeoutError(self)
         if self.first_output_at is None:
             self.first_output_at = now

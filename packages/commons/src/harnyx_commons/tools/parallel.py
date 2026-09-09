@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections.abc import Mapping
@@ -29,6 +30,7 @@ from harnyx_commons.tools.provider_billing import (
     ProviderBillingSource,
     SearchProviderResult,
 )
+from harnyx_commons.tools.search_http import read_search_response
 from harnyx_commons.tools.search_models import (
     FetchPageRequest,
     FetchPageResponse,
@@ -177,6 +179,7 @@ class ParallelClient:
         client: httpx.AsyncClient | None = None,
         retry_policy: RetryPolicy | None = None,
         max_concurrent: int | None = None,
+        max_response_bytes: int | None = None,
         include_payloads_in_logs: bool = True,
     ) -> None:
         if not api_key:
@@ -184,6 +187,7 @@ class ParallelClient:
         normalized_base = base_url.rstrip("/")
         self._owns_client = client is None
         self._timeout = timeout
+        self._max_response_bytes = max_response_bytes
         self._client: httpx.AsyncClient = client or httpx.AsyncClient(
             base_url=normalized_base,
             timeout=timeout,
@@ -327,9 +331,7 @@ class ParallelClient:
     ) -> SearchProviderResult[ExtractPagesResponse]:
         advanced_settings: dict[str, object] = {
             "full_content": (
-                True
-                if request.max_chars_per_result is None
-                else {"max_chars_per_result": request.max_chars_per_result}
+                True if request.max_chars_per_result is None else {"max_chars_per_result": request.max_chars_per_result}
             )
         }
         if provider_extra is not None:
@@ -457,7 +459,8 @@ class ParallelClient:
         for attempt in range(self._retry_policy.attempts):
             attempt_start = time.perf_counter()
             try:
-                response = await self._client.post(
+                async with self._client.stream(
+                    "POST",
                     path,
                     headers={
                         "x-api-key": self._api_key,
@@ -465,9 +468,12 @@ class ParallelClient:
                     },
                     json=dict(payload),
                     timeout=timeout,
-                )
+                ) as response:
+                    body = await read_search_response(
+                        response, provider="parallel", max_response_bytes=self._max_response_bytes
+                    )
                 response.raise_for_status()
-                data = response.json()
+                data = json.loads(body)
                 if not isinstance(data, dict):
                     raise RuntimeError("parallel response was not an object")
                 total_latency_ms += (time.perf_counter() - attempt_start) * 1000
@@ -576,9 +582,7 @@ def _parallel_extract_billable_units(
     submitted_url_count: int,
     usage: tuple[_ParallelUsageItemPayload, ...] | None,
 ) -> tuple[int, ProviderBillingSource]:
-    supported_usage = tuple(
-        item.count for item in (usage or ()) if item.name == "sku_extract_excerpts"
-    )
+    supported_usage = tuple(item.count for item in (usage or ()) if item.name == "sku_extract_excerpts")
     if supported_usage:
         return sum(supported_usage), "response_body"
     return submitted_url_count, "request_body"
@@ -623,4 +627,6 @@ def _validate_extract_url_partition(
         raise ValueError("parallel extract response URL appeared in results and errors")
     if result_urls | error_urls != requested:
         raise ValueError("parallel extract response did not partition requested URLs")
+
+
 __all__ = ["ParallelClient"]

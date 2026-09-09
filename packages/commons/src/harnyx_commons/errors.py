@@ -66,6 +66,13 @@ class ToolProviderError(RuntimeError):
         self.billing = billing
 
 
+class ToolResponseTooLargeError(ToolProviderError):
+    """A provider response exceeded the caller's decoded-byte allowance; never retry."""
+
+    def __init__(self, *, limit: int, provider: str, billing: ProviderBillingMetadata | None = None) -> None:
+        super().__init__(f"search response exceeds {limit} decoded bytes", provider=provider, billing=billing)
+
+
 def is_tool_provider_credential_failure(error: ToolProviderError) -> bool:
     return error.failure_code in {
         ToolProviderFailureCode.CREDENTIAL_UNAVAILABLE,
@@ -83,5 +90,6 @@ __all__ = [
     "ProviderCredentialUnavailableError",
     "ToolProviderFailureCode",
     "ToolProviderError",
+    "ToolResponseTooLargeError",
     "is_tool_provider_credential_failure",
 ]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import time
@@ -26,6 +27,7 @@ from harnyx_commons.tools.desearch_ai_protocol import (
     parse_desearch_ai_response,
 )
 from harnyx_commons.tools.provider_billing import ProviderBillingMetadata, SearchProviderResult
+from harnyx_commons.tools.search_http import read_search_response
 from harnyx_commons.tools.search_models import (
     FetchPageRequest,
     FetchPageResponse,
@@ -148,6 +150,7 @@ class DeSearchClient:
         client: httpx.AsyncClient | None = None,
         retry_policy: RetryPolicy | None = None,
         max_concurrent: int | None = None,
+        max_response_bytes: int | None = None,
         include_payloads_in_logs: bool = True,
     ) -> None:
         if not api_key:
@@ -155,6 +158,7 @@ class DeSearchClient:
         normalized_base = base_url.rstrip("/")
         self._owns_client = client is None
         self._timeout = timeout
+        self._max_response_bytes = max_response_bytes
         self._client: httpx.AsyncClient = client or httpx.AsyncClient(
             base_url=normalized_base,
             timeout=timeout,
@@ -681,7 +685,7 @@ class DeSearchClient:
                     attempts_made = attempt + 1
                     attempt_start = time.perf_counter()
                     try:
-                        resp = await self._send(
+                        resp, body = await self._send(
                             method,
                             path,
                             json_payload=json_payload,
@@ -690,6 +694,7 @@ class DeSearchClient:
                         )
                         raw_response, data, billing = await self._parse_response(
                             resp,
+                            body=body,
                             response_format=response_format,
                         )
                         total_latency_ms += (time.perf_counter() - attempt_start) * 1000
@@ -823,25 +828,39 @@ class DeSearchClient:
         json_payload: dict[str, Any] | None,
         params: dict[str, Any] | None,
         timeout: float,
-    ) -> httpx.Response:
+    ) -> tuple[httpx.Response, bytes]:
         headers = {"Authorization": self._api_key}
         if method == "post":
             headers["content-type"] = "application/json"
-            return await self._client.post(path, headers=headers, json=json_payload, timeout=timeout)
-        return await self._client.get(path, headers=headers, params=params, timeout=timeout)
+        async with self._client.stream(
+            method.upper(),
+            path,
+            headers=headers,
+            json=json_payload if method == "post" else None,
+            params=params if method != "post" else None,
+            timeout=timeout,
+        ) as response:
+            body = await read_search_response(
+                response,
+                provider="desearch",
+                max_response_bytes=self._max_response_bytes,
+                billing=_billing_metadata_from_headers(response.headers),
+            )
+        return response, body
 
     @staticmethod
     async def _parse_response(
         resp: httpx.Response,
         *,
+        body: bytes,
         response_format: str,
     ) -> tuple[object, dict[str, Any], ProviderBillingMetadata | None]:
         resp.raise_for_status()
         billing = _billing_metadata_from_headers(resp.headers)
         if response_format in {"text", "html"}:
-            raw = resp.text
+            raw = body.decode(resp.encoding or "utf-8", errors="replace")
             return raw, {"content": raw}, billing
-        raw = resp.json()
+        raw = json.loads(body)
         body_billing = _billing_metadata_from_json(raw)
         if body_billing is not None:
             billing = body_billing

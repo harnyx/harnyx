@@ -71,6 +71,26 @@ async def test_expired_attempt_cannot_be_revived_by_late_output(monkeypatch: pyt
         monkeypatch.undo()
 
 
+async def test_synchronous_expiry_does_not_cancel_stream_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
+    from harnyx_commons.llm import timeout as module
+
+    cleanup: list[str] = []
+    with pytest.raises(LlmAttemptTimeoutError) as failure:
+        async with enforce_attempt_deadlines(Timeout(10)):
+            attempt = module._current_attempt.get()
+            assert attempt is not None
+            attempt.timer.reschedule(asyncio.get_running_loop().time() - 1)
+            monkeypatch.setattr(attempt, "now", lambda: attempt.deadline_at + 1)
+            try:
+                record_output_progress()
+            finally:
+                cleanup.append("started")
+                await asyncio.sleep(0)
+                cleanup.append("completed")
+    assert failure.value.phase == "total"
+    assert cleanup == ["started", "completed"]
+
+
 class _Stream(httpx.AsyncByteStream):
     def __init__(self, scenario: str) -> None:
         self.scenario = scenario

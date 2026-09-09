@@ -13,11 +13,34 @@ from typing import Any
 import httpx
 
 from harnyx_commons.config.external_client import ExternalClientRetrySettings
-from harnyx_commons.errors import ToolProviderError, ToolProviderFailureCode
+from harnyx_commons.errors import ToolProviderError, ToolProviderFailureCode, ToolResponseTooLargeError
 from harnyx_commons.llm.retry_utils import RetryPolicy, backoff_ms
 from harnyx_commons.platform_tool_proxy import platform_tool_proxy_effective_provider_timeout_seconds
+from harnyx_commons.tools.provider_billing import ProviderBillingMetadata
 
 _RETRYABLE_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+
+
+async def read_search_response(
+    response: httpx.Response,
+    *,
+    provider: str,
+    max_response_bytes: int | None,
+    billing: ProviderBillingMetadata | None = None,
+) -> bytes:
+    """Read decoded content within the caller's allowance, before JSON parsing.
+
+    The caller owns stream closure. HTTPX may allocate decompressed chunks before
+    yielding them; this bounds retained content, not decompressor peak memory.
+    """
+    if max_response_bytes is None:
+        return await response.aread()
+    body = bytearray()
+    async for chunk in response.aiter_bytes():
+        if len(body) + len(chunk) > max_response_bytes:
+            raise ToolResponseTooLargeError(limit=max_response_bytes, provider=provider, billing=billing)
+        body.extend(chunk)
+    return bytes(body)
 
 
 class JsonSearchProviderClient:
@@ -36,10 +59,12 @@ class JsonSearchProviderClient:
         retry_policy: RetryPolicy | None,
         max_concurrent: int | None,
         include_payloads_in_logs: bool,
+        max_response_bytes: int | None = None,
     ) -> None:
         if not api_key.strip():
             raise ValueError(f"{provider.title()} API key must be provided")
         self._provider = provider
+        self._max_response_bytes = max_response_bytes
         self._owns_client = client is None
         self._timeout = timeout
         self._client = client or httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=timeout)
@@ -74,16 +99,17 @@ class JsonSearchProviderClient:
         started = time.perf_counter()
         for attempt in range(self._retry_policy.attempts):
             try:
-                response = await self._client.post(
-                    path, headers=self._headers, json=dict(payload), timeout=timeout
-                )
+                async with self._client.stream(
+                    "POST", path, headers=self._headers, json=dict(payload), timeout=timeout
+                ) as response:
+                    body = await read_search_response(
+                        response, provider=self._provider, max_response_bytes=self._max_response_bytes
+                    )
                 response.raise_for_status()
                 try:
-                    raw = response.json()
+                    raw = json.loads(body)
                 except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-                    raise ToolProviderError(
-                        "tool provider response invalid", provider=self._provider
-                    ) from exc
+                    raise ToolProviderError("tool provider response invalid", provider=self._provider) from exc
                 if not isinstance(raw, dict):
                     raise ToolProviderError("tool provider response invalid", provider=self._provider)
                 log_data: dict[str, object] = {
@@ -135,4 +161,4 @@ def _retry_delay_seconds(response: httpx.Response, attempt: int, policy: RetryPo
     return backoff_ms(attempt, policy) / 1000
 
 
-__all__ = ["JsonSearchProviderClient"]
+__all__ = ["JsonSearchProviderClient", "read_search_response"]

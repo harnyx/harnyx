@@ -83,7 +83,26 @@ class CitationRef(BaseModel):
 
 
 class Response(BaseModel):
-    model_config = _MINER_SDK_STRICT_CONFIG
+    model_config = ConfigDict(
+        **_MINER_SDK_STRICT_CONFIG,
+        json_schema_extra={
+            "oneOf": [
+                {
+                    "required": ["text"],
+                    "properties": {"text": {"type": "string"}, "output": {"type": "null"}},
+                },
+                {
+                    "required": ["output"],
+                    "properties": {
+                        "output": {},
+                        # No value is both string and number. The SDK generator preserves
+                        # this as `never`, but drops `not` and boolean-false schemas.
+                        "text": {"allOf": [{"type": "string"}, {"type": "number"}]},
+                    },
+                },
+            ],
+        },
+    )
 
     text: str | None = Field(
         default=None,
@@ -157,9 +176,8 @@ class Response(BaseModel):
         info: SerializationInfo,
     ) -> dict[str, object]:
         payload = cast(dict[str, object], handler(self))
-        output_is_selected = (
-            (info.include is None or "output" in info.include)
-            and (info.exclude is None or "output" not in info.exclude)
+        output_is_selected = (info.include is None or "output" in info.include) and (
+            info.exclude is None or "output" not in info.exclude
         )
         if "output" in self.model_fields_set and output_is_selected:
             payload["output"] = self.output

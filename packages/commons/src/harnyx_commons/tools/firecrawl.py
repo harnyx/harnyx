@@ -18,6 +18,7 @@ from harnyx_commons.errors import ToolProviderError, ToolProviderFailureCode
 from harnyx_commons.llm.retry_utils import RetryPolicy, backoff_ms
 from harnyx_commons.platform_tool_proxy import platform_tool_proxy_effective_provider_timeout_seconds
 from harnyx_commons.tools.provider_billing import ProviderBillingMetadata, SearchProviderResult
+from harnyx_commons.tools.search_http import read_search_response
 from harnyx_commons.tools.search_models import (
     FetchPageRequest,
     FetchPageResponse,
@@ -152,12 +153,14 @@ class FirecrawlClient:
         client: httpx.AsyncClient | None = None,
         retry_policy: RetryPolicy | None = None,
         max_concurrent: int | None = None,
+        max_response_bytes: int | None = None,
         include_payloads_in_logs: bool = True,
     ) -> None:
         if not api_key.strip():
             raise ValueError("Firecrawl API key must be provided")
         self._owns_client = client is None
         self._timeout = timeout
+        self._max_response_bytes = max_response_bytes
         self._client = client or httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=timeout)
         self._api_key = api_key
         self._retry_policy = retry_policy or ExternalClientRetrySettings().retry_policy
@@ -234,9 +237,7 @@ class FirecrawlClient:
             for requested_format in extra.formats:
                 content = content_by_format[requested_format]
                 if content is None:
-                    raise ValueError(
-                        f"Firecrawl scrape response omitted requested format {requested_format!r}"
-                    )
+                    raise ValueError(f"Firecrawl scrape response omitted requested format {requested_format!r}")
                 results.append(
                     FetchPageResult(
                         url=result_url,
@@ -282,15 +283,19 @@ class FirecrawlClient:
         started = time.perf_counter()
         for attempt in range(self._retry_policy.attempts):
             try:
-                response = await self._client.post(
+                async with self._client.stream(
+                    "POST",
                     path,
                     headers={"authorization": f"Bearer {self._api_key}", "content-type": "application/json"},
                     json=dict(payload),
                     timeout=timeout,
-                )
+                ) as response:
+                    body = await read_search_response(
+                        response, provider="firecrawl", max_response_bytes=self._max_response_bytes
+                    )
                 response.raise_for_status()
                 try:
-                    raw = response.json()
+                    raw = json.loads(body)
                 except (json.JSONDecodeError, UnicodeDecodeError) as exc:
                     raise ToolProviderError(
                         "tool provider response invalid",

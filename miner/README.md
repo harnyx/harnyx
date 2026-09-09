@@ -128,6 +128,52 @@ Use a fresh timestamp and nonce for every retry. Timestamps must use UTC and be 
 
 A 503 can follow a successful commit whose publication acknowledgement was lost. Finalization stalls and database outages delay recognition of both new and removed miners. Endpoint registration does not require uploading a script or storing provider API keys.
 
+### Exercise the endpoint protocol
+
+This example supports text queries only. It rejects assignments with `query.output_schema` using HTTP 422 before retaining the assignment or starting search. Implement structured answers in your own miner if you need them; the endpoint protocol itself supports both answer forms.
+
+The miner package includes a small HTTPS test endpoint. It answers Platform's ownership challenge at `<base-url>/verify`, verifies signed assignments, and calls assignment-bound Platform search when provider inputs are supplied. One task per assignment owns search and callback delivery; repeated assignment deliveries and status polls do not start parallel work. Callback delivery retries the saved answer until Platform acknowledges a durable outcome or the original deadline expires.
+
+Failed searches are logged without provider credentials and are not automatically retried. The assignment stays in memory and status returns HTTP 503 instead of falsely reporting `running` or claiming `unknown`. Successful searches retain their callback and report `completed`, including after acknowledgement or deadline expiry. Shutdown cancels and joins active tasks; explicit state clearing cancels obsolete work and makes status `unknown`. The server does not provide durable storage across process restarts.
+
+Search HTTP requests use the assignment's remaining time, including an overall deadline, rather than the client's default inactivity timeout. The example uses the first result's summary or title as its answer, but includes a citation only when that result has nonblank source text. A title alone is not citation evidence.
+
+Platform rejects new assignment searches above 2 MiB of decoded provider response or 2 MiB of normalized saved response/results evidence. This can reject long valid pages: source text is represented in both the provider response and citation results. There is no truncation or automatic retry; known provider costs remain recorded. The example handles this as a failed search and retains the assignment. See the [SDK search contract](../packages/miner-sdk/README.md) for exact byte-counting and replay behavior.
+
+Run it with your public HTTPS base URL, your hotkey's current `BlockAtRegistration`, and a TLS certificate and key whose public hostname matches that URL. The server checks challenges against these startup values, not the request's Host header. Then follow [Black-box endpoint registration](#black-box-endpoint-registration) to register the same URL and block with Platform:
+
+```bash
+harnyx-miner-endpoint-test \
+  --platform-hotkey <platform-hotkey-ss58> \
+  --miner-hotkey-uri <miner-hotkey-uri> \
+  --endpoint-url https://miner.example:8300/base \
+  --registration-block <block-at-registration> \
+  --ssl-certfile <certificate.pem> \
+  --ssl-keyfile <private-key.pem> \
+  --host 0.0.0.0 \
+  --port 8300
+```
+
+To exercise receipt-backed search, supply the provider name and the name of an environment variable containing its API key. The key is sent only in the `X-Provider-Api-Key` header and is not retained in endpoint state:
+
+```bash
+harnyx-miner-endpoint-test \
+  --platform-hotkey <platform-hotkey-ss58> \
+  --miner-hotkey-uri <miner-hotkey-uri> \
+  --endpoint-url https://miner.example:8300/base \
+  --registration-block <block-at-registration> \
+  --provider parallel \
+  --provider-key-env PARALLEL_API_KEY \
+  --ssl-certfile <certificate.pem> \
+  --ssl-keyfile <private-key.pem> \
+  --host 0.0.0.0 \
+  --port 8300
+```
+
+All three incoming routes use the configured base path, including encoded path characters. A reverse proxy must preserve the external path when forwarding; prefix stripping is not supported. Ownership challenges are bounded to 8 KiB and rejected without a signature if malformed, expired, or inconsistent with the configured hotkey, URL or block. Update the startup values when the URL or chain registration changes; the test server does not discover them from the chain.
+
+The endpoint state is intentionally temporary. For production endpoints, we recommend deduplicating assignments and retaining signed results until Platform acknowledges a durable outcome. These are recommended practices, not guarantees Platform trusts. A retry may arrive after a callback commits; Platform preserves the first valid, timely answer and its recorded latency regardless of whether the miner repeats work. See the [registered endpoint protocol](../packages/miner-sdk/README.md#registered-endpoint-protocol) for retry identity and callback guarantees. The strict DTOs and digest helper live in `harnyx_miner_sdk.endpoint_protocol`.
+
 ## Write → Local Eval → Submit
 
 ### Step 1: Setup

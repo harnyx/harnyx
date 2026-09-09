@@ -4,6 +4,34 @@ Agent-facing SDK for Harnyx miners: entrypoints, request/response contracts, and
 
 This package is imported by **your miner agent script**.
 
+## Registered endpoint protocol
+
+`harnyx_miner_sdk.endpoint_protocol` contains the strict version-one wire models for registered miner endpoints:
+
+- `EndpointAssignment` binds an assignment UUID, `Query`, query digest, expected miner hotkey, HTTPS callback URL, nonce, and expiry.
+- `EndpointCallback` returns the same binding with a normal SDK `Response`.
+- `EndpointStatusResponse` reports `running`, `completed`, or `unknown` for caller-driven recovery.
+- `EndpointSearchRequest` and `EndpointSearchResponse` carry assignment-bound `search_web` or `fetch_page` calls and their receipt-backed results. Deprecated `search_ai` is unavailable to miners; Platform rejects it before reserving a search or contacting a provider.
+- Assignment and callback acknowledgements confirm acceptance and a durable `persisted` or `closed` terminal result.
+
+All models reject extra fields. Both peers sign the exact HTTP method, path, and raw body with their Bittensor hotkeys using `harnyx_commons.bittensor.build_canonical_request`. A callback must reuse every binding from the assignment. Its citations may reference only successful Platform search receipts created by that assignment.
+
+Assignment acknowledgement and status replies must be uncompressed and fit within 8 KiB. Platform requests `Accept-Encoding: identity` and accepts an absent `Content-Encoding` header or `identity`; it rejects other encodings before reading or decoding the body. A rejected acknowledgement leaves delivery uncertain, and a rejected status reply is unavailable for recovery polling. This restriction does not change callback acceptance or provider-search response handling.
+
+Search requires a nonempty `X-Provider-Api-Key` header; missing or empty values return HTTP 401. Choose a `receipt_id` of 1–256 characters without NUL (`U+0000`). Platform rejects invalid IDs with HTTP 422 before reserving or executing a search and preserves accepted IDs exactly.
+
+Object keys anywhere in search `args` or `kwargs` must also exclude NUL. Numeric values at every depth must be finite: `NaN`, `Infinity`, and `-Infinity` return HTTP 422 before reservation or persistence, without conversion. Finite numbers and string values remain unchanged. Invalid keys return HTTP 422 before reservation; Platform does not rename keys or change valid Unicode keys and string values. Handled authentication, assignment, body-validation and search errors use a string `detail`; HTTP 422 can instead contain FastAPI's validation-detail array when the assignment path is invalid. The generated API contract describes both shapes.
+
+New assignment searches permit at most 2 MiB (2,097,152 bytes) of decoded provider HTTP response and 2 MiB of normalized saved evidence. The evidence limit counts the complete compact UTF-8 `{response, results}` JSON envelope, including duplicated source text and metadata. Platform closes an oversized download and rejects the search with HTTP 400; it never truncates results or automatically retries them. Known incurred provider costs remain recorded; billing unavailable after an early download abort remains unknown, not zero. Existing successful receipts still replay exactly, without applying the new-size check again. These limits do not extend the assignment deadline or change callback eligibility.
+
+If a successful search response is lost, repeat the same search request with the same `receipt_id` under the same assignment. While that assignment remains active and before its original deadline, Platform returns the saved response and result identifiers without another provider call, receipt or charge, even when new-search capacity is full. A conflicting request or an unfinished or failed call with that receipt is rejected; replay does not restart search. The same receipt under a different assignment identifies a separate call. Authenticate and supply the provider-key header as for the original request.
+
+Recovery skips success visible at its final check, but a concurrent callback can commit before the retry is sent. Duplicate network delivery is therefore possible. Retries reuse the same assignment ID and original deadline; they do not create another assignment or independently count toward evaluation or reward. Platform saves only the first valid, timely callback. Later callbacks cannot replace that answer or its recorded latency, even if the miner repeats work and returns a different valid answer.
+
+We recommend deduplicating assignments and retaining signed results until Platform acknowledges a durable outcome. These practices reduce repeated work and help recover delivery, but Platform does not trust miners to implement them. A miner may reuse work, repeat work or ignore a duplicate request without changing Platform's saved result.
+
+The runnable `harnyx-miner-endpoint-test` command in the miner package exercises assignment verification, assignment-bound search, signed callback retry, status polling, and deliberate `unknown` recovery after its in-memory state is cleared. It is protocol tooling, not durable miner execution storage.
+
 ## Generated Python execution
 
 SDK `0.1.9` can execute generated Python inside the miner sandbox:

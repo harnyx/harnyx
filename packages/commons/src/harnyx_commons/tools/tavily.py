@@ -62,6 +62,7 @@ class TavilyClient:
         client: httpx.AsyncClient | None = None,
         retry_policy: RetryPolicy | None = None,
         max_concurrent: int | None = None,
+        max_response_bytes: int | None = None,
         include_payloads_in_logs: bool = True,
     ) -> None:
         self._http = JsonSearchProviderClient(
@@ -74,6 +75,7 @@ class TavilyClient:
             client=client,
             retry_policy=retry_policy,
             max_concurrent=max_concurrent,
+            max_response_bytes=max_response_bytes,
             include_payloads_in_logs=include_payloads_in_logs,
         )
 

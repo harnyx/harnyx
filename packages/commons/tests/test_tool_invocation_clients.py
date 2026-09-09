@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 
+import httpx
 import pytest
 from pydantic import SecretStr
 
@@ -18,6 +20,7 @@ from harnyx_commons.llm.schema import (
     LlmResponse,
     LlmUsage,
 )
+from harnyx_commons.observability.logging import ExtrasFormatter
 from harnyx_commons.tools import invocation_clients
 from harnyx_commons.tools.invocation_clients import (
     ChutesEmbeddingProvider,
@@ -25,6 +28,47 @@ from harnyx_commons.tools.invocation_clients import (
     build_optional_tool_embedding_provider,
     build_tool_invocation_clients,
 )
+from harnyx_commons.tools.search_models import SearchAiSearchRequest
+
+
+@pytest.mark.anyio("asyncio")
+@pytest.mark.parametrize("include_payloads", [False, True])
+async def test_miner_paid_ai_provider_preserves_payload_logging_choice(monkeypatch, caplog, include_payloads):
+    """The AI factory must preserve the caller's logging choice at the actual provider boundary."""
+    monkeypatch.setenv("K_SERVICE", "platform-test")
+    logger_name = "harnyx_commons.tools.desearch.calls"
+    caplog.set_level(logging.INFO, logger=logger_name)
+    original_client = httpx.AsyncClient
+    clients = []
+
+    def handle(request):
+        assert "private-query" in request.content.decode()
+        return httpx.Response(200, json={"results": [{"link": "https://example.com", "snippet": "private-evidence"}]})
+
+    def client_with_transport(**kwargs):
+        client = original_client(**kwargs, transport=httpx.MockTransport(handle))
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_with_transport)
+    provider = invocation_clients.build_miner_paid_ai_search_provider(
+        provider="desearch",
+        api_key="test-key",
+        llm_settings=LlmSettings(),
+        include_payloads_in_logs=include_payloads,
+    )
+    try:
+        result = await provider.search_ai(SearchAiSearchRequest(provider="desearch", prompt="private-query"))
+    finally:
+        await provider.aclose()
+    assert "private-evidence" in repr(result)
+    assert clients and all(client.is_closed for client in clients)
+    records = [record for record in caplog.records if record.name == logger_name]
+    assert any(record.getMessage() == "desearch.request.complete" for record in records)
+    rendered = "\n".join(ExtrasFormatter("%(message)s").format(record) for record in records)
+    assert ("private-query" in rendered) is include_payloads
+    assert ("private-evidence" in rendered) is include_payloads
+
 
 GEMMA_MODEL = "google/gemma-4-31B-turbo-TEE"
 GEMMA_ROUTE_TARGET = "custom-openai-compatible:gemma4-cloud-run-turbo"

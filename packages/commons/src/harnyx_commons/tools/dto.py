@@ -73,10 +73,10 @@ def tool_payload_from_args_kwargs(
     if args:
         first = args[0]
         if not isinstance(first, dict):
-            raise TypeError("expected JSON object payload as first positional argument")
+            raise ValueError("expected JSON object payload as first positional argument")
         for key in first:
             if not isinstance(key, str):
-                raise TypeError("expected JSON object with string keys")
+                raise ValueError("expected JSON object with string keys")
         return dict(first)
     return {}
 
