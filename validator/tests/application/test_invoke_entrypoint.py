@@ -169,10 +169,20 @@ async def test_invoke_entrypoint_returns_structured_output() -> None:
     }
 
 
-async def test_invoke_entrypoint_maps_schema_mismatch_as_miner_response_invalid() -> None:
+@pytest.mark.parametrize("surface", ["schema", "text", "output", "note"])
+async def test_invoke_entrypoint_maps_schema_mismatch_as_miner_response_invalid(surface: str) -> None:
     token = uuid4().hex
     invoker, sandbox, session_id, _, _, _, _ = _build_invoker(token)
     sandbox.response = {"output": {"answer": 1}}
+    query = Query(text="question", output_schema={"type": "array"})
+    if surface == "text":
+        sandbox.response = {"text": "Answer [[1]]"}
+        query = Query(text="question")
+    elif surface == "output":
+        sandbox.response = {"output": [{"answer": "[[1]]"}]}
+    elif surface == "note":
+        sandbox.response = {"text": "Answer", "note": "[[1]]"}
+        query = Query(text="question")
 
     with pytest.raises(MinerResponseValidationError):
         await invoker.invoke(
@@ -181,7 +191,7 @@ async def test_invoke_entrypoint_maps_schema_mismatch_as_miner_response_invalid(
                 token=token,
                 uid=42,
                 execution_time_limit_seconds=300.0,
-                query=Query(text="question", output_schema={"type": "array"}),
+                query=query,
             )
         )
 

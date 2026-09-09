@@ -26,8 +26,92 @@ from harnyx_commons.domain.tool_call import (
 )
 from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
 from harnyx_commons.tools.types import ToolName
+from harnyx_miner_sdk.json_types import JsonValue
 
 _LEGACY_QUERY = Query(text="question")
+
+
+@pytest.mark.parametrize("surface", ["text", "output", "nested", "note"])
+@pytest.mark.parametrize("number", ["0", "2", pytest.param("9" * 5_000, id="huge")])
+def test_citation_reference_must_be_in_range(surface: str, number: str) -> None:
+    """Future failure: dangling markers must not escape schema-equivalent validation on any answer surface."""
+    session_id = uuid4()
+    marker = f"[[{number}]]"
+    payload: dict[str, JsonValue] = {"citations": [{"receipt_id": "receipt-1", "result_id": "result-1"}]}
+    if surface == "nested":
+        payload["output"] = {"items": [None, 3, True, {"claim": marker}]}
+    elif surface == "note":
+        payload.update(text="Answer", note=marker)
+    else:
+        payload[surface] = marker
+    query = Query(text="question", output_schema={}) if "output" in payload else _LEGACY_QUERY
+    with pytest.raises(MinerResponsePayloadError, match="citation"):
+        hydrate_miner_response_payload(
+            payload,
+            query=query,
+            session_id=session_id,
+            receipt_log=_receipt_log_with_result(session_id=session_id, note=_source_text()),
+        )
+
+
+@pytest.mark.parametrize("citations", [None, [], [{"receipt_id": "missing", "result_id": "missing"}]])
+@pytest.mark.parametrize("surface", ["text", "output", "note"])
+def test_citation_reference_requires_resolved_evidence(citations: JsonValue, surface: str) -> None:
+    """Future failure: absent evidence and hydrated null positions must reject a referenced citation."""
+    payload: dict[str, JsonValue] = {"citations": citations}
+    query = _LEGACY_QUERY
+    if surface == "output":
+        payload["output"] = {"items": [{"claim": "[[1]]"}]}
+        query = Query(text="question", output_schema={})
+    elif surface == "note":
+        payload.update(text="Answer", note="[[1]]")
+    else:
+        payload["text"] = "Answer [[1]]"
+    with pytest.raises(MinerResponsePayloadError, match="citation"):
+        hydrate_miner_response_payload(
+            payload,
+            query=query,
+            session_id=uuid4(),
+            receipt_log=InMemoryReceiptLog(),
+        )
+
+
+def test_citation_check_preserves_valid_content_and_ignores_non_answer_markers() -> None:
+    """Future failure: checking references must not renumber nulls or parse keys and source text as claims."""
+    session_id = uuid4()
+    output: JsonValue = {"[[999]]": [None, True, 3, {"claim": "[[1]][[3]][[0001]]"}]}
+    response = hydrate_miner_response_payload(
+        {
+            "output": output,
+            "note": "[[3]]",
+            "citations": [
+                {"receipt_id": "receipt-1", "result_id": "result-1"},
+                {"receipt_id": "missing", "result_id": "missing"},
+                {"receipt_id": "receipt-1", "result_id": "result-1"},
+            ],
+        },
+        query=Query(text="question", output_schema={}),
+        session_id=session_id,
+        receipt_log=_receipt_log_with_result(session_id=session_id, note="Source [[999]]"),
+    )
+    assert response.output == output
+    assert response.note == "[[3]]"
+    assert response.citations is not None
+    assert len(response.citations) == 3
+    assert response.citations[1] is None
+    assert response.citations[0] == response.citations[2]
+
+
+@pytest.mark.parametrize("text", ["Answer", "[1] [[1,2]] [[x]] [[ 1 ]] [[-1]]"])
+def test_unrecognized_markers_and_unused_nulls_do_not_fail(text: str) -> None:
+    """Future failure: reference checking must not become citation-necessity or malformed-marker enforcement."""
+    response = hydrate_miner_response_payload(
+        {"text": text, "citations": [{"receipt_id": "missing", "result_id": "missing"}]},
+        session_id=uuid4(),
+        receipt_log=InMemoryReceiptLog(),
+    )
+    assert response.text == text
+    assert response.citations == (None,)
 
 
 def test_parse_materialized_citation_excerpts_recovers_each_exact_slice() -> None:
@@ -467,6 +551,21 @@ def test_hydrate_miner_response_payload_preserves_every_soft_unresolved_class_as
         text="Answer [[8]]",
         citations=(None, None, None, None, None, None, None, resolved),
     )
+    for receipt_id, result_id in (
+        ("missing-receipt", "result-1"),
+        ("wrong-session", "result-1"),
+        ("unsuccessful", "result-1"),
+        ("non-citation-tool", "result-1"),
+        ("not-referenceable", "result-1"),
+        ("missing-result", "absent"),
+        ("wrong-result-type", "result-1"),
+    ):
+        with pytest.raises(MinerResponsePayloadError, match="unresolved citation"):
+            hydrate_miner_response_payload(
+                {"text": "[[1]]", "citations": [{"receipt_id": receipt_id, "result_id": result_id}]},
+                session_id=session_id,
+                receipt_log=receipt_log,
+            )
 
 
 def test_hydrate_miner_response_payload_preserves_existing_list_ingress_shape() -> None:

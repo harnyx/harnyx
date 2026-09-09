@@ -24,6 +24,7 @@ _MAX_EVIDENCE_SEGMENTS_PER_RESPONSE = 400
 MIN_CITATION_SLICE_CHARS = 100
 MAX_TOTAL_CITATION_EVIDENCE_CHARS = 120_000
 _MATERIALIZED_SLICE_HEADER = re.compile(r"\[slice ([0-9]+):([0-9]+)\]\n")
+_CITATION_MARKER = re.compile(r"\[\[([0-9]+)\]\]")
 
 
 class MinerResponsePayloadError(ValueError):
@@ -139,9 +140,34 @@ def hydrate_miner_response_payload(
     if hydrated_citations.source_text_chars > MAX_TOTAL_CITATION_EVIDENCE_CHARS:
         raise MinerResponsePayloadError("response citations exceed 120000 materialized source-text characters")
     citations = hydrated_citations.citations or None
+    _validate_citation_references(raw_response, hydrated_citations.citations)
     if "text" in raw_response.model_fields_set:
         return Response(text=raw_response.text, note=raw_response.note, citations=citations)
     return Response(output=raw_response.output, note=raw_response.note, citations=citations)
+
+
+def _validate_citation_references(
+    response: _RawMinerResponsePayload, citations: tuple[AnswerCitation | None, ...]
+) -> None:
+    pending: list[JsonValue] = [response.text, response.output, response.note]
+    max_position_digits = len(str(len(citations)))
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+        elif isinstance(value, str):
+            for marker in _CITATION_MARKER.finditer(value):
+                digits = marker.group(1).lstrip("0") or "0"
+                # Bound conversion even when a response contains thousands of digits.
+                if len(digits) > max_position_digits:
+                    raise MinerResponsePayloadError("inline citation position is out of range")
+                position = int(digits)
+                if not 1 <= position <= len(citations):
+                    raise MinerResponsePayloadError("inline citation position is out of range")
+                if citations[position - 1] is None:
+                    raise MinerResponsePayloadError(f"inline citation [[{position}]] points to an unresolved citation")
 
 
 def _validate_answer_for_query(response: _RawMinerResponsePayload, query: Query) -> None:
