@@ -118,7 +118,7 @@ async def test_miner_paid_ai_gateway_inkling_live() -> None:
     assert response.usage.reasoning_tokens > 0
 
 
-async def test_ai_gateway_cerebras_gemma_reasoning_live() -> None:
+async def test_ai_gateway_gemma_live() -> None:
     settings = LlmSettings()
     provider = build_miner_paid_llm_provider(
         provider="ai_gateway",
@@ -143,7 +143,6 @@ async def test_ai_gateway_cerebras_gemma_reasoning_live() -> None:
         max_output_tokens=None,
         thinking=LlmThinkingConfig(enabled=True, effort="medium"),
         timeout=180.0,
-        extra={"providerOptions": {"gateway": {"only": ["cerebras"]}}},
     )
 
     try:
@@ -153,15 +152,8 @@ async def test_ai_gateway_cerebras_gemma_reasoning_live() -> None:
 
     assert response.raw_text
     assert response.metadata is not None
-    routing = response.metadata["raw_response"]["providerMetadata"]["gateway"]["routing"]
-    assert routing["resolvedProvider"] == "cerebras"
-    assert routing["finalProvider"] == "cerebras"
-    message = response.choices[0].message
-    reasoning = message.reasoning
-    assert reasoning, "Gemma 4 must expose a reasoning trace through AI Gateway on Cerebras"
-    assert message.reasoning_details, "Gemma 4 must expose reasoning details through AI Gateway on Cerebras"
-    assert response.usage.reasoning_tokens is not None
-    assert response.usage.reasoning_tokens > 0
+    assert response.metadata["actual_cost_provider"] == "ai_gateway"
+    assert response.metadata["actual_cost_usd"] >= 0.0
 
 
 async def test_ai_gateway_two_turn_function_tool_loop_live() -> None:

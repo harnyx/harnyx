@@ -39,7 +39,6 @@ from harnyx_miner_sdk.llm import Timeout
 
 AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
 AI_GATEWAY_SUPPORTED_MODELS = MINER_SELECTED_LLM_PROVIDER_MODELS[AI_GATEWAY_PROVIDER]
-_CEREBRAS_GEMMA_MODEL = "google/gemma-4-31b-it"
 
 
 class AiGatewayLlmProvider(BaseLlmProvider):
@@ -232,13 +231,7 @@ class _AiGatewayChatRequest(BaseModel):
             ),
         )
         if request.extra:
-            payload = payload.model_copy(
-                update=_with_cerebras_gemma_reasoning_option(
-                    request.extra,
-                    model=request.model,
-                    thinking=request.thinking,
-                )
-            )
+            payload = payload.model_copy(update=dict(request.extra))
         payload = payload.model_copy(
             update={
                 "reasoning": _merge_reasoning_extra(
@@ -472,42 +465,6 @@ def _merge_reasoning_extra(
     if reasoning_payload is not None:
         merged.update(reasoning_payload)
     return merged
-
-
-def _with_cerebras_gemma_reasoning_option(
-    request_extra: Mapping[str, Any],
-    *,
-    model: str,
-    thinking: LlmThinkingConfig | None,
-) -> dict[str, Any]:
-    merged_extra = dict(request_extra)
-    if model != _CEREBRAS_GEMMA_MODEL or thinking is None or not thinking.enabled:
-        return merged_extra
-    if thinking.effort is None:
-        return merged_extra
-
-    if "providerOptions" not in merged_extra:
-        return merged_extra
-    provider_options = merged_extra["providerOptions"]
-    if not isinstance(provider_options, Mapping):
-        raise ValueError("AI Gateway request extra.providerOptions must be an object")
-    gateway_options = provider_options.get("gateway")
-    if not isinstance(gateway_options, Mapping):
-        return merged_extra
-    if gateway_options.get("only") != ["cerebras"]:
-        return merged_extra
-
-    cerebras_options = provider_options.get("cerebras", {})
-    if not isinstance(cerebras_options, Mapping):
-        raise ValueError("AI Gateway request extra.providerOptions.cerebras must be an object")
-
-    merged_provider_options = dict(provider_options)
-    merged_provider_options["cerebras"] = {
-        **cerebras_options,
-        "reasoningEffort": thinking.effort,
-    }
-    merged_extra["providerOptions"] = merged_provider_options
-    return merged_extra
 
 
 def _reasoning_payload(thinking: LlmThinkingConfig | None) -> dict[str, Any] | None:
