@@ -12,6 +12,7 @@ from harnyx_commons.domain.miner_task import (
     EvaluationDetails,
     EvaluationError,
     MinerTask,
+    MinerTaskErrorCode,
     Query,
     ReferenceAnswer,
     Response,
@@ -28,11 +29,16 @@ class MinerTaskRun(BaseModel):
     artifact_id: UUID
     task_id: UUID
     response: Response | None = None
+    rejected_response: str | None = None
     details: EvaluationDetails
     completed_at: datetime
 
     @model_validator(mode="after")
     def _validate_state(self) -> Self:
+        if self.rejected_response is not None and (
+            self.details.error is None or self.details.error.code != MinerTaskErrorCode.MINER_RESPONSE_INVALID
+        ):
+            raise ValueError("rejected response requires miner_response_invalid")
         if self.details.score_breakdown is not None:
             if self.response is None:
                 raise ValueError("successful runs must include a response")

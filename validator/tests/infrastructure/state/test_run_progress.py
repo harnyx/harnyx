@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import json
 import os
 import threading
 import tracemalloc
@@ -42,6 +43,25 @@ from harnyx_validator.application.dto.evaluation import (
 )
 from harnyx_validator.domain.evaluation import MinerTaskRun
 from harnyx_validator.infrastructure.state.run_progress import FileBackedRunProgress
+from harnyx_validator.infrastructure.state.run_progress_blob_store import RunSubmissionBlobStore
+
+
+def test_rejected_response_survives_restart_and_oversized_blob_frame(tmp_path: Path) -> None:
+    batch = _make_batch()
+    capture = json.dumps({"text": "x" * (1024 * 1024 + 1), "value": "雪\x00\ud800\\u0000"})
+    original = _make_failed_submission(batch, error_code="miner_response_invalid")
+    submission = original.model_copy(update={"run": original.run.model_copy(update={"rejected_response": capture})})
+    progress = _progress(tmp_path)
+    progress.register(batch)
+    progress.record(submission)
+    page = progress.completed_run_page(batch.batch_id, after_sequence=0, limit=1)
+    assert page["items"][0]["submission"].run.rejected_response == capture
+
+    blob = RunSubmissionBlobStore(tmp_path / "small-segments", segment_size_bytes=1024)
+    ref = blob.append(batch_id=batch.batch_id, sequence=1, submission=submission)
+    assert ref.frame_length > blob.segment_size_bytes
+    reopened = RunSubmissionBlobStore(tmp_path / "small-segments", segment_size_bytes=1024)
+    assert reopened.read(ref).run.rejected_response == capture
 
 
 def _progress(tmp_path: Path) -> FileBackedRunProgress:

@@ -10,6 +10,27 @@ from harnyx_commons.domain.tool_usage import ToolUsageSummary
 from harnyx_validator.domain.evaluation import MinerTaskRun
 
 
+@pytest.mark.parametrize("error_code", ["miner_response_invalid", "sandbox_failed", None])
+def test_rejected_response_requires_invalid_response_failure(error_code: str | None) -> None:
+    values = dict(
+        session_id=uuid4(),
+        uid=7,
+        artifact_id=uuid4(),
+        task_id=uuid4(),
+        response=None if error_code else Response(text="ok"),
+        rejected_response='{"text": " "}',
+        details=EvaluationDetails(error=EvaluationError(code=error_code, message="failed"))
+        if error_code
+        else EvaluationDetails(score_breakdown=ScoreBreakdown(comparison_score=1, total_score=1, scoring_version="v1")),
+        completed_at=datetime.now(UTC),
+    )
+    if error_code == "miner_response_invalid":
+        assert MinerTaskRun(**values).rejected_response == values["rejected_response"]
+    else:
+        with pytest.raises(ValueError, match="rejected response requires"):
+            MinerTaskRun(**values)
+
+
 def test_miner_task_run_rejects_failed_state_without_error() -> None:
     with pytest.raises(
         ValueError,

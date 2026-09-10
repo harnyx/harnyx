@@ -1953,6 +1953,7 @@ class EvaluationRunner:
         task: MinerTask,
         error_code: MinerTaskErrorCode,
         error_message: str,
+        rejected_response: str | None = None,
         total_tool_usage: ToolUsageSummary | None = None,
         usage: TokenUsageSummary | None = None,
         execution_log: tuple[ToolCall, ...] | None = None,
@@ -1969,6 +1970,7 @@ class EvaluationRunner:
             task=task,
             error_code=error_code,
             error_message=error_message,
+            rejected_response=rejected_response,
             total_tool_usage=total_tool_usage,
             usage=usage,
             execution_log=execution_log,
@@ -2063,6 +2065,7 @@ class EvaluationRunner:
         task: MinerTask,
         error_code: MinerTaskErrorCode,
         error_message: str,
+        rejected_response: str | None = None,
         total_tool_usage: ToolUsageSummary | None = None,
         usage: TokenUsageSummary | None = None,
         execution_log: tuple[ToolCall, ...] | None = None,
@@ -2087,6 +2090,7 @@ class EvaluationRunner:
             artifact_id=artifact_id,
             task_id=task.task_id,
             response=None,
+            rejected_response=rejected_response,
             details=details,
             completed_at=completed_at,
         )
@@ -2137,6 +2141,7 @@ class EvaluationRunner:
         error_message: str,
         log_message: str,
         exc: Exception,
+        rejected_response: str | None = None,
         scoring_judge_usage: JudgeUsageSummary | None = None,
     ) -> MinerTaskRunSubmission:
         logger.error(
@@ -2158,6 +2163,7 @@ class EvaluationRunner:
             task=task,
             error_code=error_code,
             error_message=error_message,
+            rejected_response=rejected_response,
             scoring_judge_usage=scoring_judge_usage or getattr(exc, "judge_usage", None),
             trace=evaluation_trace if isinstance(evaluation_trace, EvaluationTrace) else None,
         )
@@ -2318,6 +2324,7 @@ class EvaluationRunner:
                     session_id=session_id,
                     error_code=MinerTaskErrorCode.MINER_RESPONSE_INVALID,
                     error_message=str(exc),
+                    rejected_response=exc.rejected_response,
                     log_message="miner returned invalid response payload",
                     exc=exc,
                 )

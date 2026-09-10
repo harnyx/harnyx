@@ -2678,7 +2678,7 @@ class _EntrypointUnavailableOrchestrator:
 
 class _MinerResponseValidationOrchestrator:
     async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
-        raise MinerResponseValidationError("miner returned invalid response payload")
+        raise MinerResponseValidationError("response text must not be blank", rejected_response='{"text": " "}')
 
 
 class _ScoringRetryExhaustedOrchestrator:
@@ -3831,8 +3831,10 @@ async def test_evaluation_runner_records_zero_score_for_invalid_miner_response(t
     assert submission.score == 0.0
     assert submission.run.details.error == EvaluationError(
         code="miner_response_invalid",
-        message="miner returned invalid response payload",
+        message="response text must not be blank",
     )
+    assert submission.run.response is None
+    assert submission.run.rejected_response == '{"text": " "}'
     assert evaluation_store.records == [submission]
 
 

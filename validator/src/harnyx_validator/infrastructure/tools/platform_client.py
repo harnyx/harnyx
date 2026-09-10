@@ -809,6 +809,10 @@ def _run_submission_payload(submission: Any) -> JsonObject:
                 else submission.run.completed_at.isoformat()
             ),
             "response": _jsonable(submission.run.response),
+            **(
+                {"rejected_response": submission.run.rejected_response}
+                if submission.run.rejected_response is not None else {}
+            ),
         },
         "score": submission.score,
         "usage": _jsonable(submission.usage),

@@ -5165,6 +5165,7 @@ Body: [StatusResponse](#model-statusresponse)
 | `run` |  |  | req | [MinerTaskRunSection](#model-minertaskrunsection) |
 |  | `artifact_id` |  | req | `string` (format: uuid) |
 |  | `completed_at` |  | opt | `string` (format: date-time; nullable) |
+|  | `rejected_response` |  | opt | `string` (nullable) |
 |  | `response` |  | opt | [Response](#model-response) (nullable) |
 |  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation) (nullable)] (nullable) |
 |  |  | `note` | opt | `string` (nullable) |
@@ -5292,6 +5293,7 @@ Body: [StatusResponse](#model-statusresponse)
 | --- | --- | --- | --- | --- |
 | `artifact_id` |  |  | req | `string` (format: uuid) |
 | `completed_at` |  |  | opt | `string` (format: date-time; nullable) |
+| `rejected_response` |  |  | opt | `string` (nullable) |
 | `response` |  |  | opt | [Response](#model-response) (nullable) |
 |  | `citations` |  | opt | array[[AnswerCitation](#model-answercitation) (nullable)] (nullable) |
 |  |  | `note` | opt | `string` (nullable) |
@@ -5324,6 +5326,17 @@ Body: [StatusResponse](#model-statusresponse)
         }
       ],
       "title": "Completed At"
+    },
+    "rejected_response": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Rejected Response"
     },
     "response": {
       "anyOf": [
@@ -5927,6 +5940,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `run` |  | req | [MinerTaskRunSection](#model-minertaskrunsection) |
 |  |  | `artifact_id` | req | `string` (format: uuid) |
 |  |  | `completed_at` | opt | `string` (format: date-time; nullable) |
+|  |  | `rejected_response` | opt | `string` (nullable) |
 |  |  | `response` | opt | [Response](#model-response) (nullable) |
 |  |  | `task_id` | req | `string` (format: uuid) |
 |  | `score` |  | opt | `number` (nullable) |

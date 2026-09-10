@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import re
 from uuid import UUID
 
+from jsonschema import ValidationError as JsonSchemaValidationError
 from pydantic import ValidationError
 
 from harnyx_commons.application.miner_response_hydration import (
@@ -45,6 +48,119 @@ class SandboxInvocationError(RuntimeError):
 class MinerResponseValidationError(RuntimeError):
     """Raised when miner output violates the response contract."""
 
+    def __init__(self, message: str, *, rejected_response: str | None = None) -> None:
+        super().__init__(message)
+        self.rejected_response = rejected_response
+
+
+_GENERIC_REJECTION = "miner returned invalid response payload"
+_HYDRATION_REASONS = frozenset(
+    {
+        "legacy query response must use text",
+        "structured query response must use output",
+        "response text must not be blank",
+        "response note must not be blank",
+        "response must include exactly one answer field",
+        "response text must not be null",
+        "value must be finite JSON",
+        "response output exceeds 80000 compact JSON characters",
+        "response citations exceed 400 materialized evidence segments",
+        "response citations exceed 120000 materialized source-text characters",
+        "citation slice start must be non-negative",
+        "citation slice end must be greater than start",
+        "inline citation position is out of range",
+        "cited result has no source text",
+        "citation slice exceeds source text length",
+        "citation slice must contain at least 100 characters",
+    }
+)
+_PYDANTIC_REASONS = {
+    "missing": "required field is missing",
+    "extra_forbidden": "unexpected response field",
+    "string_type": "must be a string",
+    "string_too_short": "string is shorter than the allowed minimum",
+    "string_too_long": "string exceeds the allowed maximum length",
+    "list_type": "must be a list",
+    "dict_type": "must be an object",
+    "model_type": "must be an object",
+    "int_type": "must be an integer",
+    "greater_than_equal": "value is below the allowed minimum",
+    "greater_than": "value must exceed the allowed minimum",
+    "too_long": "exceeds the allowed maximum size",
+}
+_SCHEMA_REASONS = {
+    "type": "value has the wrong type",
+    "required": "required field is missing",
+    "additionalProperties": "unexpected field",
+    "minLength": "string is shorter than the allowed minimum",
+    "maxLength": "string exceeds the allowed maximum length",
+    "minItems": "too few items",
+    "maxItems": "too many items",
+    "minimum": "value is below the allowed minimum",
+    "maximum": "value exceeds the allowed maximum",
+    "enum": "value is not an allowed option",
+    "const": "value does not match the required value",
+    "pattern": "string does not match the required pattern",
+}
+
+
+def _known_hydration_reason(message: str) -> str | None:
+    if message in _HYDRATION_REASONS:
+        return message
+    if re.fullmatch(r"inline citation \[\[[0-9]{1,3}\]\] points to an unresolved citation", message):
+        return "inline citation points to an unresolved citation"
+    return None
+
+
+def _public_rejection_reason(exc: Exception) -> str:
+    """Describe validation metadata without publishing library input/schema dumps."""
+    cause: BaseException | None = exc
+    visited: set[int] = set()
+    for _ in range(16):
+        if cause is None or id(cause) in visited:
+            break
+        visited.add(id(cause))
+        if isinstance(cause, JsonSchemaValidationError):
+            # Schema property names are declared by the task, unlike instance paths
+            # whose arbitrary keys can contain submitted answer text.
+            schema_path = iter(cause.absolute_schema_path)
+            fields = []
+            for part in schema_path:
+                if part == "properties":
+                    fields.append(str(next(schema_path)))
+            location = "output" + "".join(f"[{json.dumps(field, ensure_ascii=True)}]" for field in fields)
+            reason = _SCHEMA_REASONS.get(cause.validator, "value does not match the output schema")
+            return f"{location[:256]}: {reason}"[:512]
+        if isinstance(cause, ValidationError):
+            for error in cause.errors(include_url=False, include_input=False):
+                context = error.get("ctx", {})
+                known = _known_hydration_reason(str(context.get("error", "")))
+                if known is not None:
+                    return known
+                reason = _PYDANTIC_REASONS.get(error["type"])
+                if reason is not None:
+                    safe_fields = {
+                        "text",
+                        "output",
+                        "note",
+                        "citations",
+                        "receipt_id",
+                        "result_id",
+                        "slices",
+                        "start",
+                        "end",
+                    }
+                    location = ".".join(
+                        str(part) for part in error["loc"] if part in safe_fields or isinstance(part, int)
+                    )
+                    return f"{location[:256] or 'response'}: {reason}"[:512]
+        if isinstance(cause, MinerResponsePayloadError | ValueError):
+            known = _known_hydration_reason(str(cause))
+            if known is not None:
+                return known
+        cause = cause.__cause__ or (None if cause.__suppress_context__ else cause.__context__)
+    return _GENERIC_REJECTION
+
 
 class EntrypointInvoker:
     """Coordinates entrypoint invocation with token concurrency enforcement."""
@@ -76,7 +192,10 @@ class EntrypointInvoker:
                 receipt_log=self._receipts,
             )
         except (MinerResponsePayloadError, ValidationError) as exc:
-            raise MinerResponseValidationError("miner returned invalid response payload") from exc
+            raise MinerResponseValidationError(
+                _public_rejection_reason(exc),
+                rejected_response=json.dumps(payload, ensure_ascii=True),
+            ) from exc
         return EntrypointInvocationResult(
             response=hydrated_response,
             tool_receipts=receipts,

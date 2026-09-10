@@ -13,6 +13,7 @@ import pytest
 from harnyx_commons.bittensor import build_canonical_request
 from harnyx_commons.domain.miner_task import (
     EvaluationDetails,
+    EvaluationError,
     FastScoreEvidence,
     FastScoreExpectedComponent,
     Response,
@@ -485,9 +486,10 @@ def test_submit_miner_task_work_results_posts_delivery_failure_detail() -> None:
     )
 
 
-@pytest.mark.parametrize("include_fast_evidence", (False, True))
+@pytest.mark.parametrize(("include_fast_evidence", "rejected"), [(False, False), (True, False), (False, True)])
 def test_submit_miner_task_work_results_serializes_score_evidence_contract(
     include_fast_evidence: bool,
+    rejected: bool,
 ) -> None:
     keypair = _keypair()
     batch_id = uuid4()
@@ -598,6 +600,17 @@ def test_submit_miner_task_work_results_serializes_score_evidence_contract(
         ),
     )
 
+    capture = json.dumps({"text": "x" * (1024 * 1024 + 1), "value": "雪\x00\ud800\\u0000"})
+    if rejected:
+        assert result.result is not None
+        run = result.result.run.model_copy(
+            update={
+                "response": None,
+                "rejected_response": capture,
+                "details": EvaluationDetails(error=EvaluationError(code="miner_response_invalid", message="too long")),
+            }
+        )
+        result = result.model_copy(update={"result": result.result.model_copy(update={"run": run, "score": 0.0})})
     acknowledgements = client.submit_miner_task_work_results((result,))
 
     assert seen_body is not None
@@ -605,6 +618,12 @@ def test_submit_miner_task_work_results_serializes_score_evidence_contract(
     assert "validator" not in item["result"]
     assert "execution_log" not in item["result"]
     assert "execution_log" not in item["terminal_attempt"]
+    if rejected:
+        assert item["result"]["run"]["rejected_response"] == capture
+        assert item["result"]["run"]["response"] is None
+        assert item["result"]["score"] == 0
+        return
+    assert "rejected_response" not in item["result"]["run"]
     breakdown = item["result"]["specifics"]["score_breakdown"]
     if include_fast_evidence:
         assert breakdown["fast_score_evidence"] == {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -26,10 +27,117 @@ from harnyx_validator.application.invoke_entrypoint import (
     MinerResponseValidationError,
     SandboxClient,
     SandboxInvocationError,
+    _public_rejection_reason,
 )
 from validator.tests.fixtures.fakes import FakeReceiptLog, FakeSessionRegistry
 
 pytestmark = pytest.mark.anyio("asyncio")
+
+
+@pytest.mark.parametrize(
+    ("payload", "schema", "reason"),
+    [
+        ({"text": "private-answer"}, {"type": "string"}, "structured query response must use output"),
+        ({"output": "private-answer"}, None, "legacy query response must use text"),
+        ({"text": " "}, None, "response text must not be blank"),
+        ({"output": "x" * 80_001}, {"type": "string"}, "response output exceeds 80000 compact JSON characters"),
+        ({"text": "private-answer", "note": " "}, None, "response note must not be blank"),
+        ({"text": "private-answer", "output": None}, None, "exactly one answer field"),
+        ({"private-answer": "private-answer"}, None, "unexpected response field"),
+        ({"text": "private-answer [[1]]"}, None, "inline citation position is out of range"),
+        (
+            {"output": {"answer": ""}},
+            {"type": "object", "properties": {"answer": {"type": "string", "minLength": 1}}},
+            'output["answer"]: string is shorter',
+        ),
+        ({"output": "private-answer"}, {"type": "integer"}, "output: value has the wrong type"),
+        (
+            {"output": {"properties": "private-answer"}},
+            {"type": "object", "properties": {"properties": {"type": "integer"}}},
+            'output["properties"]: value has the wrong type',
+        ),
+        ({"output": {}}, {"type": "object", "required": ["answer"]}, "required field is missing"),
+    ],
+)
+async def test_rejected_response_has_safe_reason_and_complete_capture(payload, schema, reason) -> None:
+    token = uuid4().hex
+    invoker, sandbox, session_id, *_ = _build_invoker(token)
+    sandbox.response = payload
+    with pytest.raises(MinerResponseValidationError) as raised:
+        await invoker.invoke(
+            EntrypointInvocationRequest(
+                session_id=session_id,
+                token=token,
+                uid=42,
+                execution_time_limit_seconds=300,
+                query=Query(text="question", output_schema=schema),
+            )
+        )
+    assert reason in str(raised.value)
+    assert "private-answer" not in str(raised.value)
+    assert len(str(raised.value)) <= 512
+    assert raised.value.__cause__ is not None
+    assert json.loads(raised.value.rejected_response) == payload
+
+
+@pytest.mark.parametrize(
+    "number", [float("nan"), float("inf"), -float("inf")], ids=["nan", "infinity", "negative-infinity"]
+)
+async def test_structured_nonfinite_response_has_specific_reason_and_complete_capture(number: float) -> None:
+    token = uuid4().hex
+    invoker, sandbox, session_id, *_ = _build_invoker(token)
+    payload = {"output": {"value": number}}
+    sandbox.response = payload
+    with pytest.raises(MinerResponseValidationError) as raised:
+        await invoker.invoke(
+            EntrypointInvocationRequest(
+                session_id=session_id,
+                token=token,
+                uid=42,
+                execution_time_limit_seconds=300,
+                query=Query(text="question", output_schema={"type": "object"}),
+            )
+        )
+    assert str(raised.value) == "value must be finite JSON"
+    assert raised.value.rejected_response == json.dumps(payload, ensure_ascii=True)
+    assert raised.value.__cause__ is not None
+
+
+async def test_rejected_capture_preserves_oversize_escaped_and_nonfinite_values() -> None:
+    token = uuid4().hex
+    invoker, sandbox, session_id, *_ = _build_invoker(token)
+    payload = {
+        "text": "x" * (1024 * 1024 + 1) + "END",
+        "\x00": "\x00",
+        "\\u0000": "\\u0000",
+        "unicode": "雪\ud800",
+        "numbers": [float("nan"), float("inf"), float("-inf")],
+    }
+    sandbox.response = payload
+    with pytest.raises(MinerResponseValidationError) as raised:
+        await invoker.invoke(
+            EntrypointInvocationRequest(
+                session_id=session_id,
+                token=token,
+                uid=42,
+                execution_time_limit_seconds=300,
+                query=Query(text="question"),
+            )
+        )
+    capture = raised.value.rejected_response
+    assert capture == json.dumps(payload, ensure_ascii=True)
+    decoded = json.loads(capture)
+    assert decoded["text"] == payload["text"]
+    assert decoded["\x00"] != decoded["\\u0000"]
+    assert decoded["unicode"] == payload["unicode"]
+    assert "NaN, Infinity, -Infinity" in capture
+    assert str(raised.value) == "text: string exceeds the allowed maximum length"
+
+
+def test_unknown_cyclic_validation_chain_stays_generic() -> None:
+    error = ValueError("unrecognized private-answer")
+    error.__cause__ = error
+    assert _public_rejection_reason(error) == "miner returned invalid response payload"
 
 
 class RecordingSandbox(SandboxClient):
