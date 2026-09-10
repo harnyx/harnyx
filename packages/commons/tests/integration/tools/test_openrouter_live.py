@@ -35,6 +35,7 @@ OPENROUTER_BYOK_LIVE_CHAT_MODEL = "openai/gpt-oss-120b"
 NEW_OPENROUTER_MODELS = (
     "deepseek/deepseek-v4-flash",
     "deepseek/deepseek-v4-flash-0731",
+    "deepseek/deepseek-v4.1-flash",
     "deepseek/deepseek-v4-pro",
     "z-ai/glm-5.2",
     "z-ai/glm-5.3-flash",
@@ -372,13 +373,18 @@ async def test_new_openrouter_model_exact_route_contract_live(model: str) -> Non
         "timeout": 180.0,
     }
 
+    # DeepSeek thinking mode rejects forced tool selection.
+    automatic_tool_choice = model == "deepseek/deepseek-v4.1-flash"
+
     try:
         direct = await provider.invoke(LlmRequest(messages=direct_messages, **common))
         first = await provider.invoke(
             LlmRequest(
                 messages=(user_message,),
                 tools=(tool,),
-                tool_choice={"type": "function", "function": {"name": "lookup_weather"}},
+                tool_choice=(
+                    None if automatic_tool_choice else {"type": "function", "function": {"name": "lookup_weather"}}
+                ),
                 **common,
             )
         )
@@ -404,7 +410,7 @@ async def test_new_openrouter_model_exact_route_contract_live(model: str) -> Non
                     ),
                 ),
                 tools=(tool,),
-                tool_choice="none",
+                tool_choice=None if automatic_tool_choice else "none",
                 **common,
             )
         )
