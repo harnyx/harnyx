@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Iterable
 from enum import StrEnum
-from typing import Literal, cast
+from typing import Literal, Self, cast
 from uuid import UUID
 
 from pydantic import (
@@ -48,12 +49,83 @@ class _TextModel(BaseModel):
     text: str = Field(min_length=1)
 
 
+class CitationExcerpt(BaseModel):
+    """Exact source passage; unknown positions are retained only for legacy evidence."""
+
+    model_config = ConfigDict(**{**COMMONS_STRICT_CONFIG, "str_strip_whitespace": False})
+
+    start: int | None = Field(default=None, ge=0)
+    end: int | None = Field(default=None, gt=0)
+    text: str
+
+    @model_validator(mode="after")
+    def _validate_positions(self) -> Self:
+        if (self.start is None) != (self.end is None):
+            raise ValueError("excerpt source positions must both be present or both absent")
+        if self.start is not None and self.end is not None:
+            if self.end <= self.start or len(self.text) != self.end - self.start:
+                raise ValueError("excerpt text must match its source range length")
+        return self
+
+
+_LEGACY_SLICE_HEADER = re.compile(r"\[slice ([0-9]+):([0-9]+)\]\n")
+
+
+def _decode_legacy_citation_note(note: str | None) -> tuple[CitationExcerpt, ...]:
+    """Decode complete length-delimited envelopes; preserve other historical text whole."""
+    if note is None:
+        return ()
+    excerpts: list[CitationExcerpt] = []
+    position = 0
+    while position < len(note):
+        header = _LEGACY_SLICE_HEADER.match(note, position)
+        if header is None:
+            break
+        try:
+            start, end = (int(value) for value in header.groups())
+        except ValueError:
+            break
+        excerpt_end = header.end() + end - start
+        if end <= start or excerpt_end > len(note):
+            break
+        excerpts.append(CitationExcerpt(start=start, end=end, text=note[header.end() : excerpt_end]))
+        position = excerpt_end
+        if position == len(note):
+            return tuple(excerpts)
+        if note[position : position + 2] != "\n\n":
+            break
+        position += 2
+    return (CitationExcerpt(text=note),)
+
+
 class AnswerCitation(BaseModel):
     model_config = COMMONS_STRICT_CONFIG
 
     url: str = Field(min_length=1)
-    note: str | None = None
+    excerpts: tuple[CitationExcerpt, ...] = ()
     title: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _decode_legacy_evidence(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        payload = cast(dict[str, object], value)
+        if "note" not in payload:
+            return value
+        if "excerpts" in payload:
+            raise ValueError("citation cannot contain both note and excerpts")
+        note = payload["note"]
+        if note is not None and not isinstance(note, str):
+            raise ValueError("legacy citation note must be a string or null")
+        return {key: item for key, item in payload.items() if key != "note"} | {
+            "excerpts": _decode_legacy_citation_note(note)
+        }
+
+    @field_validator("excerpts", mode="before")
+    @classmethod
+    def _normalize_excerpts(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
 
 
 class ReferenceAnswer(_TextModel):
@@ -456,6 +528,7 @@ class MinerTask(BaseModel):
 
 __all__ = [
     "AnswerCitation",
+    "CitationExcerpt",
     "DEFAULT_MINER_TASK_BUDGET_USD",
     "DELIVERY_DISQUALIFYING_VALIDATOR_PAIR_ERROR_CODES",
     "EvaluationDetails",

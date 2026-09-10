@@ -10,7 +10,6 @@ from harnyx_commons.application.miner_response_hydration import (
     CitationSlice,
     MinerResponsePayloadError,
     materialize_citation_slices,
-    parse_materialized_citation_excerpts,
 )
 from harnyx_commons.application.miner_response_hydration import (
     hydrate_miner_response_payload as _hydrate_miner_response_payload,
@@ -114,16 +113,50 @@ def test_unrecognized_markers_and_unused_nulls_do_not_fail(text: str) -> None:
     assert response.citations == (None,)
 
 
-def test_parse_materialized_citation_excerpts_recovers_each_exact_slice() -> None:
+def test_citation_preserves_structured_evidence_and_decodes_history() -> None:
+    """Stored history and new output must represent identical exact evidence."""
+    text = " α\n[slice 1:2]\n "
+    legacy = AnswerCitation.model_validate(
+        {"url": "https://example.com", "note": f"[slice 10:{10 + len(text)}]\n{text}"}
+    )
+    canonical = {"url": "https://example.com", "excerpts": [{"start": 10, "end": 10 + len(text), "text": text}]}
+    current = AnswerCitation.model_validate(canonical)
+    assert current == legacy
+    assert current.model_dump(mode="json")["excerpts"] == canonical["excerpts"]
+    assert "note" not in current.model_dump(mode="json")
+
+
+@pytest.mark.parametrize(
+    "excerpt",
+    [
+        {"start": 1, "end": None, "text": "a"},
+        {"start": -1, "end": 0, "text": "a"},
+        {"start": 1, "end": 1, "text": ""},
+        {"start": 0, "end": 2, "text": "a"},
+    ],
+)
+def test_citation_rejects_invalid_source_positions(excerpt: dict[str, object]) -> None:
+    """Invalid ranges must not silently become replayable source evidence."""
+    with pytest.raises(ValidationError):
+        AnswerCitation.model_validate({"url": "https://example.com", "excerpts": [excerpt]})
+
+
+def test_citation_rejects_ambiguous_old_and_new_evidence() -> None:
+    with pytest.raises(ValidationError):
+        AnswerCitation.model_validate({"url": "https://example.com", "note": "old", "excerpts": []})
+
+
+def test_legacy_citation_decoder_recovers_each_exact_slice() -> None:
     note = "[slice 10:14]\na\n[b\n\n[slice 20:23]\nxyz"
-    assert parse_materialized_citation_excerpts(note) == ("a\n[b", "xyz")
+    citation = AnswerCitation.model_validate({"url": "https://example.com", "note": note})
+    assert [(e.start, e.end, e.text) for e in citation.excerpts] == [(10, 14, "a\n[b"), (20, 23, "xyz")]
 
 
-def test_parse_materialized_citation_excerpts_preserves_legacy_notes() -> None:
-    assert parse_materialized_citation_excerpts(None) == ()
-    assert parse_materialized_citation_excerpts("legacy evidence") == ("legacy evidence",)
-    malformed = "[slice 0:10]\nshort"
-    assert parse_materialized_citation_excerpts(malformed) == (malformed,)
+@pytest.mark.parametrize("note", [None, "", "legacy evidence", "[slice 0:10]\nshort", "[slice 0:1]\na\n\n"])
+def test_legacy_citation_decoder_preserves_unrecoverable_notes(note: str | None) -> None:
+    citation = AnswerCitation.model_validate({"url": "https://example.com", "note": note})
+    assert [e.text for e in citation.excerpts] == ([] if note is None else [note])
+    assert all(e.start is None and e.end is None for e in citation.excerpts)
 
 
 def test_reference_answer_loads_legacy_persisted_citation_count_above_judge_cap() -> None:
@@ -232,10 +265,12 @@ def test_hydrate_miner_response_payload_materializes_full_result_when_slices_are
     assert response == Response(
         text="Answer",
         citations=(
-            AnswerCitation(
-                url="https://example.com/source",
-                note=f"[slice 0:{len(source_text)}]\n{source_text}",
-                title="Example source",
+            AnswerCitation.model_validate(
+                {
+                    "url": "https://example.com/source",
+                    "note": f"[slice 0:{len(source_text)}]\n{source_text}",
+                    "title": "Example source",
+                }
             ),
         ),
     )
@@ -263,10 +298,12 @@ def test_hydrate_miner_response_payload_materializes_targeted_slice() -> None:
     assert response == Response(
         text="Answer",
         citations=(
-            AnswerCitation(
-                url="https://example.com/source",
-                note=f"[slice 0:120]\n{source_text[:120]}",
-                title="Example source",
+            AnswerCitation.model_validate(
+                {
+                    "url": "https://example.com/source",
+                    "note": f"[slice 0:120]\n{source_text[:120]}",
+                    "title": "Example source",
+                }
             ),
         ),
     )
@@ -292,9 +329,10 @@ def test_hydrate_miner_response_payload_materializes_multiple_slices() -> None:
     )
 
     assert response.citations is not None
-    assert response.citations[0].note == (
-        f"[slice 0:120]\n{source_text[:120]}\n\n[slice 180:300]\n{source_text[180:300]}"
-    )
+    assert [(e.start, e.end, e.text) for e in response.citations[0].excerpts] == [
+        (0, 120, source_text[:120]),
+        (180, 300, source_text[180:300]),
+    ]
 
 
 def test_public_slice_materializer_matches_official_hydration_for_raw_unicode_crlf_slices() -> None:
@@ -320,7 +358,7 @@ def test_public_slice_materializer_matches_official_hydration_for_raw_unicode_cr
     )
 
     assert hydrated.citations is not None
-    assert hydrated.citations[0].note == materialized.text
+    assert hydrated.citations[0].excerpts == materialized.excerpts
     assert materialized.char_count == 240
 
 
@@ -345,7 +383,7 @@ def test_hydrate_miner_response_payload_uses_unstripped_source_text_offsets() ->
     )
 
     assert response.citations is not None
-    assert response.citations[0].note == f"[slice 0:120]\n{source_text[:120]}"
+    assert [(e.start, e.end, e.text) for e in response.citations[0].excerpts] == [(0, 120, source_text[:120])]
 
 
 def test_hydrate_miner_response_payload_allows_full_short_source_slice() -> None:
@@ -368,7 +406,7 @@ def test_hydrate_miner_response_payload_allows_full_short_source_slice() -> None
     )
 
     assert response.citations is not None
-    assert response.citations[0].note == f"[slice 0:{len(source_text)}]\n{source_text}"
+    assert [(e.start, e.end, e.text) for e in response.citations[0].excerpts] == [(0, len(source_text), source_text)]
 
 
 def test_hydrate_miner_response_payload_rejects_short_slice_from_long_source() -> None:
@@ -458,10 +496,12 @@ def test_hydrate_miner_response_payload_preserves_duplicate_and_unresolved_posit
         receipt_log=receipt_log,
     )
 
-    resolved = AnswerCitation(
-        url="https://example.com/source",
-        note=f"[slice 0:{len(source_text)}]\n{source_text}",
-        title="Example source",
+    resolved = AnswerCitation.model_validate(
+        {
+            "url": "https://example.com/source",
+            "note": f"[slice 0:{len(source_text)}]\n{source_text}",
+            "title": "Example source",
+        }
     )
     assert response == Response(text="Answer", citations=(resolved, None, resolved))
 
@@ -542,10 +582,12 @@ def test_hydrate_miner_response_payload_preserves_every_soft_unresolved_class_as
         receipt_log=receipt_log,
     )
 
-    resolved = AnswerCitation(
-        url="https://example.com/source",
-        note=f"[slice 0:{len(source_text)}]\n{source_text}",
-        title="Example source",
+    resolved = AnswerCitation.model_validate(
+        {
+            "url": "https://example.com/source",
+            "note": f"[slice 0:{len(source_text)}]\n{source_text}",
+            "title": "Example source",
+        }
     )
     assert response == Response(
         text="Answer [[8]]",
@@ -651,10 +693,12 @@ def test_hydrate_structured_output_and_citations() -> None:
     assert response.output == {"answer": [1, None, "  exact  "]}
     assert response.text is None
     assert response.citations == (
-        AnswerCitation(
-            url="https://example.com/source",
-            note=f"[slice 0:{len(source_text)}]\n{source_text}",
-            title="Example source",
+        AnswerCitation.model_validate(
+            {
+                "url": "https://example.com/source",
+                "note": f"[slice 0:{len(source_text)}]\n{source_text}",
+                "title": "Example source",
+            }
         ),
     )
 
@@ -750,3 +794,10 @@ def test_hydration_rejects_wrong_mode_and_schema_mismatch(query: Query, payload:
             session_id=uuid4(),
             receipt_log=InMemoryReceiptLog(),
         )
+
+
+def test_unparseable_huge_legacy_offset_keeps_whole_evidence() -> None:
+    note = "[slice " + "9" * 5000 + ":10]\nsource"
+    citation = AnswerCitation.model_validate({"url": "https://example.com", "note": note})
+    assert citation.excerpts[0].text == note
+    assert citation.excerpts[0].start is None

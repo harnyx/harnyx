@@ -9,6 +9,7 @@ import pytest
 import harnyx_commons.miner_task_scoring as miner_task_scoring
 from harnyx_commons.domain.miner_task import (
     AnswerCitation,
+    CitationExcerpt,
     MinerTask,
     Query,
     ReferenceAnswer,
@@ -1243,11 +1244,11 @@ async def test_scoring_service_preserves_positional_citations_and_caps_without_r
     )
 
     citations = [
-        AnswerCitation(url="https://same-source.example.com", title="Title A", note="Note A"),
-        AnswerCitation(url="https://same-source.example.com", title="Title A", note="Note A"),
+        AnswerCitation.model_validate({"url": "https://same-source.example.com", "title": "Title A", "note": "Note A"}),
+        AnswerCitation.model_validate({"url": "https://same-source.example.com", "title": "Title A", "note": "Note A"}),
         None,
-        AnswerCitation(url="https://same-source.example.com", title="Title B", note="Note B"),
-        AnswerCitation(url="https://miner.example.com", note="Miner note"),
+        AnswerCitation.model_validate({"url": "https://same-source.example.com", "title": "Title B", "note": "Note B"}),
+        AnswerCitation.model_validate({"url": "https://miner.example.com", "note": "Miner note"}),
     ]
     citations.extend(
         AnswerCitation(url=f"https://extra-{index}.example.com") for index in range(_MAX_RENDERED_CITATIONS + 3)
@@ -1259,14 +1260,47 @@ async def test_scoring_service_preserves_positional_citations_and_caps_without_r
     validated_citations = payload["answers"][0]["validated_citations"]
     assert len(validated_citations) == _MAX_RENDERED_CITATIONS
     assert validated_citations[:4] == [
-        {"url": "https://same-source.example.com", "title": "Title A", "note": "Note A"},
-        {"url": "https://same-source.example.com", "title": "Title A", "note": "Note A"},
+        {"url": "https://same-source.example.com", "title": "Title A", "excerpts": ["Note A"]},
+        {"url": "https://same-source.example.com", "title": "Title A", "excerpts": ["Note A"]},
         None,
-        {"url": "https://same-source.example.com", "title": "Title B", "note": "Note B"},
+        {"url": "https://same-source.example.com", "title": "Title B", "excerpts": ["Note B"]},
     ]
     assert (
-        validated_citations.count({"url": "https://same-source.example.com", "title": "Title A", "note": "Note A"}) == 2
+        validated_citations.count(
+            {"url": "https://same-source.example.com", "title": "Title A", "excerpts": ["Note A"]}
+        )
+        == 2
     )
+
+
+@pytest.mark.parametrize("excerpt_text", ["first", "a\x00b\ud800c", "é 漢 字"])
+async def test_scoring_projects_two_passages_as_one_citation_in_both_orders(excerpt_text: str) -> None:
+    """Passage boundaries must not shift citation indices or leak source metadata."""
+    citation = AnswerCitation(
+        url="https://example.com",
+        excerpts=(
+            CitationExcerpt(start=0, end=len(excerpt_text), text=excerpt_text),
+            CitationExcerpt(start=20, end=26, text="second"),
+        ),
+    )
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="question"),
+        reference_answer=ReferenceAnswer(text="reference", citations=(citation, None)),
+    )
+    llm = StubLlmProvider([("first", None, None), ("second", None, None)])
+    service = EvaluationScoringService(
+        llm_provider=llm, config=EvaluationScoringConfig(provider="chutes", model="judge-model")
+    )
+    await service.score(task=task, response=Response(text="answer", citations=(citation, None)))
+    assert len(llm.requests) == 2
+    for request in llm.requests:
+        request.messages[1].content[0].text.encode("utf-8")
+        for answer in _pairwise_payload(request)["answers"]:
+            assert answer["validated_citations"] == [
+                {"url": "https://example.com", "excerpts": [excerpt_text, "second"]},
+                None,
+            ]
 
 
 async def test_scoring_service_persists_joined_reasoning_trace_and_token_total() -> None:

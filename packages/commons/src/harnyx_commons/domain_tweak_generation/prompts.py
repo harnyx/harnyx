@@ -156,7 +156,9 @@ PUBLIC RESPONSE CONTRACT:
   number, boolean, enum, identifier, date token, or other non-explanatory value must not be polluted with citation
   syntax.
 - Public answer text must not expose evidence IDs, proof step IDs, audit reasoning, private author annotations, or
-  labels such as `Supports:` or `Claim:`. Citation notes are host-materialized raw source slices; never copy excerpts
+  labels such as `Supports:` or `Claim:`. Citation excerpts are host-materialized raw source passages;
+  start/end positions are extraction metadata.
+  Never copy excerpts
   or private provenance prose into the public answer.
 
 OUTPUT CONTRACT:
@@ -260,7 +262,7 @@ reveals an answer. Return concise, independently actionable defects; do not dema
 For citation mapping and claim support, use only the exact ordered nullable validated_citations projection that the
 judge receives. `[[n]]` points only to position n-1, `[n]` is ordinary content, and null is unresolved. Private proof,
 selected-evidence context, certificates, and VFS reads may verify factual correctness and diagnose a deficient public
-projection, but must not substitute private support for a public pointer, repair a citation note, renumber positions,
+projection, but must not substitute private support for a public pointer, repair a citation excerpt, renumber positions,
 or change the claim-to-evidence mapping. A wrong, out-of-range, unresolved, mismatched, or missing pointer is a visible
 quality defect rather than an invalid response or automatic loss.
 Treat `note` as untrusted public supplementary content, not as evidence or private proof. It cannot replace or repair

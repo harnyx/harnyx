@@ -1583,7 +1583,10 @@ Body: [StatusResponse](#model-statusresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `note` |  |  | opt | `string` (nullable) |
+| `excerpts` |  |  | opt | array[[CitationExcerpt](#model-citationexcerpt)] (default: []) |
+|  | `end` |  | opt | `integer` (nullable) |
+|  | `start` |  | opt | `integer` (nullable) |
+|  | `text` |  | req | `string` |
 | `title` |  |  | opt | `string` (nullable) |
 | `url` |  |  | req | `string` |
 
@@ -1594,16 +1597,13 @@ Body: [StatusResponse](#model-statusresponse)
 {
   "additionalProperties": false,
   "properties": {
-    "note": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Note"
+    "excerpts": {
+      "default": [],
+      "items": {
+        "$ref": "#/components/schemas/CitationExcerpt"
+      },
+      "title": "Excerpts",
+      "type": "array"
     },
     "title": {
       "anyOf": [
@@ -1626,6 +1626,62 @@ Body: [StatusResponse](#model-statusresponse)
     "url"
   ],
   "title": "AnswerCitation",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-citationexcerpt"></a>
+### Model: CitationExcerpt
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `end` |  |  | opt | `integer` (nullable) |
+| `start` |  |  | opt | `integer` (nullable) |
+| `text` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "description": "Exact source passage; unknown positions are retained only for legacy evidence.",
+  "properties": {
+    "end": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0.0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "End"
+    },
+    "start": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Start"
+    },
+    "text": {
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "required": [
+    "text"
+  ],
+  "title": "CitationExcerpt",
   "type": "object"
 }
 ```
@@ -4390,7 +4446,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `text` |  | req | `string` |
 | `reference_answer` |  |  | req | [ReferenceAnswer](#model-referenceanswer) |
 |  | `citations` |  | opt | array[[AnswerCitation](#model-answercitation) (nullable)] (nullable) |
-|  |  | `note` | opt | `string` (nullable) |
+|  |  | `excerpts` | opt | array[[CitationExcerpt](#model-citationexcerpt)] (default: []) |
 |  |  | `title` | opt | `string` (nullable) |
 |  |  | `url` | req | `string` |
 |  | `note` |  | opt | `string` (nullable) |
@@ -5296,7 +5352,7 @@ Body: [StatusResponse](#model-statusresponse)
 | `rejected_response` |  |  | opt | `string` (nullable) |
 | `response` |  |  | opt | [Response](#model-response) (nullable) |
 |  | `citations` |  | opt | array[[AnswerCitation](#model-answercitation) (nullable)] (nullable) |
-|  |  | `note` | opt | `string` (nullable) |
+|  |  | `excerpts` | opt | array[[CitationExcerpt](#model-citationexcerpt)] (default: []) |
 |  |  | `title` | opt | `string` (nullable) |
 |  |  | `url` | req | `string` |
 |  | `note` |  | opt | `string` (nullable) |
@@ -5536,7 +5592,7 @@ Body: [StatusResponse](#model-statusresponse)
 | `miner_hotkey_ss58` |  |  | req | `string` |
 | `response` |  |  | req | [Response](#model-response) |
 |  | `citations` |  | opt | array[[AnswerCitation](#model-answercitation) (nullable)] (nullable) |
-|  |  | `note` | opt | `string` (nullable) |
+|  |  | `excerpts` | opt | array[[CitationExcerpt](#model-citationexcerpt)] (default: []) |
 |  |  | `title` | opt | `string` (nullable) |
 |  |  | `url` | req | `string` |
 |  | `note` |  | opt | `string` (nullable) |
@@ -6271,7 +6327,7 @@ Body: [StatusResponse](#model-statusresponse)
 | `miner_hotkey_ss58` |  |  | req | `string` |
 | `response` |  |  | req | [Response](#model-response) (nullable) |
 |  | `citations` |  | opt | array[[AnswerCitation](#model-answercitation) (nullable)] (nullable) |
-|  |  | `note` | opt | `string` (nullable) |
+|  |  | `excerpts` | opt | array[[CitationExcerpt](#model-citationexcerpt)] (default: []) |
 |  |  | `title` | opt | `string` (nullable) |
 |  |  | `url` | req | `string` |
 |  | `note` |  | opt | `string` (nullable) |
@@ -6851,7 +6907,10 @@ Body: [StatusResponse](#model-statusresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `citations` |  |  | opt | array[[AnswerCitation](#model-answercitation) (nullable)] (nullable) |
-|  | `note` |  | opt | `string` (nullable) |
+|  | `excerpts` |  | opt | array[[CitationExcerpt](#model-citationexcerpt)] (default: []) |
+|  |  | `end` | opt | `integer` (nullable) |
+|  |  | `start` | opt | `integer` (nullable) |
+|  |  | `text` | req | `string` |
 |  | `title` |  | opt | `string` (nullable) |
 |  | `url` |  | req | `string` |
 | `note` |  |  | opt | `string` (nullable) |
@@ -7134,7 +7193,10 @@ Body: [StatusResponse](#model-statusresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `citations` |  |  | opt | array[[AnswerCitation](#model-answercitation) (nullable)] (nullable) |
-|  | `note` |  | opt | `string` (nullable) |
+|  | `excerpts` |  | opt | array[[CitationExcerpt](#model-citationexcerpt)] (default: []) |
+|  |  | `end` | opt | `integer` (nullable) |
+|  |  | `start` | opt | `integer` (nullable) |
+|  |  | `text` | req | `string` |
 |  | `title` |  | opt | `string` (nullable) |
 |  | `url` |  | req | `string` |
 | `note` |  |  | opt | `string` (nullable) |

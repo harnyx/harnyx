@@ -109,7 +109,7 @@ def validate_and_render_reference(
                 AnswerCitation(
                     url=source.final_url,
                     title=None,
-                    note=materialized.text,
+                    excerpts=materialized.excerpts,
                 )
             )
     except MinerResponsePayloadError as exc:

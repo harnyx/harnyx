@@ -1806,8 +1806,8 @@ def _citation_markdown_line(citation: AnswerCitation) -> str:
     parts = [citation.title or citation.url]
     if citation.title:
         parts.append(citation.url)
-    if citation.note:
-        parts.append(citation.note)
+    if citation.excerpts:
+        parts.append("\n\n".join(excerpt.text for excerpt in citation.excerpts))
     return " - ".join(parts)
 
 

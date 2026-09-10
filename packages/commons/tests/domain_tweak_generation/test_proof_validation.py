@@ -398,8 +398,8 @@ def test_reference_preserves_duplicate_and_unresolved_citation_positions_for_aud
         None,
         citations[0].model_dump(mode="json", exclude_none=True),
     ]
-    assert citations[0].note is not None
-    assert "PRIVATE HEADER" not in citations[0].note
+    assert citations[0].excerpts
+    assert all("PRIVATE HEADER" not in e.text for e in citations[0].excerpts)
     assert "PRIVATE HEADER" in str(validated.audit_packet["selected_evidence"])
 
 

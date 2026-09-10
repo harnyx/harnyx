@@ -377,10 +377,12 @@ async def test_invoke_entrypoint_hydrates_same_session_citations() -> None:
     assert result.response == Response(
         text="Answer",
         citations=(
-            AnswerCitation(
-                url="https://example.com/source",
-                note=f"[slice 0:{len(source_text)}]\n{source_text}",
-                title="Example source",
+            AnswerCitation.model_validate(
+                {
+                    "url": "https://example.com/source",
+                    "note": f"[slice 0:{len(source_text)}]\n{source_text}",
+                    "title": "Example source",
+                }
             ),
         ),
     )
@@ -436,7 +438,7 @@ async def test_invoke_entrypoint_hydrates_same_session_citation_slices() -> None
     )
 
     assert result.response.citations is not None
-    assert result.response.citations[0].note == f"[slice 0:120]\n{source_text[:120]}"
+    assert [e.text for e in result.response.citations[0].excerpts] == [source_text[:120]]
 
 
 async def test_invoke_entrypoint_normalizes_null_citations_to_absent() -> None:

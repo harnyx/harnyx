@@ -11,7 +11,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
-from harnyx_commons.domain.miner_task import AnswerCitation, Query, Response
+from harnyx_commons.domain.miner_task import AnswerCitation, CitationExcerpt, Query, Response
 from harnyx_commons.domain.shared_config import COMMONS_STRICT_CONFIG
 from harnyx_commons.domain.tool_call import SearchToolResult, ToolCall, ToolResultPolicy
 from harnyx_commons.tools.types import is_citation_source
@@ -23,7 +23,6 @@ _MAX_CITATION_REFS = 200
 _MAX_EVIDENCE_SEGMENTS_PER_RESPONSE = 400
 MIN_CITATION_SLICE_CHARS = 100
 MAX_TOTAL_CITATION_EVIDENCE_CHARS = 120_000
-_MATERIALIZED_SLICE_HEADER = re.compile(r"\[slice ([0-9]+):([0-9]+)\]\n")
 _CITATION_MARKER = re.compile(r"\[\[([0-9]+)\]\]")
 
 
@@ -45,7 +44,7 @@ class CitationSlice:
 
 @dataclass(frozen=True, slots=True)
 class MaterializedCitationSelection:
-    text: str
+    excerpts: tuple[CitationExcerpt, ...]
     char_count: int
 
 
@@ -225,7 +224,7 @@ def _hydrate_citation(
     return _HydratedCitation(
         answer_citation=AnswerCitation(
             url=result.url,
-            note=materialized.text,
+            excerpts=materialized.excerpts,
             title=result.title,
         ),
         source_text_chars=materialized.char_count,
@@ -262,39 +261,14 @@ def materialize_citation_slices(
     slices: Sequence[CitationSlice],
 ) -> MaterializedCitationSelection:
     selected_slices = tuple(slices) or (CitationSlice(start=0, end=len(source_text)),)
-    parts: list[str] = []
+    excerpts: list[CitationExcerpt] = []
     source_text_chars = 0
     for selected_slice in selected_slices:
         _validate_slice_against_source(source_text, selected_slice)
         excerpt = source_text[selected_slice.start : selected_slice.end]
-        parts.append(f"[slice {selected_slice.start}:{selected_slice.end}]\n{excerpt}")
+        excerpts.append(CitationExcerpt(start=selected_slice.start, end=selected_slice.end, text=excerpt))
         source_text_chars += len(excerpt)
-    return MaterializedCitationSelection(text="\n\n".join(parts), char_count=source_text_chars)
-
-
-def parse_materialized_citation_excerpts(note: str | None) -> tuple[str, ...]:
-    """Recover exact excerpts from the materialized note format this module owns."""
-
-    if note is None:
-        return ()
-    excerpts: list[str] = []
-    position = 0
-    while position < len(note):
-        header = _MATERIALIZED_SLICE_HEADER.match(note, position)
-        if header is None:
-            return (note,)
-        start, end = (int(value) for value in header.groups())
-        excerpt_end = header.end() + (end - start)
-        if end <= start or excerpt_end > len(note):
-            return (note,)
-        excerpts.append(note[header.end() : excerpt_end])
-        position = excerpt_end
-        if position == len(note):
-            return tuple(excerpts)
-        if note[position : position + 2] != "\n\n":
-            return (note,)
-        position += 2
-    return (note,)
+    return MaterializedCitationSelection(excerpts=tuple(excerpts), char_count=source_text_chars)
 
 
 def _validate_slice_against_source(source_text: str, selected_slice: CitationSlice) -> None:
@@ -320,5 +294,4 @@ __all__ = [
     "MinerResponsePayloadError",
     "hydrate_miner_response_payload",
     "materialize_citation_slices",
-    "parse_materialized_citation_excerpts",
 ]

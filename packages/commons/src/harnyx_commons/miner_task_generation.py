@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
-from harnyx_commons.domain.miner_task import AnswerCitation, MinerTask, Query, ReferenceAnswer
+from harnyx_commons.domain.miner_task import AnswerCitation, CitationExcerpt, MinerTask, Query, ReferenceAnswer
 from harnyx_commons.domain.shared_config import COMMONS_STRICT_CONFIG
 from harnyx_commons.json_types import JsonObject
 from harnyx_commons.llm.json_utils import pydantic_postprocessor
@@ -531,7 +531,7 @@ def _complete_reference_citations(
     complete = tuple(
         AnswerCitation(
             url=citation.url,
-            note=citation.note,
+            excerpts=(CitationExcerpt(text=citation.note),),
             title=citation.title,
         )
         for citation in citations

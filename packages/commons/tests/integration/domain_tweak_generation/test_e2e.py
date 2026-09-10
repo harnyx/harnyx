@@ -257,4 +257,4 @@ async def test_production_reference_positions_and_rich_schema_reach_judge_payloa
     citations = payload["answers"][0]["validated_citations"]
     assert citations[0] == citations[2]
     assert citations[1] is None
-    assert citations[3]["note"].endswith("ROW\tBeta\t900")
+    assert citations[3]["excerpts"][-1].endswith("ROW\tBeta\t900")

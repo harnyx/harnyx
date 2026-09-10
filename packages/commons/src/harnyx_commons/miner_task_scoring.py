@@ -64,15 +64,15 @@ _PAIRWISE_SYSTEM_PROMPT = (
     "- A pointer is valid only when `n` is positive and in range and the selected position "
     "contains a resolved citation object.\n"
     "- Only resolved `validated_citations` objects count as citation evidence, and only when "
-    "their notes directly support the associated answer-visible claim.\n"
+    "their excerpts directly support the associated answer-visible claim.\n"
     "- An invalid, out-of-range, unresolved, irrelevant, mismatched, or missing citation is "
     "an answer-quality defect, never an automatic invalid response or automatic loss.\n"
     "- `validated_citations` override your prior knowledge, cutoff assumptions, and "
     "beliefs about whether an event should have happened.\n"
     "- Do not reject a citation-supported claim because it seems future-dated, surprising, "
     "or inconsistent with your prior knowledge.\n"
-    "- A citation note supports a factual claim only when it contains usable grounding "
-    "text; blank notes provide no support value.\n"
+    "- Citation excerpts support a factual claim only when they contain usable grounding "
+    "text; empty or blank excerpts provide no support value.\n"
     "- Assess factual correctness separately from citation-pointer validity. Validated evidence may "
     "establish whether a claim is true even when its pointer is defective, but that defect still "
     "removes valid claim-level traceability.\n"
@@ -127,8 +127,10 @@ _PAIRWISE_USER_PROMPT_PREFIX = (
     "5. Apply each `[[n]]` to its exact position. Treat `[n]` as ordinary content. A missing, "
     "invalid, out-of-range, unresolved, irrelevant, or claim-to-evidence mismatched pointer "
     "reduces evidence support but does not invalidate the whole answer or decide the comparison automatically.\n"
-    "6. Judge whether the resolved citation note directly supports the associated claim. "
-    "Validator-materialized notes may contain `[slice start:end]` excerpts from observed tool results.\n"
+    "6. Judge whether the resolved citation excerpts directly support the associated claim. "
+    "The excerpts array contains separate exact passages from observed tool results. All passages in one object "
+    "share its citation number; [[1]] can point to an object containing two passages. "
+    "Do not treat its second passage as citation [[2]].\n"
     "7. Compare evidence by whether every required claim and required comparison member is "
     "directly verifiable. One evidence packet has a material advantage only when it changes that "
     "verifiability. Once both packets sufficiently support all required claims, do not prefer one "
@@ -375,7 +377,7 @@ class EvaluationScoringService:
             payload,
             ensure_ascii=False,
             indent=2,
-        )
+        ).encode("utf-8", errors="backslashreplace").decode("utf-8")
         judged = await self._invoke_structured_judge(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
@@ -864,10 +866,10 @@ def _render_answer_for_judge(
 
 def _bounded_citations(
     citations: Sequence[AnswerCitation | None] | None,
-) -> list[dict[str, str] | None]:
+) -> list[dict[str, str | list[str]] | None]:
     if not citations:
         return []
-    rendered: list[dict[str, str] | None] = []
+    rendered: list[dict[str, str | list[str]] | None] = []
     for citation in citations:
         rendered.append(None if citation is None else _render_citation_payload(citation))
         if len(rendered) == _MAX_RENDERED_CITATIONS:
@@ -875,12 +877,13 @@ def _bounded_citations(
     return rendered
 
 
-def _render_citation_payload(citation: AnswerCitation) -> dict[str, str]:
-    payload = {"url": citation.url}
+def _render_citation_payload(citation: AnswerCitation) -> dict[str, str | list[str]]:
+    payload: dict[str, str | list[str]] = {
+        "url": citation.url,
+        "excerpts": [excerpt.text for excerpt in citation.excerpts],
+    }
     if citation.title:
         payload["title"] = citation.title
-    if citation.note and citation.note.strip():
-        payload["note"] = citation.note
     return payload
 
 

@@ -8,7 +8,14 @@ from uuid import uuid4
 import pytest
 
 from harnyx_commons.config.llm import LlmSettings, OpenAiCompatibleGoogleIdTokenAuthConfig
-from harnyx_commons.domain.miner_task import MinerTask, Query, ReferenceAnswer, Response
+from harnyx_commons.domain.miner_task import (
+    AnswerCitation,
+    CitationExcerpt,
+    MinerTask,
+    Query,
+    ReferenceAnswer,
+    Response,
+)
 from harnyx_commons.llm.provider import LlmProviderPort
 from harnyx_commons.llm.provider_factory import build_cached_llm_provider_registry, build_routed_llm_provider
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
@@ -110,6 +117,15 @@ async def test_evaluation_scoring_live_uses_real_structured_runtime_flow(
             timeout_seconds=float(settings.llm.scoring_llm_timeout_seconds),
         ),
     )
+    citations = (
+        AnswerCitation(
+            url="https://example.com/geography",
+            excerpts=(
+                CitationExcerpt(start=0, end=31, text="Paris is the capital of France."),
+                CitationExcerpt(start=100, end=131, text="France has its capital in Paris"),
+            ),
+        ),
+    )
     task = MinerTask(
         task_id=uuid4(),
         query=Query(
@@ -122,17 +138,28 @@ async def test_evaluation_scoring_live_uses_real_structured_runtime_flow(
                 "additionalProperties": False,
             },
         ),
-        reference_answer=ReferenceAnswer(text='{"capital":"Paris"}'),
+        reference_answer=ReferenceAnswer(text='{"capital":"Paris"}', citations=citations),
     )
 
     try:
         score = await service.score(
             task=task,
-            response=Response(output={"capital": "Paris"}),
+            response=Response(output={"capital": "Paris"}, citations=citations),
         )
     finally:
         await registry.aclose()
 
+    if not fast:
+        for request in llm_provider.requests:
+            _, payload_json = request.messages[1].content[0].text.split("Payload:\n", 1)
+            payload = json.loads(payload_json)
+            for answer in payload["answers"]:
+                assert answer["validated_citations"] == [
+                    {
+                        "url": "https://example.com/geography",
+                        "excerpts": [e.text for e in citations[0].excerpts],
+                    }
+                ]
     assert len(llm_provider.requests) == request_count
     assert all(request.output_mode == "structured" for request in llm_provider.requests)
     assert all(request.provider == settings.llm.scoring_llm_provider for request in llm_provider.requests)
