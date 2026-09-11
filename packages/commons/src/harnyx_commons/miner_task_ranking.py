@@ -13,6 +13,7 @@ from harnyx_commons.domain.miner_task import EvaluationDetails
 
 ScoreVector = list[float]
 _SCORE_PRECISION = 12
+MAIN_PARTICIPANT_LIMIT = 30
 
 COST_REDUCTION_REQUIRED = 0.10
 TIME_REDUCTION_REQUIRED = 0.10
@@ -72,6 +73,27 @@ class RankingCascadeEvaluation:
     rules: tuple[RankingRuleEvaluation, ...]
     cost_non_regressing: bool | None = None
     runtime_non_regressing: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class QualifyingComparison:
+    challenger_artifact_id: UUID
+    evaluation: RankingCascadeEvaluation
+
+
+@dataclass(frozen=True, slots=True)
+class QualifyingSelection:
+    incumbent_artifact_id: UUID | None
+    comparisons: tuple[QualifyingComparison, ...]
+    participant_artifact_ids: tuple[UUID, ...]
+
+    @property
+    def eligible_challenger_artifact_ids(self) -> tuple[UUID, ...]:
+        return tuple(
+            comparison.challenger_artifact_id
+            for comparison in self.comparisons
+            if comparison.evaluation.selected_rule is not None
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,7 +213,8 @@ class RankingCascade:
             incumbent_before = current
             dethroned = False
             if current is None:
-                evaluation = self._evaluate_positive_score(
+                evaluation = self.evaluate_challenger(
+                    incumbent_artifact_id=current,
                     challenger_artifact_id=artifact_id,
                     aggregates=aggregates,
                 )
@@ -209,7 +232,7 @@ class RankingCascade:
                     )
                 )
                 continue
-            evaluation = self._evaluate_dethrone(
+            evaluation = self.evaluate_challenger(
                 challenger_artifact_id=artifact_id,
                 incumbent_artifact_id=current,
                 aggregates=aggregates,
@@ -230,6 +253,25 @@ class RankingCascade:
             initial_artifact_id=initial,
             final_artifact_id=current,
             steps=tuple(steps),
+        )
+
+    def evaluate_challenger(
+        self,
+        *,
+        incumbent_artifact_id: UUID | None,
+        challenger_artifact_id: UUID,
+        aggregates: ArtifactAggregateBundle,
+    ) -> RankingCascadeEvaluation:
+        if not self._has_positive_total(incumbent_artifact_id, aggregates):
+            return self._evaluate_positive_score(
+                challenger_artifact_id=challenger_artifact_id,
+                aggregates=aggregates,
+            )
+        assert incumbent_artifact_id is not None
+        return self._evaluate_dethrone(
+            incumbent_artifact_id=incumbent_artifact_id,
+            challenger_artifact_id=challenger_artifact_id,
+            aggregates=aggregates,
         )
 
     def _evaluate_positive_score(
@@ -419,12 +461,8 @@ class RankingCascade:
         return RankingRuleEvaluation(
             rule=RankingDecisionRule.SCORE_MARGIN,
             status=RankingRuleStatus.PASSED if passed else RankingRuleStatus.FAILED,
-            required_absolute_improvement=_normalize_score(
-                max(0.0, required_total - incumbent_total) / maximum_score
-            ),
-            observed_absolute_improvement=_normalize_score(
-                (challenger_total - incumbent_total) / maximum_score
-            ),
+            required_absolute_improvement=_normalize_score(max(0.0, required_total - incumbent_total) / maximum_score),
+            observed_absolute_improvement=_normalize_score((challenger_total - incumbent_total) / maximum_score),
         )
 
     @staticmethod
@@ -432,6 +470,47 @@ class RankingCascade:
         if artifact_id is None:
             return False
         return float(aggregates.totals.get(artifact_id, 0.0)) > 0.0
+
+
+def select_qualifying_participants(
+    *,
+    initial: UUID | None,
+    challengers_ordered: Sequence[UUID],
+    aggregates: ArtifactAggregateBundle,
+    cascade: RankingCascade,
+) -> QualifyingSelection:
+    comparisons = tuple(
+        QualifyingComparison(
+            challenger_artifact_id=artifact_id,
+            evaluation=cascade.evaluate_challenger(
+                incumbent_artifact_id=initial,
+                challenger_artifact_id=artifact_id,
+                aggregates=aggregates,
+            ),
+        )
+        for artifact_id in challengers_ordered
+        if artifact_id in aggregates.vectors
+    )
+    eligible = tuple(
+        comparison.challenger_artifact_id
+        for comparison in comparisons
+        if comparison.evaluation.selected_rule is not None
+    )
+    ranked = sorted(
+        eligible,
+        key=lambda artifact_id: (
+            -aggregates.totals[artifact_id],
+            aggregates.costs[artifact_id],
+            aggregates.median_elapsed_ms.get(artifact_id, math.inf),
+        ),
+    )
+    incumbent = () if initial is None else (initial,)
+    selected = set(ranked[: MAIN_PARTICIPANT_LIMIT - len(incumbent)])
+    return QualifyingSelection(
+        incumbent_artifact_id=initial,
+        comparisons=comparisons,
+        participant_artifact_ids=incumbent + tuple(artifact_id for artifact_id in eligible if artifact_id in selected),
+    )
 
 
 def aggregate_ranking_rows(
@@ -672,6 +751,10 @@ def _is_meaningfully_faster(
 
 
 __all__ = [
+    "MAIN_PARTICIPANT_LIMIT",
+    "QualifyingComparison",
+    "QualifyingSelection",
+    "select_qualifying_participants",
     "ArtifactAggregateBundle",
     "ArtifactRankingRow",
     "COST_REDUCTION_REQUIRED",

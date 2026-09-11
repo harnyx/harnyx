@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -19,7 +19,95 @@ from harnyx_commons.miner_task_ranking import (
     main_participant_priority,
     ordered_challengers,
     run_ranking_cost_usd,
+    select_qualifying_participants,
 )
+
+
+def test_qualifying_compares_every_challenger_to_original_incumbent() -> None:
+    incumbent, earlier, later = uuid4(), uuid4(), uuid4()
+    scores = {incumbent: 0.5, earlier: 0.8, later: 0.65}
+    aggregates = ArtifactAggregateBundle(
+        vectors={artifact: [score] for artifact, score in scores.items()},
+        totals=scores,
+        costs=dict.fromkeys(scores, 1.0),
+    )
+    cascade = RankingCascade()
+    selection = select_qualifying_participants(
+        initial=incumbent,
+        challengers_ordered=[earlier, later],
+        aggregates=aggregates,
+        cascade=cascade,
+    )
+    assert selection.participant_artifact_ids == (incumbent, earlier, later)
+    assert selection.eligible_challenger_artifact_ids == (earlier, later)
+    assert cascade.trace(
+        initial=incumbent,
+        challengers_ordered=[earlier, later],
+        aggregates=aggregates,
+    ).champion_lineage_artifact_ids() == (incumbent, earlier)
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "winner_index"),
+    [
+        ((0.5, 1.0, 1000.0), (0.6, 9.0, 9000.0), 1),
+        ((0.5, 2.0, 1000.0), (0.5, 1.0, 9000.0), 1),
+        ((0.5, 1.0, 9000.0), (0.5, 1.0, 1000.0), 1),
+        ((0.5, 1.0, None), (0.5, 1.0, 9000.0), 1),
+        ((0.5, 1.0, 1000.0), (0.5, 1.0, 1000.0), 0),
+        ((0.5, 1.0, None), (0.5, 1.0, None), 0),
+    ],
+)
+def test_qualifying_cap_orders_by_score_cost_runtime_then_original_order(
+    first: tuple[float, float, float | None],
+    second: tuple[float, float, float | None],
+    winner_index: int,
+) -> None:
+    incumbent = uuid4()
+    cutoff = (uuid4(), uuid4())
+    leading = tuple(uuid4() for _ in range(28))
+    metrics = {
+        incumbent: (0.1, 1.0, 1000.0),
+        **dict.fromkeys(leading, (0.9, 1.0, 1000.0)),
+        cutoff[0]: first,
+        cutoff[1]: second,
+    }
+    aggregates = ArtifactAggregateBundle(
+        vectors={artifact: [values[0]] for artifact, values in metrics.items()},
+        totals={artifact: values[0] for artifact, values in metrics.items()},
+        costs={artifact: values[1] for artifact, values in metrics.items()},
+        median_elapsed_ms={artifact: values[2] for artifact, values in metrics.items() if values[2] is not None},
+    )
+    selection = select_qualifying_participants(
+        initial=incumbent,
+        challengers_ordered=(*cutoff, *leading),
+        aggregates=aggregates,
+        cascade=RankingCascade(),
+    )
+    assert selection.participant_artifact_ids == (incumbent, cutoff[winner_index], *leading)
+    assert len(selection.eligible_challenger_artifact_ids) == 30
+
+
+@pytest.mark.parametrize("incumbent", [None, UUID(int=1)])
+@pytest.mark.parametrize("score", [0.0, 0.01])
+def test_qualifying_zero_incumbent_and_championless_cap(incumbent: UUID | None, score: float) -> None:
+    challengers = tuple(uuid4() for _ in range(32))
+    scores = dict.fromkeys(challengers, score)
+    if incumbent is not None:
+        scores[incumbent] = 0.0
+    aggregates = ArtifactAggregateBundle(
+        vectors={artifact: [value] for artifact, value in scores.items()},
+        totals=scores,
+        costs=dict.fromkeys(scores, 1.0),
+    )
+    selection = select_qualifying_participants(
+        initial=incumbent,
+        challengers_ordered=challengers,
+        aggregates=aggregates,
+        cascade=RankingCascade(),
+    )
+    initial = () if incumbent is None else (incumbent,)
+    assert selection.participant_artifact_ids == initial + (challengers[: 30 - len(initial)] if score > 0 else ())
 
 
 def test_run_ranking_cost_usd_uses_reference_total_with_embedding_cost() -> None:

@@ -15,10 +15,55 @@ from harnyx_commons.miner_task_champion import (
     filter_successful_validator_runs,
     select_batch_artifacts,
     select_champion,
+    select_qualifying,
     selection_from_stored_champion_weights,
     validate_champion_run_inputs,
 )
-from harnyx_commons.miner_task_ranking import ArtifactAggregateBundle, RankingCascade
+from harnyx_commons.miner_task_ranking import ArtifactAggregateBundle, QualifyingSelection, RankingCascade
+
+
+@pytest.mark.parametrize("score", [0.0, 0.01])
+def test_qualifying_adapter_preserves_championless_terminal_decision(score: float) -> None:
+    task_id, artifact_id, validator_id = uuid4(), uuid4(), uuid4()
+    result = select_qualifying(
+        task_ids=(task_id,),
+        artifacts=(ChampionArtifactInput(artifact_id, 7, "hotkey-7"),),
+        runs=(ChampionRunInput(validator_id, artifact_id, task_id, score, 1.0, 1000.0),),
+        current_champion_artifact_id=None,
+        cascade=RankingCascade(),
+    )
+    if score > 0:
+        assert isinstance(result, QualifyingSelection)
+        assert result.participant_artifact_ids == (artifact_id,)
+    else:
+        assert isinstance(result, ChampionSelection)
+        assert result.champion_artifact_id is None
+        assert result.weights == {}
+        assert result.ranking_trace is not None
+        assert result.ranking_trace.champion_lineage_artifact_ids() == ()
+
+
+def test_qualifying_and_champion_share_validator_median_aggregates() -> None:
+    task_id = uuid4()
+    incumbent, earlier, later = uuid4(), uuid4(), uuid4()
+    validators = (uuid4(), uuid4(), uuid4())
+    runs = tuple(
+        ChampionRunInput(validator, artifact, task_id, score, 1.0, 1000.0)
+        for index, validator in enumerate(validators)
+        for artifact, score in ((incumbent, 0.5), (earlier, 0.8), (later, 0.65 if index < 2 else 0.0))
+    )
+    result = select_qualifying(
+        task_ids=(task_id,),
+        artifacts=tuple(
+            ChampionArtifactInput(artifact, index, f"hotkey-{index}")
+            for index, artifact in enumerate((incumbent, earlier, later))
+        ),
+        runs=runs,
+        current_champion_artifact_id=incumbent,
+        cascade=RankingCascade(),
+    )
+    assert isinstance(result, QualifyingSelection)
+    assert result.participant_artifact_ids == (incumbent, earlier, later)
 
 
 def test_selection_from_stored_champion_weights_reads_single_champion_score() -> None:

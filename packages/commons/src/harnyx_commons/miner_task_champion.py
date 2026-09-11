@@ -14,10 +14,12 @@ from harnyx_commons.miner_task_emission import compose_champion_weights
 from harnyx_commons.miner_task_ranking import (
     ArtifactAggregateBundle,
     ArtifactRankingRow,
+    QualifyingSelection,
     RankingCascade,
     RankingCascadeTrace,
     aggregate_ranking_rows,
     ordered_challengers,
+    select_qualifying_participants,
 )
 
 REQUIRED_SUCCESSFUL_VALIDATOR_COUNT = 1
@@ -129,9 +131,7 @@ def _challenger_order_key(
     incumbent_hotkey: str | None,
 ) -> tuple[int, datetime, int, str]:
     incumbent_hotkey_priority = (
-        0
-        if incumbent_hotkey is not None and record.miner_hotkey_ss58 == incumbent_hotkey
-        else 1
+        0 if incumbent_hotkey is not None and record.miner_hotkey_ss58 == incumbent_hotkey else 1
     )
     return (
         incumbent_hotkey_priority,
@@ -166,6 +166,64 @@ def select_champion(
     current_champion_artifact_id: UUID | None,
     cascade: RankingCascade,
 ) -> ChampionSelection | None:
+    candidate_artifact_ids, artifact_identity_map, aggregates = _prepare_ranking_inputs(
+        task_ids=task_ids,
+        artifacts=artifacts,
+        runs=runs,
+    )
+    return _select_champion_from_aggregates(
+        task_count=len(task_ids),
+        candidate_artifact_ids=candidate_artifact_ids,
+        artifact_identity_map=artifact_identity_map,
+        aggregates=aggregates,
+        current_champion_artifact_id=current_champion_artifact_id,
+        cascade=cascade,
+    )
+
+
+def select_qualifying(
+    *,
+    task_ids: Sequence[UUID],
+    artifacts: Sequence[ChampionArtifactInput],
+    runs: Sequence[ChampionRunInput],
+    current_champion_artifact_id: UUID | None,
+    cascade: RankingCascade,
+) -> QualifyingSelection | ChampionSelection | None:
+    candidate_artifact_ids, artifact_identity_map, aggregates = _prepare_ranking_inputs(
+        task_ids=task_ids,
+        artifacts=artifacts,
+        runs=runs,
+    )
+    if not aggregates.vectors or not aggregates.totals:
+        return None
+    selection = select_qualifying_participants(
+        initial=current_champion_artifact_id,
+        challengers_ordered=ordered_challengers(
+            initial=current_champion_artifact_id,
+            candidate_artifact_ids=candidate_artifact_ids,
+        ),
+        aggregates=aggregates,
+        cascade=cascade,
+    )
+    if selection.participant_artifact_ids:
+        return selection
+    # Preserve the existing persisted decision for championless all-zero completion.
+    return _select_champion_from_aggregates(
+        task_count=len(task_ids),
+        candidate_artifact_ids=candidate_artifact_ids,
+        artifact_identity_map=artifact_identity_map,
+        aggregates=aggregates,
+        current_champion_artifact_id=current_champion_artifact_id,
+        cascade=cascade,
+    )
+
+
+def _prepare_ranking_inputs(
+    *,
+    task_ids: Sequence[UUID],
+    artifacts: Sequence[ChampionArtifactInput],
+    runs: Sequence[ChampionRunInput],
+) -> tuple[tuple[UUID, ...], dict[UUID, _ArtifactIdentity], ArtifactAggregateBundle]:
     validated_runs, candidate_artifact_ids, artifact_identity_map = validate_champion_run_inputs(
         task_ids=task_ids,
         artifacts=artifacts,
@@ -184,6 +242,18 @@ def select_champion(
             for run in validated_runs
         )
     )
+    return candidate_artifact_ids, artifact_identity_map, aggregates
+
+
+def _select_champion_from_aggregates(
+    *,
+    task_count: int,
+    candidate_artifact_ids: tuple[UUID, ...],
+    artifact_identity_map: dict[UUID, _ArtifactIdentity],
+    aggregates: ArtifactAggregateBundle,
+    current_champion_artifact_id: UUID | None,
+    cascade: RankingCascade,
+) -> ChampionSelection | None:
     if not aggregates.vectors or not aggregates.totals:
         return None
 
@@ -210,7 +280,7 @@ def select_champion(
     champion_identity = artifact_identity_map[champion_artifact_id]
     artifact_scores = artifact_batch_scores(
         artifact_ids=candidate_artifact_ids,
-        task_count=len(task_ids),
+        task_count=task_count,
         aggregates=aggregates,
     )
     return ChampionSelection(
@@ -371,6 +441,7 @@ def _similarity_fallback_artifact_ids(
 
 
 __all__ = [
+    "select_qualifying",
     "ChampionArtifactInput",
     "ChampionRunInput",
     "ChampionSelection",
