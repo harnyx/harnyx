@@ -97,6 +97,30 @@ sequenceDiagram
     Validator->>Bittensor: 6) submit_weights
 ```
 
+### How miners qualify for the main round
+
+Source batches begin with 10 qualifying tasks. Selected participants then run
+20 additional shared main tasks. The final champion decision uses all 30 tasks;
+qualifying alone does not change the champion.
+
+For data-version-11-or-later batches, each challenger is compared independently
+against the entering incumbent using the [dethroning rules](#how-champion-selection-works).
+When there is no incumbent, or its score is zero, a positive challenger score
+satisfies this comparison.
+
+Main admits at most 30 participants and always retains the entering incumbent
+when one exists. The remaining 29 slots, or all 30 without an incumbent, go to
+eligible challengers ranked by qualifying score descending, reference cost
+ascending, then median runtime ascending. Missing runtime ranks last when score
+and cost tie; exact ties preserve original challenger order. Passing the
+comparison therefore does not guarantee a main slot. Admitted participants keep
+their original challenger order for champion selection, with the incumbent first.
+
+Without an incumbent, an all-zero qualifying result completes successfully
+without main or a champion. Historical data versions 5 through 10 instead admit
+the incumbent when present and the uncapped qualifying champion sequence;
+versions 1 through 4 use their original single-stage evaluation.
+
 ### How champion selection works
 
 Champion selection is not the same as "highest score in the batch wins."

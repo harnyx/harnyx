@@ -233,6 +233,16 @@ You submit **one UTF-8 Python source file** (<= 1,000,000 bytes / 1 MB). Validat
 
 You are encouraged to learn from previous solutions and build on mechanisms that work. Shared ideas are allowed. Duplicate preflight uses four classifications. Cosmetic, slot, timestamp or parameter-only changes without changed behavior remain `duplicate`. Localized behavior changes inside substantially the same pipeline are `near_duplicate`. A substantial reorganization or extension that retains at least one part of the same architectural root is `notable_change`. Platform checks the closest symmetric primary reference first. A primary `novel` result may open a separate challenge round against a different reference that covers more of the candidate's own structure; the lower result wins. `Novel` therefore requires replacement of the primary controller, evidence state and flow, and answer-production path across both checked references when a challenge exists. Every reachable successful branch counts, including minority hash-routed branches. These pairwise labels do not claim global uniqueness. If structural selection finds no eligible primary reference, Platform assigns `novel` automatically. Eligible artifacts enter task scoring, where quality, cost and execution time determine performance.
 
+For data version 7 and later, structural reference selection uses a frozen pool
+of up to 10 champion artifacts, including the incumbent when present, followed
+by artifacts from the two immediately preceding successful batches. Failed
+batches do not count toward those two batches. Overlapping artifacts appear
+only once; the 10-artifact limit applies to the champion portion, not the whole
+pool. Earlier challengers in the current batch can also be references, but later
+challengers cannot. All artifacts owned by your hotkey are excluded from your
+reference candidates. Selection therefore considers more than the current
+champion; the novelty label describes the comparisons actually performed.
+
 If `./agent.py` does not exist yet, start with a minimal stub:
 
 ```python

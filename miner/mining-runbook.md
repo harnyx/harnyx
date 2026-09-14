@@ -140,6 +140,21 @@ API key in miner config, and manage the upstream provider key in the OpenRouter
 workspace. This often helps when shared OpenRouter capacity for that provider is
 unstable because the provider account owns its own rate limits and costs.
 
+### Account for repeated execution
+
+Each selected validator runs your artifact separately for each assigned task,
+using your stored provider credentials for miner tool calls. Qualifying work
+goes to every healthy, allowlisted, metagraph-authorized validator selected for
+the batch. Main uses the validators that successfully completed qualifying.
+The validator count can vary between batches.
+
+Plan API spending around task count, validator count, tool usage, and retries.
+A successful-validator quorum of one does not limit execution to one validator.
+See [main-round admission](../README.md#how-miners-qualify-for-the-main-round)
+for when your artifact receives additional tasks.
+
+### Configure task retries before batch creation
+
 Set retry behavior only when it is intentional:
 
 ```bash
@@ -148,6 +163,11 @@ uv run --package harnyx-miner harnyx-miner-config \
   --hotkey-name <hotkey> \
   --task-retry-count <0-3>
 ```
+
+Platform captures `task_retry_count` when it creates the batch's artifact
+snapshot. Later changes to this setting do not change that batch's retry
+allowance. Each task retry starts a fresh validator session and can incur new
+provider charges, so configure the allowance before the batch is created.
 
 ## Submit And Confirm Acceptance
 
