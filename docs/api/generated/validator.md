@@ -158,6 +158,7 @@ Body: [ValidatorStatusResponse](#model-validatorstatusresponse)
 | `last_weight_error` |  |  | opt | `string` (nullable) |
 | `last_weight_submission_at` |  |  | opt | `string` (nullable) |
 | `queued_batches` |  |  | opt | `integer` (default: 0) |
+| `rating_worker_ready` |  |  | opt | `boolean` (default: False) |
 | `resource_usage` |  |  | opt | [ValidatorResourceUsageResponse](#model-validatorresourceusageresponse) (nullable) |
 |  | `captured_at` |  | req | `string` |
 |  | `cpu_capacity_cores` |  | req | `number` |
@@ -1456,6 +1457,7 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
 | `last_weight_error` |  |  | opt | `string` (nullable) |
 | `last_weight_submission_at` |  |  | opt | `string` (nullable) |
 | `queued_batches` |  |  | opt | `integer` (default: 0) |
+| `rating_worker_ready` |  |  | opt | `boolean` (default: False) |
 | `resource_usage` |  |  | opt | [ValidatorResourceUsageResponse](#model-validatorresourceusageresponse) (nullable) |
 |  | `captured_at` |  | req | `string` |
 |  | `cpu_capacity_cores` |  | req | `number` |
@@ -1563,6 +1565,11 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
       "minimum": 0.0,
       "title": "Queued Batches",
       "type": "integer"
+    },
+    "rating_worker_ready": {
+      "default": false,
+      "title": "Rating Worker Ready",
+      "type": "boolean"
     },
     "resource_usage": {
       "anyOf": [

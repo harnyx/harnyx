@@ -140,6 +140,7 @@ class ValidatorStatusResponse(BaseModel):
     last_completed_at: str | None = None
     running: bool = False
     queued_batches: int = Field(default=0, ge=0)
+    rating_worker_ready: bool = False
     last_error: str | None = None
     last_weight_submission_at: str | None = None
     last_weight_error: str | None = None

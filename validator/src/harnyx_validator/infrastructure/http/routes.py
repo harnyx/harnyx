@@ -273,6 +273,7 @@ def add_control_routes(
                 hotkey=response.hotkey,
                 status=response.status,
                 running=response.running,
+                rating_worker_ready=response.rating_worker_ready,
             )
             return response.model_copy(update={"signature_hex": deps.validator_hotkey.sign(proof_payload).hex()})
         except Exception as exc:
@@ -385,6 +386,7 @@ def _build_status_proof_payload(
     hotkey: str,
     status: str,
     running: bool,
+    rating_worker_ready: bool | None = None,
 ) -> bytes:
     return "\n".join(
         (
@@ -395,6 +397,7 @@ def _build_status_proof_payload(
             f"status={status}",
             f"running={running}",
         )
+        + (() if rating_worker_ready is None else (f"rating_worker_ready={rating_worker_ready}",))
     ).encode("utf-8")
 
 

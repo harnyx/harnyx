@@ -27,6 +27,9 @@ Generated from FastAPI OpenAPI.
   - [POST /v1/miners/scripts](#endpoint-post-v1-miners-scripts)
 - [platform-tool-proxy](#platform-tool-proxy)
   - [POST /v1/platform-tool-proxy/grants](#endpoint-post-v1-platform-tool-proxy-grants)
+- [rating-comparisons](#rating-comparisons)
+  - [GET /v1/rating-comparisons](#endpoint-get-v1-rating-comparisons)
+  - [POST /v1/rating-comparisons/{comparison_id}/judgment](#endpoint-post-v1-rating-comparisons-comparison_id-judgment)
 - [repo-search](#repo-search)
   - [POST /v1/repo-search/ensure-index](#endpoint-post-v1-repo-search-ensure-index)
   - [POST /v1/repo-search/get-file](#endpoint-post-v1-repo-search-get-file)
@@ -1142,6 +1145,135 @@ Body: [PlatformToolProxyGrantResponse](#model-platformtoolproxygrantresponse)
 | --- | --- | --- | --- | --- |
 | `expires_at` |  |  | req | `string` (format: date-time) |
 | `token` |  |  | req | `string` |
+
+`422` Validation Error
+Content-Type: `application/json`
+Body: [HTTPValidationError](#model-httpvalidationerror)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
+|  | `ctx` |  | opt | `object` |
+|  | `input` |  | opt | `object` |
+|  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
+|  | `msg` |  | req | `string` |
+|  | `type` |  | req | `string` |
+
+
+
+## rating-comparisons
+
+<a id="endpoint-get-v1-rating-comparisons"></a>
+### GET /v1/rating-comparisons
+
+Poll
+
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
+
+**Parameters**
+| Param | In | Req | Notes |
+| --- | --- | --- | --- |
+| `after` | query | opt | `string` (format: uuid; nullable) |
+| `limit` | query | opt | `integer` (default: 100) |
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: [RatingWorkPage](#model-ratingworkpage)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `items` |  |  | req | array[[RatingWork](#model-ratingwork)] |
+|  | `comparison_id` |  | req | `string` (format: uuid) |
+|  | `first` |  | req | [RatingAnswer](#model-ratinganswer) |
+|  |  | `assignment_id` | req | `string` (format: uuid) |
+|  |  | `callback_body_utf8` | req | `string` |
+|  |  | `expected_hotkey` | req | `string` |
+|  |  | `receipt_logs` | req | array[[RatingReceipt](#model-ratingreceipt)] |
+|  |  | `signature_hex` | req | `string` |
+|  |  | `signed_callback_path` | req | `string` |
+|  | `query` |  | req | [Query](#model-query) |
+|  |  | `fast` | opt | `boolean` (default: False) |
+|  |  | `output_schema` | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
+|  |  | `text` | req | `string` |
+|  | `second` |  | req | [RatingAnswer](#model-ratinganswer) |
+|  |  | `assignment_id` | req | `string` (format: uuid) |
+|  |  | `callback_body_utf8` | req | `string` |
+|  |  | `expected_hotkey` | req | `string` |
+|  |  | `receipt_logs` | req | array[[RatingReceipt](#model-ratingreceipt)] |
+|  |  | `signature_hex` | req | `string` |
+|  |  | `signed_callback_path` | req | `string` |
+| `next_after` |  |  | opt | `string` (format: uuid; nullable) |
+
+`422` Validation Error
+Content-Type: `application/json`
+Body: [HTTPValidationError](#model-httpvalidationerror)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
+|  | `ctx` |  | opt | `object` |
+|  | `input` |  | opt | `object` |
+|  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
+|  | `msg` |  | req | `string` |
+|  | `type` |  | req | `string` |
+
+
+### {comparison_id}
+
+#### judgment
+
+<a id="endpoint-post-v1-rating-comparisons-comparison_id-judgment"></a>
+##### POST /v1/rating-comparisons/{comparison_id}/judgment
+
+Submit
+
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
+
+**Parameters**
+| Param | In | Req | Notes |
+| --- | --- | --- | --- |
+| `comparison_id` | path | req | `string` (format: uuid) |
+
+**Request**
+Content-Type: `application/json`
+Body: [RatingJudgment](#model-ratingjudgment)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `comparison_id` |  |  | req | `string` (format: uuid) |
+| `quality_result` |  |  | req | `integer` (enum: [-1, 0, 1]) |
+| `two_order_evidence` |  |  | req | [RatingJudgmentRatingQualityEvidence](#model-ratingjudgmentratingqualityevidence) |
+|  | `evaluation_trace` |  | opt | [RatingJudgmentEvaluationTrace](#model-ratingjudgmentevaluationtrace) (nullable) |
+|  |  | `entrypoint_invocation_ms` | opt | `number` (nullable) |
+|  |  | `orchestration_ms` | opt | `number` (nullable) |
+|  |  | `scoring_judge_attempt_count` | opt | `integer` (nullable) |
+|  |  | `scoring_judge_duration_ms` | opt | `number` (nullable) |
+|  |  | `scoring_judge_retry_count` | opt | `integer` (nullable) |
+|  |  | `scoring_judge_retry_reasons` | opt | array[`string`] (default: []) |
+|  |  | `scoring_judge_selected_routes` | opt | array[`string`] (default: []) |
+|  |  | `scoring_judge_status` | opt | `string` (enum: [ok, exhausted, failed]; nullable) |
+|  |  | `scoring_ms` | opt | `number` (nullable) |
+|  | `first_order_preference` |  | req | `string` (enum: [first, second]) |
+|  | `judge_usage` |  | req | [RatingJudgmentJudgeUsageSummary](#model-ratingjudgmentjudgeusagesummary) |
+|  |  | `actual_cost_usd` | req | `number` (nullable) |
+|  |  | `call_count` | req | `integer` |
+|  |  | `completion_tokens` | req | `integer` |
+|  |  | `models` | req | array[[RatingJudgmentJudgeModelUsage](#model-ratingjudgmentjudgemodelusage)] |
+|  |  | `prompt_tokens` | req | `integer` |
+|  |  | `reasoning_tokens` | req | `integer` |
+|  |  | `total_tokens` | req | `integer` |
+|  | `reasoning` |  | req | [RatingJudgmentScorerReasoning](#model-ratingjudgmentscorerreasoning) (nullable) |
+|  |  | `reasoning_tokens` | opt | `integer` (nullable) |
+|  |  | `text` | opt | `string` (nullable) |
+|  | `second_order_preference` |  | req | `string` (enum: [first, second]) |
+
+**Responses**
+`204` Successful Response
+
+`409` Judgment conflict; rating_judgment_already_accepted means a different result is final.
+
+`413` Judgment body exceeds 1 MiB; evidence is rejected without truncation.
 
 `422` Validation Error
 Content-Type: `application/json`
@@ -3846,6 +3978,50 @@ Body: [StatusResponse](#model-statusresponse)
     {
       "additionalProperties": {
         "$ref": "#/components/schemas/JsonValue-Input"
+      },
+      "type": "object"
+    },
+    {
+      "type": "null"
+    }
+  ]
+}
+```
+
+</details>
+
+<a id="model-jsonvalue-output"></a>
+### Model: JsonValue-Output
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "anyOf": [
+    {
+      "type": "string"
+    },
+    {
+      "type": "integer"
+    },
+    {
+      "type": "number"
+    },
+    {
+      "type": "boolean"
+    },
+    {
+      "items": {
+        "$ref": "#/components/schemas/JsonValue-Output"
+      },
+      "type": "array"
+    },
+    {
+      "additionalProperties": {
+        "$ref": "#/components/schemas/JsonValue-Output"
       },
       "type": "object"
     },
@@ -6901,6 +7077,855 @@ Body: [StatusResponse](#model-statusresponse)
 
 </details>
 
+<a id="model-ratinganswer"></a>
+### Model: RatingAnswer
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `assignment_id` |  |  | req | `string` (format: uuid) |
+| `callback_body_utf8` |  |  | req | `string` |
+| `expected_hotkey` |  |  | req | `string` |
+| `receipt_logs` |  |  | req | array[[RatingReceipt](#model-ratingreceipt)] |
+|  | `assignment_id` |  | req | `string` (format: uuid) |
+|  | `issued_at` |  | req | `string` (format: date-time) |
+|  | `receipt_id` |  | req | `string` |
+|  | `results` |  | req | array[[SearchToolResult](#model-searchtoolresult)] |
+|  |  | `index` | req | `integer` |
+|  |  | `note` | opt | `string` (nullable) |
+|  |  | `raw` | opt | [JsonValue-Output](#model-jsonvalue-output) (nullable) |
+|  |  | `result_id` | req | `string` |
+|  |  | `title` | opt | `string` (nullable) |
+|  |  | `url` | opt | `string` (default: ) |
+|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+| `signature_hex` |  |  | req | `string` |
+| `signed_callback_path` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "assignment_id": {
+      "format": "uuid",
+      "title": "Assignment Id",
+      "type": "string"
+    },
+    "callback_body_utf8": {
+      "title": "Callback Body Utf8",
+      "type": "string"
+    },
+    "expected_hotkey": {
+      "minLength": 1,
+      "title": "Expected Hotkey",
+      "type": "string"
+    },
+    "receipt_logs": {
+      "items": {
+        "$ref": "#/components/schemas/RatingReceipt"
+      },
+      "title": "Receipt Logs",
+      "type": "array"
+    },
+    "signature_hex": {
+      "minLength": 1,
+      "title": "Signature Hex",
+      "type": "string"
+    },
+    "signed_callback_path": {
+      "pattern": "^/",
+      "title": "Signed Callback Path",
+      "type": "string"
+    }
+  },
+  "required": [
+    "assignment_id",
+    "expected_hotkey",
+    "callback_body_utf8",
+    "signature_hex",
+    "signed_callback_path",
+    "receipt_logs"
+  ],
+  "title": "RatingAnswer",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-ratingjudgment"></a>
+### Model: RatingJudgment
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `comparison_id` |  |  | req | `string` (format: uuid) |
+| `quality_result` |  |  | req | `integer` (enum: [-1, 0, 1]) |
+| `two_order_evidence` |  |  | req | [RatingJudgmentRatingQualityEvidence](#model-ratingjudgmentratingqualityevidence) |
+|  | `evaluation_trace` |  | opt | [RatingJudgmentEvaluationTrace](#model-ratingjudgmentevaluationtrace) (nullable) |
+|  |  | `entrypoint_invocation_ms` | opt | `number` (nullable) |
+|  |  | `orchestration_ms` | opt | `number` (nullable) |
+|  |  | `scoring_judge_attempt_count` | opt | `integer` (nullable) |
+|  |  | `scoring_judge_duration_ms` | opt | `number` (nullable) |
+|  |  | `scoring_judge_retry_count` | opt | `integer` (nullable) |
+|  |  | `scoring_judge_retry_reasons` | opt | array[`string`] (default: []) |
+|  |  | `scoring_judge_selected_routes` | opt | array[`string`] (default: []) |
+|  |  | `scoring_judge_status` | opt | `string` (enum: [ok, exhausted, failed]; nullable) |
+|  |  | `scoring_ms` | opt | `number` (nullable) |
+|  | `first_order_preference` |  | req | `string` (enum: [first, second]) |
+|  | `judge_usage` |  | req | [RatingJudgmentJudgeUsageSummary](#model-ratingjudgmentjudgeusagesummary) |
+|  |  | `actual_cost_usd` | req | `number` (nullable) |
+|  |  | `call_count` | req | `integer` |
+|  |  | `completion_tokens` | req | `integer` |
+|  |  | `models` | req | array[[RatingJudgmentJudgeModelUsage](#model-ratingjudgmentjudgemodelusage)] |
+|  |  | `prompt_tokens` | req | `integer` |
+|  |  | `reasoning_tokens` | req | `integer` |
+|  |  | `total_tokens` | req | `integer` |
+|  | `reasoning` |  | req | [RatingJudgmentScorerReasoning](#model-ratingjudgmentscorerreasoning) (nullable) |
+|  |  | `reasoning_tokens` | opt | `integer` (nullable) |
+|  |  | `text` | opt | `string` (nullable) |
+|  | `second_order_preference` |  | req | `string` (enum: [first, second]) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "comparison_id": {
+      "format": "uuid",
+      "title": "Comparison Id",
+      "type": "string"
+    },
+    "quality_result": {
+      "enum": [
+        -1,
+        0,
+        1
+      ],
+      "title": "Quality Result",
+      "type": "integer"
+    },
+    "two_order_evidence": {
+      "$ref": "#/components/schemas/RatingJudgmentRatingQualityEvidence"
+    }
+  },
+  "required": [
+    "comparison_id",
+    "quality_result",
+    "two_order_evidence"
+  ],
+  "title": "RatingJudgment",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-ratingjudgmentevaluationtrace"></a>
+### Model: RatingJudgmentEvaluationTrace
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `entrypoint_invocation_ms` |  |  | opt | `number` (nullable) |
+| `orchestration_ms` |  |  | opt | `number` (nullable) |
+| `scoring_judge_attempt_count` |  |  | opt | `integer` (nullable) |
+| `scoring_judge_duration_ms` |  |  | opt | `number` (nullable) |
+| `scoring_judge_retry_count` |  |  | opt | `integer` (nullable) |
+| `scoring_judge_retry_reasons` |  |  | opt | array[`string`] (default: []) |
+| `scoring_judge_selected_routes` |  |  | opt | array[`string`] (default: []) |
+| `scoring_judge_status` |  |  | opt | `string` (enum: [ok, exhausted, failed]; nullable) |
+| `scoring_ms` |  |  | opt | `number` (nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "entrypoint_invocation_ms": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Entrypoint Invocation Ms"
+    },
+    "orchestration_ms": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Orchestration Ms"
+    },
+    "scoring_judge_attempt_count": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Scoring Judge Attempt Count"
+    },
+    "scoring_judge_duration_ms": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Scoring Judge Duration Ms"
+    },
+    "scoring_judge_retry_count": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Scoring Judge Retry Count"
+    },
+    "scoring_judge_retry_reasons": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Scoring Judge Retry Reasons",
+      "type": "array"
+    },
+    "scoring_judge_selected_routes": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Scoring Judge Selected Routes",
+      "type": "array"
+    },
+    "scoring_judge_status": {
+      "anyOf": [
+        {
+          "enum": [
+            "ok",
+            "exhausted",
+            "failed"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Scoring Judge Status"
+    },
+    "scoring_ms": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Scoring Ms"
+    }
+  },
+  "title": "EvaluationTrace",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-ratingjudgmentjudgemodelusage"></a>
+### Model: RatingJudgmentJudgeModelUsage
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `actual_cost_evidence` |  |  | opt | `string` (nullable) |
+| `actual_cost_provider` |  |  | opt | `string` (nullable) |
+| `actual_cost_source` |  |  | req | `string` (enum: [provider_actual, unavailable]) |
+| `actual_cost_usd` |  |  | req | `number` (nullable) |
+| `call_count` |  |  | req | `integer` |
+| `completion_tokens` |  |  | req | `integer` |
+| `model` |  |  | req | `string` |
+| `prompt_tokens` |  |  | req | `integer` |
+| `provider` |  |  | req | `string` |
+| `reasoning_tokens` |  |  | req | `integer` (nullable) |
+| `total_tokens` |  |  | req | `integer` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "actual_cost_evidence": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Actual Cost Evidence"
+    },
+    "actual_cost_provider": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Actual Cost Provider"
+    },
+    "actual_cost_source": {
+      "enum": [
+        "provider_actual",
+        "unavailable"
+      ],
+      "title": "Actual Cost Source",
+      "type": "string"
+    },
+    "actual_cost_usd": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Actual Cost Usd"
+    },
+    "call_count": {
+      "title": "Call Count",
+      "type": "integer"
+    },
+    "completion_tokens": {
+      "title": "Completion Tokens",
+      "type": "integer"
+    },
+    "model": {
+      "title": "Model",
+      "type": "string"
+    },
+    "prompt_tokens": {
+      "title": "Prompt Tokens",
+      "type": "integer"
+    },
+    "provider": {
+      "title": "Provider",
+      "type": "string"
+    },
+    "reasoning_tokens": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Reasoning Tokens"
+    },
+    "total_tokens": {
+      "title": "Total Tokens",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "provider",
+    "model",
+    "call_count",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "reasoning_tokens",
+    "actual_cost_usd",
+    "actual_cost_source"
+  ],
+  "title": "JudgeModelUsage",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-ratingjudgmentjudgeusagesummary"></a>
+### Model: RatingJudgmentJudgeUsageSummary
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `actual_cost_usd` |  |  | req | `number` (nullable) |
+| `call_count` |  |  | req | `integer` |
+| `completion_tokens` |  |  | req | `integer` |
+| `models` |  |  | req | array[[RatingJudgmentJudgeModelUsage](#model-ratingjudgmentjudgemodelusage)] |
+|  | `actual_cost_evidence` |  | opt | `string` (nullable) |
+|  | `actual_cost_provider` |  | opt | `string` (nullable) |
+|  | `actual_cost_source` |  | req | `string` (enum: [provider_actual, unavailable]) |
+|  | `actual_cost_usd` |  | req | `number` (nullable) |
+|  | `call_count` |  | req | `integer` |
+|  | `completion_tokens` |  | req | `integer` |
+|  | `model` |  | req | `string` |
+|  | `prompt_tokens` |  | req | `integer` |
+|  | `provider` |  | req | `string` |
+|  | `reasoning_tokens` |  | req | `integer` (nullable) |
+|  | `total_tokens` |  | req | `integer` |
+| `prompt_tokens` |  |  | req | `integer` |
+| `reasoning_tokens` |  |  | req | `integer` |
+| `total_tokens` |  |  | req | `integer` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "actual_cost_usd": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Actual Cost Usd"
+    },
+    "call_count": {
+      "title": "Call Count",
+      "type": "integer"
+    },
+    "completion_tokens": {
+      "title": "Completion Tokens",
+      "type": "integer"
+    },
+    "models": {
+      "items": {
+        "$ref": "#/components/schemas/RatingJudgmentJudgeModelUsage"
+      },
+      "title": "Models",
+      "type": "array"
+    },
+    "prompt_tokens": {
+      "title": "Prompt Tokens",
+      "type": "integer"
+    },
+    "reasoning_tokens": {
+      "title": "Reasoning Tokens",
+      "type": "integer"
+    },
+    "total_tokens": {
+      "title": "Total Tokens",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "call_count",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "reasoning_tokens",
+    "actual_cost_usd",
+    "models"
+  ],
+  "title": "JudgeUsageSummary",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-ratingjudgmentratingqualityevidence"></a>
+### Model: RatingJudgmentRatingQualityEvidence
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `evaluation_trace` |  |  | opt | [RatingJudgmentEvaluationTrace](#model-ratingjudgmentevaluationtrace) (nullable) |
+|  | `entrypoint_invocation_ms` |  | opt | `number` (nullable) |
+|  | `orchestration_ms` |  | opt | `number` (nullable) |
+|  | `scoring_judge_attempt_count` |  | opt | `integer` (nullable) |
+|  | `scoring_judge_duration_ms` |  | opt | `number` (nullable) |
+|  | `scoring_judge_retry_count` |  | opt | `integer` (nullable) |
+|  | `scoring_judge_retry_reasons` |  | opt | array[`string`] (default: []) |
+|  | `scoring_judge_selected_routes` |  | opt | array[`string`] (default: []) |
+|  | `scoring_judge_status` |  | opt | `string` (enum: [ok, exhausted, failed]; nullable) |
+|  | `scoring_ms` |  | opt | `number` (nullable) |
+| `first_order_preference` |  |  | req | `string` (enum: [first, second]) |
+| `judge_usage` |  |  | req | [RatingJudgmentJudgeUsageSummary](#model-ratingjudgmentjudgeusagesummary) |
+|  | `actual_cost_usd` |  | req | `number` (nullable) |
+|  | `call_count` |  | req | `integer` |
+|  | `completion_tokens` |  | req | `integer` |
+|  | `models` |  | req | array[[RatingJudgmentJudgeModelUsage](#model-ratingjudgmentjudgemodelusage)] |
+|  |  | `actual_cost_evidence` | opt | `string` (nullable) |
+|  |  | `actual_cost_provider` | opt | `string` (nullable) |
+|  |  | `actual_cost_source` | req | `string` (enum: [provider_actual, unavailable]) |
+|  |  | `actual_cost_usd` | req | `number` (nullable) |
+|  |  | `call_count` | req | `integer` |
+|  |  | `completion_tokens` | req | `integer` |
+|  |  | `model` | req | `string` |
+|  |  | `prompt_tokens` | req | `integer` |
+|  |  | `provider` | req | `string` |
+|  |  | `reasoning_tokens` | req | `integer` (nullable) |
+|  |  | `total_tokens` | req | `integer` |
+|  | `prompt_tokens` |  | req | `integer` |
+|  | `reasoning_tokens` |  | req | `integer` |
+|  | `total_tokens` |  | req | `integer` |
+| `reasoning` |  |  | req | [RatingJudgmentScorerReasoning](#model-ratingjudgmentscorerreasoning) (nullable) |
+|  | `reasoning_tokens` |  | opt | `integer` (nullable) |
+|  | `text` |  | opt | `string` (nullable) |
+| `second_order_preference` |  |  | req | `string` (enum: [first, second]) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "evaluation_trace": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/RatingJudgmentEvaluationTrace"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "first_order_preference": {
+      "enum": [
+        "first",
+        "second"
+      ],
+      "title": "First Order Preference",
+      "type": "string"
+    },
+    "judge_usage": {
+      "$ref": "#/components/schemas/RatingJudgmentJudgeUsageSummary"
+    },
+    "reasoning": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/RatingJudgmentScorerReasoning"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "second_order_preference": {
+      "enum": [
+        "first",
+        "second"
+      ],
+      "title": "Second Order Preference",
+      "type": "string"
+    }
+  },
+  "required": [
+    "first_order_preference",
+    "second_order_preference",
+    "reasoning",
+    "judge_usage"
+  ],
+  "title": "RatingQualityEvidence",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-ratingjudgmentscorerreasoning"></a>
+### Model: RatingJudgmentScorerReasoning
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `reasoning_tokens` |  |  | opt | `integer` (nullable) |
+| `text` |  |  | opt | `string` (nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "reasoning_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reasoning Tokens"
+    },
+    "text": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Text"
+    }
+  },
+  "title": "ScorerReasoning",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-ratingreceipt"></a>
+### Model: RatingReceipt
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `assignment_id` |  |  | req | `string` (format: uuid) |
+| `issued_at` |  |  | req | `string` (format: date-time) |
+| `receipt_id` |  |  | req | `string` |
+| `results` |  |  | req | array[[SearchToolResult](#model-searchtoolresult)] |
+|  | `index` |  | req | `integer` |
+|  | `note` |  | opt | `string` (nullable) |
+|  | `raw` |  | opt | [JsonValue-Output](#model-jsonvalue-output) (nullable) |
+|  | `result_id` |  | req | `string` |
+|  | `title` |  | opt | `string` (nullable) |
+|  | `url` |  | opt | `string` (default: ) |
+| `tool` |  |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "assignment_id": {
+      "format": "uuid",
+      "title": "Assignment Id",
+      "type": "string"
+    },
+    "issued_at": {
+      "format": "date-time",
+      "title": "Issued At",
+      "type": "string"
+    },
+    "receipt_id": {
+      "title": "Receipt Id",
+      "type": "string"
+    },
+    "results": {
+      "items": {
+        "$ref": "#/components/schemas/SearchToolResult"
+      },
+      "title": "Results",
+      "type": "array"
+    },
+    "tool": {
+      "enum": [
+        "search_web",
+        "search_ai",
+        "fetch_page",
+        "embed_text",
+        "llm_chat",
+        "test_tool",
+        "tooling_info"
+      ],
+      "title": "Tool",
+      "type": "string"
+    }
+  },
+  "required": [
+    "receipt_id",
+    "assignment_id",
+    "tool",
+    "issued_at",
+    "results"
+  ],
+  "title": "RatingReceipt",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-ratingwork"></a>
+### Model: RatingWork
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `comparison_id` |  |  | req | `string` (format: uuid) |
+| `first` |  |  | req | [RatingAnswer](#model-ratinganswer) |
+|  | `assignment_id` |  | req | `string` (format: uuid) |
+|  | `callback_body_utf8` |  | req | `string` |
+|  | `expected_hotkey` |  | req | `string` |
+|  | `receipt_logs` |  | req | array[[RatingReceipt](#model-ratingreceipt)] |
+|  |  | `assignment_id` | req | `string` (format: uuid) |
+|  |  | `issued_at` | req | `string` (format: date-time) |
+|  |  | `receipt_id` | req | `string` |
+|  |  | `results` | req | array[[SearchToolResult](#model-searchtoolresult)] |
+|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+|  | `signature_hex` |  | req | `string` |
+|  | `signed_callback_path` |  | req | `string` |
+| `query` |  |  | req | [Query](#model-query) |
+|  | `fast` |  | opt | `boolean` (default: False) |
+|  | `output_schema` |  | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
+|  | `text` |  | req | `string` |
+| `second` |  |  | req | [RatingAnswer](#model-ratinganswer) |
+|  | `assignment_id` |  | req | `string` (format: uuid) |
+|  | `callback_body_utf8` |  | req | `string` |
+|  | `expected_hotkey` |  | req | `string` |
+|  | `receipt_logs` |  | req | array[[RatingReceipt](#model-ratingreceipt)] |
+|  |  | `assignment_id` | req | `string` (format: uuid) |
+|  |  | `issued_at` | req | `string` (format: date-time) |
+|  |  | `receipt_id` | req | `string` |
+|  |  | `results` | req | array[[SearchToolResult](#model-searchtoolresult)] |
+|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+|  | `signature_hex` |  | req | `string` |
+|  | `signed_callback_path` |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "comparison_id": {
+      "format": "uuid",
+      "title": "Comparison Id",
+      "type": "string"
+    },
+    "first": {
+      "$ref": "#/components/schemas/RatingAnswer"
+    },
+    "query": {
+      "$ref": "#/components/schemas/Query"
+    },
+    "second": {
+      "$ref": "#/components/schemas/RatingAnswer"
+    }
+  },
+  "required": [
+    "comparison_id",
+    "query",
+    "first",
+    "second"
+  ],
+  "title": "RatingWork",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-ratingworkpage"></a>
+### Model: RatingWorkPage
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `items` |  |  | req | array[[RatingWork](#model-ratingwork)] |
+|  | `comparison_id` |  | req | `string` (format: uuid) |
+|  | `first` |  | req | [RatingAnswer](#model-ratinganswer) |
+|  |  | `assignment_id` | req | `string` (format: uuid) |
+|  |  | `callback_body_utf8` | req | `string` |
+|  |  | `expected_hotkey` | req | `string` |
+|  |  | `receipt_logs` | req | array[[RatingReceipt](#model-ratingreceipt)] |
+|  |  | `signature_hex` | req | `string` |
+|  |  | `signed_callback_path` | req | `string` |
+|  | `query` |  | req | [Query](#model-query) |
+|  |  | `fast` | opt | `boolean` (default: False) |
+|  |  | `output_schema` | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
+|  |  | `text` | req | `string` |
+|  | `second` |  | req | [RatingAnswer](#model-ratinganswer) |
+|  |  | `assignment_id` | req | `string` (format: uuid) |
+|  |  | `callback_body_utf8` | req | `string` |
+|  |  | `expected_hotkey` | req | `string` |
+|  |  | `receipt_logs` | req | array[[RatingReceipt](#model-ratingreceipt)] |
+|  |  | `signature_hex` | req | `string` |
+|  |  | `signed_callback_path` | req | `string` |
+| `next_after` |  |  | opt | `string` (format: uuid; nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "items": {
+        "$ref": "#/components/schemas/RatingWork"
+      },
+      "title": "Items",
+      "type": "array"
+    },
+    "next_after": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Next After"
+    }
+  },
+  "required": [
+    "items"
+  ],
+  "title": "RatingWorkPage",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-referenceanswer"></a>
 ### Model: ReferenceAnswer
 
@@ -7866,6 +8891,82 @@ Body: [StatusResponse](#model-statusresponse)
     }
   },
   "title": "SearchRepoSearchResponse",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-searchtoolresult"></a>
+### Model: SearchToolResult
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `index` |  |  | req | `integer` |
+| `note` |  |  | opt | `string` (nullable) |
+| `raw` |  |  | opt | [JsonValue-Output](#model-jsonvalue-output) (nullable) |
+| `result_id` |  |  | req | `string` |
+| `title` |  |  | opt | `string` (nullable) |
+| `url` |  |  | opt | `string` (default: ) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "description": "Normalized search result that miners may cite.",
+  "properties": {
+    "index": {
+      "title": "Index",
+      "type": "integer"
+    },
+    "note": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Note"
+    },
+    "raw": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/JsonValue-Output"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "result_id": {
+      "title": "Result Id",
+      "type": "string"
+    },
+    "title": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Title"
+    },
+    "url": {
+      "default": "",
+      "title": "Url",
+      "type": "string"
+    }
+  },
+  "required": [
+    "index",
+    "result_id"
+  ],
+  "title": "SearchToolResult",
   "type": "object"
 }
 ```

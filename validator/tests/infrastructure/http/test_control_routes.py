@@ -181,6 +181,7 @@ def test_status_endpoint_returns_signed_ownership_proof_when_timestamp_header_is
             "hotkey=5proof",
             "status=ok",
             "running=False",
+            "rating_worker_ready=False",
         )
     ).encode("utf-8")
     assert payload["signature_hex"] == (b"sig:" + expected).hex()
@@ -197,3 +198,31 @@ def test_control_routes_return_503_when_auth_warmup_is_unavailable() -> None:
     assert response.json() == {
         "detail": "inbound auth verifier has not completed initial hotkey warmup",
     }
+
+
+def test_status_proof_authenticates_rating_worker_readiness_and_preserves_legacy_bytes() -> None:
+    from harnyx_validator.infrastructure.http.routes import _build_status_proof_payload
+
+    provider = DemoControlDependencyProvider(
+        validator_hotkey=_StubHotkey("5rating"),
+        status_provider=StatusProvider(rating_worker_readiness=lambda: True),
+    )
+    response = TestClient(_create_test_app(provider)).get(
+        "/validator/status",
+        headers={
+            "Authorization": 'Bittensor ss58="5demo",sig="00"',
+            "X-Harnyx-Status-Ts": "2026-09-10T00:00:00+00:00",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["rating_worker_ready"] is True
+    fields = dict(request_ts="2026-09-10T00:00:00+00:00", hotkey="5rating", status="idle", running=False)
+    legacy = _build_status_proof_payload(**fields)
+    assert legacy.endswith(b"running=False")
+    signed = _build_status_proof_payload(**fields, rating_worker_ready=True)
+    assert signed == legacy + b"\nrating_worker_ready=True"
+    assert payload["signature_hex"] == (b"sig:" + signed).hex()
+    assert (
+        payload["signature_hex"] != (b"sig:" + _build_status_proof_payload(**fields, rating_worker_ready=False)).hex()
+    )

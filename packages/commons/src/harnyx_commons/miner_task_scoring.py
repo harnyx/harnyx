@@ -6,7 +6,10 @@ import asyncio
 import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Generic, Literal, TypeVar
+from typing import TYPE_CHECKING, Generic, Literal, TypeVar
+
+if TYPE_CHECKING:
+    from harnyx_commons.rating_competition import RatingQualityEvidence
 
 from pydantic import AliasChoices, BaseModel, Field
 
@@ -191,6 +194,8 @@ class _CompletedPairwiseOutcome:
 @dataclass(frozen=True, slots=True)
 class _PairwiseScore:
     comparison_score: float
+    first_order_preference: Literal["first", "second"]
+    second_order_preference: Literal["first", "second"]
     reasoning: ScorerReasoning | None
     judge_usage: JudgeUsageSummary
     evaluation_trace: EvaluationTrace | None = None
@@ -272,6 +277,19 @@ class EvaluationScoringService:
             evaluation_trace=pairwise_score.evaluation_trace,
         )
 
+    async def compare_quality(self, *, query: Query, first: Response, second: Response) -> RatingQualityEvidence:
+        """Compare two hydrated answers, including FAST queries, without reference privilege."""
+        from harnyx_commons.rating_competition import RatingQualityEvidence
+
+        result = await self._score_pairwise(query=query, miner_response=first, reference_response=second)
+        return RatingQualityEvidence(
+            first_order_preference=result.first_order_preference,
+            second_order_preference=result.second_order_preference,
+            reasoning=result.reasoning,
+            judge_usage=result.judge_usage,
+            evaluation_trace=result.evaluation_trace,
+        )
+
     async def _score_fast(
         self,
         *,
@@ -308,7 +326,7 @@ class EvaluationScoringService:
         *,
         query: Query,
         miner_response: Response,
-        reference_response: ReferenceAnswer,
+        reference_response: Response | ReferenceAnswer,
     ) -> _PairwiseScore:
         pair_tasks = (
             asyncio.create_task(
@@ -345,6 +363,8 @@ class EvaluationScoringService:
         judge_usage = merge_judge_usage((miner_first.judge_usage, reference_first.judge_usage))
         return _PairwiseScore(
             comparison_score=miner_wins / 2.0,
+            first_order_preference=miner_first.preferred_position,
+            second_order_preference=reference_first.preferred_position,
             reasoning=_build_pairwise_reasoning_trace(miner_first, reference_first),
             judge_usage=judge_usage,
             evaluation_trace=_merge_scoring_evaluation_traces(

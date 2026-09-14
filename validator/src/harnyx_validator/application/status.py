@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from threading import Lock
@@ -29,6 +30,7 @@ class InMemoryStatus:
 
 
 class StatusSnapshot(TypedDict):
+    rating_worker_ready: bool
     status: str
     last_batch_id: str | None
     last_started_at: str | None
@@ -123,6 +125,7 @@ class StatusProvider:
     """Tracks lightweight runtime status for RPC inspection."""
 
     state: InMemoryStatus = field(default_factory=InMemoryStatus)
+    rating_worker_readiness: Callable[[], bool] = field(default=lambda: False)
 
     def snapshot(self) -> StatusSnapshot:
         if self.state.running:
@@ -132,6 +135,7 @@ class StatusProvider:
         else:
             status_value = "idle"
         return {
+            "rating_worker_ready": self.rating_worker_readiness(),
             "status": status_value,
             "last_batch_id": str(self.state.last_batch_id) if self.state.last_batch_id else None,
             "last_started_at": self._iso(self.state.last_started_at),

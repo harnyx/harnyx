@@ -75,6 +75,7 @@ from harnyx_validator.application.platform_tool_proxy import (
 from harnyx_validator.application.ports.evaluation_record import EvaluationRecordPort
 from harnyx_validator.application.ports.platform import PlatformPort, PlatformToolProxyPlatformPort
 from harnyx_validator.application.ports.subtensor import SubtensorClientPort
+from harnyx_validator.application.rating_competition import RatingCompetitionService
 from harnyx_validator.application.services.evaluation_batch_prep import (
     SANDBOX_CONTAINER_NAME_PREFIX,
     SANDBOX_LABELS,
@@ -109,6 +110,7 @@ from harnyx_validator.runtime.platform_work_worker import (
     ScoringSlotConfig,
     ScoringSlotConfigEntry,
 )
+from harnyx_validator.runtime.rating_competition_worker import RatingCompetitionWorker
 from harnyx_validator.runtime.registration_metadata import resolve_validator_registration_metadata
 from harnyx_validator.runtime.resource_usage import ValidatorResourceUsageProvider
 from harnyx_validator.runtime.settings import Settings
@@ -277,6 +279,7 @@ class RuntimeContext:
     platform_client: PlatformPort | None
     platform_tool_proxy_platform_client: PlatformToolProxyPlatformPort | None
     platform_tool_proxy_scopes: PlatformToolProxyScopeRegistry
+    rating_competition_worker: RatingCompetitionWorker | None
     platform_work_worker: PlatformWorkWorker | None
     status_provider: StatusProvider
     registration_metadata: ValidatorRegistrationMetadata
@@ -403,6 +406,14 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         options_factory=options_factory,
     )
 
+    rating_competition_worker = (
+        RatingCompetitionWorker(platform_client, RatingCompetitionService(scoring_service))
+        if resolved.rating_competition_enabled and platform_client is not None
+        else None
+    )
+    if rating_competition_worker is not None:
+        status_provider.rating_worker_readiness = rating_competition_worker.is_running
+
     return RuntimeContext(
         settings=resolved,
         platform_hotkey=platform_hotkey,
@@ -434,6 +445,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         platform_client=platform_client,
         platform_tool_proxy_platform_client=platform_tool_proxy_platform_client,
         platform_tool_proxy_scopes=state.platform_tool_proxy_scopes,
+        rating_competition_worker=rating_competition_worker,
         platform_work_worker=platform_work_worker,
         status_provider=status_provider,
         registration_metadata=registration_metadata,

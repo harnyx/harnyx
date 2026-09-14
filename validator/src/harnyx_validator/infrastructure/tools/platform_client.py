@@ -22,6 +22,7 @@ from harnyx_commons.domain.tool_usage import ToolUsageSummary
 from harnyx_commons.errors import BudgetExceededError, ToolInvocationTimeoutError, ToolProviderError
 from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.protocol_headers import PLATFORM_TOOL_PROXY_TOKEN_HEADER
+from harnyx_commons.rating_competition import RATING_JUDGMENT_ALREADY_ACCEPTED, RatingJudgment, RatingWorkPage
 from harnyx_commons.tools.types import ToolName
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskWorkAssignment,
@@ -39,6 +40,7 @@ from harnyx_validator.application.ports.platform import (
     PlatformToolProxyPlatformPort,
     PlatformToolProxyToolResult,
     PlatformWeightsUnavailableError,
+    RatingJudgmentDeliveryRejectedError,
 )
 from harnyx_validator.infrastructure.transient_network import classify_transient_network_failure
 
@@ -199,6 +201,30 @@ class HttpPlatformClient(PlatformPort):
                 headers=self._request_headers("POST", path, body),
                 **kwargs,
             )
+
+    async def poll_rating_comparisons(self, *, after: UUID | None = None, limit: int = 100) -> RatingWorkPage:
+
+        path = f"/v1/rating-comparisons?limit={limit}"
+        if after is not None:
+            path += f"&after={after}"
+        async with self._async_client() as client:
+            response = await client.get(path, headers=self._request_headers("GET", path, b""))
+        if response.status_code != httpx.codes.OK:
+            raise PlatformClientError(status_code=response.status_code, message="rating work poll failed")
+        return RatingWorkPage.model_validate_json(response.content, strict=True)
+
+    async def submit_rating_judgment(self, judgment: RatingJudgment) -> None:
+        path = f"/v1/rating-comparisons/{judgment.comparison_id}/judgment"
+        response = await self._post_json_async(path, judgment.model_dump(mode="json"))
+        if response.status_code == httpx.codes.REQUEST_ENTITY_TOO_LARGE:
+            raise RatingJudgmentDeliveryRejectedError("rating judgment exceeds the Platform request limit")
+        if (
+            response.status_code == httpx.codes.CONFLICT
+            and _platform_error_code(response) == RATING_JUDGMENT_ALREADY_ACCEPTED
+        ):
+            raise RatingJudgmentDeliveryRejectedError("a different rating judgment was already accepted")
+        if response.status_code != httpx.codes.NO_CONTENT:
+            raise PlatformClientError(status_code=response.status_code, message="rating judgment submission failed")
 
     def fetch_artifact(self, batch_id: UUID, artifact_id: UUID) -> bytes:
         path = f"/v1/miner-task-batches/{batch_id}/artifacts/{artifact_id}"

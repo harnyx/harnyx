@@ -10,6 +10,7 @@ from uuid import UUID
 
 from harnyx_commons.domain.tool_call import ToolExecutionFacts
 from harnyx_commons.json_types import JsonObject, JsonValue
+from harnyx_commons.rating_competition import RatingJudgment, RatingWorkPage
 from harnyx_commons.tools.types import ToolName
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskWorkAssignment,
@@ -18,8 +19,20 @@ from harnyx_validator.application.dto.evaluation import (
 )
 
 
+class RatingJudgmentDeliveryRejectedError(RuntimeError):
+    """Platform cannot accept this completed result; automatic retry cannot repair it."""
+
+
 class PlatformPort(Protocol):
     """Abstract platform client capable of champion lookup and logging."""
+
+    async def poll_rating_comparisons(self, *, after: UUID | None = None, limit: int = 100) -> RatingWorkPage:
+        """Poll assigned ready comparisons without expiring outstanding work."""
+        ...
+
+    async def submit_rating_judgment(self, judgment: RatingJudgment) -> None:
+        """Persist the first valid judgment; acknowledge identical retries."""
+        ...
 
     def fetch_artifact(self, batch_id: UUID, artifact_id: UUID) -> bytes:
         """Download the python agent artifact for a given candidate in the batch."""

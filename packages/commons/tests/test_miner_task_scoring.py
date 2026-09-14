@@ -1633,3 +1633,15 @@ async def test_fast_scoring_reuses_fallback_usage_trace_and_terminal_failure() -
     )
     with pytest.raises(LlmRetryExhaustedError, match="fallback exhausted"):
         await terminal_service.score(task=task, response=Response(text="Answer."))
+
+
+async def test_rating_quality_uses_two_orders_even_for_fast_queries() -> None:
+    provider = StubLlmProvider([('first', 'first reason', 1), ('second', 'second reason', 2)])
+    service = EvaluationScoringService(provider, EvaluationScoringConfig(provider='openai', model='stub'))
+    result = await service.compare_quality(query=Query(text='Question', fast=True),
+                                           first=Response(text='A'), second=Response(text='B'))
+    assert result.quality_result == 1
+    assert result.first_order_preference == 'first'
+    assert result.second_order_preference == 'second'
+    assert len(provider.requests) == 2
+    assert result.reasoning is not None
