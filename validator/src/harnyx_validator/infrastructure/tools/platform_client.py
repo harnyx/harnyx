@@ -384,7 +384,7 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
 
     base_url: str
     hotkey: bt.Keypair
-    timeout_seconds: float = 10.0
+    timeout_seconds: float = 30.0
     transport: httpx.AsyncBaseTransport | None = None
     grant_retry_delays_seconds: tuple[float, ...] = _PLATFORM_TOOL_PROXY_GRANT_RETRY_DELAYS_SECONDS
     _client: httpx.AsyncClient = field(init=False, repr=False)

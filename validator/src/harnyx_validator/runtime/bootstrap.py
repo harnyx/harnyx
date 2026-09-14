@@ -910,7 +910,6 @@ def _create_platform_client(settings: Settings) -> tuple[PlatformPort, PlatformT
     platform_tool_proxy_client = AsyncPlatformToolProxyPlatformClient(
         base_url=normalized_base,
         hotkey=hotkey,
-        timeout_seconds=PLATFORM.timeout_seconds,
     )
     return client, platform_tool_proxy_client, hotkey
 

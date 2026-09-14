@@ -750,8 +750,10 @@ next improvement step.
 
 ## Miner Script Python Subset
 
-Server upload validates miner scripts with an AST policy before duplicate
-fingerprinting. Normal SDK imports, common stdlib imports, async helpers,
+After authentication and SHA-256 verification, server upload rejects already-stored
+exact-byte duplicates before analysis. New content receives the existing AST policy
+validation and duplicate fingerprinting in a separate process. Each API process runs
+one analysis with at most two waiting submissions; a full queue returns HTTP 503. Normal SDK imports, common stdlib imports, async helpers,
 loops, lambdas, comprehensions, f-strings, dataclass-style classes,
 `json.dumps(...)`, `re.compile(...)`, and ordinary bound method calls are
 supported.
@@ -855,6 +857,14 @@ annotations, and method definitions.
 | `sha_mismatch` (422) | Your `sha256` does not match the decoded `script_b64` |
 | `invalid_script_payload` (422) | The script is not valid UTF-8/Python or uses unsupported dynamic/reflection syntax |
 | `duplicate_script` (409) | The same script already exists globally |
+
+### Upload capacity (503)
+
+`script_processing_unavailable` means the upload was rejected because script processing
+is busy or unavailable. Retry the submission later. The upload CLI reports the error
+and does not retry automatically; its upload timeout is 30 seconds. A large
+or queued upload can exceed that timeout. If an earlier timed-out request committed,
+resubmitting the same script returns `duplicate_script` (409).
 
 ### Runtime (during evaluation)
 

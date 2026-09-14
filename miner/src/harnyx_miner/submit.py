@@ -65,7 +65,7 @@ def _upload_agent(*, agent_path: Path, wallet_name: str, hotkey_name: str) -> di
         "Authorization": authorization,
         "Content-Type": "application/json",
     }
-    with httpx.Client(base_url=_platform_base_url(), timeout=10) as client:
+    with httpx.Client(base_url=_platform_base_url(), timeout=30) as client:
         response = client.post(path, headers=headers, content=body)
     if response.status_code != 200:
         detail = _summarize_response_text(response)
