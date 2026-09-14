@@ -197,6 +197,18 @@ Check:
 
 If `submitted_at` is after `cutoff_at`, expect to wait for a later batch.
 
+The submission window starts after the cutoff of the last successfully completed
+batch and ends at the new batch's cutoff, inclusive. Failed batches do not advance
+this window.
+
+The next batch selects the latest eligible submission per miner hotkey, plus the
+incumbent champion. A submission included in a failed batch remains eligible, but
+a newer submission from the same hotkey can replace it.
+
+Latest Submissions shows current candidates, not a guaranteed final batch roster.
+Artifacts already assigned to a finalized, non-terminal batch appear in that
+batch's details instead.
+
 ### While A Batch Is Running
 
 Use `get_miner_task_batch(batch_id)` for:
