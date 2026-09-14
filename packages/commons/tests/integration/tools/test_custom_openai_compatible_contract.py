@@ -40,7 +40,7 @@ async def test_custom_openai_compatible_provider_contract_against_local_server(
             f'[{{"id":"gemma4-cloud-run-turbo","base_url":"{base_url}/v1","auth":{{"type":"none"}}}}]'
         ),
         LLM_MODEL_PROVIDER_OVERRIDES_JSON=(
-            '{"tool":{"google/gemma-4-31B-turbo-TEE":"custom-openai-compatible:gemma4-cloud-run-turbo"}}'
+            '{"scoring":{"google/gemma-4-31B-turbo-TEE":"custom-openai-compatible:gemma4-cloud-run-turbo"}}'
         ),
     )
     registry = build_cached_llm_provider_registry(
@@ -54,7 +54,7 @@ async def test_custom_openai_compatible_provider_contract_against_local_server(
         ),
     )
     provider = build_routed_llm_provider(
-        surface="tool",
+        surface="scoring",
         default_provider="chutes",
         llm_settings=settings,
         allowed_providers={"chutes", "vertex"},
@@ -100,7 +100,7 @@ async def test_qwen36_custom_openai_compatible_provider_contract_against_local_s
             f'[{{"id":"qwen36-cloud-run","base_url":"{base_url}/v1","auth":{{"type":"none"}}}}]'
         ),
         LLM_MODEL_PROVIDER_OVERRIDES_JSON=(
-            '{"tool":{"Qwen/Qwen3.6-27B-TEE":"custom-openai-compatible:qwen36-cloud-run"}}'
+            '{"scoring":{"Qwen/Qwen3.6-27B-TEE":"custom-openai-compatible:qwen36-cloud-run"}}'
         ),
     )
     registry = build_cached_llm_provider_registry(
@@ -114,7 +114,7 @@ async def test_qwen36_custom_openai_compatible_provider_contract_against_local_s
         ),
     )
     provider = build_routed_llm_provider(
-        surface="tool",
+        surface="scoring",
         default_provider="chutes",
         llm_settings=settings,
         allowed_providers={"chutes", "vertex"},

@@ -23,7 +23,6 @@ LlmRouteSurface = Literal[
     "digest",
     "reference",
     "content_review",
-    "tool",
     "scoring",
     "duplication_detection",
 ]
@@ -34,7 +33,6 @@ _ALLOWED_ROUTE_SURFACES: tuple[LlmRouteSurface, ...] = (
     "digest",
     "reference",
     "content_review",
-    "tool",
     "scoring",
     "duplication_detection",
 )

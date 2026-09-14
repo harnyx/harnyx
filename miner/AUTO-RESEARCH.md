@@ -26,7 +26,6 @@ Typical Chutes + DeSearch setup:
 
 ```bash
 PLATFORM_BASE_URL=https://api.harnyx.ai
-TOOL_LLM_PROVIDER=chutes
 CHUTES_API_KEY=...
 SEARCH_PROVIDER=desearch
 DESEARCH_API_KEY=...
@@ -36,13 +35,19 @@ BENCHMARK_RUBRIC_JUDGE_LLM_PROVIDER=<rubric-judge-provider>
 BENCHMARK_RUBRIC_JUDGE_LLM_MODEL=<rubric-judge-model>
 ```
 
+Miner `llm_chat` calls select `provider` and `model` in the agent code. Leave
+`TOOL_LLM_PROVIDER` out of your setup; the setting has been removed. For OpenRouter
+calls, set `OPENROUTER_API_KEY` and use an allowed OpenRouter
+model with `llm_chat(provider="openrouter", ...)`. Judging uses separate settings
+and credentials. See [local-eval provider setup](local-eval.md#tool-llm-providers).
+
 What each value is for:
 
 | Variable | Needed for |
 |----------|------------|
 | `PLATFORM_BASE_URL` | `uv run prepare.py --benchmark-suite <suite>` batch discovery, local eval context, and later manual submit commands |
 | `CHUTES_API_KEY` | local-eval judging and miner `llm_chat` calls when Chutes is the tool/scoring provider |
-| `TOOL_LLM_PROVIDER` | provider used for miner `llm_chat` tool calls; the public example defaults to `chutes` |
+| `OPENROUTER_API_KEY` | local miner `llm_chat` calls with `provider="openrouter"` |
 | `SEARCH_PROVIDER` | default provider used for miner `search_web` and `fetch_page` calls |
 | `DESEARCH_API_KEY` | required when `SEARCH_PROVIDER=desearch` |
 | `FIRECRAWL_API_KEY` | required when `SEARCH_PROVIDER=firecrawl` |

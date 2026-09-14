@@ -18,7 +18,6 @@ from harnyx_commons.llm.schema import (
     LlmResponse,
     LlmUsage,
 )
-from harnyx_commons.tools.invocation_clients import build_tool_invocation_clients
 from harnyx_validator.runtime import bootstrap
 from harnyx_validator.runtime.bootstrap import _build_llm_clients
 from harnyx_validator.runtime.settings import Settings
@@ -68,7 +67,6 @@ def _settings() -> Settings:
             search_provider="parallel",
             parallel_base_url="https://proxy.parallel.test",
             parallel_api_key=SecretStr("parallel-key"),
-            tool_llm_provider="chutes",
             scoring_llm_provider="vertex",
             similarity_llm_provider="chutes",
             chutes_api_key=SecretStr("test-key"),
@@ -99,80 +97,6 @@ def test_validator_runtime_rejects_unsupported_bedrock_surfaces(field: str, mess
 
     with pytest.raises(ValueError, match=message):
         _build_llm_clients(settings)
-
-
-def test_validator_runtime_ignores_tool_bedrock_for_proxy_backed_tooling(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    settings = _settings()
-    settings = settings.model_copy(update={"llm": settings.llm.model_copy(update={"tool_llm_provider": "bedrock"})})
-
-    class _FakeRegistry:
-        def resolve(self, name: str) -> str:
-            return f"provider:{name}"
-
-    monkeypatch.setattr(bootstrap, "build_cached_llm_provider_registry", lambda **_: _FakeRegistry())
-
-    clients = _build_llm_clients(settings)
-
-    assert clients.tool_llm_provider is None
-
-
-def test_local_tool_invocation_clients_still_reject_bedrock_tool_provider() -> None:
-    settings = _settings()
-    settings = settings.model_copy(update={"llm": settings.llm.model_copy(update={"tool_llm_provider": "bedrock"})})
-
-    with pytest.raises(ValueError, match="TOOL_LLM_PROVIDER='bedrock' is not supported"):
-        build_tool_invocation_clients(
-            llm_settings=settings.llm,
-            bedrock_settings=settings.bedrock,
-            vertex_settings=settings.vertex,
-        )
-
-
-def test_validator_runtime_ignores_tool_override_to_bedrock_for_proxy_backed_tooling(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    settings = _settings()
-    settings = settings.model_copy(
-        update={
-            "llm": settings.llm.model_copy(
-                update={
-                    "llm_model_provider_overrides_json": json.dumps({"tool": {"sample-tool-model": "bedrock"}}),
-                }
-            )
-        }
-    )
-
-    class _FakeRegistry:
-        def resolve(self, name: str) -> str:
-            return f"provider:{name}"
-
-    monkeypatch.setattr(bootstrap, "build_cached_llm_provider_registry", lambda **_: _FakeRegistry())
-
-    clients = _build_llm_clients(settings)
-
-    assert clients.tool_llm_provider is None
-
-
-def test_local_tool_invocation_clients_still_reject_tool_override_to_bedrock() -> None:
-    settings = _settings()
-    settings = settings.model_copy(
-        update={
-            "llm": settings.llm.model_copy(
-                update={
-                    "llm_model_provider_overrides_json": json.dumps({"tool": {"sample-tool-model": "bedrock"}}),
-                }
-            )
-        }
-    )
-
-    with pytest.raises(ValueError, match="TOOL_LLM_PROVIDER='bedrock' is not supported"):
-        build_tool_invocation_clients(
-            llm_settings=settings.llm,
-            bedrock_settings=settings.bedrock,
-            vertex_settings=settings.vertex,
-        )
 
 
 @pytest.mark.anyio("asyncio")

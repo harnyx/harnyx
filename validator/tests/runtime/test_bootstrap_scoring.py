@@ -103,7 +103,6 @@ def _settings_for_tooling(search_provider: str = "desearch") -> Settings:
     return Settings.model_construct(
         llm=LlmSettings.model_construct(
             search_provider=search_provider,
-            tool_llm_provider="chutes",
         )
     )
 
@@ -136,10 +135,8 @@ def test_build_llm_clients_uses_shared_provider_registry(monkeypatch: pytest.Mon
     settings = Settings.model_construct(
         llm=LlmSettings.model_construct(
             search_provider=None,
-            tool_llm_provider="bedrock",
             scoring_llm_provider="vertex",
             similarity_llm_provider="chutes",
-            llm_model_provider_overrides_json=json.dumps({"tool": {"unused-tool-model": "bedrock"}}),
         ),
         vertex=VertexSettings.model_construct(
             gcp_project_id="project",
@@ -167,7 +164,6 @@ def test_build_llm_clients_uses_shared_provider_registry(monkeypatch: pytest.Mon
     clients = _build_llm_clients(settings)
 
     assert clients.search_client is None
-    assert clients.tool_llm_provider is None
     assert _routed_surface(clients.scoring_llm_provider) == "scoring"
     assert _routed_surface(clients.similarity_llm_provider) == "duplication_detection"
     assert type(clients.llm_provider_registry).__name__ == "_FakeRegistry"
@@ -190,7 +186,6 @@ def test_validator_runtime_llm_clients_do_not_build_local_tool_invocation_client
     settings = Settings.model_construct(
         llm=LlmSettings.model_construct(
             search_provider=None,
-            tool_llm_provider="chutes",
             scoring_llm_provider="chutes",
             chutes_api_key=SecretStr("test-key"),
         ),
@@ -211,7 +206,6 @@ def test_validator_runtime_llm_clients_do_not_build_local_tool_invocation_client
     clients = _build_llm_clients(settings)
 
     assert clients.search_client is None
-    assert clients.tool_llm_provider is None
 
 
 def test_build_llm_clients_resolves_route_for_each_scoring_slot_entry(
@@ -227,7 +221,6 @@ def test_build_llm_clients_resolves_route_for_each_scoring_slot_entry(
             parallel_base_url="https://proxy.parallel.test",
             parallel_api_key=SecretStr("parallel-key"),
             parallel_max_concurrent=7,
-            tool_llm_provider="chutes",
             scoring_llm_provider="vertex",
             llm_model_provider_overrides_json=json.dumps({"scoring": scoring_routes}),
             openai_compatible_endpoints_json=json.dumps(
@@ -563,7 +556,6 @@ def test_build_runtime_cleans_stale_sandbox_containers_on_startup(
         lambda _settings: bootstrap.RuntimeLlmClients(
             search_client=None,
             llm_provider_registry=object(),
-            tool_llm_provider=None,
             tool_embedding_provider=None,
             scoring_llm_provider=None,
             similarity_llm_provider=None,
@@ -851,7 +843,6 @@ async def test_close_runtime_resources_closes_llm_provider_registry() -> None:
         search_client=None,
         llm_provider_registry=llm_provider_registry,
         platform_tool_proxy_platform_client=None,
-        tool_llm_provider=None,
         scoring_llm_provider=None,
     )
 
@@ -870,7 +861,6 @@ async def test_close_runtime_resources_closes_registry_once() -> None:
         search_client=None,
         llm_provider_registry=llm_provider_registry,
         platform_tool_proxy_platform_client=None,
-        tool_llm_provider=None,
         scoring_llm_provider=None,
     )
 
@@ -889,7 +879,6 @@ async def test_close_runtime_resources_closes_platform_tool_proxy_client_once() 
         search_client=None,
         llm_provider_registry=closable,
         platform_tool_proxy_platform_client=closable,
-        tool_llm_provider=None,
         scoring_llm_provider=None,
     )
 

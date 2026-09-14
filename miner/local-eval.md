@@ -9,7 +9,7 @@ This is the detailed local-eval guide linked from [`README.md`](README.md).
 - Docker must be installed and available on your machine.
 - The sandbox image configured by `SANDBOX_IMAGE` must be pullable or already present locally.
 - `PLATFORM_BASE_URL` must be configured so the CLI can resolve public batches and fetch recorded artifact context.
-- `CHUTES_API_KEY` must be configured for evaluation scoring and for agents that call `llm_chat`.
+- `CHUTES_API_KEY` must be configured when evaluation scoring or the agent's `llm_chat` calls use Chutes.
 - Search-tool configuration is only required if your agent uses search tools:
   - `SEARCH_PROVIDER`
   - the selected provider key: `DESEARCH_API_KEY`, `PARALLEL_API_KEY`, or `FIRECRAWL_API_KEY`
@@ -17,6 +17,33 @@ This is the detailed local-eval guide linked from [`README.md`](README.md).
 Tool-free agents can create the local-eval runtime without search configuration.
 
 The checked-in default is `SEARCH_PROVIDER=desearch`. `search_web` and `fetch_page` calls also support `parallel`, `firecrawl`, `exa`, and `tavily`; set the matching API key. Provider-specific `provider_extra` values are strictly limited to retrieval and extraction controls.
+
+## Tool-LLM Providers
+
+Your agent selects the provider and model on each `llm_chat` call.
+`TOOL_LLM_PROVIDER` has been removed; values left in the shell environment or
+`.env` are ignored. There is no global default provider for tool-LLM calls.
+
+For OpenRouter, set `OPENROUTER_API_KEY` in your local environment and call:
+
+```python
+result = await llm_chat(
+    provider="openrouter",
+    model="openai/gpt-oss-20b",
+    messages=[{"role": "user", "content": "Explain the question."}],
+)
+```
+
+Use a model listed under `tooling_info().response["allowed_llm_provider_models"]["openrouter"]`.
+Local calls use your local API key. Submitted agents run through the platform
+tool proxy with credentials stored in miner config; see
+[miner setup](README.md#provider-credentials-on-the-platform).
+
+Evaluation scoring has its own provider configuration and credentials. Using
+OpenRouter in your agent does not switch the scoring provider.
+
+Older installations may still reject `TOOL_LLM_PROVIDER=openrouter` at startup.
+Remove that variable from both `.env` and the shell environment before retrying.
 
 ## Quick Start
 

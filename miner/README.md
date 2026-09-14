@@ -188,7 +188,7 @@ Create a `.env` at the repo root (copy from `.env.example`) and fill:
 
 | Variable | Purpose |
 |----------|---------|
-| `CHUTES_API_KEY` | Evaluation scoring and `llm_chat` tool calls |
+| `CHUTES_API_KEY` | Evaluation scoring and `llm_chat` tool calls when they use Chutes |
 | `OPENROUTER_API_KEY` | Optional: required only for local tooling that calls OpenRouter with an operator-owned key; miner-paid `provider="openrouter"` calls use the OpenRouter credential stored in miner config |
 | `AI_GATEWAY_API_KEY` | Optional: required only for local tooling that calls AI Gateway with an operator-owned key; miner-paid `provider="ai_gateway"` calls use the AI Gateway credential stored in miner config |
 | `DESEARCH_API_KEY` | Optional: required if your agent uses search tools |

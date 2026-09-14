@@ -338,7 +338,6 @@ class LocalEvaluationRuntime:
     _search_client: Any
     _search_provider_registry: Any
     _llm_provider_registry: Any
-    _tool_llm_provider: Any
     _tool_embedding_provider: Any
     _embedding_provider_registry: Any
     _scoring_llm_provider: Any | None
@@ -365,7 +364,6 @@ class LocalEvaluationRuntime:
             llm_settings=settings.llm,
             bedrock_settings=settings.bedrock,
             vertex_settings=settings.vertex,
-            build_routed_tool_llm_provider=False,
         )
         scoring_route = _resolve_scoring_judge_route(settings, model=_DIRECT_SCORING_LLM_MODEL)
         scoring_llm_provider = build_routed_llm_provider(
@@ -389,7 +387,6 @@ class LocalEvaluationRuntime:
             ai_search_client=invocation_clients.ai_search_client,
             search_provider_registry=invocation_clients.search_provider_registry,
             llm_provider_registry=invocation_clients.llm_provider_registry,
-            tool_llm_provider=invocation_clients.tool_llm_provider,
             tool_embedding_provider=invocation_clients.embedding_provider,
             embedding_provider_registry=invocation_clients.embedding_provider_registry,
             scoring_llm_provider=scoring_llm_provider,
@@ -415,7 +412,6 @@ class LocalEvaluationRuntime:
             llm_settings=settings.llm,
             bedrock_settings=settings.bedrock,
             vertex_settings=settings.vertex,
-            build_routed_tool_llm_provider=False,
         )
         return cls._from_components(
             settings=settings,
@@ -424,7 +420,6 @@ class LocalEvaluationRuntime:
             ai_search_client=invocation_clients.ai_search_client,
             search_provider_registry=invocation_clients.search_provider_registry,
             llm_provider_registry=invocation_clients.llm_provider_registry,
-            tool_llm_provider=invocation_clients.tool_llm_provider,
             tool_embedding_provider=invocation_clients.embedding_provider,
             embedding_provider_registry=invocation_clients.embedding_provider_registry,
             scoring_llm_provider=None,
@@ -444,7 +439,6 @@ class LocalEvaluationRuntime:
         ai_search_client: Any,
         search_provider_registry: Any,
         llm_provider_registry: Any,
-        tool_llm_provider: Any,
         tool_embedding_provider: Any,
         embedding_provider_registry: Any,
         scoring_llm_provider: Any | None,
@@ -458,7 +452,6 @@ class LocalEvaluationRuntime:
             resolved=settings,
             search_client=search_client,
             ai_search_client=ai_search_client,
-            tool_llm_provider=tool_llm_provider,
             web_search_provider_resolver=lambda requested_provider, _context: search_provider_registry.resolve_web(
                 requested_provider
             ),
@@ -500,7 +493,6 @@ class LocalEvaluationRuntime:
             _search_client=search_client,
             _search_provider_registry=search_provider_registry,
             _llm_provider_registry=llm_provider_registry,
-            _tool_llm_provider=tool_llm_provider,
             _tool_embedding_provider=tool_embedding_provider,
             _embedding_provider_registry=embedding_provider_registry,
             _scoring_llm_provider=scoring_llm_provider,

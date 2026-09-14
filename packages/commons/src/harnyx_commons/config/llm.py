@@ -164,7 +164,6 @@ class LlmSettings(BaseSettings):
     )
 
     # --- Tooling / search ---
-    tool_llm_provider: LlmProviderName = Field(default="chutes", alias="TOOL_LLM_PROVIDER")
     tool_embedding_provider: EmbeddingProviderName = Field(default="chutes", alias="TOOL_EMBEDDING_PROVIDER")
     search_provider: SearchProviderName | None = Field(default=None, alias="SEARCH_PROVIDER")
 

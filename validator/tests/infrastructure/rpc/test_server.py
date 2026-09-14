@@ -17,7 +17,6 @@ from harnyx_commons.errors import ToolProviderError
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_commons.llm.providers.openrouter import OpenRouterLlmProvider
-from harnyx_commons.llm.routing import ResolvedLlmRoute
 from harnyx_commons.llm.schema import (
     LlmChoice,
     LlmChoiceMessage,
@@ -317,11 +316,6 @@ class TrackingDependencyProvider:
             clock=lambda: datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
             progress=self.progress_tracker,
             search_provider_name="desearch",
-            llm_route_resolver=lambda model: ResolvedLlmRoute(
-                surface="tool",
-                provider=llm_provider_name,
-                model=model,
-            ),
         )
         self.tool_concurrency_limiter = RecordingToolConcurrencyLimiter()
         self.dependencies = ToolRouteDeps(

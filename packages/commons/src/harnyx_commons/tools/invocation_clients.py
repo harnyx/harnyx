@@ -24,16 +24,12 @@ from harnyx_commons.config.vertex import VertexSettings
 from harnyx_commons.errors import ProviderCredentialUnavailableError
 from harnyx_commons.llm.cost_settlement import normalized_provider_cost
 from harnyx_commons.llm.pricing import MINER_TOOL_EMBEDDING_PRICING, price_embedding
-from harnyx_commons.llm.provider import LlmProviderPort
 from harnyx_commons.llm.provider_factory import (
     CachedLlmProviderRegistry,
     build_cached_llm_provider_registry,
-    build_routed_llm_provider,
 )
-from harnyx_commons.llm.provider_types import BEDROCK_PROVIDER
 from harnyx_commons.llm.providers.chutes import ChutesTextEmbeddingClient
 from harnyx_commons.llm.providers.openrouter import OpenRouterEmbeddingClient
-from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
 from harnyx_commons.platform_tool_proxy import platform_tool_proxy_effective_provider_timeout_seconds
 from harnyx_commons.tools.desearch import DeSearchClient
 from harnyx_commons.tools.embedding_models import (
@@ -72,7 +68,6 @@ class ToolInvocationClients:
     ai_search_client: AiSearchProviderPort | None
     search_provider_registry: CachedWebSearchProviderRegistry
     llm_provider_registry: CachedLlmProviderRegistry
-    tool_llm_provider: LlmProviderPort | None
     embedding_provider: EmbeddingProviderPort | None
     embedding_provider_registry: CachedEmbeddingProviderRegistry
 
@@ -84,10 +79,7 @@ def build_tool_invocation_clients(
     vertex_settings: VertexSettings,
     lazy_search: bool = True,
     require_search: bool = False,
-    build_routed_tool_llm_provider: bool = True,
 ) -> ToolInvocationClients:
-    if build_routed_tool_llm_provider:
-        validate_tool_invocation_provider_policy(llm_settings)
     provider_registry = build_cached_llm_provider_registry(
         llm_settings=llm_settings,
         bedrock_settings=bedrock_settings,
@@ -103,44 +95,8 @@ def build_tool_invocation_clients(
         ai_search_client=ai_search_client,
         search_provider_registry=CachedWebSearchProviderRegistry(llm_settings=llm_settings),
         llm_provider_registry=provider_registry,
-        tool_llm_provider=(
-            build_optional_tool_llm_provider(llm_settings, provider_registry)
-            if build_routed_tool_llm_provider
-            else None
-        ),
         embedding_provider=build_optional_tool_embedding_provider(llm_settings),
         embedding_provider_registry=CachedEmbeddingProviderRegistry(llm_settings=llm_settings),
-    )
-
-
-def validate_tool_invocation_provider_policy(llm_settings: LlmSettings) -> None:
-    if llm_settings.tool_llm_provider == BEDROCK_PROVIDER:
-        raise ValueError("TOOL_LLM_PROVIDER='bedrock' is not supported")
-    for provider_name in llm_settings.llm_model_provider_overrides.get("tool", {}).values():
-        if provider_name == BEDROCK_PROVIDER:
-            raise ValueError("TOOL_LLM_PROVIDER='bedrock' is not supported")
-
-
-def build_optional_tool_llm_provider(
-    llm_settings: LlmSettings,
-    provider_registry: CachedLlmProviderRegistry,
-) -> LlmProviderPort | None:
-    if llm_settings.tool_llm_provider is None:
-        return None
-    return LazyLlmProvider(lambda: build_tool_llm_provider(llm_settings, provider_registry))
-
-
-def build_tool_llm_provider(
-    llm_settings: LlmSettings,
-    provider_registry: CachedLlmProviderRegistry,
-) -> LlmProviderPort:
-    return build_routed_llm_provider(
-        surface="tool",
-        default_provider=llm_settings.tool_llm_provider,
-        llm_settings=llm_settings,
-        allowed_providers={"chutes", "vertex"},
-        allow_custom_openai_compatible=True,
-        provider_registry=provider_registry,
     )
 
 
@@ -452,33 +408,6 @@ def _effective_client_timeout(default_timeout: float, requested_timeout: float |
     return platform_tool_proxy_effective_provider_timeout_seconds(default_timeout, requested_timeout)
 
 
-class LazyLlmProvider(LlmProviderPort):
-    def __init__(self, factory: Callable[[], LlmProviderPort]) -> None:
-        self._factory = factory
-        self._provider: LlmProviderPort | None = None
-        self._lock = asyncio.Lock()
-
-    async def invoke(self, request: AbstractLlmRequest) -> LlmResponse:
-        provider = await self._get_provider()
-        return await provider.invoke(request)
-
-    async def aclose(self) -> None:
-        provider = self._provider
-        if provider is not None:
-            await provider.aclose()
-
-    async def _get_provider(self) -> LlmProviderPort:
-        provider = self._provider
-        if provider is not None:
-            return provider
-        async with self._lock:
-            provider = self._provider
-            if provider is None:
-                provider = self._factory()
-                self._provider = provider
-        return provider
-
-
 class LazyWebSearchProvider(WebSearchProviderPort):
     def __init__(self, factory: Callable[[], WebSearchProviderPort]) -> None:
         self._factory = factory
@@ -761,17 +690,13 @@ __all__ = [
     "CachedEmbeddingProviderRegistry",
     "CachedWebSearchProviderRegistry",
     "ChutesEmbeddingProvider",
-    "LazyLlmProvider",
     "LazySearchProvider",
     "OpenRouterEmbeddingProvider",
     "ToolInvocationClients",
     "build_miner_paid_embedding_provider",
     "build_miner_paid_web_search_provider",
     "build_optional_tool_embedding_provider",
-    "build_optional_tool_llm_provider",
     "build_tool_invocation_clients",
-    "build_tool_llm_provider",
     "build_web_search_provider",
     "build_web_search_provider_for_name",
-    "validate_tool_invocation_provider_policy",
 ]

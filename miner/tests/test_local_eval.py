@@ -696,9 +696,39 @@ class _FailingAsyncResource(_FakeAsyncResource):
         raise RuntimeError("close failed")
 
 
-def test_local_eval_runtime_create_binds_sandbox_publish_to_loopback(
+@pytest.mark.parametrize("source", ["env", "dotenv"])
+def test_local_eval_settings_ignore_unused_tool_provider(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    source: str,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("TOOL_LLM_PROVIDER", raising=False)
+    if source == "env":
+        monkeypatch.setenv("TOOL_LLM_PROVIDER", "openrouter")
+    else:
+        (tmp_path / ".env").write_text("TOOL_LLM_PROVIDER=openrouter\n", encoding="utf-8")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "local-test-key")
+    monkeypatch.setenv("SCORING_LLM_PROVIDER", "vertex")
+
+    settings = local_eval.Settings.load()
+
+    assert settings.llm.openrouter_api_key_value == "local-test-key"
+    assert settings.llm.scoring_llm_provider == "vertex"
+
+
+def test_local_eval_settings_still_validate_scoring_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SCORING_LLM_PROVIDER", "invalid-provider")
+
+    with pytest.raises(ValidationError, match="SCORING_LLM_PROVIDER"):
+        local_eval.Settings.load()
+
+
+@pytest.mark.parametrize("invocation_only", [False, True])
+def test_local_eval_runtime_starts_with_unused_tool_provider_and_binds_to_loopback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    invocation_only: bool,
 ) -> None:
     captured: dict[str, object] = {}
     scoring_llm_provider = _FakeAsyncResource()
@@ -707,21 +737,15 @@ def test_local_eval_runtime_create_binds_sandbox_publish_to_loopback(
         def resolve(self, name: str) -> _FakeAsyncResource:
             raise AssertionError(f"scoring provider should be routed, not eagerly resolved: {name}")
 
-    settings = SimpleNamespace(
-        llm=SimpleNamespace(scoring_llm_provider="chutes"),
-        bedrock=object(),
-        vertex=object(),
-        sandbox=SimpleNamespace(
-            sandbox_image="local/harnyx-sandbox:0.1.0-dev",
-            sandbox_pull_policy="missing",
-        ),
-    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TOOL_LLM_PROVIDER", "openrouter")
+    monkeypatch.setenv("SANDBOX_IMAGE", "local/harnyx-sandbox:0.1.0-dev")
+    monkeypatch.setenv("SANDBOX_PULL_POLICY", "missing")
 
     def create_sandbox_manager(**kwargs: object) -> _FakeSandboxManager:
         captured.update(kwargs)
         return _FakeSandboxManager()
 
-    monkeypatch.setattr(local_eval.Settings, "load", staticmethod(lambda: settings))
     monkeypatch.setattr(
         local_eval,
         "_build_state",
@@ -735,7 +759,6 @@ def test_local_eval_runtime_create_binds_sandbox_publish_to_loopback(
             ai_search_client=_FakeAsyncResource(),
             search_provider_registry=_FakeRegistry(),
             llm_provider_registry=_FakeRegistry(),
-            tool_llm_provider=_FakeAsyncResource(),
             embedding_provider=_FakeAsyncResource(),
             embedding_provider_registry=_FakeRegistry(),
         ),
@@ -764,10 +787,23 @@ def test_local_eval_runtime_create_binds_sandbox_publish_to_loopback(
     )
     monkeypatch.setattr(local_eval, "create_sandbox_manager", create_sandbox_manager)
 
-    runtime = local_eval.LocalEvaluationRuntime.create(
-        run_progress_root=tmp_path / "run-progress",
-        progress_reporter=None,
-    )
+    if invocation_only:
+        scoring_config = EvaluationScoringConfig(
+            provider="chutes",
+            model="openai/gpt-oss-120b-TEE",
+            timeout_seconds=30.0,
+        )
+        runtime = local_eval.LocalEvaluationRuntime.create_invocation_only(
+            scoring_service=SimpleNamespace(_config=scoring_config),
+            scoring_config=scoring_config,
+            run_progress_root=tmp_path / "run-progress",
+            execution_time_limit_seconds=300.0,
+        )
+    else:
+        runtime = local_eval.LocalEvaluationRuntime.create(
+            run_progress_root=tmp_path / "run-progress",
+            progress_reporter=None,
+        )
 
     assert captured["host"] == "127.0.0.1"
     assert captured["published_port_bind_host"] == "127.0.0.1"
@@ -779,7 +815,6 @@ async def test_local_runtime_closes_llm_provider_registry_not_routed_wrappers() 
     search_client = _FakeAsyncResource()
     search_provider_registry = _FakeAsyncResource()
     llm_provider_registry = _FakeAsyncResource()
-    tool_llm_provider = _FakeAsyncResource()
     tool_embedding_provider = _FakeAsyncResource()
     embedding_provider_registry = _FakeAsyncResource()
     scoring_llm_provider = _FakeAsyncResource()
@@ -797,7 +832,6 @@ async def test_local_runtime_closes_llm_provider_registry_not_routed_wrappers() 
         _search_client=search_client,
         _search_provider_registry=search_provider_registry,
         _llm_provider_registry=llm_provider_registry,
-        _tool_llm_provider=tool_llm_provider,
         _tool_embedding_provider=tool_embedding_provider,
         _embedding_provider_registry=embedding_provider_registry,
         _scoring_llm_provider=scoring_llm_provider,
@@ -813,7 +847,6 @@ async def test_local_runtime_closes_llm_provider_registry_not_routed_wrappers() 
     assert search_client.closed is True
     assert search_provider_registry.closed is True
     assert llm_provider_registry.closed is True
-    assert tool_llm_provider.closed is False
     assert tool_embedding_provider.closed is True
     assert embedding_provider_registry.closed is True
     assert scoring_llm_provider.closed is False
@@ -837,7 +870,6 @@ async def test_local_runtime_closes_llm_provider_registry_when_search_close_fail
         _search_client=search_client,
         _search_provider_registry=search_provider_registry,
         _llm_provider_registry=llm_provider_registry,
-        _tool_llm_provider=_FakeAsyncResource(),
         _tool_embedding_provider=_FakeAsyncResource(),
         _embedding_provider_registry=_FakeAsyncResource(),
         _scoring_llm_provider=_FakeAsyncResource(),
@@ -1027,7 +1059,6 @@ def _local_runtime(
         _search_client=_FakeAsyncResource(),
         _search_provider_registry=_FakeAsyncResource(),
         _llm_provider_registry=_FakeAsyncResource(),
-        _tool_llm_provider=_FakeAsyncResource(),
         _tool_embedding_provider=_FakeAsyncResource(),
         _embedding_provider_registry=_FakeAsyncResource(),
         _scoring_llm_provider=_FakeAsyncResource(),
@@ -1645,7 +1676,6 @@ async def test_local_runtime_stops_started_sandbox_when_cancelled_during_startup
         _search_client=None,
         _search_provider_registry=None,
         _llm_provider_registry=None,
-        _tool_llm_provider=None,
         _tool_embedding_provider=None,
         _embedding_provider_registry=None,
         _scoring_llm_provider=None,

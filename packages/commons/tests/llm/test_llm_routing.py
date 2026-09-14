@@ -38,7 +38,7 @@ def test_parse_llm_model_provider_overrides_accepts_surface_scoped_json() -> Non
 def test_parse_llm_model_provider_overrides_accepts_custom_openai_compatible_target() -> None:
     parsed = parse_llm_model_provider_overrides(
         (
-            '{"tool":{'
+            '{"scoring":{'
             '"google/gemma-4-31B-turbo-TEE":"custom-openai-compatible:gemma4-cloud-run-turbo",'
             '"Qwen/Qwen3.6-27B-TEE":"custom-openai-compatible:qwen36-cloud-run"'
             "}}"
@@ -47,7 +47,7 @@ def test_parse_llm_model_provider_overrides_accepts_custom_openai_compatible_tar
     )
 
     assert parsed == {
-        "tool": {
+        "scoring": {
             "google/gemma-4-31B-turbo-TEE": "custom-openai-compatible:gemma4-cloud-run-turbo",
             "Qwen/Qwen3.6-27B-TEE": "custom-openai-compatible:qwen36-cloud-run",
         }
@@ -57,14 +57,15 @@ def test_parse_llm_model_provider_overrides_accepts_custom_openai_compatible_tar
 def test_parse_llm_model_provider_overrides_rejects_unknown_custom_endpoint() -> None:
     with pytest.raises(ValueError, match="unknown custom OpenAI-compatible endpoint 'missing'"):
         parse_llm_model_provider_overrides(
-            '{"tool":{"google/gemma-4-31B-turbo-TEE":"custom-openai-compatible:missing"}}',
+            '{"scoring":{"google/gemma-4-31B-turbo-TEE":"custom-openai-compatible:missing"}}',
             custom_openai_compatible_endpoint_ids={"gemma4-cloud-run-turbo"},
         )
 
 
-def test_parse_llm_model_provider_overrides_rejects_unknown_surface() -> None:
-    with pytest.raises(ValueError, match="surface 'unknown' is not supported"):
-        parse_llm_model_provider_overrides('{"unknown":{"sample-routed-model":"bedrock"}}')
+@pytest.mark.parametrize("surface", ("unknown", "tool"))
+def test_parse_llm_model_provider_overrides_rejects_unsupported_surface(surface: str) -> None:
+    with pytest.raises(ValueError, match=f"surface '{surface}' is not supported"):
+        parse_llm_model_provider_overrides(f'{{"{surface}":{{"sample-routed-model":"bedrock"}}}}')
 
 
 def test_resolve_llm_route_falls_back_to_default_provider() -> None:
@@ -92,14 +93,14 @@ def test_resolve_llm_route_rejects_provider_not_allowed_for_surface() -> None:
 
 def test_resolve_llm_route_allows_custom_target_only_when_enabled() -> None:
     overrides = {
-        "tool": {
+        "scoring": {
             "google/gemma-4-31B-turbo-TEE": "custom-openai-compatible:gemma4-cloud-run-turbo",
             "Qwen/Qwen3.6-27B-TEE": "custom-openai-compatible:qwen36-cloud-run",
         }
     }
 
     route = resolve_llm_route(
-        surface="tool",
+        surface="scoring",
         default_provider="chutes",
         model="google/gemma-4-31B-turbo-TEE",
         overrides=overrides,
@@ -108,12 +109,12 @@ def test_resolve_llm_route_allows_custom_target_only_when_enabled() -> None:
     )
 
     assert route == ResolvedLlmRoute(
-        surface="tool",
+        surface="scoring",
         provider="custom-openai-compatible:gemma4-cloud-run-turbo",
         model="google/gemma-4-31B-turbo-TEE",
     )
     qwen_route = resolve_llm_route(
-        surface="tool",
+        surface="scoring",
         default_provider="chutes",
         model="Qwen/Qwen3.6-27B-TEE",
         overrides=overrides,
@@ -121,13 +122,13 @@ def test_resolve_llm_route_allows_custom_target_only_when_enabled() -> None:
         allow_custom_openai_compatible=True,
     )
     assert qwen_route == ResolvedLlmRoute(
-        surface="tool",
+        surface="scoring",
         provider="custom-openai-compatible:qwen36-cloud-run",
         model="Qwen/Qwen3.6-27B-TEE",
     )
     with pytest.raises(ValueError, match="not supported"):
         resolve_llm_route(
-            surface="tool",
+            surface="scoring",
             default_provider="chutes",
             model="google/gemma-4-31B-turbo-TEE",
             overrides=overrides,
@@ -176,11 +177,11 @@ def test_resolve_llm_route_allows_custom_targets_for_scoring_owned_judge_surface
 
 def test_custom_route_target_is_canonicalized() -> None:
     parsed = parse_llm_model_provider_overrides(
-        '{"tool":{"google/gemma-4-31B-turbo-TEE":"custom-openai-compatible: gemma4-cloud-run-turbo"}}',
+        '{"scoring":{"google/gemma-4-31B-turbo-TEE":"custom-openai-compatible: gemma4-cloud-run-turbo"}}',
         custom_openai_compatible_endpoint_ids={"gemma4-cloud-run-turbo"},
     )
 
-    assert parsed["tool"]["google/gemma-4-31B-turbo-TEE"] == "custom-openai-compatible:gemma4-cloud-run-turbo"
+    assert parsed["scoring"]["google/gemma-4-31B-turbo-TEE"] == "custom-openai-compatible:gemma4-cloud-run-turbo"
 
 
 def test_openrouter_route_target_requires_explicit_surface_authorization() -> None:
@@ -210,95 +211,19 @@ def test_openrouter_route_target_requires_explicit_surface_authorization() -> No
         )
 
 
-def test_tool_surface_does_not_authorize_openrouter_route_target() -> None:
+def test_scoring_surface_does_not_authorize_openrouter_route_target() -> None:
     model = "google/gemma-4-31B-turbo-TEE"
-    parsed = parse_llm_model_provider_overrides(f'{{"tool":{{"{model}":"openrouter"}}}}')
+    parsed = parse_llm_model_provider_overrides(f'{{"scoring":{{"{model}":"openrouter"}}}}')
 
     with pytest.raises(ValueError, match="override provider 'openrouter' is not supported"):
         resolve_llm_route(
-            surface="tool",
+            surface="scoring",
             default_provider="chutes",
             model=model,
             overrides=parsed,
             allowed_providers={"chutes", "vertex"},
             allow_custom_openai_compatible=True,
         )
-
-
-@pytest.mark.parametrize("model", ("openai/gpt-oss-20b",))
-def test_resolve_llm_route_keeps_chutes_selected_model_on_chutes(model: str) -> None:
-    route = resolve_llm_route(
-        surface="tool",
-        default_provider="chutes",
-        model=model,
-        overrides={},
-        allowed_providers={"chutes", "vertex"},
-        allow_custom_openai_compatible=True,
-    )
-
-    assert route == ResolvedLlmRoute(surface="tool", provider="chutes", model=model)
-
-
-def test_resolve_llm_route_vertex_keeps_gpt_oss_20b_on_vertex_when_vertex_is_default() -> None:
-    route = resolve_llm_route(
-        surface="tool",
-        default_provider="vertex",
-        model="openai/gpt-oss-20b",
-        overrides={},
-        allowed_providers={"chutes", "vertex"},
-        allow_custom_openai_compatible=True,
-    )
-
-    assert route == ResolvedLlmRoute(
-        surface="tool",
-        provider="vertex",
-        model="openai/gpt-oss-20b",
-    )
-
-
-def test_resolve_llm_route_custom_qwen36_override_wins_over_default_provider() -> None:
-    route = resolve_llm_route(
-        surface="tool",
-        default_provider="chutes",
-        model="Qwen/Qwen3.6-27B-TEE",
-        overrides={"tool": {"Qwen/Qwen3.6-27B-TEE": "custom-openai-compatible:qwen36-cloud-run"}},
-        allowed_providers={"chutes", "vertex"},
-        allow_custom_openai_compatible=True,
-    )
-
-    assert route == ResolvedLlmRoute(
-        surface="tool",
-        provider="custom-openai-compatible:qwen36-cloud-run",
-        model="Qwen/Qwen3.6-27B-TEE",
-    )
-
-
-@pytest.mark.parametrize("model", ("openai/gpt-oss-20b",))
-def test_resolve_llm_route_chutes_override_keeps_model_on_chutes(model: str) -> None:
-    route = resolve_llm_route(
-        surface="tool",
-        default_provider="vertex",
-        model=model,
-        overrides={"tool": {model: "chutes"}},
-        allowed_providers={"chutes", "vertex"},
-        allow_custom_openai_compatible=True,
-    )
-
-    assert route == ResolvedLlmRoute(surface="tool", provider="chutes", model=model)
-
-
-@pytest.mark.parametrize("model", ("openai/gpt-oss-20b",))
-def test_resolve_llm_route_does_not_special_case_non_chutes_selection(model: str) -> None:
-    route = resolve_llm_route(
-        surface="tool",
-        default_provider="vertex",
-        model=model,
-        overrides={},
-        allowed_providers={"chutes", "vertex"},
-        allow_custom_openai_compatible=True,
-    )
-
-    assert route == ResolvedLlmRoute(surface="tool", provider="vertex", model=model)
 
 
 @dataclass(slots=True)
@@ -454,7 +379,7 @@ async def test_routed_provider_preserves_selected_route_metadata(model: str) -> 
     delegate = _RecordingProvider(seen_requests=[])
 
     provider = RoutedLlmProvider(
-        surface="tool",
+        surface="scoring",
         default_provider="chutes",
         overrides={},
         allowed_providers={"chutes", "vertex"},

@@ -182,7 +182,6 @@ class _ProviderTrackingToolExecutor(ToolExecutor):
         clock: Callable[[], datetime],
         progress: FileBackedRunProgress,
         search_provider_name: str | None,
-        llm_route_resolver: Callable[[str], ResolvedLlmRoute],
     ) -> None:
         super().__init__(
             session_registry=session_registry,
@@ -194,7 +193,6 @@ class _ProviderTrackingToolExecutor(ToolExecutor):
         )
         self._progress = progress
         self._search_provider_name = search_provider_name
-        self._llm_route_resolver = llm_route_resolver
 
     async def _invoke_tool_output_async(
         self,
@@ -205,7 +203,6 @@ class _ProviderTrackingToolExecutor(ToolExecutor):
         provider_key = _provider_key_from_request(
             request=request,
             search_provider_name=self._search_provider_name,
-            llm_route_resolver=self._llm_route_resolver,
         )
         try:
             response = await super()._invoke_tool_output_async(request, context=context)
@@ -262,7 +259,6 @@ class RuntimeContext:
     usage_tracker: UsageTracker
     search_client: WebSearchProviderPort | None
     llm_provider_registry: CachedLlmProviderRegistry
-    tool_llm_provider: LlmProviderPort | None
     tool_embedding_provider: EmbeddingProviderPort | None
     scoring_llm_provider: LlmProviderPort | None
     similarity_llm_provider: LlmProviderPort | None
@@ -313,7 +309,6 @@ class RuntimeContext:
 class RuntimeLlmClients:
     search_client: WebSearchProviderPort | None
     llm_provider_registry: CachedLlmProviderRegistry
-    tool_llm_provider: LlmProviderPort | None
     tool_embedding_provider: EmbeddingProviderPort | None
     scoring_llm_provider: LlmProviderPort | None
     similarity_llm_provider: LlmProviderPort | None
@@ -428,7 +423,6 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         usage_tracker=state.usage_tracker,
         search_client=llm_clients.search_client,
         llm_provider_registry=llm_clients.llm_provider_registry,
-        tool_llm_provider=llm_clients.tool_llm_provider,
         tool_embedding_provider=llm_clients.tool_embedding_provider,
         scoring_llm_provider=llm_clients.scoring_llm_provider,
         similarity_llm_provider=llm_clients.similarity_llm_provider,
@@ -635,7 +629,6 @@ def _build_llm_clients(settings: Settings) -> RuntimeLlmClients:
     return RuntimeLlmClients(
         search_client=None,
         llm_provider_registry=llm_provider_registry,
-        tool_llm_provider=None,
         tool_embedding_provider=build_optional_tool_embedding_provider(settings.llm),
         scoring_llm_provider=scoring_provider,
         similarity_llm_provider=similarity_provider,
@@ -778,7 +771,6 @@ def _build_local_provider_tooling(
     resolved: Settings,
     search_client: WebSearchProviderPort | None,
     ai_search_client: AiSearchProviderPort | None,
-    tool_llm_provider: LlmProviderPort | None,
     tool_embedding_provider: EmbeddingProviderPort | None = None,
     web_search_provider_resolver: WebSearchProviderResolver | None = None,
     ai_search_provider_resolver: AiSearchProviderResolver | None = None,
@@ -792,8 +784,6 @@ def _build_local_provider_tooling(
         web_search_provider_name=resolved.llm.search_provider,
         web_search_provider_resolver=web_search_provider_resolver,
         ai_search_provider_resolver=ai_search_provider_resolver,
-        llm_provider=tool_llm_provider,
-        llm_provider_name=resolved.llm.tool_llm_provider,
         llm_provider_resolver=llm_provider_resolver,
         embedding_provider=tool_embedding_provider,
         embedding_provider_name=resolved.llm.tool_embedding_provider if tool_embedding_provider is not None else None,
@@ -809,7 +799,6 @@ def _build_local_provider_tooling(
         clock=_clock,
         progress=state.progress_tracker,
         search_provider_name=resolved.llm.search_provider,
-        llm_route_resolver=_build_tool_route_resolver(resolved),
     )
 
 
@@ -977,7 +966,6 @@ def _provider_key_from_request(
     *,
     request: ToolInvocationRequest,
     search_provider_name: str | None,
-    llm_route_resolver: Callable[[str], ResolvedLlmRoute],
 ) -> tuple[str, str] | None:
     payload = _payload_for_evidence(request)
     has_explicit_provider = "provider" in payload
@@ -994,30 +982,7 @@ def _provider_key_from_request(
         return _explicit_embedding_provider_model(payload)
     if request.tool != "llm_chat":
         return None
-    selected_llm = _explicit_llm_provider_model(payload)
-    if selected_llm is not None:
-        return selected_llm
-    if has_explicit_provider:
-        return None
-    model = _model_name_from_payload(payload)
-    if model is None:
-        return None
-    route = llm_route_resolver(model)
-    return route.provider, route.model
-
-
-def _build_tool_route_resolver(settings: Settings) -> Callable[[str], ResolvedLlmRoute]:
-    def resolve(model: str) -> ResolvedLlmRoute:
-        return resolve_llm_route(
-            surface="tool",
-            default_provider=settings.llm.tool_llm_provider,
-            model=model,
-            overrides=settings.llm.llm_model_provider_overrides,
-            allowed_providers={"chutes", "vertex"},
-            allow_custom_openai_compatible=True,
-        )
-
-    return resolve
+    return _explicit_llm_provider_model(payload)
 
 
 def _payload_for_evidence(request: ToolInvocationRequest) -> Mapping[str, object]:
@@ -1060,16 +1025,6 @@ def _explicit_embedding_provider_model(payload: Mapping[str, object]) -> tuple[s
     except ValueError:
         return None
     return selected.provider, selected.model
-
-
-def _model_name_from_payload(payload: Mapping[str, object]) -> str | None:
-    model_raw = payload.get("model")
-    if not isinstance(model_raw, str):
-        return None
-    model = model_raw.strip()
-    if not model:
-        return None
-    return model
 
 
 def _make_dependency_provider(
