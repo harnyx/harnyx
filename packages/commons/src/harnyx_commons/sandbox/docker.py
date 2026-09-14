@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import re
+import secrets
 import shlex
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -36,7 +39,8 @@ from harnyx_commons.sandbox.diagnostic_files import (
     write_private_text,
 )
 from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager, SandboxStartError
-from harnyx_commons.sandbox.options import DEFAULT_TOKEN_HEADER, SandboxOptions
+from harnyx_commons.sandbox.options import CONTROL_TOKEN_ENV, CONTROL_TOKEN_HEADER, DEFAULT_TOKEN_HEADER, SandboxOptions
+from harnyx_miner_sdk.sandbox_protocol import SandboxAdmission
 from harnyx_miner_sdk.tools.time_budget import ExecutionTimeBudgetDTO
 
 logger = logging.getLogger(__name__)
@@ -68,8 +72,9 @@ class _UnreadySandboxClient(SandboxClient):
         token: str,
         session_id: UUID,
         include_failure_details: bool = True,
+        admission: SandboxAdmission | None = None,
     ) -> Mapping[str, JsonValue]:
-        del entrypoint, payload, context, token, session_id, include_failure_details
+        del entrypoint, payload, context, token, session_id, include_failure_details, admission
         raise RuntimeError("unready sandbox cannot accept invocations")
 
     def close(self) -> None:
@@ -83,6 +88,7 @@ class HttpSandboxClient(SandboxClient):
         self,
         base_url: str,
         *,
+        control_token: str,
         host_container_url: str | None = None,
         timeout: float = 310.0,
         client: httpx.AsyncClient | None = None,
@@ -90,6 +96,9 @@ class HttpSandboxClient(SandboxClient):
     ) -> None:
         if connect_attempts < 1:
             raise ValueError("sandbox connect_attempts must be at least 1")
+        if not control_token:
+            raise ValueError("sandbox control credential is required")
+        self._control_token = control_token
         self._token_header = DEFAULT_TOKEN_HEADER
         self._host_container_url = host_container_url
         self._connect_attempts = connect_attempts
@@ -108,6 +117,58 @@ class HttpSandboxClient(SandboxClient):
         if host_container_url is not None:
             self._host_container_url = host_container_url
 
+    @asynccontextmanager
+    async def admission(
+        self, limit_seconds: float, token: str, *, include_wait_in_budget: bool = False
+    ) -> AsyncIterator[SandboxAdmission]:
+        headers = {
+            self._token_header: token,
+            HOST_CONTAINER_URL_HEADER: self._host_container_url or "",
+            CONTROL_TOKEN_HEADER: self._control_token,
+        }
+        try:
+            response = await self._post_with_connect_retry(
+                "/admission",
+                json={"limit_seconds": limit_seconds, "include_wait_in_budget": include_wait_in_budget},
+                headers=headers,
+                timeout=None,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise _sandbox_invoke_error(
+                status_code=exc.response.status_code,
+                detail=_unwrap_response_detail(_response_json_or_text(exc.response)),
+                message="sandbox admission rejected",
+                remote_state_uncertain=(
+                    exc.response.status_code == 503
+                    and _parse_sandbox_response_detail(
+                        _unwrap_response_detail(_response_json_or_text(exc.response))
+                    ).code
+                    == "SandboxCleanupUnconfirmed"
+                ),
+            ) from exc
+        except httpx.RequestError as exc:
+            raise _sandbox_invoke_error(
+                status_code=504 if isinstance(exc, httpx.TimeoutException) else 0,
+                detail={"exception": type(exc).__name__, "error": "sandbox admission request failed"},
+                message="sandbox admission request failed",
+                remote_state_uncertain=not isinstance(exc, httpx.ConnectError),
+            ) from exc
+        try:
+            admission = SandboxAdmission.model_validate_json(response.content)
+        except ValueError as exc:
+            raise InvalidSandboxResponseError("sandbox returned invalid admission") from exc
+        try:
+            yield admission
+        finally:
+            with contextlib.suppress(httpx.HTTPError):
+                await self._client.post(
+                    "/admission/release",
+                    json=admission.model_dump(mode="json"),
+                    headers=headers,
+                    timeout=2.0,
+                )
+
     async def invoke(
         self,
         entrypoint: str,
@@ -117,10 +178,62 @@ class HttpSandboxClient(SandboxClient):
         token: str,
         session_id: UUID,
         include_failure_details: bool = True,
+        admission: SandboxAdmission | None = None,
+    ) -> Mapping[str, JsonValue]:
+        limit = ExecutionTimeBudgetDTO.model_validate(context.get("time_budget")).limit_seconds
+        if admission is not None:
+            return await self._invoke_admitted(
+                entrypoint,
+                payload=payload,
+                context=context,
+                token=token,
+                session_id=session_id,
+                include_failure_details=include_failure_details,
+                admission=admission,
+            )
+        try:
+            async with asyncio.timeout(limit + _SANDBOX_RESPONSE_HEADROOM_SECONDS) as deadline:
+                async with self.admission(limit, token, include_wait_in_budget=True) as reserved:
+                    try:
+                        return await self._invoke_admitted(
+                            entrypoint,
+                            payload=payload,
+                            context=context,
+                            token=token,
+                            session_id=session_id,
+                            include_failure_details=include_failure_details,
+                            admission=reserved,
+                        )
+                    finally:
+                        # Release has its own bounded request; it must not turn a
+                        # received outcome into an uncertain execution timeout.
+                        if not deadline.expired():
+                            deadline.reschedule(None)
+        except TimeoutError as exc:
+            # No response means the container may be unusable even when the
+            # deadline expired before query activation, during admission.
+            raise _sandbox_invoke_error(
+                status_code=504,
+                detail={"exception": "TimeoutException", "error": "sandbox invocation timed out"},
+                message="sandbox invocation timed out",
+                remote_state_uncertain=True,
+            ) from exc
+
+    async def _invoke_admitted(
+        self,
+        entrypoint: str,
+        *,
+        payload: Mapping[str, JsonValue],
+        context: Mapping[str, JsonValue],
+        token: str,
+        session_id: UUID,
+        include_failure_details: bool = True,
+        admission: SandboxAdmission,
     ) -> Mapping[str, JsonValue]:
         context_payload = dict(context)
         time_budget = ExecutionTimeBudgetDTO.model_validate(context_payload.get("time_budget"))
         headers: dict[str, str] = {
+            CONTROL_TOKEN_HEADER: self._control_token,
             self._token_header: token,
             SESSION_ID_HEADER: str(session_id),
             HOST_CONTAINER_URL_HEADER: self._host_container_url or "",
@@ -134,6 +247,7 @@ class HttpSandboxClient(SandboxClient):
                 headers=headers,
                 session_id=session_id,
                 limit_seconds=time_budget.limit_seconds,
+                admission=admission,
             )
             response.raise_for_status()
         except httpx.TimeoutException as exc:
@@ -209,6 +323,7 @@ class HttpSandboxClient(SandboxClient):
                     else f"sandbox entrypoint request failed with status {status}"
                 ),
                 status_code=status,
+                remote_state_uncertain=(status == 503 and detail.code == "SandboxCleanupUnconfirmed"),
                 detail_code=detail.code,
                 detail_exception=detail.exception,
                 detail_error=detail.error if include_failure_details else None,
@@ -248,36 +363,29 @@ class HttpSandboxClient(SandboxClient):
         headers: Mapping[str, str],
         session_id: UUID,
         limit_seconds: float,
+        admission: SandboxAdmission,
+    ) -> httpx.Response:
+        return await self._post_with_connect_retry(
+            f"/entry/{entrypoint}",
+            json={"payload": dict(payload), "context": dict(context), "admission": admission.model_dump(mode="json")},
+            headers=headers,
+            timeout=limit_seconds + _SANDBOX_RESPONSE_HEADROOM_SECONDS,
+        )
+
+    async def _post_with_connect_retry(
+        self, path: str, *, json: Mapping[str, Any], headers: Mapping[str, str], timeout: float | None
     ) -> httpx.Response:
         for attempt_number in range(1, self._connect_attempts + 1):
             try:
-                return await self._client.post(
-                    f"/entry/{entrypoint}",
-                    json={
-                        "payload": dict(payload),
-                        "context": dict(context),
-                    },
-                    headers=headers,
-                    timeout=limit_seconds + _SANDBOX_RESPONSE_HEADROOM_SECONDS,
-                )
-            except _RETRYABLE_SANDBOX_ENTRYPOINT_CONNECTION_NOT_ESTABLISHED_ERRORS as exc:
+                return await self._client.post(path, json=json, headers=headers, timeout=timeout)
+            except _RETRYABLE_SANDBOX_ENTRYPOINT_CONNECTION_NOT_ESTABLISHED_ERRORS:
                 if attempt_number == self._connect_attempts:
                     raise
                 logger.warning(
-                    "retrying sandbox entrypoint connect failure",
-                    extra={
-                        "entrypoint": entrypoint,
-                        "session_id": str(session_id),
-                        "attempt": attempt_number,
-                        "max_attempts": self._connect_attempts,
-                        "error_type": exc.__class__.__name__,
-                    },
+                    "retrying sandbox connect failure",
+                    extra={"path": path, "attempt": attempt_number, "max_attempts": self._connect_attempts},
                 )
-        raise RuntimeError("sandbox entrypoint connect retry loop exhausted without response")
-
-    async def aclose(self) -> None:
-        if self._owns_client:
-            await self._client.aclose()
+        raise RuntimeError("sandbox connect retry exhausted")
 
     def close(self) -> None:
         if not self._owns_client:
@@ -426,7 +534,7 @@ class DockerSandboxManager(SandboxManager):
         host: str = "127.0.0.1",
         published_port_bind_host: str | None = None,
         command_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
-        client_factory: Callable[[str, str | None], SandboxClient] | None = None,
+        client_factory: Callable[[str, str | None, str], SandboxClient] | None = None,
         log_consumer: Callable[[str], None] | None = None,
         log_runner: Callable[..., subprocess.Popen[str]] | None = None,
         command_timeout_seconds: float = 120.0,
@@ -437,9 +545,10 @@ class DockerSandboxManager(SandboxManager):
         self._run = command_runner or self._default_run
         self._command_timeout_seconds = command_timeout_seconds
         self._client_factory = client_factory or (
-            lambda base_url, host_container_url: HttpSandboxClient(
+            lambda base_url, host_container_url, control_token: HttpSandboxClient(
                 base_url,
                 host_container_url=host_container_url,
+                control_token=control_token,
             )
         )
         self._log_consumer = log_consumer
@@ -447,6 +556,9 @@ class DockerSandboxManager(SandboxManager):
         self._log_streams: dict[str, tuple[subprocess.Popen[str], threading.Thread]] = {}
 
     def start(self, options: SandboxOptions) -> SandboxDeployment:
+        if CONTROL_TOKEN_ENV in options.env:
+            raise ValueError("sandbox control credential is manager-owned")
+        options = replace(options, env={**options.env, CONTROL_TOKEN_ENV: secrets.token_urlsafe(32)})
         self._validate_options(options)
 
         container_id = self._launch_container(options)
@@ -605,6 +717,9 @@ class DockerSandboxManager(SandboxManager):
         try:
             result = self._run_command(args, capture_output=True, text=True, check=True)
         except subprocess.CalledProcessError as exc:  # pragma: no cover - exercised in integration
+            exc.cmd = [_redact_sensitive_text(arg, options) for arg in args]
+            exc.output = _redact_sensitive_text(str(exc.output or ""), options)
+            exc.stderr = _redact_sensitive_text(str(exc.stderr or ""), options)
             self._write_failure_diagnostics(
                 options=options,
                 container_id=None,
@@ -614,6 +729,9 @@ class DockerSandboxManager(SandboxManager):
             )
             self._raise_run_error(exc, args, options)
         except subprocess.TimeoutExpired as exc:  # pragma: no cover - integration only
+            exc.cmd = [_redact_sensitive_text(arg, options) for arg in args]
+            exc.output = _redact_sensitive_text(str(exc.output or ""), options)
+            exc.stderr = _redact_sensitive_text(str(exc.stderr or ""), options).encode()
             self._write_failure_diagnostics(
                 options=options,
                 container_id=None,
@@ -843,7 +961,7 @@ class DockerSandboxManager(SandboxManager):
             published_port = options.container_port
 
         base_url = f"http://{base_host}:{published_port}"
-        client = self._client_factory(base_url, options.host_container_url)
+        client = self._client_factory(base_url, options.host_container_url, options.env[CONTROL_TOKEN_ENV])
         return base_url, client
 
     def _resolve_published_port(self, options: SandboxOptions, *, container_id: str) -> int:
@@ -1088,9 +1206,7 @@ class DockerSandboxManager(SandboxManager):
         labeled_ids: set[str] | None = None
         # Docker combines repeated label filters as alternatives, so require ownership by intersecting lookups.
         for key, value in sorted(labels.items()):
-            matching_ids = set(
-                self._list_container_ids_all_states((("label", f"{key}={value}"),))
-            )
+            matching_ids = set(self._list_container_ids_all_states((("label", f"{key}={value}"),)))
             labeled_ids = matching_ids if labeled_ids is None else labeled_ids & matching_ids
         prefixed_ids = self._list_container_ids_all_states((("name", f"^/{name_prefix}"),))
         return sorted((labeled_ids or set()) | set(prefixed_ids))
@@ -1149,9 +1265,7 @@ class DockerSandboxManager(SandboxManager):
             matching_ids = self._list_container_ids_all_states((("id", container_id),))
             if matching_ids:
                 return False
-            matching_names = self._list_container_ids_all_states(
-                (("name", f"^/{container_id}$"),)
-            )
+            matching_names = self._list_container_ids_all_states((("name", f"^/{container_id}$"),))
         except Exception:
             logger.warning(
                 "could not confirm sandbox container absence after failed removal",

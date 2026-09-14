@@ -239,6 +239,7 @@ class EvaluationScheduler:
                 close_requested=close_requested,
                 result_queue=result_queue,
                 orchestrator=orchestrator,
+                sandbox_client=deployment.client,
             )
         except ArtifactExecutionFailedError as exc:
             affected_assignments = (*assignments, *assigned_work.drain_for_setup_failure())
@@ -503,6 +504,7 @@ class EvaluationScheduler:
             completed_submissions=(),
             remaining_tasks=tuple(tasks),
         )
+
 
 def _require_assignment_for_artifact(
     assignment: MinerTaskWorkAssignment,

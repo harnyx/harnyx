@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 
 import httpx
@@ -11,13 +12,30 @@ from harnyx_commons.tools.api import (
     test_tool as invoke_test_tool,
 )
 from harnyx_commons.tools.proxy import ToolProxy
-from harnyx_miner_sdk._internal.tool_invoker import bind_tool_invoker
+from harnyx_miner_sdk._internal.tool_invoker import _current_tool_invoker, bind_tool_invoker
 from harnyx_miner_sdk.tools.embedding_models import QWEN3_CHUTES_EMBEDDING_MODEL
 
 TEST_TOKEN = "token-123"  # noqa: S105
 SESSION_ID = "00000000-0000-0000-0000-000000000001"
 
 pytestmark = pytest.mark.anyio("asyncio")
+
+
+async def test_concurrent_queries_keep_independent_invoker_bindings() -> None:
+    first, second = _ResponseInvoker(), _ResponseInvoker()
+    arrived = asyncio.Event()
+
+    async def run(invoker):
+        with bind_tool_invoker(invoker):
+            arrived.set()
+            await asyncio.sleep(0)
+            assert _current_tool_invoker() is invoker
+        with pytest.raises(RuntimeError, match="no tool invoker"):
+            _current_tool_invoker()
+
+    task = asyncio.create_task(run(first))
+    await arrived.wait()
+    await asyncio.gather(task, run(second))
 
 
 _BUDGET = {

@@ -99,7 +99,10 @@ def test_http_sandbox_client_default_timeout_exceeds_entrypoint_budget(
 
     monkeypatch.setattr(docker_module.httpx, "AsyncClient", FakeAsyncClient)
 
-    client = HttpSandboxClient("http://sandbox")
+    client = HttpSandboxClient(
+        "http://sandbox",
+        control_token="control-test",  # noqa: S106 - test credential
+    )
     try:
         assert captured == {
             "base_url": "http://sandbox",
@@ -114,7 +117,7 @@ def test_docker_sandbox_manager_builds_commands(monkeypatch) -> None:
     runner = RecordingRunner()
     created_clients: list[DummyClient] = []
 
-    def client_factory(base_url: str, host_container_url: str | None) -> DummyClient:
+    def client_factory(base_url: str, host_container_url: str | None, control_token: str) -> DummyClient:
         client = DummyClient(base_url, host_container_url)
         created_clients.append(client)
         return client
@@ -189,7 +192,7 @@ def test_docker_sandbox_manager_can_skip_container_log_stream(
         docker_binary="docker",
         host="127.0.0.1",
         command_runner=runner,
-        client_factory=lambda base_url, host_container_url: DummyClient(base_url, host_container_url),
+        client_factory=lambda base_url, host_container_url, control_token: DummyClient(base_url, host_container_url),
         log_consumer=lambda _line: None,
     )
     monkeypatch.setattr(
@@ -280,7 +283,7 @@ def test_pull_policy_always_retries_docker_pull_before_local_run(
         docker_binary="docker",
         host="127.0.0.1",
         command_runner=command_runner,
-        client_factory=lambda base_url, host_container_url: DummyClient(base_url, host_container_url),
+        client_factory=lambda base_url, host_container_url, control_token: DummyClient(base_url, host_container_url),
     )
     options = SandboxOptions(
         image="harnyx/sandbox:demo",
@@ -444,7 +447,7 @@ def test_docker_sandbox_manager_does_not_use_probe_host_as_bind_host() -> None:
     runner = RecordingRunner()
     created_clients: list[DummyClient] = []
 
-    def client_factory(base_url: str, host_container_url: str | None) -> DummyClient:
+    def client_factory(base_url: str, host_container_url: str | None, control_token: str) -> DummyClient:
         client = DummyClient(base_url, host_container_url)
         created_clients.append(client)
         return client
@@ -478,7 +481,7 @@ def test_docker_sandbox_manager_does_not_use_probe_host_as_bind_host() -> None:
 def test_docker_manager_skips_port_mapping_when_host_port_missing() -> None:
     runner = RecordingRunner()
 
-    def client_factory(base_url: str, host_container_url: str | None) -> DummyClient:
+    def client_factory(base_url: str, host_container_url: str | None, control_token: str) -> DummyClient:
         return DummyClient(base_url, host_container_url)
 
     manager = DockerSandboxManager(
@@ -554,7 +557,7 @@ def test_docker_manager_waits_for_container_ip_before_internal_network_client(
         ]
     )
 
-    def client_factory(base_url: str, host_container_url: str | None) -> DummyClient:
+    def client_factory(base_url: str, host_container_url: str | None, control_token: str) -> DummyClient:
         return DummyClient(base_url, host_container_url)
 
     manager = DockerSandboxManager(command_runner=runner, client_factory=client_factory)
@@ -578,7 +581,7 @@ def test_docker_manager_waits_when_configured_network_is_not_attached_yet(
 
     manager = DockerSandboxManager(
         command_runner=runner,
-        client_factory=lambda base_url, host_container_url: DummyClient(base_url, host_container_url),
+        client_factory=lambda base_url, host_container_url, control_token: DummyClient(base_url, host_container_url),
     )
 
     deployment = manager.start(_internal_network_options())
@@ -592,12 +595,10 @@ def test_docker_manager_network_readiness_uses_container_id_and_classifies_early
 ) -> None:
     monkeypatch.setattr(docker_module, "_CONTAINER_IP_READY_TIMEOUT_SECONDS", 0.001)
     monkeypatch.setattr(docker_module, "_CONTAINER_IP_READY_POLL_INTERVAL_SECONDS", 0.001)
-    runner = SequencedInspectRunner(
-        [inspect_container_stdout(status="exited", exit_code=137, error="startup failed")]
-    )
+    runner = SequencedInspectRunner([inspect_container_stdout(status="exited", exit_code=137, error="startup failed")])
     manager = DockerSandboxManager(
         command_runner=runner,
-        client_factory=lambda base_url, host_container_url: DummyClient(base_url, host_container_url),
+        client_factory=lambda base_url, host_container_url, control_token: DummyClient(base_url, host_container_url),
     )
 
     with pytest.raises(RuntimeError, match="sandbox container exited before readiness"):
@@ -629,7 +630,7 @@ def test_docker_manager_network_readiness_inspect_command_failure_is_not_retryab
 
     manager = DockerSandboxManager(
         command_runner=command_runner,
-        client_factory=lambda base_url, host_container_url: DummyClient(base_url, host_container_url),
+        client_factory=lambda base_url, host_container_url, control_token: DummyClient(base_url, host_container_url),
     )
 
     with pytest.raises(RuntimeError, match="docker inspect failed while resolving sandbox network"):
@@ -661,7 +662,7 @@ def test_docker_manager_bounds_each_container_ip_inspect_poll(
 
     manager = DockerSandboxManager(
         command_runner=command_runner,
-        client_factory=lambda base_url, host_container_url: DummyClient(base_url, host_container_url),
+        client_factory=lambda base_url, host_container_url, control_token: DummyClient(base_url, host_container_url),
         command_timeout_seconds=120.0,
     )
 
@@ -681,7 +682,7 @@ def test_docker_manager_cleans_up_when_container_ip_never_becomes_valid(
     runner = SequencedInspectRunner([inspect_container_stdout(ip_address="")] * 100)
     manager = DockerSandboxManager(
         command_runner=runner,
-        client_factory=lambda base_url, host_container_url: DummyClient(base_url, host_container_url),
+        client_factory=lambda base_url, host_container_url, control_token: DummyClient(base_url, host_container_url),
     )
 
     with pytest.raises(RuntimeError, match="invalid IP address for network: harnyx-net"):
@@ -708,7 +709,7 @@ def test_start_cleans_up_container_on_healthz_failure(monkeypatch) -> None:
     runner = RecordingRunner()
     created_clients: list[DummyClient] = []
 
-    def client_factory(base_url: str, host_container_url: str | None) -> DummyClient:
+    def client_factory(base_url: str, host_container_url: str | None, control_token: str) -> DummyClient:
         client = DummyClient(base_url, host_container_url)
         created_clients.append(client)
         return client
@@ -829,3 +830,32 @@ def test_resolve_sandbox_host_container_url_raises_when_hostname_and_mountinfo_f
             sandbox_network="harnyx-net",
             rpc_port=8100,
         )
+
+
+def test_each_container_receives_only_its_clients_control_credential() -> None:
+    runner = RecordingRunner()
+    credentials = []
+
+    def factory(base_url, host_container_url, control_token):
+        credentials.append(control_token)
+        return DummyClient(base_url, host_container_url)
+
+    manager = DockerSandboxManager(command_runner=runner, client_factory=factory)
+    for name in ("first", "second"):
+        manager.start(
+            SandboxOptions(
+                image="test",
+                container_name=name,
+                host_port=9000,
+                host_container_url=_HOST_CONTAINER_URL,
+            )
+        )
+    configured = [
+        arg.split("=", 1)[1]
+        for args, _kwargs in runner.commands
+        if args[1] == "run"
+        for arg in args
+        if arg.startswith("SANDBOX_CONTROL_TOKEN=")
+    ]
+    assert configured == credentials
+    assert len(set(credentials)) == 2

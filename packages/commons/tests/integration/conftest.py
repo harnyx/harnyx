@@ -100,6 +100,7 @@ def sandbox_launcher() -> Callable[..., SandboxDeployment]:
         command: Sequence[str] | None = None,
         failure_diagnostics_dir: Path | None = None,
         healthz_timeout: float = 30.0,
+        source: bytes | None = None,
     ):
         module_rel_path = Path(*agent_module.split(".")).with_suffix(".py")
         module_path = _PUBLIC_PACKAGES_ROOT / module_rel_path
@@ -110,7 +111,7 @@ def sandbox_launcher() -> Callable[..., SandboxDeployment]:
             container_root=DEFAULT_STATE_DIR,
             namespace="integration_agents",
             key=agent_module.replace(".", "_"),
-            data=module_path.read_bytes(),
+            data=module_path.read_bytes() if source is None else source,
         )
         port = _find_free_port() if host_port is None else host_port
         options = SandboxOptions(
@@ -134,9 +135,7 @@ def sandbox_launcher() -> Callable[..., SandboxDeployment]:
             seccomp_profile=default_profile_path(),
             ulimits=CONTAINER_SECURITY.ulimits,
             extra_args=CONTAINER_SECURITY.extra_args,
-            failure_diagnostics_dir=(
-                None if failure_diagnostics_dir is None else str(failure_diagnostics_dir)
-            ),
+            failure_diagnostics_dir=(None if failure_diagnostics_dir is None else str(failure_diagnostics_dir)),
         )
         deployment = manager.start(options)
         deployments.append(deployment)

@@ -45,7 +45,9 @@ from harnyx_commons.miner_task_failure_policy import (
     is_timeout_sandbox_invocation,
     is_uncaught_platform_tool_proxy_timeout_sandbox_invocation,
 )
+from harnyx_commons.sandbox.client import SandboxClient
 from harnyx_commons.tools.types import is_search_tool
+from harnyx_miner_sdk.sandbox_protocol import SandboxAdmission
 from harnyx_validator.application.assigned_work import AssignedArtifactWork, ClaimedAssignedTask, PhaseRecorder
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptAuditRecord,
@@ -640,6 +642,7 @@ class EvaluationRunner:
         close_requested: asyncio.Event,
         result_queue: asyncio.Queue[PlatformOwnedTaskResult | PlatformOwnedTaskExecution],
         orchestrator: TaskRunOrchestrator,
+        sandbox_client: SandboxClient,
     ) -> None:
         active: dict[asyncio.Task[_AssignedAttemptRunOutcome], _ActiveAssignedTask] = {}
         queue_waiter: asyncio.Task[ClaimedAssignedTask] | None = None
@@ -669,7 +672,7 @@ class EvaluationRunner:
                 claimed=claimed,
             )
             execution_task = asyncio.create_task(
-                self._run_assigned_attempt(lifecycle, orchestrator=orchestrator)
+                self._run_admitted_assignment(lifecycle, orchestrator=orchestrator, sandbox_client=sandbox_client)
             )
             active[execution_task] = _ActiveAssignedTask(
                 assignment=assignment,
@@ -796,11 +799,43 @@ class EvaluationRunner:
             phase_recorder=_AssignedAttemptPhaseRecorder(started_at=time.monotonic()),
         )
 
+    async def _run_admitted_assignment(
+        self,
+        lifecycle: _AssignedAttemptLifecycle,
+        *,
+        orchestrator: TaskRunOrchestrator,
+        sandbox_client: SandboxClient,
+    ) -> _AssignedAttemptRunOutcome:
+        claimed = lifecycle.claimed
+        admission_wait = asyncio.timeout(claimed.remaining_dispatch_seconds())
+        try:
+            async with admission_wait:
+                async with sandbox_client.admission(
+                    self._config.execution_time_limit_seconds,
+                    claimed.assignment.assignment_token,
+                ) as admission:
+                    if not claimed.is_live():
+                        return _AssignedAttemptRunOutcome()
+                    # The dispatch lease bounds admission, not an already started attempt.
+                    admission_wait.reschedule(None)
+                    return await self._run_assigned_attempt(lifecycle, orchestrator=orchestrator, admission=admission)
+        except TimeoutError:
+            if not admission_wait.expired():
+                raise
+            return _AssignedAttemptRunOutcome()
+        except Exception as exc:
+            result = lifecycle.build_failure_result(exc=exc, attempt_started_at=self._clock())
+            claimed.fail_before_start(result)
+            return _AssignedAttemptRunOutcome(result_to_queue=result, result_already_queued=True)
+        finally:
+            claimed.release_to_queue_if_live()
+
     async def _run_assigned_attempt(
         self,
         lifecycle: _AssignedAttemptLifecycle,
         *,
         orchestrator: TaskRunOrchestrator,
+        admission: SandboxAdmission | None = None,
     ) -> _AssignedAttemptRunOutcome:
         try:
             async with lifecycle.start() as attempt:
@@ -831,6 +866,7 @@ class EvaluationRunner:
                         session_started_at=attempt.session_started_at,
                         orchestrator=orchestrator,
                         phase_recorder=attempt.phase_recorder,
+                        admission=admission,
                     )
                 except Exception as exc:
                     result = lifecycle.build_failure_result(
@@ -854,6 +890,7 @@ class EvaluationRunner:
         session_started_at: float,
         orchestrator: TaskRunOrchestrator,
         phase_recorder: PhaseRecorder | None = None,
+        admission: SandboxAdmission | None = None,
     ) -> _AssignedAttemptRunOutcome:
         terminal_outcome = "execution_completed"
         error_code: str | None = None
@@ -866,6 +903,7 @@ class EvaluationRunner:
                 orchestrator=orchestrator,
                 final_attempt=attempt_number >= max_attempts,
                 phase_recorder=phase_recorder,
+                admission=admission,
             )
             if isinstance(execution_or_decision, TaskAttemptDecision):
                 finalization = self._finalize_assigned_task_decision(
@@ -1289,7 +1327,7 @@ class EvaluationRunner:
                             artifact=artifact,
                             task=task,
                             occurred_at=self._clock(),
-                    )
+                        )
                     continue
 
                 if decision.kind is AttemptControlKind.VALIDATOR_BATCH_FAILURE:
@@ -1674,6 +1712,7 @@ class EvaluationRunner:
         orchestrator: TaskRunOrchestrator,
         final_attempt: bool,
         phase_recorder: PhaseRecorder | None = None,
+        admission: SandboxAdmission | None = None,
     ) -> TaskExecutionOutcome | TaskAttemptDecision:
         if not hasattr(orchestrator, "execute"):
             return await self._evaluate_task_attempt(
@@ -1695,7 +1734,9 @@ class EvaluationRunner:
             execution_time_limit_seconds=self._config.execution_time_limit_seconds,
         )
         try:
-            if phase_recorder is None:
+            if admission is not None:
+                outcome = await orchestrator.execute(request, phase_recorder=phase_recorder, admission=admission)
+            elif phase_recorder is None:
                 outcome = await orchestrator.execute(request)
             else:
                 outcome = await orchestrator.execute(request, phase_recorder=phase_recorder)
@@ -2943,9 +2984,7 @@ def _usage_from_receipts(receipts: tuple[ToolCall, ...]) -> SessionUsage:
         )
         if session_cost is not None:
             actual_provider = _receipt_session_cost_provider(receipt)
-            actual_cost_by_provider[actual_provider] = (
-                actual_cost_by_provider.get(actual_provider, 0.0) + session_cost
-            )
+            actual_cost_by_provider[actual_provider] = actual_cost_by_provider.get(actual_provider, 0.0) + session_cost
         if not receipt.is_successful() or receipt.tool != "llm_chat":
             continue
         model = _receipt_llm_model(receipt)
@@ -3285,8 +3324,7 @@ def _failure_owner_from_decision(decision: TaskAttemptDecision) -> str | None:
 def _orchestrator_accepts_phase_recorder(orchestrator: TaskRunOrchestrator) -> bool:
     parameters = inspect.signature(orchestrator.evaluate).parameters
     return "phase_recorder" in parameters or any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD
-        for parameter in parameters.values()
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
     )
 
 

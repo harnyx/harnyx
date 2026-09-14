@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -23,6 +25,7 @@ from harnyx_commons.infrastructure.state.session_registry import InMemorySession
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager
 from harnyx_commons.sandbox.options import SandboxOptions
+from harnyx_miner_sdk.sandbox_protocol import SandboxAdmission
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptAuditRecord,
     MinerTaskAttemptRetryDecision,
@@ -162,6 +165,15 @@ class _AssignedWork:
 
 
 class _ClaimedAssignedTaskFake:
+    def remaining_dispatch_seconds(self):
+        return 300.0
+
+    def is_live(self):
+        return True
+
+    def release_to_queue_if_live(self):
+        pass
+
     def __init__(self, owner: _AssignedWork, assignment: MinerTaskWorkAssignment) -> None:
         self._owner = owner
         self._assignment = assignment
@@ -186,6 +198,16 @@ def blocking_executor() -> ThreadPoolExecutor:
         executor.shutdown(wait=True, cancel_futures=True)
 
 
+class _AdmittingSandbox:
+    @asynccontextmanager
+    async def admission(self, limit_seconds, token):
+        yield SandboxAdmission(
+            reservation_id=uuid4().hex,
+            generation="test",
+            deadline_monotonic_ns=time.monotonic_ns() + int(limit_seconds * 1e9),
+        )
+
+
 class DummySandboxManager(SandboxManager):
     def __init__(self) -> None:
         self.starts: list[object | None] = []
@@ -193,7 +215,7 @@ class DummySandboxManager(SandboxManager):
 
     def start(self, options: object | None = None) -> SandboxDeployment:
         self.starts.append(options)
-        return SandboxDeployment(client=object())
+        return SandboxDeployment(client=_AdmittingSandbox())
 
     def stop(self, deployment: SandboxDeployment) -> bool:
         self.stops.append(deployment)

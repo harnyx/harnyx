@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from harnyx_commons.application.dto.session import SessionTokenRequest
 from harnyx_commons.application.session_manager import SessionManager
-from harnyx_commons.domain.miner_task import AnswerCitation, Query, Response
+from harnyx_commons.domain.miner_task import AnswerCitation, MinerTask, Query, ReferenceAnswer, Response
 from harnyx_commons.domain.tool_call import (
     SearchToolResult,
     ToolCall,
@@ -21,7 +21,9 @@ from harnyx_commons.domain.tool_call import (
 from harnyx_commons.errors import SessionBudgetExhaustedError
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.sandbox.client import SandboxInvokeError
-from harnyx_validator.application.dto.evaluation import EntrypointInvocationRequest
+from harnyx_miner_sdk.sandbox_protocol import SandboxAdmission
+from harnyx_validator.application.dto.evaluation import EntrypointInvocationRequest, MinerTaskRunRequest
+from harnyx_validator.application.evaluate_task_run import TaskRunOrchestrator
 from harnyx_validator.application.invoke_entrypoint import (
     EntrypointInvoker,
     MinerResponseValidationError,
@@ -146,6 +148,7 @@ class RecordingSandbox(SandboxClient):
         self.response: Mapping[str, object] = {"text": "Answer"}
         self.raise_error: Exception | None = None
         self.on_invoke: Callable[[UUID], None] | None = None
+        self.admissions = []
 
     async def invoke(
         self,
@@ -155,8 +158,10 @@ class RecordingSandbox(SandboxClient):
         context: Mapping[str, object],
         token: str,
         session_id: UUID,
+        admission=None,
     ) -> Mapping[str, object]:
         self.invocations.append((entrypoint, payload, context, token, session_id))
+        self.admissions.append(admission)
         if self.on_invoke is not None:
             self.on_invoke(session_id)
         if self.raise_error is not None:
@@ -188,7 +193,9 @@ async def test_entrypoint_invocation_request_requires_execution_time_limit() -> 
         )
 
 
-def _build_invoker(token: str) -> tuple[
+def _build_invoker(
+    token: str,
+) -> tuple[
     EntrypointInvoker,
     RecordingSandbox,
     UUID,
@@ -213,6 +220,30 @@ def _build_invoker(token: str) -> tuple[
         receipt_log=receipt_log,
     )
     return invoker, sandbox, request.session_id, session_registry, manager, token_registry, receipt_log
+
+
+async def test_orchestrator_passes_original_admission_through_invoker() -> None:
+    token = uuid4().hex
+    invoker, sandbox, session_id, sessions, _, _, receipts = _build_invoker(token)
+    admission = SandboxAdmission(
+        reservation_id="reserved", generation="worker", deadline_monotonic_ns=99999999999999999
+    )
+    orchestrator = TaskRunOrchestrator(invoker, receipts, object(), sessions, clock=lambda: datetime.now(UTC))
+    await orchestrator.execute(
+        MinerTaskRunRequest(
+            batch_id=uuid4(),
+            session_id=session_id,
+            token=token,
+            uid=42,
+            artifact_id=uuid4(),
+            task=MinerTask(
+                task_id=uuid4(), query=Query(text="question"), reference_answer=ReferenceAnswer(text="reference")
+            ),
+            execution_time_limit_seconds=300.0,
+        ),
+        admission=admission,
+    )
+    assert sandbox.admissions == [admission]
 
 
 async def test_invoke_entrypoint_calls_query_with_query_payload() -> None:
@@ -515,10 +546,7 @@ async def test_invoke_entrypoint_rejects_more_than_two_hundred_citations() -> No
     invoker, sandbox, session_id, _, _, _, _ = _build_invoker(token)
     sandbox.response = {
         "text": "Answer",
-        "citations": [
-            {"receipt_id": f"receipt-{index}", "result_id": f"result-{index}"}
-            for index in range(201)
-        ],
+        "citations": [{"receipt_id": f"receipt-{index}", "result_id": f"result-{index}"} for index in range(201)],
     }
 
     with pytest.raises(MinerResponseValidationError):

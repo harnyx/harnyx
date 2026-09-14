@@ -1003,7 +1003,7 @@ async def test_platform_work_worker_freezes_active_attempts_before_scheduling_wo
 
     claimed = group.claim_initial_for_dispatch(startup_assignment)
     assert claimed is not None
-    assert group.reportable_identities() == ()
+    assert len(group.reportable_identities()) == 1
     await poll_task
 
     assert captured_active_attempts == [
@@ -1379,7 +1379,7 @@ async def test_worker_polls_platform_when_idle_closing_group_does_not_own_capaci
     assert worker._active_artifacts[(new_batch_id, new_artifact.artifact_id)].local_inflight_count() == 1
 
 
-async def test_worker_does_not_poll_platform_while_claimed_assignment_is_unreportable() -> None:
+async def test_worker_polls_platform_with_unstarted_admission_waiter() -> None:
     batch_id = uuid4()
     artifact = _artifact(uid=1)
     assignment = _assignment(batch_id=batch_id, artifact=artifact, task=_task("claimed"))
@@ -1389,11 +1389,12 @@ async def test_worker_does_not_poll_platform_while_claimed_assignment_is_unrepor
     claimed = group.claim_initial_for_dispatch(assignment)
     assert claimed is not None
     assert group.local_inflight_count() == 1
-    assert group.reportable_identities() == ()
+    assert len(group.reportable_identities()) == 1
 
     class _Platform:
-        async def request_miner_task_work(self, **_kwargs: object) -> tuple[object, ...]:
-            raise AssertionError("worker must not request work while claimed assignments are unreportable")
+        async def request_miner_task_work(self, **kwargs: object) -> tuple[object, ...]:
+            assert kwargs["active_attempts"] == group.reportable_identities()
+            return ()
 
         def submit_miner_task_work_results(self, _results: object) -> tuple[object, ...]:
             return ()
@@ -1405,8 +1406,10 @@ async def test_worker_does_not_poll_platform_while_claimed_assignment_is_unrepor
         max_active_artifacts=1,
     )
     worker._active_artifacts[(batch_id, artifact.artifact_id)] = group
-
+    worker._monotonic_clock = group.monotonic_clock
     await worker.run_once()
+    assert worker._work_request_task is not None
+    await worker._work_request_task
 
     assert group.starting_records
     assert worker._local_inflight_count() == 1
@@ -1655,9 +1658,7 @@ async def test_worker_keeps_same_artifact_assignments_separate_across_batches() 
         (first_batch_id, artifact.artifact_id),
         (second_batch_id, artifact.artifact_id),
     }
-    assert {
-        (attempt.batch_id, attempt.artifact_id, attempt.task_id) for attempt in worker._active_attempts()
-    } == {
+    assert {(attempt.batch_id, attempt.artifact_id, attempt.task_id) for attempt in worker._active_attempts()} == {
         (first_batch_id, artifact.artifact_id, first.task.task_id),
         (second_batch_id, artifact.artifact_id, second.task.task_id),
     }
@@ -1834,6 +1835,28 @@ def _assignment(
         max_attempts=max_attempts,
         assignment_token=f"{_ASSIGNMENT_TOKEN_PREFIX}-{attempt_number}",
     )
+
+
+async def test_admission_waiter_expires_without_resetting_dispatch_lease() -> None:
+    artifact = _artifact(uid=1)
+    assignment = _assignment(batch_id=uuid4(), artifact=artifact, task=_task("waiting"))
+    group = _assigned_group(artifact_id=artifact.artifact_id)
+    clock = _MonotonicClock()
+    group.monotonic_clock = clock
+    group.put_nowait(assignment)
+    group.mark_dispatch_ready()
+    claimed = group.claim_nowait_for_dispatch()
+    clock.advance(200.0)
+    claimed.release_to_queue_if_live()
+    claimed = group.claim_nowait_for_dispatch()
+    assert claimed.remaining_dispatch_seconds() == 100.0
+    clock.advance(101.0)
+    assert group.release_expired_queued(now=clock(), dispatch_start_lease_seconds=300.0) == 1
+    assert not claimed.is_live()
+    with pytest.raises(RuntimeError):
+        claimed.mark_started(uuid4())
+    assert group.local_inflight_count() == 0
+    assert group.result_queue.empty()
 
 
 def _assigned_group(*, artifact_id: UUID) -> _AssignedArtifactGroup:

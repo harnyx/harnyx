@@ -5,13 +5,13 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import runpy
-import traceback
+import secrets
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
-from pathlib import Path
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Security
+from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 
 from harnyx_miner_sdk.sandbox_headers import (
@@ -19,10 +19,11 @@ from harnyx_miner_sdk.sandbox_headers import (
     read_platform_token_header,
     read_session_id_header,
 )
+from harnyx_miner_sdk.sandbox_protocol import AdmissionRequest, SandboxAdmission
 from harnyx_miner_sdk.tools.proxy import PLATFORM_TOOL_PROXY_SANDBOX_REQUEST_TIMEOUT_SECONDS
 from harnyx_sandbox.sandbox.harness import (
+    SandboxCleanupUnconfirmedError,
     SandboxHarness,
-    SandboxPreloadFailure,
 )
 from harnyx_sandbox.tools.proxy import ToolProxy
 
@@ -31,13 +32,24 @@ logger = logging.getLogger("harnyx_sandbox")
 PLATFORM_TOKEN_SCHEME = APIKeyHeader(name="x-platform-token", scheme_name="PlatformToken", auto_error=False)
 
 
+CONTROL_TOKEN_SCHEME = APIKeyHeader(name="x-sandbox-control-token", scheme_name="SandboxControl", auto_error=False)
+
+
+async def require_control_token(request: Request, token: str | None = Security(CONTROL_TOKEN_SCHEME)) -> None:
+    expected = getattr(request.app.state, "control_token", None)
+    if not expected or not token or not secrets.compare_digest(token, expected):
+        raise HTTPException(status_code=401, detail="invalid sandbox control credential")
+
+
 async def require_tool_token(_request: Request, token: str | None = Security(PLATFORM_TOKEN_SCHEME)) -> str:
     if not token:
         raise HTTPException(status_code=401, detail="missing x-platform-token header")
     return token
 
 
-def _tool_factory(config: Mapping[str, object] | None, headers: Mapping[str, str]) -> ToolProxy | None:
+def _tool_factory(
+    config: Mapping[str, object] | None, headers: Mapping[str, str], *, client: httpx.AsyncClient | None = None
+) -> ToolProxy | None:
     if config:
         raise ValueError("tool proxy config is not supported; use request headers")
 
@@ -51,105 +63,51 @@ def _tool_factory(config: Mapping[str, object] | None, headers: Mapping[str, str
         token=token,
         session_id=session_id,
         timeout=PLATFORM_TOOL_PROXY_SANDBOX_REQUEST_TIMEOUT_SECONDS,
+        client=client,
     )
 
 
-sandbox_harness: SandboxHarness | None = None
-_agent_loaded = False
-
-
-def _load_agent_from_env() -> SandboxPreloadFailure | None:
-    global _agent_loaded
-    if _agent_loaded:
-        return None
-
-    preload_failure_type = SandboxPreloadFailure
-
-    def make_preload_infrastructure_failure(message: str, exception: str) -> SandboxPreloadFailure:
-        return preload_failure_type(
-            code="PreloadInfrastructureFailed",
-            error=message,
-            exception=exception,
-        )
-
-    raw_agent_path = os.getenv("AGENT_PATH")
-    agent_path = raw_agent_path.strip() if raw_agent_path is not None else ""
-    raw_agent_module = os.getenv("AGENT_MODULE")
-    agent_module = raw_agent_module.strip() if raw_agent_module is not None else ""
-    if agent_module:
-        return make_preload_infrastructure_failure(
-            "AGENT_MODULE is not supported; use AGENT_PATH",
-            "ValueError",
-        )
-    if not agent_path:
-        return make_preload_infrastructure_failure("AGENT_PATH is required", "ValueError")
-
-    path = Path(agent_path)
-    if not path.exists():
-        return make_preload_infrastructure_failure(
-            "agent path is not present inside sandbox",
-            "FileNotFoundError",
-        )
-    mounted_root_text = str(path.parent.resolve())
-    mounted_root_prefix = f"{mounted_root_text}{os.sep}"
-    extract_tb = traceback.extract_tb
-    log_preload_infrastructure_failure = logger.warning
-    log_preload_success = logger.info
-    log_preload_exception = logger.exception
-
-    def is_mounted_root_path(filename: str) -> bool:
-        return filename == mounted_root_text or filename.startswith(mounted_root_prefix)
-
-    def is_loader_owned_os_error(exc: OSError) -> bool:
-        if exc.filename is None:
-            return False
-        if not is_mounted_root_path(exc.filename):
-            return False
-        for frame in extract_tb(exc.__traceback__):
-            filename = frame.filename
-            if not filename or filename.startswith("<"):
-                continue
-            if is_mounted_root_path(filename):
-                return False
-        return True
-
-    try:
-        try:
-            runpy.run_path(str(path))
-        except OSError as exc:
-            if is_loader_owned_os_error(exc):
-                log_preload_infrastructure_failure("sandbox preload infrastructure failed", exc_info=exc)
-                return make_preload_infrastructure_failure(
-                    "failed to read mounted agent path",
-                    exc.__class__.__name__,
-                )
-            raise
-        log_preload_success("loaded agent from path %s", path)
-        _agent_loaded = True
-        return None
-    except Exception as exc:  # pragma: no cover - defensive logging for sandbox startup
-        log_preload_exception("failed to load agent", exc_info=exc)
-        raise
-
-
-if sandbox_harness is None:
-    sandbox_harness = SandboxHarness(tool_factory=_tool_factory, preload=_load_agent_from_env)
+sandbox_harness = SandboxHarness(tool_factory=_tool_factory)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    del app
+    token = os.environ.pop("SANDBOX_CONTROL_TOKEN", "")
+    if not token:
+        raise RuntimeError("SANDBOX_CONTROL_TOKEN is required")
+    app.state.control_token = token
     logger.info("harnyx-sandbox starting up")
-    yield
+    try:
+        yield
+    finally:
+        await sandbox_harness.close()
     logger.info("harnyx-sandbox shutting down")
 
 
 app = FastAPI(title="Harnyx Sandbox", version="0.1.0", lifespan=lifespan)
+
+
+@app.exception_handler(SandboxCleanupUnconfirmedError)
+async def cleanup_unconfirmed(_request: Request, _exc: SandboxCleanupUnconfirmedError) -> JSONResponse:
+    return JSONResponse(status_code=503, content={"detail": {"code": "SandboxCleanupUnconfirmed"}})
+
+
 app.include_router(
     sandbox_harness.create_router(),
     prefix="/entry",
-    dependencies=[Depends(require_tool_token)],
+    dependencies=[Depends(require_control_token), Depends(require_tool_token)],
 )
+
+
+@app.post("/admission", dependencies=[Depends(require_control_token), Depends(require_tool_token)])
+async def reserve_admission(body: AdmissionRequest, request: Request) -> SandboxAdmission:
+    return await sandbox_harness.reserve(body, request.headers)
+
+
+@app.post("/admission/release", dependencies=[Depends(require_control_token), Depends(require_tool_token)])
+async def release_admission(body: SandboxAdmission) -> dict[str, bool]:
+    sandbox_harness.release(body)
+    return {"ok": True}
 
 
 @app.get("/healthz", tags=["health"], description="Sandbox health check.")

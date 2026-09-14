@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -36,6 +38,7 @@ from harnyx_commons.domain.tool_usage import SearchToolUsageSummary, ToolUsageSu
 from harnyx_commons.errors import SessionBudgetExhaustedError
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
+from harnyx_miner_sdk.sandbox_protocol import SandboxAdmission
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptAuditRecord,
     MinerTaskAttemptRetryDecision,
@@ -78,6 +81,16 @@ pytestmark = pytest.mark.anyio("asyncio")
 _ASSIGNMENT_TOKEN = "assignment-token"  # noqa: S105 - fixed test-only assignment token
 _FAILED_ASSIGNMENT_TOKEN = "failed-assignment-token"  # noqa: S105 - fixed test-only assignment token
 _COMPLETED_ASSIGNMENT_TOKEN = "completed-assignment-token"  # noqa: S105 - fixed test-only assignment token
+
+
+class _AdmittingSandbox:
+    @asynccontextmanager
+    async def admission(self, limit_seconds, token):
+        yield SandboxAdmission(
+            reservation_id=uuid4().hex,
+            generation="test",
+            deadline_monotonic_ns=time.monotonic_ns() + int(limit_seconds * 1e9),
+        )
 
 
 class _AssignedWork:
@@ -136,6 +149,15 @@ class _AssignedWork:
 
 
 class _ClaimedAssignedTaskFake:
+    def remaining_dispatch_seconds(self):
+        return 300.0
+
+    def is_live(self):
+        return True
+
+    def release_to_queue_if_live(self):
+        pass
+
     def __init__(self, owner: _AssignedWork, assignment: MinerTaskWorkAssignment) -> None:
         self._owner = owner
         self._assignment = assignment
@@ -525,6 +547,7 @@ async def _run_assigned_task_queue_until_results(
     close_requested = asyncio.Event()
     execution = asyncio.create_task(
         runner.evaluate_assigned_task_queue(
+            sandbox_client=_AdmittingSandbox(),
             batch_id=batch_id,
             artifact=artifact,
             initial_assignments=initial_assignments,
@@ -544,8 +567,11 @@ async def _run_assigned_task_queue_until_results(
     return tuple(results)
 
 
-async def test_evaluate_assigned_task_queue_success_queues_execution_before_scoring(tmp_path: Path) -> None:
-    runner, batch_id, artifact, task, _, _, _, _ = _assigned_task_test_context(tmp_path)
+@pytest.mark.parametrize("transient_connect_failure", [False, True])
+async def test_evaluate_assigned_task_queue_success_queues_execution_before_scoring(
+    tmp_path: Path, transient_connect_failure: bool
+) -> None:
+    runner, batch_id, artifact, task, sessions, _, _, _ = _assigned_task_test_context(tmp_path)
     assignment = MinerTaskWorkAssignment(
         batch_id=batch_id,
         artifact=artifact,
@@ -555,9 +581,47 @@ async def test_evaluate_assigned_task_queue_success_queues_execution_before_scor
         assignment_token=_ASSIGNMENT_TOKEN,
     )
     completed_at = datetime(2025, 10, 17, 12, 3, tzinfo=UTC)
+    admission_requested = asyncio.Event()
+    admit = asyncio.Event()
+    assigned_work = _AssignedWork()
+
+    class _PausedSandbox:
+        @asynccontextmanager
+        async def admission(self, limit_seconds, token):
+            from harnyx_commons.sandbox.docker import HttpSandboxClient
+
+            attempts = 0
+
+            async def handler(request):
+                nonlocal attempts
+                if request.url.path == "/admission":
+                    attempts += 1
+                    if transient_connect_failure and attempts == 1:
+                        raise httpx.ConnectError("transient connection failure", request=request)
+                    admission_requested.set()
+                    await admit.wait()
+                    return httpx.Response(
+                        200,
+                        json=SandboxAdmission(
+                            reservation_id=uuid4().hex,
+                            generation="test",
+                            deadline_monotonic_ns=time.monotonic_ns() + int(limit_seconds * 1e9),
+                        ).model_dump(),
+                    )
+                return httpx.Response(200, json={"ok": True})
+
+            async with httpx.AsyncClient(
+                base_url="http://sandbox.local", transport=httpx.MockTransport(handler)
+            ) as http:
+                sandbox = HttpSandboxClient("http://sandbox.local", control_token=uuid4().hex, client=http)
+                async with sandbox.admission(limit_seconds, token) as reservation:
+                    yield reservation
+                assert attempts == (2 if transient_connect_failure else 1)
 
     class _ExecutionOnlyOrchestrator:
-        async def execute(self, request: MinerTaskRunRequest, *, phase_recorder=None) -> TaskExecutionOutcome:
+        async def execute(
+            self, request: MinerTaskRunRequest, *, phase_recorder=None, admission=None
+        ) -> TaskExecutionOutcome:
             _ = phase_recorder
             assert request.execution_time_limit_seconds == 300.0
             return TaskExecutionOutcome(
@@ -586,18 +650,24 @@ async def test_evaluate_assigned_task_queue_success_queues_execution_before_scor
     close_requested = asyncio.Event()
     execution_task = asyncio.create_task(
         runner.evaluate_assigned_task_queue(
+            sandbox_client=_PausedSandbox(),
             batch_id=batch_id,
             artifact=artifact,
             initial_assignments=(assignment,),
-            assigned_work=_AssignedWork(),
+            assigned_work=assigned_work,
             close_requested=close_requested,
             result_queue=result_queue,
             orchestrator=cast(TaskRunOrchestrator, _ExecutionOnlyOrchestrator()),
         )
     )
     try:
+        await asyncio.wait_for(admission_requested.wait(), timeout=1.0)
+        assert assigned_work.started == []
+        assert not sessions._sessions
+        admit.set()
         queued = await asyncio.wait_for(result_queue.get(), timeout=1.0)
     finally:
+        admit.set()
         close_requested.set()
     await asyncio.wait_for(execution_task, timeout=1.0)
 
@@ -760,6 +830,7 @@ async def test_evaluate_assigned_task_queue_final_delivery_failure_closes_group_
     monkeypatch.setattr(runner, "_evaluate_task_attempt", evaluate_task_attempt)
     execution = asyncio.create_task(
         runner.evaluate_assigned_task_queue(
+            sandbox_client=_AdmittingSandbox(),
             batch_id=batch_id,
             artifact=artifact,
             initial_assignments=(started_assignment, delivery_failure_assignment),
@@ -877,7 +948,9 @@ async def test_evaluate_assigned_task_queue_invocation_timeout_records_phase_own
     )
 
     class _TimeoutOrchestrator:
-        async def evaluate(self, request: MinerTaskRunRequest, *, phase_recorder=None) -> TaskRunOutcome:
+        async def evaluate(
+            self, request: MinerTaskRunRequest, *, phase_recorder=None, admission=None
+        ) -> TaskRunOutcome:
             _ = request
             if phase_recorder is not None:
                 phase_recorder.mark("entrypoint_invocation")
@@ -929,7 +1002,9 @@ async def test_evaluate_assigned_task_queue_platform_tool_proxy_timeout_records_
     )
 
     class _TimeoutOrchestrator:
-        async def evaluate(self, request: MinerTaskRunRequest, *, phase_recorder=None) -> TaskRunOutcome:
+        async def evaluate(
+            self, request: MinerTaskRunRequest, *, phase_recorder=None, admission=None
+        ) -> TaskRunOutcome:
             session = session_registry.get(request.session_id)
             assert session is not None
             if phase_recorder is not None:
@@ -982,7 +1057,9 @@ async def test_evaluate_assigned_task_queue_final_platform_tool_proxy_timeout_re
     )
 
     class _TimeoutOrchestrator:
-        async def evaluate(self, request: MinerTaskRunRequest, *, phase_recorder=None) -> TaskRunOutcome:
+        async def evaluate(
+            self, request: MinerTaskRunRequest, *, phase_recorder=None, admission=None
+        ) -> TaskRunOutcome:
             session = session_registry.get(request.session_id)
             assert session is not None
             if phase_recorder is not None:
@@ -1202,6 +1279,7 @@ async def test_evaluate_assigned_task_queue_cancels_active_children_on_queue_can
 
     execution = asyncio.create_task(
         runner.evaluate_assigned_task_queue(
+            sandbox_client=_AdmittingSandbox(),
             batch_id=batch_id,
             artifact=artifact,
             initial_assignments=(assignment,),
@@ -2390,7 +2468,9 @@ class _ProviderFailureThenSuccessOrchestrator:
         _record_provider_failure(self._progress, request=request)
         return _successful_outcome(request)
 
-    async def execute(self, request: MinerTaskRunRequest, *, phase_recorder=None) -> TaskExecutionOutcome:
+    async def execute(
+        self, request: MinerTaskRunRequest, *, phase_recorder=None, admission=None
+    ) -> TaskExecutionOutcome:
         _ = phase_recorder
         self.calls += 1
         _record_provider_failure(self._progress, request=request)

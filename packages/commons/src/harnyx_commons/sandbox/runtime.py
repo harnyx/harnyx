@@ -17,15 +17,19 @@ from harnyx_commons.sandbox.seccomp.paths import default_profile_path
 DOCKER_BINARY: Final[str] = "/usr/bin/docker"
 HOST_PROBE_ADDRESS: Final[str] = "host.docker.internal"
 SANDBOX_INVOCATION_OUTPUT_PREFIX: Final[str] = "HARNYX_SANDBOX_INVOCATION_OUTPUT "
+SANDBOX_ARTIFACT_OUTPUT_PREFIX: Final[str] = "HARNYX_SANDBOX_ARTIFACT_OUTPUT "
 
 
-class _SandboxInvocationOutput(BaseModel):
+class _SandboxArtifactOutput(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    session_id: UUID
     entrypoint: str = Field(min_length=1)
     stream: Literal["stdout", "stderr"]
     message: str
+
+
+class _SandboxInvocationOutput(_SandboxArtifactOutput):
+    session_id: UUID
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,16 +82,24 @@ def create_sandbox_manager(
 
 
 def _consume_sandbox_log(sandbox_log: logging.Logger, line: str) -> None:
-    if not line.startswith(SANDBOX_INVOCATION_OUTPUT_PREFIX):
+    if line.startswith(SANDBOX_ARTIFACT_OUTPUT_PREFIX):
+        prefix = SANDBOX_ARTIFACT_OUTPUT_PREFIX
+        model = _SandboxArtifactOutput
+        event = "sandbox_artifact.output"
+    elif line.startswith(SANDBOX_INVOCATION_OUTPUT_PREFIX):
+        prefix = SANDBOX_INVOCATION_OUTPUT_PREFIX
+        model = _SandboxInvocationOutput
+        event = "sandbox_invocation.output"
+    else:
         sandbox_log.info("%s", line)
         return
-    raw_record = line.removeprefix(SANDBOX_INVOCATION_OUTPUT_PREFIX)
+    raw_record = line.removeprefix(prefix)
     try:
-        record = _SandboxInvocationOutput.model_validate_json(raw_record)
+        record = model.model_validate_json(raw_record)
     except ValidationError:
         sandbox_log.info("%s", line)
         return
-    sandbox_log.info("sandbox_invocation.output", extra={"data": record.model_dump(mode="json")})
+    sandbox_log.info(event, extra={"data": record.model_dump(mode="json")})
 
 
 def build_sandbox_options(

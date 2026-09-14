@@ -33,6 +33,7 @@ from harnyx_commons.miner_task_scoring import EvaluationScoringResult
 from harnyx_commons.tools.dto import ToolInvocationRequest
 from harnyx_commons.tools.executor import ToolExecutor, ToolInvocationContext, ToolInvocationOutput
 from harnyx_commons.tools.usage_tracker import UsageTracker
+from harnyx_miner_sdk.sandbox_protocol import SandboxAdmission
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskRunRequest,
     PlatformOwnedTaskExecution,
@@ -80,7 +81,9 @@ class StubSandboxClient:
         context: dict[str, object],
         token: str,
         session_id: UUID,
+        admission: SandboxAdmission | None = None,
     ) -> dict[str, object]:
+        del admission
         self.requests.append((entrypoint, payload, context, token, session_id))
         if self.on_invoke is not None:
             self.on_invoke(session_id)

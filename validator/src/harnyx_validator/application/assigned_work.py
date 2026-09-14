@@ -12,6 +12,18 @@ from harnyx_validator.application.dto.evaluation import MinerTaskWorkAssignment,
 class ClaimedAssignedTask(Protocol):
     """Assignment claimed for validator session start."""
 
+    def remaining_dispatch_seconds(self) -> float:
+        """Remaining original dispatch lease, including admission wait."""
+        ...
+
+    def is_live(self) -> bool:
+        """Whether this unstarted assignment can still start."""
+        ...
+
+    def release_to_queue_if_live(self) -> None:
+        """Release an unstarted claim without renewing its dispatch lease."""
+        ...
+
     @property
     def assignment(self) -> MinerTaskWorkAssignment:
         """The platform-owned assignment carried by this claim."""

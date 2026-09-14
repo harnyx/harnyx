@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import AbstractAsyncContextManager
 from typing import Protocol
 from uuid import UUID
 
 from harnyx_commons.json_types import JsonValue
+from harnyx_miner_sdk.sandbox_protocol import SandboxAdmission
 
 
 class InvalidSandboxResponseError(ValueError):
@@ -41,6 +43,10 @@ class SandboxInvokeError(RuntimeError):
 class SandboxClient(Protocol):
     """Adapter responsible for calling miner entrypoints."""
 
+    def admission(self, limit_seconds: float, token: str) -> AbstractAsyncContextManager[SandboxAdmission]:
+        """Reserve execution before creating a host tool session."""
+        ...
+
     async def invoke(
         self,
         entrypoint: str,
@@ -50,6 +56,7 @@ class SandboxClient(Protocol):
         token: str,
         session_id: UUID,
         include_failure_details: bool = True,
+        admission: SandboxAdmission | None = None,
     ) -> Mapping[str, JsonValue]:
         """Invoke the sandbox entrypoint and return its response payload."""
 

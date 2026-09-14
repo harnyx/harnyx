@@ -867,7 +867,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "harnyx-miner-sdk"
-version = "0.1.22"
+version = "0.1.23"
 source = { editable = "packages/miner-sdk" }
 dependencies = [
     { name = "httpx" },
@@ -948,6 +948,7 @@ dependencies = [
     { name = "bittensor" },
     { name = "fastapi" },
     { name = "harnyx-commons" },
+    { name = "harnyx-miner-sdk" },
     { name = "httpx" },
     { name = "jsonschema" },
     { name = "pydantic" },
@@ -967,6 +968,7 @@ requires-dist = [
     { name = "bittensor", specifier = "==10.4.1" },
     { name = "fastapi", specifier = ">=0.133,<1" },
     { name = "harnyx-commons", editable = "packages/commons" },
+    { name = "harnyx-miner-sdk", editable = "packages/miner-sdk" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "jsonschema", specifier = ">=4.26,<5" },
     { name = "pydantic", specifier = ">=2.8" },

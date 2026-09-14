@@ -35,7 +35,7 @@ class _FakeSandboxClient(SandboxClient):
         return None
 
 
-def test_docker_sandbox_manager_writes_diagnostics_when_docker_run_fails(tmp_path: Path) -> None:
+def test_docker_sandbox_manager_writes_diagnostics_when_docker_run_fails(tmp_path: Path, caplog) -> None:
     commands: list[list[str]] = []
 
     def command_runner(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -61,11 +61,13 @@ def test_docker_sandbox_manager_writes_diagnostics_when_docker_run_fails(tmp_pat
     assert "0.0.0.0:8000" in raised_message
     assert "super-secret" not in raised_message
     assert "/state/agent.py" not in raised_message
-    assert commands == [_expected_docker_run(options)]
+    credential = next(arg.split("=", 1)[1] for arg in commands[0] if arg.startswith("SANDBOX_CONTROL_TOKEN="))
+    expected_options = replace(options, env={**options.env, "SANDBOX_CONTROL_TOKEN": credential})
+    assert commands == [_expected_docker_run(expected_options)]
+    assert credential not in caplog.text
+    assert credential not in str(excinfo.value.__cause__)
     docker_run_result = json.loads((tmp_path / "docker-run-result.json").read_text(encoding="utf-8"))
-    assert docker_run_result["stderr"] == (
-        "docker error includes <redacted> and <redacted> while binding 0.0.0.0:8000"
-    )
+    assert docker_run_result["stderr"] == ("docker error includes <redacted> and <redacted> while binding 0.0.0.0:8000")
     error_text = (tmp_path / "error.txt").read_text(encoding="utf-8")
     assert error_text.startswith("CalledProcessError:")
     assert "0.0.0.0" in error_text  # noqa: S104 - verifying diagnostic text preserves bind address
@@ -83,6 +85,7 @@ def test_docker_sandbox_manager_writes_diagnostics_when_docker_run_fails(tmp_pat
         "SANDBOX_HOST": "0.0.0.0",  # noqa: S104 - verifying diagnostic snapshot preserves sandbox host
         "SANDBOX_PORT": "8000",
         "SECRET_TOKEN": "<redacted>",
+        "SANDBOX_CONTROL_TOKEN": "<redacted>",
     }
     _assert_private_mode(tmp_path, 0o700)
     _assert_private_mode(tmp_path / "sandbox-options.json", 0o600)
@@ -199,7 +202,7 @@ def test_docker_sandbox_manager_writes_inspect_and_logs_before_cleanup(tmp_path:
     _precreate_public_file(tmp_path / "docker-logs.txt")
     manager = DockerSandboxManager(
         command_runner=command_runner,
-        client_factory=lambda base_url, host_container_url: _FakeSandboxClient(),
+        client_factory=lambda base_url, host_container_url, control_token: _FakeSandboxClient(),
     )
 
     with pytest.raises(RuntimeError, match="sandbox healthz did not succeed"):
@@ -256,7 +259,7 @@ def test_docker_sandbox_manager_writes_private_diagnostic_command_error_files(
     options = _sandbox_options(tmp_path, wait_for_healthz=True, healthz_timeout=0.0)
     manager = DockerSandboxManager(
         command_runner=command_runner,
-        client_factory=lambda base_url, host_container_url: _FakeSandboxClient(),
+        client_factory=lambda base_url, host_container_url, control_token: _FakeSandboxClient(),
     )
 
     with pytest.raises(RuntimeError, match="sandbox healthz did not succeed"):
@@ -289,7 +292,7 @@ def test_docker_sandbox_manager_removes_container_when_stop_fails(tmp_path: Path
     options = _sandbox_options(tmp_path, wait_for_healthz=True, healthz_timeout=0.0)
     manager = DockerSandboxManager(
         command_runner=command_runner,
-        client_factory=lambda base_url, host_container_url: _FakeSandboxClient(),
+        client_factory=lambda base_url, host_container_url, control_token: _FakeSandboxClient(),
     )
 
     with pytest.raises(RuntimeError, match="sandbox healthz did not succeed"):
@@ -319,13 +322,16 @@ def test_docker_sandbox_manager_publishes_allocated_port_on_client_host(tmp_path
     options = replace(_sandbox_options(tmp_path), host_port=0)
     manager = DockerSandboxManager(
         command_runner=command_runner,
-        client_factory=lambda base_url, host_container_url: _FakeSandboxClient(),
+        client_factory=lambda base_url, host_container_url, control_token: _FakeSandboxClient(),
     )
 
     deployment = manager.start(options)
 
     assert deployment.base_url == "http://127.0.0.1:45678"
-    assert commands[0] == _expected_docker_run(options)
+    credential = next(arg.split("=", 1)[1] for arg in commands[0] if arg.startswith("SANDBOX_CONTROL_TOKEN="))
+    assert commands[0] == _expected_docker_run(
+        replace(options, env={**options.env, "SANDBOX_CONTROL_TOKEN": credential})
+    )
 
 
 def test_docker_sandbox_manager_binds_allocated_port_when_configured(tmp_path: Path) -> None:
@@ -350,7 +356,7 @@ def test_docker_sandbox_manager_binds_allocated_port_when_configured(tmp_path: P
     manager = DockerSandboxManager(
         published_port_bind_host="127.0.0.1",
         command_runner=command_runner,
-        client_factory=lambda base_url, host_container_url: _FakeSandboxClient(),
+        client_factory=lambda base_url, host_container_url, control_token: _FakeSandboxClient(),
     )
 
     deployment = manager.start(options)
@@ -412,6 +418,8 @@ def _expected_docker_run(options: SandboxOptions) -> list[str]:
             options.image,
         ]
     )
+    if "SANDBOX_CONTROL_TOKEN" in options.env:
+        args[-1:-1] = ["-e", "SANDBOX_CONTROL_TOKEN=" + options.env["SANDBOX_CONTROL_TOKEN"]]
     return args
 
 

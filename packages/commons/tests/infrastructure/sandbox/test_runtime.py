@@ -52,6 +52,16 @@ def test_sandbox_manager_preserves_malformed_invocation_output_as_raw_log(
         assert caplog.records[-1].message == line
 
 
+def test_shared_worker_output_has_no_invented_session(caplog: pytest.LogCaptureFixture) -> None:
+    manager = runtime_module.create_sandbox_manager(logger_name="test.runtime")
+    caplog.set_level(logging.INFO, logger="test.runtime")
+    manager._log_consumer(
+        'HARNYX_SANDBOX_ARTIFACT_OUTPUT {"entrypoint":"artifact","stream":"stdout","message":"shared"}'
+    )
+    assert caplog.records[0].message == "sandbox_artifact.output"
+    assert caplog.records[0].data == {"entrypoint": "artifact", "stream": "stdout", "message": "shared"}
+
+
 def test_build_sandbox_options_accepts_explicit_host_container_url_without_network(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

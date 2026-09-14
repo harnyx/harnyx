@@ -21,6 +21,7 @@ from harnyx_commons.errors import SessionBudgetExhaustedError
 from harnyx_commons.sandbox.client import SandboxClient, SandboxInvokeError
 from harnyx_commons.tools.dto import session_budget_snapshot
 from harnyx_commons.tools.http_serialization import serialize_tool_budget
+from harnyx_miner_sdk.sandbox_protocol import SandboxAdmission
 from harnyx_validator.application.dto.evaluation import EntrypointInvocationRequest, EntrypointInvocationResult
 
 QUERY_ENTRYPOINT = "query"
@@ -177,11 +178,13 @@ class EntrypointInvoker:
         self._tokens = token_registry
         self._receipts = receipt_log
 
-    async def invoke(self, request: EntrypointInvocationRequest) -> EntrypointInvocationResult:
+    async def invoke(
+        self, request: EntrypointInvocationRequest, *, admission: SandboxAdmission | None = None
+    ) -> EntrypointInvocationResult:
         """Invoke the requested entrypoint after validating the session token."""
         session = self._load_session(request.session_id)
         self._validate_session(session, request)
-        payload = await self._invoke_query(request=request, session=session)
+        payload = await self._invoke_query(request=request, session=session, admission=admission)
         self._raise_if_session_exhausted(session.session_id)
         receipts = tuple(self._receipts.for_session(session.session_id))
         try:
@@ -206,6 +209,7 @@ class EntrypointInvoker:
         *,
         request: EntrypointInvocationRequest,
         session: Session,
+        admission: SandboxAdmission | None = None,
     ) -> object:
         token = request.token
         cost_budget = serialize_tool_budget(session_budget_snapshot(session))
@@ -221,6 +225,7 @@ class EntrypointInvoker:
                 },
                 token=token,
                 session_id=session.session_id,
+                admission=admission,
             )
         except SandboxInvokeError as exc:
             self._raise_if_session_exhausted(session.session_id, cause=exc)
@@ -278,6 +283,7 @@ class EntrypointInvoker:
         if session is None:
             raise LookupError(f"session {session_id} not found after entrypoint invocation")
         return session
+
 
 __all__ = [
     "EntrypointInvoker",

@@ -24,6 +24,7 @@ from harnyx_commons.llm.pricing import price_search
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_commons.miner_task_scoring import EvaluationScoringResult, EvaluationScoringService
 from harnyx_commons.tools.types import SearchToolName, is_search_tool
+from harnyx_miner_sdk.sandbox_protocol import SandboxAdmission
 from harnyx_validator.application.assigned_work import PhaseRecorder
 from harnyx_validator.application.dto.evaluation import (
     EntrypointInvocationRequest,
@@ -396,6 +397,7 @@ class TaskRunOrchestrator:
         request: MinerTaskRunRequest,
         *,
         phase_recorder: PhaseRecorder | None = None,
+        admission: SandboxAdmission | None = None,
     ) -> TaskExecutionOutcome:
         orchestration_started_at = time.monotonic()
         invocation_started_at = orchestration_started_at
@@ -409,6 +411,7 @@ class TaskRunOrchestrator:
                 query=request.task.query,
                 execution_time_limit_seconds=request.execution_time_limit_seconds,
             ),
+            **({"admission": admission} if admission is not None else {}),
         )
         invocation_ms = _monotonic_elapsed_ms(
             started_at=invocation_started_at,

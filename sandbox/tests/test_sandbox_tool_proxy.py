@@ -31,6 +31,7 @@ def test_tool_factory_uses_independent_hosted_tool_timeout(monkeypatch: pytest.M
             *,
             session_id: str,
             timeout: float,
+            client=None,
         ) -> None:
             captured.update(
                 {
@@ -348,9 +349,7 @@ async def test_llm_chat_full_tool_loop_crosses_sandbox_proxy() -> None:
                                         "arguments": '{"city":"Rome"}',
                                     }
                                 ],
-                                "reasoning_details": [
-                                    {"type": "reasoning.encrypted", "data": "opaque-response"}
-                                ],
+                                "reasoning_details": [{"type": "reasoning.encrypted", "data": "opaque-response"}],
                             },
                         }
                     ],

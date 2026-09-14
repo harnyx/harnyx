@@ -5,6 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
+CONTROL_TOKEN_HEADER = "x-sandbox-control-token"  # noqa: S105
+CONTROL_TOKEN_ENV = "SANDBOX_CONTROL_TOKEN"  # noqa: S105
+
 DEFAULT_TOKEN_HEADER = "x-platform-token"  # noqa: S105
 HOST_CONTAINER_URL_HEADER = "x-host-container-url"
 
@@ -18,7 +21,7 @@ class SandboxOptions:
     pull_policy: str = "always"
     host_port: int | None = 8000
     container_port: int = 8000
-    env: Mapping[str, str] = field(default_factory=dict)
+    env: Mapping[str, str] = field(default_factory=dict, repr=False)
     entrypoint: str | None = None
     command: Sequence[str] | None = None
     network: str | None = None
