@@ -5,6 +5,7 @@ from typing import Any, cast
 
 import httpx
 import pytest
+from bittensor.core.types import ExtrinsicResponse
 
 import harnyx_validator.infrastructure.subtensor.bittensor as bittensor_mod
 from harnyx_commons.config.subtensor import SubtensorSettings
@@ -221,6 +222,34 @@ def _patch_set_weights_extrinsic(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
     monkeypatch.setattr(bittensor_mod, "set_weights_extrinsic", fake_set_weights_extrinsic)
+
+
+@pytest.mark.parametrize("commit_reveal", [False, True])
+def test_actual_weight_encoding_preserves_burn_and_zero_payment(
+    monkeypatch: pytest.MonkeyPatch, commit_reveal: bool
+) -> None:
+    subtensor = _SubtensorStub(commit_reveal_enabled=commit_reveal)
+    subtensor.sign_side_effects = [ExtrinsicResponse(success=True, message="local capture")]
+    client = _make_client(monkeypatch, subtensor=subtensor)
+    client._wallet.unlock_hotkey = lambda: None
+    encrypted_inputs = {}
+
+    def capture_encryption(**kwargs):
+        encrypted_inputs.update(kwargs)
+        return b"local-test-commit", 1
+
+    monkeypatch.setattr(bittensor_mod, "get_encrypted_commit", capture_encryption)
+    # Keep the real Bittensor SDK set_weights_extrinsic and integer conversion.
+    client.submit_weights({0: 0.25, 7: 0.75, 8: 0})
+    if commit_reveal:
+        encoded = dict(zip(encrypted_inputs["uids"], encrypted_inputs["weights"], strict=True))
+    else:
+        params = subtensor.sign_calls[0]["call"]["call_params"]
+        encoded = dict(zip(params["dests"], params["weights"], strict=True))
+    assert encoded.get(8, 0) == 0
+    total = sum(encoded.values())
+    assert encoded[0] / total == pytest.approx(0.25, abs=2 / 65535)
+    assert encoded[7] / total == pytest.approx(0.75, abs=2 / 65535)
 
 
 def test_publish_commitment_uses_pool_aware_hotkey_nonce(
