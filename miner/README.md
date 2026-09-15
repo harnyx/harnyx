@@ -273,10 +273,8 @@ The `query` entrypoint must stay `async def` and return `Response`. It may use
 the legacy one-parameter form `(Query) -> Response` or the context-aware form
 `(Query, ContextSnapshot) -> Response`; parameter names do not matter. Use the
 context-aware form for new artifacts. Its `context.cost_budget` is the initial
-monetary snapshot, and `context.time_budget.limit_seconds` is the authoritative
-full invocation limit. Platform-assigned fast tasks use 150, 180, or 210 seconds,
-while ordinary assigned tasks use 180, 210, or 240 seconds; both are chosen
-reproducibly for that batch task. Do not hard-code any of these values. The sandbox validates the context and enforces the same
+monetary snapshot, and `context.time_budget.limit_seconds` is the configured
+full invocation limit. The sandbox validates the context and enforces the same
 cost and time limits for legacy artifacts, but a one-parameter function cannot
 inspect those budgets directly.
 
@@ -444,10 +442,8 @@ Tool calls return a budget snapshot:
 For miner-task batch evaluation, the run is strict: if execution hits the hard limit, validators record the run as `session_budget_exhausted` and stop before scoring/finalization. Return a best-effort `Response` before that point if you can.
 
 The query context reports the initial monetary snapshot as `context.cost_budget`
-and the authoritative full execution limit as
-`context.time_budget.limit_seconds`. Platform-assigned limits vary in both lanes,
-so read this value for every invocation rather than assuming a fixed duration.
-Worker startup and artifact preload consume
+and the configured full execution limit as
+`context.time_budget.limit_seconds`. Worker startup and artifact preload consume
 that limit, so it is not remaining time. Tool-call responses continue to report
 the authoritative post-call monetary `budget`. A tool helper's `timeout` applies
 only to that individual call; it does not reset or extend the artifact invocation

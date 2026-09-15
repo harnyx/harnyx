@@ -899,7 +899,6 @@ async def test_evaluation_runner_issues_session_with_task_budget(
         batch_id=uuid4(),
         uid=3,
         task=task,
-        execution_time_limit_seconds=300.0,
     )
     assert issued.session.task_id == task.task_id
     assert issued.session.budget_usd == pytest.approx(0.123)
