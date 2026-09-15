@@ -4,6 +4,7 @@ Generated from FastAPI OpenAPI.
 
 ## Domains
 - [miner-task-batches](#miner-task-batches)
+  - [POST /validator/miner-task-batches/{batch_id}/reference-selection](#endpoint-post-validator-miner-task-batches-batch_id-reference-selection)
   - [POST /validator/miner-task-batches/{batch_id}/similarity](#endpoint-post-validator-miner-task-batches-batch_id-similarity)
 - [status](#status)
   - [GET /validator/status](#endpoint-get-validator-status)
@@ -16,6 +17,87 @@ Generated from FastAPI OpenAPI.
 ## miner-task-batches
 
 ### {batch_id}
+
+#### reference-selection
+
+<a id="endpoint-post-validator-miner-task-batches-batch_id-reference-selection"></a>
+##### POST /validator/miner-task-batches/{batch_id}/reference-selection
+
+Compare a signed endpoint answer against the dataset reference in both orders.
+
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
+
+**Parameters**
+| Param | In | Req | Notes |
+| --- | --- | --- | --- |
+| `batch_id` | path | req | `string` (format: uuid) |
+
+**Request**
+Content-Type: `application/json`
+Body: [ReferenceSelectionRequest](#model-referenceselectionrequest)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `batch_id` |  |  | req | `string` (format: uuid) |
+| `candidate` |  |  | req | [ReferenceSelectionRequestEndpointAnswer](#model-referenceselectionrequestendpointanswer) |
+|  | `assignment_id` |  | req | `string` (format: uuid) |
+|  | `callback_body_utf8` |  | req | `string` |
+|  | `expected_hotkey` |  | req | `string` |
+|  | `receipt_logs` |  | req | array[[ReferenceSelectionRequestEndpointReceipt](#model-referenceselectionrequestendpointreceipt)] |
+|  |  | `assignment_id` | req | `string` (format: uuid) |
+|  |  | `issued_at` | req | `string` (format: date-time) |
+|  |  | `receipt_id` | req | `string` |
+|  |  | `results` | req | array[[ReferenceSelectionRequestSearchToolResult](#model-referenceselectionrequestsearchtoolresult)] |
+|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+|  | `signature_hex` |  | req | `string` |
+|  | `signed_callback_path` |  | req | `string` |
+| `task` |  |  | req | [ReferenceSelectionRequestMinerTask](#model-referenceselectionrequestminertask) |
+|  | `budget_usd` |  | opt | `number` (default: 0.5) |
+|  | `query` |  | req | [ReferenceSelectionRequestQuery](#model-referenceselectionrequestquery) |
+|  |  | `fast` | opt | `boolean` (default: False) |
+|  |  | `output_schema` | opt | [ReferenceSelectionRequestJsonObject](#model-referenceselectionrequestjsonobject) (nullable) |
+|  |  | `text` | req | `string` |
+|  | `reference_answer` |  | req | [ReferenceSelectionRequestReferenceAnswer](#model-referenceselectionrequestreferenceanswer) |
+|  |  | `citations` | opt | array[[ReferenceSelectionRequestAnswerCitation](#model-referenceselectionrequestanswercitation) (nullable)] (nullable) |
+|  |  | `note` | opt | `string` (nullable) |
+|  |  | `text` | req | `string` |
+|  | `task_id` |  | req | `string` (format: uuid) |
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: [ScoreBreakdown](#model-scorebreakdown)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `comparison_score` |  |  | req | `number` |
+| `fast_score_evidence` |  |  | opt | [FastScoreEvidence](#model-fastscoreevidence) (nullable) |
+|  | `excessive_components` |  | req | array[[FastScoreExcessiveComponent](#model-fastscoreexcessivecomponent)] |
+|  |  | `component_id` | req | `string` |
+|  | `expected_components` |  | req | array[[FastScoreExpectedComponent](#model-fastscoreexpectedcomponent)] |
+|  |  | `component_id` | req | `string` |
+|  |  | `is_correct` | req | `boolean` |
+|  | `precision` |  | req | `number` |
+|  | `recall` |  | req | `number` |
+| `reasoning` |  |  | opt | [ScorerReasoning](#model-scorerreasoning) (nullable) |
+|  | `reasoning_tokens` |  | opt | `integer` (nullable) |
+|  | `text` |  | opt | `string` (nullable) |
+| `scoring_version` |  |  | req | `string` |
+| `total_score` |  |  | req | `number` |
+
+`422` Validation Error
+Content-Type: `application/json`
+Body: [HTTPValidationError](#model-httpvalidationerror)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
+|  | `ctx` |  | opt | `object` |
+|  | `input` |  | opt | `object` |
+|  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
+|  | `msg` |  | req | `string` |
+|  | `type` |  | req | `string` |
+
 
 #### similarity
 
@@ -308,6 +390,136 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
 
 ## Models
 
+<a id="model-fastscoreevidence"></a>
+### Model: FastScoreEvidence
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `excessive_components` |  |  | req | array[[FastScoreExcessiveComponent](#model-fastscoreexcessivecomponent)] |
+|  | `component_id` |  | req | `string` |
+| `expected_components` |  |  | req | array[[FastScoreExpectedComponent](#model-fastscoreexpectedcomponent)] |
+|  | `component_id` |  | req | `string` |
+|  | `is_correct` |  | req | `boolean` |
+| `precision` |  |  | req | `number` |
+| `recall` |  |  | req | `number` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "description": "Persisted component judgment and deterministic metrics for one fast score.",
+  "properties": {
+    "excessive_components": {
+      "items": {
+        "$ref": "#/components/schemas/FastScoreExcessiveComponent"
+      },
+      "title": "Excessive Components",
+      "type": "array"
+    },
+    "expected_components": {
+      "items": {
+        "$ref": "#/components/schemas/FastScoreExpectedComponent"
+      },
+      "minItems": 1,
+      "title": "Expected Components",
+      "type": "array"
+    },
+    "precision": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Precision",
+      "type": "number"
+    },
+    "recall": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Recall",
+      "type": "number"
+    }
+  },
+  "required": [
+    "expected_components",
+    "excessive_components",
+    "precision",
+    "recall"
+  ],
+  "title": "FastScoreEvidence",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-fastscoreexcessivecomponent"></a>
+### Model: FastScoreExcessiveComponent
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `component_id` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "description": "One excessive answer component retained as fast-score evidence.",
+  "properties": {
+    "component_id": {
+      "minLength": 1,
+      "title": "Component Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "component_id"
+  ],
+  "title": "FastScoreExcessiveComponent",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-fastscoreexpectedcomponent"></a>
+### Model: FastScoreExpectedComponent
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `component_id` |  |  | req | `string` |
+| `is_correct` |  |  | req | `boolean` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "description": "One required answer component retained as fast-score evidence.",
+  "properties": {
+    "component_id": {
+      "minLength": 1,
+      "title": "Component Id",
+      "type": "string"
+    },
+    "is_correct": {
+      "title": "Is Correct",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "component_id",
+    "is_correct"
+  ],
+  "title": "FastScoreExpectedComponent",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-httpvalidationerror"></a>
 ### Model: HTTPValidationError
 
@@ -552,6 +764,776 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
     "models"
   ],
   "title": "JudgeUsageSummary",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-referenceselectionrequest"></a>
+### Model: ReferenceSelectionRequest
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `batch_id` |  |  | req | `string` (format: uuid) |
+| `candidate` |  |  | req | [ReferenceSelectionRequestEndpointAnswer](#model-referenceselectionrequestendpointanswer) |
+|  | `assignment_id` |  | req | `string` (format: uuid) |
+|  | `callback_body_utf8` |  | req | `string` |
+|  | `expected_hotkey` |  | req | `string` |
+|  | `receipt_logs` |  | req | array[[ReferenceSelectionRequestEndpointReceipt](#model-referenceselectionrequestendpointreceipt)] |
+|  |  | `assignment_id` | req | `string` (format: uuid) |
+|  |  | `issued_at` | req | `string` (format: date-time) |
+|  |  | `receipt_id` | req | `string` |
+|  |  | `results` | req | array[[ReferenceSelectionRequestSearchToolResult](#model-referenceselectionrequestsearchtoolresult)] |
+|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+|  | `signature_hex` |  | req | `string` |
+|  | `signed_callback_path` |  | req | `string` |
+| `task` |  |  | req | [ReferenceSelectionRequestMinerTask](#model-referenceselectionrequestminertask) |
+|  | `budget_usd` |  | opt | `number` (default: 0.5) |
+|  | `query` |  | req | [ReferenceSelectionRequestQuery](#model-referenceselectionrequestquery) |
+|  |  | `fast` | opt | `boolean` (default: False) |
+|  |  | `output_schema` | opt | [ReferenceSelectionRequestJsonObject](#model-referenceselectionrequestjsonobject) (nullable) |
+|  |  | `text` | req | `string` |
+|  | `reference_answer` |  | req | [ReferenceSelectionRequestReferenceAnswer](#model-referenceselectionrequestreferenceanswer) |
+|  |  | `citations` | opt | array[[ReferenceSelectionRequestAnswerCitation](#model-referenceselectionrequestanswercitation) (nullable)] (nullable) |
+|  |  | `note` | opt | `string` (nullable) |
+|  |  | `text` | req | `string` |
+|  | `task_id` |  | req | `string` (format: uuid) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "batch_id": {
+      "format": "uuid",
+      "title": "Batch Id",
+      "type": "string"
+    },
+    "candidate": {
+      "$ref": "#/components/schemas/ReferenceSelectionRequestEndpointAnswer"
+    },
+    "task": {
+      "$ref": "#/components/schemas/ReferenceSelectionRequestMinerTask"
+    }
+  },
+  "required": [
+    "batch_id",
+    "task",
+    "candidate"
+  ],
+  "title": "ReferenceSelectionRequest",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-referenceselectionrequestanswercitation"></a>
+### Model: ReferenceSelectionRequestAnswerCitation
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `excerpts` |  |  | opt | array[[ReferenceSelectionRequestCitationExcerpt](#model-referenceselectionrequestcitationexcerpt)] (default: []) |
+|  | `end` |  | opt | `integer` (nullable) |
+|  | `start` |  | opt | `integer` (nullable) |
+|  | `text` |  | req | `string` |
+| `title` |  |  | opt | `string` (nullable) |
+| `url` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "excerpts": {
+      "default": [],
+      "items": {
+        "$ref": "#/components/schemas/ReferenceSelectionRequestCitationExcerpt"
+      },
+      "title": "Excerpts",
+      "type": "array"
+    },
+    "title": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Title"
+    },
+    "url": {
+      "minLength": 1,
+      "title": "Url",
+      "type": "string"
+    }
+  },
+  "required": [
+    "url"
+  ],
+  "title": "AnswerCitation",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-referenceselectionrequestcitationexcerpt"></a>
+### Model: ReferenceSelectionRequestCitationExcerpt
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `end` |  |  | opt | `integer` (nullable) |
+| `start` |  |  | opt | `integer` (nullable) |
+| `text` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "description": "Exact source passage; unknown positions are retained only for legacy evidence.",
+  "properties": {
+    "end": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "End"
+    },
+    "start": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Start"
+    },
+    "text": {
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "required": [
+    "text"
+  ],
+  "title": "CitationExcerpt",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-referenceselectionrequestendpointanswer"></a>
+### Model: ReferenceSelectionRequestEndpointAnswer
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `assignment_id` |  |  | req | `string` (format: uuid) |
+| `callback_body_utf8` |  |  | req | `string` |
+| `expected_hotkey` |  |  | req | `string` |
+| `receipt_logs` |  |  | req | array[[ReferenceSelectionRequestEndpointReceipt](#model-referenceselectionrequestendpointreceipt)] |
+|  | `assignment_id` |  | req | `string` (format: uuid) |
+|  | `issued_at` |  | req | `string` (format: date-time) |
+|  | `receipt_id` |  | req | `string` |
+|  | `results` |  | req | array[[ReferenceSelectionRequestSearchToolResult](#model-referenceselectionrequestsearchtoolresult)] |
+|  |  | `index` | req | `integer` |
+|  |  | `note` | opt | `string` (nullable) |
+|  |  | `raw` | opt | [ReferenceSelectionRequestJsonValue](#model-referenceselectionrequestjsonvalue) (nullable) |
+|  |  | `result_id` | req | `string` |
+|  |  | `title` | opt | `string` (nullable) |
+|  |  | `url` | opt | `string` (default: ) |
+|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+| `signature_hex` |  |  | req | `string` |
+| `signed_callback_path` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "assignment_id": {
+      "format": "uuid",
+      "title": "Assignment Id",
+      "type": "string"
+    },
+    "callback_body_utf8": {
+      "title": "Callback Body Utf8",
+      "type": "string"
+    },
+    "expected_hotkey": {
+      "minLength": 1,
+      "title": "Expected Hotkey",
+      "type": "string"
+    },
+    "receipt_logs": {
+      "items": {
+        "$ref": "#/components/schemas/ReferenceSelectionRequestEndpointReceipt"
+      },
+      "title": "Receipt Logs",
+      "type": "array"
+    },
+    "signature_hex": {
+      "minLength": 1,
+      "title": "Signature Hex",
+      "type": "string"
+    },
+    "signed_callback_path": {
+      "pattern": "^/",
+      "title": "Signed Callback Path",
+      "type": "string"
+    }
+  },
+  "required": [
+    "assignment_id",
+    "expected_hotkey",
+    "callback_body_utf8",
+    "signature_hex",
+    "signed_callback_path",
+    "receipt_logs"
+  ],
+  "title": "EndpointAnswer",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-referenceselectionrequestendpointreceipt"></a>
+### Model: ReferenceSelectionRequestEndpointReceipt
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `assignment_id` |  |  | req | `string` (format: uuid) |
+| `issued_at` |  |  | req | `string` (format: date-time) |
+| `receipt_id` |  |  | req | `string` |
+| `results` |  |  | req | array[[ReferenceSelectionRequestSearchToolResult](#model-referenceselectionrequestsearchtoolresult)] |
+|  | `index` |  | req | `integer` |
+|  | `note` |  | opt | `string` (nullable) |
+|  | `raw` |  | opt | [ReferenceSelectionRequestJsonValue](#model-referenceselectionrequestjsonvalue) (nullable) |
+|  | `result_id` |  | req | `string` |
+|  | `title` |  | opt | `string` (nullable) |
+|  | `url` |  | opt | `string` (default: ) |
+| `tool` |  |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "assignment_id": {
+      "format": "uuid",
+      "title": "Assignment Id",
+      "type": "string"
+    },
+    "issued_at": {
+      "format": "date-time",
+      "title": "Issued At",
+      "type": "string"
+    },
+    "receipt_id": {
+      "title": "Receipt Id",
+      "type": "string"
+    },
+    "results": {
+      "items": {
+        "$ref": "#/components/schemas/ReferenceSelectionRequestSearchToolResult"
+      },
+      "title": "Results",
+      "type": "array"
+    },
+    "tool": {
+      "enum": [
+        "search_web",
+        "search_ai",
+        "fetch_page",
+        "embed_text",
+        "llm_chat",
+        "test_tool",
+        "tooling_info"
+      ],
+      "title": "Tool",
+      "type": "string"
+    }
+  },
+  "required": [
+    "receipt_id",
+    "assignment_id",
+    "tool",
+    "issued_at",
+    "results"
+  ],
+  "title": "EndpointReceipt",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-referenceselectionrequestjsonobject"></a>
+### Model: ReferenceSelectionRequestJsonObject
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": {
+    "$ref": "#/components/schemas/ReferenceSelectionRequestJsonValue"
+  },
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-referenceselectionrequestjsonvalue"></a>
+### Model: ReferenceSelectionRequestJsonValue
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "anyOf": [
+    {
+      "type": "string"
+    },
+    {
+      "type": "integer"
+    },
+    {
+      "type": "number"
+    },
+    {
+      "type": "boolean"
+    },
+    {
+      "items": {
+        "$ref": "#/components/schemas/ReferenceSelectionRequestJsonValue"
+      },
+      "type": "array"
+    },
+    {
+      "additionalProperties": {
+        "$ref": "#/components/schemas/ReferenceSelectionRequestJsonValue"
+      },
+      "type": "object"
+    },
+    {
+      "type": "null"
+    }
+  ]
+}
+```
+
+</details>
+
+<a id="model-referenceselectionrequestminertask"></a>
+### Model: ReferenceSelectionRequestMinerTask
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `budget_usd` |  |  | opt | `number` (default: 0.5) |
+| `query` |  |  | req | [ReferenceSelectionRequestQuery](#model-referenceselectionrequestquery) |
+|  | `fast` |  | opt | `boolean` (default: False) |
+|  | `output_schema` |  | opt | [ReferenceSelectionRequestJsonObject](#model-referenceselectionrequestjsonobject) (nullable) |
+|  | `text` |  | req | `string` |
+| `reference_answer` |  |  | req | [ReferenceSelectionRequestReferenceAnswer](#model-referenceselectionrequestreferenceanswer) |
+|  | `citations` |  | opt | array[[ReferenceSelectionRequestAnswerCitation](#model-referenceselectionrequestanswercitation) (nullable)] (nullable) |
+|  |  | `excerpts` | opt | array[[ReferenceSelectionRequestCitationExcerpt](#model-referenceselectionrequestcitationexcerpt)] (default: []) |
+|  |  | `title` | opt | `string` (nullable) |
+|  |  | `url` | req | `string` |
+|  | `note` |  | opt | `string` (nullable) |
+|  | `text` |  | req | `string` |
+| `task_id` |  |  | req | `string` (format: uuid) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "budget_usd": {
+      "default": 0.5,
+      "minimum": 0.0,
+      "title": "Budget Usd",
+      "type": "number"
+    },
+    "query": {
+      "$ref": "#/components/schemas/ReferenceSelectionRequestQuery"
+    },
+    "reference_answer": {
+      "$ref": "#/components/schemas/ReferenceSelectionRequestReferenceAnswer"
+    },
+    "task_id": {
+      "format": "uuid",
+      "title": "Task Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "task_id",
+    "query",
+    "reference_answer"
+  ],
+  "title": "MinerTask",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-referenceselectionrequestquery"></a>
+### Model: ReferenceSelectionRequestQuery
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `fast` |  |  | opt | `boolean` (default: False) |
+| `output_schema` |  |  | opt | [ReferenceSelectionRequestJsonObject](#model-referenceselectionrequestjsonobject) (nullable) |
+| `text` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "fast": {
+      "default": false,
+      "description": "Whether the query uses correctness-only fast-mode scoring.",
+      "title": "Fast",
+      "type": "boolean"
+    },
+    "output_schema": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/ReferenceSelectionRequestJsonObject"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "text": {
+      "minLength": 1,
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "required": [
+    "text"
+  ],
+  "title": "Query",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-referenceselectionrequestreferenceanswer"></a>
+### Model: ReferenceSelectionRequestReferenceAnswer
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `citations` |  |  | opt | array[[ReferenceSelectionRequestAnswerCitation](#model-referenceselectionrequestanswercitation) (nullable)] (nullable) |
+|  | `excerpts` |  | opt | array[[ReferenceSelectionRequestCitationExcerpt](#model-referenceselectionrequestcitationexcerpt)] (default: []) |
+|  |  | `end` | opt | `integer` (nullable) |
+|  |  | `start` | opt | `integer` (nullable) |
+|  |  | `text` | req | `string` |
+|  | `title` |  | opt | `string` (nullable) |
+|  | `url` |  | req | `string` |
+| `note` |  |  | opt | `string` (nullable) |
+| `text` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "citations": {
+      "anyOf": [
+        {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReferenceSelectionRequestAnswerCitation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Hydrated submitted citation positions in order. Miners submit only non-null CitationRef entries. An AnswerCitation means that the submitted position resolved to authoritative public evidence; null means that the submitted position could not be resolved or hydrated. A null provides no factual support, and submitted positions are never deleted, renumbered, or remapped.",
+      "title": "Citations"
+    },
+    "note": {
+      "anyOf": [
+        {
+          "maxLength": 80000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional public supplementary content that may explain, qualify, support, or correct the required answer. It cannot replace or repair a missing or invalid answer. Factual claims use the same citations array.",
+      "title": "Note"
+    },
+    "text": {
+      "minLength": 1,
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "required": [
+    "text"
+  ],
+  "title": "ReferenceAnswer",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-referenceselectionrequestsearchtoolresult"></a>
+### Model: ReferenceSelectionRequestSearchToolResult
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `index` |  |  | req | `integer` |
+| `note` |  |  | opt | `string` (nullable) |
+| `raw` |  |  | opt | [ReferenceSelectionRequestJsonValue](#model-referenceselectionrequestjsonvalue) (nullable) |
+| `result_id` |  |  | req | `string` |
+| `title` |  |  | opt | `string` (nullable) |
+| `url` |  |  | opt | `string` (default: ) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "description": "Normalized search result that miners may cite.",
+  "properties": {
+    "index": {
+      "title": "Index",
+      "type": "integer"
+    },
+    "note": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Note"
+    },
+    "raw": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/ReferenceSelectionRequestJsonValue"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "result_id": {
+      "title": "Result Id",
+      "type": "string"
+    },
+    "title": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Title"
+    },
+    "url": {
+      "default": "",
+      "title": "Url",
+      "type": "string"
+    }
+  },
+  "required": [
+    "index",
+    "result_id"
+  ],
+  "title": "SearchToolResult",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-scorebreakdown"></a>
+### Model: ScoreBreakdown
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `comparison_score` |  |  | req | `number` |
+| `fast_score_evidence` |  |  | opt | [FastScoreEvidence](#model-fastscoreevidence) (nullable) |
+|  | `excessive_components` |  | req | array[[FastScoreExcessiveComponent](#model-fastscoreexcessivecomponent)] |
+|  |  | `component_id` | req | `string` |
+|  | `expected_components` |  | req | array[[FastScoreExpectedComponent](#model-fastscoreexpectedcomponent)] |
+|  |  | `component_id` | req | `string` |
+|  |  | `is_correct` | req | `boolean` |
+|  | `precision` |  | req | `number` |
+|  | `recall` |  | req | `number` |
+| `reasoning` |  |  | opt | [ScorerReasoning](#model-scorerreasoning) (nullable) |
+|  | `reasoning_tokens` |  | opt | `integer` (nullable) |
+|  | `text` |  | opt | `string` (nullable) |
+| `scoring_version` |  |  | req | `string` |
+| `total_score` |  |  | req | `number` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "comparison_score": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Comparison Score",
+      "type": "number"
+    },
+    "fast_score_evidence": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/FastScoreEvidence"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "reasoning": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/ScorerReasoning"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "scoring_version": {
+      "minLength": 1,
+      "title": "Scoring Version",
+      "type": "string"
+    },
+    "total_score": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Total Score",
+      "type": "number"
+    }
+  },
+  "required": [
+    "comparison_score",
+    "total_score",
+    "scoring_version"
+  ],
+  "title": "ScoreBreakdown",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-scorerreasoning"></a>
+### Model: ScorerReasoning
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `reasoning_tokens` |  |  | opt | `integer` (nullable) |
+| `text` |  |  | opt | `string` (nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "reasoning_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Reasoning Tokens"
+    },
+    "text": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Text"
+    }
+  },
+  "title": "ScorerReasoning",
   "type": "object"
 }
 ```

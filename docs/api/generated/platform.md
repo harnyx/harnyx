@@ -1185,22 +1185,22 @@ Body: [RatingWorkPage](#model-ratingworkpage)
 | --- | --- | --- | --- | --- |
 | `items` |  |  | req | array[[RatingWork](#model-ratingwork)] |
 |  | `comparison_id` |  | req | `string` (format: uuid) |
-|  | `first` |  | req | [RatingAnswer](#model-ratinganswer) |
+|  | `first` |  | req | [EndpointAnswer](#model-endpointanswer) |
 |  |  | `assignment_id` | req | `string` (format: uuid) |
 |  |  | `callback_body_utf8` | req | `string` |
 |  |  | `expected_hotkey` | req | `string` |
-|  |  | `receipt_logs` | req | array[[RatingReceipt](#model-ratingreceipt)] |
+|  |  | `receipt_logs` | req | array[[EndpointReceipt](#model-endpointreceipt)] |
 |  |  | `signature_hex` | req | `string` |
 |  |  | `signed_callback_path` | req | `string` |
 |  | `query` |  | req | [Query](#model-query) |
 |  |  | `fast` | opt | `boolean` (default: False) |
 |  |  | `output_schema` | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
 |  |  | `text` | req | `string` |
-|  | `second` |  | req | [RatingAnswer](#model-ratinganswer) |
+|  | `second` |  | req | [EndpointAnswer](#model-endpointanswer) |
 |  |  | `assignment_id` | req | `string` (format: uuid) |
 |  |  | `callback_body_utf8` | req | `string` |
 |  |  | `expected_hotkey` | req | `string` |
-|  |  | `receipt_logs` | req | array[[RatingReceipt](#model-ratingreceipt)] |
+|  |  | `receipt_logs` | req | array[[EndpointReceipt](#model-endpointreceipt)] |
 |  |  | `signature_hex` | req | `string` |
 |  |  | `signed_callback_path` | req | `string` |
 | `next_after` |  |  | opt | `string` (format: uuid; nullable) |
@@ -2134,6 +2134,83 @@ Body: [StatusResponse](#model-statusresponse)
 
 </details>
 
+<a id="model-endpointanswer"></a>
+### Model: EndpointAnswer
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `assignment_id` |  |  | req | `string` (format: uuid) |
+| `callback_body_utf8` |  |  | req | `string` |
+| `expected_hotkey` |  |  | req | `string` |
+| `receipt_logs` |  |  | req | array[[EndpointReceipt](#model-endpointreceipt)] |
+|  | `assignment_id` |  | req | `string` (format: uuid) |
+|  | `issued_at` |  | req | `string` (format: date-time) |
+|  | `receipt_id` |  | req | `string` |
+|  | `results` |  | req | array[[SearchToolResult](#model-searchtoolresult)] |
+|  |  | `index` | req | `integer` |
+|  |  | `note` | opt | `string` (nullable) |
+|  |  | `raw` | opt | [JsonValue-Output](#model-jsonvalue-output) (nullable) |
+|  |  | `result_id` | req | `string` |
+|  |  | `title` | opt | `string` (nullable) |
+|  |  | `url` | opt | `string` (default: ) |
+|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+| `signature_hex` |  |  | req | `string` |
+| `signed_callback_path` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "assignment_id": {
+      "format": "uuid",
+      "title": "Assignment Id",
+      "type": "string"
+    },
+    "callback_body_utf8": {
+      "title": "Callback Body Utf8",
+      "type": "string"
+    },
+    "expected_hotkey": {
+      "minLength": 1,
+      "title": "Expected Hotkey",
+      "type": "string"
+    },
+    "receipt_logs": {
+      "items": {
+        "$ref": "#/components/schemas/EndpointReceipt"
+      },
+      "title": "Receipt Logs",
+      "type": "array"
+    },
+    "signature_hex": {
+      "minLength": 1,
+      "title": "Signature Hex",
+      "type": "string"
+    },
+    "signed_callback_path": {
+      "pattern": "^/",
+      "title": "Signed Callback Path",
+      "type": "string"
+    }
+  },
+  "required": [
+    "assignment_id",
+    "expected_hotkey",
+    "callback_body_utf8",
+    "signature_hex",
+    "signed_callback_path",
+    "receipt_logs"
+  ],
+  "title": "EndpointAnswer",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-endpointcallback"></a>
 ### Model: EndpointCallback
 
@@ -2487,6 +2564,79 @@ Body: [StatusResponse](#model-statusresponse)
   ],
   "title": "EndpointDurableTerminalResult",
   "type": "string"
+}
+```
+
+</details>
+
+<a id="model-endpointreceipt"></a>
+### Model: EndpointReceipt
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `assignment_id` |  |  | req | `string` (format: uuid) |
+| `issued_at` |  |  | req | `string` (format: date-time) |
+| `receipt_id` |  |  | req | `string` |
+| `results` |  |  | req | array[[SearchToolResult](#model-searchtoolresult)] |
+|  | `index` |  | req | `integer` |
+|  | `note` |  | opt | `string` (nullable) |
+|  | `raw` |  | opt | [JsonValue-Output](#model-jsonvalue-output) (nullable) |
+|  | `result_id` |  | req | `string` |
+|  | `title` |  | opt | `string` (nullable) |
+|  | `url` |  | opt | `string` (default: ) |
+| `tool` |  |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "assignment_id": {
+      "format": "uuid",
+      "title": "Assignment Id",
+      "type": "string"
+    },
+    "issued_at": {
+      "format": "date-time",
+      "title": "Issued At",
+      "type": "string"
+    },
+    "receipt_id": {
+      "title": "Receipt Id",
+      "type": "string"
+    },
+    "results": {
+      "items": {
+        "$ref": "#/components/schemas/SearchToolResult"
+      },
+      "title": "Results",
+      "type": "array"
+    },
+    "tool": {
+      "enum": [
+        "search_web",
+        "search_ai",
+        "fetch_page",
+        "embed_text",
+        "llm_chat",
+        "test_tool",
+        "tooling_info"
+      ],
+      "title": "Tool",
+      "type": "string"
+    }
+  },
+  "required": [
+    "receipt_id",
+    "assignment_id",
+    "tool",
+    "issued_at",
+    "results"
+  ],
+  "title": "EndpointReceipt",
+  "type": "object"
 }
 ```
 
@@ -7077,83 +7227,6 @@ Body: [StatusResponse](#model-statusresponse)
 
 </details>
 
-<a id="model-ratinganswer"></a>
-### Model: RatingAnswer
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `assignment_id` |  |  | req | `string` (format: uuid) |
-| `callback_body_utf8` |  |  | req | `string` |
-| `expected_hotkey` |  |  | req | `string` |
-| `receipt_logs` |  |  | req | array[[RatingReceipt](#model-ratingreceipt)] |
-|  | `assignment_id` |  | req | `string` (format: uuid) |
-|  | `issued_at` |  | req | `string` (format: date-time) |
-|  | `receipt_id` |  | req | `string` |
-|  | `results` |  | req | array[[SearchToolResult](#model-searchtoolresult)] |
-|  |  | `index` | req | `integer` |
-|  |  | `note` | opt | `string` (nullable) |
-|  |  | `raw` | opt | [JsonValue-Output](#model-jsonvalue-output) (nullable) |
-|  |  | `result_id` | req | `string` |
-|  |  | `title` | opt | `string` (nullable) |
-|  |  | `url` | opt | `string` (default: ) |
-|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
-| `signature_hex` |  |  | req | `string` |
-| `signed_callback_path` |  |  | req | `string` |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "additionalProperties": false,
-  "properties": {
-    "assignment_id": {
-      "format": "uuid",
-      "title": "Assignment Id",
-      "type": "string"
-    },
-    "callback_body_utf8": {
-      "title": "Callback Body Utf8",
-      "type": "string"
-    },
-    "expected_hotkey": {
-      "minLength": 1,
-      "title": "Expected Hotkey",
-      "type": "string"
-    },
-    "receipt_logs": {
-      "items": {
-        "$ref": "#/components/schemas/RatingReceipt"
-      },
-      "title": "Receipt Logs",
-      "type": "array"
-    },
-    "signature_hex": {
-      "minLength": 1,
-      "title": "Signature Hex",
-      "type": "string"
-    },
-    "signed_callback_path": {
-      "pattern": "^/",
-      "title": "Signed Callback Path",
-      "type": "string"
-    }
-  },
-  "required": [
-    "assignment_id",
-    "expected_hotkey",
-    "callback_body_utf8",
-    "signature_hex",
-    "signed_callback_path",
-    "receipt_logs"
-  ],
-  "title": "RatingAnswer",
-  "type": "object"
-}
-```
-
-</details>
-
 <a id="model-ratingjudgment"></a>
 ### Model: RatingJudgment
 
@@ -7719,90 +7792,17 @@ Body: [StatusResponse](#model-statusresponse)
 
 </details>
 
-<a id="model-ratingreceipt"></a>
-### Model: RatingReceipt
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `assignment_id` |  |  | req | `string` (format: uuid) |
-| `issued_at` |  |  | req | `string` (format: date-time) |
-| `receipt_id` |  |  | req | `string` |
-| `results` |  |  | req | array[[SearchToolResult](#model-searchtoolresult)] |
-|  | `index` |  | req | `integer` |
-|  | `note` |  | opt | `string` (nullable) |
-|  | `raw` |  | opt | [JsonValue-Output](#model-jsonvalue-output) (nullable) |
-|  | `result_id` |  | req | `string` |
-|  | `title` |  | opt | `string` (nullable) |
-|  | `url` |  | opt | `string` (default: ) |
-| `tool` |  |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "additionalProperties": false,
-  "properties": {
-    "assignment_id": {
-      "format": "uuid",
-      "title": "Assignment Id",
-      "type": "string"
-    },
-    "issued_at": {
-      "format": "date-time",
-      "title": "Issued At",
-      "type": "string"
-    },
-    "receipt_id": {
-      "title": "Receipt Id",
-      "type": "string"
-    },
-    "results": {
-      "items": {
-        "$ref": "#/components/schemas/SearchToolResult"
-      },
-      "title": "Results",
-      "type": "array"
-    },
-    "tool": {
-      "enum": [
-        "search_web",
-        "search_ai",
-        "fetch_page",
-        "embed_text",
-        "llm_chat",
-        "test_tool",
-        "tooling_info"
-      ],
-      "title": "Tool",
-      "type": "string"
-    }
-  },
-  "required": [
-    "receipt_id",
-    "assignment_id",
-    "tool",
-    "issued_at",
-    "results"
-  ],
-  "title": "RatingReceipt",
-  "type": "object"
-}
-```
-
-</details>
-
 <a id="model-ratingwork"></a>
 ### Model: RatingWork
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `comparison_id` |  |  | req | `string` (format: uuid) |
-| `first` |  |  | req | [RatingAnswer](#model-ratinganswer) |
+| `first` |  |  | req | [EndpointAnswer](#model-endpointanswer) |
 |  | `assignment_id` |  | req | `string` (format: uuid) |
 |  | `callback_body_utf8` |  | req | `string` |
 |  | `expected_hotkey` |  | req | `string` |
-|  | `receipt_logs` |  | req | array[[RatingReceipt](#model-ratingreceipt)] |
+|  | `receipt_logs` |  | req | array[[EndpointReceipt](#model-endpointreceipt)] |
 |  |  | `assignment_id` | req | `string` (format: uuid) |
 |  |  | `issued_at` | req | `string` (format: date-time) |
 |  |  | `receipt_id` | req | `string` |
@@ -7814,11 +7814,11 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `fast` |  | opt | `boolean` (default: False) |
 |  | `output_schema` |  | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
 |  | `text` |  | req | `string` |
-| `second` |  |  | req | [RatingAnswer](#model-ratinganswer) |
+| `second` |  |  | req | [EndpointAnswer](#model-endpointanswer) |
 |  | `assignment_id` |  | req | `string` (format: uuid) |
 |  | `callback_body_utf8` |  | req | `string` |
 |  | `expected_hotkey` |  | req | `string` |
-|  | `receipt_logs` |  | req | array[[RatingReceipt](#model-ratingreceipt)] |
+|  | `receipt_logs` |  | req | array[[EndpointReceipt](#model-endpointreceipt)] |
 |  |  | `assignment_id` | req | `string` (format: uuid) |
 |  |  | `issued_at` | req | `string` (format: date-time) |
 |  |  | `receipt_id` | req | `string` |
@@ -7840,13 +7840,13 @@ Body: [StatusResponse](#model-statusresponse)
       "type": "string"
     },
     "first": {
-      "$ref": "#/components/schemas/RatingAnswer"
+      "$ref": "#/components/schemas/EndpointAnswer"
     },
     "query": {
       "$ref": "#/components/schemas/Query"
     },
     "second": {
-      "$ref": "#/components/schemas/RatingAnswer"
+      "$ref": "#/components/schemas/EndpointAnswer"
     }
   },
   "required": [
@@ -7869,22 +7869,22 @@ Body: [StatusResponse](#model-statusresponse)
 | --- | --- | --- | --- | --- |
 | `items` |  |  | req | array[[RatingWork](#model-ratingwork)] |
 |  | `comparison_id` |  | req | `string` (format: uuid) |
-|  | `first` |  | req | [RatingAnswer](#model-ratinganswer) |
+|  | `first` |  | req | [EndpointAnswer](#model-endpointanswer) |
 |  |  | `assignment_id` | req | `string` (format: uuid) |
 |  |  | `callback_body_utf8` | req | `string` |
 |  |  | `expected_hotkey` | req | `string` |
-|  |  | `receipt_logs` | req | array[[RatingReceipt](#model-ratingreceipt)] |
+|  |  | `receipt_logs` | req | array[[EndpointReceipt](#model-endpointreceipt)] |
 |  |  | `signature_hex` | req | `string` |
 |  |  | `signed_callback_path` | req | `string` |
 |  | `query` |  | req | [Query](#model-query) |
 |  |  | `fast` | opt | `boolean` (default: False) |
 |  |  | `output_schema` | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
 |  |  | `text` | req | `string` |
-|  | `second` |  | req | [RatingAnswer](#model-ratinganswer) |
+|  | `second` |  | req | [EndpointAnswer](#model-endpointanswer) |
 |  |  | `assignment_id` | req | `string` (format: uuid) |
 |  |  | `callback_body_utf8` | req | `string` |
 |  |  | `expected_hotkey` | req | `string` |
-|  |  | `receipt_logs` | req | array[[RatingReceipt](#model-ratingreceipt)] |
+|  |  | `receipt_logs` | req | array[[EndpointReceipt](#model-endpointreceipt)] |
 |  |  | `signature_hex` | req | `string` |
 |  |  | `signed_callback_path` | req | `string` |
 | `next_after` |  |  | opt | `string` (format: uuid; nullable) |

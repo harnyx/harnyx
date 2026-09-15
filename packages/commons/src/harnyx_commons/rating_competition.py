@@ -2,53 +2,29 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Literal, Self
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from harnyx_commons.domain.judge_usage import JudgeUsageSummary
 from harnyx_commons.domain.miner_task import EvaluationTrace, Query, ScorerReasoning
-from harnyx_commons.domain.tool_call import SearchToolResult, ToolCall, ToolResultPolicy
-from harnyx_commons.tools.types import ToolName
+from harnyx_commons.endpoint_answer import EndpointAnswer as RatingAnswer
+from harnyx_commons.endpoint_answer import EndpointReceipt as RatingReceipt
+
+__all__ = [
+    "RatingAnswer",
+    "RatingReceipt",
+    "RatingWork",
+    "RatingJudgment",
+    "RatingQualityEvidence",
+    "RatingWorkPage",
+    "MAX_RATING_JUDGMENT_BODY_BYTES",
+    "RATING_JUDGMENT_ALREADY_ACCEPTED",
+]
 
 MAX_RATING_JUDGMENT_BODY_BYTES = 1024 * 1024
 RATING_JUDGMENT_ALREADY_ACCEPTED = "rating_judgment_already_accepted"
-
-
-class RatingReceipt(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
-    receipt_id: str
-    assignment_id: UUID
-    tool: ToolName
-    issued_at: datetime
-    results: tuple[SearchToolResult, ...]
-
-    @classmethod
-    def from_tool_call(cls, call: ToolCall) -> Self:
-        if not call.is_successful() or call.details.result_policy is not ToolResultPolicy.REFERENCEABLE:
-            raise ValueError("rating receipt must be successful and referenceable")
-        results = tuple(result for result in call.details.results if isinstance(result, SearchToolResult))
-        if len(results) != len(call.details.results):
-            raise ValueError("rating receipt requires normalized search results")
-        return cls(
-            receipt_id=call.receipt_id,
-            assignment_id=call.session_id,
-            tool=call.tool,
-            issued_at=call.issued_at,
-            results=results,
-        )
-
-
-class RatingAnswer(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
-    assignment_id: UUID
-    expected_hotkey: str = Field(min_length=1)
-    callback_body_utf8: str
-    signature_hex: str = Field(min_length=1)
-    signed_callback_path: str = Field(pattern=r"^/")
-    receipt_logs: tuple[RatingReceipt, ...]
 
 
 class RatingWork(BaseModel):

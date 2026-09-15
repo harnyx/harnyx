@@ -6,18 +6,21 @@ import logging
 import traceback
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, Security, status
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
+from pydantic import ValidationError
 
 from harnyx_commons.bittensor import VerificationError
+from harnyx_commons.domain.miner_task import ScoreBreakdown
 from harnyx_commons.errors import ConcurrencyLimitError, ToolProviderError
 from harnyx_commons.llm.provider_error_summary import public_llm_provider_failure_summary
 from harnyx_commons.miner_task_similarity import SimilarityJudgeRequest, SimilarityJudgeResult
 from harnyx_commons.protocol_headers import SESSION_ID_HEADER
+from harnyx_commons.reference_selection import ReferenceSelectionRequest
 from harnyx_commons.tools.dto import ToolInvocationRequest
 from harnyx_commons.tools.executor import ToolExecutor, execute_tool_with_concurrency_permit
 from harnyx_commons.tools.http_models import ToolExecuteResponseDTO
@@ -67,6 +70,11 @@ class ValidatorControlDeps:
     platform_tool_proxy_platform: PlatformToolProxyPlatformPort | None = None
     platform_tool_proxy_scopes: PlatformToolProxyScopeRegistry | None = None
     similarity_judge: SimilarityJudgePort | None = None
+    reference_judge: ReferenceJudgePort | None = None
+
+
+class ReferenceJudgePort(Protocol):
+    async def judge(self, request: ReferenceSelectionRequest) -> ScoreBreakdown: ...
 
 
 class StatusSigner(Protocol):
@@ -209,6 +217,41 @@ def add_control_routes(
         return caller
 
     @app.post(
+        "/validator/miner-task-batches/{batch_id}/reference-selection",
+        response_model=ScoreBreakdown,
+        description="Compare a signed endpoint answer against the dataset reference in both orders.",
+        openapi_extra={
+            "requestBody": {
+                "required": True,
+                "content": {
+                    "application/json": {
+                        "schema": {"$ref": "#/components/schemas/ReferenceSelectionRequest"},
+                    }
+                },
+            }
+        },
+    )
+    async def judge_reference(
+        batch_id: UUID,
+        request: Request,
+        deps: ValidatorControlDeps = Depends(get_control_deps),  # noqa: B008
+        _caller: str = Security(require_bittensor_caller),
+    ) -> ScoreBreakdown:
+        try:
+            payload = ReferenceSelectionRequest.model_validate_json(await request.body(), strict=True)
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if batch_id != payload.batch_id:
+            raise HTTPException(status_code=422, detail="reference batch identity mismatch")
+        if deps.reference_judge is None:
+            raise HTTPException(status_code=503, detail="reference judge is not configured")
+        try:
+            return await deps.reference_judge.judge(payload)
+        except Exception as exc:
+            capture_exception(exc)
+            raise HTTPException(status_code=502, detail="reference judgment failed") from exc
+
+    @app.post(
         "/validator/miner-task-batches/{batch_id}/similarity",
         response_model=SimilarityJudgeResponseModel,
         responses={
@@ -278,6 +321,23 @@ def add_control_routes(
             return response.model_copy(update={"signature_hex": deps.validator_hotkey.sign(proof_payload).hex()})
         except Exception as exc:
             return _control_route_internal_error_response(request, exc)
+
+    default_openapi = app.openapi
+
+    def reference_openapi() -> dict[str, Any]:
+        if app.openapi_schema is None:
+            schema = default_openapi()
+            model = ReferenceSelectionRequest
+            model_schema = model.model_json_schema(ref_template=f"#/components/schemas/{model.__name__}{{model}}")
+            schemas = schema.setdefault("components", {}).setdefault("schemas", {})
+            schemas.update(
+                {f"{model.__name__}{name}": definition for name, definition in model_schema.pop("$defs", {}).items()}
+            )
+            schemas[model.__name__] = model_schema
+            app.openapi_schema = schema
+        return app.openapi_schema
+
+    app.openapi = reference_openapi  # type: ignore[invalid-assignment] -- FastAPI OpenAPI hook.
 
 
 def _log_tool_error(

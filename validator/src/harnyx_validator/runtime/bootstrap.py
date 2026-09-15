@@ -76,6 +76,7 @@ from harnyx_validator.application.ports.evaluation_record import EvaluationRecor
 from harnyx_validator.application.ports.platform import PlatformPort, PlatformToolProxyPlatformPort
 from harnyx_validator.application.ports.subtensor import SubtensorClientPort
 from harnyx_validator.application.rating_competition import RatingCompetitionService
+from harnyx_validator.application.reference_selection import ReferenceJudge
 from harnyx_validator.application.services.evaluation_batch_prep import (
     SANDBOX_CONTAINER_NAME_PREFIX,
     SANDBOX_LABELS,
@@ -148,13 +149,9 @@ _SCORING_SLOT_CONFIG = ScoringSlotConfig(
         ),
     )
 )
-_DUPLICATION_DETECTION_CHUTES_CHAIN_MODELS = frozenset(
-    _DUPLICATION_DETECTION_MODEL_CHAIN
-)
+_DUPLICATION_DETECTION_CHUTES_CHAIN_MODELS = frozenset(_DUPLICATION_DETECTION_MODEL_CHAIN)
 _DUPLICATION_DETECTION_DEEPSEEK_MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731-TEE"
-_DUPLICATION_DETECTION_OPENROUTER_MODELS = frozenset(
-    {_DUPLICATION_DETECTION_DEEPSEEK_MODEL}
-)
+_DUPLICATION_DETECTION_OPENROUTER_MODELS = frozenset({_DUPLICATION_DETECTION_DEEPSEEK_MODEL})
 _DUPLICATION_DETECTION_DEEPSEEK_OPENROUTER_IGNORED_PROVIDERS = (
     "Baidu",
     "Cloudflare",
@@ -379,6 +376,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         state=state,
         tool_executor=tool_executor,
         similarity_judge=similarity_judge,
+        reference_judge=ReferenceJudge(scoring_service),
         validator_hotkey=platform_hotkey,
         platform_client=platform_client,
         platform_tool_proxy_platform_client=platform_tool_proxy_platform_client,
@@ -519,8 +517,7 @@ def _build_platform_work_worker(
         )
 
     score_execution_by_model = {
-        model: _score_platform_execution_with(scoring_service)
-        for model, scoring_service in scoring_services.items()
+        model: _score_platform_execution_with(scoring_service) for model, scoring_service in scoring_services.items()
     }
     return PlatformWorkWorker(
         platform=platform_client,
@@ -606,8 +603,7 @@ def _build_llm_clients(settings: Settings) -> RuntimeLlmClients:
         vertex_settings=settings.vertex,
     )
     scoring_routes = {
-        entry.model: _resolve_scoring_judge_route(settings, model=entry.model)
-        for entry in _SCORING_SLOT_CONFIG.entries
+        entry.model: _resolve_scoring_judge_route(settings, model=entry.model) for entry in _SCORING_SLOT_CONFIG.entries
     }
     similarity_route = similarity_routes[0]
     scoring_provider = build_routed_llm_provider(
@@ -698,14 +694,9 @@ def _similarity_request_extra_by_model(
     routes: tuple[ResolvedLlmRoute, ...],
 ) -> dict[str, JsonObject]:
     return {
-        route.model: {
-            "provider": {
-                "ignore": list(_DUPLICATION_DETECTION_DEEPSEEK_OPENROUTER_IGNORED_PROVIDERS)
-            }
-        }
+        route.model: {"provider": {"ignore": list(_DUPLICATION_DETECTION_DEEPSEEK_OPENROUTER_IGNORED_PROVIDERS)}}
         for route in routes
-        if route.provider == OPENROUTER_PROVIDER
-        and route.model == _DUPLICATION_DETECTION_DEEPSEEK_MODEL
+        if route.provider == OPENROUTER_PROVIDER and route.model == _DUPLICATION_DETECTION_DEEPSEEK_MODEL
     }
 
 
@@ -863,6 +854,7 @@ def _build_http_dependencies(
     state: InMemoryState,
     tool_executor: ToolExecutor,
     similarity_judge: SimilarityJudge,
+    reference_judge: ReferenceJudge,
     validator_hotkey: bt.Keypair,
     platform_client: PlatformPort,
     platform_tool_proxy_platform_client: PlatformToolProxyPlatformPort,
@@ -889,6 +881,7 @@ def _build_http_dependencies(
         similarity_judge,
         platform_tool_proxy_platform_client,
         state.platform_tool_proxy_scopes,
+        reference_judge,
     )
     return tool_route_provider, control_provider, status_provider, inbound_auth
 
@@ -1050,6 +1043,7 @@ def _make_control_provider(
     similarity_judge: SimilarityJudge | None = None,
     platform_tool_proxy_platform_client: PlatformToolProxyPlatformPort | None = None,
     platform_tool_proxy_scopes: PlatformToolProxyScopeRegistry | None = None,
+    reference_judge: ReferenceJudge | None = None,
 ) -> Callable[[], ValidatorControlDeps]:
     effective_resource_usage_provider = resource_usage_provider or ValidatorResourceUsageProvider()
     is_chutes_configured = bool(settings.chutes_api_key_value.strip())
@@ -1082,6 +1076,7 @@ def _make_control_provider(
             platform_tool_proxy_platform=platform_tool_proxy_platform_client,
             platform_tool_proxy_scopes=platform_tool_proxy_scopes,
             similarity_judge=similarity_judge,
+            reference_judge=reference_judge,
         )
 
     return provider

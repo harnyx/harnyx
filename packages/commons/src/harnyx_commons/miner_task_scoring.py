@@ -277,6 +277,20 @@ class EvaluationScoringService:
             evaluation_trace=pairwise_score.evaluation_trace,
         )
 
+    async def score_reference(self, *, task: MinerTask, response: Response) -> ScoreBreakdown:
+        """Always use both pairwise orders, including FAST reference selection."""
+        result = await self._score_pairwise(
+            query=task.query,
+            miner_response=response,
+            reference_response=task.reference_answer,
+        )
+        return ScoreBreakdown(
+            comparison_score=result.comparison_score,
+            total_score=result.comparison_score,
+            scoring_version=self._config.scoring_version,
+            reasoning=result.reasoning,
+        )
+
     async def compare_quality(self, *, query: Query, first: Response, second: Response) -> RatingQualityEvidence:
         """Compare two hydrated answers, including FAST queries, without reference privilege."""
         from harnyx_commons.rating_competition import RatingQualityEvidence
