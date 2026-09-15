@@ -61,6 +61,7 @@ from harnyx_validator.application.invoke_entrypoint import (
     MinerResponseValidationError,
     SandboxInvocationError,
 )
+from harnyx_validator.application.miner_task_time_limit import assigned_miner_task_execution_time_limit_seconds
 from harnyx_validator.application.platform_tool_proxy import PlatformToolProxyScopeRegistry
 from harnyx_validator.application.ports.platform import PlatformToolProxyControlError
 from harnyx_validator.application.ports.subtensor import ValidatorNodeInfo
@@ -272,6 +273,66 @@ def _assigned_task_test_context(
         size_bytes=128,
     )
     return runner, uuid4(), artifact, task, session_registry, receipt_log, progress, evaluation_records
+
+
+async def test_evaluate_assigned_fast_task_keeps_limit_across_artifacts_and_retries(tmp_path: Path) -> None:
+    runner, batch_id, artifact, ordinary_task, sessions, _, _, _ = _assigned_task_test_context(tmp_path)
+    task = MinerTask(
+        task_id=ordinary_task.task_id,
+        query=Query(text=ordinary_task.query.text, fast=True),
+        reference_answer=ordinary_task.reference_answer,
+    )
+    expected_limit_seconds = assigned_miner_task_execution_time_limit_seconds(batch_id=batch_id, task=task)
+    requests: list[MinerTaskRunRequest] = []
+
+    class _RecordingOrchestrator:
+        async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
+            session = sessions.get(request.session_id)
+            assert session is not None
+            assert session.expires_at == session.issued_at + timedelta(seconds=expected_limit_seconds + 60.0)
+            requests.append(request)
+            return _successful_outcome(request)
+
+    second_artifact = artifact.model_copy(update={"artifact_id": uuid4()})
+    for current_artifact, attempt_number in ((artifact, 1), (second_artifact, 2)):
+        result = await runner.evaluate_assigned_task(
+            batch_id=batch_id,
+            artifact=current_artifact,
+            task=task,
+            attempt_number=attempt_number,
+            max_attempts=2,
+            assignment_token=f"assignment-token-{attempt_number}",
+            orchestrator=cast(TaskRunOrchestrator, _RecordingOrchestrator()),
+        )
+        assert result.result is not None
+
+    assert [request.execution_time_limit_seconds for request in requests] == [
+        expected_limit_seconds,
+        expected_limit_seconds,
+    ]
+
+
+async def test_non_assigned_fast_task_keeps_configured_fixed_limit(tmp_path: Path) -> None:
+    runner, batch_id, artifact, ordinary_task, _, _, _, _ = _assigned_task_test_context(tmp_path)
+    task = MinerTask(
+        task_id=ordinary_task.task_id,
+        query=Query(text=ordinary_task.query.text, fast=True),
+        reference_answer=ordinary_task.reference_answer,
+    )
+
+    class _FixedLimitOrchestrator:
+        async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
+            assert request.execution_time_limit_seconds == 300.0
+            return _successful_outcome(request)
+
+    result = await runner.evaluate_artifact(
+        batch_id=batch_id,
+        artifact=artifact,
+        tasks=(task,),
+        orchestrator=cast(TaskRunOrchestrator, _FixedLimitOrchestrator()),
+    )
+
+    assert len(result.submissions) == 1
 
 
 def _assert_local_recording_warning(
@@ -571,7 +632,13 @@ async def _run_assigned_task_queue_until_results(
 async def test_evaluate_assigned_task_queue_success_queues_execution_before_scoring(
     tmp_path: Path, transient_connect_failure: bool
 ) -> None:
-    runner, batch_id, artifact, task, sessions, _, _, _ = _assigned_task_test_context(tmp_path)
+    runner, batch_id, artifact, ordinary_task, sessions, _, _, _ = _assigned_task_test_context(tmp_path)
+    task = MinerTask(
+        task_id=ordinary_task.task_id,
+        query=Query(text=ordinary_task.query.text, fast=True),
+        reference_answer=ordinary_task.reference_answer,
+    )
+    expected_limit_seconds = assigned_miner_task_execution_time_limit_seconds(batch_id=batch_id, task=task)
     assignment = MinerTaskWorkAssignment(
         batch_id=batch_id,
         artifact=artifact,
@@ -588,6 +655,7 @@ async def test_evaluate_assigned_task_queue_success_queues_execution_before_scor
     class _PausedSandbox:
         @asynccontextmanager
         async def admission(self, limit_seconds, token):
+            assert limit_seconds == expected_limit_seconds
             from harnyx_commons.sandbox.docker import HttpSandboxClient
 
             attempts = 0
@@ -623,7 +691,10 @@ async def test_evaluate_assigned_task_queue_success_queues_execution_before_scor
             self, request: MinerTaskRunRequest, *, phase_recorder=None, admission=None
         ) -> TaskExecutionOutcome:
             _ = phase_recorder
-            assert request.execution_time_limit_seconds == 300.0
+            assert request.execution_time_limit_seconds == expected_limit_seconds
+            session = sessions.get(request.session_id)
+            assert session is not None
+            assert session.expires_at == session.issued_at + timedelta(seconds=expected_limit_seconds + 60.0)
             return TaskExecutionOutcome(
                 batch_id=request.batch_id,
                 artifact_id=request.artifact_id,

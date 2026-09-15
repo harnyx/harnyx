@@ -46,6 +46,7 @@ from harnyx_commons.miner_task_failure_policy import (
     is_uncaught_platform_tool_proxy_timeout_sandbox_invocation,
 )
 from harnyx_commons.sandbox.client import SandboxClient
+from harnyx_commons.tools.session_lifetime import tool_session_ttl_for_execution_limit
 from harnyx_commons.tools.types import is_search_tool
 from harnyx_miner_sdk.sandbox_protocol import SandboxAdmission
 from harnyx_validator.application.assigned_work import AssignedArtifactWork, ClaimedAssignedTask, PhaseRecorder
@@ -72,6 +73,7 @@ from harnyx_validator.application.invoke_entrypoint import (
     MinerResponseValidationError,
     SandboxInvocationError,
 )
+from harnyx_validator.application.miner_task_time_limit import assigned_miner_task_execution_time_limit_seconds
 from harnyx_validator.application.platform_tool_proxy import PlatformToolProxyScopeRegistry
 from harnyx_validator.application.ports.evaluation_record import EvaluationRecordPort
 from harnyx_validator.application.ports.progress import ProgressRecorder
@@ -309,6 +311,7 @@ class _AssignedAttemptLifecycle:
     batch_id: UUID
     artifact: ScriptArtifactSpec
     claimed: ClaimedAssignedTask
+    execution_time_limit_seconds: float
     phase_recorder: _AssignedAttemptPhaseRecorder
     issued: SessionIssued | None = None
 
@@ -350,6 +353,7 @@ class _AssignedAttemptStartContext:
                 uid=self.lifecycle.artifact.uid,
                 artifact_id=self.lifecycle.artifact.artifact_id,
                 task=assignment.task,
+                execution_time_limit_seconds=self.lifecycle.execution_time_limit_seconds,
                 attempt_number=assignment.attempt_number,
                 assignment_token=assignment.assignment_token,
                 phase_recorder=self.lifecycle.phase_recorder,
@@ -478,6 +482,10 @@ class EvaluationRunner:
         orchestrator: TaskRunOrchestrator,
         on_session_started: SessionStartedCallback | None = None,
     ) -> PlatformOwnedTaskResult:
+        execution_time_limit_seconds = assigned_miner_task_execution_time_limit_seconds(
+            batch_id=batch_id,
+            task=task,
+        )
         session_started_at = time.monotonic()
         issued: SessionIssued | None = None
         attempt_started_at = self._clock()
@@ -487,6 +495,7 @@ class EvaluationRunner:
                 uid=artifact.uid,
                 artifact_id=artifact.artifact_id,
                 task=task,
+                execution_time_limit_seconds=execution_time_limit_seconds,
                 attempt_number=attempt_number,
                 assignment_token=assignment_token,
             )
@@ -536,6 +545,7 @@ class EvaluationRunner:
             artifact=artifact,
             task=task,
             issued=issued,
+            execution_time_limit_seconds=execution_time_limit_seconds,
             attempt_number=attempt_number,
             max_attempts=max_attempts,
             started_at=attempt_started_at,
@@ -550,6 +560,7 @@ class EvaluationRunner:
         artifact: ScriptArtifactSpec,
         task: MinerTask,
         issued: SessionIssued,
+        execution_time_limit_seconds: float,
         attempt_number: int,
         max_attempts: int,
         started_at: datetime,
@@ -566,6 +577,7 @@ class EvaluationRunner:
                 artifact=artifact,
                 task=task,
                 issued=issued,
+                execution_time_limit_seconds=execution_time_limit_seconds,
                 orchestrator=orchestrator,
                 final_attempt=attempt_number >= max_attempts,
                 phase_recorder=phase_recorder,
@@ -796,6 +808,10 @@ class EvaluationRunner:
             batch_id=batch_id,
             artifact=artifact,
             claimed=claimed,
+            execution_time_limit_seconds=assigned_miner_task_execution_time_limit_seconds(
+                batch_id=batch_id,
+                task=claimed.assignment.task,
+            ),
             phase_recorder=_AssignedAttemptPhaseRecorder(started_at=time.monotonic()),
         )
 
@@ -811,7 +827,7 @@ class EvaluationRunner:
         try:
             async with admission_wait:
                 async with sandbox_client.admission(
-                    self._config.execution_time_limit_seconds,
+                    lifecycle.execution_time_limit_seconds,
                     claimed.assignment.assignment_token,
                 ) as admission:
                     if not claimed.is_live():
@@ -846,6 +862,7 @@ class EvaluationRunner:
                             artifact=lifecycle.artifact,
                             task=attempt.assignment.task,
                             issued=attempt.issued,
+                            execution_time_limit_seconds=lifecycle.execution_time_limit_seconds,
                             attempt_number=attempt.assignment.attempt_number,
                             max_attempts=attempt.assignment.max_attempts,
                             started_at=attempt.attempt_started_at,
@@ -860,6 +877,7 @@ class EvaluationRunner:
                         artifact=lifecycle.artifact,
                         task=attempt.assignment.task,
                         issued=attempt.issued,
+                        execution_time_limit_seconds=lifecycle.execution_time_limit_seconds,
                         attempt_number=attempt.assignment.attempt_number,
                         max_attempts=attempt.assignment.max_attempts,
                         started_at=attempt.attempt_started_at,
@@ -884,6 +902,7 @@ class EvaluationRunner:
         artifact: ScriptArtifactSpec,
         task: MinerTask,
         issued: SessionIssued,
+        execution_time_limit_seconds: float,
         attempt_number: int,
         max_attempts: int,
         started_at: datetime,
@@ -900,6 +919,7 @@ class EvaluationRunner:
                 artifact=artifact,
                 task=task,
                 issued=issued,
+                execution_time_limit_seconds=execution_time_limit_seconds,
                 orchestrator=orchestrator,
                 final_attempt=attempt_number >= max_attempts,
                 phase_recorder=phase_recorder,
@@ -1001,6 +1021,10 @@ class EvaluationRunner:
                             uid=artifact.uid,
                             artifact_id=artifact.artifact_id,
                             task=assignment.task,
+                            execution_time_limit_seconds=assigned_miner_task_execution_time_limit_seconds(
+                                batch_id=batch_id,
+                                task=assignment.task,
+                            ),
                             attempt_number=assignment.attempt_number,
                             assignment_token=assignment.assignment_token,
                         ).session.session_id
@@ -1360,6 +1384,7 @@ class EvaluationRunner:
                 uid=artifact.uid,
                 artifact_id=artifact.artifact_id,
                 task=task,
+                execution_time_limit_seconds=self._config.execution_time_limit_seconds,
             )
             try:
                 submissions.append(await create_submission(task, issued))
@@ -1420,6 +1445,7 @@ class EvaluationRunner:
                         uid=artifact.uid,
                         artifact_id=artifact.artifact_id,
                         task=task,
+                        execution_time_limit_seconds=self._config.execution_time_limit_seconds,
                         attempt_number=attempt_number,
                     ).session.session_id
                 )
@@ -1429,6 +1455,7 @@ class EvaluationRunner:
                     artifact=artifact,
                     task=task,
                     issued=issued,
+                    execution_time_limit_seconds=self._config.execution_time_limit_seconds,
                     orchestrator=orchestrator,
                     final_attempt=attempt_number >= max_attempts,
                 )
@@ -1583,6 +1610,7 @@ class EvaluationRunner:
         artifact: ScriptArtifactSpec,
         task: MinerTask,
         issued: SessionIssued,
+        execution_time_limit_seconds: float,
         orchestrator: TaskRunOrchestrator,
         final_attempt: bool,
         phase_recorder: PhaseRecorder | None = None,
@@ -1594,7 +1622,7 @@ class EvaluationRunner:
             uid=artifact.uid,
             artifact_id=artifact.artifact_id,
             task=task,
-            execution_time_limit_seconds=self._config.execution_time_limit_seconds,
+            execution_time_limit_seconds=execution_time_limit_seconds,
         )
         try:
             if phase_recorder is None or not _orchestrator_accepts_phase_recorder(orchestrator):
@@ -1709,6 +1737,7 @@ class EvaluationRunner:
         artifact: ScriptArtifactSpec,
         task: MinerTask,
         issued: SessionIssued,
+        execution_time_limit_seconds: float,
         orchestrator: TaskRunOrchestrator,
         final_attempt: bool,
         phase_recorder: PhaseRecorder | None = None,
@@ -1720,6 +1749,7 @@ class EvaluationRunner:
                 artifact=artifact,
                 task=task,
                 issued=issued,
+                execution_time_limit_seconds=execution_time_limit_seconds,
                 orchestrator=orchestrator,
                 final_attempt=final_attempt,
                 phase_recorder=phase_recorder,
@@ -1731,7 +1761,7 @@ class EvaluationRunner:
             uid=artifact.uid,
             artifact_id=artifact.artifact_id,
             task=task,
-            execution_time_limit_seconds=self._config.execution_time_limit_seconds,
+            execution_time_limit_seconds=execution_time_limit_seconds,
         )
         try:
             if admission is not None:
@@ -2853,12 +2883,13 @@ class EvaluationRunner:
         uid: int,
         artifact_id: UUID | None = None,
         task: MinerTask,
+        execution_time_limit_seconds: float,
         attempt_number: int = 1,
         assignment_token: str | None = None,
         phase_recorder: PhaseRecorder | None = None,
     ) -> SessionIssued:
         issued_at = self._clock()
-        expires_at = issued_at + self._config.session_ttl
+        expires_at = issued_at + tool_session_ttl_for_execution_limit(execution_time_limit_seconds)
         token = secrets.token_urlsafe(self._config.token_secret_bytes)
         request = SessionTokenRequest(
             session_id=uuid4(),
