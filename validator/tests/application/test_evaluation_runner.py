@@ -275,11 +275,15 @@ def _assigned_task_test_context(
     return runner, uuid4(), artifact, task, session_registry, receipt_log, progress, evaluation_records
 
 
-async def test_evaluate_assigned_fast_task_keeps_limit_across_artifacts_and_retries(tmp_path: Path) -> None:
+@pytest.mark.parametrize("fast_mode", [False, True])
+async def test_evaluate_assigned_task_keeps_lane_limit_across_artifacts_and_retries(
+    tmp_path: Path,
+    fast_mode: bool,
+) -> None:
     runner, batch_id, artifact, ordinary_task, sessions, _, _, _ = _assigned_task_test_context(tmp_path)
     task = MinerTask(
         task_id=ordinary_task.task_id,
-        query=Query(text=ordinary_task.query.text, fast=True),
+        query=Query(text=ordinary_task.query.text, fast=fast_mode),
         reference_answer=ordinary_task.reference_answer,
     )
     expected_limit_seconds = assigned_miner_task_execution_time_limit_seconds(batch_id=batch_id, task=task)
@@ -629,13 +633,16 @@ async def _run_assigned_task_queue_until_results(
 
 
 @pytest.mark.parametrize("transient_connect_failure", [False, True])
+@pytest.mark.parametrize("fast_mode", [False, True])
 async def test_evaluate_assigned_task_queue_success_queues_execution_before_scoring(
-    tmp_path: Path, transient_connect_failure: bool
+    tmp_path: Path,
+    transient_connect_failure: bool,
+    fast_mode: bool,
 ) -> None:
     runner, batch_id, artifact, ordinary_task, sessions, _, _, _ = _assigned_task_test_context(tmp_path)
     task = MinerTask(
         task_id=ordinary_task.task_id,
-        query=Query(text=ordinary_task.query.text, fast=True),
+        query=Query(text=ordinary_task.query.text, fast=fast_mode),
         reference_answer=ordinary_task.reference_answer,
     )
     expected_limit_seconds = assigned_miner_task_execution_time_limit_seconds(batch_id=batch_id, task=task)

@@ -106,7 +106,8 @@ Validators call `query` with a `Query` payload and an immutable
 full `time_budget.limit_seconds`; it does not contain remaining time. Treat that
 limit as authoritative for every invocation. Platform-assigned fast tasks use a
 reproducibly selected 150, 180, or 210 seconds, while ordinary assigned tasks use
-300 seconds; miner code must not assume one fixed duration.
+a reproducibly selected 180, 210, or 240 seconds; miner code must not assume one
+fixed duration.
 
 ```json
 {
@@ -378,8 +379,8 @@ the evaluation session's monetary budget and settled spend after that call.
 
 The query's immutable `ContextSnapshot` supplies the initial monetary budget and
 the authoritative full execution limit as `context.cost_budget` and
-`context.time_budget.limit_seconds`. Platform-assigned fast-task limits vary, so
-read the value for each invocation. The limit starts before the sandbox worker
+`context.time_budget.limit_seconds`. Platform-assigned limits vary in both lanes,
+so read the value for each invocation. The limit starts before the sandbox worker
 loads the miner artifact, so it is a configured capacity, not remaining time.
 A helper's optional `timeout` still bounds only that hosted tool call. The host
 derives its internal tool-session authorization lifetime from the invocation
