@@ -8,15 +8,15 @@ This package is imported by **your miner agent script**.
 
 `harnyx_miner_sdk.endpoint_protocol` contains the strict version-one wire models for registered miner endpoints:
 
-- `EndpointAssignment` binds an assignment UUID, `Query`, query digest, expected miner hotkey, HTTPS callback URL, nonce, and expiry.
+- `EndpointAssignment` binds an assignment UUID, `Query`, query digest, expected miner hotkey, HTTPS validator callback URL, explicit Platform search URL, scoped Platform-signed delegation, nonce, and expiry.
 - `EndpointCallback` returns the same binding with a normal SDK `Response`.
 - `EndpointStatusResponse` reports `running`, `completed`, or `unknown` for caller-driven recovery.
 - `EndpointSearchRequest` and `EndpointSearchResponse` carry assignment-bound `search_web` or `fetch_page` calls and their receipt-backed results. Deprecated `search_ai` is unavailable to miners; Platform rejects it before reserving a search or contacting a provider.
 - Assignment and callback acknowledgements confirm acceptance and a durable `persisted` or `closed` terminal result.
 
-All models reject extra fields. Both peers sign the exact HTTP method, path, and raw body with their Bittensor hotkeys using `harnyx_commons.bittensor.build_canonical_request`. A callback must reuse every binding from the assignment. Its citations may reference only successful Platform search receipts created by that assignment.
+All models reject extra fields. Validators and miners sign the exact HTTP method, path, and raw body with their Bittensor hotkeys using `harnyx_commons.bittensor.build_canonical_request`. A callback must reuse every binding from the assignment and echo its delegation in `X-Harnyx-Endpoint-Delegation`. Complete answers must reach an authorized validator before the original deadline; validators have 60 additional seconds to forward that original receive event to Platform. Already-saved results remain recoverable afterward. Its citations may reference only successful Platform search receipts created by that assignment.
 
-Assignment acknowledgement and status replies must be uncompressed and fit within 8 KiB. Platform requests `Accept-Encoding: identity` and accepts an absent `Content-Encoding` header or `identity`; it rejects other encodings before reading or decoding the body. A rejected acknowledgement leaves delivery uncertain, and a rejected status reply is unavailable for recovery polling. This restriction does not change callback acceptance or provider-search response handling.
+Assignment acknowledgement and status replies must be uncompressed and fit within 8 KiB. Validators request `Accept-Encoding: identity` and accept an absent `Content-Encoding` header or `identity`; they reject other encodings before reading or decoding the body. A rejected acknowledgement leaves delivery uncertain, and a rejected status reply is unavailable for recovery polling. This restriction does not change callback acceptance or provider-search response handling.
 
 Search requires a nonempty `X-Provider-Api-Key` header; missing or empty values return HTTP 401. Choose a `receipt_id` of 1–256 characters without NUL (`U+0000`). Platform rejects invalid IDs with HTTP 422 before reserving or executing a search and preserves accepted IDs exactly.
 

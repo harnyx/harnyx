@@ -4,8 +4,11 @@ Generated from FastAPI OpenAPI.
 
 ## Domains
 - [endpoint-assignments](#endpoint-assignments)
-  - [POST /v1/endpoint-assignments/{assignment_id}/callback](#endpoint-post-v1-endpoint-assignments-assignment_id-callback)
+  - [POST /v1/endpoint-assignments/{assignment_id}/failure](#endpoint-post-v1-endpoint-assignments-assignment_id-failure)
+  - [POST /v1/endpoint-assignments/{assignment_id}/report](#endpoint-post-v1-endpoint-assignments-assignment_id-report)
+  - [POST /v1/endpoint-assignments/{assignment_id}/saved](#endpoint-post-v1-endpoint-assignments-assignment_id-saved)
   - [POST /v1/endpoint-assignments/{assignment_id}/search](#endpoint-post-v1-endpoint-assignments-assignment_id-search)
+  - [POST /v1/endpoint-assignments/{assignment_id}/start](#endpoint-post-v1-endpoint-assignments-assignment_id-start)
 - [feeds](#feeds)
   - [POST /v1/feeds/search](#endpoint-post-v1-feeds-search)
   - [POST /v1/feeds/{feed_id}/tool/search](#endpoint-post-v1-feeds-feed_id-tool-search)
@@ -48,12 +51,12 @@ Generated from FastAPI OpenAPI.
 
 ### {assignment_id}
 
-#### callback
+#### failure
 
-<a id="endpoint-post-v1-endpoint-assignments-assignment_id-callback"></a>
-##### POST /v1/endpoint-assignments/{assignment_id}/callback
+<a id="endpoint-post-v1-endpoint-assignments-assignment_id-failure"></a>
+##### POST /v1/endpoint-assignments/{assignment_id}/failure
 
-Accept Callback
+Accept Failure
 
 **Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
 
@@ -64,22 +67,102 @@ Accept Callback
 
 **Request**
 Content-Type: `application/json`
-Body: [EndpointCallback](#model-endpointcallback)
+Body: [EndpointFailureReport](#model-endpointfailurereport)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `assignment_id` |  |  | req | `string` (format: uuid) |
-| `expires_at` |  |  | req | `string` (format: date-time) |
-| `nonce` |  |  | req | `string` |
-| `query_digest` |  |  | req | `string` |
-| `response` |  |  | req | [EndpointCallbackResponse](#model-endpointcallbackresponse) |
-|  | `citations` |  | opt | array[[EndpointCallbackCitationRef](#model-endpointcallbackcitationref)] (nullable) |
-|  |  | `receipt_id` | req | `string` |
-|  |  | `result_id` | req | `string` |
-|  |  | `slices` | opt | array[[EndpointCallbackCitationSlice](#model-endpointcallbackcitationslice)] |
-|  | `note` |  | opt | `string` (nullable) |
-|  | `output` |  | opt | [EndpointCallbackJsonValue](#model-endpointcallbackjsonvalue) (nullable) |
-|  | `text` |  | opt | `string` (nullable) |
+| `attempted_at` |  |  | req | `string` (format: date-time) |
+| `delegation` |  |  | req | [EndpointFailureReportEndpointDelegation](#model-endpointfailurereportendpointdelegation) |
+|  | `body_utf8` |  | req | `string` |
+|  | `platform_hotkey` |  | req | `string` |
+|  | `signature_hex` |  | req | `string` |
+| `observed_through` |  |  | req | `string` (format: date-time) |
+| `outcome` |  |  | opt | `string` (default: attempted_no_valid_answer) |
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: [EndpointFailureAcknowledgement](#model-endpointfailureacknowledgement)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `recorded` |  |  | req | `boolean` |
+
+`401` Missing or invalid authentication.
+Content-Type: `application/json`
+Body: `object`
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | req | `string` |
+
+`403` Assignment operation is not authorized.
+Content-Type: `application/json`
+Body: `object`
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | req | `string` |
+
+`404` Assignment not found.
+Content-Type: `application/json`
+Body: `object`
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | req | `string` |
+
+`413` Request body exceeds the size limit.
+Content-Type: `application/json`
+Body: `object`
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | req | `string` |
+
+`422` Invalid assignment path, request body, or binding.
+Content-Type: `application/json`
+Body: anyOf: `object` OR `object`
+
+(no documented fields)
+
+`503` Endpoint execution is unavailable.
+Content-Type: `application/json`
+Body: `object`
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | req | `string` |
+
+
+#### report
+
+<a id="endpoint-post-v1-endpoint-assignments-assignment_id-report"></a>
+##### POST /v1/endpoint-assignments/{assignment_id}/report
+
+Accept Report
+
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
+
+**Parameters**
+| Param | In | Req | Notes |
+| --- | --- | --- | --- |
+| `assignment_id` | path | req | `string` (format: uuid) |
+
+**Request**
+Content-Type: `application/json`
+Body: [EndpointResponseReport](#model-endpointresponsereport)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `callback_base64` |  |  | req | `string` |
+| `delegation` |  |  | req | [EndpointResponseReportEndpointDelegation](#model-endpointresponsereportendpointdelegation) |
+|  | `body_utf8` |  | req | `string` |
+|  | `platform_hotkey` |  | req | `string` |
+|  | `signature_hex` |  | req | `string` |
+| `received_at` |  |  | req | `string` (format: date-time) |
+| `signature_hex` |  |  | req | `string` |
+| `signed_callback_path` |  |  | req | `string` |
 
 **Responses**
 `200` Successful Response
@@ -91,6 +174,104 @@ Body: [EndpointCallbackAcknowledgement](#model-endpointcallbackacknowledgement)
 | `durable_terminal_result` |  |  | req | [EndpointDurableTerminalResult](#model-endpointdurableterminalresult) |
 
 `401` Missing or invalid authentication.
+Content-Type: `application/json`
+Body: `object`
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | req | `string` |
+
+`403` Assignment operation is not authorized.
+Content-Type: `application/json`
+Body: `object`
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | req | `string` |
+
+`404` Assignment not found.
+Content-Type: `application/json`
+Body: `object`
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | req | `string` |
+
+`413` Request body exceeds the size limit.
+Content-Type: `application/json`
+Body: `object`
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | req | `string` |
+
+`422` Invalid assignment path, request body, or binding.
+Content-Type: `application/json`
+Body: anyOf: `object` OR `object`
+
+(no documented fields)
+
+`503` Endpoint execution is unavailable.
+Content-Type: `application/json`
+Body: `object`
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | req | `string` |
+
+
+#### saved
+
+<a id="endpoint-post-v1-endpoint-assignments-assignment_id-saved"></a>
+##### POST /v1/endpoint-assignments/{assignment_id}/saved
+
+Saved Assignment
+
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
+
+**Parameters**
+| Param | In | Req | Notes |
+| --- | --- | --- | --- |
+| `assignment_id` | path | req | `string` (format: uuid) |
+
+**Request**
+Content-Type: `application/json`
+Body: [EndpointDelegation](#model-endpointdelegation)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `body_utf8` |  |  | req | `string` |
+| `platform_hotkey` |  |  | req | `string` |
+| `signature_hex` |  |  | req | `string` |
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: [EndpointAssignmentSnapshot](#model-endpointassignmentsnapshot)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `response_json` |  |  | opt | [JsonObject-Output](#model-jsonobject-output) (nullable) |
+| `status` |  |  | req | `string` (enum: [created, awaiting_callback, succeeded, endpoint_failed, platform_void]) |
+| `work` |  |  | req | [EndpointExecutionWork](#model-endpointexecutionwork) |
+|  | `delegation` |  | req | [EndpointDelegation](#model-endpointdelegation) |
+|  |  | `body_utf8` | req | `string` |
+|  |  | `platform_hotkey` | req | `string` |
+|  |  | `signature_hex` | req | `string` |
+|  | `query` |  | req | [Query](#model-query) |
+|  |  | `fast` | opt | `boolean` (default: False) |
+|  |  | `output_schema` | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
+|  |  | `text` | req | `string` |
+
+`401` Missing or invalid authentication.
+Content-Type: `application/json`
+Body: `object`
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | req | `string` |
+
+`403` Assignment operation is not authorized.
 Content-Type: `application/json`
 Body: `object`
 
@@ -192,6 +373,95 @@ Body: `object`
 | `detail` |  |  | req | `string` |
 
 `403` Assignment search is not authorized.
+Content-Type: `application/json`
+Body: `object`
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | req | `string` |
+
+`404` Assignment not found.
+Content-Type: `application/json`
+Body: `object`
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | req | `string` |
+
+`413` Request body exceeds the size limit.
+Content-Type: `application/json`
+Body: `object`
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | req | `string` |
+
+`422` Invalid assignment path, request body, or binding.
+Content-Type: `application/json`
+Body: anyOf: `object` OR `object`
+
+(no documented fields)
+
+`503` Endpoint execution is unavailable.
+Content-Type: `application/json`
+Body: `object`
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | req | `string` |
+
+
+#### start
+
+<a id="endpoint-post-v1-endpoint-assignments-assignment_id-start"></a>
+##### POST /v1/endpoint-assignments/{assignment_id}/start
+
+Accept Start
+
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
+
+**Parameters**
+| Param | In | Req | Notes |
+| --- | --- | --- | --- |
+| `assignment_id` | path | req | `string` (format: uuid) |
+
+**Request**
+Content-Type: `application/json`
+Body: [EndpointStartReport](#model-endpointstartreport)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `delegation` |  |  | req | [EndpointStartReportEndpointDelegation](#model-endpointstartreportendpointdelegation) |
+|  | `body_utf8` |  | req | `string` |
+|  | `platform_hotkey` |  | req | `string` |
+|  | `signature_hex` |  | req | `string` |
+| `proposed_start` |  |  | req | `string` (format: date-time) |
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: [EndpointExecutionWork](#model-endpointexecutionwork)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `delegation` |  |  | req | [EndpointDelegation](#model-endpointdelegation) |
+|  | `body_utf8` |  | req | `string` |
+|  | `platform_hotkey` |  | req | `string` |
+|  | `signature_hex` |  | req | `string` |
+| `query` |  |  | req | [Query](#model-query) |
+|  | `fast` |  | opt | `boolean` (default: False) |
+|  | `output_schema` |  | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
+|  | `text` |  | req | `string` |
+
+`401` Missing or invalid authentication.
+Content-Type: `application/json`
+Body: `object`
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | req | `string` |
+
+`403` Assignment operation is not authorized.
 Content-Type: `application/json`
 Body: `object`
 
@@ -2211,23 +2481,22 @@ Body: [StatusResponse](#model-statusresponse)
 
 </details>
 
-<a id="model-endpointcallback"></a>
-### Model: EndpointCallback
+<a id="model-endpointassignmentsnapshot"></a>
+### Model: EndpointAssignmentSnapshot
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `assignment_id` |  |  | req | `string` (format: uuid) |
-| `expires_at` |  |  | req | `string` (format: date-time) |
-| `nonce` |  |  | req | `string` |
-| `query_digest` |  |  | req | `string` |
-| `response` |  |  | req | [EndpointCallbackResponse](#model-endpointcallbackresponse) |
-|  | `citations` |  | opt | array[[EndpointCallbackCitationRef](#model-endpointcallbackcitationref)] (nullable) |
-|  |  | `receipt_id` | req | `string` |
-|  |  | `result_id` | req | `string` |
-|  |  | `slices` | opt | array[[EndpointCallbackCitationSlice](#model-endpointcallbackcitationslice)] |
-|  | `note` |  | opt | `string` (nullable) |
-|  | `output` |  | opt | [EndpointCallbackJsonValue](#model-endpointcallbackjsonvalue) (nullable) |
-|  | `text` |  | opt | `string` (nullable) |
+| `response_json` |  |  | opt | [JsonObject-Output](#model-jsonobject-output) (nullable) |
+| `status` |  |  | req | `string` (enum: [created, awaiting_callback, succeeded, endpoint_failed, platform_void]) |
+| `work` |  |  | req | [EndpointExecutionWork](#model-endpointexecutionwork) |
+|  | `delegation` |  | req | [EndpointDelegation](#model-endpointdelegation) |
+|  |  | `body_utf8` | req | `string` |
+|  |  | `platform_hotkey` | req | `string` |
+|  |  | `signature_hex` | req | `string` |
+|  | `query` |  | req | [Query](#model-query) |
+|  |  | `fast` | opt | `boolean` (default: False) |
+|  |  | `output_schema` | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
+|  |  | `text` | req | `string` |
 
 <details>
 <summary>JSON schema</summary>
@@ -2236,39 +2505,36 @@ Body: [StatusResponse](#model-statusresponse)
 {
   "additionalProperties": false,
   "properties": {
-    "assignment_id": {
-      "format": "uuid",
-      "title": "Assignment Id",
+    "response_json": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/JsonObject-Output"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "status": {
+      "enum": [
+        "created",
+        "awaiting_callback",
+        "succeeded",
+        "endpoint_failed",
+        "platform_void"
+      ],
+      "title": "Status",
       "type": "string"
     },
-    "expires_at": {
-      "format": "date-time",
-      "title": "Expires At",
-      "type": "string"
-    },
-    "nonce": {
-      "maxLength": 128,
-      "minLength": 32,
-      "title": "Nonce",
-      "type": "string"
-    },
-    "query_digest": {
-      "pattern": "^[0-9a-f]{64}$",
-      "title": "Query Digest",
-      "type": "string"
-    },
-    "response": {
-      "$ref": "#/components/schemas/EndpointCallbackResponse"
+    "work": {
+      "$ref": "#/components/schemas/EndpointExecutionWork"
     }
   },
   "required": [
-    "assignment_id",
-    "query_digest",
-    "nonce",
-    "expires_at",
-    "response"
+    "work",
+    "status"
   ],
-  "title": "EndpointCallback",
+  "title": "EndpointAssignmentSnapshot",
   "type": "object"
 }
 ```
@@ -2303,16 +2569,14 @@ Body: [StatusResponse](#model-statusresponse)
 
 </details>
 
-<a id="model-endpointcallbackcitationref"></a>
-### Model: EndpointCallbackCitationRef
+<a id="model-endpointdelegation"></a>
+### Model: EndpointDelegation
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `receipt_id` |  |  | req | `string` |
-| `result_id` |  |  | req | `string` |
-| `slices` |  |  | opt | array[[EndpointCallbackCitationSlice](#model-endpointcallbackcitationslice)] |
-|  | `end` |  | req | `integer` |
-|  | `start` |  | req | `integer` |
+| `body_utf8` |  |  | req | `string` |
+| `platform_hotkey` |  |  | req | `string` |
+| `signature_hex` |  |  | req | `string` |
 
 <details>
 <summary>JSON schema</summary>
@@ -2320,228 +2584,33 @@ Body: [StatusResponse](#model-statusresponse)
 ```json
 {
   "additionalProperties": false,
+  "description": "Original Platform-signed assignment authority, retained across validator retries.",
   "properties": {
-    "receipt_id": {
+    "body_utf8": {
+      "maxLength": 12000,
       "minLength": 1,
-      "title": "Receipt Id",
+      "title": "Body Utf8",
       "type": "string"
     },
-    "result_id": {
+    "platform_hotkey": {
       "minLength": 1,
-      "title": "Result Id",
+      "title": "Platform Hotkey",
       "type": "string"
     },
-    "slices": {
-      "items": {
-        "$ref": "#/components/schemas/EndpointCallbackCitationSlice"
-      },
-      "title": "Slices",
-      "type": "array"
+    "signature_hex": {
+      "maxLength": 128,
+      "minLength": 128,
+      "pattern": "^[0-9a-f]+$",
+      "title": "Signature Hex",
+      "type": "string"
     }
   },
   "required": [
-    "receipt_id",
-    "result_id"
+    "platform_hotkey",
+    "body_utf8",
+    "signature_hex"
   ],
-  "title": "CitationRef",
-  "type": "object"
-}
-```
-
-</details>
-
-<a id="model-endpointcallbackcitationslice"></a>
-### Model: EndpointCallbackCitationSlice
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `end` |  |  | req | `integer` |
-| `start` |  |  | req | `integer` |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "additionalProperties": false,
-  "properties": {
-    "end": {
-      "exclusiveMinimum": 0,
-      "title": "End",
-      "type": "integer"
-    },
-    "start": {
-      "minimum": 0,
-      "title": "Start",
-      "type": "integer"
-    }
-  },
-  "required": [
-    "start",
-    "end"
-  ],
-  "title": "CitationSlice",
-  "type": "object"
-}
-```
-
-</details>
-
-<a id="model-endpointcallbackjsonvalue"></a>
-### Model: EndpointCallbackJsonValue
-
-(no documented fields)
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "anyOf": [
-    {
-      "type": "string"
-    },
-    {
-      "type": "integer"
-    },
-    {
-      "type": "number"
-    },
-    {
-      "type": "boolean"
-    },
-    {
-      "items": {
-        "$ref": "#/components/schemas/EndpointCallbackJsonValue"
-      },
-      "type": "array"
-    },
-    {
-      "additionalProperties": {
-        "$ref": "#/components/schemas/EndpointCallbackJsonValue"
-      },
-      "type": "object"
-    },
-    {
-      "type": "null"
-    }
-  ]
-}
-```
-
-</details>
-
-<a id="model-endpointcallbackresponse"></a>
-### Model: EndpointCallbackResponse
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `citations` |  |  | opt | array[[EndpointCallbackCitationRef](#model-endpointcallbackcitationref)] (nullable) |
-|  | `receipt_id` |  | req | `string` |
-|  | `result_id` |  | req | `string` |
-|  | `slices` |  | opt | array[[EndpointCallbackCitationSlice](#model-endpointcallbackcitationslice)] |
-|  |  | `end` | req | `integer` |
-|  |  | `start` | req | `integer` |
-| `note` |  |  | opt | `string` (nullable) |
-| `output` |  |  | opt | [EndpointCallbackJsonValue](#model-endpointcallbackjsonvalue) (nullable) |
-| `text` |  |  | opt | `string` (nullable) |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "additionalProperties": false,
-  "oneOf": [
-    {
-      "properties": {
-        "output": {
-          "type": "null"
-        },
-        "text": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "text"
-      ]
-    },
-    {
-      "properties": {
-        "output": {},
-        "text": {
-          "allOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "number"
-            }
-          ]
-        }
-      },
-      "required": [
-        "output"
-      ]
-    }
-  ],
-  "properties": {
-    "citations": {
-      "anyOf": [
-        {
-          "items": {
-            "$ref": "#/components/schemas/EndpointCallbackCitationRef"
-          },
-          "maxItems": 200,
-          "type": "array"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Citations"
-    },
-    "note": {
-      "anyOf": [
-        {
-          "maxLength": 80000,
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "description": "Optional public supplementary content that may explain, qualify, support, or correct the required answer. It cannot replace or repair a missing or invalid answer. Factual claims use the same citations array.",
-      "title": "Note"
-    },
-    "output": {
-      "anyOf": [
-        {
-          "$ref": "#/components/schemas/EndpointCallbackJsonValue"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null
-    },
-    "text": {
-      "anyOf": [
-        {
-          "maxLength": 80000,
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Text"
-    }
-  },
-  "title": "Response",
+  "title": "EndpointDelegation",
   "type": "object"
 }
 ```
@@ -2564,6 +2633,174 @@ Body: [StatusResponse](#model-statusresponse)
   ],
   "title": "EndpointDurableTerminalResult",
   "type": "string"
+}
+```
+
+</details>
+
+<a id="model-endpointexecutionwork"></a>
+### Model: EndpointExecutionWork
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `delegation` |  |  | req | [EndpointDelegation](#model-endpointdelegation) |
+|  | `body_utf8` |  | req | `string` |
+|  | `platform_hotkey` |  | req | `string` |
+|  | `signature_hex` |  | req | `string` |
+| `query` |  |  | req | [Query](#model-query) |
+|  | `fast` |  | opt | `boolean` (default: False) |
+|  | `output_schema` |  | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
+|  | `text` |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "delegation": {
+      "$ref": "#/components/schemas/EndpointDelegation"
+    },
+    "query": {
+      "$ref": "#/components/schemas/Query"
+    }
+  },
+  "required": [
+    "query",
+    "delegation"
+  ],
+  "title": "EndpointExecutionWork",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-endpointfailureacknowledgement"></a>
+### Model: EndpointFailureAcknowledgement
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `recorded` |  |  | req | `boolean` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "recorded": {
+      "title": "Recorded",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "recorded"
+  ],
+  "title": "EndpointFailureAcknowledgement",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-endpointfailurereport"></a>
+### Model: EndpointFailureReport
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `attempted_at` |  |  | req | `string` (format: date-time) |
+| `delegation` |  |  | req | [EndpointFailureReportEndpointDelegation](#model-endpointfailurereportendpointdelegation) |
+|  | `body_utf8` |  | req | `string` |
+|  | `platform_hotkey` |  | req | `string` |
+|  | `signature_hex` |  | req | `string` |
+| `observed_through` |  |  | req | `string` (format: date-time) |
+| `outcome` |  |  | opt | `string` (default: attempted_no_valid_answer) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "attempted_at": {
+      "format": "date-time",
+      "title": "Attempted At",
+      "type": "string"
+    },
+    "delegation": {
+      "$ref": "#/components/schemas/EndpointFailureReportEndpointDelegation"
+    },
+    "observed_through": {
+      "format": "date-time",
+      "title": "Observed Through",
+      "type": "string"
+    },
+    "outcome": {
+      "const": "attempted_no_valid_answer",
+      "default": "attempted_no_valid_answer",
+      "title": "Outcome",
+      "type": "string"
+    }
+  },
+  "required": [
+    "delegation",
+    "attempted_at",
+    "observed_through"
+  ],
+  "title": "EndpointFailureReport",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-endpointfailurereportendpointdelegation"></a>
+### Model: EndpointFailureReportEndpointDelegation
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `body_utf8` |  |  | req | `string` |
+| `platform_hotkey` |  |  | req | `string` |
+| `signature_hex` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "description": "Original Platform-signed assignment authority, retained across validator retries.",
+  "properties": {
+    "body_utf8": {
+      "maxLength": 12000,
+      "minLength": 1,
+      "title": "Body Utf8",
+      "type": "string"
+    },
+    "platform_hotkey": {
+      "minLength": 1,
+      "title": "Platform Hotkey",
+      "type": "string"
+    },
+    "signature_hex": {
+      "maxLength": 128,
+      "minLength": 128,
+      "pattern": "^[0-9a-f]+$",
+      "title": "Signature Hex",
+      "type": "string"
+    }
+  },
+  "required": [
+    "platform_hotkey",
+    "body_utf8",
+    "signature_hex"
+  ],
+  "title": "EndpointDelegation",
+  "type": "object"
 }
 ```
 
@@ -2636,6 +2873,115 @@ Body: [StatusResponse](#model-statusresponse)
     "results"
   ],
   "title": "EndpointReceipt",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-endpointresponsereport"></a>
+### Model: EndpointResponseReport
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `callback_base64` |  |  | req | `string` |
+| `delegation` |  |  | req | [EndpointResponseReportEndpointDelegation](#model-endpointresponsereportendpointdelegation) |
+|  | `body_utf8` |  | req | `string` |
+|  | `platform_hotkey` |  | req | `string` |
+|  | `signature_hex` |  | req | `string` |
+| `received_at` |  |  | req | `string` (format: date-time) |
+| `signature_hex` |  |  | req | `string` |
+| `signed_callback_path` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "callback_base64": {
+      "maxLength": 1333336,
+      "title": "Callback Base64",
+      "type": "string"
+    },
+    "delegation": {
+      "$ref": "#/components/schemas/EndpointResponseReportEndpointDelegation"
+    },
+    "received_at": {
+      "format": "date-time",
+      "title": "Received At",
+      "type": "string"
+    },
+    "signature_hex": {
+      "pattern": "^[0-9a-f]{128}$",
+      "title": "Signature Hex",
+      "type": "string"
+    },
+    "signed_callback_path": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "pattern": "^/",
+      "title": "Signed Callback Path",
+      "type": "string"
+    }
+  },
+  "required": [
+    "delegation",
+    "received_at",
+    "callback_base64",
+    "signature_hex",
+    "signed_callback_path"
+  ],
+  "title": "EndpointResponseReport",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-endpointresponsereportendpointdelegation"></a>
+### Model: EndpointResponseReportEndpointDelegation
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `body_utf8` |  |  | req | `string` |
+| `platform_hotkey` |  |  | req | `string` |
+| `signature_hex` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "description": "Original Platform-signed assignment authority, retained across validator retries.",
+  "properties": {
+    "body_utf8": {
+      "maxLength": 12000,
+      "minLength": 1,
+      "title": "Body Utf8",
+      "type": "string"
+    },
+    "platform_hotkey": {
+      "minLength": 1,
+      "title": "Platform Hotkey",
+      "type": "string"
+    },
+    "signature_hex": {
+      "maxLength": 128,
+      "minLength": 128,
+      "pattern": "^[0-9a-f]+$",
+      "title": "Signature Hex",
+      "type": "string"
+    }
+  },
+  "required": [
+    "platform_hotkey",
+    "body_utf8",
+    "signature_hex"
+  ],
+  "title": "EndpointDelegation",
   "type": "object"
 }
 ```
@@ -2888,6 +3234,92 @@ Body: [StatusResponse](#model-statusresponse)
     "url"
   ],
   "title": "EndpointSearchResult",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-endpointstartreport"></a>
+### Model: EndpointStartReport
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `delegation` |  |  | req | [EndpointStartReportEndpointDelegation](#model-endpointstartreportendpointdelegation) |
+|  | `body_utf8` |  | req | `string` |
+|  | `platform_hotkey` |  | req | `string` |
+|  | `signature_hex` |  | req | `string` |
+| `proposed_start` |  |  | req | `string` (format: date-time) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "delegation": {
+      "$ref": "#/components/schemas/EndpointStartReportEndpointDelegation"
+    },
+    "proposed_start": {
+      "format": "date-time",
+      "title": "Proposed Start",
+      "type": "string"
+    }
+  },
+  "required": [
+    "delegation",
+    "proposed_start"
+  ],
+  "title": "EndpointStartReport",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-endpointstartreportendpointdelegation"></a>
+### Model: EndpointStartReportEndpointDelegation
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `body_utf8` |  |  | req | `string` |
+| `platform_hotkey` |  |  | req | `string` |
+| `signature_hex` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "description": "Original Platform-signed assignment authority, retained across validator retries.",
+  "properties": {
+    "body_utf8": {
+      "maxLength": 12000,
+      "minLength": 1,
+      "title": "Body Utf8",
+      "type": "string"
+    },
+    "platform_hotkey": {
+      "minLength": 1,
+      "title": "Platform Hotkey",
+      "type": "string"
+    },
+    "signature_hex": {
+      "maxLength": 128,
+      "minLength": 128,
+      "pattern": "^[0-9a-f]+$",
+      "title": "Signature Hex",
+      "type": "string"
+    }
+  },
+  "required": [
+    "platform_hotkey",
+    "body_utf8",
+    "signature_hex"
+  ],
+  "title": "EndpointDelegation",
   "type": "object"
 }
 ```
@@ -4089,6 +4521,25 @@ Body: [StatusResponse](#model-statusresponse)
 {
   "additionalProperties": {
     "$ref": "#/components/schemas/JsonValue-Input"
+  },
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-jsonobject-output"></a>
+### Model: JsonObject-Output
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": {
+    "$ref": "#/components/schemas/JsonValue-Output"
   },
   "type": "object"
 }

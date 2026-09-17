@@ -74,6 +74,12 @@ If the validator cannot produce a similarity verdict after receiving a valid req
 
 Internal route controls may still appear in internal/local tooling deployments, including miner local eval, but they are not validator server miner-task provider credential requirements.
 
+### Miner communication
+
+Platform can assign registered-miner execution through `POST /validator/endpoint-assignments`. Your public HTTPS base must also accept miner callbacks at `/validator/endpoint-assignments/{assignment_id}/callback`. Preserve the signed raw path through proxies. The runtime verifies Platform delegation, saves start timing on Platform before sending, and forwards original signed miner answers for durable storage.
+
+Healthy progress checks retain the current validator. After unavailability, another validator can continue the same assignment; either may deliver the first valid answer. Neither retries nor missing ACKs extend the original deadline. Complete answers received on time may be forwarded for 60 more seconds. Validator disappearance alone carries no miner penalty; an authenticated actual-attempt failure report does. Saved outcomes remain recoverable afterward. Execution readiness is checked on the actual execute route, independently of rating judging.
+
 ### Optional black-box rating judging
 
 The signed `/validator/status` response reports `rating_worker_ready` from the running rating worker. Platform requires a true report before assigning new comparisons; disabled or stopped workers report false. Previously assigned results remain acceptable. Pausing the Platform scheduler also pauses making newly received answers available for judging; pending orchestration resumes when the scheduler restarts.

@@ -21,6 +21,13 @@ from fastapi.responses import Response as HttpResponse
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError
 
 from harnyx_commons.bittensor import VerificationError, build_canonical_request, verify_signed_request
+from harnyx_commons.endpoint_execution import (
+    ENDPOINT_DELEGATION_HEADER,
+    ENDPOINT_REPORT_FORWARDING_ALLOWANCE,
+    delegation_header,
+    parse_delegation_header,
+    verify_delegation,
+)
 from harnyx_miner_sdk.endpoint_protocol import (
     EndpointAssignment,
     EndpointAssignmentAcknowledgement,
@@ -74,9 +81,13 @@ class EndpointTestServerState:
     callbacks: dict[UUID, EndpointCallback] = field(default_factory=dict, repr=False)
     callback_attempts: dict[UUID, int] = field(default_factory=dict)
     active_tasks: dict[UUID, asyncio.Task[None]] = field(default_factory=dict, repr=False)
+    destinations: dict[UUID, dict[str, EndpointAssignment]] = field(default_factory=dict, repr=False)
+    delivery_tasks: dict[tuple[UUID, str], asyncio.Task[None]] = field(default_factory=dict, repr=False)
+    acknowledged_destinations: set[tuple[UUID, str]] = field(default_factory=set, repr=False)
     acknowledged: set[UUID] = field(default_factory=set, repr=False)
 
     def clear(self) -> None:
+        parent_owned = set(self.active_tasks)
         for task in self.active_tasks.values():
             task.cancel()
         self.active_tasks.clear()
@@ -85,6 +96,12 @@ class EndpointTestServerState:
         self.callbacks.clear()
         self.callback_attempts.clear()
         self.acknowledged.clear()
+        self.acknowledged_destinations.clear()
+        self.destinations.clear()
+        for key, task in self.delivery_tasks.items():
+            if key[0] not in parent_owned:
+                task.cancel()
+        self.delivery_tasks.clear()
 
 
 def create_endpoint_test_app(
@@ -163,6 +180,28 @@ def create_endpoint_test_app(
 
         task.add_done_callback(completed)
 
+    def schedule_delivery(assignment: EndpointAssignment) -> None:
+        key = (assignment.assignment_id, assignment.callback_url)
+        if key in server_state.acknowledged_destinations:
+            return
+        task = server_state.delivery_tasks.get(key)
+        if task is not None and not task.done():
+            return
+        callback = server_state.callbacks[assignment.assignment_id]
+        task = asyncio.create_task(
+            _deliver_callback(
+                assignment=assignment,
+                callback=callback,
+                miner_hotkey=miner_hotkey,
+                state=server_state,
+                client=http_client,
+                retry_seconds=callback_retry_seconds,
+            )
+        )
+        server_state.delivery_tasks[key] = task
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
     @app.post("/verify")
     async def prove_ownership(request: Request) -> dict[str, str]:
         body = await _read_bounded_body(request, max_bytes=8192)
@@ -188,17 +227,23 @@ def create_endpoint_test_app(
     async def accept_assignment(request: Request) -> HttpResponse:
         path = request.scope["raw_path"].decode("ascii")
         body = await _read_bounded_body(request)
+        try:
+            assignment = EndpointAssignment.model_validate_json(body, strict=True)
+            authority = verify_delegation(assignment.delegation, platform_hotkey_ss58)
+            if (
+                authority.assignment(assignment.query, assignment.delegation) != assignment
+                or authority.endpoint_url.rstrip("/") != canonical_url
+            ):
+                raise ValueError("assignment does not match delegated authority")
+        except (ValueError, VerificationError) as exc:
+            raise HTTPException(status_code=422, detail="invalid endpoint delegation") from exc
         _verify_or_401(
             method="POST",
             path=path,
             body=body,
             authorization=request.headers.get("Authorization"),
-            allowed_ss58=platform_hotkey_ss58,
+            allowed_ss58=authority.validator_hotkey,
         )
-        try:
-            assignment = EndpointAssignment.model_validate_json(body, strict=True)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail="invalid endpoint assignment") from exc
         if assignment.expected_hotkey != miner_hotkey.ss58_address:
             raise HTTPException(status_code=403, detail="assignment targets another hotkey")
         if assignment.expires_at <= datetime.now(UTC):
@@ -206,11 +251,16 @@ def create_endpoint_test_app(
         if assignment.query.output_schema is not None:
             raise HTTPException(status_code=422, detail="this example supports text queries only")
         existing = server_state.assignments.get(assignment.assignment_id)
-        if existing is not None and existing != assignment:
+        if existing is not None and existing.model_dump(
+            exclude={"callback_url", "delegation"}
+        ) != assignment.model_dump(exclude={"callback_url", "delegation"}):
             raise HTTPException(status_code=409, detail="assignment identity conflicts")
         if existing is None:
             server_state.assignments[assignment.assignment_id] = assignment
             server_state.statuses[assignment.assignment_id] = EndpointMinerStatus.RUNNING
+        server_state.destinations.setdefault(assignment.assignment_id, {})[assignment.callback_url] = assignment
+        if assignment.assignment_id in server_state.callbacks:
+            schedule_delivery(assignment)
         if existing is None and provider is not None and provider_key is not None:
             schedule(
                 assignment,
@@ -234,12 +284,24 @@ def create_endpoint_test_app(
     @app.get("/v1/endpoint-assignments/{assignment_id}/status")
     async def assignment_status(assignment_id: UUID, request: Request) -> HttpResponse:
         path = request.scope["raw_path"].decode("ascii")
+        try:
+            authority = verify_delegation(
+                parse_delegation_header(request.headers.get(ENDPOINT_DELEGATION_HEADER)), platform_hotkey_ss58
+            )
+            if (
+                authority.assignment_id != assignment_id
+                or authority.miner_hotkey != miner_hotkey.ss58_address
+                or authority.endpoint_url.rstrip("/") != canonical_url
+            ):
+                raise ValueError("status delegation mismatch")
+        except (ValueError, VerificationError) as exc:
+            raise HTTPException(status_code=403, detail="invalid status delegation") from exc
         _verify_or_401(
             method="GET",
             path=path,
             body=b"",
             authorization=request.headers.get("Authorization"),
-            allowed_ss58=platform_hotkey_ss58,
+            allowed_ss58=authority.validator_hotkey,
         )
         status = server_state.statuses.get(assignment_id)
         callback = server_state.callbacks.get(assignment_id)
@@ -252,17 +314,8 @@ def create_endpoint_test_app(
             and assignment_id not in server_state.acknowledged
             and datetime.now(UTC) < assignment.expires_at
         ):
-            schedule(
-                assignment,
-                lambda: _deliver_callback(
-                    assignment=assignment,
-                    callback=callback,
-                    miner_hotkey=miner_hotkey,
-                    state=server_state,
-                    client=http_client,
-                    retry_seconds=callback_retry_seconds,
-                ),
-            )
+            for destination in server_state.destinations.get(assignment_id, {}).values():
+                schedule_delivery(destination)
         return _signed_json(
             method="GET",
             path=path,
@@ -290,7 +343,7 @@ async def _execute_assignment(
         tool=EndpointSearchTool.SEARCH_WEB,
         kwargs={"provider": provider, "search_queries": [assignment.query.text]},
     )
-    search_url = assignment.callback_url.removesuffix("/callback") + "/search"
+    search_url = assignment.search_url
     search_response = await _post_signed_json(
         client=client,
         url=search_url,
@@ -317,14 +370,22 @@ async def _execute_assignment(
     )
     state.callbacks[assignment.assignment_id] = callback
     state.statuses[assignment.assignment_id] = EndpointMinerStatus.COMPLETED
-    await _deliver_callback(
-        assignment=assignment,
-        callback=callback,
-        miner_hotkey=miner_hotkey,
-        state=state,
-        client=client,
-        retry_seconds=callback_retry_seconds,
-    )
+    async with asyncio.TaskGroup() as deliveries:
+        for destination in tuple(
+            state.destinations.get(assignment.assignment_id, {assignment.callback_url: assignment}).values()
+        ):
+            key = (assignment.assignment_id, destination.callback_url)
+            task = deliveries.create_task(
+                _deliver_callback(
+                    assignment=destination,
+                    callback=callback,
+                    miner_hotkey=miner_hotkey,
+                    state=state,
+                    client=client,
+                    retry_seconds=callback_retry_seconds,
+                )
+            )
+            state.delivery_tasks[key] = task
 
 
 async def _deliver_callback(
@@ -337,7 +398,11 @@ async def _deliver_callback(
     retry_seconds: float,
 ) -> None:
     path = httpx.URL(assignment.callback_url).raw_path.decode("ascii")
-    while state.assignments.get(assignment.assignment_id) is assignment and datetime.now(UTC) < assignment.expires_at:
+    owner = state.assignments.get(assignment.assignment_id)
+    cutoff = assignment.expires_at + ENDPOINT_REPORT_FORWARDING_ALLOWANCE
+    while (
+        owner is not None and state.assignments.get(assignment.assignment_id) is owner and datetime.now(UTC) <= cutoff
+    ):
         state.callback_attempts[assignment.assignment_id] = state.callback_attempts.get(assignment.assignment_id, 0) + 1
         try:
             response = await _post_signed_json(
@@ -346,7 +411,8 @@ async def _deliver_callback(
                 path=path,
                 payload=callback,
                 hotkey=miner_hotkey,
-                deadline_at=assignment.expires_at,
+                deadline_at=cutoff,
+                headers={ENDPOINT_DELEGATION_HEADER: delegation_header(assignment.delegation)},
             )
             if response.status_code == 200:
                 acknowledgement = EndpointCallbackAcknowledgement.model_validate_json(response.content, strict=True)
@@ -354,14 +420,15 @@ async def _deliver_callback(
                     EndpointDurableTerminalResult.PERSISTED,
                     EndpointDurableTerminalResult.CLOSED,
                 }:
-                    if state.assignments.get(assignment.assignment_id) is assignment:
+                    if state.assignments.get(assignment.assignment_id) is owner:
                         state.acknowledged.add(assignment.assignment_id)
+                        state.acknowledged_destinations.add((assignment.assignment_id, assignment.callback_url))
                     return
         except TimeoutError:
             return
         except (httpx.HTTPError, ValueError):
             pass
-        remaining = (assignment.expires_at - datetime.now(UTC)).total_seconds()
+        remaining = (cutoff - datetime.now(UTC)).total_seconds()
         if remaining <= 0:
             return
         await asyncio.sleep(min(retry_seconds, remaining))

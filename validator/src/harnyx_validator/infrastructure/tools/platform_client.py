@@ -19,11 +19,20 @@ from harnyx_commons.domain.miner_task import EvaluationTrace, MinerTask, Respons
 from harnyx_commons.domain.session import LlmUsageTotals, Session, SessionStatus
 from harnyx_commons.domain.tool_call import ToolExecutionFacts
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
+from harnyx_commons.endpoint_execution import (
+    EndpointAssignmentSnapshot,
+    EndpointExecutionWork,
+    EndpointFailureAcknowledgement,
+    EndpointFailureReport,
+    EndpointResponseReport,
+    EndpointStartReport,
+)
 from harnyx_commons.errors import BudgetExceededError, ToolInvocationTimeoutError, ToolProviderError
 from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.protocol_headers import PLATFORM_TOOL_PROXY_TOKEN_HEADER
 from harnyx_commons.rating_competition import RATING_JUDGMENT_ALREADY_ACCEPTED, RatingJudgment, RatingWorkPage
 from harnyx_commons.tools.types import ToolName
+from harnyx_miner_sdk.endpoint_protocol import EndpointCallbackAcknowledgement, EndpointDelegation
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskWorkAssignment,
     PlatformOwnedTaskExecution,
@@ -31,6 +40,7 @@ from harnyx_validator.application.dto.evaluation import (
     ScriptArtifactSpec,
     TokenUsageSummary,
 )
+from harnyx_validator.application.endpoint_execution import EndpointReportRejectedError
 from harnyx_validator.application.ports.platform import (
     ChampionWeights,
     PlatformPort,
@@ -202,6 +212,49 @@ class HttpPlatformClient(PlatformPort):
                 **kwargs,
             )
 
+    async def _endpoint_request(self, assignment_id: UUID, operation: str, payload: BaseModel) -> bytes:
+        path = f"/v1/endpoint-assignments/{assignment_id}/{operation}"
+        body = payload.model_dump_json().encode()
+        async with asyncio.timeout(self.timeout_seconds):
+            async with self._async_client() as client:
+                url = httpx.URL(str(client.base_url).rstrip("/") + path)
+                headers = self._request_headers("POST", url.raw_path.decode(), body)
+                async with client.stream(
+                    "POST", url, content=body, headers=headers, follow_redirects=False
+                ) as response:
+                    raw = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        raw.extend(chunk)
+                        if len(raw) > 4_000_000:
+                            raise PlatformClientError(status_code=None, message="endpoint response exceeds size limit")
+                    if response.status_code == 422 and operation == "report":
+                        raise EndpointReportRejectedError("Platform rejected response evidence")
+                    if response.status_code != 200:
+                        raise PlatformClientError(status_code=response.status_code, message="endpoint request failed")
+        return bytes(raw)
+
+    async def start_endpoint(self, assignment_id: UUID, report: EndpointStartReport) -> EndpointExecutionWork:
+        return EndpointExecutionWork.model_validate_json(
+            await self._endpoint_request(assignment_id, "start", report), strict=True
+        )
+
+    async def report_endpoint(
+        self, assignment_id: UUID, report: EndpointResponseReport
+    ) -> EndpointCallbackAcknowledgement:
+        return EndpointCallbackAcknowledgement.model_validate_json(
+            await self._endpoint_request(assignment_id, "report", report), strict=True
+        )
+
+    async def fail_endpoint(self, assignment_id: UUID, report: EndpointFailureReport) -> bool:
+        return EndpointFailureAcknowledgement.model_validate_json(
+            await self._endpoint_request(assignment_id, "failure", report), strict=True
+        ).recorded
+
+    async def saved_endpoint(self, assignment_id: UUID, delegation: EndpointDelegation) -> EndpointAssignmentSnapshot:
+        return EndpointAssignmentSnapshot.model_validate_json(
+            await self._endpoint_request(assignment_id, "saved", delegation), strict=True
+        )
+
     async def poll_rating_comparisons(self, *, after: UUID | None = None, limit: int = 100) -> RatingWorkPage:
 
         path = f"/v1/rating-comparisons?limit={limit}"
@@ -283,9 +336,7 @@ class HttpPlatformClient(PlatformPort):
                         "task_id": str(attempt.task_id),
                         "attempt_number": attempt.attempt_number,
                         "validator_session_id": (
-                            None
-                            if attempt.validator_session_id is None
-                            else str(attempt.validator_session_id)
+                            None if attempt.validator_session_id is None else str(attempt.validator_session_id)
                         ),
                     }
                     for attempt in active_attempts
@@ -347,7 +398,7 @@ class HttpPlatformClient(PlatformPort):
             raise PlatformClientError(
                 status_code=response.status_code,
                 message=f"platform returned {response.status_code} for POST {path}",
-        )
+            )
         payload = response.json()
         if not isinstance(payload, dict):
             raise PlatformClientError(
@@ -377,9 +428,7 @@ class HttpPlatformClient(PlatformPort):
                         "task_id": str(attempt.task_id),
                         "attempt_number": attempt.attempt_number,
                         "validator_session_id": (
-                            None
-                            if attempt.validator_session_id is None
-                            else str(attempt.validator_session_id)
+                            None if attempt.validator_session_id is None else str(attempt.validator_session_id)
                         ),
                     }
                     for attempt in active_scoring
@@ -391,7 +440,7 @@ class HttpPlatformClient(PlatformPort):
             raise PlatformClientError(
                 status_code=response.status_code,
                 message=f"platform returned {response.status_code} for POST {path}",
-        )
+            )
         payload = response.json()
         if not isinstance(payload, dict):
             raise PlatformClientError(
@@ -626,8 +675,7 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
                     status_code=response.status_code,
                     error_code=error_code,
                     message=(
-                        _platform_error_message(response)
-                        or "platform tool proxy selected-provider/tool request failed"
+                        _platform_error_message(response) or "platform tool proxy selected-provider/tool request failed"
                     ),
                 )
             if error_code in _NON_PROVIDER_PLATFORM_TOOL_PROXY_ERROR_CODES:
@@ -640,8 +688,7 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
                 status_code=response.status_code,
                 error_code="platform_error",
                 message=(
-                    _platform_error_message(response)
-                    or f"platform returned {response.status_code} for POST {path}"
+                    _platform_error_message(response) or f"platform returned {response.status_code} for POST {path}"
                 ),
             )
         try:
@@ -829,15 +876,12 @@ def _run_submission_payload(submission: Any) -> JsonObject:
         "run": {
             "artifact_id": str(submission.run.artifact_id),
             "task_id": str(submission.run.task_id),
-            "completed_at": (
-                None
-                if submission.run.completed_at is None
-                else submission.run.completed_at.isoformat()
-            ),
+            "completed_at": (None if submission.run.completed_at is None else submission.run.completed_at.isoformat()),
             "response": _jsonable(submission.run.response),
             **(
                 {"rejected_response": submission.run.rejected_response}
-                if submission.run.rejected_response is not None else {}
+                if submission.run.rejected_response is not None
+                else {}
             ),
         },
         "score": submission.score,

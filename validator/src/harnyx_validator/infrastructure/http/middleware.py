@@ -24,8 +24,9 @@ async def request_logging_middleware(
     request_line = _format_request_line(request)
     query_params = list(request.query_params.multi_items())
 
-    body_bytes = await request.body()
-    body_str = _truncate_body(body_bytes)
+    body_str = (
+        "<redacted>" if "/validator/endpoint-assignments" in request.url.path else _truncate_body(await request.body())
+    )
     logger.log(
         log_level,
         "request_received",

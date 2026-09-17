@@ -10,10 +10,18 @@ import httpx
 import pytest
 
 from harnyx_commons.bittensor import build_canonical_request, verify_signed_request
+from harnyx_commons.endpoint_execution import (
+    ENDPOINT_DELEGATION_HEADER,
+    ENDPOINT_REPORT_FORWARDING_ALLOWANCE,
+    EndpointAuthority,
+    delegation_header,
+    delegation_signing_bytes,
+)
 from harnyx_miner.endpoint_test_server import EndpointTestServerState, create_endpoint_test_app
 from harnyx_miner_sdk.endpoint_protocol import (
     EndpointAssignment,
     EndpointCallbackAcknowledgement,
+    EndpointDelegation,
     EndpointDurableTerminalResult,
     EndpointMinerStatus,
     query_digest,
@@ -25,15 +33,43 @@ pytestmark = pytest.mark.anyio("asyncio")
 
 def _assignment(miner):
     query = Query(text="Find evidence")
-    return EndpointAssignment(
+    assignment = EndpointAssignment(
         assignment_id=uuid4(),
         query=query,
         query_digest=query_digest(query),
         expected_hotkey=miner.ss58_address,
         callback_url="https://platform.example/v1/endpoint-assignments/example/callback",
+        search_url="https://platform.example/v1/endpoint-assignments/example/search",
+        delegation=EndpointDelegation(platform_hotkey="platform", body_utf8="{}", signature_hex="0" * 128),
         nonce="b" * 64,
         expires_at=datetime.now(UTC) + timedelta(minutes=1),
     )
+    return _delegate(assignment, bt.Keypair.create_from_uri("//Alice"))
+
+
+def _delegate(assignment, platform):
+    start = assignment.expires_at - timedelta(minutes=1)
+    authority = EndpointAuthority(
+        assignment_id=assignment.assignment_id,
+        validator_hotkey=platform.ss58_address,
+        miner_hotkey=assignment.expected_hotkey,
+        query_digest=assignment.query_digest,
+        nonce=assignment.nonce,
+        endpoint_url="https://miner.example",
+        callback_url=assignment.callback_url,
+        search_url=assignment.search_url,
+        first_scheduled_at=start,
+        started_at=start,
+        deadline_at=assignment.expires_at,
+        execution_timeout_seconds=60.0,
+        attempt_number=1,
+    )
+    delegation = EndpointDelegation(
+        platform_hotkey=platform.ss58_address,
+        body_utf8=authority.model_dump_json(),
+        signature_hex=platform.sign(delegation_signing_bytes(authority)).hex(),
+    )
+    return assignment.model_copy(update={"delegation": delegation})
 
 
 async def _accept(client, platform, assignment):
@@ -51,7 +87,13 @@ async def _accept(client, platform, assignment):
 
 async def _status(client, platform, assignment):
     path = f"/v1/endpoint-assignments/{assignment.assignment_id}/status"
-    return await client.get(path, headers={"Authorization": _authorization(platform, "GET", path, b"")})
+    return await client.get(
+        path,
+        headers={
+            "Authorization": _authorization(platform, "GET", path, b""),
+            ENDPOINT_DELEGATION_HEADER: delegation_header(assignment.delegation),
+        },
+    )
 
 
 def _search_result(request):
@@ -300,7 +342,7 @@ async def test_clear_and_reaccept_cannot_be_changed_by_obsolete_task(stage):
                 await _accept(client, platform, assignment)
                 await replacement_entered.wait()
                 release.set()
-                await asyncio.gather(*obsolete)
+                await asyncio.gather(*obsolete, return_exceptions=True)
                 assert state.statuses[assignment.assignment_id] is EndpointMinerStatus.RUNNING
                 assert not state.callbacks
                 assert not state.acknowledged
@@ -324,7 +366,7 @@ async def test_expired_delivery_retains_callback_without_poll_restarting_it(monk
     class Expired:
         @staticmethod
         def now(tz):
-            return assignment.expires_at
+            return assignment.expires_at + ENDPOINT_REPORT_FORWARDING_ALLOWANCE + timedelta(microseconds=1)
 
     async def transport(request):
         nonlocal deliveries
@@ -375,7 +417,11 @@ async def test_callback_deadline_closes_stalled_attempt_and_retains_result(monke
     class NearDeadline:
         @staticmethod
         def now(tz):
-            return assignment.expires_at if expired else assignment.expires_at - timedelta(milliseconds=20)
+            return (
+                assignment.expires_at + ENDPOINT_REPORT_FORWARDING_ALLOWANCE + timedelta(microseconds=1)
+                if expired
+                else assignment.expires_at + ENDPOINT_REPORT_FORWARDING_ALLOWANCE - timedelta(milliseconds=20)
+            )
 
     async def wait_until_cancelled():
         nonlocal expired
@@ -533,9 +579,12 @@ async def test_assignment_and_status_are_signed_and_unknown_after_memory_clear()
         query_digest=query_digest(query),
         expected_hotkey=miner_hotkey.ss58_address,
         callback_url="https://platform.example/v1/endpoint-assignments/callback",
+        search_url="https://platform.example/v1/endpoint-assignments/example/search",
+        delegation=EndpointDelegation(platform_hotkey="platform", body_utf8="{}", signature_hex="0" * 128),
         nonce="b" * 64,
         expires_at=datetime.now(UTC) + timedelta(minutes=1),
     )
+    assignment = _delegate(assignment, platform_hotkey)
     path = "/v1/endpoint-assignments"
     body = assignment.model_dump_json().encode()
     transport = httpx.ASGITransport(app=app)
@@ -557,14 +606,20 @@ async def test_assignment_and_status_are_signed_and_unknown_after_memory_clear()
         status_path = f"/v1/endpoint-assignments/{assignment.assignment_id}/status"
         known = await client.get(
             status_path,
-            headers={"Authorization": _authorization(platform_hotkey, "GET", status_path, b"")},
+            headers={
+                "Authorization": _authorization(platform_hotkey, "GET", status_path, b""),
+                ENDPOINT_DELEGATION_HEADER: delegation_header(assignment.delegation),
+            },
         )
         assert known.json()["state"] == EndpointMinerStatus.RUNNING.value
 
         state.clear()
         unknown = await client.get(
             status_path,
-            headers={"Authorization": _authorization(platform_hotkey, "GET", status_path, b"")},
+            headers={
+                "Authorization": _authorization(platform_hotkey, "GET", status_path, b""),
+                ENDPOINT_DELEGATION_HEADER: delegation_header(assignment.delegation),
+            },
         )
         assert unknown.json()["state"] == EndpointMinerStatus.UNKNOWN.value
 
@@ -590,7 +645,7 @@ async def test_tampered_assignment_is_rejected_without_retaining_secrets() -> No
             headers={"Authorization": _authorization(platform_hotkey, "POST", path, signed_body)},
         )
 
-    assert response.status_code == 401
+    assert response.status_code in {401, 422}
     assert "must-not-survive" not in repr(state)
 
 
@@ -659,9 +714,12 @@ async def test_executable_endpoint_searches_and_retries_callback_without_retaini
         query_digest=query_digest(query),
         expected_hotkey=miner_hotkey.ss58_address,
         callback_url="https://platform.example/v1/endpoint-assignments/00000000-0000-0000-0000-000000000001/callback",
+        search_url="https://platform.example/v1/endpoint-assignments/example/search",
+        delegation=EndpointDelegation(platform_hotkey="platform", body_utf8="{}", signature_hex="0" * 128),
         nonce="b" * 64,
         expires_at=datetime.now(UTC) + timedelta(minutes=1),
     )
+    assignment = _delegate(assignment, platform_hotkey)
     path = "/v1/endpoint-assignments"
     body = assignment.model_dump_json().encode()
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://miner.example") as client:

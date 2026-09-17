@@ -17,6 +17,7 @@ import bittensor as bt
 
 from harnyx_commons.application.session_manager import SessionManager
 from harnyx_commons.clients import PLATFORM
+from harnyx_commons.endpoint_execution import DELEGATION_PATH, EndpointAuthority, verify_delegation
 from harnyx_commons.errors import ToolProviderError
 from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
 from harnyx_commons.infrastructure.state.session_registry import InMemorySessionRegistry
@@ -59,6 +60,7 @@ from harnyx_commons.tools.runtime_invoker import (
 from harnyx_commons.tools.search_models import SearchProviderName
 from harnyx_commons.tools.token_semaphore import DEFAULT_TOOL_CONCURRENCY_LIMITS, ToolConcurrencyLimiter
 from harnyx_commons.tools.usage_tracker import UsageTracker
+from harnyx_miner_sdk.endpoint_protocol import EndpointDelegation
 from harnyx_validator.application.assigned_work import AssignedArtifactWork
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskBatchSpec,
@@ -66,6 +68,7 @@ from harnyx_validator.application.dto.evaluation import (
     PlatformOwnedTaskResult,
 )
 from harnyx_validator.application.dto.registration import ValidatorRegistrationMetadata
+from harnyx_validator.application.endpoint_execution import ValidatorEndpointExecution
 from harnyx_validator.application.evaluate_task_run import TaskRunOrchestrator, score_platform_execution
 from harnyx_validator.application.invoke_entrypoint import EntrypointInvoker, SandboxClient
 from harnyx_validator.application.platform_tool_proxy import (
@@ -87,6 +90,7 @@ from harnyx_validator.application.similarity_judge import SimilarityJudge, Simil
 from harnyx_validator.application.status import BatchActivityTracker, StatusProvider
 from harnyx_validator.application.submit_weights import WeightSubmissionService
 from harnyx_validator.infrastructure.auth.sr25519 import BittensorSr25519InboundVerifier
+from harnyx_validator.infrastructure.endpoint_client import SignedMinerEndpointClient
 from harnyx_validator.infrastructure.http.routes import (
     StatusSigner,
     ToolRouteDeps,
@@ -272,6 +276,7 @@ class RuntimeContext:
     platform_client: PlatformPort | None
     platform_tool_proxy_platform_client: PlatformToolProxyPlatformPort | None
     platform_tool_proxy_scopes: PlatformToolProxyScopeRegistry
+    endpoint_execution: ValidatorEndpointExecution | None
     rating_competition_worker: RatingCompetitionWorker | None
     platform_work_worker: PlatformWorkWorker | None
     status_provider: StatusProvider
@@ -381,6 +386,31 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         platform_client=platform_client,
         platform_tool_proxy_platform_client=platform_tool_proxy_platform_client,
     )
+    endpoint_execution = None
+    if platform_client is not None:
+        original_control_provider = control_provider
+
+        async def authorize_delegation(delegation: EndpointDelegation) -> EndpointAuthority:
+            await original_control_provider().auth(
+                "POST",
+                DELEGATION_PATH,
+                delegation.body_utf8.encode(),
+                f'Bittensor ss58="{delegation.platform_hotkey}",sig="{delegation.signature_hex}"',
+            )
+            return verify_delegation(delegation, delegation.platform_hotkey)
+
+        endpoint_execution = ValidatorEndpointExecution(
+            platform=platform_client,
+            miner=SignedMinerEndpointClient(validator_hotkey=platform_hotkey),
+            authorize_delegation=authorize_delegation,
+            validator_hotkey=platform_hotkey.ss58_address,
+            callback_base_url=resolved.platform_api.validator_public_base_url or "",
+        )
+
+        def execution_control_provider() -> ValidatorControlDeps:
+            return replace(original_control_provider(), endpoint_execution=endpoint_execution)
+
+        control_provider = execution_control_provider
     registration_metadata = resolve_validator_registration_metadata()
 
     batch_blocking_executor = ThreadPoolExecutor(
@@ -437,6 +467,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         platform_client=platform_client,
         platform_tool_proxy_platform_client=platform_tool_proxy_platform_client,
         platform_tool_proxy_scopes=state.platform_tool_proxy_scopes,
+        endpoint_execution=endpoint_execution,
         rating_competition_worker=rating_competition_worker,
         platform_work_worker=platform_work_worker,
         status_provider=status_provider,

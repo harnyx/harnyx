@@ -6,7 +6,9 @@ import logging
 import traceback
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Protocol, cast
+from urllib.parse import quote
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, Security, status
@@ -16,6 +18,15 @@ from pydantic import ValidationError
 
 from harnyx_commons.bittensor import VerificationError
 from harnyx_commons.domain.miner_task import ScoreBreakdown
+from harnyx_commons.endpoint_execution import (
+    ENDPOINT_CALLBACK_MAX_BYTES,
+    ENDPOINT_DELEGATION_HEADER,
+    ENDPOINT_REPORT_MAX_BYTES,
+    EXECUTION_PATH,
+    EndpointExecutionWork,
+    EndpointProgress,
+    parse_delegation_header,
+)
 from harnyx_commons.errors import ConcurrencyLimitError, ToolProviderError
 from harnyx_commons.llm.provider_error_summary import public_llm_provider_failure_summary
 from harnyx_commons.miner_task_similarity import SimilarityJudgeRequest, SimilarityJudgeResult
@@ -26,7 +37,9 @@ from harnyx_commons.tools.executor import ToolExecutor, execute_tool_with_concur
 from harnyx_commons.tools.http_models import ToolExecuteResponseDTO
 from harnyx_commons.tools.http_serialization import serialize_tool_execute_response
 from harnyx_commons.tools.token_semaphore import ToolConcurrencyLimiter
+from harnyx_miner_sdk.endpoint_protocol import EndpointCallback, EndpointCallbackAcknowledgement
 from harnyx_miner_sdk.tools.http_models import ToolExecuteRequestDTO
+from harnyx_validator.application.endpoint_execution import ValidatorEndpointExecution
 from harnyx_validator.application.platform_tool_proxy import PlatformToolProxyScopeRegistry
 from harnyx_validator.application.ports.platform import PlatformToolProxyPlatformPort
 from harnyx_validator.application.status import BatchActivityTracker, StatusProvider
@@ -71,6 +84,7 @@ class ValidatorControlDeps:
     platform_tool_proxy_scopes: PlatformToolProxyScopeRegistry | None = None
     similarity_judge: SimilarityJudgePort | None = None
     reference_judge: ReferenceJudgePort | None = None
+    endpoint_execution: ValidatorEndpointExecution | None = None
 
 
 class ReferenceJudgePort(Protocol):
@@ -182,12 +196,89 @@ def add_system_routes(app: FastAPI, status_provider: StatusProvider) -> None:
         return {"status": "waiting_for_platform_registration"}
 
 
+def _endpoint_path(request: Request) -> str:
+    raw_path = request.scope.get("raw_path")
+    path = raw_path.decode("ascii") if raw_path is not None else quote(request.url.path, safe="/%")
+    query = request.scope.get("query_string", b"").decode("ascii")
+    return f"{path}?{query}" if query else path
+
+
+def _endpoint_contract(model: str) -> dict[str, Any]:
+    return {
+        "security": [{"BittensorAuth": []}],
+        "parameters": [
+            {
+                "name": ENDPOINT_DELEGATION_HEADER,
+                "in": "header",
+                "required": True,
+                "schema": {"type": "string", "maxLength": 24_000},
+            }
+        ]
+        if model == "EndpointCallback"
+        else [],
+        "requestBody": {
+            "required": True,
+            "content": {"application/json": {"schema": {"$ref": f"#/components/schemas/{model}"}}},
+        },
+    }
+
+
 def add_control_routes(
     app: FastAPI,
     control_deps_provider: Callable[[], ValidatorControlDeps],
 ) -> None:
     def get_control_deps() -> ValidatorControlDeps:
         return control_deps_provider()
+
+    @app.post(
+        EXECUTION_PATH, response_model=EndpointProgress, openapi_extra=_endpoint_contract("EndpointExecutionWork")
+    )
+    async def execute_endpoint(request: Request) -> EndpointProgress:
+        deps = get_control_deps()
+        service = deps.endpoint_execution
+        if service is None:
+            raise HTTPException(status_code=503, detail="endpoint execution unavailable")
+        body = await _endpoint_body(request, ENDPOINT_REPORT_MAX_BYTES)
+        try:
+            await deps.auth("POST", _endpoint_path(request), body, request.headers.get("Authorization"))
+            return await service.execute(EndpointExecutionWork.model_validate_json(body, strict=True))
+        except VerificationError as exc:
+            raise HTTPException(status_code=401, detail=exc.message) from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.post(
+        EXECUTION_PATH + "/{assignment_id}/callback",
+        response_model=EndpointCallbackAcknowledgement,
+        openapi_extra=_endpoint_contract("EndpointCallback"),
+    )
+    async def endpoint_callback(assignment_id: UUID, request: Request) -> EndpointCallbackAcknowledgement:
+        service = get_control_deps().endpoint_execution
+        if service is None:
+            raise HTTPException(status_code=503, detail="endpoint execution unavailable")
+        body = await _endpoint_body(request, ENDPOINT_CALLBACK_MAX_BYTES)
+        received_at = datetime.now(UTC)
+        try:
+            return await service.accept_callback(
+                assignment_id=assignment_id,
+                delegation=parse_delegation_header(request.headers.get(ENDPOINT_DELEGATION_HEADER)),
+                raw_body=body,
+                received_at=received_at,
+                authorization_header=request.headers.get("Authorization"),
+                signed_path=_endpoint_path(request),
+            )
+        except VerificationError as exc:
+            raise HTTPException(status_code=401, detail=exc.message) from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Platform has not confirmed a durable result") from exc
 
     bittensor_header = APIKeyHeader(name="Authorization", scheme_name="BittensorAuth", auto_error=False)
 
@@ -327,13 +418,16 @@ def add_control_routes(
     def reference_openapi() -> dict[str, Any]:
         if app.openapi_schema is None:
             schema = default_openapi()
-            model = ReferenceSelectionRequest
-            model_schema = model.model_json_schema(ref_template=f"#/components/schemas/{model.__name__}{{model}}")
-            schemas = schema.setdefault("components", {}).setdefault("schemas", {})
-            schemas.update(
-                {f"{model.__name__}{name}": definition for name, definition in model_schema.pop("$defs", {}).items()}
-            )
-            schemas[model.__name__] = model_schema
+            for model in (ReferenceSelectionRequest, EndpointExecutionWork, EndpointCallback):
+                model_schema = model.model_json_schema(ref_template=f"#/components/schemas/{model.__name__}{{model}}")
+                schemas = schema.setdefault("components", {}).setdefault("schemas", {})
+                schemas.update(
+                    {
+                        f"{model.__name__}{name}": definition
+                        for name, definition in model_schema.pop("$defs", {}).items()
+                    }
+                )
+                schemas[model.__name__] = model_schema
             app.openapi_schema = schema
         return app.openapi_schema
 
@@ -468,3 +562,12 @@ __all__ = [
     "add_system_routes",
     "add_control_routes",
 ]
+
+
+async def _endpoint_body(request: Request, limit: int) -> bytes:
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > limit:
+            raise HTTPException(status_code=413, detail="endpoint request body exceeds size limit")
+        body.extend(chunk)
+    return bytes(body)

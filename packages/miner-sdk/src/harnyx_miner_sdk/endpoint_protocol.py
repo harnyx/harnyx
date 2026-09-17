@@ -35,6 +35,15 @@ class EndpointDurableTerminalResult(StrEnum):
     CLOSED = "closed"
 
 
+class EndpointDelegation(BaseModel):
+    """Original Platform-signed assignment authority, retained across validator retries."""
+
+    model_config = _STRICT
+    platform_hotkey: str = Field(min_length=1)
+    body_utf8: str = Field(min_length=1, max_length=12_000)
+    signature_hex: str = Field(min_length=128, max_length=128, pattern=r"^[0-9a-f]+$")
+
+
 class EndpointAssignment(BaseModel):
     model_config = _STRICT
 
@@ -43,10 +52,12 @@ class EndpointAssignment(BaseModel):
     query_digest: str = Field(pattern=_HEX_64)
     expected_hotkey: str = Field(min_length=1)
     callback_url: str = Field(min_length=1, max_length=2000)
+    search_url: str = Field(min_length=1, max_length=2000)
+    delegation: EndpointDelegation
     nonce: str = Field(min_length=32, max_length=128)
     expires_at: datetime
 
-    @field_validator("callback_url")
+    @field_validator("callback_url", "search_url")
     @classmethod
     def validate_callback_url(cls, value: str) -> str:
         if not value.startswith("https://"):
@@ -159,6 +170,7 @@ def query_digest(query: Query) -> str:
 
 __all__ = [
     "EndpointAssignment",
+    "EndpointDelegation",
     "EndpointAssignmentAcknowledgement",
     "EndpointCallback",
     "EndpointCallbackAcknowledgement",

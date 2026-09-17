@@ -3,6 +3,9 @@
 Generated from FastAPI OpenAPI.
 
 ## Domains
+- [endpoint-assignments](#endpoint-assignments)
+  - [POST /validator/endpoint-assignments](#endpoint-post-validator-endpoint-assignments)
+  - [POST /validator/endpoint-assignments/{assignment_id}/callback](#endpoint-post-validator-endpoint-assignments-assignment_id-callback)
 - [miner-task-batches](#miner-task-batches)
   - [POST /validator/miner-task-batches/{batch_id}/reference-selection](#endpoint-post-validator-miner-task-batches-batch_id-reference-selection)
   - [POST /validator/miner-task-batches/{batch_id}/similarity](#endpoint-post-validator-miner-task-batches-batch_id-similarity)
@@ -13,6 +16,105 @@ Generated from FastAPI OpenAPI.
 - [Misc](#misc)
   - [GET /healthz](#endpoint-get-healthz)
   - [GET /readyz](#endpoint-get-readyz)
+
+## endpoint-assignments
+
+<a id="endpoint-post-validator-endpoint-assignments"></a>
+### POST /validator/endpoint-assignments
+
+Execute Endpoint
+
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
+
+**Request**
+Content-Type: `application/json`
+Body: [EndpointExecutionWork](#model-endpointexecutionwork)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `delegation` |  |  | req | [EndpointExecutionWorkEndpointDelegation](#model-endpointexecutionworkendpointdelegation) |
+|  | `body_utf8` |  | req | `string` |
+|  | `platform_hotkey` |  | req | `string` |
+|  | `signature_hex` |  | req | `string` |
+| `query` |  |  | req | [EndpointExecutionWorkQuery](#model-endpointexecutionworkquery) |
+|  | `fast` |  | opt | `boolean` (default: False) |
+|  | `output_schema` |  | opt | [EndpointExecutionWorkJsonObject](#model-endpointexecutionworkjsonobject) (nullable) |
+|  | `text` |  | req | `string` |
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: [EndpointProgress](#model-endpointprogress)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `assignment_id` |  |  | req | `string` (format: uuid) |
+| `state` |  |  | req | `string` (enum: [queued, active, reporting, saved]) |
+
+
+### {assignment_id}
+
+#### callback
+
+<a id="endpoint-post-validator-endpoint-assignments-assignment_id-callback"></a>
+##### POST /validator/endpoint-assignments/{assignment_id}/callback
+
+Endpoint Callback
+
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
+
+**Headers**
+| Header | Req | Notes |
+| --- | --- | --- |
+| `X-Harnyx-Endpoint-Delegation` | req | `string` |
+
+**Parameters**
+| Param | In | Req | Notes |
+| --- | --- | --- | --- |
+| `assignment_id` | path | req | `string` (format: uuid) |
+
+**Request**
+Content-Type: `application/json`
+Body: [EndpointCallback](#model-endpointcallback)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `assignment_id` |  |  | req | `string` (format: uuid) |
+| `expires_at` |  |  | req | `string` (format: date-time) |
+| `nonce` |  |  | req | `string` |
+| `query_digest` |  |  | req | `string` |
+| `response` |  |  | req | [EndpointCallbackResponse](#model-endpointcallbackresponse) |
+|  | `citations` |  | opt | array[[EndpointCallbackCitationRef](#model-endpointcallbackcitationref)] (nullable) |
+|  |  | `receipt_id` | req | `string` |
+|  |  | `result_id` | req | `string` |
+|  |  | `slices` | opt | array[[EndpointCallbackCitationSlice](#model-endpointcallbackcitationslice)] |
+|  | `note` |  | opt | `string` (nullable) |
+|  | `output` |  | opt | [EndpointCallbackJsonValue](#model-endpointcallbackjsonvalue) (nullable) |
+|  | `text` |  | opt | `string` (nullable) |
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: [EndpointCallbackAcknowledgement](#model-endpointcallbackacknowledgement)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `durable_terminal_result` |  |  | req | [EndpointDurableTerminalResult](#model-endpointdurableterminalresult) |
+
+`422` Validation Error
+Content-Type: `application/json`
+Body: [HTTPValidationError](#model-httpvalidationerror)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
+|  | `ctx` |  | opt | `object` |
+|  | `input` |  | opt | `object` |
+|  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
+|  | `msg` |  | req | `string` |
+|  | `type` |  | req | `string` |
+
+
 
 ## miner-task-batches
 
@@ -389,6 +491,605 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
 
 
 ## Models
+
+<a id="model-endpointcallback"></a>
+### Model: EndpointCallback
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `assignment_id` |  |  | req | `string` (format: uuid) |
+| `expires_at` |  |  | req | `string` (format: date-time) |
+| `nonce` |  |  | req | `string` |
+| `query_digest` |  |  | req | `string` |
+| `response` |  |  | req | [EndpointCallbackResponse](#model-endpointcallbackresponse) |
+|  | `citations` |  | opt | array[[EndpointCallbackCitationRef](#model-endpointcallbackcitationref)] (nullable) |
+|  |  | `receipt_id` | req | `string` |
+|  |  | `result_id` | req | `string` |
+|  |  | `slices` | opt | array[[EndpointCallbackCitationSlice](#model-endpointcallbackcitationslice)] |
+|  | `note` |  | opt | `string` (nullable) |
+|  | `output` |  | opt | [EndpointCallbackJsonValue](#model-endpointcallbackjsonvalue) (nullable) |
+|  | `text` |  | opt | `string` (nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "assignment_id": {
+      "format": "uuid",
+      "title": "Assignment Id",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "nonce": {
+      "maxLength": 128,
+      "minLength": 32,
+      "title": "Nonce",
+      "type": "string"
+    },
+    "query_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Query Digest",
+      "type": "string"
+    },
+    "response": {
+      "$ref": "#/components/schemas/EndpointCallbackResponse"
+    }
+  },
+  "required": [
+    "assignment_id",
+    "query_digest",
+    "nonce",
+    "expires_at",
+    "response"
+  ],
+  "title": "EndpointCallback",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-endpointcallbackacknowledgement"></a>
+### Model: EndpointCallbackAcknowledgement
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `durable_terminal_result` |  |  | req | [EndpointDurableTerminalResult](#model-endpointdurableterminalresult) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "durable_terminal_result": {
+      "$ref": "#/components/schemas/EndpointDurableTerminalResult"
+    }
+  },
+  "required": [
+    "durable_terminal_result"
+  ],
+  "title": "EndpointCallbackAcknowledgement",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-endpointcallbackcitationref"></a>
+### Model: EndpointCallbackCitationRef
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `receipt_id` |  |  | req | `string` |
+| `result_id` |  |  | req | `string` |
+| `slices` |  |  | opt | array[[EndpointCallbackCitationSlice](#model-endpointcallbackcitationslice)] |
+|  | `end` |  | req | `integer` |
+|  | `start` |  | req | `integer` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "receipt_id": {
+      "minLength": 1,
+      "title": "Receipt Id",
+      "type": "string"
+    },
+    "result_id": {
+      "minLength": 1,
+      "title": "Result Id",
+      "type": "string"
+    },
+    "slices": {
+      "items": {
+        "$ref": "#/components/schemas/EndpointCallbackCitationSlice"
+      },
+      "title": "Slices",
+      "type": "array"
+    }
+  },
+  "required": [
+    "receipt_id",
+    "result_id"
+  ],
+  "title": "CitationRef",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-endpointcallbackcitationslice"></a>
+### Model: EndpointCallbackCitationSlice
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `end` |  |  | req | `integer` |
+| `start` |  |  | req | `integer` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "end": {
+      "exclusiveMinimum": 0,
+      "title": "End",
+      "type": "integer"
+    },
+    "start": {
+      "minimum": 0,
+      "title": "Start",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "start",
+    "end"
+  ],
+  "title": "CitationSlice",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-endpointcallbackjsonvalue"></a>
+### Model: EndpointCallbackJsonValue
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "anyOf": [
+    {
+      "type": "string"
+    },
+    {
+      "type": "integer"
+    },
+    {
+      "type": "number"
+    },
+    {
+      "type": "boolean"
+    },
+    {
+      "items": {
+        "$ref": "#/components/schemas/EndpointCallbackJsonValue"
+      },
+      "type": "array"
+    },
+    {
+      "additionalProperties": {
+        "$ref": "#/components/schemas/EndpointCallbackJsonValue"
+      },
+      "type": "object"
+    },
+    {
+      "type": "null"
+    }
+  ]
+}
+```
+
+</details>
+
+<a id="model-endpointcallbackresponse"></a>
+### Model: EndpointCallbackResponse
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `citations` |  |  | opt | array[[EndpointCallbackCitationRef](#model-endpointcallbackcitationref)] (nullable) |
+|  | `receipt_id` |  | req | `string` |
+|  | `result_id` |  | req | `string` |
+|  | `slices` |  | opt | array[[EndpointCallbackCitationSlice](#model-endpointcallbackcitationslice)] |
+|  |  | `end` | req | `integer` |
+|  |  | `start` | req | `integer` |
+| `note` |  |  | opt | `string` (nullable) |
+| `output` |  |  | opt | [EndpointCallbackJsonValue](#model-endpointcallbackjsonvalue) (nullable) |
+| `text` |  |  | opt | `string` (nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "properties": {
+        "output": {
+          "type": "null"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ]
+    },
+    {
+      "properties": {
+        "output": {},
+        "text": {
+          "allOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        }
+      },
+      "required": [
+        "output"
+      ]
+    }
+  ],
+  "properties": {
+    "citations": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/components/schemas/EndpointCallbackCitationRef"
+          },
+          "maxItems": 200,
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Citations"
+    },
+    "note": {
+      "anyOf": [
+        {
+          "maxLength": 80000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional public supplementary content that may explain, qualify, support, or correct the required answer. It cannot replace or repair a missing or invalid answer. Factual claims use the same citations array.",
+      "title": "Note"
+    },
+    "output": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/EndpointCallbackJsonValue"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "text": {
+      "anyOf": [
+        {
+          "maxLength": 80000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Text"
+    }
+  },
+  "title": "Response",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-endpointdurableterminalresult"></a>
+### Model: EndpointDurableTerminalResult
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "enum": [
+    "persisted",
+    "closed"
+  ],
+  "title": "EndpointDurableTerminalResult",
+  "type": "string"
+}
+```
+
+</details>
+
+<a id="model-endpointexecutionwork"></a>
+### Model: EndpointExecutionWork
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `delegation` |  |  | req | [EndpointExecutionWorkEndpointDelegation](#model-endpointexecutionworkendpointdelegation) |
+|  | `body_utf8` |  | req | `string` |
+|  | `platform_hotkey` |  | req | `string` |
+|  | `signature_hex` |  | req | `string` |
+| `query` |  |  | req | [EndpointExecutionWorkQuery](#model-endpointexecutionworkquery) |
+|  | `fast` |  | opt | `boolean` (default: False) |
+|  | `output_schema` |  | opt | [EndpointExecutionWorkJsonObject](#model-endpointexecutionworkjsonobject) (nullable) |
+|  | `text` |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "delegation": {
+      "$ref": "#/components/schemas/EndpointExecutionWorkEndpointDelegation"
+    },
+    "query": {
+      "$ref": "#/components/schemas/EndpointExecutionWorkQuery"
+    }
+  },
+  "required": [
+    "query",
+    "delegation"
+  ],
+  "title": "EndpointExecutionWork",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-endpointexecutionworkendpointdelegation"></a>
+### Model: EndpointExecutionWorkEndpointDelegation
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `body_utf8` |  |  | req | `string` |
+| `platform_hotkey` |  |  | req | `string` |
+| `signature_hex` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "description": "Original Platform-signed assignment authority, retained across validator retries.",
+  "properties": {
+    "body_utf8": {
+      "maxLength": 12000,
+      "minLength": 1,
+      "title": "Body Utf8",
+      "type": "string"
+    },
+    "platform_hotkey": {
+      "minLength": 1,
+      "title": "Platform Hotkey",
+      "type": "string"
+    },
+    "signature_hex": {
+      "maxLength": 128,
+      "minLength": 128,
+      "pattern": "^[0-9a-f]+$",
+      "title": "Signature Hex",
+      "type": "string"
+    }
+  },
+  "required": [
+    "platform_hotkey",
+    "body_utf8",
+    "signature_hex"
+  ],
+  "title": "EndpointDelegation",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-endpointexecutionworkjsonobject"></a>
+### Model: EndpointExecutionWorkJsonObject
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": {
+    "$ref": "#/components/schemas/EndpointExecutionWorkJsonValue"
+  },
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-endpointexecutionworkjsonvalue"></a>
+### Model: EndpointExecutionWorkJsonValue
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "anyOf": [
+    {
+      "type": "string"
+    },
+    {
+      "type": "integer"
+    },
+    {
+      "type": "number"
+    },
+    {
+      "type": "boolean"
+    },
+    {
+      "items": {
+        "$ref": "#/components/schemas/EndpointExecutionWorkJsonValue"
+      },
+      "type": "array"
+    },
+    {
+      "additionalProperties": {
+        "$ref": "#/components/schemas/EndpointExecutionWorkJsonValue"
+      },
+      "type": "object"
+    },
+    {
+      "type": "null"
+    }
+  ]
+}
+```
+
+</details>
+
+<a id="model-endpointexecutionworkquery"></a>
+### Model: EndpointExecutionWorkQuery
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `fast` |  |  | opt | `boolean` (default: False) |
+| `output_schema` |  |  | opt | [EndpointExecutionWorkJsonObject](#model-endpointexecutionworkjsonobject) (nullable) |
+| `text` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "fast": {
+      "default": false,
+      "description": "Whether the query uses correctness-only fast-mode scoring.",
+      "title": "Fast",
+      "type": "boolean"
+    },
+    "output_schema": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/EndpointExecutionWorkJsonObject"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "text": {
+      "minLength": 1,
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "required": [
+    "text"
+  ],
+  "title": "Query",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-endpointprogress"></a>
+### Model: EndpointProgress
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `assignment_id` |  |  | req | `string` (format: uuid) |
+| `state` |  |  | req | `string` (enum: [queued, active, reporting, saved]) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "assignment_id": {
+      "format": "uuid",
+      "title": "Assignment Id",
+      "type": "string"
+    },
+    "state": {
+      "enum": [
+        "queued",
+        "active",
+        "reporting",
+        "saved"
+      ],
+      "title": "State",
+      "type": "string"
+    }
+  },
+  "required": [
+    "assignment_id",
+    "state"
+  ],
+  "title": "EndpointProgress",
+  "type": "object"
+}
+```
+
+</details>
 
 <a id="model-fastscoreevidence"></a>
 ### Model: FastScoreEvidence

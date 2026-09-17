@@ -9,9 +9,17 @@ from typing import Literal, Protocol
 from uuid import UUID
 
 from harnyx_commons.domain.tool_call import ToolExecutionFacts
+from harnyx_commons.endpoint_execution import (
+    EndpointAssignmentSnapshot,
+    EndpointExecutionWork,
+    EndpointFailureReport,
+    EndpointResponseReport,
+    EndpointStartReport,
+)
 from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.rating_competition import RatingJudgment, RatingWorkPage
 from harnyx_commons.tools.types import ToolName
+from harnyx_miner_sdk.endpoint_protocol import EndpointCallbackAcknowledgement, EndpointDelegation
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskWorkAssignment,
     PlatformOwnedTaskExecution,
@@ -23,7 +31,18 @@ class RatingJudgmentDeliveryRejectedError(RuntimeError):
     """Platform cannot accept this completed result; automatic retry cannot repair it."""
 
 
-class PlatformPort(Protocol):
+class EndpointPlatformPort(Protocol):
+    async def start_endpoint(self, assignment_id: UUID, report: EndpointStartReport) -> EndpointExecutionWork: ...
+    async def report_endpoint(
+        self, assignment_id: UUID, report: EndpointResponseReport
+    ) -> EndpointCallbackAcknowledgement: ...
+    async def fail_endpoint(self, assignment_id: UUID, report: EndpointFailureReport) -> bool: ...
+    async def saved_endpoint(
+        self, assignment_id: UUID, delegation: EndpointDelegation
+    ) -> EndpointAssignmentSnapshot: ...
+
+
+class PlatformPort(EndpointPlatformPort, Protocol):
     """Abstract platform client capable of champion lookup and logging."""
 
     async def poll_rating_comparisons(self, *, after: UUID | None = None, limit: int = 100) -> RatingWorkPage:

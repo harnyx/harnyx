@@ -11,6 +11,7 @@ from harnyx_miner_sdk.endpoint_protocol import (
     EndpointAssignment,
     EndpointCallback,
     EndpointCallbackAcknowledgement,
+    EndpointDelegation,
     EndpointDurableTerminalResult,
     EndpointMinerStatus,
     EndpointSearchRequest,
@@ -29,6 +30,8 @@ def _assignment() -> EndpointAssignment:
         query_digest=query_digest(query),
         expected_hotkey="5ExpectedMinerHotkey",
         callback_url="https://platform.example/v1/endpoint-assignments/callback",
+        search_url="https://platform.example/v1/endpoint-assignments/search",
+        delegation=EndpointDelegation(platform_hotkey="platform", body_utf8="{}", signature_hex="0" * 128),
         nonce="a" * 64,
         expires_at=datetime.now(UTC) + timedelta(minutes=1),
     )

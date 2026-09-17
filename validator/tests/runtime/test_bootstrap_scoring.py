@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from bittensor import Keypair
 from pydantic import SecretStr
 
 from harnyx_commons.config.bedrock import BedrockSettings
@@ -546,9 +547,10 @@ def test_build_runtime_cleans_stale_sandbox_containers_on_startup(
             self.cleanup_calls.append({"labels": dict(labels), "name_prefix": name_prefix})
 
     manager = FakeSandboxManager()
+    validator_hotkey = Keypair.create_from_uri("//Alice")
 
     monkeypatch.setattr(
-        bootstrap, "_build_external_clients", lambda _settings: (object(), object(), object(), object())
+        bootstrap, "_build_external_clients", lambda _settings: (object(), object(), validator_hotkey, object())
     )
     monkeypatch.setattr(
         bootstrap,
