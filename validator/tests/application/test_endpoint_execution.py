@@ -9,7 +9,7 @@ from uuid import uuid4
 import bittensor as bt
 import pytest
 
-from harnyx_commons.bittensor import build_canonical_request
+from harnyx_commons.bittensor import VerificationError, build_canonical_request
 from harnyx_commons.endpoint_execution import (
     EndpointAssignmentSnapshot,
     EndpointAuthority,
@@ -45,7 +45,7 @@ async def test_miner_restart_unknown_status_reuses_original_assignment_and_timin
         if service.miner.send_assignment.await_count == 2:
             retried.set()
             service.miner.get_status.return_value = EndpointStatusResponse(state=EndpointMinerStatus.RUNNING)
-        return MinerRequestAttempt(attempted_at=datetime.now(UTC))
+        return MinerRequestAttempt(attempted_at=datetime.now(UTC), admission_confirmed=True)
 
     service.miner.send_assignment.side_effect = sent
     try:
@@ -247,7 +247,7 @@ async def test_no_miner_send_until_start_is_durable_and_saved_timing_wins():
         await service.stop()
 
 
-async def test_restart_retains_on_time_report_during_platform_outage_and_recovers_ack():
+async def test_restart_retains_on_time_report_during_platform_outage_and_recovers_ack(monkeypatch):
     service, work, authority, _, miner_key = _setup()
     service.platform.report_endpoint.side_effect = ConnectionError("Platform unavailable")
     callback = _callback(authority, work, miner_key)
@@ -261,8 +261,17 @@ async def test_restart_retains_on_time_report_during_platform_outage_and_recover
             with pytest.raises(ConnectionError):
                 await service.accept_callback(**_callback(authority, work, miner_key))
         assert len(item.pending) == 1
+
+        class AfterDeadline(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return authority.deadline_at + timedelta(seconds=1)
+
+        monkeypatch.setattr("harnyx_validator.application.endpoint_execution.datetime", AfterDeadline)
         service.platform.report_endpoint.side_effect = None
-        ack = await service.accept_callback(**callback)
+        late_retry = dict(callback, received_at=AfterDeadline.now(UTC))
+        ack = await service.accept_callback(**late_retry)
+        assert service.platform.report_endpoint.call_args.args[1].received_at == callback["received_at"]
         assert ack.durable_terminal_result == EndpointDurableTerminalResult.PERSISTED
         assert not item.pending
     finally:
@@ -416,5 +425,168 @@ async def test_expired_forwarding_does_not_hold_capacity(admission, monkeypatch)
             ack = await service.accept_callback(**_callback(next_authority, next_work, miner))
             assert ack.durable_terminal_result == EndpointDurableTerminalResult.PERSISTED
         assert authority.assignment_id not in service._executions
+    finally:
+        await service.stop()
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "validator_hotkey",
+        "miner_hotkey",
+        "assignment_id",
+        "query_digest",
+        "nonce",
+        "deadline_at",
+        "callback_url",
+        "signature",
+    ],
+)
+async def test_restart_rejects_tampered_context_or_answer_binding(field):
+    service, work, authority, sign_work, miner = _setup()
+    request = _callback(authority, work, miner)
+    changes = {
+        "validator_hotkey": miner.ss58_address,
+        "miner_hotkey": bt.Keypair.create_from_uri("//Dave").ss58_address,
+        "assignment_id": uuid4(),
+        "query_digest": "f" * 64,
+        "nonce": "f" * 64,
+        "deadline_at": authority.deadline_at + timedelta(seconds=1),
+        "callback_url": "https://other.example/callback",
+    }
+    if field == "signature":
+        request["delegation"] = work.delegation.model_copy(update={"signature_hex": "0" * 128})
+    else:
+        request["delegation"] = sign_work(authority.model_copy(update={field: changes[field]})).delegation
+    try:
+        with pytest.raises((ValueError, PermissionError, VerificationError)):
+            await service.accept_callback(**request)
+        service.platform.report_endpoint.assert_not_awaited()
+        service.platform.saved_endpoint.assert_not_awaited()
+    finally:
+        await service.stop()
+
+
+async def test_replacement_retries_admission_after_chain_failure_with_original_request():
+    import httpx
+
+    from harnyx_miner.endpoint_test_server import EndpointTestServerState, create_endpoint_test_app
+    from harnyx_validator.infrastructure.endpoint_client import SignedMinerEndpointClient
+
+    service, work, authority, _, miner = _setup()
+    replacement = bt.Keypair.create_from_uri("//Bob")
+    original = bt.Keypair.create_from_uri("//Alice")
+    state = EndpointTestServerState()
+    recovered = asyncio.Event()
+    lookups = 0
+    requests = []
+
+    async def eligible(signer):
+        nonlocal lookups
+        if signer == replacement.ss58_address:
+            lookups += 1
+            if lookups == 1:
+                raise ConnectionError("temporary chain outage")
+            recovered.set()
+        return True
+
+    async def record(request):
+        if request.method == "POST":
+            requests.append(request.content)
+
+    app = create_endpoint_test_app(
+        validator_eligibility=eligible,
+        miner_hotkey=miner,
+        endpoint_url=authority.endpoint_url,
+        block_at_registration=90,
+        state=state,
+    )
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), event_hooks={"request": [record]}) as http,
+    ):
+        assignment = authority.assignment(work.query, work.delegation)
+        earlier = assignment.model_copy(
+            update={"callback_url": "https://earlier.example/callback", "callback_context": "earlier"}
+        )
+        await SignedMinerEndpointClient(original, http).send_assignment(
+            endpoint_url=authority.endpoint_url,
+            expected_hotkey=miner.ss58_address,
+            assignment=earlier,
+            stop_at=asyncio.get_running_loop().time() + 5,
+        )
+        service.miner = SignedMinerEndpointClient(replacement, http)
+        try:
+            await service.execute(work)
+            await asyncio.wait_for(recovered.wait(), 3)
+            assert lookups == 2
+            assert requests[1:] == [assignment.model_dump_json().encode()] * 2
+            assert state.assignments[authority.assignment_id].expires_at == authority.deadline_at
+            assert state.signers[authority.assignment_id] == {original.ss58_address, replacement.ss58_address}
+            assert set(state.destinations[authority.assignment_id]) == {earlier.callback_url, assignment.callback_url}
+            service.platform.start_endpoint.assert_not_awaited()
+        finally:
+            await service.stop()
+
+
+@pytest.mark.parametrize("confirmation", ["ack", "status"])
+async def test_status_outage_after_confirmed_admission_does_not_resend(confirmation):
+    service, work, _, _, _ = _setup()
+    service.miner.send_assignment.return_value = MinerRequestAttempt(
+        attempted_at=datetime.now(UTC), admission_confirmed=confirmation == "ack"
+    )
+    checked_after_outage = asyncio.Event()
+    calls = 0
+
+    async def status(**kwargs):
+        nonlocal calls
+        calls += 1
+        if confirmation == "status" and calls == 1:
+            return EndpointStatusResponse(state=EndpointMinerStatus.RUNNING)
+        if calls == (3 if confirmation == "status" else 2):
+            checked_after_outage.set()
+        raise ConnectionError("temporary status outage")
+
+    service.miner.get_status.side_effect = status
+    try:
+        await service.execute(work)
+        await asyncio.wait_for(checked_after_outage.wait(), 4)
+        service.miner.send_assignment.assert_awaited_once()
+    finally:
+        await service.stop()
+
+
+@pytest.mark.parametrize("answer_state", ["pending", "saved"])
+@pytest.mark.parametrize("status_result", ["unavailable", "unknown"])
+async def test_answer_received_during_status_check_prevents_resend(answer_state, status_result):
+    service, work, authority, _, miner = _setup()
+    status_entered, release_status, checked_again = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def status(**kwargs):
+        if status_entered.is_set():
+            checked_again.set()
+        status_entered.set()
+        await release_status.wait()
+        if status_result == "unavailable":
+            raise ConnectionError("temporary status outage")
+        return EndpointStatusResponse(state=EndpointMinerStatus.UNKNOWN)
+
+    service.miner.get_status.side_effect = status
+    if answer_state == "pending":
+        service.platform.report_endpoint.side_effect = ConnectionError("Platform unavailable")
+    try:
+        await service.execute(work)
+        await asyncio.wait_for(status_entered.wait(), 2)
+        if answer_state == "pending":
+            with pytest.raises(ConnectionError):
+                await service.accept_callback(**_callback(authority, work, miner))
+        else:
+            await service.accept_callback(**_callback(authority, work, miner))
+        release_status.set()
+        if answer_state == "pending":
+            await asyncio.wait_for(checked_again.wait(), 3)
+        else:
+            await asyncio.wait_for(service._executions[authority.assignment_id].task, 3)
+        service.miner.send_assignment.assert_awaited_once()
     finally:
         await service.stop()

@@ -12,12 +12,10 @@ import httpx
 from pydantic import ValidationError
 
 from harnyx_commons.bittensor import VerificationError, build_canonical_request, verify_signed_request
-from harnyx_commons.endpoint_execution import ENDPOINT_DELEGATION_HEADER, delegation_header
 from harnyx_commons.task_ownership import await_owned_task
 from harnyx_miner_sdk.endpoint_protocol import (
     EndpointAssignment,
     EndpointAssignmentAcknowledgement,
-    EndpointDelegation,
     EndpointStatusResponse,
 )
 from harnyx_validator.application.endpoint_execution import EndpointStatusUnavailableError, MinerRequestAttempt
@@ -67,7 +65,6 @@ class SignedMinerEndpointClient:
                 body=body,
                 deadline_at=assignment.expires_at,
                 attempt=attempt,
-                delegation=assignment.delegation,
                 stop_at=stop_at,
             )
         except (
@@ -90,7 +87,8 @@ class SignedMinerEndpointClient:
                 authorization_header=response.headers.get("Authorization"),
                 allowed_ss58=(expected_hotkey,),
             )
-            EndpointAssignmentAcknowledgement.model_validate_json(response.content, strict=True)
+            acknowledgement = EndpointAssignmentAcknowledgement.model_validate_json(response.content, strict=True)
+            attempt.admission_confirmed = acknowledgement.accepted
         except (ValidationError, VerificationError):
             return attempt
         return attempt
@@ -103,7 +101,6 @@ class SignedMinerEndpointClient:
         assignment_id: UUID,
         deadline_at: datetime,
         stop_at: float,
-        delegation: EndpointDelegation,
     ) -> EndpointStatusResponse:
         suffix = f"/v1/endpoint-assignments/{assignment_id}/status"
         target = _endpoint_target(endpoint_url, suffix)
@@ -115,7 +112,6 @@ class SignedMinerEndpointClient:
                 path=path,
                 body=b"",
                 deadline_at=deadline_at,
-                delegation=delegation,
                 stop_at=stop_at,
             )
             if response.status_code != 200:
@@ -140,7 +136,6 @@ class SignedMinerEndpointClient:
         body: bytes,
         deadline_at: datetime,
         stop_at: float,
-        delegation: EndpointDelegation,
         attempt: MinerRequestAttempt | None = None,
     ) -> httpx.Response:
         loop = asyncio.get_running_loop()
@@ -164,7 +159,6 @@ class SignedMinerEndpointClient:
                     "Authorization": authorization,
                     "Content-Type": "application/json",
                     "Accept-Encoding": "identity",
-                    ENDPOINT_DELEGATION_HEADER: delegation_header(delegation),
                 },
                 timeout=min(remaining, 10.0),
             ) as streamed:

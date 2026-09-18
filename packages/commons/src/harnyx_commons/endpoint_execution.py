@@ -21,7 +21,6 @@ ENDPOINT_CONTROL_TIMEOUT_SECONDS = 10.0
 ENDPOINT_CALLBACK_MAX_BYTES = 1_000_000
 ENDPOINT_REPORT_MAX_BYTES = 2_000_000
 ENDPOINT_FAILURE_MAX_BYTES = 16 * 1024
-ENDPOINT_DELEGATION_HEADER = "X-Harnyx-Endpoint-Delegation"
 DELEGATION_PATH = "/v1/endpoint-execution/delegation"
 EXECUTION_PATH = "/validator/endpoint-assignments"
 _STRICT = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -81,7 +80,8 @@ class EndpointAuthority(BaseModel):
             expected_hotkey=self.miner_hotkey,
             callback_url=self.callback_url,
             search_url=self.search_url,
-            delegation=delegation,
+            endpoint_url=self.endpoint_url,
+            callback_context=delegation_header(delegation),
             nonce=self.nonce,
             expires_at=self.deadline_at,
         )

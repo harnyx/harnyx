@@ -20,7 +20,6 @@ from harnyx_commons.bittensor import VerificationError
 from harnyx_commons.domain.miner_task import ScoreBreakdown
 from harnyx_commons.endpoint_execution import (
     ENDPOINT_CALLBACK_MAX_BYTES,
-    ENDPOINT_DELEGATION_HEADER,
     ENDPOINT_REPORT_MAX_BYTES,
     EXECUTION_PATH,
     EndpointExecutionWork,
@@ -37,7 +36,11 @@ from harnyx_commons.tools.executor import ToolExecutor, execute_tool_with_concur
 from harnyx_commons.tools.http_models import ToolExecuteResponseDTO
 from harnyx_commons.tools.http_serialization import serialize_tool_execute_response
 from harnyx_commons.tools.token_semaphore import ToolConcurrencyLimiter
-from harnyx_miner_sdk.endpoint_protocol import EndpointCallback, EndpointCallbackAcknowledgement
+from harnyx_miner_sdk.endpoint_protocol import (
+    ENDPOINT_CALLBACK_CONTEXT_HEADER,
+    EndpointCallback,
+    EndpointCallbackAcknowledgement,
+)
 from harnyx_miner_sdk.tools.http_models import ToolExecuteRequestDTO
 from harnyx_validator.application.endpoint_execution import ValidatorEndpointExecution
 from harnyx_validator.application.platform_tool_proxy import PlatformToolProxyScopeRegistry
@@ -208,7 +211,7 @@ def _endpoint_contract(model: str) -> dict[str, Any]:
         "security": [{"BittensorAuth": []}],
         "parameters": [
             {
-                "name": ENDPOINT_DELEGATION_HEADER,
+                "name": ENDPOINT_CALLBACK_CONTEXT_HEADER,
                 "in": "header",
                 "required": True,
                 "schema": {"type": "string", "maxLength": 24_000},
@@ -265,7 +268,7 @@ def add_control_routes(
         try:
             return await service.accept_callback(
                 assignment_id=assignment_id,
-                delegation=parse_delegation_header(request.headers.get(ENDPOINT_DELEGATION_HEADER)),
+                delegation=parse_delegation_header(request.headers.get(ENDPOINT_CALLBACK_CONTEXT_HEADER)),
                 raw_body=body,
                 received_at=received_at,
                 authorization_header=request.headers.get("Authorization"),

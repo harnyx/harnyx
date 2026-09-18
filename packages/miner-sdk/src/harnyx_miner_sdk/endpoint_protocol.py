@@ -10,13 +10,17 @@ from math import isfinite
 from typing import Self
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+import httpx
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, TypeAdapter, field_validator, model_validator
 
 from harnyx_miner_sdk.json_types import JsonObject, JsonValue
 from harnyx_miner_sdk.query import Query, Response
 
 _STRICT = ConfigDict(extra="forbid", frozen=True, strict=True, json_schema_mode_override="validation")
+ENDPOINT_CALLBACK_CONTEXT_HEADER = "X-Harnyx-Callback-Context"
+
 _HEX_64 = r"^[0-9a-f]{64}$"
+_CALLBACK_URL = TypeAdapter(HttpUrl)
 
 
 class EndpointMinerStatus(StrEnum):
@@ -53,16 +57,37 @@ class EndpointAssignment(BaseModel):
     expected_hotkey: str = Field(min_length=1)
     callback_url: str = Field(min_length=1, max_length=2000)
     search_url: str = Field(min_length=1, max_length=2000)
-    delegation: EndpointDelegation
+    endpoint_url: str = Field(min_length=1, max_length=2000)
+    callback_context: str | None = Field(default=None, max_length=24_000)
     nonce: str = Field(min_length=32, max_length=128)
     expires_at: datetime
 
-    @field_validator("callback_url", "search_url")
+    @field_validator("callback_url", "search_url", "endpoint_url")
     @classmethod
     def validate_callback_url(cls, value: str) -> str:
         if not value.startswith("https://"):
             raise ValueError("callback URL must use HTTPS")
         return value.rstrip("/")
+
+    @field_validator("callback_url")
+    @classmethod
+    def validate_callback_destination(cls, value: str) -> str:
+        _CALLBACK_URL.validate_python(value)
+        # Validate transport compatibility without replacing the caller's signed URL.
+        try:
+            url = httpx.URL(value)
+        except httpx.InvalidURL as exc:
+            raise ValueError("invalid callback URL") from exc
+        if not url.host:
+            raise ValueError("callback URL requires a host")
+        return value
+
+    @field_validator("callback_context")
+    @classmethod
+    def validate_context(cls, value: str | None) -> str | None:
+        if value is not None and (value != value.strip() or any(ord(c) < 32 or ord(c) > 126 for c in value)):
+            raise ValueError("callback context must be an unchanged ASCII HTTP header value")
+        return value
 
     @field_validator("expires_at")
     @classmethod
@@ -169,6 +194,7 @@ def query_digest(query: Query) -> str:
 
 
 __all__ = [
+    "ENDPOINT_CALLBACK_CONTEXT_HEADER",
     "EndpointAssignment",
     "EndpointDelegation",
     "EndpointAssignmentAcknowledgement",

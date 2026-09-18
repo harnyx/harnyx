@@ -21,14 +21,13 @@ from fastapi.responses import Response as HttpResponse
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError
 
 from harnyx_commons.bittensor import VerificationError, build_canonical_request, verify_signed_request
-from harnyx_commons.endpoint_execution import (
-    ENDPOINT_DELEGATION_HEADER,
-    ENDPOINT_REPORT_FORWARDING_ALLOWANCE,
-    delegation_header,
-    parse_delegation_header,
-    verify_delegation,
-)
+from harnyx_commons.config.platform_api import PlatformApiSettings
+from harnyx_commons.config.subtensor import SubtensorSettings
+from harnyx_commons.endpoint_execution import ENDPOINT_REPORT_FORWARDING_ALLOWANCE
+from harnyx_miner.tooling import require_tooling_url
+from harnyx_miner.validator_eligibility import ValidatorEligibility
 from harnyx_miner_sdk.endpoint_protocol import (
+    ENDPOINT_CALLBACK_CONTEXT_HEADER,
     EndpointAssignment,
     EndpointAssignmentAcknowledgement,
     EndpointCallback,
@@ -76,6 +75,7 @@ async def _read_bounded_body(request: Request, *, max_bytes: int = _MAX_ASSIGNME
 
 @dataclass(slots=True)
 class EndpointTestServerState:
+    signers: dict[UUID, set[str]] = field(default_factory=dict, repr=False)
     assignments: dict[UUID, EndpointAssignment] = field(default_factory=dict, repr=False)
     statuses: dict[UUID, EndpointMinerStatus] = field(default_factory=dict, repr=False)
     callbacks: dict[UUID, EndpointCallback] = field(default_factory=dict, repr=False)
@@ -92,6 +92,7 @@ class EndpointTestServerState:
             task.cancel()
         self.active_tasks.clear()
         self.assignments.clear()
+        self.signers.clear()
         self.statuses.clear()
         self.callbacks.clear()
         self.callback_attempts.clear()
@@ -104,9 +105,28 @@ class EndpointTestServerState:
         self.delivery_tasks.clear()
 
 
+def _canonical_endpoint_url(endpoint_url: str) -> str:
+    if len(endpoint_url.encode()) > 2000 or any(ord(char) < 33 or ord(char) == 127 for char in endpoint_url):
+        raise ValueError("endpoint URL is invalid")
+    url = httpx.URL(endpoint_url)
+    if url.scheme != "https" or not url.host or url.userinfo or any(char in endpoint_url for char in "?#\\"):
+        raise ValueError("endpoint must be an HTTPS base URL without credentials, query or fragment")
+    return str(url).rstrip("/")
+
+
+async def _require_eligible(validator_eligibility: Callable[[str], Awaitable[bool]], signer: str) -> None:
+    try:
+        eligible = await validator_eligibility(signer)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="validator eligibility is unavailable") from exc
+    if not eligible:
+        raise HTTPException(status_code=403, detail="validator requires subnet registration and permit")
+
+
 def create_endpoint_test_app(
     *,
-    platform_hotkey_ss58: str,
+    validator_eligibility: Callable[[str], Awaitable[bool]],
+    platform_base_url: str | None = None,
     miner_hotkey: bt.Keypair,
     endpoint_url: str,
     block_at_registration: int,
@@ -121,14 +141,9 @@ def create_endpoint_test_app(
 ) -> FastAPI:
     """Build a registerable endpoint; provider inputs enable its search/callback loop."""
 
-    if len(endpoint_url.encode()) > 2000 or any(ord(char) < 33 or ord(char) == 127 for char in endpoint_url):
-        raise ValueError("endpoint URL is invalid")
-    url = httpx.URL(endpoint_url)
-    if url.scheme != "https" or not url.host or url.userinfo or any(char in endpoint_url for char in "?#\\"):
-        raise ValueError("endpoint must be an HTTPS base URL without credentials, query or fragment")
+    canonical_url = _canonical_endpoint_url(endpoint_url)
     if block_at_registration < 0:
         raise ValueError("registration block must be nonnegative")
-    canonical_url = str(url).rstrip("/")
     # Strip literal trailing URL slashes before decoding; %2F is part of the registered base.
     base_path = httpx.URL(canonical_url).path if httpx.URL(canonical_url).raw_path != b"/" else ""
 
@@ -234,35 +249,34 @@ def create_endpoint_test_app(
         body = await _read_bounded_body(request)
         try:
             assignment = EndpointAssignment.model_validate_json(body, strict=True)
-            authority = verify_delegation(assignment.delegation, platform_hotkey_ss58)
-            if (
-                authority.assignment(assignment.query, assignment.delegation) != assignment
-                or authority.endpoint_url.rstrip("/") != canonical_url
-            ):
-                raise ValueError("assignment does not match delegated authority")
-        except (ValueError, VerificationError) as exc:
-            raise HTTPException(status_code=422, detail="invalid endpoint delegation") from exc
-        _verify_or_401(
-            method="POST",
-            path=path,
-            body=body,
-            authorization=request.headers.get("Authorization"),
-            allowed_ss58=authority.validator_hotkey,
-        )
-        if assignment.expected_hotkey != miner_hotkey.ss58_address:
-            raise HTTPException(status_code=403, detail="assignment targets another hotkey")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="invalid endpoint assignment") from exc
+        signer = _verify_or_401(method="POST", path=path, body=body, authorization=request.headers.get("Authorization"))
+        if assignment.expected_hotkey != miner_hotkey.ss58_address or assignment.endpoint_url != canonical_url:
+            raise HTTPException(status_code=403, detail="assignment targets another miner endpoint")
         if assignment.expires_at <= datetime.now(UTC):
             raise HTTPException(status_code=409, detail="assignment has expired")
         if answerer is None and assignment.query.output_schema is not None:
             raise HTTPException(status_code=422, detail="this example supports text queries only")
+        if signer not in server_state.signers.get(assignment.assignment_id, set()):
+            await _require_eligible(validator_eligibility, signer)
+        # Recheck and retain atomically after remote I/O; no await in this state transition.
         existing = server_state.assignments.get(assignment.assignment_id)
         if existing is not None and existing.model_dump(
-            exclude={"callback_url", "delegation"}
-        ) != assignment.model_dump(exclude={"callback_url", "delegation"}):
+            exclude={"callback_url", "callback_context"}
+        ) != assignment.model_dump(exclude={"callback_url", "callback_context"}):
             raise HTTPException(status_code=409, detail="assignment identity conflicts")
+        # Do not let another signed request replace an already retained callback's context.
+        destinations = server_state.destinations.get(assignment.assignment_id, {})
+        destination = destinations.get(assignment.callback_url)
+        if destination is not None and destination.callback_context != assignment.callback_context:
+            raise HTTPException(status_code=409, detail="callback destination context conflicts")
+        if assignment.expires_at <= datetime.now(UTC):
+            raise HTTPException(status_code=409, detail="assignment has expired")
         if existing is None:
             server_state.assignments[assignment.assignment_id] = assignment
             server_state.statuses[assignment.assignment_id] = EndpointMinerStatus.RUNNING
+        server_state.signers.setdefault(assignment.assignment_id, set()).add(signer)
         server_state.destinations.setdefault(assignment.assignment_id, {})[assignment.callback_url] = assignment
         if assignment.assignment_id in server_state.callbacks:
             schedule_delivery(assignment)
@@ -271,6 +285,7 @@ def create_endpoint_test_app(
                 assignment,
                 lambda: _execute_assignment(
                     assignment=assignment,
+                    platform_base_url=platform_base_url,
                     provider=provider,
                     provider_key=provider_key,
                     miner_hotkey=miner_hotkey,
@@ -292,25 +307,12 @@ def create_endpoint_test_app(
     @app.get("/v1/endpoint-assignments/{assignment_id}/status")
     async def assignment_status(assignment_id: UUID, request: Request) -> HttpResponse:
         path = request.scope["raw_path"].decode("ascii")
-        try:
-            authority = verify_delegation(
-                parse_delegation_header(request.headers.get(ENDPOINT_DELEGATION_HEADER)), platform_hotkey_ss58
-            )
-            if (
-                authority.assignment_id != assignment_id
-                or authority.miner_hotkey != miner_hotkey.ss58_address
-                or authority.endpoint_url.rstrip("/") != canonical_url
-            ):
-                raise ValueError("status delegation mismatch")
-        except (ValueError, VerificationError) as exc:
-            raise HTTPException(status_code=403, detail="invalid status delegation") from exc
-        _verify_or_401(
-            method="GET",
-            path=path,
-            body=b"",
-            authorization=request.headers.get("Authorization"),
-            allowed_ss58=authority.validator_hotkey,
-        )
+        signer = _verify_or_401(method="GET", path=path, body=b"", authorization=request.headers.get("Authorization"))
+        if assignment_id not in server_state.assignments:
+            await _require_eligible(validator_eligibility, signer)
+        # An assignment may have been admitted while eligibility was being read.
+        if assignment_id in server_state.assignments and signer not in server_state.signers.get(assignment_id, set()):
+            raise HTTPException(status_code=403, detail="validator has not been admitted to this assignment")
         status = server_state.statuses.get(assignment_id)
         callback = server_state.callbacks.get(assignment_id)
         assignment = server_state.assignments.get(assignment_id)
@@ -336,6 +338,7 @@ def create_endpoint_test_app(
 
 async def _execute_assignment(
     *,
+    platform_base_url: str | None = None,
     assignment: EndpointAssignment,
     provider: str | None,
     provider_key: str | None,
@@ -355,7 +358,9 @@ async def _execute_assignment(
             response = await answerer(assignment)
         else:
             assert provider is not None and provider_key is not None
-            response = await _search_snippet(assignment, provider, provider_key, miner_hotkey, client)
+            response = await _search_snippet(
+                assignment, provider, provider_key, miner_hotkey, client, platform_base_url
+            )
     if state.assignments.get(assignment.assignment_id) is not assignment:
         return
     callback = EndpointCallback(
@@ -393,7 +398,9 @@ async def _search_snippet(
     provider_key: str,
     miner_hotkey: bt.Keypair,
     client: httpx.AsyncClient,
+    platform_base_url: str | None,
 ) -> Response:
+    require_tooling_url(assignment.search_url, assignment.assignment_id, platform_base_url)
     receipt_id = f"endpoint-test-{assignment.assignment_id}"
     search = EndpointSearchRequest(
         receipt_id=receipt_id,
@@ -447,7 +454,11 @@ async def _deliver_callback(
                 payload=callback,
                 hotkey=miner_hotkey,
                 deadline_at=min(cutoff, datetime.now(UTC) + timedelta(seconds=attempt_timeout_seconds)),
-                headers={ENDPOINT_DELEGATION_HEADER: delegation_header(assignment.delegation)},
+                headers=(
+                    {ENDPOINT_CALLBACK_CONTEXT_HEADER: assignment.callback_context}
+                    if assignment.callback_context is not None
+                    else {}
+                ),
             )
             if response.status_code == 200:
                 acknowledgement = EndpointCallbackAcknowledgement.model_validate_json(response.content, strict=True)
@@ -483,12 +494,12 @@ async def _post_signed_json(
     authorization = f'Bittensor ss58="{hotkey.ss58_address}",sig="{signature}"'
     signed_headers = {**(headers or {}), "Authorization": authorization}
     if deadline_at is None:
-        return await client.post(url, content=body, headers=signed_headers)
+        return await client.post(url, content=body, headers=signed_headers, follow_redirects=False)
     remaining = (deadline_at - datetime.now(UTC)).total_seconds()
     if remaining <= 0:
         raise TimeoutError("assignment expired before signed request")
     async with asyncio.timeout(remaining):
-        return await client.post(url, content=body, headers=signed_headers, timeout=remaining)
+        return await client.post(url, content=body, headers=signed_headers, timeout=remaining, follow_redirects=False)
 
 
 def _verify_or_401(
@@ -497,16 +508,14 @@ def _verify_or_401(
     path: str,
     body: bytes,
     authorization: str | None,
-    allowed_ss58: str,
-) -> None:
+) -> str:
     try:
-        verify_signed_request(
+        return verify_signed_request(
             method=method,
             path_qs=path,
             body=body,
             authorization_header=authorization,
-            allowed_ss58=(allowed_ss58,),
-        )
+        ).ss58
     except VerificationError as exc:
         raise HTTPException(status_code=401, detail=exc.message) from exc
 
@@ -520,7 +529,6 @@ def _signed_json(*, method: str, path: str, payload: object, hotkey: bt.Keypair)
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the signed Harnyx miner endpoint protocol test server")
-    parser.add_argument("--platform-hotkey", required=True)
     parser.add_argument("--miner-hotkey-uri", required=True)
     parser.add_argument("--endpoint-url", required=True, help="public HTTPS base URL submitted for registration")
     parser.add_argument(
@@ -543,7 +551,8 @@ def main() -> None:
     if (args.provider is None) != (provider_key is None):
         parser.error("--provider and --provider-key-env must be supplied together")
     app = create_endpoint_test_app(
-        platform_hotkey_ss58=args.platform_hotkey,
+        validator_eligibility=ValidatorEligibility(SubtensorSettings()),
+        platform_base_url=PlatformApiSettings().platform_base_url,
         miner_hotkey=bt.Keypair.create_from_uri(args.miner_hotkey_uri),
         endpoint_url=args.endpoint_url,
         block_at_registration=args.registration_block,

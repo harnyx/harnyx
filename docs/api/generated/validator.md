@@ -66,7 +66,7 @@ Endpoint Callback
 **Headers**
 | Header | Req | Notes |
 | --- | --- | --- |
-| `X-Harnyx-Endpoint-Delegation` | req | `string` |
+| `X-Harnyx-Callback-Context` | req | `string` |
 
 **Parameters**
 | Param | In | Req | Notes |

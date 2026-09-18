@@ -51,6 +51,7 @@ class EndpointReportRejectedError(ValueError):
 @dataclass(slots=True)
 class MinerRequestAttempt:
     attempted_at: datetime | None = None
+    admission_confirmed: bool = False
 
 
 class MinerEndpointPort(Protocol):
@@ -65,7 +66,6 @@ class MinerEndpointPort(Protocol):
         assignment_id: UUID,
         deadline_at: datetime,
         stop_at: float,
-        delegation: EndpointDelegation,
     ) -> EndpointStatusResponse: ...
     async def aclose(self) -> None: ...
 
@@ -194,6 +194,7 @@ class ValidatorEndpointExecution:
         item.state = "active"
         # Re-presenting the same assignment registers this validator's callback destination.
         # An idempotent progress request above never reaches this send again.
+        admission_confirmed = False
         if datetime.now(UTC) < authority.deadline_at:
             remaining = (authority.deadline_at - datetime.now(UTC)).total_seconds()
             attempt = await self.miner.send_assignment(
@@ -203,6 +204,7 @@ class ValidatorEndpointExecution:
                 stop_at=asyncio.get_running_loop().time() + min(10.0, remaining),
             )
             item.attempted_at = attempt.attempted_at
+            admission_confirmed = attempt.admission_confirmed
         failure_saved = False
         while self._running and datetime.now(UTC) <= authority.report_cutoff:
             for report in tuple(item.pending):
@@ -228,6 +230,7 @@ class ValidatorEndpointExecution:
                     except Exception:
                         logger.debug("endpoint failure report will retry")
             else:
+                status = None
                 try:
                     status = await self.miner.get_status(
                         endpoint_url=authority.endpoint_url,
@@ -236,16 +239,22 @@ class ValidatorEndpointExecution:
                         deadline_at=authority.deadline_at,
                         stop_at=asyncio.get_running_loop().time()
                         + min(10.0, (authority.deadline_at - now).total_seconds()),
-                        delegation=item.work.delegation,
                     )
+                except Exception:
+                    logger.debug("endpoint status unavailable")
+                if status is not None:
+                    admission_confirmed = status.state is not EndpointMinerStatus.UNKNOWN
+                try:
                     remaining = (authority.deadline_at - datetime.now(UTC)).total_seconds()
-                    if status.state is EndpointMinerStatus.UNKNOWN and remaining > 0:
+                    # A callback may have arrived while the status request was pending.
+                    if not admission_confirmed and not item.pending and item.terminal is None and remaining > 0:
                         attempt = await self.miner.send_assignment(
                             endpoint_url=authority.endpoint_url,
                             expected_hotkey=authority.miner_hotkey,
                             assignment=authority.assignment(item.work.query, item.work.delegation),
                             stop_at=asyncio.get_running_loop().time() + min(10.0, remaining),
                         )
+                        admission_confirmed = attempt.admission_confirmed
                         if item.attempted_at is None:
                             item.attempted_at = attempt.attempted_at
                 except Exception:
@@ -315,17 +324,18 @@ class ValidatorEndpointExecution:
                 work=None, authority=authority, platform_hotkey=delegation.platform_hotkey, state="reporting"
             )
             self._executions[assignment_id] = item
-        if authority.deadline_at is None or received_at >= authority.deadline_at:
-            snapshot = await self.platform.saved_endpoint(assignment_id, delegation)
-            if snapshot.status in {"succeeded", "endpoint_failed", "platform_void"}:
-                return _terminal_ack(snapshot.status)
-            raise ValueError("answer arrived after the miner deadline")
+        # A duplicate delivery is the original receive event, even after the deadline.
         for pending in item.pending:
             if (
                 pending.callback_base64 == report.callback_base64
                 and pending.signed_callback_path == report.signed_callback_path
             ):
                 return await self._forward(item, pending)
+        if authority.deadline_at is None or received_at >= authority.deadline_at:
+            snapshot = await self.platform.saved_endpoint(assignment_id, delegation)
+            if snapshot.status in {"succeeded", "endpoint_failed", "platform_void"}:
+                return _terminal_ack(snapshot.status)
+            raise ValueError("answer arrived after the miner deadline")
         if len(item.pending) >= 4:
             raise RuntimeError("pending answer capacity exhausted")
         item.pending.append(report)

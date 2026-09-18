@@ -10,8 +10,9 @@ import httpx
 import pytest
 from fastapi import FastAPI, Request
 
-from harnyx_commons.endpoint_execution import ENDPOINT_DELEGATION_HEADER, delegation_header
+from harnyx_commons.endpoint_execution import delegation_header
 from harnyx_miner_sdk.endpoint_protocol import (
+    ENDPOINT_CALLBACK_CONTEXT_HEADER,
     EndpointCallbackAcknowledgement,
     EndpointDelegation,
     EndpointDurableTerminalResult,
@@ -74,9 +75,30 @@ async def test_callback_passes_complete_body_and_original_encoded_proxy_path():
         response = await client.post(
             path,
             content=b"original bytes",
-            headers={ENDPOINT_DELEGATION_HEADER: delegation_header(delegation), "Authorization": "original signature"},
+            headers={
+                ENDPOINT_CALLBACK_CONTEXT_HEADER: delegation_header(delegation),
+                "Authorization": "original signature",
+            },
         )
     assert response.status_code == 200
     values = worker.accept_callback.call_args.kwargs
     assert values["signed_path"] == path and values["raw_body"] == b"original bytes"
     assert values["authorization_header"] == "original signature" and values["delegation"] == delegation
+
+
+@pytest.mark.parametrize(
+    "context", [None, "", "not-an-encoded-document", "x" * 24_001], ids=["missing", "empty", "invalid", "oversized"]
+)
+async def test_coordinated_callback_requires_decodable_context_before_reporting(context):
+    worker = AsyncMock()
+    app = FastAPI()
+    add_control_routes(app, lambda: SimpleNamespace(endpoint_execution=worker))
+    headers = {} if context is None else {ENDPOINT_CALLBACK_CONTEXT_HEADER: context}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://validator.example"
+    ) as client:
+        response = await client.post(
+            f"/validator/endpoint-assignments/{uuid4()}/callback", content=b"{}", headers=headers
+        )
+    assert response.status_code == 422
+    worker.accept_callback.assert_not_awaited()

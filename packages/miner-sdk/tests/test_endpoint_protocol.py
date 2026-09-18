@@ -11,7 +11,6 @@ from harnyx_miner_sdk.endpoint_protocol import (
     EndpointAssignment,
     EndpointCallback,
     EndpointCallbackAcknowledgement,
-    EndpointDelegation,
     EndpointDurableTerminalResult,
     EndpointMinerStatus,
     EndpointSearchRequest,
@@ -31,7 +30,7 @@ def _assignment() -> EndpointAssignment:
         expected_hotkey="5ExpectedMinerHotkey",
         callback_url="https://platform.example/v1/endpoint-assignments/callback",
         search_url="https://platform.example/v1/endpoint-assignments/search",
-        delegation=EndpointDelegation(platform_hotkey="platform", body_utf8="{}", signature_hex="0" * 128),
+        endpoint_url="https://miner.example",
         nonce="a" * 64,
         expires_at=datetime.now(UTC) + timedelta(minutes=1),
     )
@@ -171,3 +170,19 @@ def test_search_preserves_valid_receipt_identity(receipt: str) -> None:
         json.dumps({"receipt_id": receipt, "provider": "parallel", "tool": "search_web"})
     )
     assert request.receipt_id == receipt
+
+
+@pytest.mark.parametrize("context", [None, "", "opaque context", "x" * 24_000])
+def test_optional_context_round_trips_without_interpretation(context):
+    payload = _assignment().model_dump(mode="json")
+    payload["callback_context"] = context
+    result = EndpointAssignment.model_validate_json(json.dumps(payload))
+    assert result.callback_context == context
+
+
+@pytest.mark.parametrize("context", ["x" * 24_001, " leading", "trailing ", "x\ny", "x\ry", "x\ty", "\x7f", "é"])
+def test_context_rejects_values_that_cannot_be_echoed_as_an_unchanged_header(context):
+    payload = _assignment().model_dump(mode="json")
+    payload["callback_context"] = context
+    with pytest.raises(ValidationError):
+        EndpointAssignment.model_validate_json(json.dumps(payload))

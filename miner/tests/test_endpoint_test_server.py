@@ -1,8 +1,11 @@
 """Protect the runnable miner endpoint's signed and forgetful behavior."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import bittensor as bt
@@ -11,14 +14,15 @@ import pytest
 
 from harnyx_commons.bittensor import build_canonical_request, verify_signed_request
 from harnyx_commons.endpoint_execution import (
-    ENDPOINT_DELEGATION_HEADER,
     ENDPOINT_REPORT_FORWARDING_ALLOWANCE,
     EndpointAuthority,
     delegation_header,
     delegation_signing_bytes,
+    parse_delegation_header,
 )
 from harnyx_miner.endpoint_test_server import EndpointTestServerState, create_endpoint_test_app
 from harnyx_miner_sdk.endpoint_protocol import (
+    ENDPOINT_CALLBACK_CONTEXT_HEADER,
     EndpointAssignment,
     EndpointCallback,
     EndpointCallbackAcknowledgement,
@@ -37,7 +41,9 @@ async def test_injected_answerer_reuses_structured_answer_for_continuation_and_l
     query = Query(text="Return null", output_schema={"type": "null"})
     original = _assignment(miner)
     assignment = _delegate(original.model_copy(update={"query": query, "query_digest": query_digest(query)}), platform)
-    authority = EndpointAuthority.model_validate_json(assignment.delegation.body_utf8).model_copy(
+    authority = EndpointAuthority.model_validate_json(
+        parse_delegation_header(assignment.callback_context).body_utf8
+    ).model_copy(
         update={
             "validator_hotkey": second_validator.ss58_address,
             "callback_url": "https://second-validator.example/callback",
@@ -61,14 +67,15 @@ async def test_injected_answerer_reuses_structured_answer_for_continuation_and_l
         return Response(output=None)
 
     async def transport(request):
-        delivered.append((str(request.url), request.content))
+        delivered.append((str(request.url), request.content, request.headers.get(ENDPOINT_CALLBACK_CONTEXT_HEADER)))
         if len(delivered) == 1:
             raise httpx.ReadError("acknowledgment lost")
         return httpx.Response(200, json={"durable_terminal_result": "persisted"})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as outbound:
         app = create_endpoint_test_app(
-            platform_hotkey_ss58=platform.ss58_address,
+            validator_eligibility=AsyncMock(return_value=True),
+            platform_base_url="https://platform.example",
             miner_hotkey=miner,
             endpoint_url="https://miner.example",
             block_at_registration=90,
@@ -88,8 +95,12 @@ async def test_injected_answerer_reuses_structured_answer_for_continuation_and_l
             release.set()
             await asyncio.gather(*tuple(app.state.endpoint_background_tasks))
             assert invocations == [assignment]
-            assert {url for url, _ in delivered} == {assignment.callback_url, continuation.callback_url}
-            assert len({body for _, body in delivered}) == 1
+            assert {url: context for url, _, context in delivered} == {
+                assignment.callback_url: assignment.callback_context,
+                continuation.callback_url: continuation.callback_context,
+            }
+            assert {url for url, _, _ in delivered} == {assignment.callback_url, continuation.callback_url}
+            assert len({body for _, body, _ in delivered}) == 1
             callback = json.loads(delivered[0][1])
             assert callback["response"]["output"] is None
             assert callback["expires_at"] == assignment.model_dump(mode="json")["expires_at"]
@@ -121,7 +132,8 @@ async def test_injected_answer_failure_or_cancellation_cannot_send_success(endin
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(no_callback)) as outbound:
         app = create_endpoint_test_app(
-            platform_hotkey_ss58=platform.ss58_address,
+            validator_eligibility=AsyncMock(return_value=True),
+            platform_base_url="https://platform.example",
             miner_hotkey=miner,
             endpoint_url="https://miner.example",
             block_at_registration=90,
@@ -147,14 +159,15 @@ async def test_injected_answer_failure_or_cancellation_cannot_send_success(endin
 
 def _assignment(miner):
     query = Query(text="Find evidence")
+    identity = uuid4()
     assignment = EndpointAssignment(
-        assignment_id=uuid4(),
+        assignment_id=identity,
         query=query,
         query_digest=query_digest(query),
         expected_hotkey=miner.ss58_address,
         callback_url="https://platform.example/v1/endpoint-assignments/example/callback",
-        search_url="https://platform.example/v1/endpoint-assignments/example/search",
-        delegation=EndpointDelegation(platform_hotkey="platform", body_utf8="{}", signature_hex="0" * 128),
+        search_url=f"https://platform.example/v1/endpoint-assignments/{identity}/search",
+        endpoint_url="https://miner.example",
         nonce="b" * 64,
         expires_at=datetime.now(UTC) + timedelta(minutes=1),
     )
@@ -183,7 +196,7 @@ def _delegate(assignment, platform):
         body_utf8=authority.model_dump_json(),
         signature_hex=platform.sign(delegation_signing_bytes(authority)).hex(),
     )
-    return assignment.model_copy(update={"delegation": delegation})
+    return assignment.model_copy(update={"callback_context": delegation_header(delegation)})
 
 
 async def _accept(client, platform, assignment):
@@ -205,7 +218,6 @@ async def _status(client, platform, assignment):
         path,
         headers={
             "Authorization": _authorization(platform, "GET", path, b""),
-            ENDPOINT_DELEGATION_HEADER: delegation_header(assignment.delegation),
         },
     )
 
@@ -243,7 +255,8 @@ async def test_one_task_owns_search_and_delivery_through_duplicate_polls_and_ack
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as outbound:
         app = create_endpoint_test_app(
-            platform_hotkey_ss58=platform.ss58_address,
+            validator_eligibility=AsyncMock(return_value=True),
+            platform_base_url="https://platform.example",
             miner_hotkey=miner,
             endpoint_url="https://miner.example",
             block_at_registration=90,
@@ -287,7 +300,8 @@ async def test_structured_assignment_is_rejected_before_search_or_retention(outp
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(no_outbound_request)) as outbound:
         app = create_endpoint_test_app(
-            platform_hotkey_ss58=platform.ss58_address,
+            validator_eligibility=AsyncMock(return_value=True),
+            platform_base_url="https://platform.example",
             miner_hotkey=miner,
             endpoint_url="https://miner.example",
             block_at_registration=90,
@@ -335,7 +349,8 @@ async def test_failed_search_is_logged_retained_and_never_restarted(failure, cap
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as outbound:
         app = create_endpoint_test_app(
-            platform_hotkey_ss58=platform.ss58_address,
+            validator_eligibility=AsyncMock(return_value=True),
+            platform_base_url="https://platform.example",
             miner_hotkey=miner,
             endpoint_url="https://miner.example",
             block_at_registration=90,
@@ -380,7 +395,8 @@ async def test_shutdown_joins_execution_or_delivery_and_retains_assignment(stage
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as outbound:
         app = create_endpoint_test_app(
-            platform_hotkey_ss58=platform.ss58_address,
+            validator_eligibility=AsyncMock(return_value=True),
+            platform_base_url="https://platform.example",
             miner_hotkey=miner,
             endpoint_url="https://miner.example",
             block_at_registration=90,
@@ -436,7 +452,8 @@ async def test_clear_and_reaccept_cannot_be_changed_by_obsolete_task(stage):
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as outbound:
         app = create_endpoint_test_app(
-            platform_hotkey_ss58=platform.ss58_address,
+            validator_eligibility=AsyncMock(return_value=True),
+            platform_base_url="https://platform.example",
             miner_hotkey=miner,
             endpoint_url="https://miner.example",
             block_at_registration=90,
@@ -494,7 +511,8 @@ async def test_expired_delivery_retains_callback_without_poll_restarting_it(monk
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as outbound:
         app = create_endpoint_test_app(
-            platform_hotkey_ss58=platform.ss58_address,
+            validator_eligibility=AsyncMock(return_value=True),
+            platform_base_url="https://platform.example",
             miner_hotkey=miner,
             endpoint_url="https://miner.example",
             block_at_registration=90,
@@ -565,7 +583,8 @@ async def test_callback_deadline_closes_stalled_attempt_and_retains_result(monke
     # The assignment deadline must own cancellation even without a client timeout.
     async with httpx.AsyncClient(transport=httpx.MockTransport(transport), timeout=None) as outbound:  # noqa: S113
         app = create_endpoint_test_app(
-            platform_hotkey_ss58=platform.ss58_address,
+            validator_eligibility=AsyncMock(return_value=True),
+            platform_base_url="https://platform.example",
             miner_hotkey=miner,
             endpoint_url="https://miner.example",
             block_at_registration=90,
@@ -614,7 +633,8 @@ async def test_failed_assignment_does_not_interrupt_independent_execution(caplog
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as outbound:
         app = create_endpoint_test_app(
-            platform_hotkey_ss58=platform.ss58_address,
+            validator_eligibility=AsyncMock(return_value=True),
+            platform_base_url="https://platform.example",
             miner_hotkey=miner,
             endpoint_url="https://miner.example",
             block_at_registration=90,
@@ -647,7 +667,8 @@ async def test_oversized_assignment_is_rejected_before_signature_validation(decl
     app = create_endpoint_test_app(
         endpoint_url="https://miner.example",
         block_at_registration=90,
-        platform_hotkey_ss58=bt.Keypair.create_from_uri("//Alice").ss58_address,
+        validator_eligibility=AsyncMock(return_value=True),
+        platform_base_url="https://platform.example",
         miner_hotkey=bt.Keypair.create_from_uri("//Bob"),
         state=state,
     )
@@ -682,19 +703,21 @@ async def test_assignment_and_status_are_signed_and_unknown_after_memory_clear()
     app = create_endpoint_test_app(
         endpoint_url="https://miner.example",
         block_at_registration=90,
-        platform_hotkey_ss58=platform_hotkey.ss58_address,
+        validator_eligibility=AsyncMock(return_value=True),
+        platform_base_url="https://platform.example",
         miner_hotkey=miner_hotkey,
         state=state,
     )
     query = Query(text="Find evidence")
+    identity = uuid4()
     assignment = EndpointAssignment(
-        assignment_id=__import__("uuid").uuid4(),
+        assignment_id=identity,
         query=query,
         query_digest=query_digest(query),
         expected_hotkey=miner_hotkey.ss58_address,
         callback_url="https://platform.example/v1/endpoint-assignments/callback",
-        search_url="https://platform.example/v1/endpoint-assignments/example/search",
-        delegation=EndpointDelegation(platform_hotkey="platform", body_utf8="{}", signature_hex="0" * 128),
+        search_url=f"https://platform.example/v1/endpoint-assignments/{identity}/search",
+        endpoint_url="https://miner.example",
         nonce="b" * 64,
         expires_at=datetime.now(UTC) + timedelta(minutes=1),
     )
@@ -722,7 +745,6 @@ async def test_assignment_and_status_are_signed_and_unknown_after_memory_clear()
             status_path,
             headers={
                 "Authorization": _authorization(platform_hotkey, "GET", status_path, b""),
-                ENDPOINT_DELEGATION_HEADER: delegation_header(assignment.delegation),
             },
         )
         assert known.json()["state"] == EndpointMinerStatus.RUNNING.value
@@ -732,7 +754,6 @@ async def test_assignment_and_status_are_signed_and_unknown_after_memory_clear()
             status_path,
             headers={
                 "Authorization": _authorization(platform_hotkey, "GET", status_path, b""),
-                ENDPOINT_DELEGATION_HEADER: delegation_header(assignment.delegation),
             },
         )
         assert unknown.json()["state"] == EndpointMinerStatus.UNKNOWN.value
@@ -745,7 +766,8 @@ async def test_tampered_assignment_is_rejected_without_retaining_secrets() -> No
     app = create_endpoint_test_app(
         endpoint_url="https://miner.example",
         block_at_registration=90,
-        platform_hotkey_ss58=platform_hotkey.ss58_address,
+        validator_eligibility=AsyncMock(return_value=True),
+        platform_base_url="https://platform.example",
         miner_hotkey=miner_hotkey,
         state=state,
     )
@@ -813,7 +835,8 @@ async def test_executable_endpoint_searches_and_retries_callback_without_retaini
     app = create_endpoint_test_app(
         endpoint_url="https://miner.example",
         block_at_registration=90,
-        platform_hotkey_ss58=platform_hotkey.ss58_address,
+        validator_eligibility=AsyncMock(return_value=True),
+        platform_base_url="https://platform.example",
         miner_hotkey=miner_hotkey,
         state=state,
         provider="parallel",
@@ -822,14 +845,15 @@ async def test_executable_endpoint_searches_and_retries_callback_without_retaini
         callback_retry_seconds=0,
     )
     query = Query(text="Find evidence")
+    identity = uuid4()
     assignment = EndpointAssignment(
-        assignment_id=__import__("uuid").uuid4(),
+        assignment_id=identity,
         query=query,
         query_digest=query_digest(query),
         expected_hotkey=miner_hotkey.ss58_address,
         callback_url="https://platform.example/v1/endpoint-assignments/00000000-0000-0000-0000-000000000001/callback",
-        search_url="https://platform.example/v1/endpoint-assignments/example/search",
-        delegation=EndpointDelegation(platform_hotkey="platform", body_utf8="{}", signature_hex="0" * 128),
+        search_url=f"https://platform.example/v1/endpoint-assignments/{identity}/search",
+        endpoint_url="https://miner.example",
         nonce="b" * 64,
         expires_at=datetime.now(UTC) + timedelta(minutes=1),
     )
@@ -871,7 +895,8 @@ async def test_ownership_proof_signs_exact_body_and_registered_path(prefix: str)
     miner = bt.Keypair.create_from_uri("//Bob")
     url = "https://miner.example" + prefix
     app = create_endpoint_test_app(
-        platform_hotkey_ss58=bt.Keypair.create_from_uri("//Alice").ss58_address,
+        validator_eligibility=AsyncMock(return_value=True),
+        platform_base_url="https://platform.example",
         miner_hotkey=miner,
         endpoint_url=url,
         block_at_registration=90,
@@ -910,7 +935,8 @@ async def test_ownership_proof_rejects_invalid_challenge_without_signature(field
     miner = bt.Keypair.create_from_uri("//Bob")
     url = "https://miner.example"
     app = create_endpoint_test_app(
-        platform_hotkey_ss58=bt.Keypair.create_from_uri("//Alice").ss58_address,
+        validator_eligibility=AsyncMock(return_value=True),
+        platform_base_url="https://platform.example",
         miner_hotkey=miner,
         endpoint_url=url,
         block_at_registration=90,
@@ -929,7 +955,8 @@ async def test_ownership_proof_rejects_requests_outside_registered_base(path: st
     miner = bt.Keypair.create_from_uri("//Bob")
     url = "https://miner.example/base"
     app = create_endpoint_test_app(
-        platform_hotkey_ss58=bt.Keypair.create_from_uri("//Alice").ss58_address,
+        validator_eligibility=AsyncMock(return_value=True),
+        platform_base_url="https://platform.example",
         miner_hotkey=miner,
         endpoint_url=url,
         block_at_registration=90,
@@ -943,7 +970,8 @@ async def test_ownership_proof_rejects_requests_outside_registered_base(path: st
 @pytest.mark.parametrize("body", [b"not-json", b"{}", b"[]"])
 async def test_ownership_proof_rejects_malformed_or_incomplete_json(body: bytes) -> None:
     app = create_endpoint_test_app(
-        platform_hotkey_ss58=bt.Keypair.create_from_uri("//Alice").ss58_address,
+        validator_eligibility=AsyncMock(return_value=True),
+        platform_base_url="https://platform.example",
         miner_hotkey=bt.Keypair.create_from_uri("//Bob"),
         endpoint_url="https://miner.example",
         block_at_registration=90,
@@ -958,7 +986,8 @@ async def test_ownership_proof_rejects_malformed_or_incomplete_json(body: bytes)
 @pytest.mark.parametrize("declared_length", [True, False])
 async def test_ownership_proof_rejects_oversized_body_without_buffering_remainder(declared_length: bool) -> None:
     app = create_endpoint_test_app(
-        platform_hotkey_ss58=bt.Keypair.create_from_uri("//Alice").ss58_address,
+        validator_eligibility=AsyncMock(return_value=True),
+        platform_base_url="https://platform.example",
         miner_hotkey=bt.Keypair.create_from_uri("//Bob"),
         endpoint_url="https://miner.example",
         block_at_registration=90,
@@ -984,6 +1013,7 @@ async def test_ownership_proof_rejects_oversized_body_without_buffering_remainde
     assert response.status_code == 413
     assert chunks_read == (0 if declared_length else 2)
     assert "signature" not in response.json()
+
 
 @pytest.mark.parametrize("failure", ["status", "connection", "headers", "body"])
 async def test_callback_backoff_recovers_with_original_result_after_failed_attempts(monkeypatch, failure):
@@ -1028,8 +1058,14 @@ async def test_callback_backoff_recovers_with_original_result_after_failed_attem
     monkeypatch.setattr(endpoint_test_server.asyncio, "sleep", sleep)
     async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
         await endpoint_test_server._deliver_callback(
-            assignment=assignment, callback=callback, miner_hotkey=miner, state=state,
-            client=client, retry_seconds=1, retry_max_seconds=3, attempt_timeout_seconds=0.02,
+            assignment=assignment,
+            callback=callback,
+            miner_hotkey=miner,
+            state=state,
+            client=client,
+            retry_seconds=1,
+            retry_max_seconds=3,
+            attempt_timeout_seconds=0.02,
         )
 
     assert delays == [1, 2, 3, 3]
@@ -1051,8 +1087,11 @@ async def test_callback_backoff_stops_at_original_delivery_cutoff(monkeypatch):
     state = EndpointTestServerState()
     state.assignments[assignment.assignment_id] = assignment
     callback = EndpointCallback(
-        assignment_id=assignment.assignment_id, query_digest=assignment.query_digest,
-        nonce=assignment.nonce, expires_at=assignment.expires_at, response=Response(text="Saved"),
+        assignment_id=assignment.assignment_id,
+        query_digest=assignment.query_digest,
+        nonce=assignment.nonce,
+        expires_at=assignment.expires_at,
+        response=Response(text="Saved"),
     )
     delays, requests = [], []
 
@@ -1074,10 +1113,284 @@ async def test_callback_backoff_stops_at_original_delivery_cutoff(monkeypatch):
     monkeypatch.setattr(endpoint_test_server.asyncio, "sleep", sleep)
     async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
         await endpoint_test_server._deliver_callback(
-            assignment=assignment, callback=callback, miner_hotkey=miner, state=state,
-            client=client, retry_seconds=1, retry_max_seconds=10, attempt_timeout_seconds=5,
+            assignment=assignment,
+            callback=callback,
+            miner_hotkey=miner,
+            state=state,
+            client=client,
+            retry_seconds=1,
+            retry_max_seconds=10,
+            attempt_timeout_seconds=5,
         )
     assert delays == [0.5]
     assert len(requests) == 1
     assert requests[0].extensions["timeout"]["read"] == 0.5
     assert not state.acknowledged
+
+
+@pytest.mark.parametrize(
+    "context",
+    [None, "", "opaque context; NOT a Platform document", "x" * 24_000],
+    ids=["absent", "empty", "opaque", "maximum"],
+)
+async def test_direct_request_returns_exact_optional_context_and_signed_answer(context):
+    validator, miner = (bt.Keypair.create_from_uri(uri) for uri in ("//Alice", "//Bob"))
+    assignment = _assignment(miner).model_copy(update={"callback_context": context})
+    received = []
+
+    async def callback(request):
+        verify_signed_request(
+            method="POST",
+            path_qs=request.url.raw_path.decode(),
+            body=request.content,
+            authorization_header=request.headers["Authorization"],
+            allowed_ss58=(miner.ss58_address,),
+        )
+        received.append(request)
+        return httpx.Response(200, json={"durable_terminal_result": "persisted"})
+
+    eligibility = AsyncMock(return_value=True)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(callback)) as outbound:
+        app = create_endpoint_test_app(
+            validator_eligibility=eligibility,
+            miner_hotkey=miner,
+            endpoint_url=assignment.endpoint_url,
+            block_at_registration=90,
+            answerer=AsyncMock(return_value=Response(text="answer")),
+            client=outbound,
+        )
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=assignment.endpoint_url) as client,
+        ):
+            await _accept(client, validator, assignment)
+            await asyncio.gather(*tuple(app.state.endpoint_background_tasks))
+            assert (await _status(client, validator, assignment)).status_code == 200
+    eligibility.assert_awaited_once_with(validator.ss58_address)
+    assert len(received) == 1
+    assert received[0].headers.get(ENDPOINT_CALLBACK_CONTEXT_HEADER) == context
+    assert EndpointCallback.model_validate_json(received[0].content).response.text == "answer"
+
+
+async def test_replacement_requires_matching_nonce_and_eligibility_and_memory_loss_rechecks():
+    original, replacement, miner = (bt.Keypair.create_from_uri(uri) for uri in ("//Alice", "//Charlie", "//Bob"))
+    assignment = _assignment(miner).model_copy(update={"callback_context": "original"})
+    continuation = assignment.model_copy(
+        update={"callback_context": "replacement", "callback_url": "https://other.example/callback"}
+    )
+    state = EndpointTestServerState()
+    eligibility = AsyncMock(return_value=True)
+    app = create_endpoint_test_app(
+        validator_eligibility=eligibility,
+        miner_hotkey=miner,
+        endpoint_url=assignment.endpoint_url,
+        block_at_registration=90,
+        state=state,
+    )
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=assignment.endpoint_url) as client,
+    ):
+        await _accept(client, original, assignment)
+        eligibility.return_value = False
+        await _accept(client, original, assignment)
+        assert (await _status(client, original, assignment)).status_code == 200
+        assert (await _status(client, replacement, assignment)).status_code == 403
+        path = "/v1/endpoint-assignments"
+
+        async def post(key, request):
+            body = request.model_dump_json().encode()
+            return await client.post(
+                path, content=body, headers={"Authorization": _authorization(key, "POST", path, body)}
+            )
+
+        assert (await post(replacement, continuation)).status_code == 403
+        eligibility.return_value = True
+        assert (await post(replacement, continuation.model_copy(update={"nonce": "z" * 64}))).status_code == 409
+        await _accept(client, replacement, continuation)
+        assert state.assignments[assignment.assignment_id] == assignment
+        assert set(state.destinations[assignment.assignment_id]) == {assignment.callback_url, continuation.callback_url}
+        assert (
+            await post(replacement, assignment.model_copy(update={"callback_context": "overwrite"}))
+        ).status_code == 409
+        state.clear()
+        eligibility.return_value = False
+        assert (await _status(client, original, assignment)).status_code == 403
+        assert (await post(original, assignment)).status_code == 403
+        eligibility.return_value = True
+        assert (await _status(client, replacement, assignment)).json()["state"] == "unknown"
+        await _accept(client, replacement, continuation)
+        assert state.assignments[assignment.assignment_id].expires_at == assignment.expires_at
+
+
+@pytest.mark.parametrize("eligibility_result, expected", [(False, 403), (RuntimeError("chain unavailable"), 503)])
+async def test_failed_eligibility_never_admits_assignment_or_unknown_status(eligibility_result, expected):
+    validator, miner = (bt.Keypair.create_from_uri(uri) for uri in ("//Alice", "//Bob"))
+    assignment = _assignment(miner)
+    eligibility = (
+        AsyncMock(side_effect=eligibility_result)
+        if isinstance(eligibility_result, Exception)
+        else AsyncMock(return_value=False)
+    )
+    state = EndpointTestServerState()
+    app = create_endpoint_test_app(
+        validator_eligibility=eligibility,
+        miner_hotkey=miner,
+        endpoint_url=assignment.endpoint_url,
+        block_at_registration=90,
+        state=state,
+    )
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=assignment.endpoint_url) as client,
+    ):
+        body = assignment.model_dump_json().encode()
+        path = "/v1/endpoint-assignments"
+        result = await client.post(
+            path, content=body, headers={"Authorization": _authorization(validator, "POST", path, body)}
+        )
+        assert result.status_code == expected
+        assert (await _status(client, validator, assignment)).status_code == expected
+        assert not state.assignments and not state.signers
+
+
+@pytest.mark.parametrize("operation", ["status", "assignment"])
+async def test_chain_lookup_does_not_block_admitted_work_or_bypass_retained_status_admission(operation):
+    original, newcomer, miner = (bt.Keypair.create_from_uri(uri) for uri in ("//Alice", "//Charlie", "//Bob"))
+    blocked, release = asyncio.Event(), asyncio.Event()
+    state = EndpointTestServerState()
+    assignment = _assignment(miner)
+
+    async def eligibility(signer):
+        if signer == newcomer.ss58_address:
+            blocked.set()
+            await release.wait()
+        return True
+
+    app = create_endpoint_test_app(
+        validator_eligibility=eligibility,
+        miner_hotkey=miner,
+        endpoint_url=assignment.endpoint_url,
+        block_at_registration=90,
+        state=state,
+    )
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=assignment.endpoint_url) as client,
+    ):
+        if operation == "status":
+            pending = asyncio.create_task(_status(client, newcomer, assignment))
+        else:
+            # Two concurrent first admissions must retain one execution and both destinations.
+            continuation = assignment.model_copy(
+                update={"callback_url": "https://new.example/callback", "callback_context": "new"}
+            )
+            pending = asyncio.create_task(_accept(client, newcomer, continuation))
+        try:
+            await asyncio.wait_for(blocked.wait(), 1)
+            async with asyncio.timeout(1):
+                await _accept(client, original, assignment)
+                await _accept(client, original, assignment)
+            release.set()
+            result = await pending
+            if operation == "status":
+                assert result.status_code == 403
+            else:
+                assert len(state.assignments) == 1
+                assert len(state.destinations[assignment.assignment_id]) == 2
+                assert state.assignments[assignment.assignment_id] == assignment
+        finally:
+            release.set()
+            await asyncio.gather(pending, return_exceptions=True)
+
+
+async def test_signed_request_tampering_cannot_reach_eligibility_or_execute():
+    validator, miner = (bt.Keypair.create_from_uri(uri) for uri in ("//Alice", "//Bob"))
+    assignment = _assignment(miner)
+    eligibility = AsyncMock(return_value=True)
+    state = EndpointTestServerState()
+    app = create_endpoint_test_app(
+        validator_eligibility=eligibility,
+        miner_hotkey=miner,
+        endpoint_url=assignment.endpoint_url,
+        block_at_registration=90,
+        state=state,
+    )
+    path = "/v1/endpoint-assignments"
+    signature = _authorization(validator, "POST", path, assignment.model_dump_json().encode())
+    tampered = assignment.model_copy(update={"callback_context": "modified after signing"})
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=assignment.endpoint_url) as client,
+    ):
+        response = await client.post(path, content=tampered.model_dump_json(), headers={"Authorization": signature})
+        assert response.status_code == 401
+    eligibility.assert_not_awaited()
+    assert not state.assignments
+
+
+async def test_public_search_adapter_rejects_untrusted_destination_before_sending_credentials():
+    from harnyx_miner.endpoint_test_server import _search_snippet
+
+    miner = bt.Keypair.create_from_uri("//Bob")
+    assignment = _assignment(miner).model_copy(update={"search_url": "https://attacker.example/search"})
+
+    async def outbound(request):
+        pytest.fail("credentials must not leave the miner")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(outbound)) as client:
+        with pytest.raises(ValueError, match="configured assignment tooling route"):
+            await _search_snippet(assignment, "parallel", "provider-secret", miner, client, "https://platform.example")
+
+
+@pytest.mark.parametrize(
+    "callback_url",
+    [
+        "https://validator.example:invalid/callback",
+        "https://[invalid/callback",
+        "https:///callback",
+        "https://validator.example:99999/callback",
+    ],
+)
+async def test_malformed_replacement_callback_is_rejected_without_interrupting_original(callback_url):
+    original, replacement, miner = (bt.Keypair.create_from_uri(uri) for uri in ("//Alice", "//Charlie", "//Bob"))
+    assignment = _assignment(miner)
+    state = EndpointTestServerState()
+    release = asyncio.Event()
+    delivered = []
+
+    async def answer(request):
+        await release.wait()
+        return Response(text="original answer")
+
+    async def callback(request):
+        delivered.append(str(request.url))
+        return httpx.Response(200, json={"durable_terminal_result": "persisted"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(callback)) as outbound:
+        app = create_endpoint_test_app(
+            validator_eligibility=AsyncMock(return_value=True),
+            miner_hotkey=miner,
+            endpoint_url=assignment.endpoint_url,
+            block_at_registration=90,
+            state=state,
+            answerer=answer,
+            client=outbound,
+        )
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=assignment.endpoint_url) as client,
+        ):
+            await _accept(client, original, assignment)
+            bad = assignment.model_copy(update={"callback_url": callback_url, "callback_context": "replacement"})
+            body = bad.model_dump_json().encode()
+            path = "/v1/endpoint-assignments"
+            rejected = await client.post(
+                path, content=body, headers={"Authorization": _authorization(replacement, "POST", path, body)}
+            )
+            assert rejected.status_code == 422
+            assert list(state.destinations[assignment.assignment_id]) == [assignment.callback_url]
+            release.set()
+            await asyncio.gather(*tuple(app.state.endpoint_background_tasks))
+            assert delivered == [assignment.callback_url]
+            assert assignment.assignment_id in state.acknowledged

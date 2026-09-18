@@ -132,7 +132,13 @@ A 503 can follow a successful commit whose publication acknowledgement was lost.
 
 This example supports text queries only. It rejects assignments with `query.output_schema` using HTTP 422 before retaining the assignment or starting search. Implement structured answers in your own miner if you need them; the endpoint protocol itself supports both answer forms.
 
-The miner package includes a small HTTPS test endpoint. It answers Platform's ownership challenge at `<base-url>/verify`, verifies Platform delegation and the authorized validator's request signature, and calls assignment-bound Platform search when provider inputs are supplied. One computation per assignment can attach independent callback destinations for two authorized validators. Repeated deliveries and status polls reuse saved work. Send the original signed answer and delegation header to each validator callback URL, using the explicit assignment search URL for Platform search. Callback retries preserve the original receipt event at the validator and stop after a durable Platform acknowledgement or the 60-second forwarding allowance. A complete answer must reach a validator before the original miner deadline; the allowance does not extend answering time.
+The miner package includes a small HTTPS test endpoint. It answers ownership challenges at `<base-url>/verify` and authenticates validator signatures, subnet registration and validator permits. Set `SUBTENSOR_ENDPOINT` and `SUBTENSOR_NETUID` for the subnet you serve. No Platform signer configuration is required. New signers require a successful current finalized-chain read; unavailable chain data rejects admission.
+
+A replacement validator must present the complete matching request, including its unpredictable nonce. It attaches its own callback destination and optional `callback_context` to the existing computation without resetting the deadline. The miner returns each destination's exact context string in `X-Harnyx-Callback-Context`; it never interprets or verifies that string. Omitted context produces no header; an empty string produces an empty header. See the [SDK contract](../packages/miner-sdk/README.md#registered-endpoint-protocol) for transport bounds.
+
+Admitted validators can retry and read status while their assignment remains in memory, even if they later lose their permit. After miner state loss, current eligibility is required again. Status for a retained assignment is available only to admitted signers; eligible callers get `unknown` for a forgotten assignment. A replacement can resume with the original deadline.
+
+For Platform-coordinated work, our validator uses the existing signed assignment document as context and verifies it on callback, including after restart. Send the original miner-signed answer to each callback URL. The validator acknowledges successful storage only after Platform confirms it, retaining the original receipt timestamp through reporting retries. A complete answer must reach a validator before the original miner deadline; the 60-second forwarding allowance does not extend answering time. Independent validators may omit context or use a string understood by their own handler.
 
 Failed searches are logged without provider credentials and are not automatically retried. The assignment stays in memory and status returns HTTP 503 instead of falsely reporting `running` or claiming `unknown`. Successful searches retain their callback and report `completed`, including after acknowledgement or deadline expiry. Shutdown cancels and joins active tasks; explicit state clearing cancels obsolete work and makes status `unknown`. The server does not provide durable storage across process restarts.
 
@@ -144,7 +150,6 @@ Run it with your public HTTPS base URL, your hotkey's current `BlockAtRegistrati
 
 ```bash
 harnyx-miner-endpoint-test \
-  --platform-hotkey <platform-hotkey-ss58> \
   --miner-hotkey-uri <miner-hotkey-uri> \
   --endpoint-url https://miner.example:8300/base \
   --registration-block <block-at-registration> \
@@ -154,11 +159,10 @@ harnyx-miner-endpoint-test \
   --port 8300
 ```
 
-To exercise receipt-backed search, supply the provider name and the name of an environment variable containing its API key. The key is sent only in the `X-Provider-Api-Key` header and is not retained in endpoint state:
+To exercise receipt-backed search, set `PLATFORM_BASE_URL` to the trusted HTTPS tooling base and supply the provider name and the name of an environment variable containing its API key. The miner checks the exact assignment search route before sending credentials and does not follow redirects. Platform tooling still requires an existing Platform assignment; a context-free protocol request does not create one. The key is sent only in the `X-Provider-Api-Key` header and is not retained in endpoint state:
 
 ```bash
 harnyx-miner-endpoint-test \
-  --platform-hotkey <platform-hotkey-ss58> \
   --miner-hotkey-uri <miner-hotkey-uri> \
   --endpoint-url https://miner.example:8300/base \
   --registration-block <block-at-registration> \

@@ -1,9 +1,11 @@
 """Protect signed assignment transport and uncertainty classification."""
 
+from __future__ import annotations
+
 import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import bittensor as bt
@@ -64,7 +66,6 @@ async def test_streaming_response_obeys_total_call_budget(operation, budget):
                         expected_hotkey=miner.ss58_address,
                         assignment_id=assignment.assignment_id,
                         deadline_at=assignment.expires_at,
-                        delegation=assignment.delegation,
                         stop_at=started + budget,
                     )
         elapsed = asyncio.get_running_loop().time() - started
@@ -106,7 +107,8 @@ async def test_client_and_endpoint_exchange_signed_assignment_and_status() -> No
     platform = bt.Keypair.create_from_mnemonic(bt.Keypair.generate_mnemonic())
     miner = bt.Keypair.create_from_mnemonic(bt.Keypair.generate_mnemonic())
     app = create_endpoint_test_app(
-        platform_hotkey_ss58=platform.ss58_address,
+        validator_eligibility=AsyncMock(return_value=True),
+        platform_base_url="https://platform.example",
         miner_hotkey=miner,
         endpoint_url="https://miner.example",
         block_at_registration=90,
@@ -128,12 +130,12 @@ async def test_client_and_endpoint_exchange_signed_assignment_and_status() -> No
         expected_hotkey=miner.ss58_address,
         assignment_id=assignment.assignment_id,
         deadline_at=assignment.expires_at,
-        delegation=assignment.delegation,
         stop_at=asyncio.get_running_loop().time() + 60,
     )
 
     await client.aclose()
-    assert (outcome).attempted_at is not None
+    assert outcome.attempted_at is not None
+    assert outcome.admission_confirmed
     assert status.state is EndpointMinerStatus.RUNNING
 
 
@@ -174,7 +176,7 @@ async def test_unreachable_miner_and_http_failure_are_actual_attempts() -> None:
     await failed_client.aclose()
 
 
-@pytest.mark.parametrize("acknowledgement", ["unsigned", "malformed", "oversized"])
+@pytest.mark.parametrize("acknowledgement", ["unsigned", "malformed", "oversized", "declined"])
 async def test_post_send_acknowledgement_failures_remain_uncertain(acknowledgement: str) -> None:
     """Future failure: a bad HTTP 200 acknowledgement must not escape and stop fan-out."""
     platform = bt.Keypair.create_from_mnemonic(bt.Keypair.generate_mnemonic())
@@ -186,7 +188,9 @@ async def test_post_send_acknowledgement_failures_remain_uncertain(acknowledgeme
             return httpx.Response(200, content=b"x" * (8 * 1024 + 1))
         body = b"not-json"
         headers: dict[str, str] = {}
-        if acknowledgement == "malformed":
+        if acknowledgement == "declined":
+            body = b'{"accepted":false}'
+        if acknowledgement in {"malformed", "declined"}:
             path = request.url.raw_path.decode("ascii")
             signature = miner.sign(build_canonical_request("POST", path, body)).hex()
             headers["Authorization"] = f'Bittensor ss58="{miner.ss58_address}",sig="{signature}"'
@@ -205,7 +209,8 @@ async def test_post_send_acknowledgement_failures_remain_uncertain(acknowledgeme
     )
 
     await client.aclose()
-    assert (outcome).attempted_at is not None
+    assert outcome.attempted_at is not None
+    assert not outcome.admission_confirmed
 
 
 @pytest.mark.parametrize("encoding", [None, "identity"])
@@ -252,7 +257,6 @@ async def test_client_signs_and_verifies_the_registered_endpoint_base_path(encod
         expected_hotkey=miner.ss58_address,
         assignment_id=assignment.assignment_id,
         deadline_at=assignment.expires_at,
-        delegation=assignment.delegation,
         stop_at=asyncio.get_running_loop().time() + 60,
     )
 
@@ -298,7 +302,6 @@ async def test_encoded_replies_close_without_reading_or_decoding(method: str, en
                     expected_hotkey=miner.ss58_address,
                     assignment_id=assignment.assignment_id,
                     deadline_at=assignment.expires_at,
-                    delegation=assignment.delegation,
                     stop_at=asyncio.get_running_loop().time() + 60,
                 )
         assert closed
@@ -346,7 +349,6 @@ async def test_status_failures_are_gateway_unavailability(failure: str) -> None:
                 expected_hotkey=miner.ss58_address,
                 assignment_id=uuid4(),
                 deadline_at=datetime.now(UTC) + timedelta(seconds=1),
-                delegation=_assignment(miner.ss58_address, platform).delegation,
                 stop_at=asyncio.get_running_loop().time() + 60,
             )
 
@@ -386,7 +388,6 @@ async def test_signing_expiry_never_opens_transport(method: str, monkeypatch: py
                         expected_hotkey=assignment.expected_hotkey,
                         assignment_id=assignment.assignment_id,
                         deadline_at=assignment.expires_at,
-                        delegation=assignment.delegation,
                         stop_at=asyncio.get_running_loop().time() + 60,
                     )
         transport.assert_not_called()
@@ -431,7 +432,6 @@ async def test_request_deadline_or_caller_cancellation_closes_stream(method: str
                 expected_hotkey=assignment.expected_hotkey,
                 assignment_id=assignment.assignment_id,
                 deadline_at=assignment.expires_at,
-                delegation=assignment.delegation,
                 stop_at=asyncio.get_running_loop().time() + 60,
             )
 
