@@ -431,7 +431,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
 
     rating_competition_worker = (
         RatingCompetitionWorker(platform_client, RatingCompetitionService(scoring_service))
-        if resolved.rating_competition_enabled and platform_client is not None
+        if platform_client is not None
         else None
     )
     if rating_competition_worker is not None:

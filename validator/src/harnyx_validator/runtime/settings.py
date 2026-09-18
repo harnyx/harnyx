@@ -64,8 +64,6 @@ class Settings(BaseSettings):
         env_ignore_empty=True,
     )
 
-    rating_competition_enabled: bool = Field(default=False, alias="RATING_COMPETITION_ENABLED")
-
     # --- Server ---
     rpc_listen_host: str = Field(
         default="0.0.0.0",  # noqa: S104

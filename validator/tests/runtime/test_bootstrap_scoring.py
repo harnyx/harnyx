@@ -535,7 +535,10 @@ def test_build_state_prunes_stale_run_progress_dirs(tmp_path: Path) -> None:
     assert not stale_dir.exists()
 
 
-def test_build_runtime_cleans_stale_sandbox_containers_on_startup(
+@pytest.mark.anyio
+@pytest.mark.parametrize("has_platform_client", [False, True])
+async def test_build_runtime_cleans_stale_sandbox_containers_on_startup(
+    has_platform_client: bool,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -548,9 +551,16 @@ def test_build_runtime_cleans_stale_sandbox_containers_on_startup(
 
     manager = FakeSandboxManager()
     validator_hotkey = Keypair.create_from_uri("//Alice")
+    from unittest.mock import AsyncMock
 
+    from harnyx_commons.rating_competition import RatingWorkPage
+
+    platform_client = SimpleNamespace(poll_rating_comparisons=AsyncMock(return_value=RatingWorkPage(items=())))
+    status_provider = SimpleNamespace(rating_worker_readiness=lambda: False)
     monkeypatch.setattr(
-        bootstrap, "_build_external_clients", lambda _settings: (object(), object(), validator_hotkey, object())
+        bootstrap,
+        "_build_external_clients",
+        lambda _settings: (platform_client if has_platform_client else None, object(), validator_hotkey, object()),
     )
     monkeypatch.setattr(
         bootstrap,
@@ -584,7 +594,7 @@ def test_build_runtime_cleans_stale_sandbox_containers_on_startup(
     monkeypatch.setattr(
         bootstrap,
         "_build_http_dependencies",
-        lambda **_kwargs: (lambda: object(), lambda: object(), object(), object()),
+        lambda **_kwargs: (lambda: object(), lambda: object(), status_provider, object()),
     )
     monkeypatch.setattr(bootstrap, "create_sandbox_manager", lambda **_kwargs: manager)
     settings = Settings.model_construct(
@@ -593,7 +603,16 @@ def test_build_runtime_cleans_stale_sandbox_containers_on_startup(
     )
 
     runtime = bootstrap.build_runtime(settings)
-    runtime.batch_blocking_executor.shutdown(wait=False, cancel_futures=True)
+    try:
+        assert (runtime.rating_competition_worker is not None) is has_platform_client
+        assert status_provider.rating_worker_readiness() is False
+        if has_platform_client:
+            runtime.rating_competition_worker.start()
+            assert status_provider.rating_worker_readiness() is True
+            await runtime.rating_competition_worker.stop()
+            assert status_provider.rating_worker_readiness() is False
+    finally:
+        runtime.batch_blocking_executor.shutdown(wait=False, cancel_futures=True)
 
     assert manager.cleanup_calls == [
         {

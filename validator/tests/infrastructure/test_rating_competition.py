@@ -550,3 +550,20 @@ async def test_polling_failure_is_reported_once_without_stopping_worker_early(mo
     worker = RatingCompetitionWorker(Platform(), object())
     await worker._run()
     capture.assert_called_once_with(failure)
+
+
+@pytest.mark.anyio
+async def test_idle_worker_never_judges_or_submits():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    platform = SimpleNamespace(
+        poll_rating_comparisons=AsyncMock(return_value=RatingWorkPage(items=())),
+        submit_rating_judgment=AsyncMock(),
+    )
+    service = SimpleNamespace(judge=AsyncMock())
+    worker = RatingCompetitionWorker(platform, service)
+    await worker.tick()
+    await worker.tick()
+    service.judge.assert_not_awaited()
+    platform.submit_rating_judgment.assert_not_awaited()
