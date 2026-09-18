@@ -20,15 +20,129 @@ from harnyx_commons.endpoint_execution import (
 from harnyx_miner.endpoint_test_server import EndpointTestServerState, create_endpoint_test_app
 from harnyx_miner_sdk.endpoint_protocol import (
     EndpointAssignment,
+    EndpointCallback,
     EndpointCallbackAcknowledgement,
     EndpointDelegation,
     EndpointDurableTerminalResult,
     EndpointMinerStatus,
     query_digest,
 )
-from harnyx_miner_sdk.query import Query
+from harnyx_miner_sdk.query import Query, Response
 
 pytestmark = pytest.mark.anyio("asyncio")
+
+
+async def test_injected_answerer_reuses_structured_answer_for_continuation_and_lost_ack():
+    platform, miner, second_validator = (bt.Keypair.create_from_uri(uri) for uri in ("//Alice", "//Bob", "//Charlie"))
+    query = Query(text="Return null", output_schema={"type": "null"})
+    original = _assignment(miner)
+    assignment = _delegate(original.model_copy(update={"query": query, "query_digest": query_digest(query)}), platform)
+    authority = EndpointAuthority.model_validate_json(assignment.delegation.body_utf8).model_copy(
+        update={
+            "validator_hotkey": second_validator.ss58_address,
+            "callback_url": "https://second-validator.example/callback",
+            "attempt_number": 2,
+        }
+    )
+    delegation = EndpointDelegation(
+        platform_hotkey=platform.ss58_address,
+        body_utf8=authority.model_dump_json(),
+        signature_hex=platform.sign(delegation_signing_bytes(authority)).hex(),
+    )
+    continuation = authority.assignment(query, delegation)
+    state = EndpointTestServerState()
+    started, release = asyncio.Event(), asyncio.Event()
+    invocations, delivered = [], []
+
+    async def answerer(received):
+        invocations.append(received)
+        started.set()
+        await release.wait()
+        return Response(output=None)
+
+    async def transport(request):
+        delivered.append((str(request.url), request.content))
+        if len(delivered) == 1:
+            raise httpx.ReadError("acknowledgment lost")
+        return httpx.Response(200, json={"durable_terminal_result": "persisted"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as outbound:
+        app = create_endpoint_test_app(
+            platform_hotkey_ss58=platform.ss58_address,
+            miner_hotkey=miner,
+            endpoint_url="https://miner.example",
+            block_at_registration=90,
+            state=state,
+            answerer=answerer,
+            client=outbound,
+        )
+        async with (
+            asyncio.timeout(5),
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://miner.example") as client,
+        ):
+            await _accept(client, platform, assignment)
+            await started.wait()
+            await _accept(client, platform, assignment)
+            await _accept(client, second_validator, continuation)
+            release.set()
+            await asyncio.gather(*tuple(app.state.endpoint_background_tasks))
+            assert invocations == [assignment]
+            assert {url for url, _ in delivered} == {assignment.callback_url, continuation.callback_url}
+            assert len({body for _, body in delivered}) == 1
+            callback = json.loads(delivered[0][1])
+            assert callback["response"]["output"] is None
+            assert callback["expires_at"] == assignment.model_dump(mode="json")["expires_at"]
+            assert callback["assignment_id"] == str(assignment.assignment_id)
+            assert len(state.acknowledged_destinations) == 2
+
+
+@pytest.mark.parametrize("ending", ["failure", "expiry", "shutdown"])
+async def test_injected_answer_failure_or_cancellation_cannot_send_success(ending):
+    platform, miner = bt.Keypair.create_from_uri("//Alice"), bt.Keypair.create_from_uri("//Bob")
+    assignment, state = _assignment(miner), EndpointTestServerState()
+    if ending == "expiry":
+        assignment = _delegate(
+            assignment.model_copy(update={"expires_at": datetime.now(UTC) + timedelta(milliseconds=80)}), platform
+        )
+    started, stopped = asyncio.Event(), asyncio.Event()
+
+    async def answerer(_assignment):
+        started.set()
+        try:
+            if ending == "failure":
+                raise ValueError("invalid proof")
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    async def no_callback(request):
+        pytest.fail("failed answer must not produce callback")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(no_callback)) as outbound:
+        app = create_endpoint_test_app(
+            platform_hotkey_ss58=platform.ss58_address,
+            miner_hotkey=miner,
+            endpoint_url="https://miner.example",
+            block_at_registration=90,
+            state=state,
+            answerer=answerer,
+            client=outbound,
+        )
+        async with asyncio.timeout(5):
+            async with (
+                app.router.lifespan_context(app),
+                httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://miner.example") as client,
+            ):
+                await _accept(client, platform, assignment)
+                await started.wait()
+                if ending != "shutdown":
+                    await stopped.wait()
+                    await asyncio.gather(*tuple(app.state.endpoint_background_tasks), return_exceptions=True)
+                    assert (await _status(client, platform, assignment)).status_code == 503
+            assert stopped.is_set()
+            assert assignment.assignment_id in state.assignments
+            assert not state.callbacks
 
 
 def _assignment(miner):
@@ -870,3 +984,100 @@ async def test_ownership_proof_rejects_oversized_body_without_buffering_remainde
     assert response.status_code == 413
     assert chunks_read == (0 if declared_length else 2)
     assert "signature" not in response.json()
+
+@pytest.mark.parametrize("failure", ["status", "connection", "headers", "body"])
+async def test_callback_backoff_recovers_with_original_result_after_failed_attempts(monkeypatch, failure):
+    from harnyx_miner import endpoint_test_server
+
+    miner = bt.Keypair.create_from_uri("//Bob")
+    assignment = _assignment(miner)
+    state = EndpointTestServerState()
+    state.assignments[assignment.assignment_id] = assignment
+    callback = EndpointCallback(
+        assignment_id=assignment.assignment_id,
+        query_digest=assignment.query_digest,
+        nonce=assignment.nonce,
+        expires_at=assignment.expires_at,
+        response=Response(text="Saved answer"),
+    )
+    delays, requests, closed = [], [], []
+
+    async def sleep(delay):
+        delays.append(delay)
+
+    class StalledBody(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"{"
+            await asyncio.Event().wait()
+
+        async def aclose(self):
+            closed.append(True)
+
+    async def transport(request):
+        requests.append(request)
+        if len(requests) <= 4:
+            if failure == "connection":
+                raise httpx.ConnectError("validator unavailable", request=request)
+            if failure == "headers":
+                await asyncio.Event().wait()
+            if failure == "body":
+                return httpx.Response(200, stream=StalledBody())
+            return httpx.Response(503)
+        return httpx.Response(200, json={"durable_terminal_result": "persisted"})
+
+    monkeypatch.setattr(endpoint_test_server.asyncio, "sleep", sleep)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+        await endpoint_test_server._deliver_callback(
+            assignment=assignment, callback=callback, miner_hotkey=miner, state=state,
+            client=client, retry_seconds=1, retry_max_seconds=3, attempt_timeout_seconds=0.02,
+        )
+
+    assert delays == [1, 2, 3, 3]
+    assert len(requests) == 5
+    assert {request.content for request in requests} == {callback.model_dump_json().encode()}
+    assert state.acknowledged_destinations == {(assignment.assignment_id, assignment.callback_url)}
+    assert state.assignments[assignment.assignment_id].expires_at == assignment.expires_at
+    if failure == "body":
+        assert len(closed) == 4
+
+
+async def test_callback_backoff_stops_at_original_delivery_cutoff(monkeypatch):
+    from harnyx_miner import endpoint_test_server
+
+    miner = bt.Keypair.create_from_uri("//Bob")
+    assignment = _assignment(miner)
+    cutoff = assignment.expires_at + ENDPOINT_REPORT_FORWARDING_ALLOWANCE
+    now = cutoff - timedelta(seconds=0.5)
+    state = EndpointTestServerState()
+    state.assignments[assignment.assignment_id] = assignment
+    callback = EndpointCallback(
+        assignment_id=assignment.assignment_id, query_digest=assignment.query_digest,
+        nonce=assignment.nonce, expires_at=assignment.expires_at, response=Response(text="Saved"),
+    )
+    delays, requests = [], []
+
+    class Clock:
+        @staticmethod
+        def now(tz):
+            return now
+
+    async def sleep(delay):
+        nonlocal now
+        delays.append(delay)
+        now += timedelta(seconds=delay, microseconds=1)
+
+    async def transport(request):
+        requests.append(request)
+        return httpx.Response(503)
+
+    monkeypatch.setattr(endpoint_test_server, "datetime", Clock)
+    monkeypatch.setattr(endpoint_test_server.asyncio, "sleep", sleep)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+        await endpoint_test_server._deliver_callback(
+            assignment=assignment, callback=callback, miner_hotkey=miner, state=state,
+            client=client, retry_seconds=1, retry_max_seconds=10, attempt_timeout_seconds=5,
+        )
+    assert delays == [0.5]
+    assert len(requests) == 1
+    assert requests[0].extensions["timeout"]["read"] == 0.5
+    assert not state.acknowledged

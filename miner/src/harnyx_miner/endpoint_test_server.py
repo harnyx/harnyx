@@ -9,7 +9,7 @@ import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from uuid import UUID
 
@@ -115,6 +115,9 @@ def create_endpoint_test_app(
     provider_key: str | None = None,
     client: httpx.AsyncClient | None = None,
     callback_retry_seconds: float = 0.05,
+    callback_retry_max_seconds: float = 10,
+    callback_attempt_timeout_seconds: float = 5,
+    answerer: Callable[[EndpointAssignment], Awaitable[Response]] | None = None,
 ) -> FastAPI:
     """Build a registerable endpoint; provider inputs enable its search/callback loop."""
 
@@ -196,6 +199,8 @@ def create_endpoint_test_app(
                 state=server_state,
                 client=http_client,
                 retry_seconds=callback_retry_seconds,
+                retry_max_seconds=callback_retry_max_seconds,
+                attempt_timeout_seconds=callback_attempt_timeout_seconds,
             )
         )
         server_state.delivery_tasks[key] = task
@@ -248,7 +253,7 @@ def create_endpoint_test_app(
             raise HTTPException(status_code=403, detail="assignment targets another hotkey")
         if assignment.expires_at <= datetime.now(UTC):
             raise HTTPException(status_code=409, detail="assignment has expired")
-        if assignment.query.output_schema is not None:
+        if answerer is None and assignment.query.output_schema is not None:
             raise HTTPException(status_code=422, detail="this example supports text queries only")
         existing = server_state.assignments.get(assignment.assignment_id)
         if existing is not None and existing.model_dump(
@@ -261,7 +266,7 @@ def create_endpoint_test_app(
         server_state.destinations.setdefault(assignment.assignment_id, {})[assignment.callback_url] = assignment
         if assignment.assignment_id in server_state.callbacks:
             schedule_delivery(assignment)
-        if existing is None and provider is not None and provider_key is not None:
+        if existing is None and (answerer is not None or (provider is not None and provider_key is not None)):
             schedule(
                 assignment,
                 lambda: _execute_assignment(
@@ -272,6 +277,9 @@ def create_endpoint_test_app(
                     state=server_state,
                     client=http_client,
                     callback_retry_seconds=callback_retry_seconds,
+                    callback_retry_max_seconds=callback_retry_max_seconds,
+                    callback_attempt_timeout_seconds=callback_attempt_timeout_seconds,
+                    answerer=answerer,
                 ),
             )
         return _signed_json(
@@ -329,13 +337,63 @@ def create_endpoint_test_app(
 async def _execute_assignment(
     *,
     assignment: EndpointAssignment,
-    provider: str,
-    provider_key: str,
+    provider: str | None,
+    provider_key: str | None,
     miner_hotkey: bt.Keypair,
     state: EndpointTestServerState,
     client: httpx.AsyncClient,
     callback_retry_seconds: float,
+    callback_retry_max_seconds: float,
+    callback_attempt_timeout_seconds: float,
+    answerer: Callable[[EndpointAssignment], Awaitable[Response]] | None = None,
 ) -> None:
+    remaining = (assignment.expires_at - datetime.now(UTC)).total_seconds()
+    if remaining <= 0:
+        raise TimeoutError("assignment expired before answering")
+    async with asyncio.timeout(remaining):
+        if answerer is not None:
+            response = await answerer(assignment)
+        else:
+            assert provider is not None and provider_key is not None
+            response = await _search_snippet(assignment, provider, provider_key, miner_hotkey, client)
+    if state.assignments.get(assignment.assignment_id) is not assignment:
+        return
+    callback = EndpointCallback(
+        assignment_id=assignment.assignment_id,
+        query_digest=assignment.query_digest,
+        nonce=assignment.nonce,
+        expires_at=assignment.expires_at,
+        response=response,
+    )
+    state.callbacks[assignment.assignment_id] = callback
+    state.statuses[assignment.assignment_id] = EndpointMinerStatus.COMPLETED
+    async with asyncio.TaskGroup() as deliveries:
+        for destination in tuple(
+            state.destinations.get(assignment.assignment_id, {assignment.callback_url: assignment}).values()
+        ):
+            key = (assignment.assignment_id, destination.callback_url)
+            task = deliveries.create_task(
+                _deliver_callback(
+                    assignment=destination,
+                    callback=callback,
+                    miner_hotkey=miner_hotkey,
+                    state=state,
+                    client=client,
+                    retry_seconds=callback_retry_seconds,
+                    retry_max_seconds=callback_retry_max_seconds,
+                    attempt_timeout_seconds=callback_attempt_timeout_seconds,
+                )
+            )
+            state.delivery_tasks[key] = task
+
+
+async def _search_snippet(
+    assignment: EndpointAssignment,
+    provider: str,
+    provider_key: str,
+    miner_hotkey: bt.Keypair,
+    client: httpx.AsyncClient,
+) -> Response:
     receipt_id = f"endpoint-test-{assignment.assignment_id}"
     search = EndpointSearchRequest(
         receipt_id=receipt_id,
@@ -355,37 +413,11 @@ async def _execute_assignment(
     )
     search_response.raise_for_status()
     result = EndpointSearchResponse.model_validate_json(search_response.content, strict=True)
-    if state.assignments.get(assignment.assignment_id) is not assignment:
-        return
     first = result.results[0] if result.results else None
     source_text = first.note if first is not None and first.note and first.note.strip() else None
     citations = [CitationRef(receipt_id=receipt_id, result_id=first.result_id)] if first and source_text else None
     answer = source_text or first.title if first else "No search results were returned."
-    callback = EndpointCallback(
-        assignment_id=assignment.assignment_id,
-        query_digest=assignment.query_digest,
-        nonce=assignment.nonce,
-        expires_at=assignment.expires_at,
-        response=Response(text=answer or "The search result did not include a summary.", citations=citations),
-    )
-    state.callbacks[assignment.assignment_id] = callback
-    state.statuses[assignment.assignment_id] = EndpointMinerStatus.COMPLETED
-    async with asyncio.TaskGroup() as deliveries:
-        for destination in tuple(
-            state.destinations.get(assignment.assignment_id, {assignment.callback_url: assignment}).values()
-        ):
-            key = (assignment.assignment_id, destination.callback_url)
-            task = deliveries.create_task(
-                _deliver_callback(
-                    assignment=destination,
-                    callback=callback,
-                    miner_hotkey=miner_hotkey,
-                    state=state,
-                    client=client,
-                    retry_seconds=callback_retry_seconds,
-                )
-            )
-            state.delivery_tasks[key] = task
+    return Response(text=answer or "The search result did not include a summary.", citations=citations)
 
 
 async def _deliver_callback(
@@ -396,10 +428,13 @@ async def _deliver_callback(
     state: EndpointTestServerState,
     client: httpx.AsyncClient,
     retry_seconds: float,
+    retry_max_seconds: float,
+    attempt_timeout_seconds: float,
 ) -> None:
     path = httpx.URL(assignment.callback_url).raw_path.decode("ascii")
     owner = state.assignments.get(assignment.assignment_id)
     cutoff = assignment.expires_at + ENDPOINT_REPORT_FORWARDING_ALLOWANCE
+    retry_delay = min(retry_seconds, retry_max_seconds)
     while (
         owner is not None and state.assignments.get(assignment.assignment_id) is owner and datetime.now(UTC) <= cutoff
     ):
@@ -411,7 +446,7 @@ async def _deliver_callback(
                 path=path,
                 payload=callback,
                 hotkey=miner_hotkey,
-                deadline_at=cutoff,
+                deadline_at=min(cutoff, datetime.now(UTC) + timedelta(seconds=attempt_timeout_seconds)),
                 headers={ENDPOINT_DELEGATION_HEADER: delegation_header(assignment.delegation)},
             )
             if response.status_code == 200:
@@ -424,14 +459,13 @@ async def _deliver_callback(
                         state.acknowledged.add(assignment.assignment_id)
                         state.acknowledged_destinations.add((assignment.assignment_id, assignment.callback_url))
                     return
-        except TimeoutError:
-            return
-        except (httpx.HTTPError, ValueError):
+        except (TimeoutError, httpx.HTTPError, ValueError):
             pass
         remaining = (cutoff - datetime.now(UTC)).total_seconds()
         if remaining <= 0:
             return
-        await asyncio.sleep(min(retry_seconds, remaining))
+        await asyncio.sleep(min(retry_delay, remaining))
+        retry_delay = min(retry_delay * 2, retry_max_seconds)
 
 
 async def _post_signed_json(
