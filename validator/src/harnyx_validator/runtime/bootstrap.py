@@ -17,7 +17,11 @@ import bittensor as bt
 
 from harnyx_commons.application.session_manager import SessionManager
 from harnyx_commons.clients import PLATFORM
-from harnyx_commons.endpoint_execution import DELEGATION_PATH, EndpointAuthority, verify_delegation
+from harnyx_commons.endpoint_execution import (
+    DELEGATION_PATH,
+    EndpointAuthority,
+    verify_delegation,
+)
 from harnyx_commons.errors import ToolProviderError
 from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
 from harnyx_commons.infrastructure.state.session_registry import InMemorySessionRegistry
@@ -389,7 +393,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
     endpoint_execution = None
     if platform_client is not None:
         original_control_provider = control_provider
-
+        validator_callback_base_url = resolved.platform_api.validator_public_base_url or ""
         async def authorize_delegation(delegation: EndpointDelegation) -> EndpointAuthority:
             await original_control_provider().auth(
                 "POST",
@@ -404,7 +408,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
             miner=SignedMinerEndpointClient(validator_hotkey=platform_hotkey),
             authorize_delegation=authorize_delegation,
             validator_hotkey=platform_hotkey.ss58_address,
-            callback_base_url=resolved.platform_api.validator_public_base_url or "",
+            callback_base_url=validator_callback_base_url,
         )
 
         def execution_control_provider() -> ValidatorControlDeps:

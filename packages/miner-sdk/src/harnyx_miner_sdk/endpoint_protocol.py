@@ -8,10 +8,19 @@ from datetime import datetime
 from enum import StrEnum
 from math import isfinite
 from typing import Self
+from urllib.parse import urlsplit
 from uuid import UUID
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, TypeAdapter, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    TypeAdapter,
+    field_validator,
+    model_validator,
+)
 
 from harnyx_miner_sdk.json_types import JsonObject, JsonValue
 from harnyx_miner_sdk.query import Query, Response
@@ -21,6 +30,40 @@ ENDPOINT_CALLBACK_CONTEXT_HEADER = "X-Harnyx-Callback-Context"
 
 _HEX_64 = r"^[0-9a-f]{64}$"
 _CALLBACK_URL = TypeAdapter(HttpUrl)
+
+
+def _validated_callback_url(value: str, *, allowed_schemes: frozenset[str]) -> str:
+    normalized = value.rstrip("/")
+    parsed = urlsplit(normalized)
+    try:
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError("callback URL contains an invalid port") from exc
+    if (
+        parsed.scheme not in allowed_schemes
+        or not parsed.netloc
+        or parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        schemes = " or ".join(sorted(scheme.upper() for scheme in allowed_schemes))
+        raise ValueError(f"callback URL must use {schemes} without credentials, query or fragment")
+    _CALLBACK_URL.validate_python(normalized)
+    try:
+        transport_url = httpx.URL(normalized)
+    except httpx.InvalidURL as exc:
+        raise ValueError("invalid callback URL") from exc
+    if not transport_url.host:
+        raise ValueError("callback URL requires a host")
+    return normalized
+
+
+def validate_endpoint_callback_url(value: str) -> str:
+    """Validate the HTTP transport URL carried by the signed endpoint protocol."""
+
+    return _validated_callback_url(value, allowed_schemes=frozenset({"http", "https"}))
 
 
 class EndpointMinerStatus(StrEnum):
@@ -62,25 +105,17 @@ class EndpointAssignment(BaseModel):
     nonce: str = Field(min_length=32, max_length=128)
     expires_at: datetime
 
-    @field_validator("callback_url", "search_url", "endpoint_url")
+    @field_validator("search_url", "endpoint_url")
     @classmethod
-    def validate_callback_url(cls, value: str) -> str:
+    def validate_https_url(cls, value: str) -> str:
         if not value.startswith("https://"):
-            raise ValueError("callback URL must use HTTPS")
+            raise ValueError("endpoint and search URLs must use HTTPS")
         return value.rstrip("/")
 
     @field_validator("callback_url")
     @classmethod
-    def validate_callback_destination(cls, value: str) -> str:
-        _CALLBACK_URL.validate_python(value)
-        # Validate transport compatibility without replacing the caller's signed URL.
-        try:
-            url = httpx.URL(value)
-        except httpx.InvalidURL as exc:
-            raise ValueError("invalid callback URL") from exc
-        if not url.host:
-            raise ValueError("callback URL requires a host")
-        return value
+    def normalize_callback_url(cls, value: str) -> str:
+        return value.rstrip("/")
 
     @field_validator("callback_context")
     @classmethod
@@ -100,6 +135,7 @@ class EndpointAssignment(BaseModel):
     def validate_query_binding(self) -> Self:
         if self.query_digest != query_digest(self.query):
             raise ValueError("query digest does not match query")
+        validate_endpoint_callback_url(self.callback_url)
         return self
 
 
@@ -208,4 +244,5 @@ __all__ = [
     "EndpointSearchTool",
     "EndpointStatusResponse",
     "query_digest",
+    "validate_endpoint_callback_url",
 ]

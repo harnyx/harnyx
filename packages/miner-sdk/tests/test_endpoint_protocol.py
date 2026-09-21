@@ -70,15 +70,46 @@ def test_callback_preserves_response_citation_refs() -> None:
     assert EndpointCallback.model_validate_json(callback.model_dump_json()).response == response
 
 
-def test_protocol_rejects_extra_fields_and_insecure_callback_urls() -> None:
-    payload = _assignment().model_dump(mode="json")
+def test_protocol_rejects_extra_fields_and_accepts_http_callback_urls() -> None:
+    payload = _assignment().model_dump()
     payload["internal_query_id"] = str(uuid4())
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         EndpointAssignment.model_validate(payload)
 
     payload.pop("internal_query_id")
     payload["callback_url"] = "http://platform.example/callback"
-    with pytest.raises(ValidationError, match="HTTPS"):
+    assert EndpointAssignment.model_validate(payload).callback_url == "http://platform.example/callback"
+
+
+def test_assignment_rejects_callback_url_incompatible_with_http_transport() -> None:
+    payload = _assignment().model_dump()
+    payload["callback_url"] = "https://platform.example/v1/endpoint-assignments/callback\nignored"
+
+    with pytest.raises(ValidationError, match="invalid callback URL"):
+        EndpointAssignment.model_validate(payload)
+
+
+def test_assignment_rejects_callback_url_httpx_treats_as_relative() -> None:
+    payload = _assignment().model_dump()
+    payload["callback_url"] = " http://validator:8100/callback"
+
+    with pytest.raises(ValidationError, match="callback URL requires a host"):
+        EndpointAssignment.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "callback_url",
+    [
+        "ftp://validator.example/callback",
+        "http://user@validator:8100/callback",
+        "http://validator:8100/callback?bypass=1",
+        "http://validator:8100/callback#fragment",
+    ],
+)
+def test_assignment_rejects_invalid_callback_urls(callback_url: str) -> None:
+    payload = _assignment().model_dump() | {"callback_url": callback_url}
+
+    with pytest.raises(ValidationError):
         EndpointAssignment.model_validate(payload)
 
 

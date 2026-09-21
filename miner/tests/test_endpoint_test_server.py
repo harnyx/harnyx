@@ -199,6 +199,49 @@ def _delegate(assignment, platform):
     return assignment.model_copy(update={"callback_context": delegation_header(delegation)})
 
 
+async def test_miner_accepts_http_callback_assignment() -> None:
+    validator = bt.Keypair.create_from_uri("//Alice")
+    miner = bt.Keypair.create_from_uri("//Bob")
+    identity = uuid4()
+    query = Query(text="Find evidence")
+    assignment = EndpointAssignment.model_validate(
+        {
+            "assignment_id": identity,
+            "query": query,
+            "query_digest": query_digest(query),
+            "expected_hotkey": miner.ss58_address,
+            "callback_url": f"http://validator:8100/validator/endpoint-assignments/{identity}/callback",
+            "search_url": f"https://platform.example/v1/endpoint-assignments/{identity}/search",
+            "endpoint_url": "https://miner.example",
+            "nonce": "b" * 64,
+            "expires_at": datetime.now(UTC) + timedelta(minutes=1),
+        },
+    )
+    state = EndpointTestServerState()
+
+    async def callback(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"durable_terminal_result": "persisted"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(callback)) as outbound:
+        app = create_endpoint_test_app(
+            validator_eligibility=AsyncMock(return_value=True),
+            miner_hotkey=miner,
+            endpoint_url=assignment.endpoint_url,
+            block_at_registration=90,
+            state=state,
+            answerer=AsyncMock(return_value=Response(text="answer")),
+            client=outbound,
+        )
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=assignment.endpoint_url) as client,
+        ):
+            await _accept(client, validator, assignment)
+            await asyncio.gather(*tuple(app.state.endpoint_background_tasks))
+
+    assert state.acknowledged == {identity}
+
+
 async def _accept(client, platform, assignment):
     path = "/v1/endpoint-assignments"
     body = assignment.model_dump_json().encode()

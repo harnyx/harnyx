@@ -12,7 +12,12 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validato
 
 from harnyx_commons.bittensor import build_canonical_request, verify_signed_request
 from harnyx_commons.json_types import JsonObject
-from harnyx_miner_sdk.endpoint_protocol import EndpointAssignment, EndpointDelegation, query_digest
+from harnyx_miner_sdk.endpoint_protocol import (
+    EndpointAssignment,
+    EndpointDelegation,
+    query_digest,
+    validate_endpoint_callback_url,
+)
 from harnyx_miner_sdk.query import Query
 
 ENDPOINT_START_ALLOWANCE = timedelta(seconds=60)
@@ -45,7 +50,7 @@ class EndpointAuthority(BaseModel):
 
     @model_validator(mode="after")
     def validate_binding(self) -> Self:
-        for value in (self.endpoint_url, self.callback_url, self.search_url):
+        for value in (self.endpoint_url, self.search_url):
             parsed = urlsplit(value)
             if (
                 parsed.scheme != "https"
@@ -56,6 +61,7 @@ class EndpointAuthority(BaseModel):
                 or parsed.fragment
             ):
                 raise ValueError("execution URLs must be HTTPS without credentials, query or fragment")
+        validate_endpoint_callback_url(self.callback_url)
         if (self.started_at is None) != (self.deadline_at is None):
             raise ValueError("start and deadline must be supplied together")
         if self.started_at is not None and self.deadline_at != self.started_at + timedelta(
@@ -70,24 +76,34 @@ class EndpointAuthority(BaseModel):
             raise ValueError("assignment has not started")
         return self.deadline_at + ENDPOINT_REPORT_FORWARDING_ALLOWANCE
 
-    def assignment(self, query: Query, delegation: EndpointDelegation) -> EndpointAssignment:
+    def assignment(
+        self,
+        query: Query,
+        delegation: EndpointDelegation,
+    ) -> EndpointAssignment:
         if self.deadline_at is None or query_digest(query) != self.query_digest:
             raise ValueError("assignment requires persisted timing and matching query")
-        return EndpointAssignment(
-            assignment_id=self.assignment_id,
-            query=query,
-            query_digest=self.query_digest,
-            expected_hotkey=self.miner_hotkey,
-            callback_url=self.callback_url,
-            search_url=self.search_url,
-            endpoint_url=self.endpoint_url,
-            callback_context=delegation_header(delegation),
-            nonce=self.nonce,
-            expires_at=self.deadline_at,
+        return EndpointAssignment.model_validate(
+            {
+                "assignment_id": self.assignment_id,
+                "query": query,
+                "query_digest": self.query_digest,
+                "expected_hotkey": self.miner_hotkey,
+                "callback_url": self.callback_url,
+                "search_url": self.search_url,
+                "endpoint_url": self.endpoint_url,
+                "callback_context": delegation_header(delegation),
+                "nonce": self.nonce,
+                "expires_at": self.deadline_at,
+            },
+            strict=True,
         )
 
 
-def verify_delegation(delegation: EndpointDelegation, platform_hotkey: str) -> EndpointAuthority:
+def verify_delegation(
+    delegation: EndpointDelegation,
+    platform_hotkey: str,
+) -> EndpointAuthority:
     if delegation.platform_hotkey != platform_hotkey:
         raise ValueError("delegation signer does not match trusted Platform key")
     verify_signed_request(
