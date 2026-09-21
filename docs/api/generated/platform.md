@@ -32,6 +32,7 @@ Generated from FastAPI OpenAPI.
   - [POST /v1/platform-tool-proxy/grants](#endpoint-post-v1-platform-tool-proxy-grants)
 - [rating-comparisons](#rating-comparisons)
   - [GET /v1/rating-comparisons](#endpoint-get-v1-rating-comparisons)
+  - [POST /v1/rating-comparisons/admissions](#endpoint-post-v1-rating-comparisons-admissions)
   - [POST /v1/rating-comparisons/{comparison_id}/judgment](#endpoint-post-v1-rating-comparisons-comparison_id-judgment)
 - [repo-search](#repo-search)
   - [POST /v1/repo-search/ensure-index](#endpoint-post-v1-repo-search-ensure-index)
@@ -1487,6 +1488,52 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
 |  | `msg` |  | req | `string` |
 |  | `type` |  | req | `string` |
+
+
+### admissions
+
+<a id="endpoint-post-v1-rating-comparisons-admissions"></a>
+#### POST /v1/rating-comparisons/admissions
+
+Subnet owner or platform admin API-key command. Admits one normal evaluation request; the existing scheduler processes it in the background. Each successful call creates new work and is not replay-safe. Does not change randomized admission timing or force rating finalization.
+
+**Auth**: ConfiguredApiKey OR Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
+
+**Responses**
+`202` Successful Response
+Content-Type: `application/json`
+Body: [RatingAdmissionAcceptedResponse](#model-ratingadmissionacceptedresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `request_id` |  |  | req | `string` (format: uuid) |
+
+`401` Operator authorization is missing or malformed.
+Content-Type: `application/json`
+Body: [ErrorResponse](#model-errorresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `error_code` |  |  | req | `string` |
+| `message` |  |  | req | `string` |
+
+`403` Operator authorization is invalid or not permitted.
+Content-Type: `application/json`
+Body: [ErrorResponse](#model-errorresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `error_code` |  |  | req | `string` |
+| `message` |  |  | req | `string` |
+
+`503` Rating admission or authentication prerequisites are unavailable.
+Content-Type: `application/json`
+Body: [ErrorResponse](#model-errorresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `error_code` |  |  | req | `string` |
+| `message` |  |  | req | `string` |
 
 
 ### {comparison_id}
@@ -7672,6 +7719,35 @@ Body: [StatusResponse](#model-statusresponse)
     "text"
   ],
   "title": "Query",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-ratingadmissionacceptedresponse"></a>
+### Model: RatingAdmissionAcceptedResponse
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `request_id` |  |  | req | `string` (format: uuid) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "request_id": {
+      "format": "uuid",
+      "title": "Request Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "request_id"
+  ],
+  "title": "RatingAdmissionAcceptedResponse",
   "type": "object"
 }
 ```
