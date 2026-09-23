@@ -61,6 +61,9 @@ from harnyx_commons.observability.langfuse import (
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 
+# Bump when the feedback message or its request assembly changes.
+POSTPROCESS_FEEDBACK_POLICY_VERSION = "retry_with_feedback_original_messages_v1"
+
 
 def parse_provider_name(raw: str | None, *, component: str) -> LlmProviderName:
     """Parse and validate an LLM provider label."""
@@ -548,7 +551,12 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             return result.processed, False, None
 
         next_request: AbstractLlmRequest | None = None
-        if request.allow_postprocess_recovery and result.recovery is not None:
+        if (
+            request.allow_postprocess_recovery
+            and result.recovery is not None
+            and result.retryable
+            and not ctx.is_exhausted(attempt)
+        ):
             feedback_retry = self._build_postprocess_feedback_retry(
                 request=request,
                 response=response,

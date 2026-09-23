@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Callable
 
 import pytest
 from pydantic import BaseModel
 
 from harnyx_commons.llm.json_utils import pydantic_postprocessor
-from harnyx_commons.llm.provider import BaseLlmProvider, LlmRetryExhaustedError
+from harnyx_commons.llm.provider import (
+    POSTPROCESS_FEEDBACK_POLICY_VERSION,
+    BaseLlmProvider,
+    LlmRetryExhaustedError,
+)
 from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import (
     AbstractLlmRequest,
@@ -154,6 +159,14 @@ async def test_provider_uses_feedback_retry_for_json_decode_failure() -> None:
     assert retry_request.messages[2].role == "user"
     assert "json decode error:" in retry_request.messages[2].content[0].text
     assert "original instructions" in retry_request.messages[2].content[0].text
+    assert POSTPROCESS_FEEDBACK_POLICY_VERSION == "retry_with_feedback_original_messages_v1"
+    assert retry_request.messages[2].content[0].text == (
+        "Your previous response failed the original output contract.\n\n"
+        "Validation/parsing error:\njson decode error: Expecting value: line 1 column 1 (char 0)\n\n"
+        "Correct your previous response so it follows the original instructions, "
+        "output contract, and formatting constraints. "
+        "Do not add extra wrapper text or commentary unless the original instructions required it."
+    )
     assert result.postprocessed == _ExpectedAnswer(verdict=1, justification="repaired")
     assert result.metadata is not None
     assert result.metadata["postprocess_recoveries"] == (
@@ -361,7 +374,10 @@ async def test_provider_feedback_retry_omits_actual_cost_total_when_cost_is_miss
     assert "actual_cost_usd_total" not in result.metadata
 
 
-async def test_provider_retry_exhaustion_returns_accumulated_actual_cost_metadata_with_usage() -> None:
+async def test_provider_retry_exhaustion_returns_accumulated_actual_cost_metadata_with_usage(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="harnyx_commons.llm.calls")
     provider = _SequencedProvider(
         responses=[
             _response(
@@ -392,6 +408,11 @@ async def test_provider_retry_exhaustion_returns_accumulated_actual_cost_metadat
     assert response.metadata["billable_response_count"] == 2
     assert response.metadata["actual_cost_usd"] == pytest.approx(0.02)
     assert response.metadata["actual_cost_usd_total"] == pytest.approx(0.03)
+    assert response.metadata["postprocess_recoveries"] == (
+        {"kind": "retry_with_feedback", "response_id": "resp-1", "feedback_role": "user"},
+    )
+    scheduled = [record for record in caplog.records if record.msg == "llm.recovery.postprocess.retry_scheduled"]
+    assert [record.data["response_id"] for record in scheduled] == ["resp-1"]
 
 
 async def test_provider_retryable_postprocess_failure_without_recovery_keeps_original_history() -> None:
