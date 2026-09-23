@@ -689,6 +689,15 @@ Body: [MinerConfigResponse](#model-minerconfigresponse)
 | `task_retry_count` |  |  | req | `integer` |
 | `uid` |  |  | req | `integer` (nullable) |
 
+`409` This provider API key is already registered to another miner hotkey.
+Content-Type: `application/json`
+Body: [ErrorResponse](#model-errorresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `error_code` |  |  | req | `string` |
+| `message` |  |  | req | `string` |
+
 `422` Validation Error
 Content-Type: `application/json`
 Body: [HTTPValidationError](#model-httpvalidationerror)
