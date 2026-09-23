@@ -32,6 +32,11 @@ NEW_AI_GATEWAY_MODELS = (
     "alibaba/qwen3.8-27b",
     "tencent/hy4-preview",
 )
+MIMO_V26_MODELS = (
+    "xiaomi/mimo-v2.6-flash",
+    "xiaomi/mimo-v2.6-pro",
+    "xiaomi/mimo-v2.6-pro-ultraspeed",
+)
 
 
 def _api_key() -> str:
@@ -77,6 +82,34 @@ async def test_miner_paid_ai_gateway_groq_selection_live() -> None:
     assert response.metadata["actual_cost_evidence"]["settlement_source"] == "provider_returned"
     raw_response = response.metadata["raw_response"]
     assert raw_response["providerMetadata"]["gateway"]["cost"]
+
+
+@pytest.mark.parametrize("model", MIMO_V26_MODELS)
+async def test_mimo_v26_miner_route_live(model: str) -> None:
+    settings = LlmSettings()
+    provider = build_miner_paid_llm_provider(
+        provider="ai_gateway",
+        api_key=_api_key(),
+        llm_settings=settings,
+    )
+    request = LlmRequest(
+        provider="ai_gateway",
+        model=model,
+        messages=(LlmMessage(role="user", content=(LlmMessageContentPart.input_text('Reply with only "ok".'),)),),
+        temperature=None,
+        max_output_tokens=64,
+        timeout=180.0,
+    )
+
+    try:
+        response = await provider.invoke(request)
+    finally:
+        await provider.aclose()
+
+    assert response.raw_text
+    assert response.metadata is not None
+    assert response.metadata["actual_cost_provider"] == "ai_gateway"
+    assert response.metadata["actual_cost_evidence"]["model"] == model
 
 
 async def test_miner_paid_ai_gateway_inkling_live() -> None:

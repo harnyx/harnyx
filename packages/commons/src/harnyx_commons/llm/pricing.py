@@ -119,6 +119,9 @@ MINER_TOOL_LLM_PRICING: Mapping[MinerSelectedLlmProviderName, Mapping[str, Model
         "qwen/qwen3.5-397b-a17b": ModelPricing(0.39, 2.34, 0.0),
         "meta/muse-glimmer-30b": ModelPricing(0.35, 1.50, 0.0),
         "tencent/hy4-preview": ModelPricing(0.834, 2.501, 0.0),
+        "xiaomi/mimo-v2.6-flash": ModelPricing(0.14, 0.28, 0.0),
+        "xiaomi/mimo-v2.6-pro": ModelPricing(0.435, 0.87, 0.0),
+        "xiaomi/mimo-v2.6-pro-ultraspeed": ModelPricing(4.35, 8.70, 0.0),
     },
     AI_GATEWAY_PROVIDER: {
         "thinkingmachines/inkling": ModelPricing(1.00, 4.05, 0.0),
@@ -137,6 +140,9 @@ MINER_TOOL_LLM_PRICING: Mapping[MinerSelectedLlmProviderName, Mapping[str, Model
         "meta/muse-glimmer-30b": ModelPricing(0.35, 1.50, 0.0),
         "alibaba/qwen3.8-27b": ModelPricing(0.10, 0.40, 0.0),
         "tencent/hy4-preview": ModelPricing(0.834, 2.501, 0.0),
+        "xiaomi/mimo-v2.6-flash": ModelPricing(0.14, 0.28, 0.0),
+        "xiaomi/mimo-v2.6-pro": ModelPricing(0.435, 0.87, 0.0),
+        "xiaomi/mimo-v2.6-pro-ultraspeed": ModelPricing(4.35, 8.70, 0.0),
     },
 }
 

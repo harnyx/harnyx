@@ -479,10 +479,12 @@ Current allowed `llm_chat` provider/model ids in this repo:
 | Provider | Model ids |
 |----------|-----------|
 | `chutes` | `deepseek-ai/DeepSeek-V3.2-TEE`, `moonshotai/Kimi-K2.6-TEE`, `Qwen/Qwen3.6-27B-TEE`, `Qwen/Qwen3.8-27B-TEE`, `google/gemma-4-31B-turbo-TEE`, `zai-org/GLM-5.2-TEE`, `Qwen/Qwen3.5-397B-A17B-TEE` |
-| `openrouter` | `openai/gpt-oss-20b`, `openai/gpt-oss-120b`, `deepseek/deepseek-v3.2`, `z-ai/glm-5`, `qwen/qwen3.6-27b`, `qwen/qwen3.8-27b`, `google/gemma-4-31b-it`, `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-flash-0731`, `deepseek/deepseek-v4.1-flash`, `deepseek/deepseek-v4-pro`, `z-ai/glm-5.2`, `z-ai/glm-5.3-flash`, `thinkingmachines/inkling`, `qwen/qwen3.5-397b-a17b`, `meta/muse-glimmer-30b` |
-| `ai_gateway` | `thinkingmachines/inkling`, `zai/glm-5.2-fast`, `zai/glm-5.3-flash`, `openai/gpt-oss-20b`, `zai/glm-4.7`, `google/gemma-4-31b-it`, `openai/gpt-oss-120b`, `minimax/minimax-m2.7`, `zai/glm-4.7-flash`, `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-flash-0731`, `deepseek/deepseek-v4.1-flash`, `deepseek/deepseek-v4-pro`, `meta/muse-glimmer-30b`, `alibaba/qwen3.8-27b` |
+| `openrouter` | `openai/gpt-oss-20b`, `openai/gpt-oss-120b`, `deepseek/deepseek-v3.2`, `z-ai/glm-5`, `qwen/qwen3.6-27b`, `qwen/qwen3.8-27b`, `google/gemma-4-31b-it`, `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-flash-0731`, `deepseek/deepseek-v4.1-flash`, `deepseek/deepseek-v4-pro`, `z-ai/glm-5.2`, `z-ai/glm-5.3-flash`, `thinkingmachines/inkling`, `qwen/qwen3.5-397b-a17b`, `meta/muse-glimmer-30b`, `tencent/hy4-preview`, `xiaomi/mimo-v2.6-flash`, `xiaomi/mimo-v2.6-pro`, `xiaomi/mimo-v2.6-pro-ultraspeed` |
+| `ai_gateway` | `thinkingmachines/inkling`, `zai/glm-5.2-fast`, `zai/glm-5.3-flash`, `openai/gpt-oss-20b`, `zai/glm-4.7`, `google/gemma-4-31b-it`, `openai/gpt-oss-120b`, `minimax/minimax-m2.7`, `zai/glm-4.7-flash`, `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-flash-0731`, `deepseek/deepseek-v4.1-flash`, `deepseek/deepseek-v4-pro`, `meta/muse-glimmer-30b`, `alibaba/qwen3.8-27b`, `tencent/hy4-preview`, `xiaomi/mimo-v2.6-flash`, `xiaomi/mimo-v2.6-pro`, `xiaomi/mimo-v2.6-pro-ultraspeed` |
 
 `tooling_info().response["pricing"]["llm_chat"]["provider_models"]` exposes representative static rates for each provider/model pair. For OpenRouter and AI Gateway, those are reference prices for budgeting and fallback settlement; actual provider-returned cost wins when the provider returns one.
+
+Xiaomi publishes MIT-licensed open weights for [MiMo-V2.6-Pro-RL](https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Pro-RL), [MiMo-V2.6-Flash-RL](https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-RL), and [MiMo-V2.6-Distill-Qwen-9B](https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B). The `pro-ultraspeed` id is a faster hosted route for Pro, not another weight release. The 9B checkpoint has no verified route through a miner-supported provider, so it is not in the allowed list.
 
 ### Run a function tool loop
 

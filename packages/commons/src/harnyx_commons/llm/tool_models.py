@@ -79,6 +79,9 @@ MINER_SELECTED_LLM_PROVIDER_MODELS: Mapping[
         "qwen/qwen3.5-397b-a17b",
         "meta/muse-glimmer-30b",
         "tencent/hy4-preview",
+        "xiaomi/mimo-v2.6-flash",
+        "xiaomi/mimo-v2.6-pro",
+        "xiaomi/mimo-v2.6-pro-ultraspeed",
     ),
     AI_GATEWAY_PROVIDER: (
         "thinkingmachines/inkling",
@@ -97,6 +100,9 @@ MINER_SELECTED_LLM_PROVIDER_MODELS: Mapping[
         "meta/muse-glimmer-30b",
         "alibaba/qwen3.8-27b",
         "tencent/hy4-preview",
+        "xiaomi/mimo-v2.6-flash",
+        "xiaomi/mimo-v2.6-pro",
+        "xiaomi/mimo-v2.6-pro-ultraspeed",
     ),
 }
 

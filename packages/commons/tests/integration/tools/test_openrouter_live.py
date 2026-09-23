@@ -32,6 +32,11 @@ pytestmark = [
 
 OPENROUTER_LIVE_CHAT_MODEL = "openai/gpt-oss-20b"
 OPENROUTER_BYOK_LIVE_CHAT_MODEL = "openai/gpt-oss-120b"
+MIMO_V26_MODELS = (
+    "xiaomi/mimo-v2.6-flash",
+    "xiaomi/mimo-v2.6-pro",
+    "xiaomi/mimo-v2.6-pro-ultraspeed",
+)
 NEW_OPENROUTER_MODELS = (
     "deepseek/deepseek-v4-flash",
     "deepseek/deepseek-v4-flash-0731",
@@ -147,6 +152,31 @@ async def test_openrouter_provider_invokes_cheapest_chat_model_live() -> None:
     assert response.metadata["actual_cost_evidence"]["provider_request_id"] == response.id
     assert response.usage.reasoning_tokens is not None
     assert response.usage.reasoning_tokens > 0
+
+
+@pytest.mark.parametrize("model", MIMO_V26_MODELS)
+async def test_mimo_v26_miner_route_live(model: str) -> None:
+    settings = LlmSettings()
+    assert settings.openrouter_api_key_value, "OPENROUTER_API_KEY must be configured"
+    provider = OpenRouterLlmProvider(openrouter_api_key=settings.openrouter_api_key)
+    request = LlmRequest(
+        provider="openrouter",
+        model=model,
+        messages=(LlmMessage(role="user", content=(LlmMessageContentPart.input_text('Reply with only "ok".'),)),),
+        temperature=None,
+        max_output_tokens=64,
+        timeout=180.0,
+    )
+
+    try:
+        response = await provider.invoke(request)
+    finally:
+        await provider.aclose()
+
+    assert response.raw_text
+    assert response.metadata is not None
+    assert response.metadata["effective_model"] == model
+    assert response.metadata["actual_cost_provider"] == "openrouter"
 
 
 async def test_openrouter_byok_completion_settles_original_response_cost_live() -> None:

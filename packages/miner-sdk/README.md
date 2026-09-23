@@ -513,11 +513,13 @@ The SDK still accepts the legacy top-level `provider.only` input and normalizes 
 
 Do not pass `provider_extra={"provider": "cerebras"}`. The SDK/runtime rejects the raw string form.
 
-AI Gateway model ids currently allowed by the tool contract are `thinkingmachines/inkling`, `zai/glm-5.2-fast`, `zai/glm-5.3-flash`, `openai/gpt-oss-20b`, `zai/glm-4.7`, `google/gemma-4-31b-it`, `openai/gpt-oss-120b`, `minimax/minimax-m2.7`, `zai/glm-4.7-flash`, `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-flash-0731`, `deepseek/deepseek-v4.1-flash`, `deepseek/deepseek-v4-pro`, `meta/muse-glimmer-30b`, `alibaba/qwen3.8-27b`, and `tencent/hy4-preview`. Use `tooling_info().response["pricing"]["llm_chat"]["provider_models"]["ai_gateway"]` for representative static rates; actual AI Gateway returned cost wins when present.
+AI Gateway model ids currently allowed by the tool contract are `thinkingmachines/inkling`, `zai/glm-5.2-fast`, `zai/glm-5.3-flash`, `openai/gpt-oss-20b`, `zai/glm-4.7`, `google/gemma-4-31b-it`, `openai/gpt-oss-120b`, `minimax/minimax-m2.7`, `zai/glm-4.7-flash`, `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-flash-0731`, `deepseek/deepseek-v4.1-flash`, `deepseek/deepseek-v4-pro`, `meta/muse-glimmer-30b`, `alibaba/qwen3.8-27b`, `tencent/hy4-preview`, `xiaomi/mimo-v2.6-flash`, `xiaomi/mimo-v2.6-pro`, and `xiaomi/mimo-v2.6-pro-ultraspeed`. Use `tooling_info().response["pricing"]["llm_chat"]["provider_models"]["ai_gateway"]` for representative static rates; actual AI Gateway returned cost wins when present.
+
+OpenRouter also allows `xiaomi/mimo-v2.6-flash`, `xiaomi/mimo-v2.6-pro`, and `xiaomi/mimo-v2.6-pro-ultraspeed`. The UltraSpeed route serves Pro; the open-weight `MiMo-V2.6-Distill-Qwen-9B` checkpoint has no verified route through a miner-supported provider. Use `tooling_info().response["allowed_llm_provider_models"][provider]` for the current complete list of allowed model ids.
 
 Do not put common behavior in `provider_extra`. For example, reasoning controls belong in `thinking` even when a provider's raw API spells them differently. Chutes raw reasoning options are handled by `thinking`, not `provider_extra`. Other OpenRouter provider-preference fields such as `order`, `require_parameters`, `ignore`, `quantizations`, `sort`, and `max_price` are not supported here.
 
-`llm_chat` accepts a typed `thinking` option:
+`llm_chat` accepts a typed `thinking` option. The table describes verified thinking controls, not the complete model allowlist:
 
 | Provider | Model | `enabled=True` / `enabled=False` | `effort` | `budget` |
 |----------|-------|----------------------------------|----------|----------|
