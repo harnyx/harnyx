@@ -3,10 +3,54 @@
 Generated from FastAPI OpenAPI.
 
 ## Domains
+- [release](#release)
+  - [POST /admission/release](#endpoint-post-admission-release)
 - [{entrypoint_name}](#entrypoint_name)
   - [POST /entry/{entrypoint_name}](#endpoint-post-entry-entrypoint_name)
 - [Misc](#misc)
+  - [POST /admission](#endpoint-post-admission)
   - [GET /healthz](#endpoint-get-healthz)
+
+## release
+
+<a id="endpoint-post-admission-release"></a>
+### POST /admission/release
+
+Release Admission
+
+**Auth**: SandboxControl OR Tool token (`x-platform-token` header)
+
+**Request**
+Content-Type: `application/json`
+Body: [SandboxAdmission](#model-sandboxadmission)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `deadline_monotonic_ns` |  |  | req | `integer` |
+| `generation` |  |  | req | `string` |
+| `reservation_id` |  |  | req | `string` |
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: `object`
+
+(no documented fields)
+
+`422` Validation Error
+Content-Type: `application/json`
+Body: [HTTPValidationError](#model-httpvalidationerror)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
+|  | `ctx` |  | opt | `object` |
+|  | `input` |  | opt | `object` |
+|  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
+|  | `msg` |  | req | `string` |
+|  | `type` |  | req | `string` |
+
+
 
 ## {entrypoint_name}
 
@@ -15,7 +59,7 @@ Generated from FastAPI OpenAPI.
 
 Invoke a registered entrypoint by name in a sandboxed worker process.
 
-**Auth**: Tool token (`x-platform-token` header)
+**Auth**: SandboxControl OR Tool token (`x-platform-token` header)
 
 **Parameters**
 | Param | In | Req | Notes |
@@ -28,6 +72,10 @@ Body: [EntrypointRequest](#model-entrypointrequest)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `admission` |  |  | opt | [SandboxAdmission](#model-sandboxadmission) (nullable) |
+|  | `deadline_monotonic_ns` |  | req | `integer` |
+|  | `generation` |  | req | `string` |
+|  | `reservation_id` |  | req | `string` |
 | `context` |  |  | req | [_EntrypointContext](#model-_entrypointcontext) |
 |  | `cost_budget` |  | opt | [ToolBudgetDTO](#model-toolbudgetdto) (nullable) |
 |  |  | `session_budget_usd` | req | `number` |
@@ -62,6 +110,49 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 
 ## Misc
+
+### admission
+
+<a id="endpoint-post-admission"></a>
+#### POST /admission
+
+Reserve Admission
+
+**Auth**: SandboxControl OR Tool token (`x-platform-token` header)
+
+**Request**
+Content-Type: `application/json`
+Body: [AdmissionRequest](#model-admissionrequest)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `include_wait_in_budget` |  |  | opt | `boolean` (default: False) |
+| `limit_seconds` |  |  | req | `number` |
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: [SandboxAdmission](#model-sandboxadmission)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `deadline_monotonic_ns` |  |  | req | `integer` |
+| `generation` |  |  | req | `string` |
+| `reservation_id` |  |  | req | `string` |
+
+`422` Validation Error
+Content-Type: `application/json`
+Body: [HTTPValidationError](#model-httpvalidationerror)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
+|  | `ctx` |  | opt | `object` |
+|  | `input` |  | opt | `object` |
+|  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
+|  | `msg` |  | req | `string` |
+|  | `type` |  | req | `string` |
+
 
 ### healthz
 
@@ -128,11 +219,51 @@ Body: `object`
 
 </details>
 
+<a id="model-admissionrequest"></a>
+### Model: AdmissionRequest
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `include_wait_in_budget` |  |  | opt | `boolean` (default: False) |
+| `limit_seconds` |  |  | req | `number` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "include_wait_in_budget": {
+      "default": false,
+      "title": "Include Wait In Budget",
+      "type": "boolean"
+    },
+    "limit_seconds": {
+      "exclusiveMinimum": 0.0,
+      "title": "Limit Seconds",
+      "type": "number"
+    }
+  },
+  "required": [
+    "limit_seconds"
+  ],
+  "title": "AdmissionRequest",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-entrypointrequest"></a>
 ### Model: EntrypointRequest
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `admission` |  |  | opt | [SandboxAdmission](#model-sandboxadmission) (nullable) |
+|  | `deadline_monotonic_ns` |  | req | `integer` |
+|  | `generation` |  | req | `string` |
+|  | `reservation_id` |  | req | `string` |
 | `context` |  |  | req | [_EntrypointContext](#model-_entrypointcontext) |
 |  | `cost_budget` |  | opt | [ToolBudgetDTO](#model-toolbudgetdto) (nullable) |
 |  |  | `session_budget_usd` | req | `number` |
@@ -150,6 +281,16 @@ Body: `object`
 ```json
 {
   "properties": {
+    "admission": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/SandboxAdmission"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "context": {
       "$ref": "#/components/schemas/_EntrypointContext"
     },
@@ -239,6 +380,50 @@ Body: `object`
     }
   },
   "title": "HTTPValidationError",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-sandboxadmission"></a>
+### Model: SandboxAdmission
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `deadline_monotonic_ns` |  |  | req | `integer` |
+| `generation` |  |  | req | `string` |
+| `reservation_id` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "deadline_monotonic_ns": {
+      "exclusiveMinimum": 0.0,
+      "title": "Deadline Monotonic Ns",
+      "type": "integer"
+    },
+    "generation": {
+      "minLength": 1,
+      "title": "Generation",
+      "type": "string"
+    },
+    "reservation_id": {
+      "minLength": 1,
+      "title": "Reservation Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "reservation_id",
+    "generation",
+    "deadline_monotonic_ns"
+  ],
+  "title": "SandboxAdmission",
   "type": "object"
 }
 ```
