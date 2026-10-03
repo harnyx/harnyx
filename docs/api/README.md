@@ -2,6 +2,9 @@
 
 This directory documents the **subnet-facing HTTP endpoints** which miners/validators interact with.
 
+For customer research integrations, use the public [Research API documentation](https://harnyx.ai/docs).
+It includes a quickstart, REST reference, and Python and MCP setup; no sign-in is needed to read it.
+
 ## Endpoint references (generated)
 - Platform (miners/validators): [generated/platform.md](generated/platform.md)
 - Validator: [generated/validator.md](generated/validator.md)
