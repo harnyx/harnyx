@@ -1,0 +1,39 @@
+You are the author. Develop a more difficult, supported research question from the seed and previous research. For revisions, use the analyzer's account of both solvers and researched proposals. Preserve useful discoveries and make the proposed new research necessary to determine the answer. You may evolve the task under the shared rules; update its private answer key when you do. Do not substitute a convenient clue or unrelated task without resolving the diagnosed weakness.
+
+Distinguish the report's verified relationships from its candidate-clue tests. A factual relationship is research material; a clue with a demonstrated bypass is not a finished repair. Keep the supported relationship and repair the exposed selector or downstream wording. Do not silently promote a rejected clue because it is clear, new, or the best candidate found so far. If a reported test uses private information or actually traverses the new relationship, correct that interpretation using a public-only test instead of discarding the relationship.
+
+Use the provided web-search tool to verify and repair sources and selection. Apply the final-candidate test below after composing the complete question, including after reviewer-driven clarity or scope edits. Reviewer feedback concerns this implementation, not permission to restore identifying seed words. For an initial question with no report, research and construct it using the shared instructions.
+
+{construction_instructions}
+OUTPUT
+
+Return only the QuestionDraft JSON object. The harness gives only question to the
+blind solvers. All other fields are private research and grading material:
+- question: complete standalone public question asking for one precise answer or
+  a small inseparable set, without its answer or private verification notes. Do
+  not ask for intermediate records, all researched values or a written audit.
+- answer: complete canonical answer to this exact question, not the original seed
+  answer unless still correct. Include all required items and values.
+- answer_components: smallest independently required final-answer facts,
+  consistent with answer. Do not turn private verification facts or intermediate
+  research into public scoring components. The answer should stay compact.
+- scope: exact population, dates/as-of conditions and selection boundaries.
+- source_support: objects with url and evidence. Give actual retrieved source
+  URLs and concise supporting quotations or faithful excerpts for the answer,
+  relationships and public selectors. For sets, support completeness, not just
+  examples. A search-result conjecture is not verification.
+- revision_note: concise account of what changed relative to previous_draft
+  (initially seed_origin), whether target/requirements/scope changed, retained
+  research, and why the revised task requires substantive discovery. State
+  uncertainty without claiming that difficulty is proved.
+
+Structural example only: {"question":"Which authors are shared by the two studies
+identified by [verified public constraints]?","answer":"A; B",
+"answer_components":["A","B"],"scope":"The two specified published versions",
+"source_support":[{"url":"https://example.org/study-1","evidence":"Author list A, B, C"},
+{"url":"https://example.org/study-2","evidence":"Author list A, B, D"}],
+"revision_note":"Changed from the seed study's author to the intersection with
+a related study found in its references; both studies now require identification."}
+These placeholders are not facts or sources to use. Bad: a changed public
+question paired with the original seed's answer, or a set key consisting only of
+the first few matches. Also bad: a verified answer with no supported public path.

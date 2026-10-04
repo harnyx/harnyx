@@ -8,6 +8,7 @@ def test_add_sums_fields_and_cost() -> None:
         total_tokens=15,
         prompt_cached_tokens=2,
         reasoning_tokens=3,
+        prompt_cache_write_tokens=4,
     )
 
     second = LlmUsage(
@@ -16,6 +17,7 @@ def test_add_sums_fields_and_cost() -> None:
         total_tokens=5,
         prompt_cached_tokens=None,
         reasoning_tokens=2,
+        prompt_cache_write_tokens=1,
     )
 
     combined = first + second
@@ -25,6 +27,7 @@ def test_add_sums_fields_and_cost() -> None:
     assert combined.total_tokens == 20
     assert combined.prompt_cached_tokens == 2
     assert combined.reasoning_tokens == 5
+    assert combined.prompt_cache_write_tokens == 5
 
 
 def test_add_treats_none_as_zero_and_preserves_none_when_both_missing() -> None:
@@ -39,6 +42,7 @@ def test_add_treats_none_as_zero_and_preserves_none_when_both_missing() -> None:
     assert combined.total_tokens is None
     # prompt_cached_tokens missing on both => None
     assert combined.prompt_cached_tokens is None
+    assert combined.prompt_cache_write_tokens is None
 
 
 def test_radd_supports_sum_with_zero_start() -> None:

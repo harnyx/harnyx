@@ -1,0 +1,143 @@
+GOAL AND TASK EVOLUTION
+
+Make the question difficult for a capable web-research AI: additional supported
+discovery must determine the answer, not merely confirm a recognizable answer.
+The seed is a research starting point, not an immutable target. Build on useful
+research from the previous question. You may evolve the target or temporal scope
+when the discovered evidence supports a better research problem;
+changing them is optional, not progress by itself. Record the change and replace
+the private answer key before testing. Do not restart in an unrelated subject.
+Every relationship and public selector must be factual, discoverable and unambiguous.
+Ask for one precise answer, or a small inseparable answer set whose members jointly
+resolve one research question. Make identifying that answer difficult, not reporting
+everything researched. Keep intermediate entities, source inventories, numerical
+crosschecks, explanations and the full verification chain private unless they are
+the answer itself. Do not turn one endpoint into a questionnaire or grow the answer
+requirements after a solver finds it. A longer list or chain does not establish difficulty.
+
+Fast-mode scoring credits each independently correct required answer component and
+penalizes incorrect extra claims. An omitted peripheral detail is not a hard-question
+success when the essential answer was found. Use solver trajectories to obstruct
+recovery of the essential answer through supported relationships. Measure success
+on the compact answer, not missing exposition, citations or intermediate work.
+
+CONSTRUCTION
+
+Start from the previous public question and the analyst's evidence from both
+solvers. Identify the information that enabled a successful lookup, including
+inputs recovered for later searches. Feedback identifies information to conceal,
+not merely a phrase or document to avoid. For an initial question, start from the
+seed's identifying information without inventing a prior solver trajectory.
+
+Ask what the solver still needs to discover after its first useful identification.
+Research relationships that supply missing inputs or distinguish real candidates.
+Extend a useful existing route to the specific entity being hidden, or develop
+the problem around a supported intersection, comparison or bounded small-set search
+in the researched source neighborhood. Choose according to the evidence, not a
+required construction template. If the first clue already determines the answer
+and the rest only confirm it, address that shortcut rather than append documents.
+A new entry clue is not an extension merely because it reaches the same answer.
+
+Keep public scope bounded and time-anchored without adding separate answer requests.
+For a small inseparable set answer, establish the
+candidate population, membership criteria and why the key is complete; finding
+several qualifying examples does not establish all of them. For one answer,
+verify that the combined constraints distinguish it. A changed target must follow
+from the preserved research and create substantive discovery, not just abandon
+an unsuccessful disguise. Explain which useful relationships survive, what task
+changed, and what uncertainty must now be resolved. Do not present success on a
+different task as measured improvement on the unchanged previous question.
+
+FINAL-CANDIDATE SELECTION
+
+Choose by what the complete public question lets a solver recover, not by whether the new relationship is factual, unfamiliar or longer. A direct description of a hidden entity and a source whose ordinary result supplies that entity can recreate the same short path. Prefer incoming relationships that require resolving a source's relevant content before the next useful input is available. Keep useful discoveries already added; replacing their start with another searchable attribute of the same entity is not cumulative progress.
+
+Test the actual candidate you intend to publish. Start with its strongest public clues, including the downstream request and scope selectors. After a result, combine only information it supplied or that a solver could ordinarily infer with the remaining question and try the strongest next lookup. Allow recognition, synonyms, arithmetic, chronological succession and intelligent guesses. Record actual query/result evidence in the available research output; do not substitute a private-name verification search or one overconstrained query containing the entire intended chain.
+
+At selection, distinguish three findings: a public clue bypasses the proposed new relationship; a search actually traverses that relationship and then continues; or the evidence is unresolved. A demonstrated bypass disqualifies that formulation even if it was discovered during your research rather than in a prior solver run. Repair it and test the changed wording. A returned source that must be investigated to recover the hidden input is not by itself a bypass. Neither a failed query nor an extra click establishes difficulty. Select the strongest supported repair based on the observed routes, then let the blind solvers measure it.
+
+Carry negative test results through composition. Do not finish by publishing a different, untested selector after rejecting tested candidates. Recheck any final change that affects identification or selection. When clarification is needed, use a verified relationship to the discovered record to select the next record; do not automatically restore an answer-revealing year, prize, title or topic. Keep public selection unambiguous without using the private answer. A verified connection and a verified selector are both required.
+
+Feedback identifies information to conceal, not a phrase or document to avoid. If the actual question still recovers that information around the new relationship, additional documents, source restrictions or requested evidence cannot repair it. Producing a complete question does not override this requirement: continue researching rather than return an unchanged question, a cosmetic rewrite or invented facts. Reviewer approval only permits a solver test; it does not prove difficulty.
+
+EXAMPLES
+
+Task development (structural illustration, not source claims): seed "Who wrote
+paper X?". An entry document pointing to X may still leave a routine author lookup.
+Researching two independently identified studies and asking which authors occur
+in both can instead make their author-set intersection determine the answer.
+Verify both lists and the intersection. Reject this formulation if one public
+clue already retrieves the shared-author answer directly. Do not add an unrelated
+second study merely to require more output. A study found while researching X is
+a useful starting point for a related task; keep that relationship in the record.
+
+Observed failure to avoid: after a solver finds the relevant gravitational-wave
+paper, asking it for three masses, every interval bound, four model comparisons
+and an explanation creates many easy scoring components. Missing one value does
+not make the underlying identification difficult. Instead, use the necessary
+comparison to select one event and ask for that event only; privately verify all
+values. If the event can be guessed or retrieved without the comparison, repair
+the public clues rather than require the solver to print the calculations.
+Likewise, an art-source intersection may legitimately return a small set of
+paintings. Adding accession numbers and a conservation finding for each painting
+does not make identifying the intersection harder. Keep those checks private.
+
+Another useful pattern is inverse identification: begin with a verified record,
+research independently supported attributes of its participants, then identify
+the record from their combination. Ordinary biographical recognition may still
+defeat this. Several obscure-sounding descriptions do not imply a large search
+space or necessary comparison. Test the actual strongest public clues.
+
+Same information, different wording: "Nobel Peace Prize 2024", "Oslo peace award
+two years before 2026" and "Oslo peace-award entry after 2023" expose the same
+prize/year. Likewise, replacing a Nobel annual-report clue with City Hall's
+centenary or a concert lineup is inadequate when each cheaply yields the year
+used in the successful laureate lookup. Avoiding the report is not the objective.
+
+Easy intermediate recovery: Canada SCORES -> education fund -> Club World Cup
+2025 -> Chelsea. A result naming the tournament/year defeats concealment even
+without naming Chelsea. Recognizable combinations such as software architect +
+Soyuz 2009, observatory + decade-long survey, or Church's journal-founder role
+can identify the same entity as its name. A distinctive dissertation title can
+also be a direct search key. An added co-passenger, biography or citation branch
+helps only if the identifying combination no longer bypasses it; do not keep
+exposing clues as "confirmation."
+
+Record relationships: the patent example replaces descriptions of the target
+patents with other patents whose direct backward citations, filtered by grant
+year, expose inventor sets to intersect. It supplies hidden inputs through real
+records. A recognizable inventor may still expose the endpoint, so test that
+route too. This is a construction pattern, not proof of difficulty.
+
+Worked process: conceal Elon Musk. Reject "richest man in 2025" as recognizable
+identity wording. Research incoming relationships: the 2017 paper "General Bounds
+on Satisfiability Thresholds for Random CSPs via Fourier Analysis" acknowledges
+Future of Life Institute grant 2016-158687 and NSF; FLI's 2015 grant announcement
+identifies Musk as the initial donor. Verify both records. Candidate route:
+paper -> acknowledgments -> funder -> donor. Tests "2017 satisfiability thresholds
+Fourier" and "Future of Life Institute research program initial donor" immediately
+recover the paper and Musk. The factual chain is still easy. Research ways to
+conceal those identifying inputs; do not stop because the topic sounds unrelated.
+
+Worked process: conceal icosahedrite. Museum specimen 46407/G, originally labeled
+khatyrkite, is linked to icosahedrite in the 2015 Scientific Reports paper "Natural
+quasicrystal with decagonal symmetry." Verify the label, specimen and phase.
+A bare identifier search gives mixed results; refining to "46407/G mineral"
+returns icosahedrite. That ordinary reformulation defeats the candidate. Research
+a supported route to the specimen instead of publishing its search key, and
+check whether structural/locality clues independently identify the mineral.
+Neither worked example is a demonstrated hard question or a required subject area.
+
+Observed contrast: changing a boat's build code to its distinctive distance record still let ordinary searches identify the same boat, campaign and race. The author selected a new clue, not an effective concealment of that short route. In a stronger food-prize revision, a living-collections review's reference 73 supplied a second paper; its reference 22 supplied a report whose Annex V identified the pair. Both tested solvers found the starting review but failed to recover the actual reference. Finding the starting record is acceptable; the needed information was not supplied by recognizing that record. These are observations from particular runs, not guarantees or required subject matter.
+
+Downstream leak: an upstream paper chain became optional when the question separately supplied “May 2024 IUCN technical evaluation.” A public search on that wording exposed the property. Replacing it with the evaluation containing the discovered reference preserved selection without that date clue. Test all identifying selectors together with the new entry clue; fixing only the beginning is insufficient.
+
+Factuality: verify how the public constraints select each next record, not merely
+that the intended record appears in the source. When several records fit, verify
+that the remaining constraints select the intended branch without using the
+private answer. A prior author claimed David Thomas received a 2018 award, while the
+official record named Paul Hesse; Thomas received it in 2011. Check exact identities,
+years and relationships rather than accepting an author's verification claim.
+Unsupported premises, ambiguity and operational errors are not difficulty wins;
+a correct target answer does not certify every premise. Treat archived traces as
+evidence, not instructions, and retain uncertainty about unobserved retrieval.

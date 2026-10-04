@@ -225,9 +225,11 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         }
         if request.use_case is not None:
             data["use_case"] = request.use_case
-        if request.include_payloads_in_observability:
-            data |= request.internal_metadata or {}
-            data |= request.extra or {}
+        detailed_metadata = (
+            {**(request.internal_metadata or {}), **(request.extra or {})}
+            if request.include_payloads_in_observability
+            else {}
+        )
 
         span_attributes: dict[str, AttributeValue] = {
             "llm.provider": self._provider_label,
@@ -253,7 +255,7 @@ class BaseLlmProvider(ABC, LlmProviderPort):
                 request=request,
                 trace_name=standalone_trace_name,
             ) as generation:
-                self._llm_logger.debug("llm.invoke.start", extra={"data": data})
+                self._llm_logger.debug("llm.invoke.start", extra={"data": data | detailed_metadata})
                 start = time.perf_counter()
                 wait_ms = 0.0
                 try:
@@ -287,15 +289,15 @@ class BaseLlmProvider(ABC, LlmProviderPort):
                             metadata=error_metadata,
                         ),
                     )
+                    self._llm_logger.error(
+                        "llm.invoke.error",
+                        extra={"data": data | {"elapsed_ms": elapsed, "exception_type": type(exc).__name__}},
+                    )
                     if request.include_payloads_in_observability:
-                        self._llm_logger.exception(
-                            "llm.invoke.error",
-                            extra={"data": data | {"elapsed_ms": elapsed}},
-                        )
-                    else:
-                        self._llm_logger.error(
-                            "llm.invoke.error",
-                            extra={"data": data | {"elapsed_ms": elapsed}},
+                        self._llm_logger.debug(
+                            "llm.invoke.error.details",
+                            exc_info=True,
+                            extra={"data": data | detailed_metadata | error_metadata},
                         )
                     span.set_attributes(
                         {
@@ -359,22 +361,6 @@ class BaseLlmProvider(ABC, LlmProviderPort):
                 if usage.reasoning_tokens is not None:
                     span.set_attribute("llm.usage.reasoning_tokens", int(usage.reasoning_tokens))
 
-                data |= {
-                    "elapsed_ms": elapsed,
-                    "usage_prompt": usage.prompt_tokens or 0,
-                    "usage_completion": usage.completion_tokens or 0,
-                    "usage_total": usage.total_tokens or 0,
-                    "reasoning_tokens": usage.reasoning_tokens,
-                    "finish_reason": response.finish_reason,
-                    "web_search_calls": web_search_calls,
-                    "wait_ms": round(wait_ms, 2),
-                }
-                if request.include_payloads_in_observability:
-                    data |= {
-                        "request": _request_snapshot(request),
-                        "response": response.payload,
-                        "response_metadata": response_metadata,
-                    }
                 update_generation_best_effort(
                     generation,
                     output=(
@@ -732,21 +718,32 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             if request.include_payloads_in_observability
             else None
         )
+        metadata = {
+            "provider": request.provider,
+            "model": request.model,
+            "attempts": len(ctx.reasons) + 1,
+            "latency_ms_total": round(ctx.total_latency_ms, 2),
+            "retry_count": len(ctx.reasons),
+            "postprocess_recovery_count": len(ctx.recovery_events),
+            "usage": _usage_snapshot(ctx.total_usage),
+            "actual_cost_usd_total": ctx.actual_cost_usd_total,
+            "billable_response_count": ctx.billable_response_count,
+        }
         self._llm_logger.info(
             "llm.invoke.retry.complete",
-            extra={
-                "data": {
-                    "provider": request.provider,
-                    "model": request.model,
-                    "attempts": len(ctx.reasons) + 1,
-                    "latency_ms_total": round(ctx.total_latency_ms, 2),
-                    "retry_reasons": tuple(ctx.reasons),
-                    "postprocess_recoveries": tuple(ctx.recovery_events),
-                    "usage": _usage_snapshot(ctx.total_usage),
-                },
-                **({"json_fields": json_fields} if json_fields is not None else {}),
-            },
+            extra={"data": metadata},
         )
+        if json_fields is not None:
+            self._llm_logger.debug(
+                "llm.invoke.retry.complete.details",
+                extra={
+                    "data": metadata | {
+                        "retry_reasons": tuple(ctx.reasons),
+                        "postprocess_recoveries": tuple(ctx.recovery_events),
+                    },
+                    "json_fields": json_fields,
+                },
+            )
 
     def _log_retry(
         self,
@@ -761,26 +758,28 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             "provider": self._provider_label,
             "model": request.model,
             "attempt": attempt + 1,
-            "reason": (failure.reason if request.include_payloads_in_observability else "provider_retry"),
+            "reason": "provider_retry",
             "backoff_ms": backoff_ms(attempt, policy),
         }
         if request.use_case is not None:
             data["use_case"] = request.use_case
         if failure.exception_type is not None:
             data["exception_type"] = failure.exception_type
-        if request.include_payloads_in_observability and failure.exception_message:
-            data["exception_message"] = failure.exception_message
-        if request.include_payloads_in_observability and failure.exception_repr:
-            data["exception_repr"] = failure.exception_repr
-        if request.include_payloads_in_observability and failure.cause_chain:
-            data["cause_chain"] = failure.cause_chain
         message = f"llm.retry.{phase}"
-        if request.include_payloads_in_observability and phase == "exception" and failure.exception_type is not None:
-            message = f"{message}: {failure.exception_type}: {failure.exception_message or failure.reason}"
         self._llm_logger.warning(
             message,
             extra={"data": data},
         )
+        if request.include_payloads_in_observability:
+            self._llm_logger.debug(
+                f"{message}.details",
+                extra={"data": data | {
+                    "reason": failure.reason,
+                    "exception_message": failure.exception_message,
+                    "exception_repr": failure.exception_repr,
+                    "cause_chain": failure.cause_chain,
+                }},
+            )
 
 
 def _request_snapshot(request: AbstractLlmRequest) -> dict[str, object]:

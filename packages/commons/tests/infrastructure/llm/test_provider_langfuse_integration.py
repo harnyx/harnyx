@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import TracebackType
@@ -22,6 +23,30 @@ from harnyx_commons.llm.schema import (
 from harnyx_commons.observability import langfuse
 
 pytestmark = pytest.mark.anyio("asyncio")
+
+
+@pytest.mark.parametrize("level", (logging.INFO, logging.DEBUG))
+async def test_console_level_preserves_langfuse_content(
+    level: int, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Future failure: filtering console detail also removes the evidence from Langfuse."""
+    caplog.set_level(level, logger="harnyx_commons.llm.calls")
+    updates: list[dict[str, object]] = []
+    scope = _Scope(generation=object())
+    response = _response(metadata={"raw_response": {"evidence": "source-passage"}}, reasoning="reasoning-summary")
+    monkeypatch.setattr(provider_module, "start_llm_generation", lambda **_: scope)
+    monkeypatch.setattr(
+        provider_module, "update_generation_best_effort", lambda generation, **kwargs: updates.append(kwargs)
+    )
+    monkeypatch.setattr(provider_module, "_record_child_observations", lambda **_: None)
+
+    await _StubProvider(response=response).invoke(_request())
+
+    assert len(updates) == 1
+    assert updates[0]["output"] == provider_module.build_generation_output_payload(response)
+    assert updates[0]["usage"] == response.usage
+    assert "source-passage" in repr(updates[0]["metadata"])
+    assert "reasoning-summary" in repr(updates[0]["metadata"])
 
 
 @dataclass

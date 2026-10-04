@@ -8,7 +8,7 @@ from typing import cast
 
 
 def main() -> None:
-    from harnyx_commons.domain_tweak_generation.source_fetch import (
+    from harnyx_commons.miner_task_generation.source_fetch import (
         DocumentKind,
         SourceFetchError,
         _fetch_complete_body,

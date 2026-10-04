@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from typing import Literal, cast
 
 from harnyx_commons.json_types import JsonObject
@@ -49,6 +50,7 @@ PARALLEL_EXTRACT_URL_COST_USD = 0.001
 VERTEX_GROUNDED_PER_1K = 35.0
 VERTEX_GEMINI3_GROUNDED_PER_1K = 14.0
 VERTEX_CLAUDE_WEB_SEARCH_PER_1K = 10.0
+OPENAI_WEB_SEARCH_PER_1K = 10.0
 
 
 @dataclass(frozen=True)
@@ -62,6 +64,8 @@ class ModelPricing:
     input_per_million: float
     output_per_million: float
     reasoning_per_million: float
+    cached_input_per_million: float | None = None
+    cache_write_per_million: float | None = None
 
     @property
     def billable_reasoning_per_million(self) -> float:
@@ -156,6 +160,8 @@ MINER_TOOL_EMBEDDING_PRICING: Mapping[EmbeddingProviderName, Mapping[str, Embedd
 }
 
 GENERATION_MODEL_PRICING: Mapping[str, ModelPricing] = {
+    # Standard processing, verified 2026-10-03: https://developers.openai.com/api/docs/pricing
+    "openai:gpt-6-luna": ModelPricing(0.10, 0.50, 0.0, 0.01, 0.125),
     "openrouter:openai/gpt-oss-20b": ModelPricing(0.03, 0.14, 0.0),
     "openrouter:openai/gpt-oss-120b": ModelPricing(0.039, 0.18, 0.0),
     # Historical/accounting prices only; Vertex runtime rejects Gemini models earlier than 3.
@@ -163,7 +169,10 @@ GENERATION_MODEL_PRICING: Mapping[str, ModelPricing] = {
     "vertex:gemini-2.5-flash": ModelPricing(0.30, 2.50, 0.0),
     "vertex:gemini-2.5-flash-lite": ModelPricing(0.10, 0.40, 0.0),
     "vertex:gemini-3-pro-preview": ModelPricing(2.0, 12.0, 0.0),
-    "vertex:gemini-3.1-pro-preview": ModelPricing(2.0, 12.0, 0.0),
+    "vertex:gemini-3.1-pro-preview": ModelPricing(2.0, 12.0, 0.0, 0.20),
+    # Standard global endpoint. Introductory Flash rates expire 2026-12-31.
+    # Verified 2026-10-03: https://cloud.google.com/vertex-ai/generative-ai/pricing
+    "vertex:gemini-3.8-flash": ModelPricing(0.75, 3.75, 0.0, 0.075),
     "vertex:gemini-3.1-flash-lite": ModelPricing(0.25, 1.50, 0.0),
     "vertex:claude-opus-4-5": ModelPricing(5.50, 27.50, 0.0),
     "vertex:claude-sonnet-4-5": ModelPricing(3.30, 16.50, 0.0),
@@ -178,13 +187,18 @@ GENERATION_MODEL_PRICING: Mapping[str, ModelPricing] = {
     "gemini-2.5-pro": ModelPricing(1.25, 10.0, 0.0),
     "gemini-2.5-flash": ModelPricing(0.30, 2.50, 0.0),
     "gemini-3-pro-preview": ModelPricing(2.0, 12.0, 0.0),
-    "gemini-3.1-pro-preview": ModelPricing(2.0, 12.0, 0.0),
+    "gemini-3.1-pro-preview": ModelPricing(2.0, 12.0, 0.0, 0.20),
     "gemini-3.1-flash-lite": ModelPricing(0.25, 1.50, 0.0),
     "claude-opus-4-5": ModelPricing(5.50, 27.50, 0.0),
     "claude-sonnet-4-5": ModelPricing(3.30, 16.50, 0.0),
     "claude-haiku-4-5": ModelPricing(1.10, 5.50, 0.0),
     "sonnet-4.5": ModelPricing(3.0, 15.0, 0.0),
     "haiku-4.5": ModelPricing(1.0, 5.0, 0.0),
+}
+
+GENERATION_LONG_CONTEXT_PRICING: Mapping[str, tuple[int, ModelPricing]] = {
+    "openai:gpt-6-luna": (272_000, ModelPricing(0.20, 0.75, 0.0, 0.02, 0.25)),
+    "vertex:gemini-3.1-pro-preview": (200_000, ModelPricing(4.0, 18.0, 0.0, 0.40)),
 }
 
 
@@ -219,9 +233,16 @@ def pricing_key(provider: str, model: str) -> str:
     return f"{provider_key}:{model_base}"
 
 
-def lookup_pricing(provider: str, model: str) -> ModelPricing | None:
+def lookup_pricing(
+    provider: str, model: str, *, prompt_tokens: int = 0, pricing_date: date | None = None
+) -> ModelPricing | None:
     """Return generation pricing for an arbitrary provider/model route."""
     key = pricing_key(provider, model)
+    long_context = GENERATION_LONG_CONTEXT_PRICING.get(key)
+    if long_context is not None and prompt_tokens > long_context[0]:
+        return long_context[1]
+    if key == "vertex:gemini-3.8-flash" and (pricing_date or datetime.now(UTC).date()) >= date(2027, 1, 1):
+        return ModelPricing(1.50, 7.50, 0.0, 0.15)
     pricing = GENERATION_MODEL_PRICING.get(key)
     if pricing is not None:
         return pricing
@@ -233,6 +254,8 @@ def grounded_cost_usd(*, provider: str, model: str, web_search_calls: int) -> fl
     if web_search_calls <= 0:
         return 0.0
     provider_key = provider.strip().lower()
+    if provider_key == "openai":
+        return (float(web_search_calls) * OPENAI_WEB_SEARCH_PER_1K) / 1000.0
     if provider_key != VERTEX_PROVIDER:
         return 0.0
 
@@ -244,12 +267,15 @@ def grounded_cost_usd(*, provider: str, model: str, web_search_calls: int) -> fl
     return (float(web_search_calls) * VERTEX_GROUNDED_PER_1K) / 1000.0
 
 
-def generation_usage_cost_breakdown(usage: LlmUsage, *, provider: str, model: str) -> JsonObject:
+def generation_usage_cost_breakdown(
+    usage: LlmUsage, *, provider: str, model: str, pricing_date: date | None = None
+) -> JsonObject:
     """Return reference-cost details for a generation LLM call."""
-    pricing = lookup_pricing(provider, model)
+    pricing = lookup_pricing(provider, model, prompt_tokens=usage.prompt_tokens or 0, pricing_date=pricing_date)
 
     prompt_tokens = float(usage.prompt_tokens or 0)
     prompt_cached_tokens = float(usage.prompt_cached_tokens or 0)
+    prompt_cache_write_tokens = float(usage.prompt_cache_write_tokens or 0)
     completion_tokens = float(usage.completion_tokens or 0)
     reasoning_tokens = float(usage.reasoning_tokens or 0)
     total_tokens = float(usage.total_tokens or 0)
@@ -262,6 +288,7 @@ def generation_usage_cost_breakdown(usage: LlmUsage, *, provider: str, model: st
         "pricing_key": pricing_key(provider, model),
         "prompt_tokens": prompt_tokens,
         "prompt_cached_tokens": prompt_cached_tokens,
+        "prompt_cache_write_tokens": prompt_cache_write_tokens,
         "completion_tokens": completion_tokens,
         "reasoning_tokens": reasoning_tokens,
         "total_tokens": total_tokens,
@@ -278,7 +305,22 @@ def generation_usage_cost_breakdown(usage: LlmUsage, *, provider: str, model: st
             "usd_cost": grounded_cost,
         }
 
-    cost_input = (prompt_tokens / 1_000_000) * pricing.input_per_million
+    if (
+        prompt_cached_tokens < 0
+        or prompt_cache_write_tokens < 0
+        or prompt_cached_tokens + prompt_cache_write_tokens > prompt_tokens
+    ):
+        raise ValueError("Cached input and cache writes must be disjoint subsets of prompt tokens")
+    cached_rate = pricing.cached_input_per_million
+    write_rate = pricing.cache_write_per_million
+    cost_input = (
+        (prompt_tokens - prompt_cached_tokens - prompt_cache_write_tokens) * pricing.input_per_million
+        + prompt_cached_tokens * (cached_rate if cached_rate is not None else pricing.input_per_million)
+        + prompt_cache_write_tokens * (write_rate if write_rate is not None else pricing.input_per_million)
+    ) / 1_000_000
+    # OpenAI output_tokens already includes reasoning; Gemini candidates_token_count does not.
+    if provider.strip().lower() == "openai":
+        completion_tokens = max(completion_tokens - reasoning_tokens, 0.0)
     cost_output = (completion_tokens / 1_000_000) * pricing.output_per_million
     cost_reasoning = (reasoning_tokens / 1_000_000) * pricing.billable_reasoning_per_million
     return {

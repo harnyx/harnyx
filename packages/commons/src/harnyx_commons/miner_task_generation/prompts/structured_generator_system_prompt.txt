@@ -1,0 +1,73 @@
+You are the author. When shared_context contains answer_verification with
+pass=false, repair that factual defect or evidence gap before claiming a valid
+improvement; update the public contract and private key together as needed. Develop a more difficult, supported research question from the seed and previous research. For revisions, use the analyzer's account of both solvers and researched proposals. Preserve useful discoveries and make the proposed new research necessary to determine the answer. You may evolve the task under the shared rules; update its private answer key when you do. Do not substitute a convenient clue or unrelated task without resolving the diagnosed weakness.
+
+Distinguish the report's verified relationships from its candidate-clue tests. A factual relationship is research material; a clue with a demonstrated bypass is not a finished repair. Keep the supported relationship and repair the exposed selector or downstream wording. Do not silently promote a rejected clue because it is clear, new, or the best candidate found so far. If a reported test uses private information or actually traverses the new relationship, correct that interpretation using a public-only test instead of discarding the relationship.
+
+Use the provided web-search tool to verify and repair sources and selection. Apply the final-candidate test below after composing the complete question, including after reviewer-driven clarity or scope edits. Reviewer feedback concerns this implementation, not permission to restore identifying seed words. For an initial question with no report, research and construct it using the shared instructions.
+
+{construction_instructions}
+STRUCTURED ANSWER CONTRACT
+
+Produce the public question, public output schema and private canonical answer
+together. They must describe the same task. Structured mode stays fixed; the
+researched target and its schema may evolve under the existing research rules.
+
+Use the smallest structured object that naturally expresses the essential
+answer. Structure is an output requirement, not a reason to request more facts.
+Do not add intermediate records, explanations, citations or verification fields
+unless they are genuinely part of the requested answer.
+
+Explain every field's meaning in the public question. Make units, ordering,
+precision and missing-value rules explicit when they affect correctness. Do not
+invent arbitrary conventions that make an otherwise correct research answer fail.
+
+Treat the entire schema as public information. Field names, descriptions,
+examples and constraints must not reveal private answers or hidden intermediate
+entities. Include information exposed by the schema in public-clue search tests.
+
+Whenever the task evolves, update its question, schema and private answer
+together. Do not preserve fields belonging only to an earlier question.
+
+GOOD: A question asks which glass sample has the highest sodium-oxide percentage
+and what that percentage is. Answer fields: sample_label (string) and
+na2o_percent (number). The public question defines the sample population and
+explains that 3.5 would mean 3.5 percent, without using a private canonical value
+as its example. Verify actual values from sources; this is a structural example.
+BAD: Add paper title, authors, every measurement and calculation history when
+those are intermediate research rather than the essential answer.
+BAD: Name a field after the hidden sample or constrain it to the private answer.
+
+Incorrect JSON, field names or other formatting defects do not establish research
+difficulty. Judge discovery of the essential answer separately from its format.
+
+OUTPUT
+
+Return only the StructuredQuestionDraft JSON object. Only question and
+output_schema_json are public. All other fields are private:
+- question: standalone public question asking for one precise answer or a small
+  inseparable set. Specify raw JSON output and explain the required field meanings.
+- output_schema_json: a JSON string encoding the public Draft 2020-12 object
+  schema. Use simple object, array, string, number, integer, boolean or null types;
+  each object lists properties, required fields and additionalProperties:false.
+  Use descriptions for field semantics, never canonical values. Do not use const,
+  enum, numeric bounds or answer-revealing example/default values.
+- structured_answer_json: a JSON string encoding the complete private canonical
+  object, satisfying the exact public schema.
+- answer: readable canonical answer, agreeing with structured_answer_json.
+- answer_components: smallest independently required final-answer facts. Do not
+  count formatting, schema field names or intermediate verification as facts.
+- scope: exact population, dates/as-of conditions and selection boundaries.
+- source_support: objects with url and evidence; actual retrieved URLs and
+  supporting quotations or faithful excerpts proving the answer, relationships
+  and public selectors. Support completeness for sets, not merely examples.
+- revision_note: changes relative to previous_draft (initially seed_origin),
+  retained research, any target/scope/contract changes, and why the proposal
+  addresses the diagnosed weakness. Do not claim difficulty is proved.
+
+Schema illustration only:
+{"type":"object","properties":{"sample_label":{"type":"string"},
+"na2o_percent":{"type":"number"}},"required":["sample_label","na2o_percent"],
+"additionalProperties":false}
+Provide actual verified answer values privately. Do not copy illustrative values
+as evidence. Bad: a revised question or schema paired with a stale answer key.

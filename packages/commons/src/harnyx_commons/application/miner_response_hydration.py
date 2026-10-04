@@ -139,16 +139,16 @@ def hydrate_miner_response_payload(
     if hydrated_citations.source_text_chars > MAX_TOTAL_CITATION_EVIDENCE_CHARS:
         raise MinerResponsePayloadError("response citations exceed 120000 materialized source-text characters")
     citations = hydrated_citations.citations or None
-    _validate_citation_references(raw_response, hydrated_citations.citations)
+    validate_citation_references(
+        (raw_response.text, raw_response.output, raw_response.note), hydrated_citations.citations
+    )
     if "text" in raw_response.model_fields_set:
         return Response(text=raw_response.text, note=raw_response.note, citations=citations)
     return Response(output=raw_response.output, note=raw_response.note, citations=citations)
 
 
-def _validate_citation_references(
-    response: _RawMinerResponsePayload, citations: tuple[AnswerCitation | None, ...]
-) -> None:
-    pending: list[JsonValue] = [response.text, response.output, response.note]
+def validate_citation_references(values: Sequence[JsonValue], citations: Sequence[AnswerCitation | None]) -> None:
+    pending = list(values)
     max_position_digits = len(str(len(citations)))
     while pending:
         value = pending.pop()

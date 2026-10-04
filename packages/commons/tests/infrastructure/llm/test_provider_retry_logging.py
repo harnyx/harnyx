@@ -165,6 +165,45 @@ async def test_retry_success_exposes_safe_retry_metadata() -> None:
     assert "actual_cost_usd" not in result.metadata
 
 
+@pytest.mark.parametrize("level", (logging.INFO, logging.DEBUG))
+async def test_provider_details_are_debug_only(level: int, caplog: pytest.LogCaptureFixture) -> None:
+    """Future failure: provider content leaks into ordinary completion or retry logs."""
+    caplog.set_level(level, logger="harnyx_commons.llm.calls")
+    provider = _RetryOnceExceptionProvider()
+    await provider.invoke_with_retry(_request())
+
+    summaries = [record for record in caplog.records if record.levelno >= logging.INFO]
+    rendered = repr([(record.getMessage(), record.__dict__) for record in summaries])
+    assert "provider transport failed" not in rendered
+    assert "dns lookup failed" not in rendered
+    assert "hello" not in rendered
+    assert not any(hasattr(record, "json_fields") for record in summaries)
+    completion = next(record for record in summaries if record.getMessage() == "llm.invoke.retry.complete")
+    assert completion.data["attempts"] == 2
+    assert completion.data["usage"]["prompt"] == 11
+    if level == logging.DEBUG:
+        details = [record for record in caplog.records if record.levelno == logging.DEBUG]
+        assert "provider transport failed" in repr([record.__dict__ for record in details])
+        payloads = [record.json_fields for record in details if hasattr(record, "json_fields")]
+        assert len(payloads) == 1
+        assert "hello" in repr(payloads)
+
+
+async def test_provider_failure_summary_does_not_include_exception_content(caplog: pytest.LogCaptureFixture) -> None:
+    """Future failure: an exception traceback bypasses console payload filtering."""
+    provider = _NonRetryableExceptionProvider()
+    caplog.set_level(logging.DEBUG, logger="harnyx_commons.llm.calls")
+    with pytest.raises(ValueError):
+        await provider.invoke(_request())
+    summary = next(record for record in caplog.records if record.getMessage() == "llm.invoke.error")
+    assert summary.levelno == logging.ERROR
+    assert summary.exc_info is None
+    assert summary.data["exception_type"] == "ValueError"
+    details = next(record for record in caplog.records if record.getMessage() == "llm.invoke.error.details")
+    assert details.levelno == logging.DEBUG
+    assert details.exc_info is not None
+
+
 async def test_similarity_retry_logs_each_stream_attempt_without_content(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

@@ -108,7 +108,69 @@ def test_generation_usage_cost_breakdown_prices_default_domain_tweak_model() -> 
     assert breakdown["pricing_missing"] is False
     assert breakdown["pricing_key"] == "vertex:gemini-3.1-pro-preview"
     assert breakdown["usd_cost_grounded"] == pytest.approx(0.028)
-    assert breakdown["usd_cost"] == pytest.approx(14.028)
+    assert breakdown["usd_cost"] == pytest.approx(22.028)
+
+
+def test_luna_prices_disjoint_cache_writes_and_reads_without_double_billing_reasoning() -> None:
+    breakdown = generation_usage_cost_breakdown(
+        LlmUsage(
+            prompt_tokens=100_000,
+            prompt_cached_tokens=20_000,
+            prompt_cache_write_tokens=30_000,
+            completion_tokens=10_000,
+            reasoning_tokens=9_000,
+            web_search_calls=3,
+        ),
+        provider="openai",
+        model="gpt-6-luna",
+    )
+    assert breakdown["usd_cost_input"] == pytest.approx(0.00895)
+    assert breakdown["usd_cost_output"] == pytest.approx(0.0005)
+    assert breakdown["usd_cost_reasoning"] == pytest.approx(0.0045)
+    assert breakdown["usd_cost_grounded"] == pytest.approx(0.03)
+    assert breakdown["usd_cost"] == pytest.approx(0.04395)
+
+
+@pytest.mark.parametrize(("tokens", "expected"), [(272_000, 0.0277), (272_001, 0.0551502)])
+def test_luna_long_context_prices_the_entire_request(tokens: int, expected: float) -> None:
+    breakdown = generation_usage_cost_breakdown(
+        LlmUsage(prompt_tokens=tokens, completion_tokens=1_000, reasoning_tokens=800),
+        provider="openai",
+        model="gpt-6-luna",
+    )
+    assert breakdown["usd_cost"] == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(("tokens", "expected"), [(200_000, 0.412), (200_001, 0.818004)])
+def test_pro_long_context_uses_prompt_count_and_bills_reasoning_separately(tokens: int, expected: float) -> None:
+    breakdown = generation_usage_cost_breakdown(
+        LlmUsage(prompt_tokens=tokens, completion_tokens=200, reasoning_tokens=800),
+        provider="vertex",
+        model="gemini-3.1-pro-preview",
+    )
+    assert breakdown["usd_cost"] == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(("day", "expected"), [("2026-12-31", 0.00615), ("2027-01-01", 0.0123)])
+def test_flash_cache_discount_and_promotion_expiry(day: str, expected: float) -> None:
+    from datetime import date
+
+    breakdown = generation_usage_cost_breakdown(
+        LlmUsage(prompt_tokens=10_000, prompt_cached_tokens=2_000),
+        provider="vertex",
+        model="gemini-3.8-flash",
+        pricing_date=date.fromisoformat(day),
+    )
+    assert breakdown["usd_cost"] == pytest.approx(expected)
+
+
+def test_overlapping_cached_token_counts_do_not_produce_negative_input_cost() -> None:
+    with pytest.raises(ValueError, match="disjoint subsets"):
+        generation_usage_cost_breakdown(
+            LlmUsage(prompt_tokens=10, prompt_cached_tokens=8, prompt_cache_write_tokens=8),
+            provider="openai",
+            model="gpt-6-luna",
+        )
 
 
 @pytest.mark.parametrize(

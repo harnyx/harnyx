@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
+from datetime import date
 
 from harnyx_commons.domain.session import LlmUsageTotals
 from harnyx_commons.domain.tool_usage import (
@@ -22,9 +23,10 @@ def tool_usage_from_llm_usage(
     *,
     provider: str,
     model: str,
+    pricing_date: date | None = None,
 ) -> ToolUsageSummary:
     """Convert one LLM call usage record into a shared tool-usage summary."""
-    breakdown = generation_usage_cost_breakdown(usage, provider=provider, model=model)
+    breakdown = generation_usage_cost_breakdown(usage, provider=provider, model=model, pricing_date=pricing_date)
     grounded_cost = _breakdown_float(breakdown.get("usd_cost_grounded"))
     total_reference_cost = _breakdown_float(breakdown.get("usd_cost"))
     llm_cost = max(total_reference_cost - grounded_cost, 0.0)
@@ -134,6 +136,14 @@ def merge_complete_actual_cost_usage(left: ToolUsageSummary, right: ToolUsageSum
     }
     return replace(
         merged,
+        search_tool=replace(
+            merged.search_tool,
+            actual_cost=(
+                merged.search_tool.actual_cost
+                if left.search_tool.actual_cost is not None and right.search_tool.actual_cost is not None
+                else None
+            ),
+        ),
         llm=replace(merged.llm, actual_cost=None, providers=providers),
         actual_total_cost_usd=None,
         actual_cost_by_provider={},

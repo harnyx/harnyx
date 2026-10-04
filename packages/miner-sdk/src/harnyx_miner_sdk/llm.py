@@ -252,6 +252,7 @@ class LlmUsage:
     prompt_cached_tokens: int | None = None
     reasoning_tokens: int | None = None
     web_search_calls: int | None = None
+    prompt_cache_write_tokens: int | None = None
 
     def __add__(self, other: LlmUsage | None) -> LlmUsage:
         """Combine usages fieldwise, treating ``None`` as zero when present."""
@@ -269,6 +270,7 @@ class LlmUsage:
             prompt_cached_tokens=_sum(self.prompt_cached_tokens, other_usage.prompt_cached_tokens),
             reasoning_tokens=_sum(self.reasoning_tokens, other_usage.reasoning_tokens),
             web_search_calls=_sum(self.web_search_calls, other_usage.web_search_calls),
+            prompt_cache_write_tokens=_sum(self.prompt_cache_write_tokens, other_usage.prompt_cache_write_tokens),
         )
 
     def __radd__(self, other: object) -> LlmUsage:

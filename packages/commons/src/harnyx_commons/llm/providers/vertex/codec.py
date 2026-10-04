@@ -743,9 +743,12 @@ def collect_search_queries(response: Any) -> list[str]:
 def attach_search_metadata(
     source: Any,
     usage: LlmUsage,
+    *,
+    search_enabled: bool = False,
 ) -> tuple[dict[str, Any] | None, LlmUsage]:
     queries = source if isinstance(source, list) else collect_search_queries(source)
-    calls = len(queries)
+    # Missing grounding metadata does not establish zero billable searches.
+    calls = len(queries) if queries or not search_enabled else None
     usage = usage + LlmUsage(web_search_calls=calls)
     if calls:
         return {

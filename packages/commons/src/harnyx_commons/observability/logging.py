@@ -82,7 +82,7 @@ class ExtrasFormatter(logging.Formatter):
         record_dict = record.__dict__
         record_data = record_dict.get("data")
 
-        if _should_emit_json_payload():
+        if _should_emit_json_payload() or (record.levelno == logging.DEBUG and record_dict.get("json_fields")):
             return json.dumps(_structured_payload(record), sort_keys=True, separators=(",", ":"))
 
         formatted = super().format(record)
@@ -241,6 +241,11 @@ def _logger_definitions(
             "propagate": False,
         },
         "httpx": {
+            "level": _level("HTTPX_LOG_LEVEL", "WARNING"),
+            "handlers": _handler_list(cloud_handler_name),
+            "propagate": False,
+        },
+        "httpx2": {
             "level": _level("HTTPX_LOG_LEVEL", "WARNING"),
             "handlers": _handler_list(cloud_handler_name),
             "propagate": False,

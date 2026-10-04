@@ -12,6 +12,23 @@ from harnyx_commons.observability.logging import (
 )
 
 
+def test_local_debug_payloads_are_complete_and_sanitized(monkeypatch) -> None:
+    """Future failure: redirected local benchmark logs silently omit detailed provider payloads."""
+    monkeypatch.delenv("K_SERVICE", raising=False)
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    formatter = ExtrasFormatter("%(levelname)s %(name)s: %(message)s")
+    record = logging.LogRecord("harnyx_commons.llm.calls", logging.DEBUG, __file__, 1, "details", (), None)
+    record.data = {"model": "configured-model"}
+    record.json_fields = {"request": {"payload": b"hello"}, "response": {"text": "x" * 2000}}
+
+    rendered = formatter.format(record)
+
+    payload = json.loads(rendered)
+    assert payload["data"] == record.data
+    assert payload["request"]["payload"] == "<bytes len=5>"
+    assert payload["response"]["text"] == "x" * 2000
+
+
 def test_formatter_emits_json_payload_for_json_fields_in_cloud_run(monkeypatch) -> None:
     monkeypatch.setenv("K_SERVICE", "harnyx-platform")
     formatter = ExtrasFormatter("%(levelname)s %(name)s: %(message)s")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import cast
 
@@ -14,6 +15,7 @@ from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.llm.adapter import canonical_model_for_provider_model
 from harnyx_commons.llm.pricing import (
     MINER_TOOL_LLM_PRICING,
+    generation_usage_cost_breakdown,
     price_miner_llm,
     price_static_llm_model,
 )
@@ -27,6 +29,21 @@ class SettledLlmCost:
     cost_usd: float
     provider: str
     evidence: JsonObject
+
+
+def settled_generation_llm_cost(
+    *, provider: str, model: str, usage: LlmUsage, pricing_date: date | None = None
+) -> SettledLlmCost | None:
+    """Calculate generation token costs from the shared published rate card, excluding search."""
+    breakdown = generation_usage_cost_breakdown(usage, provider=provider, model=model, pricing_date=pricing_date)
+    if breakdown["pricing_missing"] or usage.prompt_tokens is None or usage.completion_tokens is None:
+        return None
+    cost = float(cast(float, breakdown["usd_cost"])) - float(cast(float, breakdown["usd_cost_grounded"]))
+    return SettledLlmCost(
+        cost_usd=cost,
+        provider=provider,
+        evidence={"settlement_source": "static_pricing", "pricing_origin": "generation_model_pricing", **breakdown},
+    )
 
 
 def with_settled_llm_cost(response: LlmResponse, cost: SettledLlmCost) -> LlmResponse:
