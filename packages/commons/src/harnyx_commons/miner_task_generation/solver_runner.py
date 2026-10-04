@@ -29,7 +29,7 @@ from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequ
 from harnyx_commons.observability.langfuse import start_llm_generation, update_generation_best_effort
 
 from .agent_runner import CallCapture, logger, retry_request, shared_provider_failure, temporal_instruction
-from .contracts import AgentResult, BatchTerminalGenerationError, CandidateSession
+from .contracts import AgentResult, BatchTerminalGenerationError, CandidateSession, CandidateStageError
 from .prompts import role_prompt
 
 SOLVER_TURNS = 8
@@ -85,6 +85,8 @@ class RecordedModels:
                         search_queries.extend(collect_search_queries(chunk))
                         if chunk.usage_metadata is not None:
                             latest_usage = extract_usage(chunk.usage_metadata)
+                        if chunk.prompt_feedback is not None:
+                            raise RuntimeError(f"Provider blocked prompt: {chunk.prompt_feedback.block_reason}")
                         for candidate in chunk.candidates or []:
                             if candidate.finish_reason is not None:
                                 if candidate.finish_reason != types.FinishReason.STOP:
@@ -92,7 +94,9 @@ class RecordedModels:
                                 stopped = True
                         chunks.append(chunk)
                 if not stopped:
-                    raise RuntimeError("Provider stream ended without STOP")
+                    raise CandidateStageError(
+                        "transient_provider", "question_generation", "Provider stream ended without a finish reason"
+                    )
                 return chunks
             finally:
                 if latest_usage is not None:
