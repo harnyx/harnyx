@@ -182,6 +182,97 @@ async def test_grounded_worker_retains_full_response_and_search_usage():
     assert observed.requests[0]["contents"] == "exact independent query"
 
 
+@pytest.mark.parametrize(
+    "incomplete", ["no_candidates", "no_finish", "unspecified_finish", "no_content", "blank", "thought_only"]
+)
+async def test_grounded_worker_recovers_exact_request_without_delivering_failed_evidence(monkeypatch, incomplete):
+    """Incomplete search results must not kill a solver or leak into its evidence; retries remain billable."""
+    monkeypatch.setattr("harnyx_commons.miner_task_generation.agent_runner.backoff_ms", lambda *args: 0)
+    failed = chunk("discarded answer", stop=True, searches=["failed query"])
+    candidate = failed.candidates[0]
+    if incomplete == "no_candidates":
+        failed.candidates = []
+    elif incomplete == "no_finish":
+        candidate.finish_reason = None
+    elif incomplete == "unspecified_finish":
+        candidate.finish_reason = types.FinishReason.FINISH_REASON_UNSPECIFIED
+    elif incomplete == "no_content":
+        candidate.content = None
+    elif incomplete == "blank":
+        candidate.content.parts[0].text = "   "
+    else:
+        candidate.content.parts[0].thought = True
+    responses = iter([failed, chunk("complete answer", stop=True, searches=["successful query"])])
+    calls = []
+
+    class Models:
+        async def generate_content(self, **kwargs):
+            calls.append(kwargs)
+            return next(responses)
+
+    observed = capture()
+    worker = SearchWorkers(SimpleNamespace(aio=SimpleNamespace(models=Models())), observed, monotonic() + 2)
+    result = await worker.search("exact independent query")
+    assert calls[0] == calls[1] and observed.attempted == 2
+    assert worker.started == 1 and len(observed.workers) == 1
+    assert result["status"] == "completed" and result["answer"] == "complete answer"
+    assert observed.responses[result["provider_response_index"]]["attempt_status"] == "completed"
+    assert observed.responses[0]["attempt_status"] == "failed"
+    assert "discarded answer" not in str(result)
+    assert observed.tool_usage.llm.prompt_tokens == 20
+    assert observed.tool_usage.search_tool.call_count == (1 if incomplete == "no_candidates" else 2)
+    assert observed.available_cost_usd > 0
+
+
+@pytest.mark.parametrize("failure", ["safety", "max_tokens", "blocked", "unspecified_block", "multiple_candidates"])
+async def test_grounded_worker_does_not_retry_explicit_blocks_or_contract_failures(failure):
+    """Recovery must never replay an explicit provider block or a malformed multi-answer contract."""
+    response = chunk("unusable", stop=True, searches=["paid query"])
+    if failure == "safety":
+        response.candidates[0].finish_reason = types.FinishReason.SAFETY
+    elif failure == "max_tokens":
+        response.candidates[0].finish_reason = types.FinishReason.MAX_TOKENS
+    elif failure in {"blocked", "unspecified_block"}:
+        response.candidates = []
+        response.prompt_feedback = types.GenerateContentResponsePromptFeedback(
+            block_reason=types.BlockedReason.SAFETY if failure == "blocked" else None
+        )
+    else:
+        response.candidates.append(response.candidates[0].model_copy())
+
+    class Models:
+        async def generate_content(self, **kwargs):
+            return response
+
+    observed = capture()
+    worker = SearchWorkers(SimpleNamespace(aio=SimpleNamespace(models=Models())), observed, monotonic() + 2)
+    with pytest.raises(RuntimeError):
+        await worker.search("exact independent query")
+    assert observed.attempted == 1
+    assert observed.workers[0]["status"] == "error"
+    assert observed.responses[0]["attempt_status"] == "failed"
+    assert observed.tool_usage.llm.prompt_tokens == 10
+
+
+async def test_grounded_worker_incomplete_response_retries_only_until_existing_deadline(monkeypatch):
+    """Repeated empty responses must end operationally instead of spending beyond the candidate deadline."""
+    monkeypatch.setattr("harnyx_commons.miner_task_generation.agent_runner.backoff_ms", lambda *args: 10)
+
+    class Models:
+        async def generate_content(self, **kwargs):
+            return chunk("", stop=True, searches=["paid query"])
+
+    observed = capture()
+    worker = SearchWorkers(SimpleNamespace(aio=SimpleNamespace(models=Models())), observed, monotonic() + 0.05)
+    with pytest.raises(TimeoutError):
+        await worker.search("exact independent query")
+    assert observed.attempted > 1 and worker.started == 1
+    assert observed.workers[0]["status"] == "error"
+    assert observed.tool_usage.llm.prompt_tokens == 10 * observed.attempted
+    assert observed.tool_usage.search_tool.call_count == observed.attempted
+    assert all(event["attempt_status"] == "failed" for event in observed.responses)
+
+
 @pytest.mark.parametrize("search_enabled", [False, True])
 async def test_stream_without_search_receipt_reports_unknown_cost_only_when_search_enabled(search_enabled):
     class Models:

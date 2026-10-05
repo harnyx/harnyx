@@ -173,30 +173,47 @@ class SearchWorkers:
             extra={"data": self.capture.identity() | {"worker_order": record["order"], "request": request}},
         )
 
-        async def call() -> types.GenerateContentResponse:
+        async def call() -> tuple[types.GenerateContentResponse, str]:
             response = await self.client.aio.models.generate_content(**kwargs)
             record["provider_response_index"] = self.capture.event(response.model_dump(mode="json", exclude_none=True))
             usage = extract_usage(response.usage_metadata)
             if usage is not None:
                 _, usage = attach_search_metadata(response, usage, search_enabled=True)
             self.capture.account(usage, model=WORKER_MODEL)
-            return response
-
-        try:
-            response = await retry_request(call, self.capture, self.deadline, solver=True)
+            if response.prompt_feedback is not None:
+                raise RuntimeError(f"Provider blocked prompt: {response.prompt_feedback.block_reason}")
             candidates = response.candidates or []
-            if len(candidates) != 1 or candidates[0].finish_reason != types.FinishReason.STOP:
-                raise RuntimeError("Grounded worker did not return one complete answer")
+            if not candidates:
+                raise CandidateStageError(
+                    "transient_provider", "question_generation", "Grounded worker returned no candidates"
+                )
+            if len(candidates) != 1:
+                raise RuntimeError("Grounded worker returned multiple answer candidates")
+            finish_reason = candidates[0].finish_reason
+            if finish_reason in {None, types.FinishReason.FINISH_REASON_UNSPECIFIED}:
+                raise CandidateStageError(
+                    "transient_provider", "question_generation", "Grounded worker ended without a finish reason"
+                )
+            if finish_reason != types.FinishReason.STOP:
+                raise RuntimeError(f"Grounded worker ended with {finish_reason}")
             if candidates[0].content is None:
-                raise ValueError("Grounded worker returned no content")
+                raise CandidateStageError(
+                    "transient_provider", "question_generation", "Grounded worker returned no content"
+                )
             answer = "".join(part.text or "" for part in candidates[0].content.parts or [] if not part.thought)
             if not answer.strip():
-                raise ValueError("Grounded worker returned no answer")
+                raise CandidateStageError(
+                    "transient_provider", "question_generation", "Grounded worker returned no answer text"
+                )
+            return response, answer
+
+        try:
+            response, answer = await retry_request(call, self.capture, self.deadline, solver=True)
             record.update(
                 answer=answer,
                 grounding=[
                     candidate.grounding_metadata.model_dump(mode="json") if candidate.grounding_metadata else {}
-                    for candidate in candidates
+                    for candidate in response.candidates or []
                 ],
                 response=response.model_dump(mode="json", exclude_none=True),
                 status="completed",
