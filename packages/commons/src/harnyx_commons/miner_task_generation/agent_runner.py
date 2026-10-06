@@ -384,7 +384,7 @@ class GenerationAgentRunner:
     def __init__(
         self, *, project_id: str | None, judge: LlmProviderPort, openai_client: AsyncOpenAI | None = None
     ) -> None:
-        self._slots = asyncio.Semaphore(2)
+        self._slots = asyncio.Semaphore(20)
         self._source_fetcher = PublicSourceFetcher()
         self._judge = judge
         self._project_id = project_id

@@ -414,7 +414,8 @@ def test_invalid_retry_after_does_not_replace_original_provider_failure():
     assert retry_after(error) == 0
 
 
-async def test_author_roles_share_two_slots_across_candidates(monkeypatch):
+async def test_author_roles_share_twenty_slots_across_candidates(monkeypatch):
+    """Parallel candidates must not serialize behind a small cap or exceed the shared limit."""
     from harnyx_commons.miner_task_generation.agent_runner import GenerationAgentRunner
     from harnyx_commons.miner_task_generation.contracts import AgentResult
 
@@ -434,10 +435,10 @@ async def test_author_roles_share_two_slots_across_candidates(monkeypatch):
     await asyncio.gather(
         *(
             runner.invoke(role, "input", capture().session, monotonic() + 2)
-            for role in ["author", "reviewer", "analyst", "verifier"] * 2
+            for role in ["author", "reviewer", "analyst", "verifier"] * 6
         )
     )
-    assert maximum == 2
+    assert maximum == 20
 
 
 async def test_expired_deadline_admits_no_provider_request():
