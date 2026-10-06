@@ -3,6 +3,7 @@
 import asyncio
 import json
 import random
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from time import monotonic
 from uuid import uuid4
@@ -126,13 +127,14 @@ async def test_slots_start_concurrently_and_preserve_partial_success_without_rep
     assert len(error.value.result.candidates) == 2
 
 
-async def test_duplicate_question_remains_a_failed_original_slot():
+async def test_identical_finalized_questions_are_distinct_eligible_tasks():
     builder = MinerTaskDatasetBuilder(runner=SeedRunner())
     slots = Slots(duplicate=True)
     builder._pipeline = slots
     result = await builder.build_with_result(request())
-    assert len(result.finalized_tasks) == 1
-    assert [c.error_type for c in result.candidates].count("DuplicateQuestion") == 1
+    assert len(result.finalized_tasks) == 2
+    assert len({item.task.task_id for item in result.finalized_tasks}) == 2
+    assert all(candidate.status == "finalized" and candidate.error_type is None for candidate in result.candidates)
     assert len(slots.started) == 2
 
 
@@ -252,33 +254,106 @@ async def test_seed_failure_accounts_for_every_requested_slot():
     assert result.seed_attempted_calls == result.seed_missing_usage_calls == 2
 
 
-@pytest.mark.parametrize("confirmed", [True, False])
-async def test_equivalent_candidate_waits_for_acceptance_before_duplicate_decision(confirmed):
-    """Rejected publication releases the key; uncertain commits cannot authorize a duplicate."""
-    from harnyx_commons.miner_task_generation import BatchGenerationResult
-    from harnyx_commons.miner_task_generation.contracts import FinalizedTaskRejectedError
-
+async def test_blocked_publication_does_not_block_another_candidate():
+    """A slow publication must not delay an eligible peer with equivalent question text."""
     builder = MinerTaskDatasetBuilder(runner=SeedRunner())
     builder._pipeline = Slots(duplicate=True)
-    calls = []
     first_started = asyncio.Event()
+    peer_committed = asyncio.Event()
     release = asyncio.Event()
-    failure = FinalizedTaskRejectedError("slot expired") if confirmed else RuntimeError("commit uncertain")
+    accepted = []
+
+    async def accept(slot, finalized):
+        if not first_started.is_set():
+            first_started.set()
+            await release.wait()
+        accepted.append(slot)
+        peer_committed.set()
+
+    invocation = asyncio.create_task(builder.build_with_result(request(), on_finalized_task=accept))
+    try:
+        await asyncio.wait_for(first_started.wait(), 1)
+        await asyncio.wait_for(peer_committed.wait(), 1)
+        assert len(accepted) == 1 and not invocation.done()
+        release.set()
+        result = await asyncio.wait_for(invocation, 1)
+        assert set(accepted) == {0, 1}
+        assert len(result.finalized_tasks) == 2
+    finally:
+        release.set()
+        invocation.cancel()
+        with suppress(asyncio.CancelledError):
+            await invocation
+
+
+@pytest.mark.parametrize("outcome_kind", ["confirmed_rejection", "uncertain_commit", "cancellation"])
+async def test_concurrent_publication_preserves_committed_peer_and_usage(outcome_kind):
+    """Failures and shutdown must join callbacks without erasing a peer's committed output or paid calls."""
+    from harnyx_commons.llm.schema import LlmUsage
+    from harnyx_commons.miner_task_generation import BatchGenerationResult
+    from harnyx_commons.miner_task_generation.agent_runner import CallCapture
+    from harnyx_commons.miner_task_generation.contracts import FinalizedTaskRejectedError
+
+    class AccountedSlots(Slots):
+        async def run(self, seed, *, session, **kwargs):
+            capture = CallCapture(session, "solver", "gemini-3.8-flash", "vertex")
+            capture.attempted = 1
+            capture.account(LlmUsage(prompt_tokens=10, completion_tokens=5, web_search_calls=0))
+            try:
+                return await super().run(seed, session=session, **kwargs)
+            finally:
+                capture.finish()
+
+    builder = MinerTaskDatasetBuilder(runner=SeedRunner())
+    builder._pipeline = AccountedSlots(duplicate=True)
+    calls = []
+    committed = []
+    first_started = asyncio.Event()
+    peer_committed = asyncio.Event()
+    release = asyncio.Event()
+    callbacks_drained = []
     outcome = BatchGenerationResult(target_count=2)
+    failure = (
+        FinalizedTaskRejectedError("slot expired")
+        if outcome_kind == "confirmed_rejection"
+        else RuntimeError("commit uncertain")
+    )
 
     async def accept(slot, finalized):
         calls.append(slot)
-        if len(calls) == 1:
-            first_started.set()
-            await release.wait()
-            raise failure
+        try:
+            if len(calls) == 1:
+                first_started.set()
+                await release.wait()
+                if outcome_kind != "cancellation":
+                    raise failure
+            committed.append(slot)
+            peer_committed.set()
+        finally:
+            callbacks_drained.append(slot)
 
     invocation = asyncio.create_task(builder.build_with_result(request(), on_finalized_task=accept, outcome=outcome))
-    await asyncio.wait_for(first_started.wait(), 1)
-    release.set()
-    with pytest.raises(type(failure)) as caught:
-        await invocation
-    assert caught.value is failure
-    assert len(calls) == (2 if confirmed else 1)
-    assert len(outcome.finalized_tasks) == (1 if confirmed else 0)
-    assert [c.error_type for c in outcome.candidates].count("DuplicateQuestion") == (0 if confirmed else 1)
+    try:
+        await asyncio.wait_for(first_started.wait(), 1)
+        await asyncio.wait_for(peer_committed.wait(), 1)
+        peer_slot = committed[0]
+        if outcome_kind == "cancellation":
+            invocation.cancel()
+        release.set()
+        expected_error = asyncio.CancelledError if outcome_kind == "cancellation" else type(failure)
+        with pytest.raises(expected_error) as caught:
+            await asyncio.wait_for(invocation, 1)
+        if outcome_kind != "cancellation":
+            assert caught.value is failure
+            assert outcome.candidates[calls[0]].error_type == type(failure).__name__
+        assert outcome.candidates[peer_slot].finalized is not None
+        assert len(outcome.finalized_tasks) == (2 if outcome_kind == "cancellation" else 1)
+        assert set(callbacks_drained) == {0, 1}
+        assert outcome.tool_usage.llm.call_count == 2 and outcome.tool_usage.llm.prompt_tokens == 20
+        assert outcome.available_cost_usd > 0
+        assert all(candidate.attempted_calls == 1 for candidate in outcome.candidates)
+    finally:
+        release.set()
+        invocation.cancel()
+        with suppress(asyncio.CancelledError, RuntimeError):
+            await invocation

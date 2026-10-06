@@ -184,9 +184,7 @@ class MinerTaskDatasetBuilder:
         deadline: float,
         on_finalized_task: FinalizedTaskCallback | None,
     ) -> None:
-        finalized_questions: set[str] = set()
         acceptance_errors: list[Exception] = []
-        acceptance_lock = asyncio.Lock()
 
         async def generate(slot: int) -> None:
             session = sessions[slot]
@@ -202,58 +200,36 @@ class MinerTaskDatasetBuilder:
             )
             candidate.output_slot = slot
             if candidate.finalized is not None:
-                question = " ".join(candidate.finalized.task.query.text.split()).casefold()
+                cancellation = None
                 try:
-                    await acceptance_lock.acquire()
+                    if on_finalized_task is not None:
+                        finalized = candidate.finalized
+
+                        async def publish() -> None:
+                            await on_finalized_task(slot, finalized)
+
+                        publication = asyncio.create_task(publish())
+                        cancellation = await wait_for_owned_task(publication)
+                        publication.result()
                 except asyncio.CancelledError:
                     candidate.status = "operational_failure"
                     candidate.error_type = "CancelledError"
                     candidate.finalized = None
                     raise
-                try:
-                    if question in finalized_questions:
-                        candidate.finalized = None
-                        candidate.status = "operational_failure"
-                        candidate.error_type = "DuplicateQuestion"
-                    else:
-                        cancellation = None
-                        try:
-                            if on_finalized_task is not None:
-                                finalized = candidate.finalized
-
-                                async def publish() -> None:
-                                    await on_finalized_task(slot, finalized)
-
-                                publication = asyncio.create_task(publish())
-                                cancellation = await wait_for_owned_task(publication)
-                                publication.result()
-                        except asyncio.CancelledError:
-                            candidate.status = "operational_failure"
-                            candidate.error_type = "CancelledError"
-                            candidate.finalized = None
-                            raise
-                        except Exception as exc:
-                            # An arbitrary database error may follow a committed write.
-                            # Only a confirmed rejection releases the question to a peer.
-                            if not isinstance(exc, FinalizedTaskRejectedError):
-                                finalized_questions.add(question)
-                            acceptance_errors.append(exc)
-                            candidate.status = "operational_failure"
-                            candidate.error_type = type(exc).__name__
-                            candidate.finalized = None
-                            logger.error(
-                                "task_generation.acceptance.failed",
-                                extra={"data": {"task_id": session.task_id, "exception_type": type(exc).__name__}},
-                            )
-                            logger.debug("task_generation.acceptance.failure.details", exc_info=True)
-                            if not isinstance(exc, FinalizedTaskRejectedError):
-                                raise
-                        else:
-                            finalized_questions.add(question)
-                        if cancellation is not None:
-                            raise cancellation
-                finally:
-                    acceptance_lock.release()
+                except Exception as exc:
+                    acceptance_errors.append(exc)
+                    candidate.status = "operational_failure"
+                    candidate.error_type = type(exc).__name__
+                    candidate.finalized = None
+                    logger.error(
+                        "task_generation.acceptance.failed",
+                        extra={"data": {"task_id": session.task_id, "exception_type": type(exc).__name__}},
+                    )
+                    logger.debug("task_generation.acceptance.failure.details", exc_info=True)
+                    if not isinstance(exc, FinalizedTaskRejectedError):
+                        raise
+                if cancellation is not None:
+                    raise cancellation
             logger.info(
                 "task_generation.candidate.completed",
                 extra={"data": {"output_slot": slot, "outcome": candidate.status, "elapsed_ms": candidate.elapsed_ms}},
