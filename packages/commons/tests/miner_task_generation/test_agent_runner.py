@@ -16,7 +16,7 @@ from harnyx_commons.miner_task_generation.contracts import CandidateSession
 pytestmark = pytest.mark.anyio("asyncio")
 
 
-def openai_sse(status, *, code=None, answer="complete answer", summary=None):
+def openai_sse(status, *, code=None, answer="complete answer", summary=None, no_output=False):
     """Pinned Responses SDK fixtures; every physical attempt carries its own receipt."""
     response = {
         "id": "resp_offline",
@@ -37,7 +37,7 @@ def openai_sse(status, *, code=None, answer="complete answer", summary=None):
         "tool_usage": {"web_search": {"num_requests": 0}},
         "error": {"code": code, "message": "offline failure"} if code else None,
         "output": []
-        if status != "completed"
+        if status != "completed" or no_output
         else [
             {
                 "id": "msg_offline",
@@ -66,6 +66,53 @@ def openai_sse(status, *, code=None, answer="complete answer", summary=None):
         else {"type": f"response.{status}", "sequence_number": len(events), "response": response}
     )
     return "".join(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events).encode()
+
+
+@pytest.mark.parametrize("first_output", ["invalid_json", "blank", "no_final"])
+@pytest.mark.parametrize("exhaust", [False, True])
+async def test_model_output_failure_replays_once_without_committing_failed_output(monkeypatch, first_output, exhaust):
+    """Malformed or unfinished output must recover without losing receipts or poisoning agent history."""
+    import httpx2
+    from agents.exceptions import ModelBehaviorError
+    from openai import AsyncOpenAI
+
+    from harnyx_commons.miner_task_generation.agent_runner import GenerationAgentRunner
+
+    monkeypatch.setattr("harnyx_commons.miner_task_generation.agent_runner.backoff_ms", lambda *args: 0)
+    requests = []
+    role = "reviewer" if first_output == "invalid_json" else "analyst"
+    valid = json.dumps({"pass": True, "feedback": ""}) if role == "reviewer" else "complete answer"
+
+    def respond(request):
+        requests.append(json.loads(request.content))
+        failed = len(requests) == 1 or exhaust
+        body = openai_sse(
+            "completed",
+            answer=("{" if first_output == "invalid_json" else " ") if failed else valid,
+            no_output=failed and first_output == "no_final",
+        )
+        return httpx2.Response(200, headers={"content-type": "text/event-stream"}, content=body)
+
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(respond)) as http:
+        client = AsyncOpenAI(api_key="offline-test", max_retries=0, http_client=http)
+        runner = GenerationAgentRunner(project_id=None, judge=None, openai_client=client)
+        session = capture().session
+        if exhaust:
+            with pytest.raises(ModelBehaviorError):
+                await runner._invoke_openai(role, "exact input", session, monotonic() + 5)
+        else:
+            result = await runner._invoke_openai(role, "exact input", session, monotonic() + 5)
+            if role == "reviewer":
+                assert json.loads(result.answer) == json.loads(valid)
+            else:
+                assert result.answer == valid
+            assert [item["attempt_status"] for item in result.provider_responses] == ["failed", "completed"]
+    assert len(requests) == 2
+    inputs = [{key: value for key, value in request.items() if key != "prompt_cache_key"} for request in requests]
+    assert inputs[0] == inputs[1]
+    assert session.attempted_calls == session.tool_usage.llm.call_count == 2
+    assert session.tool_usage.llm.prompt_tokens == 20
+    assert session.missing_usage_calls == 0 and session.author_history == []
 
 
 @pytest.mark.parametrize(

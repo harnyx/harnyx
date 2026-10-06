@@ -1,4 +1,5 @@
 import asyncio
+import http.client
 import io
 import json
 import socket
@@ -195,6 +196,37 @@ class _AddressConnection:
 
     def close(self) -> None:
         self.closed = True
+
+
+def test_connection_close_source_preserves_peer_validation_and_complete_body(monkeypatch):
+    """HTTPConnection detaches closing sockets; a safe public document must still reach reference generation."""
+    body = b"<html>complete public evidence</html>"
+
+    class Socket(_FetchedSocket):
+        def makefile(self, _mode):
+            return io.BytesIO(
+                b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/html\r\nContent-Length: "
+                + str(len(body)).encode()
+                + b"\r\n\r\n"
+                + body
+            )
+
+        def sendall(self, _data):
+            pass
+
+        def close(self):
+            pass
+
+    class Connection(http.client.HTTPConnection):
+        def connect(self):
+            self.sock = Socket("93.184.216.34")
+
+    monkeypatch.setattr(source_fetch, "_public_addresses", lambda *_args: ("93.184.216.34",))
+    monkeypatch.setattr(source_fetch, "_PinnedHTTPSConnection", lambda *args, **kwargs: Connection("example.com"))
+
+    fetched = _fetch_complete_body("https://example.com/report", "html")
+
+    assert fetched.body == body and fetched.media_type == "text/html"
 
 
 def test_fetch_tries_next_validated_public_address_after_connection_failure(

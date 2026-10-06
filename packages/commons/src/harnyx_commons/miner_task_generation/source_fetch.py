@@ -163,9 +163,6 @@ def _fetch_complete_body(initial_url: str, document_kind: DocumentKind) -> _Fetc
         try:
             if _public_addresses(host, port) != addresses:
                 raise SourceFetchError("source_fetch_rejected", "DNS resolution changed during the request")
-            peer = connection.sock.getpeername()[0] if connection.sock is not None else None
-            if peer not in addresses:
-                raise SourceFetchError("source_fetch_rejected", "connected peer was not in the validated DNS set")
             if response.status in {301, 302, 303, 307, 308}:
                 location = response.getheader("Location")
                 if not location:
@@ -234,6 +231,9 @@ def _request_from_public_address(
             connection.close()
             raise
         try:
+            peer = connection.sock.getpeername()[0] if connection.sock is not None else None
+            if peer not in addresses:
+                raise SourceFetchError("source_fetch_rejected", "connected peer was not in the validated DNS set")
             connection.request(
                 "GET",
                 path,

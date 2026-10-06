@@ -18,6 +18,7 @@ from typing import Any, TypeVar, cast
 import httpx
 import httpx2
 from agents import Agent, ModelSettings, OpenAIResponsesModel, RunConfig, Runner, WebSearchTool
+from agents.exceptions import ModelBehaviorError
 from agents.items import TResponseInputItem
 from agents.result import RunResultStreaming
 from agents.stream_events import RawResponsesStreamEvent, StreamEvent
@@ -230,6 +231,8 @@ def provider_status(exc: Exception) -> int | None:
 
 
 def transient_error(exc: Exception) -> bool:
+    if isinstance(exc, ModelBehaviorError):
+        return True
     if isinstance(exc, OpenAIStreamError):
         return exc.code in {"server_error", "rate_limit_exceeded"}
     if isinstance(exc, LlmProviderError) and isinstance(exc.__cause__, Exception):
@@ -506,7 +509,7 @@ class GenerationAgentRunner:
                 final = result.final_output
                 answer = final.model_dump_json(by_alias=True) if isinstance(final, BaseModel) else final
                 if not isinstance(answer, str) or not answer.strip():
-                    raise ValueError("Agent did not return a complete answer")
+                    raise ModelBehaviorError("Agent did not return a complete answer")
                 if role == "author":
                     session.author_history = result.to_input_list()
                 return answer

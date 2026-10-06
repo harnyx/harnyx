@@ -140,6 +140,64 @@ async def test_repeated_stream_without_finish_reason_stops_at_deadline(monkeypat
     assert observed.tool_usage.search_tool.call_count == observed.attempted
 
 
+@pytest.mark.parametrize("empty_answer", ["blank", "thought_only", "signature_only"])
+async def test_stop_without_answer_or_tool_call_retries_before_committing_to_adk(monkeypatch, empty_answer):
+    """A normal finish marker alone must not turn a reasoning-only response into a completed solver turn."""
+    monkeypatch.setattr("harnyx_commons.miner_task_generation.agent_runner.backoff_ms", lambda *args: 0)
+    calls = []
+
+    class Models:
+        async def generate_content_stream(self, **kwargs):
+            calls.append(kwargs)
+
+            async def events():
+                if len(calls) == 1:
+                    response = chunk(" ", stop=True)
+                    if empty_answer == "thought_only":
+                        response.candidates[0].content.parts = [types.Part(text="discarded reasoning", thought=True)]
+                    elif empty_answer == "signature_only":
+                        response.candidates[0].content.parts = [types.Part(thought_signature=b"signature")]
+                    yield response
+                else:
+                    yield chunk("complete answer", stop=True)
+
+            return events()
+
+    observed = capture()
+    proxy = RecordedModels(SimpleNamespace(aio=SimpleNamespace(models=Models())), observed, monotonic() + 2)
+    stream = await proxy.generate_content_stream(
+        model="gemini-3.8-flash", contents=[], config=types.GenerateContentConfig()
+    )
+    committed = [item async for item in stream]
+    assert calls[0] == calls[1] and observed.attempted == 2
+    assert committed[0].candidates[0].content.parts[0].text == "complete answer"
+    assert [item["attempt_status"] for item in observed.responses] == ["failed", "completed"]
+    assert observed.tool_usage.llm.prompt_tokens == 20
+
+
+async def test_streamed_tool_call_is_complete_without_answer_text():
+    """Solver tool turns must reach ADK even though they intentionally contain no final answer."""
+    class Models:
+        async def generate_content_stream(self, **kwargs):
+            async def events():
+                response = chunk("", stop=True)
+                response.candidates[0].content.parts = [
+                    types.Part(function_call=types.FunctionCall(name="search", args={}))
+                ]
+                yield response
+
+            return events()
+
+    observed = capture()
+    proxy = RecordedModels(SimpleNamespace(aio=SimpleNamespace(models=Models())), observed, monotonic() + 2)
+    stream = await proxy.generate_content_stream(
+        model="gemini-3.8-flash", contents=[], config=types.GenerateContentConfig()
+    )
+    committed = [item async for item in stream]
+    assert committed[0].candidates[0].content.parts[0].function_call.name == "search"
+    assert observed.attempted == 1
+
+
 @pytest.mark.parametrize(
     "block_reason", [None, types.BlockedReason.BLOCKED_REASON_UNSPECIFIED, types.BlockedReason.SAFETY]
 )

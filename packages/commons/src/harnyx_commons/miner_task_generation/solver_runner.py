@@ -97,6 +97,19 @@ class RecordedModels:
                     raise CandidateStageError(
                         "transient_provider", "question_generation", "Provider stream ended without a finish reason"
                     )
+                parts = [
+                    part
+                    for chunk in chunks
+                    for candidate in chunk.candidates or []
+                    if candidate.content is not None
+                    for part in candidate.content.parts or []
+                ]
+                if not any(
+                    part.function_call is not None or (not part.thought and (part.text or "").strip()) for part in parts
+                ):
+                    raise CandidateStageError(
+                        "transient_provider", "question_generation", "Provider stream returned no answer or tool call"
+                    )
                 return chunks
             finally:
                 if latest_usage is not None:
