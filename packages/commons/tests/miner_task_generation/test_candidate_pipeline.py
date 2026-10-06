@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from time import monotonic
 
 import pytest
 
 from harnyx_commons.domain.miner_task import ReferenceAnswer
+from harnyx_commons.llm.schema import LlmUsage
 from harnyx_commons.miner_task_fast_scoring import FastJudgeAssessment
+from harnyx_commons.miner_task_generation.agent_runner import CallCapture
 from harnyx_commons.miner_task_generation.candidate_pipeline import CandidatePipeline
 from harnyx_commons.miner_task_generation.contracts import (
     AgentResult,
     BatchTerminalGenerationError,
+    CandidateResult,
     CandidateSession,
     QuestionDraft,
     ReviewDecision,
@@ -38,6 +42,7 @@ class FakeRunner:
         self.reference_calls = 0
         self.corrected_reference = False
         self.reject_reviews = False
+        self.reference_inputs = []
 
     async def invoke(self, role, message, session, deadline):
         self.calls.append((role, session.cycle, message))
@@ -67,6 +72,7 @@ class FakeRunner:
         return AgentResult(answer="Research report")
 
     async def assess(self, draft, result, session, deadline):
+        self.calls.append(("assessment", session.cycle, result.answer))
         return FastJudgeAssessment.model_validate(
             {
                 "expected_components": [{"component_id": "bird", "is_correct": result.answer == "kākāpō"}],
@@ -77,9 +83,49 @@ class FakeRunner:
     async def derive_reference(self, draft, verification, session, deadline):
         self.reference_calls += 1
         self.calls.append(("reference", session.cycle, draft.question))
+        self.reference_inputs.append((draft, verification, list(session.source_support)))
         return TerminalReference(
             reference_answer=ReferenceAnswer(text=draft.answer), factual_correction=self.corrected_reference
         )
+
+
+class RecordingRunner(FakeRunner):
+    """Use the real accounting owner around deterministic provider receipts."""
+
+    def __init__(self, *, analyst_failure=None, **kwargs):
+        super().__init__(**kwargs)
+        self.captures = []
+        self.analyst_failure = analyst_failure
+        self.analyst_entered = asyncio.Event()
+
+    @contextmanager
+    def capture(self, role, session):
+        capture = CallCapture(session, role, "gpt-6-luna", "openai")
+        self.captures.append(capture)
+        capture.attempted = 1
+        capture.account(LlmUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15, web_search_calls=0))
+        try:
+            yield
+        finally:
+            capture.finish()
+
+    async def invoke(self, role, message, session, deadline):
+        with self.capture(role, session):
+            if role == "analyst" and self.analyst_failure is not None:
+                self.calls.append((role, session.cycle, message))
+                self.analyst_entered.set()
+                if self.analyst_failure == "exception":
+                    raise ValueError("analyst interrupted")
+                await asyncio.Event().wait()
+            return await super().invoke(role, message, session, deadline)
+
+    async def assess(self, draft, result, session, deadline):
+        with self.capture("assessment", session):
+            return await super().assess(draft, result, session, deadline)
+
+    async def derive_reference(self, draft, verification, session, deadline):
+        with self.capture("reference", session):
+            return await super().derive_reference(draft, verification, session, deadline)
 
 
 def seed() -> Seed:
@@ -245,8 +291,10 @@ async def test_analyst_excludes_abandoned_attempts_and_keeps_workers_once_at_res
                     assert response["candidates"][0]["grounding_metadata"]["web_search_queries"] == ["bird query"]
             return await super().invoke(role, message, session, deadline)
 
-    result = await run(Runner())
+    runner = Runner(success_cycles={1})
+    result = await run(runner)
     assert result.status == "finalized"
+    assert [cycle for role, cycle, _ in runner.calls if role == "analyst"] == [1]
     assert "abandoned-wrong-answer" in str(captures[0].responses)
     assert captures[0].usage_records == captures[0].attempted == 4
     assert captures[0].tool_usage.llm.prompt_tokens == 40
@@ -260,6 +308,8 @@ async def test_parallel_blind_solvers_and_reference_after_verified_miss():
     roles = [role for role, _, _ in runner.calls]
     assert roles[-2:] == ["verifier", "reference"]
     assert runner.reference_calls == 1
+    assert [cycle for role, cycle, _ in runner.calls if role == "analyst"] == [1]
+    assert result.cycles[-1].analysis is None
     for role, _, message in runner.calls:
         if role in {"solver", "grounded_solver"}:
             assert "kākāpō" not in message and "source_support" not in message
@@ -271,6 +321,8 @@ async def test_five_cycles_keep_exhausted_draft_without_publication():
     assert result.status == "exhausted" and result.finalized is None
     assert len(result.cycles) == 5 and runner.reference_calls == 1
     assert not any(role == "verifier" for role, _, _ in runner.calls)
+    assert [cycle for role, cycle, _ in runner.calls if role == "analyst"] == [1, 2, 3, 4]
+    assert result.cycles[-1].analysis is None
 
 
 @pytest.mark.parametrize("both_miss", [False, True])
@@ -375,6 +427,10 @@ async def test_verifier_rejection_feedback_reaches_next_author_without_solver_tr
     assert result.status == "exhausted"
     second_input = next(json.loads(message) for role, cycle, message in runner.calls if role == "author" and cycle == 2)
     assert second_input["shared_context"]["answer_verification"] == {"pass": False, "feedback": "repair scope"}
+    assert second_input["shared_context"]["solver_analysis"] == result.cycles[0].analysis == "Research report"
+    roles = [role for role, cycle, _ in runner.calls if cycle == 1]
+    assert roles.index("verifier") < roles.index("analyst")
+    assert [cycle for role, cycle, _ in runner.calls if role == "analyst"] == [1, 2, 3, 4]
     for role, _, message in runner.calls:
         if role == "verifier":
             packet = json.loads(message)
@@ -413,4 +469,186 @@ async def test_judge_failure_settles_peer_and_retains_completed_assessment():
     result = await run(runner)
     assert result.status == "operational_failure" and runner.peer_judge_finished
     assert len(result.cycles[0].assessments) == len(result.cycles[0].f1_scores) == 1
-    assert not any(role in {"verifier", "reference"} for role, _, _ in runner.calls)
+    assert not any(role in {"analyst", "verifier", "reference"} for role, _, _ in runner.calls)
+    assert result.cycles[0].analysis is None
+
+
+async def test_terminal_cycle_skips_analyst_and_accounts_only_executed_work(caplog):
+    """An immediately approved task must not pay for unused revision research."""
+    caplog.set_level("DEBUG", logger="harnyx_commons.miner_task_generation")
+    runner = RecordingRunner()
+    result = await run(runner)
+    assert result.status == "finalized"
+    assert [role for role, _, _ in runner.calls] == [
+        "author",
+        "reviewer",
+        "solver",
+        "grounded_solver",
+        "assessment",
+        "assessment",
+        "verifier",
+        "reference",
+    ]
+    assert result.cycles[0].analysis is None
+    assert [stage.stage for stage in result.stage_summaries].count("analyst") == 0
+    assert result.attempted_calls == result.tool_usage.llm.call_count == len(runner.captures) == 8
+    assert result.missing_usage_calls == 0
+    assert result.tool_usage.llm.total_tokens == 15 * len(runner.captures)
+    assert result.tool_usage.actual_total_cost_usd == pytest.approx(
+        sum(capture.tool_usage.actual_total_cost_usd for capture in runner.captures)
+    )
+    draft, verification, sources = runner.reference_inputs[0]
+    assert draft == result.cycles[0].draft and verification == result.cycles[0].verification
+    assert verification.passed and runner.reference_calls == 1
+    assert sources == [*seed().supporting_sources, *draft.source_support]
+    records = [
+        record.data["record"] for record in caplog.records if record.message == "task_generation.cycle.completed"
+    ]
+    assert len(records) == 1 and records[0]["analysis"] is None
+    assert set(records[0]["solver_results"]) == {"solver", "grounded_solver"}
+
+
+async def test_one_perfect_solver_continues_with_analysis_after_both_assessments():
+    """One scored miss cannot stop a task or omit the next author's research."""
+
+    class OnePerfectRunner(FakeRunner):
+        async def invoke(self, role, message, session, deadline):
+            result = await super().invoke(role, message, session, deadline)
+            if role == "solver" and session.cycle == 1:
+                result.answer = "kea"
+            return result
+
+    runner = OnePerfectRunner(success_cycles={1})
+    result = await run(runner)
+    assert result.status == "finalized" and len(result.cycles) == 2
+    assert sorted(result.cycles[0].f1_scores.values()) == [0, 1]
+    assert [cycle for role, cycle, _ in runner.calls if role == "analyst"] == [1]
+    roles = [role for role, cycle, _ in runner.calls if cycle == 1]
+    assert roles[-3:] == ["assessment", "assessment", "analyst"]
+    assert "verifier" not in roles
+    context = next(
+        json.loads(message)["shared_context"]
+        for role, cycle, message in runner.calls
+        if role == "author" and cycle == 2
+    )
+    assert context["solver_analysis"] == result.cycles[0].analysis == "Research report"
+
+
+@pytest.mark.parametrize("outcome", ["approval", "perfect", "rejection"])
+async def test_fifth_cycle_skips_analyst_and_preserves_stop_outcome(outcome, caplog):
+    """Cycle five still verifies paired misses and gives approval precedence."""
+
+    class FifthCycleRunner(FakeRunner):
+        async def invoke(self, role, message, session, deadline):
+            if role == "verifier":
+                self.reject_verifier = outcome == "rejection" or session.cycle < 5
+            return await super().invoke(role, message, session, deadline)
+
+    caplog.set_level("DEBUG", logger="harnyx_commons.miner_task_generation")
+    runner = FifthCycleRunner(success_cycles=set(range(1, 6)) if outcome == "perfect" else set())
+    result = await run(runner)
+    assert len(result.cycles) == 5
+    assert result.status == ("finalized" if outcome == "approval" else "exhausted")
+    assert (result.finalized is not None) == (outcome == "approval")
+    assert [cycle for role, cycle, _ in runner.calls if role == "analyst"] == [1, 2, 3, 4]
+    assert result.cycles[-1].analysis is None and runner.reference_calls == 1
+    assert [cycle for role, cycle, _ in runner.calls if role == "verifier"] == (
+        [] if outcome == "perfect" else [1, 2, 3, 4, 5]
+    )
+    records = [
+        record.data["record"] for record in caplog.records if record.message == "task_generation.cycle.completed"
+    ]
+    assert [record["cycle"] for record in records] == [1, 2, 3, 4, 5]
+    assert all(record["analysis"] == "Research report" for record in records[:-1])
+    assert records[-1]["analysis"] is None
+
+
+async def test_assessments_still_run_in_parallel():
+    """Moving assessments must not serialize the two independent judge calls."""
+    both_entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class GatedRunner(FakeRunner):
+        async def assess(self, draft, result, session, deadline):
+            self.started.add(result.answer)
+            self.assessment_count = getattr(self, "assessment_count", 0) + 1
+            if self.assessment_count == 2:
+                both_entered.set()
+            await release.wait()
+            return await super().assess(draft, result, session, deadline)
+
+    task = asyncio.create_task(run(GatedRunner()))
+    try:
+        await asyncio.wait_for(both_entered.wait(), 1)
+        assert not task.done()
+        release.set()
+        assert (await task).status == "finalized"
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_verifier_failure_retains_scores_without_analyst_or_reference():
+    """Unfinished verification cannot become a miss approval or a revision."""
+
+    class FailedVerifierRunner(FakeRunner):
+        async def invoke(self, role, message, session, deadline):
+            if role == "verifier":
+                self.calls.append((role, session.cycle, message))
+                raise ValueError("invalid verification")
+            return await super().invoke(role, message, session, deadline)
+
+    runner = FailedVerifierRunner()
+    result = await run(runner)
+    assert result.status == "operational_failure" and result.error_type == "ValueError"
+    assert set(result.cycles[0].assessments) == {"solver", "grounded_solver"}
+    assert set(result.cycles[0].f1_scores) == {"solver", "grounded_solver"}
+    assert result.cycles[0].analysis is None and result.cycles[0].verification is None
+    assert not any(role in {"analyst", "reference"} for role, _, _ in runner.calls)
+    assert sum(role == "author" for role, _, _ in runner.calls) == 1
+
+
+@pytest.mark.parametrize("failure", ["exception", "deadline", "cancellation"])
+async def test_failed_continuing_analyst_retains_evidence_and_real_accounting(failure):
+    """Failed paid revision work keeps settled scores, feedback and real receipts."""
+    runner = RecordingRunner(reject_verifier=True, analyst_failure=failure)
+    result = CandidateResult(seed=seed(), mode="plain_text", status="operational_failure")
+    task = asyncio.create_task(
+        CandidatePipeline(runner=runner).run(
+            seed(),
+            mode="plain_text",
+            fast=False,
+            session=CandidateSession(task_id="analyst-failure", effective_date=datetime.now(UTC).date()),
+            deadline=monotonic() + (0.2 if failure == "deadline" else 10),
+            result=result,
+        )
+    )
+    try:
+        await asyncio.wait_for(runner.analyst_entered.wait(), 1)
+        if failure == "cancellation":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            assert await task is result
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert result.status == "operational_failure"
+    assert (
+        result.error_type
+        == {"exception": "ValueError", "deadline": "TimeoutError", "cancellation": "CancelledError"}[failure]
+    )
+    cycle = result.cycles[0]
+    assert set(cycle.solver_results) == set(cycle.assessments) == set(cycle.f1_scores) == {"solver", "grounded_solver"}
+    assert cycle.verification is not None and not cycle.verification.passed
+    assert cycle.analysis is None
+    assert [role for role, _, _ in runner.calls][-2:] == ["verifier", "analyst"]
+    assert runner.reference_calls == 0 and sum(role == "author" for role, _, _ in runner.calls) == 1
+    analyst = next(stage for stage in result.stage_summaries if stage.stage == "analyst")
+    captured = runner.captures[-1]
+    assert analyst.outcome == "failed" and analyst.attempted_calls == captured.attempted == 1
+    assert analyst.tool_usage == captured.tool_usage
+    assert analyst.available_cost_usd == captured.available_cost_usd > 0
+    assert result.attempted_calls == result.tool_usage.llm.call_count == len(runner.captures)
+    assert result.missing_usage_calls == 0

@@ -195,37 +195,6 @@ class CandidatePipeline:
             record.format_results = {
                 role: format_assessment(answer.answer, schema) for role, answer in record.solver_results.items()
             }
-            analysis_packet = {
-                "seed_origin": seed_origin(result.seed),
-                "current_draft": draft.model_dump(),
-                **contract,
-                "solver_results": {
-                    role: {
-                        **answer.model_dump(mode="json", exclude={"search_worker_responses"}),
-                        "provider_responses": answer.evidence_responses(),
-                        "search_worker_responses": [
-                            {
-                                **{key: value for key, value in worker.items() if key not in {"response", "grounding"}},
-                                **(
-                                    {
-                                        "response_reference": (
-                                            f"task:{session.task_id}:cycle:{cycle}#/solver_results/{role}/"
-                                            f"provider_responses/{worker['provider_response_index']}/response"
-                                        ),
-                                    }
-                                    if "provider_response_index" in worker
-                                    else {}
-                                ),
-                            }
-                            for worker in answer.search_worker_responses
-                        ],
-                    }
-                    for role, answer in record.solver_results.items()
-                },
-            }
-            analysis_packet["evidence_file"] = f"task:{session.task_id}:cycle:{cycle}"
-            analysis_packet["trace_locations"] = solver_trace_locations(record, session)
-            record.analysis = (await self._runner.invoke("analyst", encode(analysis_packet), session, deadline)).answer
             assessment_tasks = {
                 role: asyncio.create_task(self._runner.assess(draft, record.solver_results[role], session, deadline))
                 for role in SOLVER_ROLES
@@ -240,11 +209,50 @@ class CandidatePipeline:
             if paired_miss:
                 verification = await self._runner.invoke("verifier", encode(packet), session, deadline)
                 record.verification = ReviewDecision.model_validate_json(verification.answer)
+            approved = record.verification is not None and record.verification.passed
+            if not approved and cycle < MAX_CYCLES:
+                analysis_packet = {
+                    "seed_origin": seed_origin(result.seed),
+                    "current_draft": draft.model_dump(),
+                    **contract,
+                    "solver_results": {
+                        role: {
+                            **answer.model_dump(mode="json", exclude={"search_worker_responses"}),
+                            "provider_responses": answer.evidence_responses(),
+                            "search_worker_responses": [
+                                {
+                                    **{
+                                        key: value
+                                        for key, value in worker.items()
+                                        if key not in {"response", "grounding"}
+                                    },
+                                    **(
+                                        {
+                                            "response_reference": (
+                                                f"task:{session.task_id}:cycle:{cycle}#/solver_results/{role}/"
+                                                f"provider_responses/{worker['provider_response_index']}/response"
+                                            ),
+                                        }
+                                        if "provider_response_index" in worker
+                                        else {}
+                                    ),
+                                }
+                                for worker in answer.search_worker_responses
+                            ],
+                        }
+                        for role, answer in record.solver_results.items()
+                    },
+                }
+                analysis_packet["evidence_file"] = f"task:{session.task_id}:cycle:{cycle}"
+                analysis_packet["trace_locations"] = solver_trace_locations(record, session)
+                record.analysis = (
+                    await self._runner.invoke("analyst", encode(analysis_packet), session, deadline)
+                ).answer
             logger.debug(
                 "task_generation.cycle.completed",
                 extra={"data": {"task_id": session.task_id, "record": record.model_dump(mode="json")}},
             )
-            if record.verification is not None and record.verification.passed:
+            if approved:
                 result.status = "finalized"
                 break
             if cycle == MAX_CYCLES:

@@ -75,6 +75,7 @@ async def test_full_candidate_lifecycle_renders_public_reference_from_registered
         assert prompt["question"] == "What value does Alpha have in the named report?"
         assert {"url": "https://example.org/report", "evidence": "Alpha value 1200"} in prompt["source_support"]
         assert "solver-private-trace" not in kwargs["prompt"]
+        assert prompt["verification"] == {"pass": True, "feedback": ""}
         proof = ReferenceProof(
             status="finalized",
             answer_text=f"{terminal_value} [[1]]" if mode == "plain_text" else None,
@@ -119,6 +120,7 @@ async def test_full_candidate_lifecycle_renders_public_reference_from_registered
 
     class Runner:
         async def invoke(self, role, message, session, deadline):
+            assert role != "analyst"
             if role == "author":
                 payload = dict(
                     question="What value does Alpha have in the named report?",
@@ -173,6 +175,7 @@ async def test_full_candidate_lifecycle_renders_public_reference_from_registered
         session=CandidateSession(task_id="e2e", effective_date=datetime.now(UTC).date()),
         deadline=monotonic() + (0.1 if comparison == "deadline" else 5),
     )
+    assert result.cycles[-1].analysis is None
     if comparison in {"malformed", "provider", "deadline"}:
         assert result.status == "operational_failure" and result.finalized is None
         return
