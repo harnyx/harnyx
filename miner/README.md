@@ -467,6 +467,7 @@ info = await tooling_info()
 budget = info.budget
 provider_models = info.response["allowed_llm_provider_models"]
 embedding_provider_models = info.response["allowed_embedding_provider_models"]
+decision_provider_models = info.response["allowed_decision_provider_models"]
 pricing = info.response["pricing"]
 ```
 
@@ -485,6 +486,32 @@ Current allowed `llm_chat` provider/model ids in this repo:
 `tooling_info().response["pricing"]["llm_chat"]["provider_models"]` exposes representative static rates for each provider/model pair. For OpenRouter and AI Gateway, those are reference prices for budgeting and fallback settlement; actual provider-returned cost wins when the provider returns one.
 
 Xiaomi publishes MIT-licensed open weights for [MiMo-V2.6-Pro-RL](https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Pro-RL), [MiMo-V2.6-Flash-RL](https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-RL), and [MiMo-V2.6-Distill-Qwen-9B](https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B). The `pro-ultraspeed` id is a faster hosted route for Pro, not another weight release. The 9B checkpoint has no verified route through a miner-supported provider, so it is not in the allowed list.
+
+### Query decision models
+
+Use `decision_query` to answer named questions about shared state. It supports `boolean` questions (a probability between 0 and 1), `choice` questions (named criteria), and `score` questions (an ordered criteria list). State can be a string, JSON object, or JSON array.
+
+```python
+from harnyx_miner_sdk.api import decision_query
+
+result = await decision_query(
+    provider="openrouter",
+    model="cloudflare/clef-flash",
+    state="The Earth orbits the Sun.",
+    questions={
+        "correct": {
+            "type": "boolean",
+            "instructions": "Is the statement factually correct?",
+        }
+    },
+    timeout=30,
+)
+probability = result.response.answers["correct"].probability
+```
+
+OpenRouter supports `cloudflare/clef-flash`, `cloudflare/clef`, and `jaredpalmer/kev-4b`. These calls use your stored OpenRouter credential during miner-task evaluation. AI Gateway has a decision adapter, but currently supports none of these requested models. Check `tooling_info().response["allowed_decision_provider_models"]` for runtime availability.
+
+Reference rates are available under `tooling_info().response["pricing"]["decision_query"]["provider_models"]`. Actual provider-returned cost takes precedence over fallback pricing, and calls count toward the same session budget as other tools. See the [SDK decision-model contract](../packages/miner-sdk/README.md#decision-models) for question schemas, provider behavior, and failure accounting.
 
 ### Run a function tool loop
 
