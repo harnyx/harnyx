@@ -6,7 +6,12 @@ from harnyx_commons.config.llm import LlmSettings
 from harnyx_commons.tools.decision_models import DecisionQueryRequest
 from harnyx_commons.tools.invocation_clients import OpenRouterDecisionProvider
 
-pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.expensive,
+    pytest.mark.anyio("asyncio"),
+    pytest.mark.flaky(reruns=1),
+]
 
 
 @pytest.mark.parametrize("model", ["cloudflare/clef-flash", "cloudflare/clef", "jaredpalmer/kev-4b"])

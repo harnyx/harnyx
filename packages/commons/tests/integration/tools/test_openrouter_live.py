@@ -18,6 +18,7 @@ from harnyx_commons.llm.schema import (
     LlmMessage,
     LlmMessageContentPart,
     LlmRequest,
+    LlmResponse,
     LlmThinkingConfig,
     LlmTool,
 )
@@ -367,6 +368,12 @@ async def test_openrouter_two_turn_function_tool_loop_with_reasoning_replay_live
     assert second.raw_text
 
 
+def _assert_not_truncated(response: LlmResponse, *, model: str) -> None:
+    assert response.finish_reason != "length", (
+        f"OpenRouter contract response from {model} exhausted its output budget: {response.usage}"
+    )
+
+
 @pytest.mark.parametrize("model", NEW_OPENROUTER_MODELS)
 async def test_new_openrouter_model_exact_route_contract_live(model: str) -> None:
     settings = LlmSettings()
@@ -398,7 +405,8 @@ async def test_new_openrouter_model_exact_route_contract_live(model: str) -> Non
         "provider": "openrouter",
         "model": model,
         "temperature": 0.0,
-        "max_output_tokens": 1024,
+        # Reasoning shares this safety budget with the tool call and visible output.
+        "max_output_tokens": 4096,
         "thinking": LlmThinkingConfig(enabled=True),
         "timeout": 180.0,
     }
@@ -408,6 +416,7 @@ async def test_new_openrouter_model_exact_route_contract_live(model: str) -> Non
 
     try:
         direct = await provider.invoke(LlmRequest(messages=direct_messages, **common))
+        _assert_not_truncated(direct, model=model)
         first = await provider.invoke(
             LlmRequest(
                 messages=(user_message,),
@@ -418,8 +427,12 @@ async def test_new_openrouter_model_exact_route_contract_live(model: str) -> Non
                 **common,
             )
         )
+        _assert_not_truncated(first, model=model)
         calls = first.choices[0].message.tool_calls
-        assert calls and calls[0].id
+        assert calls and calls[0].id, (
+            f"Expected a tool call from {model}; finish_reason={first.finish_reason!r}, "
+            f"usage={first.usage}, text={first.raw_text!r}"
+        )
         second = await provider.invoke(
             LlmRequest(
                 messages=(
@@ -444,6 +457,7 @@ async def test_new_openrouter_model_exact_route_contract_live(model: str) -> Non
                 **common,
             )
         )
+        _assert_not_truncated(second, model=model)
     finally:
         await provider.aclose()
 
