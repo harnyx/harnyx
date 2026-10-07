@@ -632,3 +632,37 @@ def _request(
         reasoning_effort=reasoning_effort,
         retry_policy=retry_policy,
     )
+
+
+async def test_decision_native_transport_and_client_ownership() -> None:
+    import json
+
+    from harnyx_commons.llm.providers.openrouter import OpenRouterDecisionClient
+
+    captured: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "model": "cloudflare/clef-flash",
+                "answers": {"b": {"type": "noul", "noul": 0.9}},
+                "usage": {"input_tokens": 12, "output_tokens": 1, "cost": 0.002},
+            },
+        )
+
+    async with httpx.AsyncClient(
+        base_url="https://openrouter.ai/api/alpha/", transport=httpx.MockTransport(handle)
+    ) as http:
+        client = OpenRouterDecisionClient(model="cloudflare/clef-flash", api_key=SecretStr("private-key"), client=http)
+        result = await client.query("state", {"b": {"type": "boolean", "instructions": "?"}})
+        assert str(captured[0].url) == "https://openrouter.ai/api/alpha/decisions"
+        assert captured[0].headers["Authorization"] == "Bearer private-key"
+        assert json.loads(captured[0].content)["questions"]["b"]["type"] == "noul"
+        assert result.raw_payload["usage"] == {"input_tokens": 12, "output_tokens": 1, "cost": 0.002}
+        await client.aclose()
+        assert not http.is_closed
+    owned = OpenRouterDecisionClient(model="cloudflare/clef-flash", api_key=SecretStr("private-key"))
+    await owned.aclose()
+    assert owned.client is not None and owned.client.is_closed

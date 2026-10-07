@@ -11,6 +11,8 @@ from uuid import UUID
 
 from harnyx_commons.json_types import JsonValue
 from harnyx_commons.platform_tool_proxy import PLATFORM_TOOL_PROXY_EXECUTE_TRANSPORT_TIMEOUT_SECONDS
+from harnyx_commons.tools.decision_models import DecisionQueryRequest
+from harnyx_commons.tools.dto import tool_payload_from_args_kwargs
 from harnyx_commons.tools.executor import ToolInvocationContext, ToolInvocationOutput, ToolInvoker
 from harnyx_commons.tools.types import ToolName, is_embedding_tool, is_search_tool
 from harnyx_validator.application.assigned_work import PhaseRecorder
@@ -154,10 +156,10 @@ class PlatformToolProxyProxyToolInvoker(ToolInvoker):
     ) -> object:
         if not _is_platform_tool_proxy_tool(tool_name):
             return await self._local.invoke(tool_name, args=args, kwargs=kwargs, context=context)
+        if tool_name == "decision_query":
+            DecisionQueryRequest.model_validate(tool_payload_from_args_kwargs(args, kwargs))
         if context is None:
-            raise PlatformToolProxyControlError(
-                "platform tool proxy execution requires tool invocation context"
-            )
+            raise PlatformToolProxyControlError("platform tool proxy execution requires tool invocation context")
         scope = self._scopes.require_session(context.session_id)
         attempt_number = scope.attempt_number
         attempt_grant = scope.grants_by_attempt.get(attempt_number)
@@ -194,6 +196,8 @@ class PlatformToolProxyProxyToolInvoker(ToolInvoker):
         previous_phase = None
         if scope.phase_recorder is not None:
             previous_phase = scope.phase_recorder.mark("platform_tool_proxy_execute")
+        if context.on_provider_dispatch is not None:
+            context.on_provider_dispatch()
         result = await self._platform.execute_platform_tool_proxy_tool(
             token=attempt_grant.token,
             uid=context.uid,
@@ -221,7 +225,7 @@ class PlatformToolProxyProxyToolInvoker(ToolInvoker):
 
 
 def _is_platform_tool_proxy_tool(tool_name: ToolName) -> bool:
-    return is_search_tool(tool_name) or is_embedding_tool(tool_name) or tool_name == "llm_chat"
+    return is_search_tool(tool_name) or is_embedding_tool(tool_name) or tool_name in {"llm_chat", "decision_query"}
 
 
 def _grant_expired(expires_at: datetime) -> bool:

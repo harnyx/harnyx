@@ -761,6 +761,7 @@ def test_local_eval_runtime_starts_with_unused_tool_provider_and_binds_to_loopba
             llm_provider_registry=_FakeRegistry(),
             embedding_provider=_FakeAsyncResource(),
             embedding_provider_registry=_FakeRegistry(),
+            decision_provider_registry=_FakeRegistry(),
         ),
     )
     monkeypatch.setattr(
@@ -834,6 +835,7 @@ async def test_local_runtime_closes_llm_provider_registry_not_routed_wrappers() 
         _llm_provider_registry=llm_provider_registry,
         _tool_embedding_provider=tool_embedding_provider,
         _embedding_provider_registry=embedding_provider_registry,
+        _decision_provider_registry=_FakeAsyncResource(),
         _scoring_llm_provider=scoring_llm_provider,
         _sandbox_manager=cast(Any, object()),
         _tool_host=None,
@@ -849,6 +851,7 @@ async def test_local_runtime_closes_llm_provider_registry_not_routed_wrappers() 
     assert llm_provider_registry.closed is True
     assert tool_embedding_provider.closed is True
     assert embedding_provider_registry.closed is True
+    assert runtime._decision_provider_registry.closed is True
     assert scoring_llm_provider.closed is False
 
 
@@ -872,6 +875,7 @@ async def test_local_runtime_closes_llm_provider_registry_when_search_close_fail
         _llm_provider_registry=llm_provider_registry,
         _tool_embedding_provider=_FakeAsyncResource(),
         _embedding_provider_registry=_FakeAsyncResource(),
+        _decision_provider_registry=_FakeAsyncResource(),
         _scoring_llm_provider=_FakeAsyncResource(),
         _sandbox_manager=cast(Any, object()),
         _tool_host=None,
@@ -1061,6 +1065,7 @@ def _local_runtime(
         _llm_provider_registry=_FakeAsyncResource(),
         _tool_embedding_provider=_FakeAsyncResource(),
         _embedding_provider_registry=_FakeAsyncResource(),
+        _decision_provider_registry=_FakeAsyncResource(),
         _scoring_llm_provider=_FakeAsyncResource(),
         _sandbox_manager=cast(Any, sandbox_manager),
         _tool_host=cast(Any, tool_host),
@@ -1678,6 +1683,7 @@ async def test_local_runtime_stops_started_sandbox_when_cancelled_during_startup
         _llm_provider_registry=None,
         _tool_embedding_provider=None,
         _embedding_provider_registry=None,
+        _decision_provider_registry=_FakeAsyncResource(),
         _scoring_llm_provider=None,
         _sandbox_manager=cast(Any, sandbox_manager),
         _tool_host=cast(Any, _FakeToolHost()),

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -289,7 +289,8 @@ async def test_platform_tool_proxy_proxy_serializes_concurrent_first_grant_creat
     assert platform.grants[0]["attempt_number"] == 1
 
 
-async def test_platform_tool_proxy_proxy_rejects_expired_cached_token_without_reissue() -> None:
+@pytest.mark.parametrize("tool", ["search_web", "decision_query"])
+async def test_platform_tool_proxy_proxy_rejects_expired_cached_token_without_reissue(tool) -> None:
     batch_id = uuid4()
     session_id = uuid4()
     artifact_id = uuid4()
@@ -315,21 +316,31 @@ async def test_platform_tool_proxy_proxy_rejects_expired_cached_token_without_re
         scopes=scopes,
     )
 
+    dispatched = []
     with pytest.raises(PlatformToolProxyTokenExpiredError) as exc_info:
         await invoker.invoke(
-            "search_web",
+            tool,
             args=(),
-            kwargs={"provider": "parallel", "search_queries": ["harnyx"]},
+            kwargs={"provider": "parallel", "search_queries": ["harnyx"]}
+            if tool == "search_web"
+            else {
+                "provider": "openrouter",
+                "model": "cloudflare/clef-flash",
+                "state": "s",
+                "questions": {"b": {"type": "boolean", "instructions": "?"}},
+            },
             context=ToolInvocationContext(
                 receipt_id=str(uuid4()),
                 session_id=session_id,
                 active_attempt=1,
                 uid=7,
+                on_provider_dispatch=lambda: dispatched.append(True),
             ),
         )
 
     assert platform.grants == []
     assert platform.calls == []
+    assert dispatched == []
     assert exc_info.value.error_code == "platform_tool_proxy_denied"
     assert exc_info.value.status_code == 403
 
@@ -449,3 +460,223 @@ async def test_platform_tool_proxy_proxy_keeps_local_tools_local() -> None:
     assert result == {"local": True}
     assert local.calls == ["test_tool"]
     assert platform.calls == []
+
+
+async def test_decision_query_uses_hosted_grant_instead_of_local_provider() -> None:
+    session_id, batch_id, artifact_id, task_id = (uuid4() for _ in range(4))
+    scopes = PlatformToolProxyScopeRegistry()
+    scopes.register_session(
+        batch_id=batch_id,
+        session_id=session_id,
+        artifact_id=artifact_id,
+        task_id=task_id,
+        assignment_token=_ASSIGNMENT_TOKEN,
+        attempt_number=1,
+    )
+    platform = _RecordingPlatformToolProxyPlatform(calls=[], grants=[])
+    local = _RecordingLocalInvoker()
+    invoker = PlatformToolProxyProxyToolInvoker(
+        local_invoker=local, platform_tool_proxy_platform=platform, scopes=scopes
+    )
+    kwargs = {
+        "provider": "openrouter",
+        "model": "cloudflare/clef-flash",
+        "state": "s",
+        "questions": {"b": {"type": "boolean", "instructions": "?"}},
+    }
+    dispatched = []
+    await invoker.invoke(
+        "decision_query",
+        args=(),
+        kwargs=kwargs,
+        context=ToolInvocationContext(
+            receipt_id=str(uuid4()),
+            session_id=session_id,
+            active_attempt=1,
+            uid=7,
+            on_provider_dispatch=lambda: dispatched.append(True),
+        ),
+    )
+    assert dispatched == [True]
+    assert local.calls == []
+    assert len(platform.calls) == 1
+    assert platform.calls[0]["tool"] == "decision_query"
+    assert platform.calls[0]["kwargs"] == kwargs
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "invalid_request",
+        "miner_credential_missing",
+        "platform_error",
+        "platform_error_unpriced",
+        "budget_exhausted",
+        "concurrency_exhausted",
+        "duplicate_call",
+        "provider_failed",
+        "billed_timeout",
+        "billed_interruption",
+        "tool_timeout",
+        "transport",
+        "missing_provider",
+        "unknown_provider",
+        "unsupported_provider",
+    ],
+)
+async def test_hosted_decision_failure_preserves_prior_actual_total(failure: str) -> None:
+    """HTTP rejection evidence must survive the hosted invoker and executor without hiding unknown I/O costs."""
+    import bittensor as bt
+    import httpx
+
+    from harnyx_commons.domain.session import Session
+    from harnyx_commons.domain.tool_call import ToolCallOutcome
+    from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
+    from harnyx_commons.infrastructure.state.session_registry import InMemorySessionRegistry
+    from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
+    from harnyx_commons.tools.dto import ToolInvocationRequest
+    from harnyx_commons.tools.executor import ToolExecutor
+    from harnyx_commons.tools.usage_tracker import UsageTracker
+    from harnyx_validator.application.services.evaluation_runner import _usage_from_receipts
+    from harnyx_validator.infrastructure.tools.platform_client import AsyncPlatformToolProxyPlatformClient
+
+    now = datetime.now(UTC)
+    session_id, task_id = uuid4(), uuid4()
+    sessions = InMemorySessionRegistry()
+    sessions.create(
+        Session(
+            session_id=session_id,
+            uid=7,
+            task_id=task_id,
+            issued_at=now,
+            expires_at=now + timedelta(minutes=5),
+            budget_usd=1.0,
+        )
+    )
+    tokens = InMemoryTokenRegistry()
+    tokens.register(session_id, "token")
+    receipts = InMemoryReceiptLog()
+    scopes = PlatformToolProxyScopeRegistry()
+    scopes.register_session(
+        batch_id=uuid4(),
+        session_id=session_id,
+        artifact_id=uuid4(),
+        task_id=task_id,
+        assignment_token=_ASSIGNMENT_TOKEN,
+    )
+    scopes.store_session_grant(
+        session_id=session_id, attempt_number=1, token=_GRANT_VALUE, expires_at=now + timedelta(minutes=5)
+    )
+    requests = 0
+    local_rejection = failure in {"missing_provider", "unknown_provider", "unsupported_provider"}
+    billed_failure = failure in {"provider_failed", "billed_timeout", "billed_interruption"}
+    known_zero = local_rejection or failure in {
+        "invalid_request",
+        "miner_credential_missing",
+        "platform_error",
+        "budget_exhausted",
+        "concurrency_exhausted",
+    }
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        if requests == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "response": {
+                        "model": "cloudflare/clef-flash",
+                        "answers": {"b": {"type": "boolean", "probability": 0.9}},
+                    },
+                    "execution": None,
+                    "actual_cost_usd": 0.02,
+                    "actual_cost_provider": "openrouter",
+                    "actual_cost_evidence": {"source": "provider"},
+                },
+            )
+        if failure == "transport":
+            raise httpx.ReadError("response lost")
+        error = {
+            "error_code": {
+                "platform_error_unpriced": "platform_error",
+                "billed_timeout": "tool_timeout",
+                "billed_interruption": "platform_interrupted",
+            }.get(failure, failure),
+            "message": "decision rejected",
+        }
+        if known_zero:
+            error["billing"] = {"actual_cost_usd": 0.0, "actual_cost_provider": "openrouter"}
+        elif billed_failure:
+            error["billing"] = {
+                "actual_cost_usd": 0.01,
+                "actual_cost_provider": "openrouter",
+                "usage": {"input_tokens": 100, "output_tokens": 0},
+            }
+        return httpx.Response(400, json=error)
+
+    client = AsyncPlatformToolProxyPlatformClient(
+        base_url="https://mock.local",
+        hotkey=bt.Keypair.create_from_mnemonic(bt.Keypair.generate_mnemonic()),
+        transport=httpx.MockTransport(handler),
+    )
+    executor = ToolExecutor(
+        session_registry=sessions,
+        receipt_log=receipts,
+        usage_tracker=UsageTracker(),
+        token_registry=tokens,
+        clock=lambda: now,
+        tool_invoker=PlatformToolProxyProxyToolInvoker(
+            local_invoker=_RecordingLocalInvoker(), platform_tool_proxy_platform=client, scopes=scopes
+        ),
+    )
+    request = ToolInvocationRequest(
+        session_id,
+        "token",
+        "decision_query",
+        (),
+        {
+            "provider": "openrouter",
+            "model": "cloudflare/clef-flash",
+            "state": "s",
+            "questions": {"b": {"type": "boolean", "instructions": "?"}},
+        },
+    )
+    try:
+        await executor.execute(request)
+        if local_rejection:
+            invalid_kwargs = dict(request.kwargs)
+            if failure == "missing_provider":
+                invalid_kwargs.pop("provider")
+            else:
+                invalid_kwargs["provider"] = "unknown" if failure == "unknown_provider" else "chutes"
+            request = replace(request, kwargs=invalid_kwargs)
+        with pytest.raises(ValueError if local_rejection else RuntimeError):
+            await executor.execute(request)
+    finally:
+        await client.aclose()
+    updated = sessions.get(session_id)
+    assert updated is not None
+    assert updated.usage.total_cost_usd == (0.03 if billed_failure else 0.02)
+    assert updated.usage.actual_total_cost_usd == (0.03 if billed_failure else 0.02 if known_zero else None)
+    failed = next(call for call in receipts.for_session(session_id) if call.outcome is not ToolCallOutcome.OK)
+    assert failed.details.actual_cost_usd == (0.01 if billed_failure else 0.0 if known_zero else None)
+    assert (failed.details.extra.get("actual_cost_settlement_source") == "unavailable") is (
+        not known_zero and not billed_failure
+    )
+    if billed_failure:
+        assert failed.details.response_payload == {"usage": {"input_tokens": 100, "output_tokens": 0}}
+    assert updated.usage.llm_usage_totals == {}
+    reconstructed = _usage_from_receipts(tuple(receipts.for_session(session_id)))
+    assert reconstructed.total_cost_usd == updated.usage.total_cost_usd
+    assert reconstructed.actual_total_cost_usd == updated.usage.actual_total_cost_usd
+    assert failed.outcome is (
+        ToolCallOutcome.PROVIDER_ERROR
+        if failure == "provider_failed"
+        else ToolCallOutcome.TIMEOUT
+        if failure in {"tool_timeout", "billed_timeout"}
+        else ToolCallOutcome.BUDGET_EXCEEDED
+        if failure == "budget_exhausted"
+        else ToolCallOutcome.INTERNAL_ERROR
+    )
+    assert requests == (1 if local_rejection else 2)

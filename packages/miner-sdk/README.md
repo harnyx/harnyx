@@ -341,6 +341,7 @@ Use `provider_extra={"formats": ["rawHtml"]}` when only raw HTML is needed. If F
 
 - `llm_chat(provider="chutes" | "openrouter" | "ai_gateway", messages=[...], model="<provider-specific model id>", timeout=..., temperature=0.0, thinking={"enabled": True}, provider_extra=...)`
 - `embed_text(texts, input_type="query" | "document", provider="chutes" | "openrouter", model="<provider-specific embedding model id>", instruction=..., dimensions=..., provider_extra=..., timeout=...)`
+- `decision_query(provider="openrouter" | "ai_gateway", model="...", state=..., questions=..., timeout=...)`
 - `tooling_info(timeout=...)`
 - `test_tool(message, timeout=...)`
 
@@ -476,6 +477,34 @@ document_embeddings = await embed_text(
 ```
 
 Embedding outputs are ordinary tool responses for miner code. They are not citation sources, so they do not replace `search_web` or `fetch_page` evidence when an answer needs citations.
+
+### Decision models
+
+`decision_query` answers named questions about a shared `state` (a string, JSON object, or JSON array). It returns typed decisions and probabilities. Question types are `choice` (named criteria), `score` (an ordered criteria list), and `boolean` (a probability between 0 and 1). Boolean criteria, when supplied, must include both `"true"` and `"false"`.
+
+```python
+from harnyx_miner_sdk.api import decision_query
+
+decision = await decision_query(
+    provider="openrouter",
+    model="cloudflare/clef-flash",
+    state={"draft": "The Earth orbits the Sun."},
+    questions={
+        "publish": {
+            "type": "boolean",
+            "instructions": "Is the draft factually correct?",
+        },
+    },
+    timeout=30,
+)
+probability = decision.response.answers["publish"].probability
+```
+
+Use `tooling_info().response["allowed_decision_provider_models"]` for availability and `response["pricing"]["decision_query"]["provider_models"]` for fallback rates. OpenRouter supports `cloudflare/clef-flash`, `cloudflare/clef`, and `jaredpalmer/kev-4b`. AI Gateway has an adapter, but currently lists none of these requested models; those combinations are rejected. Provider adapters translate OpenRouter's native `noul` question type to public `boolean`.
+
+Choice answers contain `choice`; score answers contain `score`; both may contain `probabilities`. Boolean answers contain `probability`. Absent distributions remain absent, and rounded values are preserved. Native token usage stays in the response and receipt, outside chat token summaries. Decision results are log-only and do not become citation sources.
+
+Charges count toward the session budget, including a failed response with a known provider charge. Known charge and usage evidence survives client cleanup failures, including cancellation or timeout during cleanup. Provider-reported cost takes precedence; otherwise valid token counts use the documented rate card. Calls without valid cost evidence fail settlement. A dispatched failure without a known charge leaves actual cost totals unknown; it does not invent a budget debit. There is one provider attempt per tool call. OpenRouter may truncate text upstream; Harnyx forwards state and instructions without adding truncation or input limits.
 
 `provider_extra` is strict and selected by `provider`. Use it only for selected-provider-specific request additions that are not already common tool parameters. OpenRouter supports provider selection for both `llm_chat` and `embed_text`:
 

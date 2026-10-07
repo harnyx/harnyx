@@ -48,6 +48,7 @@ from harnyx_commons.miner_task_scoring import (
 from harnyx_commons.sandbox.docker import DockerSandboxManager
 from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_commons.sandbox.runtime import build_sandbox_options, create_sandbox_manager
+from harnyx_commons.tools.decision_models import DecisionQueryRequest
 from harnyx_commons.tools.dto import ToolInvocationRequest, tool_payload_for_invocation
 from harnyx_commons.tools.embedding_models import parse_miner_selected_embedding_provider_model
 from harnyx_commons.tools.executor import ToolExecutor, ToolInvocationContext, ToolInvocationOutput, ToolInvoker
@@ -55,6 +56,7 @@ from harnyx_commons.tools.invocation_clients import build_optional_tool_embeddin
 from harnyx_commons.tools.ports import AiSearchProviderPort, EmbeddingProviderPort, WebSearchProviderPort
 from harnyx_commons.tools.runtime_invoker import (
     AiSearchProviderResolver,
+    DecisionProviderResolver,
     EmbeddingProviderResolver,
     LlmProviderResolver,
     RuntimeToolInvoker,
@@ -394,6 +396,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
     if platform_client is not None:
         original_control_provider = control_provider
         validator_callback_base_url = resolved.platform_api.validator_public_base_url or ""
+
         async def authorize_delegation(delegation: EndpointDelegation) -> EndpointAuthority:
             await original_control_provider().auth(
                 "POST",
@@ -802,6 +805,7 @@ def _build_local_provider_tooling(
     ai_search_provider_resolver: AiSearchProviderResolver | None = None,
     llm_provider_resolver: LlmProviderResolver | None = None,
     embedding_provider_resolver: EmbeddingProviderResolver | None = None,
+    decision_provider_resolver: DecisionProviderResolver | None = None,
 ) -> tuple[ToolInvoker, ToolExecutor]:
     local_invoker = build_miner_sandbox_tool_invoker(
         state.receipt_log,
@@ -814,6 +818,7 @@ def _build_local_provider_tooling(
         embedding_provider=tool_embedding_provider,
         embedding_provider_name=resolved.llm.tool_embedding_provider if tool_embedding_provider is not None else None,
         embedding_provider_resolver=embedding_provider_resolver,
+        decision_provider_resolver=decision_provider_resolver,
         allowed_models=ALLOWED_TOOL_MODELS,
     )
     return local_invoker, _ProviderTrackingToolExecutor(
@@ -1008,6 +1013,8 @@ def _provider_key_from_request(
         return search_provider_name, request.tool
     if request.tool == "embed_text":
         return _explicit_embedding_provider_model(payload)
+    if request.tool == "decision_query":
+        return _explicit_decision_provider_model(payload)
     if request.tool != "llm_chat":
         return None
     return _explicit_llm_provider_model(payload)
@@ -1050,6 +1057,14 @@ def _explicit_embedding_provider_model(payload: Mapping[str, object]) -> tuple[s
     model = raw_model if isinstance(raw_model, str) else None
     try:
         selected = parse_miner_selected_embedding_provider_model(provider=raw_provider, model=model)
+    except ValueError:
+        return None
+    return selected.provider, selected.model
+
+
+def _explicit_decision_provider_model(payload: Mapping[str, object]) -> tuple[str, str] | None:
+    try:
+        selected = DecisionQueryRequest.model_validate(payload)
     except ValueError:
         return None
     return selected.provider, selected.model

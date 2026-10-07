@@ -8,7 +8,6 @@ import logging
 import math
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from contextlib import suppress
 from dataclasses import asdict, dataclass
 from typing import TypeVar, cast
 
@@ -20,6 +19,7 @@ from harnyx_commons.domain.session import ProviderCredentialSource
 from harnyx_commons.domain.tool_call import ToolExecutionFacts
 from harnyx_commons.errors import (
     ProviderCredentialUnavailableError,
+    ToolInvocationCancelledError,
     ToolInvocationTimeoutError,
     ToolProviderError,
     ToolProviderFailureCode,
@@ -27,6 +27,7 @@ from harnyx_commons.errors import (
 from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.llm.cost_settlement import settled_cost_from_metadata
 from harnyx_commons.llm.pricing import (
+    MINER_TOOL_DECISION_PRICING,
     MINER_TOOL_EMBEDDING_PRICING,
     MINER_TOOL_LLM_PRICING,
     SEARCH_PRICING_PER_REFERENCEABLE_RESULT,
@@ -61,10 +62,17 @@ from harnyx_commons.platform_tool_proxy import (
     PLATFORM_TOOL_PROXY_SEARCH_TOOL_DEFAULT_TIMEOUT_SECONDS,
     platform_tool_proxy_provider_timeout_seconds,
 )
+from harnyx_commons.tools.decision_models import MINER_SELECTED_DECISION_PROVIDER_MODELS, DecisionQueryRequest
 from harnyx_commons.tools.dto import tool_payload_from_args_kwargs
 from harnyx_commons.tools.embedding_models import MINER_SELECTED_EMBEDDING_PROVIDER_MODELS, EmbedTextRequest
 from harnyx_commons.tools.executor import ToolInvocationContext, ToolInvocationOutput, ToolInvoker
-from harnyx_commons.tools.ports import AiSearchProviderPort, EmbeddingProviderPort, WebSearchProviderPort
+from harnyx_commons.tools.ports import (
+    AiSearchProviderPort,
+    DecisionProviderPort,
+    DecisionProviderResult,
+    EmbeddingProviderPort,
+    WebSearchProviderPort,
+)
 from harnyx_commons.tools.provider_billing import (
     ProviderBillingMetadata,
     SearchProviderResult,
@@ -126,6 +134,11 @@ EmbeddingProviderResolver = Callable[
 ]
 
 
+DecisionProviderResolver = Callable[
+    [str, ToolInvocationContext | None], DecisionProviderPort | Awaitable[DecisionProviderPort]
+]
+
+
 @dataclass(frozen=True, slots=True)
 class _ActualCost:
     cost_usd: float | None
@@ -168,6 +181,9 @@ def build_miner_sandbox_tool_invoker(
     embedding_provider_name: str | None = None,
     embedding_provider_resolver: EmbeddingProviderResolver | None = None,
     platform_embedding_provider_resolver: EmbeddingProviderResolver | None = None,
+    decision_provider: DecisionProviderPort | None = None,
+    decision_provider_resolver: DecisionProviderResolver | None = None,
+    platform_decision_provider_resolver: DecisionProviderResolver | None = None,
     allowed_models: tuple[ToolModelName, ...] = ALLOWED_TOOL_MODELS,
 ) -> RuntimeToolInvoker:
     return RuntimeToolInvoker(
@@ -187,6 +203,9 @@ def build_miner_sandbox_tool_invoker(
         embedding_provider_name=embedding_provider_name,
         embedding_provider_resolver=embedding_provider_resolver,
         platform_embedding_provider_resolver=platform_embedding_provider_resolver,
+        decision_provider=decision_provider,
+        decision_provider_resolver=decision_provider_resolver,
+        platform_decision_provider_resolver=platform_decision_provider_resolver,
         advertised_tool_names=MINER_SANDBOX_TOOL_NAMES,
         allowed_models=allowed_models,
     )
@@ -206,7 +225,7 @@ def effective_tool_timeout_seconds(
         return _effective_timeout_from_payload(payload, default=DEFAULT_TOOL_LLM_TIMEOUT_SECONDS)
     if tool_name in {"search_web", "search_ai", "fetch_page"}:
         return _effective_timeout_from_payload(payload, default=DEFAULT_SEARCH_TOOL_TIMEOUT_SECONDS)
-    if tool_name == "embed_text":
+    if tool_name in {"embed_text", "decision_query"}:
         return _effective_timeout_from_payload(payload, default=DEFAULT_EMBEDDING_TOOL_TIMEOUT_SECONDS)
     raise LookupError(f"tool {tool_name!r} does not have a provider timeout")
 
@@ -313,6 +332,9 @@ class RuntimeToolInvoker(ToolInvoker):
         embedding_provider_name: str | None = None,
         embedding_provider_resolver: EmbeddingProviderResolver | None = None,
         platform_embedding_provider_resolver: EmbeddingProviderResolver | None = None,
+        decision_provider: DecisionProviderPort | None = None,
+        decision_provider_resolver: DecisionProviderResolver | None = None,
+        platform_decision_provider_resolver: DecisionProviderResolver | None = None,
         advertised_tool_names: tuple[ToolName, ...] | None = None,
         allowed_models: tuple[ToolModelName, ...] = ALLOWED_TOOL_MODELS,
     ) -> None:
@@ -333,6 +355,9 @@ class RuntimeToolInvoker(ToolInvoker):
         self._embedding_provider_name = embedding_provider_name
         self._embedding_provider_resolver = embedding_provider_resolver
         self._platform_embedding_provider_resolver = platform_embedding_provider_resolver
+        self._decision_provider = decision_provider
+        self._decision_provider_resolver = decision_provider_resolver
+        self._platform_decision_provider_resolver = platform_decision_provider_resolver
         self._advertised_tool_names = tuple(sorted(advertised_tool_names or TOOL_NAMES))
         _ = allowed_models
 
@@ -354,6 +379,9 @@ class RuntimeToolInvoker(ToolInvoker):
             if is_search_tool(tool_name):
                 args, kwargs = _with_default_tool_timeout(tool_name, args=args, kwargs=kwargs)
                 return await self._dispatch_search(tool_name, args, kwargs, context=context)
+            if tool_name == "decision_query":
+                args, kwargs = _with_default_tool_timeout(tool_name, args=args, kwargs=kwargs)
+                return await self._dispatch_decision(args, kwargs, context=context)
             if is_embedding_tool(tool_name):
                 args, kwargs = _with_default_tool_timeout(tool_name, args=args, kwargs=kwargs)
                 return await self._dispatch_embedding(args, kwargs, context=context)
@@ -370,6 +398,7 @@ class RuntimeToolInvoker(ToolInvoker):
                 failure_code=exc.failure_code,
                 provider=exc.provider,
                 http_status=exc.http_status,
+                billing=exc.billing if tool_name == "decision_query" else None,
             ) from None
 
     def _invoke_test_tool(
@@ -452,6 +481,22 @@ class RuntimeToolInvoker(ToolInvoker):
                 },
             }
 
+        if "decision_query" in visible_tool_names:
+            pricing["decision_query"] = {
+                "kind": "per_million_tokens",
+                "settlement_order": ["provider_returned", "static_pricing"],
+                "provider_models": {
+                    provider: {
+                        model: {
+                            "input_per_million": card.input_per_million,
+                            "output_per_million": card.output_per_million,
+                        }
+                        for model, card in cards.items()
+                    }
+                    for provider, cards in MINER_TOOL_DECISION_PRICING.items()
+                },
+            }
+
         tool_names: list[JsonValue] = [str(name) for name in self._advertised_tool_names]
         allowed_provider_models: dict[str, JsonValue] = {
             provider: [str(model) for model in models]
@@ -463,6 +508,10 @@ class RuntimeToolInvoker(ToolInvoker):
             "allowed_embedding_provider_models": {
                 provider: [str(model) for model in models]
                 for provider, models in MINER_SELECTED_EMBEDDING_PROVIDER_MODELS.items()
+            },
+            "allowed_decision_provider_models": {
+                provider: [str(model) for model in models]
+                for provider, models in MINER_SELECTED_DECISION_PROVIDER_MODELS.items()
             },
             "pricing": pricing,
         }
@@ -671,6 +720,59 @@ class RuntimeToolInvoker(ToolInvoker):
             actual_cost_usd=actual_cost.cost_usd,
             actual_cost_provider=actual_cost.provider,
             actual_cost_evidence=actual_cost.evidence,
+        )
+
+    async def _dispatch_decision(
+        self,
+        args: Sequence[JsonValue],
+        kwargs: Mapping[str, JsonValue],
+        *,
+        context: ToolInvocationContext | None,
+    ) -> ToolInvocationOutput:
+        request = DecisionQueryRequest.model_validate(tool_payload_from_args_kwargs(args, kwargs))
+        resolver = (
+            self._platform_decision_provider_resolver
+            if _uses_platform_credentials(context)
+            else self._decision_provider_resolver
+        )
+        try:
+            if resolver is not None:
+                provider = await _resolve_maybe_awaitable(resolver(request.provider, context))
+            elif not _uses_platform_credentials(context) and self._decision_provider is not None:
+                provider = self._decision_provider
+            elif _uses_platform_credentials(context):
+                raise _credential_unavailable(request.provider)
+            else:
+                raise LookupError("decision provider is not configured")
+            started = time.perf_counter()
+
+            async def query() -> DecisionProviderResult:
+                if context is not None and context.on_provider_dispatch is not None:
+                    context.on_provider_dispatch()
+                return await provider.query(request)
+
+            result = await _invoke_with_optional_timeout(
+                "decision_query",
+                request.timeout,
+                query,
+            )
+        except ProviderCredentialUnavailableError as exc:
+            raise _credential_unavailable(exc.provider) from exc
+        except (ToolProviderError, ToolInvocationTimeoutError):
+            raise
+        except Exception as exc:
+            raise _typed_provider_error(exc, provider=request.provider) from exc
+        cost = _ActualCost(result.actual_cost_usd, result.actual_cost_provider, result.actual_cost_evidence)
+        try:
+            _require_actual_cost(cost, tool_name="decision_query")
+        except ValueError as exc:
+            raise ToolProviderError("decision provider response missing settled cost") from exc
+        return ToolInvocationOutput(
+            public_payload=cast(JsonObject, result.response.model_dump(mode="json", exclude_none=True)),
+            execution=ToolExecutionFacts(elapsed_ms=(time.perf_counter() - started) * 1000.0),
+            actual_cost_usd=cost.cost_usd,
+            actual_cost_provider=cost.provider,
+            actual_cost_evidence=cost.evidence,
         )
 
     def _parse_invocation(
@@ -892,13 +994,15 @@ async def _invoke_with_optional_timeout(
     try:
         done, _ = await asyncio.wait({task}, timeout=timeout)
     except asyncio.CancelledError:
-        await _cancel_provider_task(task)
+        billing = await _cancel_provider_task(task)
+        if billing is not None:
+            raise ToolInvocationCancelledError("tool invocation cancelled", billing=billing) from None
         raise
     if task in done:
         return _task_result(task)
 
-    await _cancel_provider_task(task)
-    raise ToolInvocationTimeoutError(f"{tool_name} timed out after {timeout:g} seconds")
+    billing = await _cancel_provider_task(task)
+    raise ToolInvocationTimeoutError(f"{tool_name} timed out after {timeout:g} seconds", billing=billing)
 
 
 async def _invoke_provider_operation(
@@ -917,10 +1021,15 @@ def _task_result(task: asyncio.Task[TInvocationResult]) -> TInvocationResult:
         raise ToolProviderError("tool provider failed") from exc
 
 
-async def _cancel_provider_task(task: asyncio.Task[TInvocationResult]) -> None:
+async def _cancel_provider_task(task: asyncio.Task[TInvocationResult]) -> ProviderBillingMetadata | None:
     task.cancel()
-    with suppress(asyncio.CancelledError, Exception):
-        await task
+    try:
+        result = await task
+    except (ToolInvocationCancelledError, ToolInvocationTimeoutError, ToolProviderError) as exc:
+        return exc.billing
+    except (asyncio.CancelledError, Exception):
+        return None
+    return result.billing if isinstance(result, DecisionProviderResult) else None
 
 
 def _public_embedding_pricing_payload(rates: EmbeddingPricing) -> JsonObject:

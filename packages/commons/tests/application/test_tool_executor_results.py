@@ -24,6 +24,7 @@ from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.llm.schema import LlmChoice, LlmChoiceMessage, LlmMessageContentPart, LlmResponse, LlmUsage
 from harnyx_commons.tools.dto import ToolInvocationRequest
 from harnyx_commons.tools.executor import ToolCallRecorder, ToolExecutor, ToolInvocationContext, ToolInvocationOutput
+from harnyx_commons.tools.runtime_invoker import RuntimeToolInvoker
 from harnyx_commons.tools.types import SearchToolName, ToolName
 from harnyx_commons.tools.usage_tracker import UsageTracker
 
@@ -196,6 +197,36 @@ async def test_durable_start_revalidates_admission_before_dispatch(rejection: st
     assert not invoked
     assert len(recorder.terminals) == 1
     assert recorder.terminals[0].details.actual_cost_usd == 0
+
+
+async def test_malformed_decision_payload_finishes_started_receipt_with_unattributed_zero() -> None:
+    """Malformed arguments must not strand a started call or invent provider charges during error recording."""
+    now = datetime.now(UTC)
+    recorder = RecordingEvidence()
+    executor, receipts, session, token = _build_search_executor(
+        now=now,
+        expires_at=now + timedelta(minutes=1),
+        payload={},
+        recorder=recorder,
+    )
+    executor._tool_invoker = RuntimeToolInvoker(receipts)
+    with pytest.raises(ValueError, match="expected JSON object payload as first positional argument"):
+        await executor.execute(ToolInvocationRequest(session.session_id, token, "decision_query", ("invalid",), {}))
+
+    assert len(recorder.starts) == 1
+    assert len(recorder.terminals) == 1
+    receipt = recorder.terminals[0]
+    assert receipt.receipt_id == recorder.starts[0].receipt_id
+    assert receipts.for_session(session.session_id) == (receipt,)
+    assert receipt.outcome is ToolCallOutcome.INTERNAL_ERROR
+    assert receipt.details.actual_cost_usd == 0.0
+    assert receipt.details.actual_cost_provider is None
+    updated = executor._sessions.get(session.session_id)
+    assert updated is not None
+    assert updated.usage.total_cost_usd == 0.0
+    assert updated.usage.actual_total_cost_usd == 0.0
+    assert updated.usage.cost_by_provider == {}
+    assert updated.usage.actual_cost_by_provider == {}
 
 
 async def test_start_storage_failure_prevents_paid_dispatch() -> None:

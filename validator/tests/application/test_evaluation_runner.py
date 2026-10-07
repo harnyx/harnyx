@@ -5418,3 +5418,126 @@ async def test_evaluation_runner_supports_serialized_artifact_execution(tmp_path
     assert orchestrator.max_active == 1
     assert [submission.run.task_id for submission in result.submissions] == [task.task_id for task in tasks]
     assert len(evaluation_store.records) == 3
+
+
+@pytest.mark.parametrize(
+    ("request_provider", "actual_provider", "expected_provider"),
+    [
+        (None, None, None),
+        ("unsupported", None, None),
+        ("openrouter", None, "openrouter"),
+        ("ai_gateway", None, "ai_gateway"),
+        (None, "openrouter", "openrouter"),
+    ],
+)
+def test_rejected_decision_receipt_reconstruction_preserves_provider_attribution(
+    request_provider: str | None, actual_provider: str | None, expected_provider: str | None
+) -> None:
+    """A known zero must not invent a provider or lose an identified decision provider on replay."""
+    receipt = ToolCall(
+        receipt_id="rejected-decision",
+        session_id=uuid4(),
+        uid=7,
+        tool="decision_query",
+        issued_at=datetime(2026, 5, 30, 12, tzinfo=UTC),
+        outcome=ToolCallOutcome.PROVIDER_ERROR,
+        details=ToolCallDetails(
+            request_hash="req",
+            request_payload={"kwargs": {} if request_provider is None else {"provider": request_provider}},
+            cost_usd=0.0,
+            actual_cost_usd=0.0,
+            actual_cost_provider=actual_provider,
+        ),
+    )
+    usage = evaluation_runner_module._usage_from_receipts((receipt,))
+    expected_costs = {} if expected_provider is None else {expected_provider: 0.0}
+    assert usage.total_cost_usd == 0.0
+    assert usage.actual_total_cost_usd == 0.0
+    assert usage.cost_by_provider == expected_costs
+    assert usage.reference_cost_by_provider == expected_costs
+    assert usage.actual_cost_by_provider == expected_costs
+    assert usage.llm_usage_totals == {}
+
+
+def test_decision_receipt_reconstruction_counts_failure_cost_without_chat_tokens() -> None:
+    receipt = ToolCall(
+        receipt_id="charged-decision",
+        session_id=uuid4(),
+        uid=7,
+        tool="decision_query",
+        issued_at=datetime(2026, 5, 30, 12, tzinfo=UTC),
+        outcome=ToolCallOutcome.PROVIDER_ERROR,
+        details=ToolCallDetails(
+            request_hash="req",
+            request_payload={"kwargs": {"provider": "openrouter", "model": "cloudflare/clef-flash"}},
+            response_hash="res",
+            response_payload={"usage": {"input_tokens": 100, "output_tokens": 0}},
+            cost_usd=0.02,
+            actual_cost_usd=0.02,
+            actual_cost_provider="openrouter",
+        ),
+    )
+    usage = evaluation_runner_module._usage_from_receipts((receipt,))
+    assert usage.total_cost_usd == pytest.approx(0.02)
+    assert usage.actual_total_cost_usd == pytest.approx(0.02)
+    assert usage.actual_cost_by_provider == {"openrouter": 0.02}
+    assert usage.llm_usage_totals == {}
+
+
+def test_mixed_chat_and_decision_reconstruction_retains_generic_totals() -> None:
+    from dataclasses import replace
+
+    decision = ToolCall(
+        receipt_id="decision",
+        session_id=uuid4(),
+        uid=7,
+        tool="decision_query",
+        issued_at=datetime(2026, 5, 30, 12, tzinfo=UTC),
+        outcome=ToolCallOutcome.OK,
+        details=ToolCallDetails(
+            request_hash="d",
+            request_payload={"kwargs": {"provider": "openrouter", "model": "cloudflare/clef-flash"}},
+            response_payload={"usage": {"input_tokens": 100, "output_tokens": 0}},
+            cost_usd=0.02,
+            actual_cost_usd=0.02,
+            actual_cost_provider="openrouter",
+        ),
+    )
+    chat = replace(
+        decision,
+        receipt_id="chat",
+        tool="llm_chat",
+        details=replace(
+            decision.details,
+            request_payload={"kwargs": {"provider": "openrouter", "model": "deepseek/deepseek-v3.2"}},
+            response_payload={"usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}},
+            cost_usd=0.01,
+            actual_cost_usd=0.01,
+        ),
+    )
+    usage = evaluation_runner_module._usage_from_receipts((chat, decision))
+    assert usage.total_cost_usd == pytest.approx(0.03)
+    assert usage.actual_total_cost_usd == pytest.approx(0.03)
+    assert usage.actual_cost_by_provider["openrouter"] == pytest.approx(0.03)
+    assert set(usage.llm_usage_totals["openrouter"]) == {"deepseek/deepseek-v3.2"}
+    assert usage.llm_usage_totals["openrouter"]["deepseek/deepseek-v3.2"].total_tokens == 5
+
+
+def test_unpriced_failed_decision_receipt_keeps_actual_total_unknown() -> None:
+    receipt = ToolCall(
+        receipt_id="unknown-decision",
+        session_id=uuid4(),
+        uid=7,
+        tool="decision_query",
+        issued_at=datetime(2026, 5, 30, 12, tzinfo=UTC),
+        outcome=ToolCallOutcome.PROVIDER_ERROR,
+        details=ToolCallDetails(
+            request_hash="d",
+            request_payload={"kwargs": {"provider": "openrouter", "model": "cloudflare/clef-flash"}},
+            actual_cost_provider="openrouter",
+        ),
+    )
+    usage = evaluation_runner_module._usage_from_receipts((receipt,))
+    assert usage.actual_total_cost_usd is None
+    assert usage.total_cost_usd == 0
+    assert usage.actual_cost_by_provider == {}

@@ -5,9 +5,11 @@ from __future__ import annotations
 from typing import Literal, TypeGuard, cast
 
 from harnyx_miner_sdk.tools.types import (
+    DECISION_TOOLS,
     EMBEDDING_TOOLS,
     LLM_TOOLS,
     MINER_TOOL_NAMES,
+    DecisionToolName,
     EmbeddingToolName,
     LlmToolName,
     MinerToolName,
@@ -20,6 +22,7 @@ ToolName = Literal[
     "search_ai",
     "fetch_page",
     "embed_text",
+    "decision_query",
     "llm_chat",
     "test_tool",
     "tooling_info",
@@ -31,6 +34,7 @@ TOOL_NAMES: set[ToolName] = {
     "search_ai",
     "fetch_page",
     "embed_text",
+    "decision_query",
     "llm_chat",
     "test_tool",
     "tooling_info",
@@ -66,6 +70,8 @@ __all__ = [
     "SEARCH_TOOLS",
     "EMBEDDING_TOOLS",
     "LLM_TOOLS",
+    "DECISION_TOOLS",
+    "DecisionToolName",
     "parse_tool_name",
     "is_search_tool",
     "is_embedding_tool",

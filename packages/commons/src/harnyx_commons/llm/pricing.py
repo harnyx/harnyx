@@ -28,6 +28,7 @@ from harnyx_commons.llm.tool_models import (
     MinerSelectedLlmProviderName,
     ToolModelName,
 )
+from harnyx_commons.tools.decision_models import DecisionProviderName, DecisionUsage
 from harnyx_commons.tools.embedding_models import (
     QWEN3_CHUTES_EMBEDDING_MODEL,
     QWEN3_OPENROUTER_EMBEDDING_MODEL,
@@ -397,15 +398,9 @@ def price_parallel_search(
     """Return provider-billed USD cost for one Parallel Search request."""
     if billable_results < 0:
         raise ValueError("billable_results must be non-negative")
-    base_cost_usd = (
-        PARALLEL_SEARCH_TURBO_BASE_COST_USD
-        if mode == "turbo"
-        else PARALLEL_SEARCH_BASE_COST_USD
-    )
+    base_cost_usd = PARALLEL_SEARCH_TURBO_BASE_COST_USD if mode == "turbo" else PARALLEL_SEARCH_BASE_COST_USD
     extra_results = max(0, billable_results - PARALLEL_SEARCH_BASE_RESULTS)
-    return base_cost_usd + (
-        float(extra_results) * PARALLEL_SEARCH_ADDITIONAL_RESULT_COST_USD
-    )
+    return base_cost_usd + (float(extra_results) * PARALLEL_SEARCH_ADDITIONAL_RESULT_COST_USD)
 
 
 def price_parallel_extract(*, url_count: int) -> float:
@@ -444,3 +439,20 @@ __all__ = [
     "price_embedding",
     "price_static_llm_model",
 ]
+
+# Published OpenRouter decision rates, USD per million tokens (2026-10-06).
+MINER_TOOL_DECISION_PRICING: Mapping[DecisionProviderName, Mapping[str, ModelPricing]] = {
+    "openrouter": {
+        "cloudflare/clef-flash": ModelPricing(0.09, 0.0, 0.0),
+        "cloudflare/clef": ModelPricing(0.24, 0.0, 0.0),
+        "jaredpalmer/kev-4b": ModelPricing(0.042, 0.0, 0.0),
+    },
+    "ai_gateway": {},
+}
+
+
+def price_decision(provider: DecisionProviderName, model: str, usage: DecisionUsage) -> float | None:
+    card = MINER_TOOL_DECISION_PRICING[provider].get(model)
+    if card is None or usage.input_tokens is None or usage.output_tokens is None:
+        return None
+    return (usage.input_tokens * card.input_per_million + usage.output_tokens * card.output_per_million) / 1_000_000

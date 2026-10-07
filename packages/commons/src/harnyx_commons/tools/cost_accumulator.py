@@ -21,11 +21,13 @@ def resolve_provider(
     usage: ToolCallUsage | None,
     normalized_tool_name: str,
     provider_override: str | None,
-) -> str:
+) -> str | None:
     if provider_override:
         return provider_override
     if usage and usage.provider:
         return usage.provider
+    if normalized_tool_name == "decision_query":
+        return None
     return "desearch" if normalized_tool_name.startswith("search") else "chutes"
 
 
@@ -54,5 +56,6 @@ def accumulate_costs(
     updated_total = total_cost_usd + cost
 
     provider_costs = dict(cost_by_provider)
-    provider_costs[provider] = provider_costs.get(provider, 0.0) + cost
+    if provider is not None:
+        provider_costs[provider] = provider_costs.get(provider, 0.0) + cost
     return updated_total, provider_costs

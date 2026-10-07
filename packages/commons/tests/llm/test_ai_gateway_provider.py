@@ -322,3 +322,39 @@ def test_ai_gateway_request_serializes_complete_tool_loop() -> None:
     }
     assert payload["tool_choice"] == {"type": "function", "function": {"name": "lookup_weather"}}
     assert payload["parallel_tool_calls"] is True
+
+
+async def test_decision_native_transport_and_client_ownership() -> None:
+    import json
+
+    from harnyx_commons.llm.providers.ai_gateway import AiGatewayDecisionClient
+
+    captured: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "model": "cloudflare/clef-flash",
+                "answers": {"b": {"type": "boolean", "probability": 0.9}},
+                "usage": {"input_tokens": 12, "output_tokens": 1, "cost": 0.002},
+            },
+        )
+
+    async with httpx.AsyncClient(
+        base_url="https://ai-gateway.vercel.sh/v4/ai/", transport=httpx.MockTransport(handle)
+    ) as http:
+        client = AiGatewayDecisionClient(model="cloudflare/clef-flash", api_key=SecretStr("private-key"), client=http)
+        result = await client.query("state", {"b": {"type": "boolean", "instructions": "?"}})
+        assert str(captured[0].url) == "https://ai-gateway.vercel.sh/v4/ai/decision-model"
+        assert captured[0].headers["Authorization"] == "Bearer private-key"
+        assert json.loads(captured[0].content)["questions"]["b"]["type"] == "boolean"
+        assert result.raw_payload["usage"] == {"input_tokens": 12, "output_tokens": 1, "cost": 0.002}
+        await client.aclose()
+        assert not http.is_closed
+    owned = AiGatewayDecisionClient(model="cloudflare/clef-flash", api_key=SecretStr("private-key"))
+    await owned.aclose()
+    assert owned.client is not None and owned.client.is_closed
+    assert captured[0].headers["ai-decision-model-specification-version"] == "4"
+    assert captured[0].headers["ai-model-id"] == "cloudflare/clef-flash"

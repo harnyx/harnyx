@@ -26,12 +26,16 @@ from harnyx_commons.domain.tool_call import (
 )
 from harnyx_commons.errors import (
     BudgetExceededError,
+    ToolInvocationCancelledError,
+    ToolInvocationRejectedError,
     ToolInvocationTimeoutError,
     ToolProviderError,
     ToolProviderFailureCode,
 )
 from harnyx_commons.json_types import JsonObject, JsonValue
+from harnyx_commons.llm.cost_settlement import normalized_provider_cost
 from harnyx_commons.llm.schema import LlmResponse
+from harnyx_commons.tools.decision_models import DecisionQueryResponse
 from harnyx_commons.tools.dto import (
     ToolBudgetSnapshot,
     ToolInvocationRequest,
@@ -39,8 +43,10 @@ from harnyx_commons.tools.dto import (
     session_budget_snapshot,
     tool_payload_for_invocation,
 )
+from harnyx_commons.tools.provider_billing import billing_evidence_payload
 from harnyx_commons.tools.token_semaphore import ToolConcurrencyLimiter
 from harnyx_commons.tools.types import (
+    DECISION_TOOLS,
     EMBEDDING_TOOLS,
     LLM_TOOLS,
     SEARCH_TOOLS,
@@ -78,7 +84,9 @@ _TOOLS_WITHOUT_USAGE: set[ToolName] = {
     "tooling_info",
 }
 
-_PROVIDER_BACKED_TOOL_NAMES: frozenset[ToolName] = frozenset({*LLM_TOOLS, *SEARCH_TOOLS, *EMBEDDING_TOOLS})
+_PROVIDER_BACKED_TOOL_NAMES: frozenset[ToolName] = frozenset(
+    {*LLM_TOOLS, *SEARCH_TOOLS, *EMBEDDING_TOOLS, *DECISION_TOOLS}
+)
 
 _SEARCH_RESULT_FIELDS: dict[SearchToolName, tuple[str, str, str]] = {
     "search_web": ("link", "snippet", "title"),
@@ -120,6 +128,9 @@ class ToolInvocationContext:
     receipt_issued_at: datetime | None = None
     miner_hotkey_ss58: str | None = None
     provider_credential_source: ProviderCredentialSource = ProviderCredentialSource.MINER
+    # Native invokers acknowledge paid I/O after validation and credential resolution.
+    # Remote invokers acknowledge execution transport once local admission succeeds.
+    on_provider_dispatch: Callable[[], None] | None = None
 
 
 ToolCallObserver = Callable[[Session, ToolCall], Awaitable[None]]
@@ -128,9 +139,7 @@ ToolCallObserver = Callable[[Session, ToolCall], Awaitable[None]]
 class ToolCallRecorder(Protocol):
     """Durable call evidence, independent of local settlement and publication."""
 
-    async def record_started(
-        self, session: Session, call: StartedToolCall, *, on_recorded: Callable[[], None]
-    ) -> None:
+    async def record_started(self, session: Session, call: StartedToolCall, *, on_recorded: Callable[[], None]) -> None:
         """Acknowledge a successful write before cancellation can propagate."""
 
     async def record_terminal(self, session: Session, call: ToolCall) -> None: ...
@@ -145,6 +154,9 @@ class _CallRecording:
 
     def mark_started(self) -> None:
         self.started = True
+
+    def mark_dispatched(self) -> None:
+        self.dispatched = True
 
 
 class ToolExecutor:
@@ -267,6 +279,9 @@ class ToolExecutor:
             if not isinstance(response_payload, Mapping):
                 raise ValueError("search tool response must be a mapping")
             return 0, None
+        if name in DECISION_TOOLS:
+            DecisionQueryResponse.model_validate(response_payload)
+            return 0, None
         if name in EMBEDDING_TOOLS:
             if not isinstance(response_payload, Mapping):
                 raise ValueError("embedding tool response must be a mapping")
@@ -321,6 +336,7 @@ class ToolExecutor:
         self._receipts.start_pending_receipt(
             started_call=started_call,
         )
+        recording = _CallRecording()
         invocation_context = ToolInvocationContext(
             receipt_id=receipt_id,
             session_id=session.session_id,
@@ -330,8 +346,8 @@ class ToolExecutor:
             receipt_issued_at=issued_at,
             miner_hotkey_ss58=session.miner_hotkey_ss58,
             provider_credential_source=session.provider_credential_source,
+            on_provider_dispatch=recording.mark_dispatched,
         )
-        recording = _CallRecording()
         try:
             if self._tool_call_recorder is not None:
                 await self._record_started(session, started_call, on_recorded=recording.mark_started)
@@ -353,6 +369,7 @@ class ToolExecutor:
         except asyncio.CancelledError as exc:
             await self._try_materialize_failed_pending_receipt(
                 session=session,
+                request=request,
                 started_call=started_call,
                 started_at=started_at,
                 exc=exc,
@@ -362,6 +379,7 @@ class ToolExecutor:
         except Exception as exc:
             await self._try_materialize_failed_pending_receipt(
                 session=session,
+                request=request,
                 started_call=started_call,
                 started_at=started_at,
                 exc=exc,
@@ -382,7 +400,8 @@ class ToolExecutor:
         invocation_context: ToolInvocationContext,
         recording: _CallRecording,
     ) -> _ExecutionResult:
-        recording.dispatched = True
+        if request.tool != "decision_query":
+            recording.dispatched = True
         invocation_output = await self._invoke_tool_output_async(request, context=invocation_context)
         recording.output = invocation_output
         finished_at = self._clock()
@@ -472,6 +491,7 @@ class ToolExecutor:
         self,
         *,
         session: Session,
+        request: ToolInvocationRequest,
         started_call: StartedToolCall,
         started_at: datetime,
         exc: BaseException,
@@ -482,11 +502,59 @@ class ToolExecutor:
             exc,
             provider_credential_source=session.provider_credential_source,
         )
+        decision_provider_failure = request.tool == "decision_query" and recording.dispatched
+        billing = (
+            exc.billing
+            if request.tool == "decision_query"
+            and isinstance(
+                exc,
+                ToolProviderError
+                | ToolInvocationRejectedError
+                | BudgetExceededError
+                | ToolInvocationTimeoutError
+                | ToolInvocationCancelledError,
+            )
+            else None
+        )
+        failure_provider = None if billing is None else billing.actual_cost_provider
+        if request.tool == "decision_query" and failure_provider is None:
+            if isinstance(exc, ToolProviderError) and exc.provider is not None:
+                selected_provider = exc.provider
+            else:
+                try:
+                    selected_provider = tool_payload_for_invocation(request).get("provider")
+                except ValueError:
+                    selected_provider = None
+            if isinstance(selected_provider, str) and selected_provider in {"openrouter", "ai_gateway"}:
+                failure_provider = selected_provider
+        failure_cost = (
+            None
+            if billing is None
+            else normalized_provider_cost(
+                billing.actual_cost_usd,
+                field_name="decision failure cost",
+                strict=False,
+            )
+        )
+        if request.tool == "decision_query" and not recording.dispatched and billing is None:
+            failure_cost = 0.0
+        if failure_cost is None and decision_provider_failure:
+            failure_cost = _known_failure_cost(recording)
+            if recording.output is not None:
+                failure_provider = recording.output.actual_cost_provider or failure_provider
+        if billing is not None and failure_cost is not None:
+            error_extra["actual_cost_evidence"] = billing_evidence_payload(billing)
+        elif decision_provider_failure and failure_cost is None:
+            error_extra["actual_cost_settlement_source"] = "unavailable"
         failed_receipt = started_call.materialize(
             outcome=_tool_failure_outcome(exc),
-            response_payload=None,
+            response_payload=None
+            if billing is None or billing.usage is None
+            else {"usage": billing.usage.model_dump(mode="json", exclude_none=True)},
             results=(),
-            cost_usd=None,
+            cost_usd=failure_cost,
+            actual_cost_usd=failure_cost,
+            actual_cost_provider=failure_provider,
             extra=error_extra,
             execution=ToolExecutionFacts(
                 elapsed_ms=_elapsed_ms_between(started_at, finished_at),
@@ -496,8 +564,8 @@ class ToolExecutor:
         )
         if self._tool_call_recorder is not None and recording.started and not recording.terminal_attempted:
             durable_receipt = failed_receipt
-            cost = _known_failure_cost(recording)
-            if cost is not None:
+            cost = failure_cost if failure_cost is not None else _known_failure_cost(recording)
+            if cost is not None and failure_cost is None:
                 durable_receipt = replace(
                     failed_receipt,
                     details=replace(
@@ -517,7 +585,19 @@ class ToolExecutor:
             publish_failure = self._tool_call_recorder is None
         completion = self._receipts.complete_pending_receipt(
             failed_receipt,
-            settle_usage=lambda: (session, False),
+            settle_usage=lambda: (
+                (session, False)
+                if failure_cost is None and not decision_provider_failure
+                else self._settle_usage(
+                    session_id=session.session_id,
+                    request=request,
+                    llm_tokens=0,
+                    usage_details=None,
+                    settled_cost_usd=failure_cost,
+                    actual_cost_usd=failure_cost,
+                    actual_cost_provider=failure_provider,
+                )
+            ),
         )
         if completion is None:
             return

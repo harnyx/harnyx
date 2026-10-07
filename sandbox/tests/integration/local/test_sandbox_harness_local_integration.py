@@ -535,9 +535,10 @@ async def test_worker_print_delivers_unterminated_output(tmp_path, capfd, text):
     )
     runtime = SandboxHarness(artifact_path=str(path))
     try:
-        assert await runtime.invoke(
-            "probe", body(), headers={"x-session-id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}
-        ) == "ok"
+        assert (
+            await runtime.invoke("probe", body(), headers={"x-session-id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"})
+            == "ok"
+        )
     finally:
         await runtime.close()
     records = [
@@ -563,5 +564,115 @@ async def test_blocking_module_initialization_remains_subject_to_query_deadline(
         assert error.value.status_code == 504
         assert error.value.detail["error"] == "entrypoint deadline exceeded"
         assert not runtime._compiler.children
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.parametrize("fail", [False, True])
+async def test_decision_sdk_roundtrip_settles_host_receipt(tmp_path, fail):
+    from dataclasses import asdict
+    from datetime import UTC, datetime, timedelta
+    from uuid import uuid4
+
+    from harnyx_commons.domain.session import Session
+    from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
+    from harnyx_commons.infrastructure.state.session_registry import InMemorySessionRegistry
+    from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
+    from harnyx_commons.tools.decision_models import DecisionQueryResponse
+    from harnyx_commons.tools.dto import ToolInvocationRequest
+    from harnyx_commons.tools.executor import ToolExecutor
+    from harnyx_commons.tools.ports import DecisionProviderResult
+    from harnyx_commons.tools.runtime_invoker import RuntimeToolInvoker
+    from harnyx_commons.tools.usage_tracker import UsageTracker
+
+    path = tmp_path / "agent.py"
+    path.write_text("""
+from harnyx_miner_sdk.api import decision_query
+from harnyx_miner_sdk.decorators import entrypoint
+@entrypoint("decision")
+async def decision(request: dict[str, object]) -> object:
+    try:
+        answer = await decision_query(provider="openrouter", model="cloudflare/clef-flash",
+            state={"draft": "hello"}, questions={"b": {"type": "boolean", "instructions": "?"}})
+        return {"probability": answer.response.answers["b"].probability,
+                "used": answer.budget.session_used_budget_usd}
+    except Exception:
+        return {"failed": True}
+""")
+    now = datetime.now(UTC)
+    session = Session(
+        session_id=uuid4(), uid=1, task_id=uuid4(), issued_at=now, expires_at=now + timedelta(minutes=5), budget_usd=1
+    )
+    sessions, receipts, tokens = InMemorySessionRegistry(), InMemoryReceiptLog(), InMemoryTokenRegistry()
+    sessions.create(session)
+    tokens.register(session.session_id, "test-token")
+
+    class Provider:
+        async def query(self, request):
+            assert request.state == {"draft": "hello"}
+            if fail:
+                from harnyx_commons.tools.invocation_clients import _decision_result
+
+                return _decision_result(
+                    request,
+                    {
+                        "model": request.model,
+                        "answers": {},
+                        "usage": {"input_tokens": 100, "output_tokens": 0, "cost": 0.02},
+                    },
+                )
+            return DecisionProviderResult(
+                DecisionQueryResponse.model_validate(
+                    {
+                        "model": request.model,
+                        "answers": {"b": {"type": "boolean", "probability": 0.8}},
+                        "usage": {"input_tokens": 100, "output_tokens": 0},
+                    }
+                ),
+                0.02,
+                "openrouter",
+                {"settlement_source": "provider_returned"},
+            )
+
+        async def aclose(self):
+            pass
+
+    executor = ToolExecutor(
+        session_registry=sessions,
+        receipt_log=receipts,
+        usage_tracker=UsageTracker(),
+        tool_invoker=RuntimeToolInvoker(receipts, decision_provider_resolver=lambda _p, _c: Provider()),
+        token_registry=tokens,
+        clock=lambda: now,
+    )
+
+    class Proxy:
+        async def invoke(self, name, *, args=(), kwargs=None):
+            result = await executor.execute(
+                ToolInvocationRequest(session.session_id, "test-token", name, args, kwargs or {})
+            )
+            return {
+                "receipt_id": result.receipt.receipt_id,
+                "response": result.response_payload,
+                "results": [],
+                "result_policy": "log_only",
+                "budget": asdict(result.budget),
+            }
+
+        async def aclose(self):
+            pass
+
+    runtime = SandboxHarness(artifact_path=str(path), tool_factory=lambda _config, _headers: Proxy())
+    try:
+        answer = await runtime.invoke("decision", body())
+        assert answer == ({"failed": True} if fail else {"probability": 0.8, "used": 0.02})
+        assert sessions.get(session.session_id).usage.total_cost_usd == 0.02
+        assert sessions.get(session.session_id).usage.llm_usage_totals == {}
+        assert len(receipts.for_session(session.session_id)) == 1
+        assert receipts.for_session(session.session_id)[0].details.actual_cost_provider == "openrouter"
+        if fail:
+            assert receipts.for_session(session.session_id)[0].details.response_payload == {
+                "usage": {"input_tokens": 100, "output_tokens": 0}
+            }
     finally:
         await runtime.close()

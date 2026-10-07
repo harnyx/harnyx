@@ -561,6 +561,12 @@ Body: [ErrorResponse](#model-errorresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_usd` |  | req | `number` |
+|  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
+|  |  | `input_tokens` | opt | `integer` (nullable) |
+|  |  | `output_tokens` | opt | `integer` (nullable) |
 | `error_code` |  |  | req | `string` |
 | `message` |  |  | req | `string` |
 
@@ -583,6 +589,12 @@ Body: [ErrorResponse](#model-errorresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_usd` |  | req | `number` |
+|  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
+|  |  | `input_tokens` | opt | `integer` (nullable) |
+|  |  | `output_tokens` | opt | `integer` (nullable) |
 | `error_code` |  |  | req | `string` |
 | `message` |  |  | req | `string` |
 
@@ -695,6 +707,12 @@ Body: [ErrorResponse](#model-errorresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_usd` |  | req | `number` |
+|  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
+|  |  | `input_tokens` | opt | `integer` (nullable) |
+|  |  | `output_tokens` | opt | `integer` (nullable) |
 | `error_code` |  |  | req | `string` |
 | `message` |  |  | req | `string` |
 
@@ -789,6 +807,12 @@ Body: [ErrorResponse](#model-errorresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_usd` |  | req | `number` |
+|  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
+|  |  | `input_tokens` | opt | `integer` (nullable) |
+|  |  | `output_tokens` | opt | `integer` (nullable) |
 | `error_code` |  |  | req | `string` |
 | `message` |  |  | req | `string` |
 
@@ -932,7 +956,7 @@ Body: [MinerTaskWorkExecutionsRequest](#model-minertaskworkexecutionsrequest)
 |  |  | `outcome` | req | [ToolCallOutcome](#model-toolcalloutcome) |
 |  |  | `receipt_id` | req | `string` |
 |  |  | `session_id` | req | `string` (format: uuid) |
-|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
 |  |  | `uid` | req | `integer` |
 |  | `miner_hotkey_ss58` |  | req | `string` |
 |  | `response` |  | req | [Response](#model-response) |
@@ -1297,6 +1321,12 @@ Body: [ErrorResponse](#model-errorresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_usd` |  | req | `number` |
+|  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
+|  |  | `input_tokens` | opt | `integer` (nullable) |
+|  |  | `output_tokens` | opt | `integer` (nullable) |
 | `error_code` |  |  | req | `string` |
 | `message` |  |  | req | `string` |
 
@@ -1306,6 +1336,12 @@ Body: [ErrorResponse](#model-errorresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_usd` |  | req | `number` |
+|  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
+|  |  | `input_tokens` | opt | `integer` (nullable) |
+|  |  | `output_tokens` | opt | `integer` (nullable) |
 | `error_code` |  |  | req | `string` |
 | `message` |  |  | req | `string` |
 
@@ -1315,6 +1351,12 @@ Body: [ErrorResponse](#model-errorresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_usd` |  | req | `number` |
+|  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
+|  |  | `input_tokens` | opt | `integer` (nullable) |
+|  |  | `output_tokens` | opt | `integer` (nullable) |
 | `error_code` |  |  | req | `string` |
 | `message` |  |  | req | `string` |
 
@@ -1324,6 +1366,12 @@ Body: [ErrorResponse](#model-errorresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_usd` |  | req | `number` |
+|  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
+|  |  | `input_tokens` | opt | `integer` (nullable) |
+|  |  | `output_tokens` | opt | `integer` (nullable) |
 | `error_code` |  |  | req | `string` |
 | `message` |  |  | req | `string` |
 
@@ -1333,6 +1381,12 @@ Body: [ErrorResponse](#model-errorresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_usd` |  | req | `number` |
+|  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
+|  |  | `input_tokens` | opt | `integer` (nullable) |
+|  |  | `output_tokens` | opt | `integer` (nullable) |
 | `error_code` |  |  | req | `string` |
 | `message` |  |  | req | `string` |
 
@@ -1342,6 +1396,12 @@ Body: [ErrorResponse](#model-errorresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_usd` |  | req | `number` |
+|  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
+|  |  | `input_tokens` | opt | `integer` (nullable) |
+|  |  | `output_tokens` | opt | `integer` (nullable) |
 | `error_code` |  |  | req | `string` |
 | `message` |  |  | req | `string` |
 
@@ -1523,6 +1583,12 @@ Body: [ErrorResponse](#model-errorresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_usd` |  | req | `number` |
+|  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
+|  |  | `input_tokens` | opt | `integer` (nullable) |
+|  |  | `output_tokens` | opt | `integer` (nullable) |
 | `error_code` |  |  | req | `string` |
 | `message` |  |  | req | `string` |
 
@@ -1532,6 +1598,12 @@ Body: [ErrorResponse](#model-errorresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_usd` |  | req | `number` |
+|  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
+|  |  | `input_tokens` | opt | `integer` (nullable) |
+|  |  | `output_tokens` | opt | `integer` (nullable) |
 | `error_code` |  |  | req | `string` |
 | `message` |  |  | req | `string` |
 
@@ -1541,6 +1613,12 @@ Body: [ErrorResponse](#model-errorresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_usd` |  | req | `number` |
+|  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
+|  |  | `input_tokens` | opt | `integer` (nullable) |
+|  |  | `output_tokens` | opt | `integer` (nullable) |
 | `error_code` |  |  | req | `string` |
 | `message` |  |  | req | `string` |
 
@@ -2410,6 +2488,53 @@ Body: [StatusResponse](#model-statusresponse)
 
 </details>
 
+<a id="model-decisionusage"></a>
+### Model: DecisionUsage
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `input_tokens` |  |  | opt | `integer` (nullable) |
+| `output_tokens` |  |  | opt | `integer` (nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "input_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Input Tokens"
+    },
+    "output_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Output Tokens"
+    }
+  },
+  "title": "DecisionUsage",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-embeddingtoolusagesummary"></a>
 ### Model: EmbeddingToolUsageSummary
 
@@ -2479,7 +2604,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `result_id` | req | `string` |
 |  |  | `title` | opt | `string` (nullable) |
 |  |  | `url` | opt | `string` (default: ) |
-|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
 | `signature_hex` |  |  | req | `string` |
 | `signed_callback_path` |  |  | req | `string` |
 
@@ -2877,7 +3002,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `result_id` |  | req | `string` |
 |  | `title` |  | opt | `string` (nullable) |
 |  | `url` |  | opt | `string` (default: ) |
-| `tool` |  |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+| `tool` |  |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
 
 <details>
 <summary>JSON schema</summary>
@@ -2913,6 +3038,7 @@ Body: [StatusResponse](#model-statusresponse)
         "search_ai",
         "fetch_page",
         "embed_text",
+        "decision_query",
         "llm_chat",
         "test_tool",
         "tooling_info"
@@ -3382,11 +3508,70 @@ Body: [StatusResponse](#model-statusresponse)
 
 </details>
 
+<a id="model-errorbillingdto"></a>
+### Model: ErrorBillingDTO
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `actual_cost_provider` |  |  | req | `string` (enum: [openrouter, ai_gateway]) |
+| `actual_cost_usd` |  |  | req | `number` |
+| `usage` |  |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
+|  | `input_tokens` |  | opt | `integer` (nullable) |
+|  | `output_tokens` |  | opt | `integer` (nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "actual_cost_provider": {
+      "enum": [
+        "openrouter",
+        "ai_gateway"
+      ],
+      "title": "Actual Cost Provider",
+      "type": "string"
+    },
+    "actual_cost_usd": {
+      "minimum": 0.0,
+      "title": "Actual Cost Usd",
+      "type": "number"
+    },
+    "usage": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/DecisionUsage"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "actual_cost_usd",
+    "actual_cost_provider"
+  ],
+  "title": "ErrorBillingDTO",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-errorresponse"></a>
 ### Model: ErrorResponse
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_usd` |  | req | `number` |
+|  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
+|  |  | `input_tokens` | opt | `integer` (nullable) |
+|  |  | `output_tokens` | opt | `integer` (nullable) |
 | `error_code` |  |  | req | `string` |
 | `message` |  |  | req | `string` |
 
@@ -3396,6 +3581,16 @@ Body: [StatusResponse](#model-statusresponse)
 ```json
 {
   "properties": {
+    "billing": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/ErrorBillingDTO"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "error_code": {
       "title": "Error Code",
       "type": "string"
@@ -5385,7 +5580,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `outcome` |  | req | [ToolCallOutcome](#model-toolcalloutcome) |
 |  | `receipt_id` |  | req | `string` |
 |  | `session_id` |  | req | `string` (format: uuid) |
-|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
 |  | `uid` |  | req | `integer` |
 | `finished_at` |  |  | req | `string` (format: date-time) |
 | `max_attempts` |  |  | req | `integer` |
@@ -6049,7 +6244,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `outcome` |  | req | [ToolCallOutcome](#model-toolcalloutcome) |
 |  | `receipt_id` |  | req | `string` |
 |  | `session_id` |  | req | `string` (format: uuid) |
-|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
 |  | `uid` |  | req | `integer` |
 | `run` |  |  | req | [MinerTaskRunSection](#model-minertaskrunsection) |
 |  | `artifact_id` |  | req | `string` (format: uuid) |
@@ -6420,7 +6615,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `outcome` |  | req | [ToolCallOutcome](#model-toolcalloutcome) |
 |  | `receipt_id` |  | req | `string` |
 |  | `session_id` |  | req | `string` (format: uuid) |
-|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
 |  | `uid` |  | req | `integer` |
 | `miner_hotkey_ss58` |  |  | req | `string` |
 | `response` |  |  | req | [Response](#model-response) |
@@ -6692,7 +6887,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `outcome` | req | [ToolCallOutcome](#model-toolcalloutcome) |
 |  |  | `receipt_id` | req | `string` |
 |  |  | `session_id` | req | `string` (format: uuid) |
-|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
 |  |  | `uid` | req | `integer` |
 |  | `miner_hotkey_ss58` |  | req | `string` |
 |  | `response` |  | req | [Response](#model-response) |
@@ -6824,7 +7019,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `outcome` | req | [ToolCallOutcome](#model-toolcalloutcome) |
 |  |  | `receipt_id` | req | `string` |
 |  |  | `session_id` | req | `string` (format: uuid) |
-|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
 |  |  | `uid` | req | `integer` |
 |  | `run` |  | req | [MinerTaskRunSection](#model-minertaskrunsection) |
 |  |  | `artifact_id` | req | `string` (format: uuid) |
@@ -6881,7 +7076,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `outcome` | req | [ToolCallOutcome](#model-toolcalloutcome) |
 |  |  | `receipt_id` | req | `string` |
 |  |  | `session_id` | req | `string` (format: uuid) |
-|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
 |  |  | `uid` | req | `integer` |
 |  | `finished_at` |  | req | `string` (format: date-time) |
 |  | `max_attempts` |  | req | `integer` |
@@ -8343,7 +8538,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `issued_at` | req | `string` (format: date-time) |
 |  |  | `receipt_id` | req | `string` |
 |  |  | `results` | req | array[[SearchToolResult](#model-searchtoolresult)] |
-|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
 |  | `signature_hex` |  | req | `string` |
 |  | `signed_callback_path` |  | req | `string` |
 | `query` |  |  | req | [Query](#model-query) |
@@ -8359,7 +8554,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `issued_at` | req | `string` (format: date-time) |
 |  |  | `receipt_id` | req | `string` |
 |  |  | `results` | req | array[[SearchToolResult](#model-searchtoolresult)] |
-|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
 |  | `signature_hex` |  | req | `string` |
 |  | `signed_callback_path` |  | req | `string` |
 
@@ -9713,7 +9908,7 @@ Body: [StatusResponse](#model-statusresponse)
 | `outcome` |  |  | req | [ToolCallOutcome](#model-toolcalloutcome) |
 | `receipt_id` |  |  | req | `string` |
 | `session_id` |  |  | req | `string` (format: uuid) |
-| `tool` |  |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+| `tool` |  |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
 | `uid` |  |  | req | `integer` |
 
 <details>
@@ -9749,6 +9944,7 @@ Body: [StatusResponse](#model-statusresponse)
         "search_ai",
         "fetch_page",
         "embed_text",
+        "decision_query",
         "llm_chat",
         "test_tool",
         "tooling_info"

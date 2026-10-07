@@ -150,7 +150,7 @@ Body: [ReferenceSelectionRequest](#model-referenceselectionrequest)
 |  |  | `issued_at` | req | `string` (format: date-time) |
 |  |  | `receipt_id` | req | `string` |
 |  |  | `results` | req | array[[ReferenceSelectionRequestSearchToolResult](#model-referenceselectionrequestsearchtoolresult)] |
-|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
 |  | `signature_hex` |  | req | `string` |
 |  | `signed_callback_path` |  | req | `string` |
 | `task` |  |  | req | [ReferenceSelectionRequestMinerTask](#model-referenceselectionrequestminertask) |
@@ -395,7 +395,7 @@ Body: [ToolExecuteRequestDTO](#model-toolexecuterequestdto)
 | --- | --- | --- | --- | --- |
 | `args` |  |  | opt | array[[JsonValue](#model-jsonvalue)] (default: []) |
 | `kwargs` |  |  | opt | `object` (default: {}) |
-| `tool` |  |  | req | `string` (enum: [search_web, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+| `tool` |  |  | req | `string` (enum: [search_web, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
 
 **Responses**
 `200` Successful Response
@@ -1486,7 +1486,7 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
 |  |  | `issued_at` | req | `string` (format: date-time) |
 |  |  | `receipt_id` | req | `string` |
 |  |  | `results` | req | array[[ReferenceSelectionRequestSearchToolResult](#model-referenceselectionrequestsearchtoolresult)] |
-|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
 |  | `signature_hex` |  | req | `string` |
 |  | `signed_callback_path` |  | req | `string` |
 | `task` |  |  | req | [ReferenceSelectionRequestMinerTask](#model-referenceselectionrequestminertask) |
@@ -1664,7 +1664,7 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
 |  |  | `result_id` | req | `string` |
 |  |  | `title` | opt | `string` (nullable) |
 |  |  | `url` | opt | `string` (default: ) |
-|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
 | `signature_hex` |  |  | req | `string` |
 | `signed_callback_path` |  |  | req | `string` |
 
@@ -1737,7 +1737,7 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
 |  | `result_id` |  | req | `string` |
 |  | `title` |  | opt | `string` (nullable) |
 |  | `url` |  | opt | `string` (default: ) |
-| `tool` |  |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+| `tool` |  |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
 
 <details>
 <summary>JSON schema</summary>
@@ -1773,6 +1773,7 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
         "search_ai",
         "fetch_page",
         "embed_text",
+        "decision_query",
         "llm_chat",
         "test_tool",
         "tooling_info"
@@ -2538,7 +2539,7 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
 | --- | --- | --- | --- | --- |
 | `args` |  |  | opt | array[[JsonValue](#model-jsonvalue)] (default: []) |
 | `kwargs` |  |  | opt | `object` (default: {}) |
-| `tool` |  |  | req | `string` (enum: [search_web, fetch_page, embed_text, llm_chat, test_tool, tooling_info]) |
+| `tool` |  |  | req | `string` (enum: [search_web, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
 
 <details>
 <summary>JSON schema</summary>
@@ -2568,6 +2569,7 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
         "search_web",
         "fetch_page",
         "embed_text",
+        "decision_query",
         "llm_chat",
         "test_tool",
         "tooling_info"

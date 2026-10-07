@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 from typing import Generic, Literal, TypeVar
 
 from harnyx_commons.json_types import JsonObject
+from harnyx_commons.tools.decision_models import DecisionUsage
 
 ProviderBillingSource = Literal[
     "response_body",
@@ -28,6 +29,7 @@ class ProviderBillingMetadata:
     usage_count: int | None = None
     service: str | None = None
     currency: str | None = None
+    usage: DecisionUsage | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,11 +41,10 @@ class SearchProviderResult(Generic[TSearchResponse]):
 def billing_evidence_payload(billing: ProviderBillingMetadata | None) -> JsonObject | None:
     if billing is None:
         return None
-    return {
-        key: value
-        for key, value in asdict(billing).items()
-        if value is not None and _is_json_value(value)
-    }
+    values = asdict(billing)
+    if billing.usage is not None:
+        values["usage"] = billing.usage.model_dump(mode="json", exclude_none=True)
+    return {key: value for key, value in values.items() if value is not None and _is_json_value(value)}
 
 
 def _is_json_value(value: object) -> bool:

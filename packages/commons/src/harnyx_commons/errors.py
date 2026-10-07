@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from asyncio import CancelledError
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -20,6 +21,10 @@ class MissingEntrypointError(SandboxError):
 class BudgetExceededError(RuntimeError):
     """Raised when a tool call exceeds the configured session budget."""
 
+    def __init__(self, message: str, *, billing: ProviderBillingMetadata | None = None) -> None:
+        super().__init__(message)
+        self.billing = billing
+
 
 class SessionBudgetExhaustedError(RuntimeError):
     """Raised when execution exhausts the session hard limit."""
@@ -31,6 +36,18 @@ class ConcurrencyLimitError(RuntimeError):
 
 class ToolInvocationTimeoutError(RuntimeError):
     """Raised when a caller-selected tool invocation deadline expires."""
+
+    def __init__(self, message: str, *, billing: ProviderBillingMetadata | None = None) -> None:
+        super().__init__(message)
+        self.billing = billing
+
+
+class ToolInvocationCancelledError(CancelledError):
+    """Cancellation after a provider supplied authoritative billing evidence."""
+
+    def __init__(self, message: str, *, billing: ProviderBillingMetadata | None = None) -> None:
+        super().__init__(message)
+        self.billing = billing
 
 
 class ToolProviderFailureCode(StrEnum):
@@ -45,6 +62,14 @@ class ProviderCredentialUnavailableError(RuntimeError):
     def __init__(self, provider: str) -> None:
         super().__init__("configured provider credential unavailable")
         self.provider = provider
+
+
+class ToolInvocationRejectedError(RuntimeError):
+    """A tool request was rejected, optionally with authoritative cost evidence."""
+
+    def __init__(self, message: str, *, billing: ProviderBillingMetadata | None = None) -> None:
+        super().__init__(message)
+        self.billing = billing
 
 
 class ToolProviderError(RuntimeError):
@@ -87,6 +112,8 @@ __all__ = [
     "SessionBudgetExhaustedError",
     "ConcurrencyLimitError",
     "ToolInvocationTimeoutError",
+    "ToolInvocationCancelledError",
+    "ToolInvocationRejectedError",
     "ProviderCredentialUnavailableError",
     "ToolProviderFailureCode",
     "ToolProviderError",

@@ -6,9 +6,10 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from harnyx_commons.json_types import JsonObject
+from harnyx_commons.tools.decision_models import DecisionQueryRequest, DecisionQueryResponse
 from harnyx_commons.tools.embedding_models import EmbedTextRequest, EmbedTextResponse
 from harnyx_commons.tools.extraction_models import ExtractPagesRequest, ExtractPagesResponse
-from harnyx_commons.tools.provider_billing import SearchProviderResult
+from harnyx_commons.tools.provider_billing import ProviderBillingMetadata, SearchProviderResult
 from harnyx_commons.tools.search_models import (
     FetchPageRequest,
     FetchPageResponse,
@@ -89,6 +90,7 @@ class DeSearchPort(Protocol):
 
     async def fetch_twitter_post(self, *, post_id: str) -> SearchXResult | None: ...
 
+
 __all__ = [
     "AiSearchProviderPort",
     "DeSearchPort",
@@ -97,3 +99,25 @@ __all__ = [
     "PageExtractionProviderPort",
     "WebSearchProviderPort",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionProviderResult:
+    response: DecisionQueryResponse
+    actual_cost_usd: float | None
+    actual_cost_provider: str
+    actual_cost_evidence: JsonObject
+
+    @property
+    def billing(self) -> ProviderBillingMetadata:
+        return ProviderBillingMetadata(
+            actual_cost_usd=self.actual_cost_usd,
+            actual_cost_provider=self.actual_cost_provider,
+            source="response_body",
+            usage=self.response.usage,
+        )
+
+
+class DecisionProviderPort(Protocol):
+    async def query(self, request: DecisionQueryRequest) -> DecisionProviderResult: ...
+    async def aclose(self) -> None: ...

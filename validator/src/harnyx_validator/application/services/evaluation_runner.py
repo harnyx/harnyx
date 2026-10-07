@@ -2976,15 +2976,14 @@ def _usage_from_receipts(receipts: tuple[ToolCall, ...]) -> SessionUsage:
         if session_cost is not None:
             provider = _receipt_session_cost_provider(receipt)
             total_cost_usd += session_cost
-            cost_by_provider[provider] = cost_by_provider.get(provider, 0.0) + session_cost
+            if provider is not None:
+                cost_by_provider[provider] = cost_by_provider.get(provider, 0.0) + session_cost
+                actual_cost_by_provider[provider] = actual_cost_by_provider.get(provider, 0.0) + session_cost
         actual_total_cost_usd = _accumulate_receipt_actual_cost(
             actual_total_cost_usd,
             receipt=receipt,
             cost_usd=session_cost,
         )
-        if session_cost is not None:
-            actual_provider = _receipt_session_cost_provider(receipt)
-            actual_cost_by_provider[actual_provider] = actual_cost_by_provider.get(actual_provider, 0.0) + session_cost
         if not receipt.is_successful() or receipt.tool != "llm_chat":
             continue
         model = _receipt_llm_model(receipt)
@@ -3107,6 +3106,8 @@ def _accumulate_receipt_actual_cost(
     cost_usd: float | None,
 ) -> float | None:
     if cost_usd is None:
+        if receipt.tool == "decision_query":
+            return None
         if (
             receipt.is_successful()
             and receipt.details.extra is not None
@@ -3119,7 +3120,7 @@ def _accumulate_receipt_actual_cost(
     return current + cost_usd
 
 
-def _receipt_session_cost_provider(receipt: ToolCall) -> str:
+def _receipt_session_cost_provider(receipt: ToolCall) -> str | None:
     if receipt.tool == "llm_chat":
         _receipt_llm_provider(receipt)
     if receipt.details.actual_cost_provider is not None:
@@ -3127,8 +3128,10 @@ def _receipt_session_cost_provider(receipt: ToolCall) -> str:
     return _receipt_request_cost_provider(receipt)
 
 
-def _receipt_request_cost_provider(receipt: ToolCall) -> str:
+def _receipt_request_cost_provider(receipt: ToolCall) -> str | None:
     provider = _receipt_request_provider(receipt)
+    if receipt.tool == "decision_query":
+        return provider if provider in {"openrouter", "ai_gateway"} else None
     if provider is not None and provider.strip():
         return provider.strip()
     if receipt.tool == "llm_chat":

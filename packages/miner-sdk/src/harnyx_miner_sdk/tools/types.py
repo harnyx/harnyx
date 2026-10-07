@@ -12,6 +12,7 @@ MinerToolName = Literal[
     "search_web",
     "fetch_page",
     "embed_text",
+    "decision_query",
     "llm_chat",
     "test_tool",
     "tooling_info",
@@ -19,12 +20,14 @@ MinerToolName = Literal[
 ToolName = MinerToolName
 SearchToolName = Literal["search_web", "fetch_page"]
 EmbeddingToolName = Literal["embed_text"]
+DecisionToolName = Literal["decision_query"]
 LlmToolName = Literal["llm_chat"]
 
 MINER_TOOL_NAMES: set[MinerToolName] = {
     "search_web",
     "fetch_page",
     "embed_text",
+    "decision_query",
     "llm_chat",
     "test_tool",
     "tooling_info",
@@ -32,6 +35,7 @@ MINER_TOOL_NAMES: set[MinerToolName] = {
 TOOL_NAMES: set[ToolName] = set(MINER_TOOL_NAMES)
 SEARCH_TOOLS: set[SearchToolName] = {"search_web", "fetch_page"}
 EMBEDDING_TOOLS: set[EmbeddingToolName] = {"embed_text"}
+DECISION_TOOLS: set[DecisionToolName] = {"decision_query"}
 LLM_TOOLS: set[LlmToolName] = {"llm_chat"}
 
 
@@ -68,6 +72,8 @@ __all__ = [
     "SEARCH_TOOLS",
     "EMBEDDING_TOOLS",
     "LLM_TOOLS",
+    "DECISION_TOOLS",
+    "DecisionToolName",
     "parse_tool_name",
     "is_search_tool",
     "is_embedding_tool",

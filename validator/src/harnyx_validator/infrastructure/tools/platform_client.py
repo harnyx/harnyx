@@ -12,7 +12,7 @@ from uuid import UUID
 
 import bittensor as bt
 import httpx
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from harnyx_commons.bittensor import build_canonical_request
 from harnyx_commons.domain.miner_task import EvaluationTrace, MinerTask, Response
@@ -27,10 +27,17 @@ from harnyx_commons.endpoint_execution import (
     EndpointResponseReport,
     EndpointStartReport,
 )
-from harnyx_commons.errors import BudgetExceededError, ToolInvocationTimeoutError, ToolProviderError
+from harnyx_commons.errors import (
+    BudgetExceededError,
+    ToolInvocationRejectedError,
+    ToolInvocationTimeoutError,
+    ToolProviderError,
+)
 from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.protocol_headers import PLATFORM_TOOL_PROXY_TOKEN_HEADER
 from harnyx_commons.rating_competition import RATING_JUDGMENT_ALREADY_ACCEPTED, RatingJudgment, RatingWorkPage
+from harnyx_commons.tools.decision_models import DecisionUsage
+from harnyx_commons.tools.provider_billing import ProviderBillingMetadata
 from harnyx_commons.tools.types import ToolName
 from harnyx_miner_sdk.endpoint_protocol import EndpointCallbackAcknowledgement, EndpointDelegation
 from harnyx_validator.application.dto.evaluation import (
@@ -70,16 +77,18 @@ class PlatformClientError(RuntimeError):
         self.status_code = status_code
 
 
-class PlatformToolProxyInvocationError(RuntimeError):
+class PlatformToolProxyInvocationError(ToolInvocationRejectedError):
     """Raised when platform-tool-proxy rejects a tool invocation for non-provider reasons."""
 
-    def __init__(self, *, status_code: int, error_code: str | None, message: str) -> None:
-        super().__init__(message)
+    def __init__(
+        self, *, status_code: int, error_code: str | None, message: str, billing: ProviderBillingMetadata | None = None
+    ) -> None:
+        super().__init__(message, billing=billing)
         self.status_code = status_code
         self.error_code = error_code
 
 
-class PlatformToolProxyInterruptedError(RuntimeError):
+class PlatformToolProxyInterruptedError(ToolInvocationRejectedError):
     """Raised when a sent platform-tool-proxy execution is interrupted before a response."""
 
     error_code = "platform_interrupted"
@@ -91,8 +100,8 @@ class PlatformToolProxyProviderError(ToolProviderError):
 
     error_code = "provider_failed"
 
-    def __init__(self, *, status_code: int, message: str) -> None:
-        super().__init__(message)
+    def __init__(self, *, status_code: int, message: str, billing: ProviderBillingMetadata | None = None) -> None:
+        super().__init__(message, billing=billing)
         self.status_code = status_code
 
 
@@ -101,8 +110,8 @@ class PlatformToolProxyToolTimeoutError(ToolInvocationTimeoutError):
 
     error_code = "tool_timeout"
 
-    def __init__(self, *, status_code: int, message: str) -> None:
-        super().__init__(message)
+    def __init__(self, *, status_code: int, message: str, billing: ProviderBillingMetadata | None = None) -> None:
+        super().__init__(message, billing=billing)
         self.status_code = status_code
 
 
@@ -111,8 +120,8 @@ class PlatformToolProxyBudgetExceededError(BudgetExceededError):
 
     error_code = "budget_exhausted"
 
-    def __init__(self, *, status_code: int, message: str) -> None:
-        super().__init__(message)
+    def __init__(self, *, status_code: int, message: str, billing: ProviderBillingMetadata | None = None) -> None:
+        super().__init__(message, billing=billing)
         self.status_code = status_code
 
 
@@ -651,27 +660,46 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
             ) from exc
         if response.status_code != httpx.codes.OK:
             error_code = _platform_error_code(response)
+            billing = None
+            if tool == "decision_query":
+                try:
+                    error_payload = response.json()
+                except ValueError:
+                    error_payload = None
+                if isinstance(error_payload, dict) and error_payload.get("billing") is not None:
+                    parsed_billing = _DecisionProxyBilling.model_validate(error_payload["billing"])
+                    billing = ProviderBillingMetadata(
+                        actual_cost_usd=parsed_billing.actual_cost_usd,
+                        actual_cost_provider=parsed_billing.actual_cost_provider,
+                        source="response_body",
+                        usage=parsed_billing.usage,
+                    )
             if error_code == "platform_interrupted":
                 raise PlatformToolProxyInterruptedError(
-                    _platform_error_message(response) or "platform tool proxy execution interrupted"
+                    _platform_error_message(response) or "platform tool proxy execution interrupted",
+                    billing=billing,
                 )
             if error_code == "tool_timeout":
                 raise PlatformToolProxyToolTimeoutError(
                     status_code=response.status_code,
                     message=_platform_error_message(response) or "tool timed out",
+                    billing=billing,
                 )
             if error_code == "provider_failed":
                 raise PlatformToolProxyProviderError(
                     status_code=response.status_code,
                     message=_platform_error_message(response) or "tool provider failed",
+                    billing=billing,
                 )
             if error_code == "budget_exhausted":
                 raise PlatformToolProxyBudgetExceededError(
+                    billing=billing,
                     status_code=response.status_code,
                     message=_platform_error_message(response) or "platform tool proxy budget exhausted",
                 )
             if error_code in _SELECTED_PROVIDER_OR_TOOL_REQUEST_MINER_OWNED_PROXY_ERROR_CODES:
                 raise PlatformToolProxyInvocationError(
+                    billing=billing,
                     status_code=response.status_code,
                     error_code=error_code,
                     message=(
@@ -680,6 +708,7 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
                 )
             if error_code in _NON_PROVIDER_PLATFORM_TOOL_PROXY_ERROR_CODES:
                 raise PlatformToolProxyInvocationError(
+                    billing=billing,
                     status_code=response.status_code,
                     error_code=error_code,
                     message=_platform_error_message(response) or "platform tool proxy control failure",
@@ -687,6 +716,7 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
             raise PlatformToolProxyInvocationError(
                 status_code=response.status_code,
                 error_code="platform_error",
+                billing=billing,
                 message=(
                     _platform_error_message(response) or f"platform returned {response.status_code} for POST {path}"
                 ),
@@ -1064,3 +1094,10 @@ __all__ = [
     "PlatformToolProxyProviderError",
     "PlatformToolProxyToolTimeoutError",
 ]
+
+
+class _DecisionProxyBilling(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    actual_cost_usd: float = Field(ge=0, allow_inf_nan=False)
+    actual_cost_provider: Literal["openrouter", "ai_gateway"]
+    usage: DecisionUsage | None = None

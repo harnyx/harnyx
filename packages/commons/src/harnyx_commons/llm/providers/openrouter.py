@@ -8,7 +8,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, cast
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError
 
 from harnyx_commons.config.llm import OpenAiCompatibleEndpointConfig
 from harnyx_commons.json_types import JsonObject, JsonValue
@@ -398,3 +398,59 @@ __all__ = [
     "OpenRouterLlmProvider",
     "build_openrouter_chat_provider",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class OpenRouterDecisionResponse:
+    raw_payload: JsonObject
+
+
+@dataclass(slots=True)
+class OpenRouterDecisionClient:
+    model: str
+    api_key: SecretStr = field(repr=False)
+    base_url: str = "https://openrouter.ai/api/alpha"
+    timeout_seconds: float = 120.0
+    client: httpx.AsyncClient | None = None
+    _owns_client: bool = field(default=False, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if not self.api_key.get_secret_value().strip():
+            raise ValueError("OpenRouter API key must be provided for decisions")
+        if self.client is None:
+            self.client = httpx.AsyncClient(
+                base_url=self.base_url.rstrip("/") + "/",
+                headers={"Authorization": f"Bearer {self.api_key.get_secret_value().strip()}"},
+                timeout=self.timeout_seconds,
+            )
+            self._owns_client = True
+
+    async def query(
+        self,
+        state: JsonValue,
+        questions: JsonObject,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> OpenRouterDecisionResponse:
+        native_questions: JsonObject = {}
+        for key, question in questions.items():
+            if not isinstance(question, dict):
+                raise ValueError("decision question must be an object")
+            native_questions[key] = {
+                **question,
+                "type": "noul" if question.get("type") == "boolean" else question.get("type"),
+            }
+        assert self.client is not None
+        response = await self.client.post(
+            "decisions",
+            headers={"Authorization": f"Bearer {self.api_key.get_secret_value().strip()}"},
+            json={"model": self.model, "state": state, "questions": native_questions},
+            timeout=self.timeout_seconds if timeout_seconds is None else timeout_seconds,
+        )
+        response.raise_for_status()
+        return OpenRouterDecisionResponse(TypeAdapter(JsonObject).validate_python(response.json()))
+
+    async def aclose(self) -> None:
+        if self._owns_client:
+            assert self.client is not None
+            await self.client.aclose()

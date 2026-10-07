@@ -7,7 +7,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from harnyx_commons.tools.api import embed_text, fetch_page, llm_chat, search_web, tooling_info
+from harnyx_commons.tools.api import decision_query, embed_text, fetch_page, llm_chat, search_web, tooling_info
 from harnyx_commons.tools.api import (
     test_tool as invoke_test_tool,
 )
@@ -60,6 +60,10 @@ class _ResponseInvoker:
                 "input_type": "query",
                 "data": [{"index": 0, "embedding": [0.1]}],
                 "dimensions": 1,
+            },
+            "decision_query": {
+                "model": "cloudflare/clef-flash",
+                "answers": {"b": {"type": "boolean", "probability": 0.8}},
             },
             "llm_chat": {"id": "response-1", "choices": [], "usage": {}},
         }
@@ -171,3 +175,16 @@ async def test_tool_helpers_reject_invalid_timeout_values(
                 await invoke_helper(timeout)
     finally:
         await proxy.aclose()
+
+
+async def test_decision_helper_returns_typed_answer_and_receipt() -> None:
+    with bind_tool_invoker(_ResponseInvoker()):
+        result = await decision_query(
+            provider="openrouter",
+            model="cloudflare/clef-flash",
+            state={"text": "state"},
+            questions={"b": {"type": "boolean", "instructions": "?"}},
+        )
+    assert result.receipt_id == "receipt-decision_query"
+    assert result.response.answers["b"].probability == 0.8
+    assert result.result_policy == "log_only"

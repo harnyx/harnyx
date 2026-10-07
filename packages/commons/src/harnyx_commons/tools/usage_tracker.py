@@ -192,7 +192,8 @@ def accumulate_actual_costs(
         provider_override=actual_cost_provider,
     )
     provider_costs = dict(actual_cost_by_provider)
-    provider_costs[provider] = provider_costs.get(provider, 0.0) + resolved_cost
+    if provider is not None:
+        provider_costs[provider] = provider_costs.get(provider, 0.0) + resolved_cost
 
     if actual_total_cost_usd is None:
         return None, provider_costs

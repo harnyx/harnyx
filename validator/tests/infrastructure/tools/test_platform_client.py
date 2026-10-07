@@ -1403,7 +1403,7 @@ async def test_platform_tool_proxy_execute_maps_platform_interrupted_error_code_
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "POST" and request.url.path == "/v1/platform-tool-proxy/tools/execute":
             return httpx.Response(
-                status_code=400,
+                status_code=503,
                 json={
                     "error_code": "platform_interrupted",
                     "message": "platform tool proxy execution interrupted before completion",
@@ -1736,3 +1736,121 @@ def test_fetch_artifact_does_not_retry_http_status_failure() -> None:
     assert [request.url.path for request in requests] == [
         f"/v1/miner-task-batches/{batch_id}/artifacts/{artifact_id}",
     ]
+
+
+@pytest.mark.anyio("asyncio")
+async def test_decision_proxy_error_preserves_charge() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            502,
+            json={
+                "error_code": "provider_failed",
+                "message": "bad answer",
+                "billing": {"actual_cost_usd": 0.02, "actual_cost_provider": "openrouter"},
+            },
+        )
+
+    client = AsyncPlatformToolProxyPlatformClient(
+        base_url="https://mock.local",
+        hotkey=_keypair(),
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(PlatformToolProxyProviderError) as error:
+            await client.execute_platform_tool_proxy_tool(
+                token=uuid4().hex,
+                uid=7,
+                artifact_id=uuid4(),
+                task_id=uuid4(),
+                validator_session_id=uuid4(),
+                attempt_number=1,
+                receipt_id=str(uuid4()),
+                tool="decision_query",
+                args=(),
+                kwargs={
+                    "provider": "openrouter",
+                    "model": "cloudflare/clef-flash",
+                    "state": "s",
+                    "questions": {"b": {"type": "boolean", "instructions": "?"}},
+                },
+                transport_timeout_seconds=11.0,
+            )
+        assert error.value.billing is not None
+        assert error.value.billing.actual_cost_usd == 0.02
+        assert error.value.billing.actual_cost_provider == "openrouter"
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.anyio("asyncio")
+@pytest.mark.parametrize("cost", [-1, "0.02", True])
+@pytest.mark.parametrize("error_code", ["provider_failed", "invalid_request"])
+async def test_decision_proxy_rejects_malformed_billing(cost, error_code) -> None:
+    from pydantic import ValidationError
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            502,
+            json={
+                "error_code": error_code,
+                "message": "bad answer",
+                "billing": {"actual_cost_usd": cost, "actual_cost_provider": "openrouter"},
+            },
+        )
+
+    client = AsyncPlatformToolProxyPlatformClient(
+        base_url="https://mock.local", hotkey=_keypair(), transport=httpx.MockTransport(handler)
+    )
+    try:
+        with pytest.raises(ValidationError):
+            await client.execute_platform_tool_proxy_tool(
+                token=uuid4().hex,
+                uid=7,
+                artifact_id=uuid4(),
+                task_id=uuid4(),
+                validator_session_id=uuid4(),
+                attempt_number=1,
+                receipt_id=str(uuid4()),
+                tool="decision_query",
+                args=(),
+                kwargs={},
+                transport_timeout_seconds=11.0,
+            )
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.anyio("asyncio")
+@pytest.mark.parametrize(
+    "body", ["<html>Bad Gateway</html>", "[]", '{"message":"gateway failed"}', '{"error_code":"budget_exhausted"}']
+)
+async def test_decision_proxy_unrecognized_error_keeps_typed_http_failure(body) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(502, content=body)
+
+    client = AsyncPlatformToolProxyPlatformClient(
+        base_url="https://mock.local",
+        hotkey=_keypair(),
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(RuntimeError) as caught:
+            await client.execute_platform_tool_proxy_tool(
+                token=uuid4().hex,
+                uid=7,
+                artifact_id=uuid4(),
+                task_id=uuid4(),
+                validator_session_id=uuid4(),
+                attempt_number=1,
+                receipt_id="r",
+                tool="decision_query",
+                args=(),
+                kwargs={},
+                transport_timeout_seconds=11.0,
+            )
+        error = caught.value
+        assert error.status_code == 502
+        assert error.error_code == ("budget_exhausted" if "budget_exhausted" in body else "platform_error")
+        assert error.billing is None
+    finally:
+        await client.aclose()

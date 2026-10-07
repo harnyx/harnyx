@@ -25,10 +25,11 @@ from harnyx_commons.llm.schema import (
     LlmUsage,
 )
 from harnyx_commons.protocol_headers import SESSION_ID_HEADER
+from harnyx_commons.tools.decision_models import BooleanAnswer, DecisionQueryRequest, DecisionQueryResponse
 from harnyx_commons.tools.dto import ToolInvocationRequest
 from harnyx_commons.tools.embedding_models import EmbedTextRequest
 from harnyx_commons.tools.executor import ToolExecutor, ToolInvocationContext, ToolInvocationOutput
-from harnyx_commons.tools.ports import EmbeddingProviderResult
+from harnyx_commons.tools.ports import DecisionProviderResult, EmbeddingProviderResult
 from harnyx_commons.tools.runtime_invoker import RuntimeToolInvoker
 from harnyx_commons.tools.search_models import (
     FetchPageRequest,
@@ -257,6 +258,7 @@ class TrackingDependencyProvider:
         llm_provider_name: str = "openrouter",
         web_search_client=None,
         embedding_provider=None,
+        decision_provider=None,
     ) -> None:
         self.session_registry = FakeSessionRegistry()
         self.receipt_log = FakeReceiptLog()
@@ -305,6 +307,7 @@ class TrackingDependencyProvider:
                 (lambda _provider, _context: embedding_provider) if embedding_provider is not None else None
             ),
             allowed_models=ALLOWED_TOOL_MODELS,
+            decision_provider=decision_provider,
         )
 
         self.tool_executor = _ProviderTrackingToolExecutor(
@@ -459,6 +462,94 @@ def test_execute_tool_endpoint_records_provider_call_on_live_llm_success() -> No
             "failed_calls": 0,
         },
     )
+
+
+class _TrackedDecisionProvider:
+    def __init__(self, *, fails: bool) -> None:
+        self.fails = fails
+
+    async def query(self, request: DecisionQueryRequest) -> DecisionProviderResult:
+        if self.fails:
+            raise ToolProviderError("decision provider unavailable")
+        return DecisionProviderResult(
+            response=DecisionQueryResponse(
+                model=request.model,
+                answers={"ready": BooleanAnswer(type="boolean", probability=0.9)},
+            ),
+            actual_cost_usd=0.001,
+            actual_cost_provider=request.provider,
+            actual_cost_evidence={"source": "provider"},
+        )
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_execute_tool_endpoint_records_decision_provider_evidence(fails: bool) -> None:
+    provider = TrackingDependencyProvider(decision_provider=_TrackedDecisionProvider(fails=fails))
+    client = TestClient(create_test_app(provider))
+
+    response = client.post(
+        "/v1/tools/execute",
+        json={
+            "tool": "decision_query",
+            "args": [],
+            "kwargs": {
+                "provider": "openrouter",
+                "model": "cloudflare/clef-flash",
+                "state": "ready",
+                "questions": {"ready": {"type": "boolean", "instructions": "Is it ready?"}},
+            },
+        },
+        headers={
+            "x-platform-token": DEMO_SESSION_TOKEN,
+            SESSION_ID_HEADER: str(provider.session.session_id),
+        },
+    )
+
+    assert response.status_code == (400 if fails else 200)
+    expected = {
+        "provider": "openrouter",
+        "model": "cloudflare/clef-flash",
+        "total_calls": 1,
+        "failed_calls": int(fails),
+    }
+    if fails:
+        expected["failure_reason"] = "decision provider unavailable"
+    assert provider.progress_tracker.provider_evidence(provider.batch_id) == (expected,)
+    assert provider.progress_tracker.consume_provider_failures(provider.session.session_id) == (
+        (expected,) if fails else ()
+    )
+
+
+@pytest.mark.parametrize(
+    ("selected_provider", "model"),
+    [("chutes", "cloudflare/clef-flash"), ("openrouter", "invalid-model"), ("ai_gateway", "cloudflare/clef")],
+)
+def test_execute_tool_endpoint_invalid_decision_selection_has_no_provider_evidence(
+    selected_provider: str, model: str
+) -> None:
+    provider = TrackingDependencyProvider(decision_provider=_TrackedDecisionProvider(fails=False))
+    client = TestClient(create_test_app(provider))
+
+    response = client.post(
+        "/v1/tools/execute",
+        json={
+            "tool": "decision_query",
+            "args": [],
+            "kwargs": {
+                "provider": selected_provider,
+                "model": model,
+                "state": "ready",
+                "questions": {"ready": {"type": "boolean", "instructions": "Is it ready?"}},
+            },
+        },
+        headers={
+            "x-platform-token": DEMO_SESSION_TOKEN,
+            SESSION_ID_HEADER: str(provider.session.session_id),
+        },
+    )
+
+    assert response.status_code == 400
+    assert provider.progress_tracker.provider_evidence(provider.batch_id) == ()
 
 
 def test_execute_tool_endpoint_records_provider_failure_on_live_llm_provider_error() -> None:

@@ -15,6 +15,14 @@ from harnyx_miner_sdk.llm import (
     LlmThinkingConfig,
     Timeout,
 )
+from harnyx_miner_sdk.tools.decision_models import (
+    DecisionContext,
+    DecisionProviderName,
+    DecisionQueryRequest,
+    DecisionQueryResponse,
+    DecisionQuestion,
+    validate_decision_answers,
+)
 from harnyx_miner_sdk.tools.embedding_models import (
     EmbeddingInputType,
     EmbeddingProviderName,
@@ -279,6 +287,34 @@ async def embed_text(
     return _build_tool_call_response(ToolCallResponse, dto, response)
 
 
+async def decision_query(
+    *,
+    provider: DecisionProviderName,
+    model: str,
+    state: DecisionContext,
+    questions: Mapping[str, DecisionQuestion | Mapping[str, Any]],
+    timeout: ToolInvocationTimeout | None = None,
+) -> ToolCallResponse[DecisionQueryResponse]:
+    """Evaluate typed questions against state through a native decision model."""
+    request = DecisionQueryRequest.model_validate(
+        {
+            "provider": provider,
+            "model": model,
+            "state": state,
+            "questions": dict(questions),
+            "timeout": timeout,
+        }
+    )
+    payload = request.model_dump(exclude_none=True, mode="json")
+    raw_response = await _current_tool_invoker().invoke("decision_query", args=(), kwargs=payload)
+    dto = _parse_execute_response(raw_response)
+    response = DecisionQueryResponse.model_validate(
+        _require_response_mapping(dto.response, label="decision_query response payload must be a mapping")
+    )
+    validate_decision_answers(request, response)
+    return _build_tool_call_response(ToolCallResponse, dto, response)
+
+
 @overload
 async def llm_chat(
     *,
@@ -430,6 +466,7 @@ def _llm_chat_message_input(message: Mapping[str, Any] | LlmChatMessage | LlmMes
 __all__ = [
     "Timeout",
     "embed_text",
+    "decision_query",
     "fetch_page",
     "llm_chat",
     "search_web",

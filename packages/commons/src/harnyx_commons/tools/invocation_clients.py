@@ -6,9 +6,9 @@ import asyncio
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import cast
+from typing import Annotated, Literal, cast
 
-from pydantic import SecretStr
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, SecretStr, ValidationError
 
 from harnyx_commons.clients import DESEARCH, EXA, FIRECRAWL, PARALLEL, TAVILY
 from harnyx_commons.config.bedrock import BedrockSettings
@@ -21,16 +21,32 @@ from harnyx_commons.config.llm import (
     parse_search_provider_name,
 )
 from harnyx_commons.config.vertex import VertexSettings
-from harnyx_commons.errors import ProviderCredentialUnavailableError
+from harnyx_commons.errors import ProviderCredentialUnavailableError, ToolProviderError
+from harnyx_commons.json_types import JsonObject
 from harnyx_commons.llm.cost_settlement import normalized_provider_cost
-from harnyx_commons.llm.pricing import MINER_TOOL_EMBEDDING_PRICING, price_embedding
+from harnyx_commons.llm.pricing import MINER_TOOL_EMBEDDING_PRICING, price_decision, price_embedding
 from harnyx_commons.llm.provider_factory import (
     CachedLlmProviderRegistry,
     build_cached_llm_provider_registry,
 )
+from harnyx_commons.llm.providers.ai_gateway import AiGatewayDecisionClient
 from harnyx_commons.llm.providers.chutes import ChutesTextEmbeddingClient
-from harnyx_commons.llm.providers.openrouter import OpenRouterEmbeddingClient
+from harnyx_commons.llm.providers.openrouter import OpenRouterDecisionClient, OpenRouterEmbeddingClient
 from harnyx_commons.platform_tool_proxy import platform_tool_proxy_effective_provider_timeout_seconds
+from harnyx_commons.tools.decision_models import (
+    BooleanAnswer,
+    ChoiceAnswer,
+    DecisionAnswer,
+    DecisionProviderName,
+    DecisionQueryRequest,
+    DecisionQueryResponse,
+    DecisionRounding,
+    DecisionUsage,
+    DecisionWarning,
+    ScoreAnswer,
+    parse_decision_provider,
+    validate_decision_answers,
+)
 from harnyx_commons.tools.desearch import DeSearchClient
 from harnyx_commons.tools.embedding_models import (
     QWEN3_DEFAULT_QUERY_INSTRUCTION,
@@ -46,11 +62,13 @@ from harnyx_commons.tools.firecrawl import FirecrawlClient
 from harnyx_commons.tools.parallel import ParallelClient
 from harnyx_commons.tools.ports import (
     AiSearchProviderPort,
+    DecisionProviderPort,
+    DecisionProviderResult,
     EmbeddingProviderPort,
     EmbeddingProviderResult,
     WebSearchProviderPort,
 )
-from harnyx_commons.tools.provider_billing import SearchProviderResult
+from harnyx_commons.tools.provider_billing import ProviderBillingMetadata, SearchProviderResult
 from harnyx_commons.tools.search_models import (
     FetchPageRequest,
     FetchPageResponse,
@@ -70,6 +88,7 @@ class ToolInvocationClients:
     llm_provider_registry: CachedLlmProviderRegistry
     embedding_provider: EmbeddingProviderPort | None
     embedding_provider_registry: CachedEmbeddingProviderRegistry
+    decision_provider_registry: CachedDecisionProviderRegistry | None = None
 
 
 def build_tool_invocation_clients(
@@ -97,6 +116,7 @@ def build_tool_invocation_clients(
         llm_provider_registry=provider_registry,
         embedding_provider=build_optional_tool_embedding_provider(llm_settings),
         embedding_provider_registry=CachedEmbeddingProviderRegistry(llm_settings=llm_settings),
+        decision_provider_registry=CachedDecisionProviderRegistry(llm_settings=llm_settings),
     )
 
 
@@ -360,9 +380,7 @@ def _build_optional_search_clients(
     if not lazy:
         client = build_web_search_provider(llm_settings)
         ai_client = (
-            cast(AiSearchProviderPort, client)
-            if llm_settings.search_provider in AI_SEARCH_PROVIDER_NAMES
-            else None
+            cast(AiSearchProviderPort, client) if llm_settings.search_provider in AI_SEARCH_PROVIDER_NAMES else None
         )
         return client, ai_client
     if llm_settings.search_provider not in AI_SEARCH_PROVIDER_NAMES:
@@ -575,9 +593,7 @@ class OpenRouterEmbeddingProvider(EmbeddingProviderPort):
             )
         )
         input_tokens = (
-            None
-            if usage is None
-            else usage.prompt_tokens if usage.prompt_tokens is not None else usage.total_tokens
+            None if usage is None else usage.prompt_tokens if usage.prompt_tokens is not None else usage.total_tokens
         )
         provider_cost_value = None if provider_usage is None else provider_usage.cost
         provider_cost = normalized_provider_cost(
@@ -619,9 +635,7 @@ class OpenRouterEmbeddingProvider(EmbeddingProviderPort):
             evidence = {
                 "settlement_source": "static_pricing",
                 "pricing_origin": "miner_tool_embedding_pricing",
-                "provider_cost_status": (
-                    "missing" if provider_cost_value is None else "malformed"
-                ),
+                "provider_cost_status": ("missing" if provider_cost_value is None else "malformed"),
                 "input_tokens": input_tokens,
                 "input_per_million": pricing.input_per_million,
                 **routing_evidence,
@@ -631,18 +645,18 @@ class OpenRouterEmbeddingProvider(EmbeddingProviderPort):
             evidence = {
                 "settlement_source": "unavailable",
                 "pricing_origin": "unavailable",
-                "provider_cost_status": (
-                    "missing" if provider_cost_value is None else "malformed"
-                ),
+                "provider_cost_status": ("missing" if provider_cost_value is None else "malformed"),
                 "usage_status": "missing" if provider_usage is None else "tokens_missing",
                 **routing_evidence,
             }
-        evidence.update({
-            "provider": request.provider,
-            "model": request.model,
-            "input_type": request.input_type,
-            "text_count": len(request.texts),
-        })
+        evidence.update(
+            {
+                "provider": request.provider,
+                "model": request.model,
+                "input_type": request.input_type,
+                "text_count": len(request.texts),
+            }
+        )
         return EmbeddingProviderResult(
             response=response,
             actual_cost_usd=cost_usd,
@@ -687,6 +701,10 @@ def _parse_embedding_provider(raw: EmbeddingProviderName | str) -> EmbeddingProv
 
 
 __all__ = [
+    "AiGatewayDecisionProvider",
+    "CachedDecisionProviderRegistry",
+    "OpenRouterDecisionProvider",
+    "build_miner_paid_decision_provider",
     "CachedEmbeddingProviderRegistry",
     "CachedWebSearchProviderRegistry",
     "ChutesEmbeddingProvider",
@@ -700,3 +718,286 @@ __all__ = [
     "build_web_search_provider",
     "build_web_search_provider_for_name",
 ]
+
+
+class _DecisionBillingProbe(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+    usage: JsonValue | None = None
+    provider_metadata: JsonValue | None = Field(default=None, alias="providerMetadata")
+
+
+class _NoulAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+    type: Literal["noul"]
+    noul: float = Field(ge=0, le=1)
+
+
+class _OpenRouterDecisionUsage(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    cost: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+
+class _OpenRouterDecisionPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+    model: str
+    id: str | None = None
+    provider: str | None = None
+    answers: dict[str, Annotated[ChoiceAnswer | ScoreAnswer | _NoulAnswer, Field(discriminator="type")]]
+    usage: _OpenRouterDecisionUsage
+
+
+class _GatewayDecisionUsage(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+    input_tokens: int | None = Field(default=None, alias="inputTokens", ge=0)
+    output_tokens: int | None = Field(default=None, alias="outputTokens", ge=0)
+
+
+class _GatewayDecisionRounding(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+    probability_decimals: int | None = Field(default=None, alias="probabilityDecimals", ge=0)
+    score_decimals: int | None = Field(default=None, alias="scoreDecimals", ge=0)
+
+
+class _GatewayDecisionPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+    model: str | None = None
+    answers: dict[str, DecisionAnswer]
+    usage: _GatewayDecisionUsage | None = None
+    rounding: _GatewayDecisionRounding | None = None
+    warnings: list[DecisionWarning] | None = None
+    provider_metadata: dict[str, JsonValue] | None = Field(default=None, alias="providerMetadata")
+
+
+def _decision_cost(
+    request: DecisionQueryRequest,
+    raw: JsonObject,
+) -> tuple[float | None, JsonObject]:
+    probe = _DecisionBillingProbe.model_validate(raw)
+    raw_usage = probe.usage if isinstance(probe.usage, dict) else {}
+    if request.provider == "openrouter":
+        reported = raw_usage.get("cost")
+    else:
+        metadata = probe.provider_metadata if isinstance(probe.provider_metadata, dict) else {}
+        gateway = metadata.get("gateway")
+        reported = gateway.get("cost") if isinstance(gateway, dict) else None
+    if request.provider == "ai_gateway" and isinstance(reported, str):
+        reported = float(reported)
+    cost = normalized_provider_cost(reported, field_name="decision provider cost")
+    evidence: JsonObject = {"provider": request.provider, "model": request.model}
+    if cost is not None:
+        return cost, {**evidence, "settlement_source": "provider_returned"}
+    usage = _decision_usage(request, raw)
+    if usage is None:
+        return None, {**evidence, "settlement_source": "unavailable"}
+    cost = price_decision(request.provider, request.model, usage)
+    return cost, {
+        **evidence,
+        "settlement_source": "static_pricing" if cost is not None else "unavailable",
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+    }
+
+
+def _decision_usage(request: DecisionQueryRequest, raw: JsonObject) -> DecisionUsage | None:
+    probe = _DecisionBillingProbe.model_validate(raw)
+    if not isinstance(probe.usage, dict):
+        return None
+    keys = ("input_tokens", "output_tokens") if request.provider == "openrouter" else ("inputTokens", "outputTokens")
+    try:
+        usage = DecisionUsage.model_validate(
+            {
+                "input_tokens": probe.usage.get(keys[0]),
+                "output_tokens": probe.usage.get(keys[1]),
+            }
+        )
+    except ValidationError:
+        return None
+    return usage if usage.input_tokens is not None or usage.output_tokens is not None else None
+
+
+def _decision_result(request: DecisionQueryRequest, raw: JsonObject) -> DecisionProviderResult:
+    try:
+        cost, evidence = _decision_cost(request, raw)
+    except (ValueError, TypeError) as exc:
+        raise ToolProviderError("decision provider returned invalid billing", provider=request.provider) from exc
+    billing = (
+        None
+        if cost is None
+        else ProviderBillingMetadata(
+            actual_cost_provider=request.provider,
+            actual_cost_usd=cost,
+            source="response_body",
+            usage=_decision_usage(request, raw),
+        )
+    )
+    try:
+        if request.provider == "openrouter":
+            native = _OpenRouterDecisionPayload.model_validate(raw)
+            response = DecisionQueryResponse(
+                model=native.model,
+                id=native.id,
+                provider=native.provider,
+                answers={
+                    key: BooleanAnswer(type="boolean", probability=answer.noul)
+                    if isinstance(answer, _NoulAnswer)
+                    else answer
+                    for key, answer in native.answers.items()
+                },
+                usage=DecisionUsage(input_tokens=native.usage.input_tokens, output_tokens=native.usage.output_tokens),
+            )
+        else:
+            gateway = _GatewayDecisionPayload.model_validate(raw)
+            response = DecisionQueryResponse(
+                model=gateway.model or request.model,
+                answers=gateway.answers,
+                usage=None
+                if gateway.usage is None
+                else DecisionUsage(
+                    input_tokens=gateway.usage.input_tokens,
+                    output_tokens=gateway.usage.output_tokens,
+                ),
+                rounding=None
+                if gateway.rounding is None
+                else DecisionRounding(
+                    probability_decimals=gateway.rounding.probability_decimals,
+                    score_decimals=gateway.rounding.score_decimals,
+                ),
+                warnings=gateway.warnings,
+                provider_metadata=gateway.provider_metadata,
+            )
+        validate_decision_answers(request, response)
+    except (ValidationError, ValueError, TypeError) as exc:
+        raise ToolProviderError(
+            "decision provider returned invalid answers",
+            provider=request.provider,
+            billing=billing,
+        ) from exc
+    if cost is None:
+        raise ToolProviderError("decision provider response missing settled cost", provider=request.provider)
+    return DecisionProviderResult(response, cost, request.provider, evidence)
+
+
+class OpenRouterDecisionProvider(DecisionProviderPort):
+    def __init__(self, *, api_key: SecretStr, timeout_seconds: float) -> None:
+        self._api_key = api_key
+        self._timeout_seconds = timeout_seconds
+        self._clients: dict[str, OpenRouterDecisionClient] = {}
+
+    async def query(self, request: DecisionQueryRequest) -> DecisionProviderResult:
+        if request.provider != "openrouter":
+            raise ValueError("OpenRouter decision adapter requires openrouter")
+        client = self._clients.get(request.model)
+        if client is None:
+            client = OpenRouterDecisionClient(
+                model=request.model,
+                api_key=self._api_key,
+                timeout_seconds=self._timeout_seconds,
+            )
+            self._clients[request.model] = client
+        native = await client.query(
+            request.state,
+            cast(
+                JsonObject,
+                {
+                    key: question.model_dump(mode="json", exclude_none=True)
+                    for key, question in request.questions.items()
+                },
+            ),
+            timeout_seconds=_effective_client_timeout(self._timeout_seconds, request.timeout),
+        )
+        return _decision_result(request, native.raw_payload)
+
+    async def aclose(self) -> None:
+        errors: list[Exception] = []
+        for client in self._clients.values():
+            try:
+                await client.aclose()
+            except Exception as exc:
+                errors.append(exc)
+        if errors:
+            raise ExceptionGroup("cached OpenRouter decision clients cleanup failed", errors)
+
+
+class AiGatewayDecisionProvider(DecisionProviderPort):
+    def __init__(self, *, api_key: SecretStr, timeout_seconds: float) -> None:
+        self._api_key = api_key
+        self._timeout_seconds = timeout_seconds
+        self._clients: dict[str, AiGatewayDecisionClient] = {}
+
+    async def query(self, request: DecisionQueryRequest) -> DecisionProviderResult:
+        if request.provider != "ai_gateway":
+            raise ValueError("AI Gateway decision adapter requires ai_gateway")
+        client = self._clients.get(request.model)
+        if client is None:
+            client = AiGatewayDecisionClient(
+                model=request.model,
+                api_key=self._api_key,
+                timeout_seconds=self._timeout_seconds,
+            )
+            self._clients[request.model] = client
+        native = await client.query(
+            request.state,
+            cast(
+                JsonObject,
+                {
+                    key: question.model_dump(mode="json", exclude_none=True)
+                    for key, question in request.questions.items()
+                },
+            ),
+            timeout_seconds=_effective_client_timeout(self._timeout_seconds, request.timeout),
+        )
+        return _decision_result(request, native.raw_payload)
+
+    async def aclose(self) -> None:
+        errors: list[Exception] = []
+        for client in self._clients.values():
+            try:
+                await client.aclose()
+            except Exception as exc:
+                errors.append(exc)
+        if errors:
+            raise ExceptionGroup("cached AI Gateway decision clients cleanup failed", errors)
+
+
+def build_miner_paid_decision_provider(
+    *,
+    provider: DecisionProviderName | str,
+    api_key: SecretStr | str,
+    llm_settings: LlmSettings,
+    timeout: float | None = None,
+) -> DecisionProviderPort:
+    name = parse_decision_provider(provider)
+    key = _validated_api_key(api_key, provider=name)
+    timeout_seconds = _effective_client_timeout(llm_settings.llm_timeout_seconds, timeout)
+    if name == "openrouter":
+        return OpenRouterDecisionProvider(api_key=key, timeout_seconds=timeout_seconds)
+    return AiGatewayDecisionProvider(api_key=key, timeout_seconds=timeout_seconds)
+
+
+class CachedDecisionProviderRegistry:
+    def __init__(self, *, llm_settings: LlmSettings) -> None:
+        self._settings = llm_settings
+        self._cache: dict[DecisionProviderName, DecisionProviderPort] = {}
+
+    def resolve(self, provider: DecisionProviderName | str) -> DecisionProviderPort:
+        name = parse_decision_provider(provider)
+        adapter = self._cache.get(name)
+        if adapter is None:
+            key = self._settings.openrouter_api_key if name == "openrouter" else self._settings.ai_gateway_api_key
+            if not key.get_secret_value().strip():
+                raise ProviderCredentialUnavailableError(name)
+            adapter = build_miner_paid_decision_provider(provider=name, api_key=key, llm_settings=self._settings)
+            self._cache[name] = adapter
+        return adapter
+
+    async def aclose(self) -> None:
+        errors: list[Exception] = []
+        for adapter in self._cache.values():
+            try:
+                await adapter.aclose()
+            except Exception as exc:
+                errors.append(exc)
+        if errors:
+            raise ExceptionGroup("cached decision providers cleanup failed", errors)
