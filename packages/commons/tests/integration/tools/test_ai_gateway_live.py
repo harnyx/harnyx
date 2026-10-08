@@ -11,6 +11,7 @@ from harnyx_commons.llm.schema import (
     LlmMessage,
     LlmMessageContentPart,
     LlmRequest,
+    LlmResponse,
     LlmThinkingConfig,
     LlmTool,
 )
@@ -265,13 +266,57 @@ async def test_ai_gateway_two_turn_function_tool_loop_live() -> None:
     assert second.metadata["actual_cost_provider"] == "ai_gateway"
 
 
+def _assert_new_ai_gateway_response(response: LlmResponse, model: str) -> None:
+    assert response.finish_reason not in {"length", "max_tokens"}, (
+        f"{model}: output budget exhausted; finish_reason={response.finish_reason!r}, usage={response.usage!r}"
+    )
+    assert response.metadata is not None
+    assert response.metadata["actual_cost_provider"] == "ai_gateway"
+    assert response.metadata["actual_cost_usd"] >= 0.0
+    assert response.metadata["actual_cost_evidence"]["model"] == model
+    assert response.usage.total_tokens is not None
+    assert response.usage.total_tokens > 0
+
+
 @pytest.mark.parametrize("model", NEW_AI_GATEWAY_MODELS)
-async def test_new_ai_gateway_model_exact_route_contract_live(model: str) -> None:
-    settings = LlmSettings()
+async def test_new_ai_gateway_model_reasoning_contract_live(model: str) -> None:
     provider = build_miner_paid_llm_provider(
         provider="ai_gateway",
         api_key=_api_key(),
-        llm_settings=settings,
+        llm_settings=LlmSettings(),
+    )
+    request = LlmRequest(
+        provider="ai_gateway",
+        model=model,
+        messages=(
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text('Think briefly, then reply with only "ok".'),),
+            ),
+        ),
+        temperature=0.0,
+        max_output_tokens=8192,
+        thinking=LlmThinkingConfig(enabled=True),
+        timeout=180.0,
+    )
+    try:
+        response = await provider.invoke(request)
+    finally:
+        await provider.aclose()
+
+    _assert_new_ai_gateway_response(response, model)
+    assert response.raw_text
+    assert response.choices[0].message.reasoning or (
+        response.usage.reasoning_tokens is not None and response.usage.reasoning_tokens > 0
+    )
+
+
+@pytest.mark.parametrize("model", NEW_AI_GATEWAY_MODELS)
+async def test_new_ai_gateway_model_tool_roundtrip_contract_live(model: str) -> None:
+    provider = build_miner_paid_llm_provider(
+        provider="ai_gateway",
+        api_key=_api_key(),
+        llm_settings=LlmSettings(),
     )
     tool = LlmTool(
         type="function",
@@ -285,12 +330,6 @@ async def test_new_ai_gateway_model_exact_route_contract_live(model: str) -> Non
             },
         },
     )
-    direct_messages = (
-        LlmMessage(
-            role="user",
-            content=(LlmMessageContentPart.input_text('Think briefly, then reply with only "ok".'),),
-        ),
-    )
     user_message = LlmMessage(
         role="user",
         content=(LlmMessageContentPart.input_text("Use lookup_weather for Paris."),),
@@ -299,16 +338,14 @@ async def test_new_ai_gateway_model_exact_route_contract_live(model: str) -> Non
         "provider": "ai_gateway",
         "model": model,
         "temperature": 0.0,
-        "max_output_tokens": 256,
-        "thinking": LlmThinkingConfig(enabled=True),
+        "max_output_tokens": 8192,
         "timeout": 180.0,
     }
 
-    # DeepSeek thinking mode rejects forced tool selection.
+    # DeepSeek's default thinking mode rejects forced tool selection.
     automatic_tool_choice = model == "deepseek/deepseek-v4.1-flash"
 
     try:
-        direct = await provider.invoke(LlmRequest(messages=direct_messages, **common))
         first = await provider.invoke(
             LlmRequest(
                 messages=(user_message,),
@@ -319,8 +356,12 @@ async def test_new_ai_gateway_model_exact_route_contract_live(model: str) -> Non
                 **common,
             )
         )
+        _assert_new_ai_gateway_response(first, model)
         calls = first.choices[0].message.tool_calls
-        assert calls and calls[0].id
+        assert calls and calls[0].id, (
+            f"{model}: expected lookup_weather tool call; finish_reason={first.finish_reason!r}, "
+            f"usage={first.usage!r}, text={first.raw_text[:1000]!r}"
+        )
         second = await provider.invoke(
             LlmRequest(
                 messages=(
@@ -348,15 +389,5 @@ async def test_new_ai_gateway_model_exact_route_contract_live(model: str) -> Non
     finally:
         await provider.aclose()
 
-    assert direct.raw_text
-    assert direct.choices[0].message.reasoning or (
-        direct.usage.reasoning_tokens is not None and direct.usage.reasoning_tokens > 0
-    )
-    for response in (direct, first, second):
-        assert response.metadata is not None
-        assert response.metadata["actual_cost_provider"] == "ai_gateway"
-        assert response.metadata["actual_cost_usd"] >= 0.0
-        assert response.metadata["actual_cost_evidence"]["model"] == model
-        assert response.usage.total_tokens is not None
-        assert response.usage.total_tokens > 0
+    _assert_new_ai_gateway_response(second, model)
     assert second.raw_text
