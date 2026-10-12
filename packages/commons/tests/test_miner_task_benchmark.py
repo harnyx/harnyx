@@ -7,6 +7,7 @@ import pytest
 from harnyx_commons.miner_task_benchmark import (
     BENCHMARK_CORRECTNESS_SCORING_VERSION,
     BENCHMARK_SAMPLE_SIZE,
+    BENCHMARK_WEIGHTED_RUBRIC_JEV_SCORING_VERSION,
     BENCHMARK_WEIGHTED_RUBRIC_SCORING_VERSION,
     SUPPORTED_BENCHMARK_SCORING_VERSION,
     SUPPORTED_BENCHMARK_SCORING_VERSIONS,
@@ -34,6 +35,7 @@ class _SampleItem:
     [
         (BENCHMARK_CORRECTNESS_SCORING_VERSION, True),
         (BENCHMARK_WEIGHTED_RUBRIC_SCORING_VERSION, False),
+        (BENCHMARK_WEIGHTED_RUBRIC_JEV_SCORING_VERSION, False),
     ],
 )
 def test_benchmark_scoring_selects_query_mode(scoring_version: str, expected_fast: bool) -> None:
@@ -152,12 +154,14 @@ def test_aggregate_benchmark_metrics_keeps_score_empty_without_terminal_items() 
 def test_defined_benchmark_scoring_versions_include_correctness_and_weighted_rubric() -> None:
     assert is_defined_benchmark_scoring_version(BENCHMARK_CORRECTNESS_SCORING_VERSION)
     assert is_defined_benchmark_scoring_version(BENCHMARK_WEIGHTED_RUBRIC_SCORING_VERSION)
+    assert is_defined_benchmark_scoring_version(BENCHMARK_WEIGHTED_RUBRIC_JEV_SCORING_VERSION)
     assert not is_defined_benchmark_scoring_version("other")
 
 
 def test_runtime_supported_benchmark_scoring_versions_include_weighted_rubric() -> None:
     assert is_supported_benchmark_scoring_version(BENCHMARK_CORRECTNESS_SCORING_VERSION)
     assert is_supported_benchmark_scoring_version(BENCHMARK_WEIGHTED_RUBRIC_SCORING_VERSION)
+    assert not is_supported_benchmark_scoring_version(BENCHMARK_WEIGHTED_RUBRIC_JEV_SCORING_VERSION)
     assert SUPPORTED_BENCHMARK_SCORING_VERSION == BENCHMARK_CORRECTNESS_SCORING_VERSION
     assert SUPPORTED_BENCHMARK_SCORING_VERSIONS == frozenset(
         {

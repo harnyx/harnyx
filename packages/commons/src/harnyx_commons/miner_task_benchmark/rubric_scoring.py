@@ -14,6 +14,8 @@ from harnyx_commons.llm.provider import LlmProviderPort
 from harnyx_commons.llm.provider_types import LlmProviderName
 from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest
 
+BENCHMARK_WEIGHTED_RUBRIC_JEV_SCORING_VERSION = "weighted-rubric-jev-v1"
+
 BENCHMARK_WEIGHTED_RUBRIC_SCORING_VERSION = "weighted-rubric-v1"
 
 _WEIGHTED_RUBRIC_SYSTEM_PROMPT = (
@@ -50,7 +52,7 @@ class WeightedRubric:
 class WeightedRubricCriterionDecision:
     criterion_id: str
     met: bool
-    justification: str
+    justification: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,7 +60,7 @@ class WeightedRubricCriterionScore:
     criterion: WeightedRubricCriterion
     met: bool
     contribution: float
-    justification: str
+    justification: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,7 +333,7 @@ def _decisions_by_criterion_id(
         result[criterion_id] = WeightedRubricCriterionDecision(
             criterion_id=criterion_id,
             met=decision.met,
-            justification=decision.justification.strip(),
+            justification=None if decision.justification is None else decision.justification.strip(),
         )
     return result
 

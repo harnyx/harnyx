@@ -13,6 +13,7 @@ from harnyx_commons.llm.provider import LlmProviderPort
 from harnyx_commons.llm.provider_types import LlmProviderName
 from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest
 from harnyx_commons.miner_task_benchmark.rubric_scoring import (
+    BENCHMARK_WEIGHTED_RUBRIC_JEV_SCORING_VERSION,
     BENCHMARK_WEIGHTED_RUBRIC_SCORING_VERSION,
 )
 
@@ -45,6 +46,7 @@ DEFINED_BENCHMARK_SCORING_VERSIONS = frozenset(
     {
         BENCHMARK_CORRECTNESS_SCORING_VERSION,
         BENCHMARK_WEIGHTED_RUBRIC_SCORING_VERSION,
+        BENCHMARK_WEIGHTED_RUBRIC_JEV_SCORING_VERSION,
     }
 )
 
@@ -107,6 +109,7 @@ class BenchmarkItemOutcome:
     state: BenchmarkItemState
     is_correct: bool | None
     score: float | None = None
+    score_unavailable: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,7 +212,7 @@ def aggregate_benchmark_metrics(items: tuple[BenchmarkItemOutcome, ...]) -> Benc
     failed = tuple(item for item in items if item.state is BenchmarkItemState.FAILED)
     failed_item_count = len(failed)
     completed_item_count = len(completed)
-    terminal_item_count = completed_item_count + failed_item_count
+    terminal_item_count = completed_item_count + sum(1 for item in failed if not item.score_unavailable)
     if terminal_item_count == 0:
         return BenchmarkRunMetrics(
             queued_item_count=queued_item_count,
@@ -310,7 +313,7 @@ def unsupported_benchmark_scoring_version_error(scoring_version: str) -> Runtime
 
 
 def benchmark_scoring_uses_fast_queries(scoring_version: str) -> bool:
-    if not is_supported_benchmark_scoring_version(scoring_version):
+    if not is_defined_benchmark_scoring_version(scoring_version):
         raise unsupported_benchmark_scoring_version_error(scoring_version)
     return scoring_version == BENCHMARK_CORRECTNESS_SCORING_VERSION
 

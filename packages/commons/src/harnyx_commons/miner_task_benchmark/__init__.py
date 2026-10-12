@@ -41,6 +41,7 @@ from harnyx_commons.miner_task_benchmark.registry import (
     load_current_benchmark_snapshot,
 )
 from harnyx_commons.miner_task_benchmark.rubric_scoring import (
+    BENCHMARK_WEIGHTED_RUBRIC_JEV_SCORING_VERSION,
     BENCHMARK_WEIGHTED_RUBRIC_SCORING_VERSION,
     BenchmarkWeightedRubricJudgedScore,
     BenchmarkWeightedRubricScore,
@@ -102,6 +103,7 @@ from harnyx_commons.miner_task_benchmark.webwalkerqa import (
 __all__ = [
     "BENCHMARK_CORRECTNESS_SCORING_VERSION",
     "BENCHMARK_SAMPLE_SIZE",
+    "BENCHMARK_WEIGHTED_RUBRIC_JEV_SCORING_VERSION",
     "BENCHMARK_WEIGHTED_RUBRIC_SCORING_VERSION",
     "BROWSECOMP_SUITE_NAME",
     "BROWSECOMP_SUITE_SLUG",
