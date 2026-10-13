@@ -119,7 +119,10 @@ async def test_failure_requires_actual_attempt_and_definitive_absence_of_valid_a
             )
             service.platform.report_endpoint.side_effect = error
             with pytest.raises(type(error)):
-                await service.accept_callback(**_callback(authority, work, miner))
+                # This callback arrived on time; CI scheduling/signing latency is not its receipt timestamp.
+                await service.accept_callback(
+                    **_callback(authority, work, miner, received_at=authority.deadline_at - timedelta(milliseconds=100))
+                )
         await asyncio.sleep(1.1)
         if answer in {"invalid", "absent"}:
             report = service.platform.fail_endpoint.call_args.args[1]
