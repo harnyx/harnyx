@@ -125,11 +125,10 @@ def extract_source(body: bytes, media_type: str, encoding: str, url: str) -> Ext
             if not isinstance(target, str) or not target.strip():
                 continue
             absolute_url = urljoin(document_base_url, target.strip())
-            text = re.sub(r"\s+", " ", tag.get_text(" ", strip=True)).strip()
+            text = "" if element == "form" else re.sub(r"\s+", " ", tag.get_text(" ", strip=True)).strip()
+            text = text[:MAX_EXTRACTED_LINK_TEXT_CHARACTERS]
             if len(absolute_url) > MAX_EXTRACTED_LINK_URL_CHARACTERS:
                 raise ExtractionRejectedError("source_extraction_limit", "source link URL exceeds extraction limit")
-            if len(text) > MAX_EXTRACTED_LINK_TEXT_CHARACTERS:
-                raise ExtractionRejectedError("source_extraction_limit", "source link text exceeds extraction limit")
             identity = (absolute_url, text)
             if identity in seen_links:
                 continue

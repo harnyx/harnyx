@@ -1,4 +1,4 @@
-"""Shared generation request and source/proof contracts."""
+"""Shared generation requests and reference output contracts."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -26,8 +26,6 @@ CandidateFailureClass = Literal[
     "source_extraction_limit",
     "source_unavailable",
     "contract_invalid",
-    "proof_invalid",
-    "audit_rejected",
 ]
 _SOURCE_FAILURE_CLASSES = frozenset(
     {
@@ -55,103 +53,31 @@ class MinerTaskDatasetRequest(BaseModel):
         return value
 
 
-class DossierAnswer(BaseModel):
+class RegisteredReferenceOutput(BaseModel):
+    """Writer output; excerpts and public citation positions belong to the host."""
+
     model_config = COMMONS_STRICT_CONFIG
-
-    answer_id: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
-    value: str = Field(min_length=1)
-
-
-class ProofStep(BaseModel):
-    model_config = COMMONS_STRICT_CONFIG
-
-    step_id: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
-    statement: str = Field(min_length=1)
-    kind: Literal["supported", "derived"]
-    evidence_ids: tuple[str, ...] = ()
-    depends_on_step_ids: tuple[str, ...] = ()
-    scan_certificate_ids: tuple[str, ...] = ()
-
-    @field_validator("evidence_ids", "depends_on_step_ids", "scan_certificate_ids", mode="before")
-    @classmethod
-    def _tuple_from_list(cls, value: object) -> object:
-        return tuple(value) if isinstance(value, list) else value
-
-
-class ReferenceAnswerSelection(BaseModel):
-    model_config = COMMONS_STRICT_CONFIG
-
-    answer_id: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
-    corrected_value: str | None = Field(default=None, min_length=1)
-
-
-class ReferenceProof(BaseModel):
-    model_config = COMMONS_STRICT_CONFIG
-
-    status: Literal["finalized", "giveup"]
     answer_text: str | None = Field(min_length=1)
-    citation_evidence_ids: tuple[str, ...] = Field(max_length=200)
-    answers: tuple[ReferenceAnswerSelection, ...] = ()
-    proof_steps: tuple[ProofStep, ...] = ()
-    structured_answer_json: str | None = Field(default=None, min_length=1)
-    note: str | None = Field(default=None, max_length=80_000)
-    giveup_reason: str | None = None
+    structured_answer_json: str | None = Field(min_length=1)
+    note: str | None = Field(max_length=80_000)
+    citation_evidence_ids: tuple[str, ...] = Field(min_length=1, max_length=200)
 
-    @field_validator("answers", "citation_evidence_ids", "proof_steps", mode="before")
+    @field_validator("citation_evidence_ids", mode="before")
     @classmethod
     def _tuple_from_list(cls, value: object) -> object:
         return tuple(value) if isinstance(value, list) else value
 
-    @field_validator("note")
+    @field_validator("answer_text", "structured_answer_json", "note")
     @classmethod
-    def _validate_note(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("reference note must not be blank")
-        return stripped
+    def _nonblank(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("reference fields must not be blank")
+        return value
 
     @model_validator(mode="after")
-    def _status_contract(self) -> ReferenceProof:
-        if self.status == "finalized" and (not self.answers or not self.proof_steps):
-            raise ValueError("finalized proof requires answers and proof steps")
-        if self.status == "finalized" and ((self.answer_text is None) == (self.structured_answer_json is None)):
-            raise ValueError("finalized proof requires exactly one public answer representation")
-        if self.status == "finalized" and not self.citation_evidence_ids:
-            raise ValueError("finalized proof requires at least one public citation position")
-        if self.status == "finalized" and self.giveup_reason is not None:
-            raise ValueError("finalized proof cannot contain giveup_reason")
-        if self.status == "giveup" and not self.giveup_reason:
-            raise ValueError("giveup proof requires giveup_reason")
-        if self.status == "giveup" and (
-            self.answer_text is not None
-            or self.structured_answer_json is not None
-            or self.note is not None
-            or self.citation_evidence_ids
-        ):
-            raise ValueError("giveup proof cannot contain a public answer, note, or citation positions")
-        return self
-
-
-class AuditResult(BaseModel):
-    model_config = COMMONS_STRICT_CONFIG
-
-    status: Literal["pass", "reject"]
-    defects: tuple[str, ...] = ()
-    explanation: str = Field(min_length=1)
-
-    @field_validator("defects", mode="before")
-    @classmethod
-    def _tuple_from_list(cls, value: object) -> object:
-        return tuple(value) if isinstance(value, list) else value
-
-    @model_validator(mode="after")
-    def _status_contract(self) -> AuditResult:
-        if self.status == "pass" and self.defects:
-            raise ValueError("passing audit cannot contain defects")
-        if self.status == "reject" and not self.defects:
-            raise ValueError("rejected audit requires concrete defects")
+    def _representation(self) -> RegisteredReferenceOutput:
+        if (self.answer_text is None) == (self.structured_answer_json is None):
+            raise ValueError("reference requires exactly one answer representation")
         return self
 
 
@@ -199,26 +125,6 @@ class CandidateStageError(RuntimeError):
         self.tool_usage = tool_usage or ToolUsageSummary.zero()
         self.elapsed_ms = elapsed_ms
         self.actual_llm_cost_usd = actual_llm_cost_usd
-
-
-TOutput = TypeVar("TOutput", bound=BaseModel)
-
-
-@dataclass(frozen=True, slots=True)
-class StageRunResult:
-    output: BaseModel
-    elapsed_ms: float
-    tool_usage: ToolUsageSummary
-    retry_after_seconds: float | None = None
-    validation_repaired: bool = False
-    actual_llm_cost_usd: float | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class AgentToolSet:
-    allowed_tools: tuple[str, ...] = ()
-    mcp_servers: dict[str, Any] = field(default_factory=dict)
-    search_result_registrar: Callable[[object], str] | None = None
 
 
 class SourceSupport(BaseModel):
@@ -319,17 +225,6 @@ class CandidateSession:
     missing_usage_calls: int = 0
     source_support: list[SourceSupport] = field(default_factory=list)
     stage_summaries: list[GenerationStageSummary] = field(default_factory=list)
-
-
-class ReferenceQuestion(BaseModel):
-    """Final public contract and proposal supplied to source-first proof generation."""
-
-    model_config = COMMONS_STRICT_CONFIG
-    status: Literal["ready"] = "ready"
-    question: str
-    answers: tuple[DossierAnswer, ...]
-    response_mode: ResponseMode
-    output_schema_json: str | None = None
 
 
 class TerminalReference(BaseModel):

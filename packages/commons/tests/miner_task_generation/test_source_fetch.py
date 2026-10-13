@@ -42,10 +42,6 @@ def test_source_url_and_dns_reject_credentials_and_private_addresses(monkeypatch
 def test_document_url_rejects_exact_api_and_credential_shapes() -> None:
     """Future failure: model declarations must not bypass the host's pre-connect document boundary."""
     rejected_sources = [
-        ("https://api.example.com/report", "html"),
-        ("https://example.com/api/report", "html"),
-        ("https://example.com/graphql/report", "html"),
-        ("https://example.com/rest/report", "html"),
         ("https://example.com/report?token=secret", "html"),
         ("https://example.com/report.json?version=1", "static_json"),
         ("https://example.com/report", "static_json"),
@@ -60,12 +56,6 @@ def test_document_url_rejects_exact_api_and_credential_shapes() -> None:
 def test_document_url_rejects_encoded_api_and_credential_shapes() -> None:
     """Future failure: URL encoding must not hide a prohibited source shape from pre-connect validation."""
     rejected_urls = [
-        "https://example.com/api%2Freport",
-        "https://example.com/%2Fapi%2Freport",
-        "https://example.com/%61pi/report",
-        "https://example.com/%2561pi/report",
-        "https://example.com/%67raphql/report",
-        "https://example.com/re%73t/report",
         "https://example.com/report%",
         "https://example.com/report?%74oken=secret",
         "https://example.com/report?%2574oken=secret",
@@ -77,11 +67,16 @@ def test_document_url_rejects_encoded_api_and_credential_shapes() -> None:
         assert captured.value.code == "source_fetch_rejected"
 
 
-def test_redirect_revalidates_encoded_api_path_before_connect(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Future failure: a public redirect must not connect to an encoded API path."""
+def test_redirect_rejects_private_address_before_connect(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Future failure: a public redirect must not connect to a private address."""
     connections: list[_RedirectConnection] = []
 
-    monkeypatch.setattr(source_fetch, "_public_addresses", lambda _host, _port: ("93.184.216.34",))
+    def addresses(host, port):
+        if host == "127.0.0.1":
+            raise SourceFetchError("source_fetch_rejected", "non-public address")
+        return ("93.184.216.34",)
+
+    monkeypatch.setattr(source_fetch, "_public_addresses", addresses)
     monkeypatch.setattr(
         source_fetch,
         "_PinnedHTTPSConnection",
@@ -104,7 +99,7 @@ class _RedirectResponse:
     status = 302
 
     def getheader(self, name: str) -> str | None:
-        return "/%252Fapi%252Freport" if name == "Location" else None
+        return "https://127.0.0.1/report" if name == "Location" else None
 
 
 class _RedirectConnection:
@@ -281,8 +276,8 @@ def test_fetch_reports_unavailable_only_after_every_validated_address_fails(
     assert all(connection.closed for connection in connections)
 
 
-def test_fetch_does_not_fallback_after_dns_set_changes(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Future failure: DNS rebinding detection must stop instead of connecting to another validated address."""
+def test_fetch_accepts_public_dns_rotation_after_pinned_peer_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Future failure: public DNS rotation must not invalidate the already validated connected peer."""
     addresses = ("93.184.216.34", "93.184.216.35")
     resolutions = iter((addresses, ("93.184.216.35",)))
     connections: list[_AddressConnection] = []
@@ -297,10 +292,7 @@ def test_fetch_does_not_fallback_after_dns_set_changes(monkeypatch: pytest.Monke
 
     monkeypatch.setattr(source_fetch, "_PinnedHTTPSConnection", create_connection)
 
-    with pytest.raises(SourceFetchError, match="DNS resolution changed") as captured:
-        _fetch_complete_body("https://example.com/report", "html")
-
-    assert captured.value.code == "source_fetch_rejected"
+    assert _fetch_complete_body("https://example.com/report", "html").body == b"<html>reachable</html>"
     assert len(connections) == 1
     assert connections[0].closed
 
@@ -385,8 +377,6 @@ def test_cross_host_redirect_uses_the_new_hosts_validated_dns_set(monkeypatch: p
     assert fetched.final_url == "https://reports.example.org/final"
     assert resolutions == [
         ("example.com", 443),
-        ("example.com", 443),
-        ("reports.example.org", 443),
         ("reports.example.org", 443),
     ]
     assert [(host, address) for host, address, _connection in connections] == [
@@ -440,10 +430,12 @@ def test_fetch_does_not_try_another_address_after_tls_failure(monkeypatch: pytes
     assert connections[0].closed
 
 
+@pytest.mark.parametrize("error_type", [OSError, ssl.SSLError])
 @pytest.mark.parametrize("failure_point", ("request", "response", "body"))
 def test_fetch_does_not_try_another_address_after_connected_io_failure(
     monkeypatch: pytest.MonkeyPatch,
     failure_point: str,
+    error_type: type[OSError],
 ) -> None:
     """Future failure: fallback must not replay a request after connection establishment succeeded."""
     addresses = ("93.184.216.34", "93.184.216.35")
@@ -453,7 +445,7 @@ def test_fetch_does_not_try_another_address_after_connected_io_failure(
 
     def create_connection(_host: str, _port: int, address: str, *, timeout: float) -> _AddressConnection:
         del timeout
-        error = OSError(f"{failure_point} failed")
+        error = error_type(f"{failure_point} failed")
         connection = _AddressConnection(
             address,
             request_error=error if failure_point == "request" else None,
@@ -468,7 +460,7 @@ def test_fetch_does_not_try_another_address_after_connected_io_failure(
     with pytest.raises(SourceFetchError, match=f"{failure_point} failed") as captured:
         _fetch_complete_body("https://example.com/report", "html")
 
-    assert captured.value.code == "source_unavailable"
+    assert captured.value.code == ("source_fetch_rejected" if error_type is ssl.SSLError else "source_unavailable")
     assert len(connections) == 1
     assert connections[0].closed
 
@@ -570,7 +562,7 @@ def test_html_extraction_retains_complete_normalized_navigation_links() -> None:
         ("https://example.com/archive/reports/2025.html", "Annual report"),
         ("https://example.com/annual.css", ""),
         ("https://example.com/archive/scripts/annual.js", ""),
-        ("https://example.com/annual/search", "Search records"),
+        ("https://example.com/annual/search", ""),
     )
 
 
@@ -627,8 +619,13 @@ def test_html_extraction_rejects_oversized_individual_link_metadata(
     monkeypatch.setattr(source_extractor_worker, "MAX_EXTRACTED_LINK_TEXT_CHARACTERS", 10_000)
     monkeypatch.setattr(source_extractor_worker, limit_name, 20)
 
-    with pytest.raises(source_extractor_worker.ExtractionRejectedError, match=message):
-        source_extractor_worker.extract_source(html, "text/html", "", "https://example.com")
+    if limit_name == "MAX_EXTRACTED_LINK_TEXT_CHARACTERS":
+        result = source_extractor_worker.extract_source(html, "text/html", "", "https://example.com")
+        assert len(result.links[0].text) == 20
+        assert result.content == "text that is too long"
+    else:
+        with pytest.raises(source_extractor_worker.ExtractionRejectedError, match=message):
+            source_extractor_worker.extract_source(html, "text/html", "", "https://example.com")
 
 
 def test_extraction_envelope_rejects_link_metadata_overflow(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -858,3 +855,58 @@ async def test_fetch_cancellation_kills_and_drains_the_source_worker(monkeypatch
         await task
 
     assert process.killed
+
+
+def test_api_paths_are_not_security_failures():
+    """Legitimate document URLs must not be blocked based on hostname or path labels."""
+    for url in [
+        "https://api.example.org/report",
+        "https://example.org/api/report",
+        "https://example.org/%2561pi/report",
+    ]:
+        _validated_document_url(url, "html")
+
+
+def test_form_metadata_does_not_discard_article_body():
+    body = "Original body " * 1000
+    result = source_extractor_worker.extract_source(
+        f'<form action="/submit">{body}</form>'.encode(), "text/html", "", "https://example.org"
+    )
+    assert result.content == body.strip()
+    assert result.links[0].text == ""
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("kind", ["html", "text", "pdf", "xlsx", "static_json"])
+async def test_url_only_reader_uses_existing_media_extractor_and_preserves_explicit_kind(monkeypatch, kind):
+    """Removing the model's kind argument must still read every supported complete source format."""
+    if kind == "pdf":
+        with fitz.open() as pdf:
+            pdf.new_page().insert_text((72, 72), "Alpha 88")
+            body = pdf.tobytes()
+        media = "application/pdf"
+    elif kind == "xlsx":
+        workbook = Workbook()
+        workbook.active.append(["Alpha", 88])
+        stream = io.BytesIO()
+        workbook.save(stream)
+        body = stream.getvalue()
+        media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    elif kind == "static_json":
+        body, media = b'{"Alpha":88}', "application/json"
+    elif kind == "html":
+        body, media = b"<html><body>Alpha 88</body></html>", "text/html"
+    else:
+        body, media = b"Alpha 88", "text/plain"
+    calls = []
+
+    async def fetch(url, transport_kind):
+        calls.append(transport_kind)
+        return source_fetch._FetchedBody(url, media, "", body)
+
+    monkeypatch.setattr(source_fetch, "_fetch_isolated", fetch)
+    url = "https://example.org/report.json" if kind == "static_json" else "https://example.org/report"
+    automatic = await PublicSourceFetcher().fetch(url)
+    explicit = await PublicSourceFetcher().fetch(url, document_kind=kind)
+    assert automatic.content == explicit.content and "88" in automatic.content
+    assert calls == ["text", kind]

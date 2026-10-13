@@ -43,6 +43,7 @@ from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequ
 from harnyx_commons.miner_task_fast_scoring import FastJudgeAssessment, build_fast_judge_messages, calculate_fast_f1
 from harnyx_commons.observability.langfuse import start_llm_generation, update_generation_best_effort
 from harnyx_commons.task_ownership import wait_for_owned_task
+from harnyx_commons.tools.parallel import ParallelClient
 
 from .contracts import (
     AgentResult,
@@ -54,6 +55,7 @@ from .contracts import (
     ReviewDecision,
     Seed,
     Seeds,
+    StageName,
     StructuredQuestionDraft,
     TerminalReference,
 )
@@ -104,10 +106,16 @@ class CallCapture:
     workers: list[dict[str, Any]] = field(default_factory=list)
     requests: list[dict[str, Any]] = field(default_factory=list)
     tool_usage: ToolUsageSummary = field(default_factory=known_zero_actual_cost_tool_usage)
+    physical_accounting: bool = False
+    retain_requests: bool = True
+    stage_attempts: int = 0
+    settled_response_ids: set[str] = field(default_factory=set)
     attempted: int = 0
     usage_records: int = 0
     started: float = field(default_factory=monotonic)
     available_cost_usd: float = 0
+    available_model_cost_usd: float = 0
+    priced_usage_records: int = 0
 
     def identity(self) -> dict[str, object]:
         return {
@@ -166,6 +174,8 @@ class CallCapture:
         self.available_cost_usd += search_cost or 0
         settled = settled_generation_llm_cost(usage=usage, model=model, provider=provider, pricing_date=pricing_date)
         if settled is not None:
+            self.available_model_cost_usd += settled.cost_usd
+            self.priced_usage_records += 1
             self.available_cost_usd += settled.cost_usd
             total_cost = settled.cost_usd + (search_cost or 0)
             summary = replace(
@@ -185,6 +195,12 @@ class CallCapture:
                 # Missing receipts cannot establish free native search.
                 summary = replace(summary, actual_total_cost_usd=None, actual_cost_by_provider={})
         self.tool_usage = merge_complete_actual_cost_usage(self.tool_usage, summary)
+
+    def account_response(self, response_id: str, usage: LlmUsage | None) -> None:
+        if response_id in self.settled_response_ids or usage is None:
+            return
+        self.settled_response_ids.add(response_id)
+        self.account(usage)
 
     def finish(self) -> None:
         missing = max(0, self.attempted - self.usage_records)
@@ -296,7 +312,9 @@ async def retry_request(call: Callable[[], Awaitable[T]], capture: CallCapture, 
         while True:
             if monotonic() >= deadline:
                 raise TimeoutError("Generation deadline reached before provider request")
-            capture.attempted += 1
+            capture.stage_attempts += 1
+            if not capture.physical_accounting:
+                capture.attempted += 1
             pricing_token = _REQUEST_DATE.set(datetime.now(UTC).date())
             logger.info(
                 "task_generation.request.started", extra={"data": capture.identity() | {"attempt": attempt + 1}}
@@ -342,8 +360,13 @@ async def retry_request(call: Callable[[], Awaitable[T]], capture: CallCapture, 
 async def record_openai_request(request: httpx2.Request) -> None:
     capture = ACTIVE_CAPTURE.get()
     if capture is not None and request.url.path.endswith("/responses"):
+        if capture.physical_accounting:
+            capture.attempted += 1
+        if not capture.retain_requests and not logger.isEnabledFor(logging.DEBUG):
+            return
         payload = exposed(json.loads(request.content))
-        capture.requests.append(payload)
+        if capture.retain_requests:
+            capture.requests.append(payload)
         logger.debug("task_generation.provider_request", extra={"data": capture.identity() | {"request": payload}})
 
 
@@ -390,8 +413,9 @@ class GenerationAgentRunner:
         self._project_id = project_id
         self._client = openai_client
         self._http: httpx2.AsyncClient | None = None
+        self._reference_parallel_client: ParallelClient | None = None
 
-    async def _openai(self) -> AsyncOpenAI:
+    async def _openai(self, *, stage: StageName = "question_generation") -> AsyncOpenAI:
         if self._client is None:
             client = httpx2.AsyncClient(event_hooks={"request": [record_openai_request]}, timeout=600)
             try:
@@ -402,18 +426,38 @@ class GenerationAgentRunner:
                     raise BatchTerminalGenerationError(
                         "provider_configuration",
                         "OpenAI initialization failed; check provider credentials",
-                        stage="question_generation",
+                        stage=stage,
                     ) from exc
                 raise
             self._http = client
+        if stage == "reference":
+            from .reference_runner import own_reference_response
+
+            hooks = self._client._client.event_hooks["request"]
+            if record_openai_request not in hooks:
+                hooks.append(record_openai_request)
+            response_hooks = self._client._client.event_hooks["response"]
+            if own_reference_response not in response_hooks:
+                response_hooks.append(own_reference_response)
         return self._client
 
+    def _reference_parallel(self) -> ParallelClient:
+        if self._reference_parallel_client is None:
+            from .reference_generation import build_reference_parallel
+
+            self._reference_parallel_client = build_reference_parallel()
+        return self._reference_parallel_client
+
     async def aclose(self) -> None:
-        if self._client is not None:
-            await self._client.close()
-        if self._http is not None:
-            await self._http.aclose()
-        await self._judge.aclose()
+        try:
+            if self._client is not None:
+                await self._client.close()
+            if self._http is not None:
+                await self._http.aclose()
+            await self._judge.aclose()
+        finally:
+            if self._reference_parallel_client is not None:
+                await self._reference_parallel_client.aclose()
 
     async def invoke(self, role: str, message: str, session: CandidateSession, deadline: float) -> AgentResult:
         if role in {"solver", "grounded_solver"}:
@@ -649,7 +693,9 @@ class GenerationAgentRunner:
             verification,
             session,
             deadline,
-            project_id=self._project_id,
+            parallel=self._reference_parallel(),
+            client=await self._openai(stage="reference"),
+            slots=self._slots,
             fetcher=self._source_fetcher,
         )
         if (

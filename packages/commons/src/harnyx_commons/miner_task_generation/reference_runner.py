@@ -1,687 +1,270 @@
-"""Claude Agent SDK boundary for terminal source-first reference generation."""
+"""OpenAI Agents reference writer; shared model slots and client remain runner-owned."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-import re
-import time
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Protocol, TypeVar
+import sys
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
+from typing import Any
 
-from claude_agent_sdk import (
-    AssistantMessage,
-    ClaudeAgentOptions,
-    ClaudeSDKClient,
-    ClaudeSDKError,
-    CLINotFoundError,
-    HookMatcher,
-    ResultMessage,
-    ServerToolUseBlock,
-    ToolUseBlock,
-)
-from claude_agent_sdk.types import HookContext, HookEvent, HookInput, SyncHookJSONOutput
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+import httpx2
+from agents import Agent, ModelSettings, OpenAIResponsesModel, RunConfig, Runner
+from agents.exceptions import ModelBehaviorError, UserError
+from agents.items import TResponseInputItem
+from agents.run_config import ToolErrorFormatterArgs
+from agents.run_error_handlers import RunErrorHandlerInput
+from agents.stream_events import RawResponsesStreamEvent
+from openai import AsyncOpenAI
+from openai.types.responses import ResponseOutputMessage, ResponseOutputText
+from openai.types.shared import Reasoning
+from pydantic import ValidationError
 
-from harnyx_commons.domain.session import LlmUsageTotals
-from harnyx_commons.domain.tool_usage import (
-    LlmModelUsageCost,
-    LlmUsageSummary,
-    SearchToolUsageSummary,
-    ToolUsageSummary,
-)
-from harnyx_commons.domain.tool_usage_accounting import (
-    known_zero_actual_cost_tool_usage,
-    merge_complete_actual_cost_usage,
-)
-from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest
-from harnyx_commons.miner_task_generation.contracts import (
-    AgentToolSet,
-    BatchTerminalGenerationError,
-    CandidateStageError,
-    StageName,
-    StageRunResult,
-)
-from harnyx_commons.observability.langfuse import (
-    LangfuseGeneration,
-    start_llm_generation,
-    update_generation_best_effort,
-)
+from harnyx_commons.errors import ToolProviderError
+from harnyx_commons.llm.schema import LlmUsage
+from harnyx_commons.task_ownership import await_owned_task
 
-MODEL = "claude-opus-5"
-EFFORT = "low"
-_PROVIDER = "vertex"
-_DISALLOWED_TOOLS = ["WebFetch", "Read", "Write", "Edit", "Bash", "Task", "Skill"]
-_T = TypeVar("_T", bound=BaseModel)
+from .agent_runner import ACTIVE_CAPTURE, CallCapture, OpenAIStreamError, openai_stream
+from .contracts import CandidateStageError, RegisteredReferenceOutput
+from .prompts import REFERENCE_SYSTEM
+from .reference_evidence import ReferenceSources
+
+REFERENCE_MODEL = "gpt-6-luna"
+MAX_FEEDBACK_RETRIES = 5
+logger = logging.getLogger("harnyx_commons.llm.calls")
 
 
-class _ResultStreamEndedError(RuntimeError):
-    """The initialized SDK stream ended before publishing its required result."""
+class ReferenceFeedback:
+    """Allow five consecutive correction retries, resetting after a successful action."""
+
+    def __init__(self, capture: CallCapture) -> None:
+        self.capture = capture
+        self.retries = 0
+
+    def error(self, operation: str, error: str) -> str:
+        exhausted = self.retries >= MAX_FEEDBACK_RETRIES
+        if not exhausted:
+            self.retries += 1
+        event = {
+            "type": "reference.model_feedback",
+            "operation": operation,
+            "error": error,
+            "retry": self.retries,
+            "max_retries": MAX_FEEDBACK_RETRIES,
+            "exhausted": exhausted,
+        }
+        self.capture.event(event)
+        logger.warning(
+            "task_generation.reference_model_feedback",
+            extra={"data": self.capture.identity() | {key: value for key, value in event.items() if key != "error"}},
+        )
+        if exhausted:
+            raise CandidateStageError(
+                "contract_invalid", "reference", f"Five model correction retries exhausted: {error}"
+            )
+        return json.dumps(
+            event
+            | {
+                "instruction": (
+                    "Correct the reported mistake using the same retained sources and registered evidence, "
+                    "then try again. Do not repeat the invalid action unchanged."
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    def success(self, operation: str) -> None:
+        if self.retries:
+            self.capture.event(
+                {"type": "reference.model_feedback_reset", "operation": operation, "previous_retries": self.retries}
+            )
+            self.retries = 0
 
 
-class _WebSearchContractError(RuntimeError):
-    """Native WebSearch returned a non-error shape outside the documented contract."""
+class _ReferenceResponseStream(httpx2.AsyncByteStream):
+    """HTTPX marks a response closed before its transport close completes; retain that task."""
+
+    def __init__(self, stream: httpx2.AsyncByteStream) -> None:
+        self.stream = stream
+        self.closing: asyncio.Task[None] | None = None
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        async for chunk in self.stream:
+            yield chunk
+
+    async def aclose(self) -> None:
+        if self.closing is None:
+            self.closing = asyncio.create_task(self.stream.aclose())
+        await await_owned_task(self.closing)
 
 
-class _AgentSDKResultContractError(RuntimeError):
-    """Agent SDK result accounting did not match the pinned boundary contract."""
+async def own_reference_response(response: httpx2.Response) -> None:
+    capture = ACTIVE_CAPTURE.get()
+    if capture is not None and capture.physical_accounting and response.request.url.path.endswith("/responses"):
+        if not isinstance(response.stream, httpx2.AsyncByteStream):
+            raise TypeError("Reference provider response requires an asynchronous byte stream")
+        response.stream = _ReferenceResponseStream(response.stream)
 
 
-class _AgentSDKUsagePayload(BaseModel):
-    model_config = ConfigDict(extra="ignore", frozen=True, strict=True)
+class _ReferenceResponsesModel(OpenAIResponsesModel):
+    """Join the pinned SDK's detached provider closes before releasing our slot."""
 
-    input_tokens: int = Field(ge=0)
-    output_tokens: int = Field(ge=0)
-    total_tokens: int | None = Field(default=None, ge=0)
-    reasoning_tokens: int | None = Field(default=None, ge=0)
+    def __init__(self, client: AsyncOpenAI) -> None:
+        super().__init__(model=REFERENCE_MODEL, openai_client=client)
+        self._stream_closes: list[asyncio.Future[None]] = []
 
+    def _detach_stream_close(self, close_task: asyncio.Future[None]) -> None:
+        self._stream_closes.append(close_task)
+        super()._detach_stream_close(close_task)
 
-class _AgentSDKResultAccountingPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    @asynccontextmanager
+    async def owned_streams(self) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            failed = sys.exc_info()[0] is not None
 
-    is_error: bool
-    num_turns: int = Field(ge=0)
-    total_cost_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
-    usage: _AgentSDKUsagePayload | None
+            async def drain() -> None:
+                results = await asyncio.gather(*self._stream_closes, return_exceptions=True)
+                for result in results:
+                    if isinstance(result, BaseException):
+                        raise result
 
-    @model_validator(mode="after")
-    def require_success_usage(self) -> _AgentSDKResultAccountingPayload:
-        if not self.is_error and self.usage is None:
-            raise ValueError("usage is required for a successful Agent SDK result")
-        return self
-
-
-@dataclass(slots=True)
-class _WebSearchCaptureState:
-    contract_error: str | None = None
-
-
-StageOutputValidator = Callable[[Any], Sequence[str]]
-
-
-class StageExecutor(Protocol):
-    async def __call__(
-        self,
-        *,
-        stage: StageName,
-        system_prompt: str,
-        prompt: str,
-        output_model: type[BaseModel],
-        timeout_seconds: float,
-        web_search: bool,
-        tool_set: AgentToolSet,
-        output_validator: StageOutputValidator | None,
-    ) -> StageRunResult: ...
+            try:
+                await await_owned_task(asyncio.create_task(drain()))
+            except Exception:
+                if not failed:
+                    raise
+                logger.debug("task_generation.reference_stream_cleanup.failure.details", exc_info=True)
 
 
 class ReferenceAgentRunner:
     def __init__(
         self,
+        client: AsyncOpenAI,
+        slots: asyncio.Semaphore,
         *,
-        project_id: str | None = None,
-        region: str = "global",
-        executor: StageExecutor | None = None,
+        validate_output: Callable[[RegisteredReferenceOutput], object] | None = None,
     ) -> None:
-        self._project_id = project_id
-        self._region = region
-        self._executor = executor
+        self.client, self.slots = client, slots
+        self.validate_output = validate_output
 
-    async def run_stage(
-        self,
-        *,
-        stage: StageName,
-        system_prompt: str,
-        prompt: str,
-        output_model: type[_T],
-        timeout_seconds: float,
-        web_search: bool = False,
-        tool_set: AgentToolSet | None = None,
-        output_validator: StageOutputValidator | None = None,
-    ) -> StageRunResult:
-        resolved_tool_set = tool_set or AgentToolSet()
-        request = LlmRequest(
-            provider=_PROVIDER,
-            model=MODEL,
-            temperature=None,
-            max_output_tokens=None,
-            use_case=f"miner_task_generation.{stage}",
-            messages=(
-                LlmMessage(role="system", content=(LlmMessageContentPart.input_text(system_prompt),)),
-                LlmMessage(role="user", content=(LlmMessageContentPart.input_text(prompt),)),
+    async def run(self, inputs: str, sources: ReferenceSources, capture: CallCapture) -> RegisteredReferenceOutput:
+        feedback = ReferenceFeedback(capture)
+
+        failed_output: RunErrorHandlerInput[Any] | None = None
+
+        def invalid_output(data: RunErrorHandlerInput[Any]) -> None:
+            nonlocal failed_output
+            # Empty output makes the SDK run another turn instead of raising. Stop after
+            # this response so every rejected final passes through our correction budget.
+            failed_output = data
+            result.cancel(mode="after_turn")
+
+        def missing_tool(data: ToolErrorFormatterArgs[Any]) -> str | None:
+            if data.kind == "tool_not_found":
+                return feedback.error("unknown_tool", data.default_message)
+            return None
+
+        model = _ReferenceResponsesModel(self.client)
+        agent = Agent(
+            name="reference",
+            instructions=REFERENCE_SYSTEM,
+            model=model,
+            tools=[*sources.tools(feedback)],
+            output_type=RegisteredReferenceOutput,
+            model_settings=ModelSettings(
+                reasoning=Reasoning(effort="high", summary="detailed"),
+                truncation="disabled",
+                context_management=[{"type": "compaction", "compact_threshold": 200_000}],
             ),
         )
-        with start_llm_generation(provider_label=_PROVIDER, request=request) as generation:
-            try:
-                result = await self._execute_stage(
-                    stage=stage,
-                    system_prompt=system_prompt,
-                    prompt=prompt,
-                    output_model=output_model,
-                    timeout_seconds=timeout_seconds,
-                    web_search=web_search,
-                    tool_set=resolved_tool_set,
-                    output_validator=output_validator,
-                )
-            except (CandidateStageError, BatchTerminalGenerationError) as exc:
-                _update_failed_stage_generation(generation, exc)
-                raise
-            except BaseException as exc:
-                update_generation_best_effort(
-                    generation,
-                    metadata={"failure_type": type(exc).__name__, "cost_status": "unavailable"},
-                    level="ERROR",
-                    status_message=type(exc).__name__,
-                )
-                raise
-            _update_successful_stage_generation(generation, result)
-            return result
-
-    async def _execute_stage(
-        self,
-        *,
-        stage: StageName,
-        system_prompt: str,
-        prompt: str,
-        output_model: type[_T],
-        timeout_seconds: float,
-        web_search: bool,
-        tool_set: AgentToolSet,
-        output_validator: StageOutputValidator | None,
-    ) -> StageRunResult:
-        if self._executor is not None:
-            return await self._executor(
-                stage=stage,
-                system_prompt=system_prompt,
-                prompt=prompt,
-                output_model=output_model,
-                timeout_seconds=timeout_seconds,
-                web_search=web_search,
-                tool_set=tool_set,
-                output_validator=output_validator,
-            )
-        return await self._run_live(
-            stage=stage,
-            system_prompt=system_prompt,
-            prompt=prompt,
-            output_model=output_model,
-            timeout_seconds=timeout_seconds,
-            web_search=web_search,
-            tool_set=tool_set,
-            output_validator=output_validator,
-        )
-
-    async def _run_live(
-        self,
-        *,
-        stage: StageName,
-        system_prompt: str,
-        prompt: str,
-        output_model: type[_T],
-        timeout_seconds: float,
-        web_search: bool,
-        tool_set: AgentToolSet,
-        output_validator: StageOutputValidator | None,
-    ) -> StageRunResult:
-        started = time.perf_counter()
-        total_usage = known_zero_actual_cost_tool_usage()
-        env = {
-            "API_TIMEOUT_MS": str(int(timeout_seconds * 1000)),
-            "CLAUDE_CODE_MAX_RETRIES": "0",
-            "CLAUDE_CODE_USE_VERTEX": "1",
-            "CLOUD_ML_REGION": self._region,
-            "DISABLE_TELEMETRY": "1",
-            "ENABLE_TOOL_SEARCH": "false",
-        }
-        if self._project_id:
-            env["ANTHROPIC_VERTEX_PROJECT_ID"] = self._project_id
-        tools = ["WebSearch"] if web_search else []
-        allowed_tools = [*tools, *tool_set.allowed_tools]
-        if web_search and tool_set.search_result_registrar is None:
-            raise BatchTerminalGenerationError(
-                "sdk_or_provider_configuration",
-                "WebSearch requires a candidate-local search result registrar",
-                stage=stage,
-                tool_usage=total_usage,
-                actual_llm_cost_usd=0.0,
-            )
-        search_capture_state = _WebSearchCaptureState()
-        hooks = (
-            _web_search_capture_hooks(tool_set.search_result_registrar, search_capture_state)
-            if web_search and tool_set.search_result_registrar is not None
-            else None
-        )
-        options = ClaudeAgentOptions(
-            tools=tools,
-            allowed_tools=allowed_tools,
-            disallowed_tools=_DISALLOWED_TOOLS,
-            system_prompt=system_prompt,
-            mcp_servers=tool_set.mcp_servers,
-            strict_mcp_config=True,
-            permission_mode="dontAsk",
-            model=MODEL,
-            fallback_model=None,
-            cwd=Path.cwd(),
-            env=env,
-            include_partial_messages=True,
-            setting_sources=[],
-            skills=[],
-            thinking={"type": "adaptive", "display": "summarized"},
-            effort=EFFORT,
-            output_format={"type": "json_schema", "schema": output_model.model_json_schema()},
-            hooks=hooks,
-        )
-        validation_repaired = False
-        attempted_query_costs: list[float | None] = []
-        client_initialized = False
-        try:
-            async with asyncio.timeout(timeout_seconds):
-                async with ClaudeSDKClient(options=options) as client:
-                    client_initialized = True
-                    attempted_query_costs.append(None)
-                    await client.query(prompt)
-                    result, search_calls = await _receive_result(client)
-                    usage = _usage_from_result(result, search_calls=search_calls)
-                    attempted_query_costs[-1] = usage.actual_total_cost_usd
-                    total_usage = merge_complete_actual_cost_usage(total_usage, usage)
-                    if search_capture_state.contract_error is not None:
-                        raise _WebSearchContractError(search_capture_state.contract_error)
-                    actual_llm_cost_usd = _strict_sum_attempted_query_costs(attempted_query_costs)
-                    _raise_for_provider_result(
-                        stage,
-                        result,
-                        tool_usage=total_usage,
-                        actual_llm_cost_usd=actual_llm_cost_usd,
-                    )
-                    try:
-                        parsed = output_model.model_validate(result.structured_output)
-                    except ValidationError as exc:
-                        defects = _pydantic_defects(exc)
-                    else:
-                        defects = tuple(output_validator(parsed)) if output_validator is not None else ()
-                    if defects:
-                        raise CandidateStageError(
-                            "contract_invalid",
-                            stage,
-                            "Invalid structured reference: " + "; ".join(defects),
-                            tool_usage=total_usage,
-                            elapsed_ms=(time.perf_counter() - started) * 1000,
-                            actual_llm_cost_usd=actual_llm_cost_usd,
-                        )
-                    return StageRunResult(
-                        output=parsed,
-                        elapsed_ms=(time.perf_counter() - started) * 1000,
-                        tool_usage=total_usage,
-                        retry_after_seconds=_retry_after_seconds(result),
-                        validation_repaired=validation_repaired,
-                        actual_llm_cost_usd=actual_llm_cost_usd,
-                    )
-        except CandidateStageError:
-            raise
-        except BatchTerminalGenerationError:
-            raise
-        except TimeoutError as exc:
-            failure_usage = _usage_with_attempted_query_costs(total_usage, attempted_query_costs)
-            raise CandidateStageError(
-                "transient_provider",
-                stage,
-                f"{stage} timed out",
-                tool_usage=failure_usage,
-                elapsed_ms=(time.perf_counter() - started) * 1000,
-                actual_llm_cost_usd=_strict_sum_attempted_query_costs(attempted_query_costs),
-            ) from exc
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            failure_usage = _usage_with_attempted_query_costs(total_usage, attempted_query_costs)
-            _raise_classified_exception(
-                stage,
-                exc,
-                client_initialized=client_initialized,
-                elapsed_ms=(time.perf_counter() - started) * 1000,
-                tool_usage=failure_usage,
-                actual_llm_cost_usd=_strict_sum_attempted_query_costs(attempted_query_costs),
-            )
-        raise AssertionError("stage execution must return or raise")
-
-
-def _update_successful_stage_generation(
-    generation: LangfuseGeneration | None,
-    result: StageRunResult,
-) -> None:
-    update_generation_best_effort(
-        generation,
-        output=result.output.model_dump(mode="json"),
-        usage_details=_stage_usage_details(result.tool_usage),
-        cost_details=_stage_cost_details(result.actual_llm_cost_usd),
-        metadata={
-            "elapsed_ms": result.elapsed_ms,
-            "agent_turn_count": result.tool_usage.llm.call_count,
-            "validation_repaired": result.validation_repaired,
-            "cost_status": _cost_status(result.actual_llm_cost_usd),
-        },
-    )
-
-
-def _update_failed_stage_generation(
-    generation: LangfuseGeneration | None,
-    error: CandidateStageError | BatchTerminalGenerationError,
-) -> None:
-    update_generation_best_effort(
-        generation,
-        usage_details=_stage_usage_details(error.tool_usage),
-        cost_details=_stage_cost_details(error.actual_llm_cost_usd),
-        metadata={
-            "failure_class": error.failure_class,
-            "elapsed_ms": error.elapsed_ms,
-            "agent_turn_count": error.tool_usage.llm.call_count,
-            "cost_status": _cost_status(error.actual_llm_cost_usd),
-        },
-        level="ERROR",
-        status_message=error.failure_class,
-    )
-
-
-def _stage_usage_details(usage: ToolUsageSummary) -> dict[str, int]:
-    return {
-        "input": usage.llm.prompt_tokens,
-        "output": usage.llm.completion_tokens,
-        "total": usage.llm.total_tokens,
-    }
-
-
-def _stage_cost_details(actual_llm_cost_usd: float | None) -> dict[str, float] | None:
-    if actual_llm_cost_usd is None:
-        return None
-    return {"total": actual_llm_cost_usd}
-
-
-def _cost_status(actual_llm_cost_usd: float | None) -> str:
-    return "unavailable" if actual_llm_cost_usd is None else "reported"
-
-
-def _web_search_capture_hooks(
-    registrar: Callable[[object], str],
-    state: _WebSearchCaptureState,
-) -> dict[HookEvent, list[HookMatcher]]:
-    async def capture_results(
-        hook_input: HookInput,
-        _tool_use_id: str | None,
-        _context: HookContext,
-    ) -> SyncHookJSONOutput:
-        if hook_input["hook_event_name"] != "PostToolUse" or hook_input["tool_name"] != "WebSearch":
-            return {}
-        try:
-            additional_context = registrar(hook_input["tool_response"])
-        except Exception as exc:
-            state.contract_error = f"{type(exc).__name__}: {exc}"[:1_000]
-            return {
-                "hookSpecificOutput": {
-                    "hookEventName": "PostToolUse",
-                    "additionalContext": (
-                        "The host rejected this WebSearch result because its response contract was invalid. "
-                        "Do not invent or use a source_candidate_id."
+        conversation: str | list[TResponseInputItem] = inputs
+        async with self.slots, model.owned_streams():
+            while True:
+                failed_output = None
+                result = Runner.run_streamed(
+                    agent,
+                    conversation,
+                    max_turns=None,
+                    error_handlers={"invalid_final_output": invalid_output},
+                    run_config=RunConfig(
+                        tracing_disabled=True,
+                        tool_not_found_behavior="return_error_to_model",
+                        tool_error_formatter=missing_tool,
                     ),
-                }
-            }
-        if not additional_context:
-            raise _WebSearchContractError("WebSearch result registrar returned empty context")
-        return {
-            "hookSpecificOutput": {
-                "hookEventName": "PostToolUse",
-                "additionalContext": additional_context,
-            }
-        }
-
-    return {"PostToolUse": [HookMatcher(matcher="WebSearch", hooks=[capture_results])]}
-
-
-async def _receive_result(client: ClaudeSDKClient) -> tuple[ResultMessage, int]:
-    from .agent_runner import ACTIVE_CAPTURE
-
-    result: ResultMessage | None = None
-    search_calls = 0
-    async for message in client.receive_response():
-        capture = ACTIVE_CAPTURE.get()
-        logging.getLogger("harnyx_commons.llm.calls").debug(
-            "task_generation.reference_event",
-            extra={"data": (capture.identity() if capture else {}) | {"event": message}},
-        )
-        if isinstance(message, AssistantMessage):
-            search_calls += sum(
-                1
-                for block in message.content
-                if (isinstance(block, ToolUseBlock) and block.name == "WebSearch")
-                or (isinstance(block, ServerToolUseBlock) and block.name == "web_search")
-            )
-        if isinstance(message, ResultMessage):
-            result = message
-    if result is None:
-        raise _ResultStreamEndedError("Agent SDK stream ended without ResultMessage")
-    return result, search_calls
-
-
-def _pydantic_defects(error: ValidationError) -> tuple[str, ...]:
-    defects = tuple(
-        f"{'.'.join(str(part) for part in item['loc'])}: {item['msg']}" for item in error.errors(include_url=False)
-    )
-    return defects
-
-
-def _usage_from_result(result: ResultMessage, *, search_calls: int) -> ToolUsageSummary:
-    try:
-        accounting = _AgentSDKResultAccountingPayload.model_validate(
-            {
-                "is_error": result.is_error,
-                "num_turns": result.num_turns,
-                "total_cost_usd": result.total_cost_usd,
-                "usage": result.usage,
-            }
-        )
-    except ValidationError as exc:
-        raise _AgentSDKResultContractError(
-            "Agent SDK result accounting contract invalid: " + "; ".join(_pydantic_defects(exc))
-        ) from exc
-
-    raw_usage = accounting.usage
-    prompt_tokens = raw_usage.input_tokens if raw_usage is not None else 0
-    completion_tokens = raw_usage.output_tokens if raw_usage is not None else 0
-    reported_total_tokens = raw_usage.total_tokens if raw_usage is not None else None
-    total_tokens = reported_total_tokens or prompt_tokens + completion_tokens
-    reasoning_tokens = (raw_usage.reasoning_tokens if raw_usage is not None else None) or 0
-    actual_cost = accounting.total_cost_usd
-    call_count = accounting.num_turns
-    totals = LlmUsageTotals(
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        total_tokens=total_tokens,
-        reasoning_tokens=reasoning_tokens,
-        call_count=call_count,
-    )
-    return ToolUsageSummary(
-        search_tool=SearchToolUsageSummary(call_count=search_calls, actual_cost=0.0),
-        llm=LlmUsageSummary(
-            call_count=call_count,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens,
-            reasoning_tokens=reasoning_tokens,
-            actual_cost=actual_cost,
-            providers={
-                _PROVIDER: {
-                    MODEL: LlmModelUsageCost(usage=totals, actual_cost=actual_cost),
-                }
-            },
-        ),
-        actual_total_cost_usd=actual_cost,
-        actual_cost_by_provider={} if actual_cost is None else {_PROVIDER: actual_cost},
-    )
-
-
-def _strict_sum_attempted_query_costs(costs: list[float | None]) -> float | None:
-    if not costs or any(cost is None for cost in costs):
-        return None
-    return sum(cost for cost in costs if cost is not None)
-
-
-def _usage_with_attempted_query_costs(
-    usage: ToolUsageSummary,
-    attempted_query_costs: Sequence[float | None],
-) -> ToolUsageSummary:
-    if not attempted_query_costs or all(cost is not None for cost in attempted_query_costs):
-        return usage
-    return merge_complete_actual_cost_usage(usage, ToolUsageSummary.zero())
-
-
-def _raise_for_provider_result(
-    stage: StageName,
-    result: ResultMessage,
-    *,
-    tool_usage: ToolUsageSummary,
-    actual_llm_cost_usd: float | None = None,
-) -> None:
-    if not result.is_error:
-        return
-    message = (
-        " ".join(
-            part
-            for part in (
-                result.result,
-                result.terminal_reason,
-                *(result.errors or []),
-            )
-            if part
-        )
-        or "Agent SDK returned an error result"
-    )
-    status = result.api_error_status
-    if result.subtype == "error_max_structured_output_retries":
-        raise CandidateStageError(
-            "contract_invalid",
-            stage,
-            message,
-            tool_usage=tool_usage,
-            elapsed_ms=float(result.duration_ms),
-            actual_llm_cost_usd=actual_llm_cost_usd,
-        )
-    if status in {401, 403}:
-        raise BatchTerminalGenerationError(
-            "provider_auth",
-            message,
-            stage=stage,
-            tool_usage=tool_usage,
-            elapsed_ms=float(result.duration_ms),
-            actual_llm_cost_usd=actual_llm_cost_usd,
-        )
-    if status == 404 or _looks_batch_terminal(message):
-        raise BatchTerminalGenerationError(
-            "provider_configuration",
-            message,
-            stage=stage,
-            tool_usage=tool_usage,
-            elapsed_ms=float(result.duration_ms),
-            actual_llm_cost_usd=actual_llm_cost_usd,
-        )
-    if status == 429 or (status is not None and status >= 500):
-        raise CandidateStageError(
-            "transient_provider",
-            stage,
-            message,
-            retry_after_seconds=_retry_after_seconds(result),
-            tool_usage=tool_usage,
-            elapsed_ms=float(result.duration_ms),
-            actual_llm_cost_usd=actual_llm_cost_usd,
-        )
-    if status is not None and 400 <= status < 500 and status != 408:
-        raise BatchTerminalGenerationError(
-            "provider_configuration",
-            message,
-            stage=stage,
-            tool_usage=tool_usage,
-            elapsed_ms=float(result.duration_ms),
-            actual_llm_cost_usd=actual_llm_cost_usd,
-        )
-    raise CandidateStageError(
-        "transient_provider",
-        stage,
-        message,
-        tool_usage=tool_usage,
-        elapsed_ms=float(result.duration_ms),
-        actual_llm_cost_usd=actual_llm_cost_usd,
-    )
-
-
-def _raise_classified_exception(
-    stage: StageName,
-    exc: Exception,
-    *,
-    client_initialized: bool,
-    elapsed_ms: float,
-    tool_usage: ToolUsageSummary | None = None,
-    actual_llm_cost_usd: float | None = None,
-) -> None:
-    message = f"{type(exc).__name__}: {exc}"
-    is_initialized_transport_failure = isinstance(exc, _ResultStreamEndedError) or (
-        isinstance(exc, ClaudeSDKError) and not isinstance(exc, CLINotFoundError)
-    )
-    if client_initialized and is_initialized_transport_failure:
-        if not _looks_batch_terminal(message):
-            raise CandidateStageError(
-                "transient_provider",
-                stage,
-                message,
-                tool_usage=tool_usage,
-                elapsed_ms=elapsed_ms,
-                actual_llm_cost_usd=actual_llm_cost_usd,
-            ) from exc
-    failure_class = (
-        "sdk_or_provider_configuration"
-        if isinstance(
-            exc,
-            (ClaudeSDKError, ImportError, TypeError, _AgentSDKResultContractError, _WebSearchContractError),
-        )
-        or _looks_batch_terminal(message)
-        else "unexpected_sdk_failure"
-    )
-    raise BatchTerminalGenerationError(
-        failure_class,
-        message,
-        stage=stage,
-        tool_usage=tool_usage,
-        elapsed_ms=elapsed_ms,
-        actual_llm_cost_usd=actual_llm_cost_usd,
-    ) from exc
-
-
-def _looks_batch_terminal(message: str) -> bool:
-    lowered = message.casefold()
-    return any(
-        marker in lowered
-        for marker in (
-            "authentication",
-            "unauthorized",
-            "permission denied",
-            "access denied",
-            "invalid model",
-            "model not found",
-            "model is not available",
-            "not entitled",
-            "not enabled",
-            "invalid mcp",
-            "tool schema",
-        )
-    )
-
-
-def _retry_after_seconds(value: object) -> float | None:
-    for name in ("retry_after", "retry_after_seconds"):
-        raw = getattr(value, name, None)
-        if isinstance(raw, int | float) and raw >= 0:
-            return float(raw)
-    text = str(value)
-    match = re.search(r"retry[- ]after[:= ]+(\d+(?:\.\d+)?)", text, re.IGNORECASE)
-    return float(match.group(1)) if match else None
-
-
-__all__ = ["ReferenceAgentRunner", "EFFORT", "MODEL", "StageExecutor"]
+                )
+                try:
+                    async with openai_stream(result) as events:
+                        async for event in events:
+                            if not isinstance(event, RawResponsesStreamEvent):
+                                continue
+                            data: dict[str, Any] = event.data.model_dump(mode="json", exclude_none=True)
+                            capture.event(data)
+                            if data["type"] in {"response.completed", "response.incomplete", "response.failed"}:
+                                response = data["response"]
+                                raw = response.get("usage")
+                                if raw is not None:
+                                    capture.account_response(
+                                        response["id"],
+                                        LlmUsage(
+                                            prompt_tokens=raw["input_tokens"],
+                                            completion_tokens=raw["output_tokens"],
+                                            total_tokens=raw["total_tokens"],
+                                            prompt_cached_tokens=raw.get("input_tokens_details", {}).get(
+                                                "cached_tokens"
+                                            ),
+                                            prompt_cache_write_tokens=raw.get("input_tokens_details", {}).get(
+                                                "cache_write_tokens"
+                                            ),
+                                            reasoning_tokens=raw.get("output_tokens_details", {}).get(
+                                                "reasoning_tokens"
+                                            ),
+                                            web_search_calls=0,  # only explicit Parallel tools are available
+                                        ),
+                                    )
+                            if data["type"] in {"response.incomplete", "response.failed", "error"}:
+                                error = data.get("response", {}).get("error") or data
+                                raise OpenAIStreamError(error.get("code"))
+                except UserError as exc:
+                    if isinstance(exc.__cause__, (ToolProviderError, CandidateStageError)):
+                        raise exc.__cause__ from exc.__cause__.__cause__
+                    raise
+                except ModelBehaviorError as exc:
+                    if failed_output is None:
+                        raise CandidateStageError("contract_invalid", "reference", str(exc)) from exc
+                if failed_output is not None:
+                    # SDK diagnostic messages may be redacted. Validate only the public writer
+                    # schema to obtain field errors without echoing its input or private state.
+                    text = "".join(
+                        part.text
+                        for response in failed_output.run_data.raw_responses
+                        for item in response.output
+                        if isinstance(item, ResponseOutputMessage)
+                        for part in item.content
+                        if isinstance(part, ResponseOutputText)
+                    )
+                    reason = "Return a complete reference matching the writer output schema"
+                    try:
+                        RegisteredReferenceOutput.model_validate_json(text, strict=True)
+                    except ValidationError as invalid:
+                        reason = json.dumps(
+                            invalid.errors(include_input=False, include_url=False, include_context=False)
+                        )
+                    message = feedback.error("final_output", reason)
+                    conversation = [*failed_output.run_data.history, {"role": "user", "content": message}]
+                    continue
+                output = result.final_output
+                if not isinstance(output, RegisteredReferenceOutput):
+                    raise TypeError("Reference SDK returned an unexpected output type")
+                try:
+                    if self.validate_output is not None:
+                        self.validate_output(output)
+                except (ValueError, RecursionError) as exc:
+                    message = feedback.error("final_output", str(exc))
+                    conversation = [*result.to_input_list(mode="normalized"), {"role": "user", "content": message}]
+                    continue
+                feedback.success("final_output")
+                return output

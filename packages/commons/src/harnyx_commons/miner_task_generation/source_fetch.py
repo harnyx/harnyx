@@ -16,7 +16,6 @@ from urllib.parse import parse_qsl, unquote, urljoin, urlsplit
 from pydantic import BaseModel, Field
 
 from harnyx_commons.domain.shared_config import COMMONS_STRICT_CONFIG
-from harnyx_commons.miner_task_generation.source_workspace import SourceDocument, SourceLink
 from harnyx_commons.source_extractor_worker import (
     MAX_ADDRESS_SPACE_BYTES,
     MAX_CPU_SECONDS,
@@ -35,7 +34,6 @@ DocumentKind = Literal["html", "text", "pdf", "xlsx", "static_json"]
 _SENSITIVE_QUERY_KEYS = frozenset(
     {"key", "api_key", "apikey", "token", "access_token", "auth", "authorization", "signature", "sig"}
 )
-_API_PATH_SEGMENTS = frozenset({"api", "graphql", "rest"})
 _INVALID_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 _PERCENT_ESCAPE = re.compile(r"%[0-9A-Fa-f]{2}")
 _XLSX_MEDIA_TYPES = frozenset(
@@ -44,6 +42,22 @@ _XLSX_MEDIA_TYPES = frozenset(
         "application/vnd.ms-excel.sheet.macroenabled.12",
     }
 )
+
+
+@dataclass(frozen=True, slots=True)
+class SourceLink:
+    url: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class SourceDocument:
+    requested_url: str
+    final_url: str
+    media_type: str
+    content: str
+    fetched_bytes: int | None
+    links: tuple[SourceLink, ...] = ()
 
 
 class SourceFetchError(RuntimeError):
@@ -120,11 +134,14 @@ class PublicSourceFetcher:
     def __init__(self) -> None:
         self._worker_slots = asyncio.Semaphore(_MAX_CONCURRENT_SOURCE_WORKERS)
 
-    async def fetch(self, url: str, *, document_kind: DocumentKind) -> SourceDocument:
-        _validated_document_url(url, document_kind)
-        async with self._worker_slots:
-            fetched = await _fetch_isolated(url, document_kind)
-            _validate_document_response(fetched, document_kind)
+    async def fetch(
+        self, url: str, *, document_kind: DocumentKind | None = None, timeout_seconds: float | None = None
+    ) -> SourceDocument:
+        _validated_document_url(url, document_kind or "text")
+        async with self._worker_slots, asyncio.timeout(timeout_seconds):
+            fetched = await _fetch_isolated(url, document_kind or "text")
+            if document_kind is not None:
+                _validate_document_response(fetched, document_kind)
             extracted = await _extract_isolated(
                 fetched.body,
                 fetched.media_type,
@@ -161,8 +178,6 @@ def _fetch_complete_body(initial_url: str, document_kind: DocumentKind) -> _Fetc
             host_header=parsed.netloc,
         )
         try:
-            if _public_addresses(host, port) != addresses:
-                raise SourceFetchError("source_fetch_rejected", "DNS resolution changed during the request")
             if response.status in {301, 302, 303, 307, 308}:
                 location = response.getheader("Location")
                 if not location:
@@ -195,6 +210,8 @@ def _fetch_complete_body(initial_url: str, document_kind: DocumentKind) -> _Fetc
             )
         except SourceFetchError:
             raise
+        except ssl.SSLError as exc:
+            raise SourceFetchError("source_fetch_rejected", f"source request failed: {exc}") from exc
         except (OSError, http.client.HTTPException, ValueError) as exc:
             raise SourceFetchError("source_unavailable", f"source request failed: {exc}") from exc
         finally:
@@ -222,7 +239,7 @@ def _request_from_public_address(
             connection.connect()
         except ssl.SSLError as exc:
             connection.close()
-            raise SourceFetchError("source_unavailable", f"source request failed: {exc}") from exc
+            raise SourceFetchError("source_fetch_rejected", f"source request failed: {exc}") from exc
         except OSError as exc:
             last_connection_error = exc
             connection.close()
@@ -248,6 +265,9 @@ def _request_from_public_address(
                 },
             )
             return connection, connection.getresponse()
+        except ssl.SSLError as exc:
+            connection.close()
+            raise SourceFetchError("source_fetch_rejected", f"source request failed: {exc}") from exc
         except (OSError, http.client.HTTPException, ValueError) as exc:
             connection.close()
             raise SourceFetchError("source_unavailable", f"source request failed: {exc}") from exc
@@ -280,13 +300,7 @@ def _validated_document_url(url: str, document_kind: DocumentKind) -> Any:
     parsed = _validated_url(url)
     host = parsed.hostname
     assert host is not None
-    if host.split(".", 1)[0].casefold() == "api":
-        raise SourceFetchError("source_fetch_rejected", "API hostnames are not public-document sources")
     _validate_percent_encoding(parsed.path)
-    canonical_path = _fully_unquote_url_component(parsed.path)
-    segments = {segment.casefold() for segment in canonical_path.split("/") if segment}
-    if segments & _API_PATH_SEGMENTS:
-        raise SourceFetchError("source_fetch_rejected", "API, GraphQL, and REST paths are not document sources")
     _validate_percent_encoding(parsed.query)
     try:
         query_items = parse_qsl(parsed.query, keep_blank_values=True, errors="strict")
