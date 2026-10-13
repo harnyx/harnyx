@@ -648,7 +648,7 @@ def _build_llm_clients(settings: Settings) -> RuntimeLlmClients:
         surface="scoring",
         default_provider=settings.llm.scoring_llm_provider,
         llm_settings=settings.llm,
-        allowed_providers={"bedrock", "chutes", "vertex"},
+        allowed_providers={"bedrock", "chutes", "vertex", "saygm"},
         allow_custom_openai_compatible=True,
         provider_registry=llm_provider_registry,
     )
@@ -656,7 +656,7 @@ def _build_llm_clients(settings: Settings) -> RuntimeLlmClients:
         surface="duplication_detection",
         default_provider=settings.llm.similarity_llm_provider,
         llm_settings=settings.llm,
-        allowed_providers={"bedrock", "chutes", "openrouter", "vertex"},
+        allowed_providers={"bedrock", "chutes", "openrouter", "vertex", "saygm"},
         allow_custom_openai_compatible=True,
         provider_registry=llm_provider_registry,
     )
@@ -680,7 +680,7 @@ def _resolve_scoring_judge_route(settings: Settings, *, model: str) -> ResolvedL
         default_provider=settings.llm.scoring_llm_provider,
         model=model,
         overrides=settings.llm.llm_model_provider_overrides,
-        allowed_providers={"bedrock", "chutes", "vertex"},
+        allowed_providers={"bedrock", "chutes", "vertex", "saygm"},
         allow_custom_openai_compatible=True,
     )
 
@@ -695,7 +695,7 @@ def _resolve_similarity_judge_route(
         default_provider=settings.llm.similarity_llm_provider,
         model=model or _effective_similarity_llm_model(settings),
         overrides=settings.llm.llm_model_provider_overrides,
-        allowed_providers={"bedrock", "chutes", "openrouter", "vertex"},
+        allowed_providers={"bedrock", "chutes", "openrouter", "vertex", "saygm"},
         allow_custom_openai_compatible=True,
     )
 
@@ -717,12 +717,12 @@ def _resolve_similarity_judge_routes(settings: Settings) -> tuple[ResolvedLlmRou
             )
         if route.model not in _DUPLICATION_DETECTION_CHUTES_CHAIN_MODELS:
             continue
-        if route.provider == CHUTES_PROVIDER:
+        if route.provider in {CHUTES_PROVIDER, "saygm"}:
             continue
         if parse_custom_openai_compatible_target(route.provider) is not None:
             continue
         raise ValueError(
-            f"duplicate-preflight similarity model {route.model!r} requires a Chutes or custom "
+            f"duplicate-preflight similarity model {route.model!r} requires a Chutes, SayGM or custom "
             f"OpenAI-compatible route; resolved provider was {route.provider!r}"
         )
     return routes

@@ -9,7 +9,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import cast
 
-from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.llm.adapter import canonical_model_for_provider_model
@@ -19,7 +19,7 @@ from harnyx_commons.llm.pricing import (
     price_miner_llm,
     price_static_llm_model,
 )
-from harnyx_commons.llm.provider_types import AI_GATEWAY_PROVIDER, OPENROUTER_PROVIDER
+from harnyx_commons.llm.provider_types import AI_GATEWAY_PROVIDER, CHUTES_PROVIDER, OPENROUTER_PROVIDER, SAYGM_PROVIDER
 from harnyx_commons.llm.schema import LlmResponse, LlmUsage
 from harnyx_commons.llm.tool_models import MinerSelectedLlmProviderName
 
@@ -29,6 +29,17 @@ class SettledLlmCost:
     cost_usd: float
     provider: str
     evidence: JsonObject
+
+
+def llm_cost_settlement_order(provider: str) -> tuple[str, ...]:
+    """Actual-charge sources in priority order, excluding budget-only estimates."""
+    if provider == SAYGM_PROVIDER:
+        return ("provider_returned",)
+    if provider == CHUTES_PROVIDER:
+        return ("cached_provider_pricing", "static_pricing")
+    if provider in {OPENROUTER_PROVIDER, AI_GATEWAY_PROVIDER}:
+        return ("provider_returned", "static_pricing")
+    return ("static_pricing",)
 
 
 def settled_generation_llm_cost(
@@ -106,15 +117,66 @@ def settled_response_cost(
 
     if normalized_provider == OPENROUTER_PROVIDER:
         return _settled_openrouter_response_cost(response=response, model=model)
+    if normalized_provider == SAYGM_PROVIDER:
+        saygm_cost = _saygm_provider_returned_cost(response=response, model=model)
+        if saygm_cost is not None:
+            return saygm_cost
     if normalized_provider == AI_GATEWAY_PROVIDER:
         ai_gateway_cost = _ai_gateway_provider_returned_cost(response=response, model=model)
         if ai_gateway_cost is not None:
             return ai_gateway_cost
 
+    if "static_pricing" not in llm_cost_settlement_order(normalized_provider):
+        return None
     return settled_static_llm_cost(
         provider=normalized_provider,
         model=model,
         usage=response.usage or LlmUsage(),
+    )
+
+
+class _SayGmSettledUsage(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True, allow_inf_nan=False)
+
+    cost: float | None = Field(default=None, ge=0)
+    cost_nano_usd: int | None = Field(default=None, ge=0)
+
+
+class _SayGmSettledResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    id: str | None = None
+    usage: _SayGmSettledUsage | None = None
+
+
+def _saygm_provider_returned_cost(*, response: LlmResponse, model: str) -> SettledLlmCost | None:
+    try:
+        raw = _SayGmSettledResponse.model_validate((response.metadata or {}).get("raw_response"))
+    except ValidationError:
+        return None
+    usage = raw.usage
+    if usage is None or (usage.cost_nano_usd is None and usage.cost is None):
+        return None
+    if usage.cost_nano_usd is not None:
+        cost_usd = usage.cost_nano_usd / 1_000_000_000
+        if usage.cost is not None and Decimal(str(usage.cost)) * 1_000_000_000 != usage.cost_nano_usd:
+            return None
+        origin = "saygm_usage_cost_nano_usd"
+    else:
+        assert usage.cost is not None
+        cost_usd = usage.cost
+        origin = "saygm_usage_cost"
+    return SettledLlmCost(
+        cost_usd=cost_usd,
+        provider=SAYGM_PROVIDER,
+        evidence={
+            "settlement_source": "provider_returned",
+            "pricing_origin": origin,
+            "model": model,
+            "provider_request_id": raw.id,
+            "cost": usage.cost,
+            "cost_nano_usd": usage.cost_nano_usd,
+        },
     )
 
 
@@ -208,11 +270,7 @@ def _settled_openrouter_response_cost(
     model: str,
 ) -> SettledLlmCost | None:
     billing = _openrouter_usage_billing(response)
-    if (
-        billing.is_byok is True
-        and billing.cost_usd is not None
-        and billing.upstream_inference_cost_usd is not None
-    ):
+    if billing.is_byok is True and billing.cost_usd is not None and billing.upstream_inference_cost_usd is not None:
         return SettledLlmCost(
             cost_usd=billing.cost_usd + billing.upstream_inference_cost_usd,
             provider=OPENROUTER_PROVIDER,
@@ -224,9 +282,7 @@ def _settled_openrouter_response_cost(
                 "usage": _openrouter_usage_evidence(billing),
             },
         )
-    if (
-        billing.is_byok is False or billing.is_byok_status == "missing"
-    ) and billing.cost_usd is not None:
+    if (billing.is_byok is False or billing.is_byok_status == "missing") and billing.cost_usd is not None:
         evidence: JsonObject = {
             "settlement_source": "provider_returned",
             "pricing_origin": "openrouter_usage_cost",
@@ -272,8 +328,8 @@ def _openrouter_usage_billing(response: LlmResponse) -> _OpenRouterUsageBilling:
         usage.cost,
         field_name="OpenRouter usage.cost",
     )
-    upstream_inference_cost_usd, upstream_inference_cost_status = (
-        _normalized_openrouter_upstream_inference_cost(usage.cost_details)
+    upstream_inference_cost_usd, upstream_inference_cost_status = _normalized_openrouter_upstream_inference_cost(
+        usage.cost_details
     )
     return _OpenRouterUsageBilling(
         is_byok=is_byok,

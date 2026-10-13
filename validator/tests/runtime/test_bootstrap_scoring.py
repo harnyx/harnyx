@@ -774,7 +774,7 @@ def test_default_similarity_chain_rejects_incompatible_builtin_provider(provider
         ),
     )
 
-    with pytest.raises(ValueError, match="google/gemma-4-31B-turbo-TEE.*requires a Chutes or custom"):
+    with pytest.raises(ValueError, match="google/gemma-4-31B-turbo-TEE.*requires a Chutes, SayGM or custom"):
         bootstrap._resolve_similarity_judge_routes(settings)
 
 

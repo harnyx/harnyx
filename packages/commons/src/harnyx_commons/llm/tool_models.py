@@ -11,6 +11,7 @@ from harnyx_commons.llm.provider_types import (
     CHUTES_PROVIDER,
     CUSTOM_OPENAI_COMPATIBLE_PROVIDER_TAG,
     OPENROUTER_PROVIDER,
+    SAYGM_PROVIDER,
     VERTEX_PROVIDER,
 )
 
@@ -30,7 +31,7 @@ ModelThinkingField = Literal[
 ModelThinkingProvider = Literal["chutes", "vertex", "custom-openai-compatible"]
 ToolModelThinkingField: TypeAlias = ModelThinkingField
 ToolModelThinkingProvider: TypeAlias = ModelThinkingProvider
-MinerSelectedLlmProviderName = Literal["chutes", "openrouter", "ai_gateway"]
+MinerSelectedLlmProviderName = Literal["chutes", "openrouter", "ai_gateway", "saygm"]
 MinerSelectedLlmModelName = str
 
 ALLOWED_TOOL_MODELS: tuple[ToolModelName, ...] = (
@@ -45,6 +46,7 @@ ALLOWED_TOOL_MODELS: tuple[ToolModelName, ...] = (
 MINER_SELECTED_LLM_PROVIDERS: tuple[MinerSelectedLlmProviderName, ...] = (
     CHUTES_PROVIDER,
     OPENROUTER_PROVIDER,
+    SAYGM_PROVIDER,
     AI_GATEWAY_PROVIDER,
 )
 
@@ -82,6 +84,26 @@ MINER_SELECTED_LLM_PROVIDER_MODELS: Mapping[
         "xiaomi/mimo-v2.6-flash",
         "xiaomi/mimo-v2.6-pro",
         "xiaomi/mimo-v2.6-pro-ultraspeed",
+    ),
+    # SayGM equivalents of models already authorized through existing miner providers.
+    SAYGM_PROVIDER: (
+        "deepseek-v3.2-tee",
+        "deepseek-v4-flash-0731",
+        "deepseek-v4-flash-0731-tee",
+        "deepseek-v4.1-flash",
+        "deepseek-v4.1-flash-tee",
+        "gemma-4-31b-turbo-tee",
+        "glm-5.2",
+        "glm-5.2-tee",
+        "glm-5.3-flash",
+        "glm-5.3-flash-tee",
+        "gpt-oss-20b",
+        "kimi-k2.6-tee",
+        "mimo-v2.6-pro-ultraspeed",
+        "mimo-v2.6-pro-ultraspeed-tee",
+        "qwen3.5-397b-a17b-tee",
+        "qwen3.6-27b-tee",
+        "qwen3.8-27b",
     ),
     AI_GATEWAY_PROVIDER: (
         "thinkingmachines/inkling",

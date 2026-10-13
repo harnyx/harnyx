@@ -58,6 +58,7 @@ from harnyx_commons.observability.langfuse import (
     start_llm_generation,
     update_generation_best_effort,
 )
+from harnyx_miner_sdk.llm import Timeout
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 
@@ -411,25 +412,45 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         policy = policy or self._retry_policy
         ctx = RetryContext(policy)
         current_request = request
+        attempt = 0
+        try:
+            async with enforce_attempt_deadlines(self._retry_timeout(request)):
+                for attempt in range(policy.attempts):
+                    # Phase 1: Attempt
+                    response = await self._try_call(attempt, ctx, current_request, call_coro, classify_exception)
+                    if response is None:
+                        continue
 
-        for attempt in range(policy.attempts):
-            # Phase 1: Attempt
-            response = await self._try_call(attempt, ctx, current_request, call_coro, classify_exception)
-            if response is None:
-                continue
+                    # Phase 2: Verify
+                    if not await self._try_verify(attempt, ctx, current_request, response, verifier):
+                        continue
 
-            # Phase 2: Verify
-            if not await self._try_verify(attempt, ctx, current_request, response, verifier):
-                continue
+                    # Phase 3: Postprocess
+                    processed, retry, next_request = await self._try_postprocess(
+                        attempt, ctx, current_request, response
+                    )
+                    if retry:
+                        current_request = next_request or current_request
+                        continue
 
-            # Phase 3: Postprocess
-            processed, retry, next_request = await self._try_postprocess(attempt, ctx, current_request, response)
-            if retry:
-                current_request = next_request or current_request
-                continue
-
-            # Success
-            return self._build_response(request, response, ctx, processed)
+                    # Success
+                    return self._build_response(request, response, ctx, processed)
+        except LlmAttemptTimeoutError as exc:
+            # The total deadline includes backoff and may expire before all attempts.
+            ctx.total_latency_ms = exc.elapsed_seconds * 1000
+            response = self._build_response_for_error(ctx.last_response, ctx)
+            if response is not None:
+                response = replace(response, metadata={**(response.metadata or {}), "attempts": attempt + 1})
+            retryable, reason = self._classify_retry_exception(exc, classify_exception)
+            if not retryable:
+                raise LlmProviderError(reason, response=response) from exc
+            raise LlmRetryExhaustedError(
+                "LLM total timeout: total request deadline exceeded",
+                response=response,
+                attempts=attempt + 1,
+                retry_reasons=tuple(ctx.reasons),
+                latency_ms_total=round(ctx.total_latency_ms, 2),
+            ) from exc
 
         raise LlmRetryExhaustedError(
             "LLM call exhausted all retry attempts",
@@ -438,6 +459,9 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             retry_reasons=tuple(ctx.reasons),
             latency_ms_total=round(ctx.total_latency_ms, 2),
         )
+
+    def _retry_timeout(self, request: AbstractLlmRequest) -> Timeout | None:
+        return None
 
     async def _try_call(
         self,
@@ -465,10 +489,7 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             except Exception as exc:
                 latency_ms = (time.perf_counter() - start) * 1000
                 ctx.total_latency_ms += latency_ms
-                if isinstance(exc, LlmAttemptTimeoutError):
-                    retryable, reason = True, f"{exc.phase}_timeout"
-                else:
-                    retryable, reason = classify_exception(exc) if classify_exception else (False, str(exc))
+                retryable, reason = self._classify_retry_exception(exc, classify_exception)
                 if observation is not None:
                     observation.finish_failure(exc, retryable=retryable)
                 await self._handle_failure(
@@ -656,13 +677,28 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             ) from source_exception
         if not retryable:
             if source_exception is not None:
+                accumulated_response = self._build_response_for_error(response_for_error, ctx)
                 if isinstance(source_exception, LlmProviderError):
+                    if source_exception.response is None:
+                        source_exception.response = accumulated_response
                     raise source_exception
-                raise LlmProviderError(failure.reason) from source_exception
+                raise LlmProviderError(failure.reason, response=accumulated_response) from source_exception
             raise LlmProviderError(failure.reason, response=response_for_error)
         ctx.reasons.append(failure.reason)
         self._log_retry(phase, request, attempt, failure, ctx.policy)
-        await asyncio.sleep(backoff_ms(attempt, ctx.policy) / 1000)
+        await asyncio.sleep(self._retry_delay_seconds(attempt, ctx.policy, source_exception))
+
+    def _classify_retry_exception(
+        self,
+        exc: Exception,
+        classify_exception: Callable[[Exception], tuple[bool, str]] | None,
+    ) -> tuple[bool, str]:
+        if isinstance(exc, LlmAttemptTimeoutError):
+            return True, f"{exc.phase}_timeout"
+        return classify_exception(exc) if classify_exception else (False, str(exc))
+
+    def _retry_delay_seconds(self, attempt: int, policy: RetryPolicy, exc: Exception | None) -> float:
+        return backoff_ms(attempt, policy) / 1000
 
     def _build_response(
         self,

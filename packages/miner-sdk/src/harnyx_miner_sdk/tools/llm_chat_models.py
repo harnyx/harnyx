@@ -34,7 +34,7 @@ from harnyx_miner_sdk.tools.llm_provider_extra import (
 )
 from harnyx_miner_sdk.tools.types import ToolInvocationTimeout
 
-LlmChatProviderName = Literal["chutes", "openrouter", "ai_gateway"]
+LlmChatProviderName = Literal["chutes", "openrouter", "ai_gateway", "saygm"]
 LlmChatToolChoiceName = Literal["none", "auto", "required"]
 
 
@@ -297,6 +297,12 @@ class LlmChatRequest(_StrictModel):
         normalized = dict(data)
         normalized["provider_extra"] = parsed
         return normalized
+
+    @model_validator(mode="after")
+    def _validate_provider_thinking(self) -> LlmChatRequest:
+        if self.provider == "saygm" and self.thinking is not None and self.thinking.budget is not None:
+            raise ValueError("SayGM does not support thinking.budget; use thinking.effort instead")
+        return self
 
     @model_validator(mode="after")
     def _validate_tools_and_transcript(self) -> LlmChatRequest:

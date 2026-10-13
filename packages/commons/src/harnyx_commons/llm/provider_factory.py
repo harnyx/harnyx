@@ -16,6 +16,7 @@ from harnyx_commons.llm.provider import LlmProviderName, LlmProviderPort
 from harnyx_commons.llm.provider_types import (
     AI_GATEWAY_PROVIDER,
     OPENROUTER_PROVIDER,
+    SAYGM_PROVIDER,
     LlmRouteTarget,
     parse_builtin_provider_name,
     parse_custom_openai_compatible_target,
@@ -26,6 +27,7 @@ from harnyx_commons.llm.providers.bedrock import BedrockLlmProvider
 from harnyx_commons.llm.providers.chutes import ChutesLlmProvider
 from harnyx_commons.llm.providers.openai_compatible import OpenAiCompatibleLlmProvider
 from harnyx_commons.llm.providers.openrouter import OpenRouterLlmProvider
+from harnyx_commons.llm.providers.saygm import SayGmLlmProvider
 from harnyx_commons.llm.providers.vertex.provider import VertexLlmProvider
 from harnyx_commons.llm.routing import LlmRouteSurface, RoutedLlmProvider
 from harnyx_commons.llm.tool_models import MinerSelectedLlmProviderName, parse_miner_selected_llm_provider
@@ -145,6 +147,11 @@ def build_miner_paid_llm_provider(
                 openrouter_api_key=SecretStr(explicit_key),
             ),
         )
+    if provider_name == SAYGM_PROVIDER:
+        return LlmProviderAdapter(
+            provider_name=provider_name,
+            delegate=SayGmLlmProvider(api_key=SecretStr(explicit_key)),
+        )
     if provider_name == AI_GATEWAY_PROVIDER:
         return LlmProviderAdapter(
             provider_name=provider_name,
@@ -169,6 +176,13 @@ def _build_provider(
             delegate=OpenRouterLlmProvider(
                 openrouter_api_key=llm_settings.openrouter_api_key,
             ),
+        )
+
+    if route_target == SAYGM_PROVIDER:
+        _require_configured_credential(route_target, llm_settings.saygm_api_key_value)
+        return LlmProviderAdapter(
+            provider_name=route_target,
+            delegate=SayGmLlmProvider(api_key=llm_settings.saygm_api_key),
         )
 
     if route_target == AI_GATEWAY_PROVIDER:

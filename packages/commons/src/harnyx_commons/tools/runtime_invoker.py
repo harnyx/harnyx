@@ -25,7 +25,7 @@ from harnyx_commons.errors import (
     ToolProviderFailureCode,
 )
 from harnyx_commons.json_types import JsonObject, JsonValue
-from harnyx_commons.llm.cost_settlement import settled_cost_from_metadata
+from harnyx_commons.llm.cost_settlement import llm_cost_settlement_order, settled_cost_from_metadata
 from harnyx_commons.llm.pricing import (
     MINER_TOOL_DECISION_PRICING,
     MINER_TOOL_EMBEDDING_PRICING,
@@ -107,6 +107,7 @@ DEFAULT_EMBEDDING_TOOL_TIMEOUT_SECONDS = PLATFORM_TOOL_PROXY_EMBEDDING_TOOL_DEFA
 TInvocationResult = TypeVar("TInvocationResult")
 _AUTHENTICATION_STATUSES_BY_PROVIDER: Mapping[str, frozenset[int]] = {
     "ai_gateway": frozenset({401}),
+    "saygm": frozenset({401}),
     "chutes": frozenset({401}),
     "desearch": frozenset({403}),
     "openrouter": frozenset({401}),
@@ -452,11 +453,19 @@ class RuntimeToolInvoker(ToolInvoker):
         if "llm_chat" in visible_tool_names:
             pricing["llm_chat"] = {
                 "kind": "per_million_tokens",
-                "settlement_order": [
-                    "provider_returned",
-                    "cached_provider_pricing",
-                    "static_pricing",
-                ],
+                # Retain the published legacy field; per-provider maps own current settlement rules.
+                "settlement_order": ["provider_returned", "cached_provider_pricing", "static_pricing"],
+                "provider_settlement_order": {
+                    provider: list(llm_cost_settlement_order(provider)) for provider in MINER_TOOL_LLM_PRICING
+                },
+                "provider_rate_usage": {
+                    provider: (
+                        "budget_estimate_and_settlement_fallback"
+                        if "static_pricing" in llm_cost_settlement_order(provider)
+                        else "budget_estimate_only"
+                    )
+                    for provider in MINER_TOOL_LLM_PRICING
+                },
                 "provider_models": {
                     provider: {
                         model: {

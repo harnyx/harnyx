@@ -20,6 +20,7 @@ from harnyx_commons.llm.provider_types import (
     AI_GATEWAY_PROVIDER,
     CHUTES_PROVIDER,
     OPENROUTER_PROVIDER,
+    SAYGM_PROVIDER,
     VERTEX_PROVIDER,
 )
 from harnyx_commons.llm.providers.vertex.anthropic import is_claude_model, normalize_claude_model
@@ -127,6 +128,27 @@ MINER_TOOL_LLM_PRICING: Mapping[MinerSelectedLlmProviderName, Mapping[str, Model
         "xiaomi/mimo-v2.6-flash": ModelPricing(0.14, 0.28, 0.0),
         "xiaomi/mimo-v2.6-pro": ModelPricing(0.435, 0.87, 0.0),
         "xiaomi/mimo-v2.6-pro-ultraspeed": ModelPricing(4.35, 8.70, 0.0),
+    },
+    # SayGM retail ceilings, verified 2026-10-13: https://api.saygm.com/v1/models
+    # Budget estimates only; settlement uses the provider-returned charge.
+    SAYGM_PROVIDER: {
+        "deepseek-v3.2-tee": ModelPricing(1, 1, 0.0),
+        "deepseek-v4-flash-0731": ModelPricing(0.44, 1.32, 0.0),
+        "deepseek-v4-flash-0731-tee": ModelPricing(0.44, 1.32, 0.0),
+        "deepseek-v4.1-flash": ModelPricing(0.3, 1.2, 0.0),
+        "deepseek-v4.1-flash-tee": ModelPricing(0.3, 1.2, 0.0),
+        "gemma-4-31b-turbo-tee": ModelPricing(0.12, 0.37, 0.0),
+        "glm-5.2": ModelPricing(1.4, 4.4, 0.0),
+        "glm-5.2-tee": ModelPricing(1.4, 4.4, 0.0),
+        "glm-5.3-flash": ModelPricing(0.15, 0.5, 0.0),
+        "glm-5.3-flash-tee": ModelPricing(0.15, 0.5, 0.0),
+        "gpt-oss-20b": ModelPricing(0.07, 0.3, 0.0),
+        "kimi-k2.6-tee": ModelPricing(0.5, 2.85, 0.0),
+        "mimo-v2.6-pro-ultraspeed": ModelPricing(4.35, 8.7, 0.0),
+        "mimo-v2.6-pro-ultraspeed-tee": ModelPricing(4.35, 8.7, 0.0),
+        "qwen3.5-397b-a17b-tee": ModelPricing(0.45, 3, 0.0),
+        "qwen3.6-27b-tee": ModelPricing(0.3, 2, 0.0),
+        "qwen3.8-27b": ModelPricing(0.5, 3, 0.0),
     },
     AI_GATEWAY_PROVIDER: {
         "thinkingmachines/inkling": ModelPricing(1.00, 4.05, 0.0),

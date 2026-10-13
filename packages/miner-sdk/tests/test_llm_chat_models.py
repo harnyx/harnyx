@@ -35,6 +35,48 @@ def test_timeout_wire_rejects_unknown_phase() -> None:
         LlmChatRequest.model_validate(_request_payload() | {"timeout": {"total": 120, "read": 10}})
 
 
+def test_saygm_wire_preserves_native_selection_and_rejects_other_gateway_routing_extras() -> None:
+    payload = _request_payload() | {"provider": "saygm", "model": "gpt-oss-20b"}
+    request = LlmChatRequest.model_validate(payload)
+    assert request.to_tool_request().provider == "saygm"
+    assert request.model_dump(mode="json")["model"] == "gpt-oss-20b"
+    with pytest.raises(ValueError, match="provider_extra is not supported"):
+        LlmChatRequest.model_validate(payload | {"provider_extra": {"provider": {"only": ["groq"]}}})
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_saygm_wire_rejects_unsupported_thinking_token_budgets(enabled: bool) -> None:
+    payload = _request_payload() | {
+        "provider": "saygm",
+        "model": "gpt-oss-20b",
+        "thinking": {"enabled": enabled, "budget": 1024},
+    }
+    with pytest.raises(ValidationError, match="SayGM does not support thinking.budget"):
+        LlmChatRequest.model_validate(payload)
+
+
+@pytest.mark.parametrize("thinking", [{"enabled": False}, {"enabled": True}, {"enabled": True, "effort": "low"}])
+def test_saygm_wire_preserves_supported_thinking_controls(thinking: dict[str, object]) -> None:
+    request = LlmChatRequest.model_validate(
+        _request_payload() | {"provider": "saygm", "model": "gpt-oss-20b", "thinking": thinking}
+    )
+    assert request.model_dump(mode="json", exclude_none=True)["thinking"] == thinking
+    normalized = request.to_tool_request()
+    assert normalized.thinking is not None
+    assert normalized.thinking.enabled == thinking["enabled"]
+    assert normalized.thinking.effort == thinking.get("effort")
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "ai_gateway"])
+def test_gateway_wire_preserves_supported_thinking_token_budgets(provider: str) -> None:
+    thinking = {"enabled": True, "budget": 1024}
+    request = LlmChatRequest.model_validate(_request_payload() | {"provider": provider, "thinking": thinking})
+    assert request.model_dump(mode="json", exclude_none=True)["thinking"] == thinking
+    normalized = request.to_tool_request()
+    assert normalized.thinking is not None
+    assert normalized.thinking.budget == 1024
+
+
 def _tool() -> dict[str, object]:
     return {
         "type": "function",

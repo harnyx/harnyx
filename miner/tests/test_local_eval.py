@@ -35,6 +35,7 @@ from harnyx_commons.domain.tool_usage import (
     SearchToolUsageSummary,
     ToolUsageSummary,
 )
+from harnyx_commons.llm.schema import AbstractLlmRequest, LlmChoice, LlmChoiceMessage, LlmResponse, LlmUsage
 from harnyx_commons.miner_task_scoring import EvaluationScoringConfig
 from harnyx_commons.sandbox.client import SandboxClient
 from harnyx_commons.sandbox.manager import SandboxDeployment
@@ -722,6 +723,69 @@ def test_local_eval_settings_still_validate_scoring_provider(monkeypatch: pytest
 
     with pytest.raises(ValidationError, match="SCORING_LLM_PROVIDER"):
         local_eval.Settings.load()
+
+
+@pytest.mark.parametrize("provider", ["saygm", "openrouter", "ai_gateway"])
+async def test_local_eval_scoring_override_dispatches_only_supported_operator_routes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    provider: str,
+) -> None:
+    model = "gpt-oss-20b"
+    requests: list[AbstractLlmRequest] = []
+    resolved_providers: list[str] = []
+
+    class _ScoringProvider:
+        async def invoke(self, request: AbstractLlmRequest) -> LlmResponse:
+            requests.append(request)
+            return LlmResponse(
+                id="local-scoring-response",
+                choices=(LlmChoice(index=0, message=LlmChoiceMessage(role="assistant", content=())),),
+                usage=LlmUsage(),
+                postprocessed={"preferred_position": "first"},
+            )
+
+    class _Registry:
+        def resolve(self, name: str) -> _ScoringProvider:
+            resolved_providers.append(name)
+            return _ScoringProvider()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SCORING_LLM_PROVIDER", "chutes")
+    monkeypatch.setenv("LLM_MODEL_PROVIDER_OVERRIDES_JSON", json.dumps({"scoring": {model: provider}}))
+    monkeypatch.setattr(local_eval, "_DIRECT_SCORING_LLM_MODEL", model)
+    monkeypatch.setattr(local_eval, "_build_state", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        local_eval,
+        "build_tool_invocation_clients",
+        lambda **_kwargs: SimpleNamespace(
+            search_client=None,
+            ai_search_client=None,
+            search_provider_registry=None,
+            llm_provider_registry=_Registry(),
+            embedding_provider=None,
+            embedding_provider_registry=None,
+            decision_provider_registry=None,
+        ),
+    )
+    # Sandbox construction is outside the scoring caller boundary under test.
+    monkeypatch.setattr(
+        local_eval.LocalEvaluationRuntime, "_from_components", lambda **kwargs: SimpleNamespace(**kwargs)
+    )
+
+    if provider != "saygm":
+        with pytest.raises(ValueError, match=f"provider '{provider}'"):
+            local_eval.LocalEvaluationRuntime.create(run_progress_root=tmp_path / "progress")
+        assert resolved_providers == []
+        assert requests == []
+        return
+
+    runtime = local_eval.LocalEvaluationRuntime.create(run_progress_root=tmp_path / "progress")
+    result = await runtime.scoring_service.score(task=_task(uuid4(), "Question"), response=Response(text="Answer"))
+
+    assert result.score_breakdown.total_score == pytest.approx(0.5)
+    assert resolved_providers == ["saygm", "saygm"]
+    assert [(request.provider, request.model) for request in requests] == [("saygm", model), ("saygm", model)]
 
 
 @pytest.mark.parametrize("invocation_only", [False, True])

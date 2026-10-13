@@ -679,8 +679,10 @@ def _retry_metadata_from_exception(
 ) -> dict[str, object]:
     response_metadata = exc.response.metadata if exc.response is not None and exc.response.metadata is not None else {}
     return {
-        "selected_provider": _metadata_string(response_metadata, "selected_provider", default_provider),
-        "selected_model": _metadata_string(response_metadata, "selected_model", default_model),
+        "selected_provider": _metadata_string(
+            response_metadata, "selected_provider", exc.effective_provider or default_provider
+        ),
+        "selected_model": _metadata_string(response_metadata, "selected_model", exc.effective_model or default_model),
         "attempts": exc.attempts or _metadata_positive_int(response_metadata, "attempts", fallback=1),
         "retry_reasons": exc.retry_reasons or _metadata_strings(response_metadata, "retry_reasons"),
         "latency_ms_total": exc.latency_ms_total

@@ -13,6 +13,17 @@ from harnyx_commons.llm.provider import LlmProviderPort
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
 
 _DEFAULT_MODEL_ALIASES: Mapping[str, str] = {
+    "saygm:deepseek-ai/DeepSeek-V3.2-TEE": "deepseek-v3.2-tee",
+    "saygm:deepseek-ai/DeepSeek-V4-Flash-0731-TEE": "deepseek-v4-flash-0731-tee",
+    "saygm:deepseek-ai/DeepSeek-V4.1-Flash-TEE": "deepseek-v4.1-flash-tee",
+    "saygm:google/gemma-4-31B-turbo-TEE": "gemma-4-31b-turbo-tee",
+    "saygm:zai-org/GLM-5.1-TEE": "glm-5.1-tee",
+    "saygm:zai-org/GLM-5.2-TEE": "glm-5.2-tee",
+    "saygm:Qwen/Qwen3.6-27B-TEE": "qwen3.6-27b-tee",
+    "saygm:Qwen/Qwen3.5-397B-A17B-TEE": "qwen3.5-397b-a17b-tee",
+    "saygm:moonshotai/Kimi-K2.6-TEE": "kimi-k2.6-tee",
+    "saygm:moonshotai/Kimi-K3-TEE": "kimi-k3-tee",
+    "saygm:openai/gpt-oss-20b": "gpt-oss-20b",
     "bedrock:openai/gpt-oss-20b-TEE": "openai.gpt-oss-20b-1:0",
     "bedrock:openai/gpt-oss-120b-TEE": "openai.gpt-oss-120b-1:0",
     "bedrock:MiniMaxAI/MiniMax-M2.5-TEE": "minimax.minimax-m2.5",

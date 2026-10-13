@@ -354,7 +354,7 @@ async def llm_chat(
 @overload
 async def llm_chat(
     *,
-    provider: Literal["chutes"],
+    provider: Literal["chutes", "saygm"],
     messages: Sequence[Mapping[str, Any] | LlmChatMessage | LlmMessage],
     model: str,
     temperature: float | None = None,
@@ -371,7 +371,7 @@ async def llm_chat(
 
 async def llm_chat(
     *,
-    provider: Literal["chutes", "openrouter", "ai_gateway"],
+    provider: Literal["chutes", "openrouter", "ai_gateway", "saygm"],
     messages: Sequence[Mapping[str, Any] | LlmChatMessage | LlmMessage],
     model: str,
     temperature: float | None = None,

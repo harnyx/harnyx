@@ -220,7 +220,7 @@ harnyx-miner-config --wallet-name <wallet> --hotkey-name <hotkey> --provider chu
 harnyx-miner-config --wallet-name <wallet> --hotkey-name <hotkey> --delete-provider chutes
 ```
 
-Supported stored-credential providers are `chutes`, `openrouter`, `ai_gateway`, `desearch`, `parallel`, `firecrawl`, `exa`, and `tavily`. Firecrawl, Exa, and Tavily credentials apply only to `search_web` and `fetch_page`.
+Supported stored-credential providers are `chutes`, `openrouter`, `ai_gateway`, `saygm`, `desearch`, `parallel`, `firecrawl`, `exa`, and `tavily`. SayGM credentials apply to `llm_chat`. Firecrawl, Exa, and Tavily credentials apply only to `search_web` and `fetch_page`.
 For each provider, a given API key can be registered to only one miner hotkey at a time. Registering a key already held by another hotkey for that provider returns `provider_credential_already_registered` (409). Deleting that credential frees the key for another hotkey. The same key value may be registered under different providers.
 Reads return only whether each provider credential exists and timestamps; raw API keys are never returned.
 Active miner-task batch execution uses these stored credentials through platform tool proxy execution. Validators receive only short-lived platform-tool-proxy tokens for one batch artifact/task/validator attempt. Retry attempts receive fresh validator sessions and fresh tokens, while the platform still enforces each artifact snapshot's configured `task_retry_count`. Raw provider API keys stay inside the platform boundary.
@@ -476,6 +476,8 @@ Treat `allowed_llm_provider_models[provider]` as the runtime source of truth for
 Treat `allowed_embedding_provider_models[provider]` the same way for `embed_text`. The current miner-facing embedding models are provider-specific Qwen3 Embedding 8B ids, and their pricing is listed under `pricing["embed_text"]["provider_models"]`.
 
 Current allowed `llm_chat` provider/model ids in this repo:
+
+SayGM supports only equivalents of models already authorized through the existing miner providers. The 17 native Chat Completions ids are listed by `tooling_info().response["allowed_llm_provider_models"]["saygm"]`, including `gpt-oss-20b`, `glm-5.2`, and `gemma-4-31b-turbo-tee`; the full SayGM catalog is not available to miners. Register the key with `harnyx-miner-config --wallet-name <wallet> --hotkey-name <hotkey> --provider saygm --api-key <provider-api-key>`. Claude and Gemini native APIs are outside this integration. SayGM accepts no `provider_extra`; actual charges use its returned settlement rather than the published ceiling prices used for budget estimates.
 
 | Provider | Model ids |
 |----------|-----------|

@@ -201,6 +201,7 @@ class LlmSettings(BaseSettings):
     llm_model_provider_overrides_json: str | None = Field(default=None, alias="LLM_MODEL_PROVIDER_OVERRIDES_JSON")
     openai_compatible_endpoints_json: str | None = Field(default=None, alias="LLM_OPENAI_COMPATIBLE_ENDPOINTS_JSON")
     openrouter_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="OPENROUTER_API_KEY")
+    saygm_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="SAYGM_API_KEY")
     ai_gateway_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="AI_GATEWAY_API_KEY")
 
     # --- Timeouts ---
@@ -342,6 +343,10 @@ class LlmSettings(BaseSettings):
     @property
     def openrouter_api_key_value(self) -> str:
         return self.openrouter_api_key.get_secret_value().strip()
+
+    @property
+    def saygm_api_key_value(self) -> str:
+        return self.saygm_api_key.get_secret_value().strip()
 
     @property
     def ai_gateway_api_key_value(self) -> str:

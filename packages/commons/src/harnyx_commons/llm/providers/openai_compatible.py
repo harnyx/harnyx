@@ -63,8 +63,9 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
         endpoint: OpenAiCompatibleEndpointConfig,
         client: httpx.AsyncClient | None = None,
         response_metadata_extractor: OpenAiCompatibleResponseMetadataExtractor | None = None,
+        provider_label: str | None = None,
     ) -> None:
-        provider_label = custom_openai_compatible_target(endpoint.id)
+        provider_label = provider_label or custom_openai_compatible_target(endpoint.id)
         super().__init__(provider_label=provider_label, max_concurrent=endpoint.max_concurrent)
         self._endpoint = endpoint
         self._authenticator = _OpenAiCompatibleAuthenticator(endpoint.auth)
@@ -170,9 +171,7 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
                 )
                 try:
                     usage = (
-                        _OpenAiCompatibleUsagePayload.model_validate(event.usage)
-                        if event.usage is not None
-                        else None
+                        _OpenAiCompatibleUsagePayload.model_validate(event.usage) if event.usage is not None else None
                     )
                 except ValidationError:
                     self._llm_logger.warning("openai_compatible.stream.invalid_usage")
@@ -189,13 +188,16 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
                     upstream_provider=stream_identity.provider,
                 )
                 if saw_output:
-                    record_output_progress()
+                    self._record_stream_output()
                     if ttft_ms is None:
                         ttft_ms = round((time.perf_counter() - started_at) * 1000, 2)
         return _OpenAiCompatibleChatResponse.from_stream_state(
             state,
             response_metadata=response_metadata,
         ), ttft_ms
+
+    def _record_stream_output(self) -> None:
+        record_output_progress()
 
     @staticmethod
     def _verify_response(response: LlmResponse) -> tuple[bool, bool, str | None]:
@@ -342,6 +344,7 @@ class _OpenAiCompatibleUsagePayload(BaseModel):
     total_tokens: int | None = None
     reasoning_tokens: int | None = None
     cost: JsonValue | None = None
+    cost_nano_usd: JsonValue | None = None
     is_byok: JsonValue | None = None
     cost_details: JsonValue | None = None
     completion_tokens_details: _OpenAiCompatibleUsageDetails | None = None

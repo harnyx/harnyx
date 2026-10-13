@@ -4,7 +4,9 @@ import asyncio
 import json
 from uuid import uuid4
 
+import httpx
 import pytest
+from pydantic import SecretStr
 
 import harnyx_commons.miner_task_scoring as miner_task_scoring
 from harnyx_commons.domain.miner_task import (
@@ -17,7 +19,9 @@ from harnyx_commons.domain.miner_task import (
     ScorerReasoning,
 )
 from harnyx_commons.llm.provider import BaseLlmProvider, LlmRetryExhaustedError
+from harnyx_commons.llm.providers.saygm import SayGmLlmProvider
 from harnyx_commons.llm.retry_utils import RetryPolicy
+from harnyx_commons.llm.routing import RoutedLlmProvider
 from harnyx_commons.llm.schema import (
     AbstractLlmRequest,
     LlmChoice,
@@ -706,6 +710,73 @@ async def test_scoring_service_tries_next_candidate_after_true_retry_exhaustion(
         "fallback-judge",
     ]
     assert [request.model for request in llm.requests_by_side["reference_first"]] == ["primary-judge"]
+
+
+@pytest.mark.parametrize("failure", ["prefill", "after_billable_response"])
+async def test_saygm_total_deadline_advances_scoring_fallback_and_retains_settled_charges(failure: str) -> None:
+    calls: dict[tuple[str, str], int] = {}
+
+    def stream(content: str, cost: int) -> bytes:
+        events = [
+            {"id": "scoring-test", "choices": [{"index": 0, "delta": {"content": content}}]},
+            {"id": "scoring-test", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+            {
+                "id": "scoring-test",
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 12,
+                    "completion_tokens": 9,
+                    "cost_nano_usd": cost,
+                },
+            },
+        ]
+        return ("".join(f"data: {json.dumps(event)}\n\n" for event in events) + "data: [DONE]\n\n").encode()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        key = (body["model"], body["messages"][1]["content"])
+        calls[key] = calls.get(key, 0) + 1
+        if body["model"] == "gpt-oss-20b":
+            if failure == "prefill":
+                await asyncio.sleep(1)
+            elif calls[key] == 1:
+                return httpx.Response(200, content=stream("invalid verdict", 100000))
+            return httpx.Response(429, headers={"Retry-After": "60"})
+        return httpx.Response(200, content=stream('{"preferred_position":"first"}', 200000))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        gateway = SayGmLlmProvider(api_key=SecretStr("key"), client=client)
+        routed = RoutedLlmProvider(
+            surface="scoring",
+            default_provider="chutes",
+            overrides={"scoring": {"gpt-oss-20b": "saygm", "glm-5.2": "saygm"}},
+            allowed_providers={"chutes", "saygm"},
+            resolve_provider=lambda _: gateway,
+        )
+        service = EvaluationScoringService(
+            llm_provider=routed,
+            config=EvaluationScoringConfig(
+                provider="chutes",
+                model="gpt-oss-20b",
+                fallback_models=("glm-5.2",),
+                timeout_seconds=0.5,
+                retry_policy=RetryPolicy(attempts=3, initial_ms=0, max_ms=0, jitter=0),
+            ),
+        )
+        result = await service.score(
+            task=MinerTask(
+                task_id=uuid4(),
+                query=Query(text="What is the answer?"),
+                reference_answer=ReferenceAnswer(text="42"),
+            ),
+            response=Response(text="Miner says 42."),
+        )
+    assert sum(count for (model, _), count in calls.items() if model == "glm-5.2") == 2
+    assert result.judge_usage.actual_cost_usd == pytest.approx(
+        0.0006 if failure == "after_billable_response" else 0.0004
+    )
+    assert result.evaluation_trace.scoring_judge_attempt_count == (6 if failure == "after_billable_response" else 4)
+    assert result.evaluation_trace.scoring_judge_selected_routes == ("saygm/gpt-oss-20b", "saygm/glm-5.2")
 
 
 async def test_scoring_service_does_not_advance_after_non_retryable_failure() -> None:

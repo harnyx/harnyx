@@ -20,6 +20,7 @@ from harnyx_commons.llm.retry_utils import RetryPolicy
         (CHUTES_PROVIDER, "CHUTES_API_KEY"),
         (OPENROUTER_PROVIDER, "OPENROUTER_API_KEY"),
         (AI_GATEWAY_PROVIDER, "AI_GATEWAY_API_KEY"),
+        ("saygm", "SAYGM_API_KEY"),
     ],
 )
 def test_cached_llm_provider_registry_reports_missing_platform_credential(

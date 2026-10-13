@@ -339,7 +339,7 @@ markdown, raw_html = page.response.data
 
 Use `provider_extra={"formats": ["rawHtml"]}` when only raw HTML is needed. If Firecrawl omits or returns blank content for any requested format, the fetch fails instead of substituting another representation.
 
-- `llm_chat(provider="chutes" | "openrouter" | "ai_gateway", messages=[...], model="<provider-specific model id>", timeout=..., temperature=0.0, thinking={"enabled": True}, provider_extra=...)`
+- `llm_chat(provider="chutes" | "openrouter" | "ai_gateway" | "saygm", messages=[...], model="<provider-specific model id>", timeout=..., temperature=0.0, thinking={"enabled": True}, provider_extra=...)`
 - `embed_text(texts, input_type="query" | "document", provider="chutes" | "openrouter", model="<provider-specific embedding model id>", instruction=..., dimensions=..., provider_extra=..., timeout=...)`
 - `decision_query(provider="openrouter" | "ai_gateway", model="...", state=..., questions=..., timeout=...)`
 - `tooling_info(timeout=...)`
@@ -386,6 +386,8 @@ enforce the miner entrypoint deadline.
 Firecrawl is an ordinary-web provider: it supports `search_web` and `fetch_page`.
 
 `llm_chat` model ids are provider-specific. Use `tooling_info().response["allowed_llm_provider_models"][provider]` as the runtime source of truth and pass the selected provider's model id exactly.
+
+SayGM uses native Chat Completions ids such as `gpt-oss-20b`, `glm-5.2`, and `gemma-4-31b-turbo-tee`. Miner access is limited to equivalents of models already authorized through the existing miner providers, not the full SayGM catalog. GPT frontier models, Kimi K3, GLM 5.1/full 5.3, and other newly available models are rejected. Claude and Gemini native API models are outside this provider's current scope. Register a `saygm` credential with the platform before hosted calls. SayGM does not accept `provider_extra`, embeddings, or `decision_query`. Its settled `usage.cost_nano_usd` (or `usage.cost` when the integer field is absent) owns actual-cost accounting; published retail ceiling rates are budget estimates only. Missing, invalid, or inconsistent settlement never falls back to those estimates. `tooling_info().response["pricing"]["llm_chat"]["provider_settlement_order"]` lists each provider’s actual-charge sources, while `provider_rate_usage` distinguishes budget-only estimates from rates also usable for settlement fallback. The `provider_models` rate-table shape is unchanged. The legacy `settlement_order` list remains available for existing clients; `provider_settlement_order[provider]` owns the actual policy, including SayGM's returned-settlement-only rule.
 
 ### Function tool calls
 
@@ -555,6 +557,7 @@ Do not put common behavior in `provider_extra`. For example, reasoning controls 
 | `openrouter` | `openai/gpt-oss-20b`, `openai/gpt-oss-120b` | Supported via OpenRouter `reasoning.enabled` / `reasoning.effort="none"` | Supported via OpenRouter `reasoning.effort` | Supported via OpenRouter `reasoning.max_tokens` |
 | `openrouter` | `deepseek/deepseek-v3.2`, `z-ai/glm-5`, `qwen/qwen3.6-27b`, `qwen/qwen3.8-27b`, `google/gemma-4-31b-it` | Supported via OpenRouter `reasoning.enabled` / `reasoning.effort="none"` | Supported via OpenRouter `reasoning.effort` | Supported via OpenRouter `reasoning.max_tokens` |
 | `openrouter` | `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-flash-0731`, `deepseek/deepseek-v4.1-flash`, `deepseek/deepseek-v4-pro`, `z-ai/glm-5.2`, `z-ai/glm-5.3-flash`, `thinkingmachines/inkling`, `qwen/qwen3.5-397b-a17b`, `meta/muse-glimmer-30b`, `tencent/hy4-preview` | Supported via OpenRouter `reasoning.enabled` / `reasoning.effort="none"` | Supported via OpenRouter `reasoning.effort` | Supported via OpenRouter `reasoning.max_tokens` |
+| `saygm` | Allowed SayGM Chat Completions models | Supported via `reasoning_effort="medium"` / `"none"` | Supported via `reasoning_effort` | Unsupported; rejected before dispatch |
 | `ai_gateway` | Allowed AI Gateway models | Supported via AI Gateway `reasoning.enabled` / `reasoning.effort="none"` | Supported via AI Gateway `reasoning.effort` | Supported via AI Gateway `reasoning.max_tokens` |
 | `chutes` | `deepseek-ai/DeepSeek-V3.2-TEE` | Supported via `chat_template_kwargs.thinking` | Unsupported for Chutes; not serialized | Unsupported for Chutes; not serialized |
 | `chutes` | `Qwen/Qwen3.6-27B-TEE`, `Qwen/Qwen3.8-27B-TEE`, `google/gemma-4-31B-turbo-TEE` | Supported via `chat_template_kwargs.enable_thinking` | Unsupported for Chutes; not serialized | Unsupported for Chutes; not serialized |
@@ -580,6 +583,6 @@ await llm_chat(
 )
 ```
 
-Omit `thinking` to use provider defaults. `effort` accepts `"low"`, `"medium"`, or `"high"` and `budget` must be a positive integer. OpenRouter-selected and AI Gateway-selected models honor those fields through provider reasoning controls. Do not send `effort` and `budget` together; that is a validation error. Provider support is best effort, so unsupported level/budget hints are not serialized into raw provider-body fields.
+Omit `thinking` to use provider defaults. `effort` accepts `"low"`, `"medium"`, or `"high"` and `budget` must be a positive integer. OpenRouter-selected and AI Gateway-selected models honor those fields through provider reasoning controls. Do not send `effort` and `budget` together; that is a validation error. SayGM rejects `thinking.budget` before dispatch rather than converting a token budget into named effort; use `enabled` or `effort` instead. Other provider support is best effort, so unsupported level/budget hints are not serialized into raw provider-body fields.
 
 See [`../../miner/README.md`](../../miner/README.md) for the end-to-end miner workflow (Write -> Test -> Submit).

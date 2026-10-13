@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from harnyx_commons.llm.cost_settlement import (
+    llm_cost_settlement_order,
     settled_cost_from_metadata,
     settled_response_cost,
 )
@@ -20,6 +21,22 @@ def _response(
         usage=usage or LlmUsage(prompt_tokens=1_000, completion_tokens=2_000, total_tokens=3_000),
         metadata=metadata,
     )
+
+
+@pytest.mark.parametrize("usage", [{}, {"cost": -1.0}, {"cost_nano_usd": True}, {"cost": 0.1, "cost_nano_usd": 1}])
+def test_saygm_missing_or_invalid_billing_cannot_settle_from_reference_rates(usage: dict[str, object]) -> None:
+    # Valid token counts and a priced model must not turn unavailable billing into a charge.
+    response = _response(metadata={"raw_response": {"usage": usage}})
+    assert llm_cost_settlement_order("saygm") == ("provider_returned",)
+    assert settled_response_cost(response, provider="saygm", model="gpt-oss-20b") is None
+
+
+def test_saygm_zero_charge_is_settled_without_using_reference_rates() -> None:
+    response = _response(metadata={"raw_response": {"usage": {"cost_nano_usd": 0, "cost": 0.0}}})
+    cost = settled_response_cost(response, provider="saygm", model="gpt-oss-20b")
+    assert cost is not None
+    assert cost.cost_usd == 0.0
+    assert cost.evidence["settlement_source"] == llm_cost_settlement_order("saygm")[0]
 
 
 def test_openrouter_provider_returned_cost_wins() -> None:

@@ -74,10 +74,20 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
     assert "allowed_tool_models" not in payload
     assert "models" not in payload["pricing"]["llm_chat"]
     assert payload["pricing"]["llm_chat"]["settlement_order"] == [
-        "provider_returned",
-        "cached_provider_pricing",
-        "static_pricing",
+        "provider_returned", "cached_provider_pricing", "static_pricing"
     ]
+    assert payload["pricing"]["llm_chat"]["provider_settlement_order"] == {
+        "chutes": ["cached_provider_pricing", "static_pricing"],
+        "openrouter": ["provider_returned", "static_pricing"],
+        "ai_gateway": ["provider_returned", "static_pricing"],
+        "saygm": ["provider_returned"],
+    }
+    assert payload["pricing"]["llm_chat"]["provider_rate_usage"] == {
+        "chutes": "budget_estimate_and_settlement_fallback",
+        "openrouter": "budget_estimate_and_settlement_fallback",
+        "ai_gateway": "budget_estimate_and_settlement_fallback",
+        "saygm": "budget_estimate_only",
+    }
     model_prices = payload["pricing"]["llm_chat"]["provider_models"]
     provider_models = payload["allowed_llm_provider_models"]
     assert provider_models == {
