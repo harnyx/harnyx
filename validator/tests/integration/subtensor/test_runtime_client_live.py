@@ -50,6 +50,8 @@ def test_runtime_client_live_commitment_and_weights() -> None:
     assert validator_info.uid >= 0, "validator hotkey is not registered on the subnet"
 
     # Publish and confirm commitment using the canonical marker format.
+    previous_commitment = client.fetch_commitment(validator_info.uid)
+    previous_reveal_block = previous_commitment.block if previous_commitment is not None else -1
     now_block = client.current_block()
     tempo = client.tempo(settings.subtensor.netuid)
     epoch = chain_epoch_index(at_block=now_block, netuid=settings.subtensor.netuid, tempo=tempo)
@@ -60,9 +62,15 @@ def test_runtime_client_live_commitment_and_weights() -> None:
     for _ in range(10):
         time.sleep(10)
         fetched = client.fetch_commitment(validator_info.uid)
-        if fetched is not None:
+        if (
+            fetched is not None
+            and fetched.data == commitment_payload
+            and fetched.block > previous_reveal_block
+        ):
             break
     assert fetched is not None, "commitment not retrievable"
+    assert fetched.data == commitment_payload, "published commitment payload not revealed"
+    assert fetched.block > previous_reveal_block, "new commitment did not reveal"
 
     baseline_update = client.last_update_block(validator_info.uid)
     if baseline_update is None:
