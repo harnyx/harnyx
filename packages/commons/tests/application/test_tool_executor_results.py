@@ -573,3 +573,148 @@ async def test_tool_executor_settles_completed_call_after_session_is_exhausted()
     assert stored_session.status is SessionStatus.EXHAUSTED
     assert stored_session.usage.total_cost_usd == pytest.approx(0.0001)
     assert receipts.lookup(result.receipt.receipt_id) is not None
+
+
+@pytest.mark.parametrize("dispatched", [False, True])
+async def test_opt_in_provider_failure_settles_zero_or_unknown_once(dispatched) -> None:
+    from harnyx_commons.errors import ToolProviderError
+
+    now = datetime.now(UTC)
+    recorder = RecordingEvidence()
+    executor, receipts, session, token = _build_search_executor(
+        now=now, expires_at=now + timedelta(minutes=1), payload={}, recorder=recorder
+    )
+    executor._account_provider_failures = True
+
+    async def failed(tool_name, *, args, kwargs, context):
+        if dispatched:
+            context.on_provider_dispatch()
+        raise ToolProviderError("failed", provider="openai")
+
+    executor._tool_invoker.invoke = failed
+    with pytest.raises(ToolProviderError):
+        await executor.execute(
+            ToolInvocationRequest(
+                session.session_id, token, "llm_chat", (), {"provider": "openai", "model": "gpt-6-luna"}
+            )
+        )
+    recorded = receipts.for_session(session.session_id)
+    assert len(recorded) == len(recorder.terminals) == 1
+    assert recorded[0] == recorder.terminals[0]
+    expected = None if dispatched else 0.0
+    assert recorded[0].details.actual_cost_usd == expected
+    assert executor._sessions.get(session.session_id).usage.actual_total_cost_usd == expected
+
+
+async def test_opt_in_failure_after_returned_output_retains_tokens_and_cost_once() -> None:
+    now = datetime.now(UTC)
+    recorder = RecordingEvidence()
+    response = LlmResponse(
+        id="charged", choices=(), usage=LlmUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    )
+    executor, receipts, session, token = _build_search_executor(
+        now=now, expires_at=now + timedelta(minutes=1), payload=response.to_payload(), recorder=recorder
+    )
+    executor._account_provider_failures = True
+    original_invoke = executor._tool_invoker.invoke
+
+    async def invoke(tool_name, *, args, kwargs, context):
+        context.on_provider_dispatch()
+        return await original_invoke(tool_name, args=args, kwargs=kwargs, context=context)
+
+    executor._tool_invoker.invoke = invoke
+
+    def fail_local_parse(*args):
+        raise ValueError("local failure after provider result")
+
+    executor._build_results = fail_local_parse
+    with pytest.raises(ValueError):
+        await executor.execute(
+            ToolInvocationRequest(
+                session.session_id, token, "llm_chat", (), {"provider": "openai", "model": "gpt-6-luna"}
+            )
+        )
+    updated = executor._sessions.get(session.session_id)
+    assert updated.usage.total_cost_usd == pytest.approx(0.001)
+    assert updated.usage.llm_usage_totals["openai"]["gpt-6-luna"].total_tokens == 15
+    assert len(recorder.terminals) == 1
+    assert receipts.for_session(session.session_id) == tuple(recorder.terminals)
+
+
+@pytest.mark.parametrize("stage", ["success_terminal", "failure_terminal", "start"])
+async def test_opt_in_storage_failure_retains_paid_cost_without_reactivating_session(stage) -> None:
+    """Future failure: receipt storage errors erase a paid call or permit another dispatch."""
+    from harnyx_commons.errors import ToolProviderError
+
+    now = datetime.now(UTC)
+    recorder = RecordingEvidence()
+    recorder.fail_start = stage == "start"
+    recorder.fail_terminal = stage != "start"
+    response = LlmResponse(
+        id="charged", choices=(), usage=LlmUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    )
+    executor, receipts, session, token = _build_search_executor(
+        now=now, expires_at=now + timedelta(minutes=1), payload=response.to_payload(), recorder=recorder
+    )
+    executor._account_provider_failures = True
+    original = executor._tool_invoker.invoke
+
+    async def invoke(tool_name, *, args, kwargs, context):
+        context.on_provider_dispatch()
+        if stage == "failure_terminal":
+            raise ToolProviderError("provider failed", provider="openai")
+        return await original(tool_name, args=args, kwargs=kwargs, context=context)
+
+    executor._tool_invoker.invoke = invoke
+    with pytest.raises(RuntimeError, match="storage failed|acknowledgement lost"):
+        await executor.execute(
+            ToolInvocationRequest(
+                session.session_id, token, "llm_chat", (), {"provider": "openai", "model": "gpt-6-luna"}
+            )
+        )
+    updated = executor._sessions.get(session.session_id)
+    assert updated.status is SessionStatus.ERROR
+    expected = 0.0 if stage == "start" else None if stage == "failure_terminal" else 0.001
+    assert updated.usage.actual_total_cost_usd == expected
+    assert len(receipts.for_session(session.session_id)) == 1
+    assert len(recorder.terminals) == (0 if stage == "start" else 1)
+    if stage == "success_terminal":
+        assert updated.usage.llm_usage_totals["openai"]["gpt-6-luna"].total_tokens == 15
+
+
+async def test_opt_in_typed_failure_billing_keeps_available_tokens() -> None:
+    from harnyx_commons.errors import ToolProviderError
+    from harnyx_commons.tools.decision_models import DecisionUsage
+    from harnyx_commons.tools.provider_billing import ProviderBillingMetadata
+
+    now = datetime.now(UTC)
+    recorder = RecordingEvidence()
+    executor, receipts, session, token = _build_search_executor(
+        now=now, expires_at=now + timedelta(minutes=1), payload={}, recorder=recorder
+    )
+    executor._account_provider_failures = True
+
+    async def invoke(tool_name, *, args, kwargs, context):
+        context.on_provider_dispatch()
+        raise ToolProviderError(
+            "failed with usage",
+            provider="openai",
+            billing=ProviderBillingMetadata(
+                actual_cost_provider="openai",
+                source="response_body",
+                actual_cost_usd=0.003,
+                usage=DecisionUsage(input_tokens=10, output_tokens=5),
+            ),
+        )
+
+    executor._tool_invoker.invoke = invoke
+    with pytest.raises(ToolProviderError):
+        await executor.execute(
+            ToolInvocationRequest(
+                session.session_id, token, "llm_chat", (), {"provider": "openai", "model": "gpt-6-luna"}
+            )
+        )
+    usage = executor._sessions.get(session.session_id).usage
+    assert usage.total_cost_usd == pytest.approx(0.003)
+    assert usage.llm_usage_totals["openai"]["gpt-6-luna"].total_tokens == 15
+    assert receipts.for_session(session.session_id) == tuple(recorder.terminals)

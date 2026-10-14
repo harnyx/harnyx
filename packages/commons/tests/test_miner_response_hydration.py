@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from harnyx_commons.application.miner_response_hydration import (
     CitationSlice,
     MinerResponsePayloadError,
+    MinerResponseSchemaError,
     materialize_citation_slices,
 )
 from harnyx_commons.application.miner_response_hydration import (
@@ -801,3 +802,17 @@ def test_unparseable_huge_legacy_offset_keeps_whole_evidence() -> None:
     citation = AnswerCitation.model_validate({"url": "https://example.com", "note": note})
     assert citation.excerpts[0].text == note
     assert citation.excerpts[0].start is None
+
+
+def test_only_schema_mismatch_is_recoverable_and_keeps_validation_feedback() -> None:
+    query = Query(text="q", output_schema={"type": "array", "items": {"type": "string"}})
+    with pytest.raises(MinerResponseSchemaError) as failure:
+        hydrate_miner_response_payload(
+            {"output": [1]}, query=query, session_id=uuid4(), receipt_log=InMemoryReceiptLog()
+        )
+    assert failure.value.output == [1]
+    assert "1" in failure.value.feedback and "string" in failure.value.feedback
+    for payload in ({"text": "wrong answer field"}, {"output": ["[[1]]"]}):
+        with pytest.raises(MinerResponsePayloadError) as ordinary:
+            hydrate_miner_response_payload(payload, query=query, session_id=uuid4(), receipt_log=InMemoryReceiptLog())
+        assert not isinstance(ordinary.value, MinerResponseSchemaError)

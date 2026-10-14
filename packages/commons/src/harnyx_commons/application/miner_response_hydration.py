@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Self
 from uuid import UUID
 
+from jsonschema import ValidationError as JsonSchemaValidationError
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
@@ -28,6 +29,15 @@ _CITATION_MARKER = re.compile(r"\[\[([0-9]+)\]\]")
 
 class MinerResponsePayloadError(ValueError):
     pass
+
+
+class MinerResponseSchemaError(MinerResponsePayloadError):
+    """A valid response envelope whose answer violates the requested schema."""
+
+    def __init__(self, output: JsonValue, feedback: str) -> None:
+        super().__init__(feedback)
+        self.output = output
+        self.feedback = feedback
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +139,8 @@ def hydrate_miner_response_payload(
     raw_response = _RawMinerResponsePayload.model_validate(payload, strict=True)
     try:
         _validate_answer_for_query(raw_response, query)
+    except MinerResponseSchemaError:
+        raise
     except ValueError as exc:
         raise MinerResponsePayloadError(str(exc)) from exc
     hydrated_citations = _hydrate_citations(
@@ -179,7 +191,12 @@ def _validate_answer_for_query(response: _RawMinerResponsePayload, query: Query)
         return
     if "output" not in response.model_fields_set:
         raise ValueError("structured query response must use output")
-    validate_output_against_schema(response.output, query.output_schema)
+    try:
+        validate_output_against_schema(response.output, query.output_schema)
+    except ValueError as exc:
+        if isinstance(exc.__cause__, JsonSchemaValidationError):
+            raise MinerResponseSchemaError(response.output, str(exc)) from exc
+        raise
 
 
 def _hydrate_citations(
@@ -292,6 +309,7 @@ __all__ = [
     "MIN_CITATION_SLICE_CHARS",
     "MaterializedCitationSelection",
     "MinerResponsePayloadError",
+    "MinerResponseSchemaError",
     "hydrate_miner_response_payload",
     "materialize_citation_slices",
 ]
