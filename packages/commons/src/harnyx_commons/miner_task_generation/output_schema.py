@@ -53,18 +53,3 @@ def format_assessment(answer: str, schema: JsonObject | None) -> dict[str, Any]:
     except ValueError as exc:
         return {"valid": False, "kind": "schema_violation", "errors": [str(exc)]}
     return {"valid": True, "kind": "valid", "errors": []}
-
-
-def same_json_value(left: str, right: str) -> bool:
-    """JSON numbers compare by value; booleans are a distinct JSON type."""
-
-    def equal(a: Any, b: Any) -> bool:
-        if isinstance(a, bool) or isinstance(b, bool):
-            return type(a) is type(b) and a == b
-        if isinstance(a, dict) and isinstance(b, dict):
-            return a.keys() == b.keys() and all(equal(value, b[key]) for key, value in a.items())
-        if isinstance(a, list) and isinstance(b, list):
-            return len(a) == len(b) and all(equal(x, y) for x, y in zip(a, b, strict=True))
-        return a == b
-
-    return equal(strict_json(left), strict_json(right))

@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from datetime import UTC, date, datetime, timedelta
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from time import monotonic
-from typing import Protocol
 
 from harnyx_commons.domain.miner_task import MinerTask
 from harnyx_commons.domain.tool_usage_accounting import (
@@ -17,32 +17,22 @@ from harnyx_commons.task_ownership import wait_for_owned_task
 
 from .candidate_pipeline import CandidatePipeline, GenerationRunnerPort
 from .contracts import (
+    AuthorReference,
     BatchGenerationResult,
     BatchTerminalGenerationError,
     CandidateResult,
     CandidateSession,
+    ConstructionAuthorPort,
     FinalizedTaskCallback,
     FinalizedTaskRejectedError,
+    GenerationCheckpoint,
     MinerTaskDatasetRequest,
+    QuestionDraft,
     ResponseMode,
-    Seed,
+    TerminalReference,
 )
 
 logger = logging.getLogger("harnyx_commons.miner_task_generation")
-
-
-class SeedRunnerPort(GenerationRunnerPort, Protocol):
-    async def generate_seeds(
-        self,
-        count: int,
-        session: CandidateSession,
-        deadline: float,
-        *,
-        start: date,
-        end: date,
-        previous_seeds: list[Seed],
-    ) -> list[Seed]: ...
-    async def aclose(self) -> None: ...
 
 
 class UnderfilledDatasetError(RuntimeError):
@@ -55,24 +45,25 @@ class MinerTaskDatasetBuilder:
     def __init__(
         self,
         *,
-        runner: SeedRunnerPort,
+        runner: GenerationRunnerPort,
+        author: ConstructionAuthorPort,
+        render_reference: Callable[[QuestionDraft, AuthorReference], Awaitable[TerminalReference]],
         rng: random.Random | None = None,
         timeout_seconds: float = 7200,
-        seed_window_start: date | None = None,
-        seed_window_end: date | None = None,
-        previous_seeds: list[Seed] | None = None,
     ) -> None:
         if not 0 < timeout_seconds <= 7200:
             raise ValueError("Generation timeout must be positive and at most two hours")
         self._runner = runner
-        self._pipeline = CandidatePipeline(runner=runner)
+        self._author = author
+        self._pipeline = CandidatePipeline(runner=runner, author=author, render_reference=render_reference)
         self._rng = rng or random.Random()  # noqa: S311 - response-mode sampling, not cryptography
         self._timeout = timeout_seconds
-        self._start, self._end = seed_window_start, seed_window_end
-        self._previous = previous_seeds or []
 
     async def aclose(self) -> None:
-        await self._runner.aclose()
+        try:
+            await self._author.aclose()
+        finally:
+            await self._runner.aclose()
 
     async def build(self, request: MinerTaskDatasetRequest) -> tuple[MinerTask, ...]:
         result = await self.build_with_result(request)
@@ -86,6 +77,7 @@ class MinerTaskDatasetBuilder:
         *,
         on_finalized_task: FinalizedTaskCallback | None = None,
         outcome: BatchGenerationResult | None = None,
+        on_checkpoint: Callable[[int, GenerationCheckpoint], Awaitable[None]] | None = None,
     ) -> BatchGenerationResult:
         if request.created_at is None:
             raise ValueError("Generation requires a creation timestamp")
@@ -102,61 +94,22 @@ class MinerTaskDatasetBuilder:
             "plain_text" if self._rng.random() < plain_probability else "structured" for _ in range(count)
         ]
         fast_modes = [self._rng.random() < fast_probability for _ in range(count)]
-        seed_session = CandidateSession(task_id=f"{request.batch_id}:seeds", effective_date=request.created_at.date())
         sessions = [
             CandidateSession(task_id=f"{request.batch_id}:{slot}", effective_date=request.created_at.date())
             for slot in range(count)
         ]
         result.candidates = [
-            CandidateResult(output_slot=slot, seed=None, mode=modes[slot], status="operational_failure")
-            for slot in range(count)
+            CandidateResult(output_slot=slot, mode=modes[slot], status="operational_failure") for slot in range(count)
         ]
         failure: BaseException | None = None
         try:
-            end = self._end or request.created_at.date()
-            start = self._start or end - timedelta(days=30)
-            if start > end or end > request.created_at.date():
-                raise ValueError("Seed window must end no later than the effective date")
-            try:
-                seeds = await self._runner.generate_seeds(
-                    count, seed_session, deadline, start=start, end=end, previous_seeds=self._previous
-                )
-                if len(seeds) != count:
-                    raise ValueError("Seed runner returned a different candidate count")
-            except BatchTerminalGenerationError:
-                raise
-            except Exception as exc:
-                logger.error(
-                    "task_generation.seed.failed",
-                    extra={"data": {"batch_id": str(request.batch_id), "exception_type": type(exc).__name__}},
-                )
-                logger.debug("task_generation.seed.failure.details", exc_info=True)
-                result.error_type = type(exc).__name__
-                for candidate in result.candidates:
-                    candidate.error_type = type(exc).__name__
-                return result
-            logger.debug(
-                "task_generation.seeds",
-                extra={
-                    "data": {
-                        "batch_id": str(request.batch_id),
-                        "seeds": [seed.model_dump(mode="json") for seed in seeds],
-                    }
-                },
-            )
-            for candidate, seed in zip(result.candidates, seeds, strict=True):
-                candidate.seed = seed
-            await self._run_candidates(result, sessions, fast_modes, deadline, on_finalized_task)
+            await self._run_candidates(result, sessions, fast_modes, deadline, on_finalized_task, on_checkpoint)
             return result
         except BaseException as exc:
             failure = exc
             result.error_type = type(exc).__name__
             raise
         finally:
-            result.tool_usage = seed_session.tool_usage
-            result.seed_attempted_calls = seed_session.attempted_calls
-            result.seed_missing_usage_calls = seed_session.missing_usage_calls
-            result.stage_summaries = seed_session.stage_summaries
             for candidate, session in zip(result.candidates, sessions, strict=True):
                 candidate.tool_usage = session.tool_usage
                 candidate.attempted_calls = session.attempted_calls
@@ -183,20 +136,25 @@ class MinerTaskDatasetBuilder:
         fast_modes: list[bool],
         deadline: float,
         on_finalized_task: FinalizedTaskCallback | None,
+        on_checkpoint: Callable[[int, GenerationCheckpoint], Awaitable[None]] | None,
     ) -> None:
         acceptance_errors: list[Exception] = []
 
         async def generate(slot: int) -> None:
             session = sessions[slot]
             candidate = result.candidates[slot]
-            assert candidate.seed is not None
+
+            async def checkpoint(state: GenerationCheckpoint) -> None:
+                if on_checkpoint is not None:
+                    await on_checkpoint(slot, state)
+
             result.candidates[slot] = candidate = await self._pipeline.run(
-                candidate.seed,
                 mode=candidate.mode,
                 fast=fast_modes[slot],
                 session=session,
                 deadline=deadline,
                 result=candidate,
+                checkpoint=checkpoint,
             )
             candidate.output_slot = slot
             if candidate.finalized is not None:

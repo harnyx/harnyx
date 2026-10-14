@@ -1,10 +1,12 @@
-"""One seed's bounded author/review/solver improvement lifecycle."""
+"""One author context, bounded Gemini challenges and exact tested-draft admission."""
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from time import monotonic
 from typing import Protocol, TypeVar
 from uuid import uuid4
@@ -15,15 +17,22 @@ from harnyx_commons.task_ownership import wait_for_owned_task
 
 from .contracts import (
     AgentResult,
+    AuthorDeclaration,
+    AuthorReference,
     BatchTerminalGenerationError,
     CandidateResult,
     CandidateSession,
+    ChallengeFeedback,
+    CheckpointCallback,
+    ConstructionAuthorPort,
     CycleRecord,
     FinalizedTask,
+    FinalizedTaskRejectedError,
+    FinishDecision,
+    GenerationCheckpoint,
     QuestionDraft,
+    ReferenceValidationError,
     ResponseMode,
-    ReviewDecision,
-    Seed,
     StructuredQuestionDraft,
     TerminalReference,
 )
@@ -31,13 +40,13 @@ from .output_schema import format_assessment, strict_json
 
 logger = logging.getLogger("harnyx_commons.miner_task_generation")
 MAX_CYCLES = 5
-AUTHOR_ATTEMPTS = 3
+SOLVER_MISS_F1 = 0.5
 SOLVER_ROLES = ("solver", "grounded_solver")
 TResult = TypeVar("TResult")
 
 
 async def settle_pair(tasks: dict[str, asyncio.Task[TResult]], completed: dict[str, TResult]) -> None:
-    """Retain ordinary peer work; stop the pair immediately on a shared fault."""
+    """Stop on any failed peer, retaining successful results and draining owned work."""
     try:
         pending = set(tasks.values())
         while pending:
@@ -46,7 +55,7 @@ async def settle_pair(tasks: dict[str, asyncio.Task[TResult]], completed: dict[s
                 if task.cancelled():
                     raise asyncio.CancelledError
                 error = task.exception()
-                if isinstance(error, BatchTerminalGenerationError):
+                if error is not None:
                     raise error
         for task in tasks.values():
             task.result()
@@ -68,9 +77,10 @@ class GenerationRunnerPort(Protocol):
     async def assess(
         self, draft: QuestionDraft, result: AgentResult, session: CandidateSession, deadline: float
     ) -> FastJudgeAssessment: ...
-    async def derive_reference(
-        self, draft: QuestionDraft, verification: ReviewDecision | None, session: CandidateSession, deadline: float
-    ) -> TerminalReference: ...
+    async def assess_reference(
+        self, draft: QuestionDraft, reference: TerminalReference, session: CandidateSession, deadline: float
+    ) -> FastJudgeAssessment: ...
+    async def aclose(self) -> None: ...
 
 
 def public_contract(draft: QuestionDraft) -> dict[str, object]:
@@ -80,299 +90,228 @@ def public_contract(draft: QuestionDraft) -> dict[str, object]:
     return packet
 
 
-def seed_origin(seed: Seed) -> dict[str, object]:
-    return {
-        "question": seed.seed_question,
-        "answer": seed.reference_answer,
-        "scope": seed.scope,
-        "sources": [source.model_dump(mode="json") for source in seed.supporting_sources],
-    }
-
-
-def encode(packet: object) -> str:
-    return json.dumps(packet, ensure_ascii=False)
-
-
-def solver_trace_locations(record: CycleRecord, session: CandidateSession) -> list[dict[str, str]]:
-    """Stable in-memory evidence pointers replace the experiment's archive paths."""
-    locations = []
-    for role, answer in record.solver_results.items():
-        for index, chunk in enumerate(answer.evidence_responses()):
-            for candidate_index, candidate in enumerate(chunk["response"].get("candidates", [])):
-                pointer = (
-                    f"task:{session.task_id}:cycle:{record.cycle}#/solver_results/{role}/provider_responses/"
-                    f"{index}/response/candidates/{candidate_index}"
-                )
-                for part_index, part in enumerate((candidate.get("content") or {}).get("parts", [])):
-                    if part.get("text"):
-                        locations.append(
-                            {
-                                "reference": f"{pointer}/content/parts/{part_index}/text",
-                                "kind": "summary" if part.get("thought") else "answer_fragment",
-                            }
-                        )
-                if candidate.get("grounding_metadata"):
-                    locations.append({"reference": f"{pointer}/grounding_metadata", "kind": "grounding_metadata"})
-    return locations
+def draft_sha256(draft: QuestionDraft) -> str:
+    payload = json.dumps(draft.model_dump(mode="json"), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 class CandidatePipeline:
-    def __init__(self, *, runner: GenerationRunnerPort) -> None:
-        self._runner = runner
+    def __init__(
+        self,
+        *,
+        runner: GenerationRunnerPort,
+        author: ConstructionAuthorPort,
+        render_reference: Callable[[QuestionDraft, AuthorReference], Awaitable[TerminalReference]],
+    ) -> None:
+        self._runner, self._author, self._render_reference = runner, author, render_reference
 
     async def run(
         self,
-        seed: Seed,
         *,
         mode: ResponseMode,
         fast: bool,
         session: CandidateSession,
         deadline: float,
-        result: CandidateResult | None = None,
+        result: CandidateResult,
+        checkpoint: CheckpointCallback | None = None,
     ) -> CandidateResult:
         started = monotonic()
-        result = result if result is not None else CandidateResult(seed=seed, mode=mode, status="operational_failure")
         session.mode = mode
-        try:
-            async with asyncio.timeout(max(0, deadline - monotonic())):
-                await self._improve(result, session, fast, deadline)
-        except asyncio.CancelledError:
-            result.status = "operational_failure"
-            result.error_type = "CancelledError"
-            logger.warning("task_generation.cancelled", extra={"data": {"task_id": session.task_id}})
-            raise
-        except BatchTerminalGenerationError as exc:
-            result.status = "operational_failure"
-            result.error_type = type(exc).__name__
-            raise
-        except Exception as exc:
-            result.status = "operational_failure"
-            result.error_type = type(exc).__name__
-            logger.error(
-                "task_generation.failed",
-                extra={
-                    "data": {"task_id": session.task_id, "cycle": session.cycle, "exception_type": type(exc).__name__}
-                },
-            )
-            logger.debug(
-                "task_generation.failure.details",
-                exc_info=True,
-                extra={"data": {"task_id": session.task_id, "retained_candidate": result.model_dump(mode="json")}},
-            )
-        finally:
-            result.tool_usage = session.tool_usage
-            result.attempted_calls = session.attempted_calls
-            result.missing_usage_calls = session.missing_usage_calls
-            result.elapsed_ms = (monotonic() - started) * 1000
-            result.stage_summaries = session.stage_summaries
-            session.author_history.clear()
-        return result
+        rounds: dict[int, tuple[str, asyncio.Task[ChallengeFeedback]]] = {}
+        decision: FinishDecision | None = None
+        declaration: AuthorDeclaration | None = None
+        last_tested_draft: QuestionDraft | None = None
+        finish_lock = asyncio.Lock()
 
-    async def _improve(self, result: CandidateResult, session: CandidateSession, fast: bool, deadline: float) -> None:
-        assert result.seed is not None
-        session.source_support.extend(result.seed.supporting_sources)
-        context: dict[str, object] = {
-            "seed_origin": seed_origin(result.seed),
-            "previous_question": None,
-            "previous_draft": None,
-            "solver_analysis": None,
-        }
-        if result.mode == "structured":
-            context["required_response_mode"] = "structured"
-        for cycle in range(1, MAX_CYCLES + 1):
+        async def record_checkpoint(state: GenerationCheckpoint) -> None:
+            result.generation_metadata = state
+            session.generation_checkpoint = state
+            if checkpoint is not None:
+                await checkpoint(state)
+
+        def validate_mode(draft: QuestionDraft) -> None:
+            if isinstance(draft, StructuredQuestionDraft) != (mode == "structured"):
+                raise ValueError("Author draft does not match its assigned response mode")
+
+        async def solve_round(draft: QuestionDraft, cycle: int, fingerprint: str) -> ChallengeFeedback:
             session.cycle = cycle
-            logger.info(
-                "task_generation.cycle.started",
-                extra={"data": {"task_id": session.task_id, "cycle": cycle, "mode": result.mode}},
-            )
-            draft, review, packet = await self._select(context, session, deadline)
-            record = CycleRecord(cycle=cycle, draft=draft, review=review)
+            record = CycleRecord(cycle=cycle, draft=draft.model_copy(deep=True))
             result.cycles.append(record)
-            contract = public_contract(draft)
-            message = encode(contract) if result.mode == "structured" else draft.question
-            await self._solve(record, message, session, deadline)
+            state = result.generation_metadata
+            if state is not None:
+                await record_checkpoint(
+                    state.model_copy(update={"status": "testing", "round": cycle, "draft_sha256": fingerprint})
+                )
+            message = json.dumps(public_contract(draft), ensure_ascii=False) if mode == "structured" else draft.question
+            await settle_pair(
+                {
+                    role: asyncio.create_task(self._runner.invoke(role, message, session, deadline))
+                    for role in SOLVER_ROLES
+                },
+                record.solver_results,
+            )
             schema = strict_json(draft.output_schema_json) if isinstance(draft, StructuredQuestionDraft) else None
             record.format_results = {
                 role: format_assessment(answer.answer, schema) for role, answer in record.solver_results.items()
             }
-            assessment_tasks = {
-                role: asyncio.create_task(self._runner.assess(draft, record.solver_results[role], session, deadline))
-                for role in SOLVER_ROLES
-            }
             try:
-                await settle_pair(assessment_tasks, record.assessments)
-            finally:
-                record.f1_scores = {
-                    role: calculate_fast_f1(assessment) for role, assessment in record.assessments.items()
-                }
-            paired_miss = all(record.f1_scores[role] < 1 for role in SOLVER_ROLES)
-            if paired_miss:
-                verification = await self._runner.invoke("verifier", encode(packet), session, deadline)
-                record.verification = ReviewDecision.model_validate_json(verification.answer)
-            approved = record.verification is not None and record.verification.passed
-            if not approved and cycle < MAX_CYCLES:
-                analysis_packet = {
-                    "seed_origin": seed_origin(result.seed),
-                    "current_draft": draft.model_dump(),
-                    **contract,
-                    "solver_results": {
-                        role: {
-                            **answer.model_dump(mode="json", exclude={"search_worker_responses"}),
-                            "provider_responses": answer.evidence_responses(),
-                            "search_worker_responses": [
-                                {
-                                    **{
-                                        key: value
-                                        for key, value in worker.items()
-                                        if key not in {"response", "grounding"}
-                                    },
-                                    **(
-                                        {
-                                            "response_reference": (
-                                                f"task:{session.task_id}:cycle:{cycle}#/solver_results/{role}/"
-                                                f"provider_responses/{worker['provider_response_index']}/response"
-                                            ),
-                                        }
-                                        if "provider_response_index" in worker
-                                        else {}
-                                    ),
-                                }
-                                for worker in answer.search_worker_responses
-                            ],
-                        }
+                await settle_pair(
+                    {
+                        role: asyncio.create_task(self._runner.assess(draft, answer, session, deadline))
                         for role, answer in record.solver_results.items()
                     },
-                }
-                analysis_packet["evidence_file"] = f"task:{session.task_id}:cycle:{cycle}"
-                analysis_packet["trace_locations"] = solver_trace_locations(record, session)
-                record.analysis = (
-                    await self._runner.invoke("analyst", encode(analysis_packet), session, deadline)
-                ).answer
-            logger.debug(
-                "task_generation.cycle.completed",
-                extra={"data": {"task_id": session.task_id, "record": record.model_dump(mode="json")}},
-            )
-            if approved:
-                result.status = "finalized"
-                break
-            if cycle == MAX_CYCLES:
-                result.status = "exhausted"
-                break
-            context = {
-                "seed_origin": seed_origin(result.seed),
-                "previous_question": draft.question,
-                "previous_draft": draft.model_dump(),
-                "solver_analysis": record.analysis,
-            }
-            if result.mode == "structured":
-                context["required_response_mode"] = "structured"
-            if record.verification is not None:
-                context["answer_verification"] = record.verification.model_dump(by_alias=True)
-        # Preserve the stopped work before a final reference can fail or exceed the deadline.
-        logger.info(
-            "task_generation.improvements.stopped",
-            extra={"data": {"task_id": session.task_id, "cycle": session.cycle, "outcome": result.status}},
-        )
-        logger.debug(
-            "task_generation.stopped_draft",
-            extra={
-                "data": {
-                    "task_id": session.task_id,
-                    "draft": draft.model_dump(),
-                    "verification": record.verification.model_dump(by_alias=True) if record.verification else None,
-                }
-            },
-        )
-        result.reference = await self._runner.derive_reference(draft, record.verification, session, deadline)
-        if (
-            result.reference.reference_answer is None
-            or result.reference.unsupported_reason is not None
-            or (result.status == "finalized" and result.reference.factual_correction)
-        ):
-            result.status = "unresolved_reference"
-        if result.status == "finalized":
-            assert result.reference.reference_answer is not None
-            result.finalized = FinalizedTask(
-                task=MinerTask(
-                    task_id=uuid4(),
-                    query=Query(text=draft.question, output_schema=schema, fast=fast),
-                    reference_answer=result.reference.reference_answer,
-                ),
-                tool_usage=session.tool_usage,
-                stage_summaries=tuple(session.stage_summaries),
-            )
+                    record.assessments,
+                )
+            finally:
+                record.f1_scores = {role: calculate_fast_f1(grade) for role, grade in record.assessments.items()}
+            paired_miss = all(record.f1_scores[role] <= SOLVER_MISS_F1 for role in SOLVER_ROLES)
+            state = result.generation_metadata
+            if state is not None:
+                await record_checkpoint(
+                    state.model_copy(
+                        update={
+                            "status": "tested",
+                            "round": cycle,
+                            "draft_sha256": fingerprint,
+                            "f1_scores": record.f1_scores,
+                        }
+                    )
+                )
+            logger.debug("task_generation.cycle.completed", extra={"data": record.model_dump(mode="json")})
+            return ChallengeFeedback(cycle, fingerprint, record, paired_miss, not paired_miss, MAX_CYCLES - cycle)
 
-    async def _select(
-        self, context: dict[str, object], session: CandidateSession, deadline: float
-    ) -> tuple[QuestionDraft, ReviewDecision, dict[str, object]]:
-        message = encode(
-            {
-                "shared_context": context,
-                "task": "Construct the initial question."
-                if context["previous_question"] is None
-                else "Use the analyst research to improve the actual discovery problem. Preserve useful research, "
-                "repair demonstrated easy routes, and evolve the target or requirements when supported. "
-                "Test the final question "
-                "and return the complete QuestionDraft with its current answer key and revision note.",
-            }
-        )
-        for attempt in range(1, AUTHOR_ATTEMPTS + 1):
-            session.attempt = attempt
-            author = await self._runner.invoke("author", message, session, deadline)
-            model = StructuredQuestionDraft if session.mode == "structured" else QuestionDraft
-            draft = model.model_validate_json(author.answer)
-            session.source_support.extend(draft.source_support)
-            author_input = dict(author.request)
-            if author_input.get("message"):
-                original = json.loads(author_input["message"])
-                if "shared_context" in original:
-                    original["shared_context"] = {"reference": "shared_context"}
-                    author_input["message"] = encode(original)
-            summaries = [
-                chunk["response"]["text"]
-                for chunk in author.evidence_responses()
-                if chunk["response"].get("type") == "response.reasoning_summary_text.done"
-            ]
-            completed = [
-                {"provider": "openai", "response": chunk["response"]["response"]}
-                for chunk in author.evidence_responses()
-                if chunk["response"].get("type") == "response.completed"
-            ]
-            packet: dict[str, object] = {
-                "shared_context": context,
-                "question": draft.question,
-                "candidate_draft": draft.model_dump(),
-                "author_trace": [
-                    {
-                        "attempt": str(attempt),
-                        "input": author_input,
-                        "provider_responses": completed,
-                        "thought_summaries": summaries,
-                        "summary_status": "available" if summaries else "missing",
-                        "result": {"status": "completed", "answer": author.answer},
-                    }
-                ],
-                "author_input_archive": f"task:{session.task_id}:cycle:{session.cycle}:author:{attempt}#/request",
-            }
-            packet["public_contract"] = public_contract(draft)
-            review = ReviewDecision.model_validate_json(
-                (await self._runner.invoke("reviewer", encode(packet), session, deadline)).answer
-            )
-            if review.passed or attempt == AUTHOR_ATTEMPTS:
-                return draft, review, packet
-            message = encode(
-                {
-                    "draft": draft.model_dump(),
-                    "review": review.model_dump(by_alias=True),
-                    "task": "Repair this candidate using the critique and shared context. Recheck public selection and "
-                    "answer-key support after edits. Return the complete QuestionDraft, retaining useful discoveries "
-                    "rather than restarting from an unrelated task.",
-                }
-            )
-        raise AssertionError("Author selection must return a draft")
+        async def challenge(draft: QuestionDraft, cycle: int) -> ChallengeFeedback:
+            nonlocal last_tested_draft
+            if declaration is not None:
+                raise ValueError("Author requested a challenge after finishing")
+            validate_mode(draft)
+            fingerprint = draft_sha256(draft)
+            if cycle in rounds:
+                prior_hash, owned = rounds[cycle]
+                if fingerprint != prior_hash:
+                    raise ValueError("Consumed round cannot be retested with a different draft")
+                return await await_round(owned)
+            if rounds and rounds[len(rounds)][1].done() and rounds[len(rounds)][1].result().paired_miss:
+                raise ValueError("Development stops after the first valid paired miss")
+            if cycle != len(rounds) + 1 or cycle > MAX_CYCLES or any(not task.done() for _, task in rounds.values()):
+                raise ValueError("Challenge rounds must be sequential and at most five")
+            # Claim synchronously before the first await, including the paid work's owned task.
+            last_tested_draft = draft.model_copy(deep=True)
+            task = asyncio.create_task(solve_round(last_tested_draft.model_copy(deep=True), cycle, fingerprint))
+            rounds[cycle] = fingerprint, task
+            return await await_round(task)
 
-    async def _solve(self, record: CycleRecord, message: str, session: CandidateSession, deadline: float) -> None:
-        tasks = {
-            role: asyncio.create_task(self._runner.invoke(role, message, session, deadline)) for role in SOLVER_ROLES
-        }
-        await settle_pair(tasks, record.solver_results)
+        async def await_round(task: asyncio.Task[ChallengeFeedback]) -> ChallengeFeedback:
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                task.cancel()
+                await wait_for_owned_task(task)
+                if not task.cancelled():
+                    task.exception()
+                raise
+
+        async def finish(final: AuthorDeclaration) -> FinishDecision:
+            nonlocal declaration, decision
+            async with finish_lock:
+                if declaration is not None:
+                    raise ValueError("Author already supplied its terminal declaration")
+                if any(not task.done() for _, task in rounds.values()):
+                    raise ValueError("Author cannot finish while a challenge is running")
+                if final.status != "completed":
+                    status = "exhausted" if final.status == "exhausted" else "operational_failure"
+                    decision = FinishDecision(False, status, final.status)
+                elif last_tested_draft is None or not rounds:
+                    decision = FinishDecision(False, "unresolved_reference", "untested_final_draft")
+                else:
+                    _, last_task = rounds[len(rounds)]
+                    feedback = last_task.result()  # Operational failure never becomes an assessment.
+                    if not feedback.paired_miss:
+                        decision = FinishDecision(False, "exhausted", "not_paired_miss")
+                    elif final.reference is None:
+                        raise ReferenceValidationError("Reference completion omitted the author-built reference")
+                    else:
+                        rendered = await self._render_reference(last_tested_draft, final.reference)
+                        if rendered.reference_answer is None:
+                            decision = FinishDecision(False, "unresolved_reference", rendered.unsupported_reason)
+                        else:
+                            assessment = await self._runner.assess_reference(
+                                last_tested_draft.model_copy(deep=True), rendered, session, deadline
+                            )
+                            result.reference_consistency_assessments.append(assessment)
+                            logger.debug(
+                                "task_generation.reference_consistency",
+                                extra={"data": {"task_id": session.task_id, **assessment.model_dump(mode="json")}},
+                            )
+                            incorrect = [
+                                item.component_id for item in assessment.expected_components if not item.is_correct
+                            ]
+                            excessive = [item.component_id for item in assessment.excessive_components]
+                            if incorrect or excessive:
+                                raise ReferenceValidationError(
+                                    "The report must preserve the tested answer facts. "
+                                    + json.dumps(
+                                        {"missing_or_incorrect": incorrect, "contradictory_or_excessive": excessive}
+                                    )
+                                )
+                            result.reference = rendered
+                            decision = FinishDecision(True, "finalized")
+                declaration = final
+                result.author_declaration = final
+                return decision
+
+        try:
+            if monotonic() >= deadline:
+                raise TimeoutError("Reservation expired before author startup")
+            async with asyncio.timeout(max(0, deadline - monotonic())):
+                outcome = await self._author.run(
+                    session=session,
+                    mode=mode,
+                    deadline=deadline,
+                    challenge=challenge,
+                    finish=finish,
+                    checkpoint=record_checkpoint,
+                )
+                if not outcome.turn_completed or declaration is None or decision is None:
+                    raise ValueError("Author did not finish on a successful matching turn")
+                result.status, result.error_type = decision.outcome, decision.reason
+                if decision.eligible:
+                    assert last_tested_draft is not None
+                    assert result.reference is not None
+                    if result.reference.reference_answer is None:
+                        result.status = "unresolved_reference"
+                        result.error_type = result.reference.unsupported_reason
+                    else:
+                        schema = strict_json(last_tested_draft.output_schema_json) if mode == "structured" else None
+                        result.finalized = FinalizedTask(
+                            task=MinerTask(
+                                task_id=uuid4(),
+                                query=Query(text=last_tested_draft.question, output_schema=schema, fast=fast),
+                                reference_answer=result.reference.reference_answer,
+                            ),
+                            tool_usage=session.tool_usage,
+                            stage_summaries=tuple(session.stage_summaries),
+                            generation_metadata=result.generation_metadata,
+                        )
+        except (asyncio.CancelledError, BatchTerminalGenerationError, FinalizedTaskRejectedError) as exc:
+            result.status, result.error_type = "operational_failure", type(exc).__name__
+            raise
+        except Exception as exc:
+            result.status, result.error_type = "operational_failure", type(exc).__name__
+            logger.error(
+                "task_generation.failed",
+                extra={"data": {"task_id": session.task_id, "exception_type": type(exc).__name__}},
+            )
+            logger.debug("task_generation.failure.details", exc_info=True)
+        finally:
+            for _, task in rounds.values():
+                if not task.done():
+                    task.cancel()
+            for _, task in rounds.values():
+                await wait_for_owned_task(task)
+                if not task.cancelled():
+                    task.exception()
+            result.tool_usage, result.stage_summaries = session.tool_usage, session.stage_summaries
+            result.attempted_calls, result.missing_usage_calls = session.attempted_calls, session.missing_usage_calls
+            result.elapsed_ms = (monotonic() - started) * 1000
+        return result

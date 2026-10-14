@@ -20,8 +20,8 @@ from harnyx_miner_sdk.json_types import JsonValue
 from harnyx_miner_sdk.structured_output import validate_output_against_schema, validate_output_size
 
 _MAX_RESPONSE_CHARS = 80_000
-_MAX_CITATION_REFS = 200
-_MAX_EVIDENCE_SEGMENTS_PER_RESPONSE = 400
+MAX_CITATION_REFS = 200
+MAX_EVIDENCE_SEGMENTS_PER_RESPONSE = 400
 MIN_CITATION_SLICE_CHARS = 100
 MAX_TOTAL_CITATION_EVIDENCE_CHARS = 120_000
 _CITATION_MARKER = re.compile(r"\[\[([0-9]+)\]\]")
@@ -102,7 +102,7 @@ class _RawMinerResponsePayload(BaseModel):
     text: str | None = Field(default=None, max_length=_MAX_RESPONSE_CHARS)
     output: JsonValue | None = None
     note: str | None = Field(default=None, max_length=_MAX_RESPONSE_CHARS)
-    citations: list[_CitationRefPayload] | None = Field(default=None, max_length=_MAX_CITATION_REFS)
+    citations: list[_CitationRefPayload] | None = Field(default=None, max_length=MAX_CITATION_REFS)
 
     @field_validator("note")
     @classmethod
@@ -124,7 +124,7 @@ class _RawMinerResponsePayload(BaseModel):
         if "output" in answer_fields:
             validate_output_size(self.output)
         total_segments = sum(len(citation.slices) if citation.slices else 1 for citation in self.citations or ())
-        if total_segments > _MAX_EVIDENCE_SEGMENTS_PER_RESPONSE:
+        if total_segments > MAX_EVIDENCE_SEGMENTS_PER_RESPONSE:
             raise ValueError("response citations exceed 400 materialized evidence segments")
         return self
 
@@ -305,6 +305,8 @@ def _validate_slice_against_source(source_text: str, selected_slice: CitationSli
 
 __all__ = [
     "CitationSlice",
+    "MAX_CITATION_REFS",
+    "MAX_EVIDENCE_SEGMENTS_PER_RESPONSE",
     "MAX_TOTAL_CITATION_EVIDENCE_CHARS",
     "MIN_CITATION_SLICE_CHARS",
     "MaterializedCitationSelection",

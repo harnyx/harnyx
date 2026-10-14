@@ -1,11 +1,6 @@
 import pytest
 from pydantic import ValidationError
 
-from harnyx_commons.miner_task_generation.contracts import (
-    RegisteredReferenceOutput,
-    Seed,
-)
-
 
 @pytest.mark.parametrize(
     "schema",
@@ -47,27 +42,6 @@ def test_generation_supports_sdk_local_references_and_composition():
     assert format_assessment('{"x":"wrong"}', schema)["kind"] == "schema_violation"
 
 
-@pytest.mark.parametrize("field", ["seed_id", "seed_question", "reference_answer", "scope"])
-def test_seed_cannot_admit_blank_research_content(field):
-    """A seed must supply usable research content before paid candidate work."""
-    values = {
-        "seed_id": "city",
-        "seed_question": "Which city?",
-        "reference_answer": "Paris",
-        "scope": "named report",
-        "event_date": "2026-10-01",
-        "supporting_sources": [
-            {
-                "url": "https://example.org/report",
-                "evidence": "Paris",
-                "publication_date": "2026-10-01",
-            }
-        ],
-    }
-    with pytest.raises(ValidationError):
-        Seed.model_validate(values | {field: " \t\n"})
-
-
 @pytest.mark.parametrize("text", ['{"x":1e999}', '{"x":NaN}', '{"x":Infinity}', '{"x":1,"x":2}'])
 def test_nonfinite_or_duplicate_json_cannot_be_marked_format_valid(text):
     from harnyx_commons.miner_task_generation.output_schema import format_assessment, strict_json
@@ -75,22 +49,6 @@ def test_nonfinite_or_duplicate_json_cannot_be_marked_format_valid(text):
     with pytest.raises(ValueError):
         strict_json(text)
     assert not format_assessment(text, {"type": "object", "properties": {"x": {"type": "number"}}})["valid"]
-
-
-@pytest.mark.parametrize("ids", [[], ["evidence:1"] * 201])
-def test_reference_requires_bounded_nonempty_citations(ids):
-    with pytest.raises(ValidationError):
-        RegisteredReferenceOutput(
-            answer_text="Alpha", structured_answer_json=None, note=None, citation_evidence_ids=ids
-        )
-
-
-@pytest.mark.parametrize("plain,structured,note", [(None, None, None), ("Alpha", "{}", None), ("Alpha", None, " ")])
-def test_reference_requires_one_answer_and_nonblank_optional_note(plain, structured, note):
-    with pytest.raises(ValidationError):
-        RegisteredReferenceOutput(
-            answer_text=plain, structured_answer_json=structured, note=note, citation_evidence_ids=["evidence:1"]
-        )
 
 
 @pytest.mark.parametrize(
@@ -118,18 +76,3 @@ def test_draft_rejects_blank_public_and_grading_fields_before_agent_work(field, 
     values[field] = value
     with pytest.raises(ValidationError):
         QuestionDraft(**values)
-
-
-@pytest.mark.parametrize(
-    "left,right,expected",
-    [
-        ('{"value":true}', '{"value":1}', False),
-        ('{"nested":[false]}', '{"nested":[0]}', False),
-        ('{"a":1,"b":true}', '{"b":true,"a":1.0}', True),
-        ('{"value":1}', '{"value":"1"}', False),
-    ],
-)
-def test_reference_json_equality_preserves_types_without_object_order_or_number_format_changes(left, right, expected):
-    from harnyx_commons.miner_task_generation.output_schema import same_json_value
-
-    assert same_json_value(left, right) is expected

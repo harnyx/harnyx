@@ -1,4 +1,4 @@
-"""Provider calls, in-memory author history and exposed streaming diagnostics."""
+"""Gemini provider calls, accounting and exposed streaming diagnostics."""
 
 from __future__ import annotations
 
@@ -6,28 +6,21 @@ import asyncio
 import json
 import logging
 import sys
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterator
-from contextlib import asynccontextmanager, contextmanager
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from email.utils import parsedate_to_datetime
 from time import monotonic, time
-from typing import Any, TypeVar, cast
+from typing import Any, TypeVar
 
 import httpx
 import httpx2
-from agents import Agent, ModelSettings, OpenAIResponsesModel, RunConfig, Runner, WebSearchTool
 from agents.exceptions import ModelBehaviorError
-from agents.items import TResponseInputItem
-from agents.result import RunResultStreaming
-from agents.stream_events import RawResponsesStreamEvent, StreamEvent
 from google.auth import exceptions as google_auth_errors
 from google.genai import errors as google_errors
-from openai import APIConnectionError, APIStatusError, AsyncOpenAI, OpenAIError
-from openai.types.responses import ResponseErrorEvent, ResponseFailedEvent
-from openai.types.shared import Reasoning
-from pydantic import BaseModel
+from openai import APIConnectionError, APIStatusError
 
 from harnyx_commons.domain.miner_task import Query, ReferenceAnswer, Response
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
@@ -40,10 +33,7 @@ from harnyx_commons.llm.cost_settlement import settled_generation_llm_cost
 from harnyx_commons.llm.provider import LlmProviderConfigurationError, LlmProviderError, LlmProviderPort
 from harnyx_commons.llm.retry_utils import RetryPolicy, backoff_ms
 from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest, LlmUsage
-from harnyx_commons.miner_task_fast_scoring import FastJudgeAssessment, build_fast_judge_messages, calculate_fast_f1
-from harnyx_commons.observability.langfuse import start_llm_generation, update_generation_best_effort
-from harnyx_commons.task_ownership import wait_for_owned_task
-from harnyx_commons.tools.parallel import ParallelClient
+from harnyx_commons.miner_task_fast_scoring import FastJudgeAssessment, build_fast_judge_messages
 
 from .contracts import (
     AgentResult,
@@ -52,18 +42,11 @@ from .contracts import (
     CandidateStageError,
     GenerationStageSummary,
     QuestionDraft,
-    ReviewDecision,
-    Seed,
-    Seeds,
-    StageName,
-    StructuredQuestionDraft,
     TerminalReference,
 )
-from .prompts import role_prompt
-from .source_fetch import PublicSourceFetcher
 
 logger = logging.getLogger("harnyx_commons.llm.calls")
-AUTHOR_MODEL = "gpt-6-luna"
+AUTHOR_MODEL = "gpt-6.1-sol"
 JUDGE_MODEL = "gemini-3.1-pro-preview"
 RETRY_POLICY = RetryPolicy(attempts=2, initial_ms=500, max_ms=30_000, jitter=0.2)
 T = TypeVar("T")
@@ -106,16 +89,10 @@ class CallCapture:
     workers: list[dict[str, Any]] = field(default_factory=list)
     requests: list[dict[str, Any]] = field(default_factory=list)
     tool_usage: ToolUsageSummary = field(default_factory=known_zero_actual_cost_tool_usage)
-    physical_accounting: bool = False
-    retain_requests: bool = True
-    stage_attempts: int = 0
-    settled_response_ids: set[str] = field(default_factory=set)
     attempted: int = 0
     usage_records: int = 0
     started: float = field(default_factory=monotonic)
     available_cost_usd: float = 0
-    available_model_cost_usd: float = 0
-    priced_usage_records: int = 0
 
     def identity(self) -> dict[str, object]:
         return {
@@ -174,8 +151,6 @@ class CallCapture:
         self.available_cost_usd += search_cost or 0
         settled = settled_generation_llm_cost(usage=usage, model=model, provider=provider, pricing_date=pricing_date)
         if settled is not None:
-            self.available_model_cost_usd += settled.cost_usd
-            self.priced_usage_records += 1
             self.available_cost_usd += settled.cost_usd
             total_cost = settled.cost_usd + (search_cost or 0)
             summary = replace(
@@ -195,12 +170,6 @@ class CallCapture:
                 # Missing receipts cannot establish free native search.
                 summary = replace(summary, actual_total_cost_usd=None, actual_cost_by_provider={})
         self.tool_usage = merge_complete_actual_cost_usage(self.tool_usage, summary)
-
-    def account_response(self, response_id: str, usage: LlmUsage | None) -> None:
-        if response_id in self.settled_response_ids or usage is None:
-            return
-        self.settled_response_ids.add(response_id)
-        self.account(usage)
 
     def finish(self) -> None:
         missing = max(0, self.attempted - self.usage_records)
@@ -312,9 +281,7 @@ async def retry_request(call: Callable[[], Awaitable[T]], capture: CallCapture, 
         while True:
             if monotonic() >= deadline:
                 raise TimeoutError("Generation deadline reached before provider request")
-            capture.stage_attempts += 1
-            if not capture.physical_accounting:
-                capture.attempted += 1
+            capture.attempted += 1
             pricing_token = _REQUEST_DATE.set(datetime.now(UTC).date())
             logger.info(
                 "task_generation.request.started", extra={"data": capture.identity() | {"attempt": attempt + 1}}
@@ -341,7 +308,7 @@ async def retry_request(call: Callable[[], Awaitable[T]], capture: CallCapture, 
                         raise BatchTerminalGenerationError(
                             failure_class,
                             f"Shared {capture.provider} failure during {capture.role}: status {status}",
-                            stage="reference" if capture.role == "reference" else "question_generation",
+                            stage="question_generation",
                             tool_usage=capture.tool_usage,
                         ) from exc
                     raise
@@ -357,270 +324,40 @@ async def retry_request(call: Callable[[], Awaitable[T]], capture: CallCapture, 
                 _REQUEST_DATE.reset(pricing_token)
 
 
-async def record_openai_request(request: httpx2.Request) -> None:
-    capture = ACTIVE_CAPTURE.get()
-    if capture is not None and request.url.path.endswith("/responses"):
-        if capture.physical_accounting:
-            capture.attempted += 1
-        if not capture.retain_requests and not logger.isEnabledFor(logging.DEBUG):
-            return
-        payload = exposed(json.loads(request.content))
-        if capture.retain_requests:
-            capture.requests.append(payload)
-        logger.debug("task_generation.provider_request", extra={"data": capture.identity() | {"request": payload}})
-
-
-@asynccontextmanager
-async def openai_stream(result: RunResultStreaming) -> AsyncIterator[AsyncIterator[StreamEvent]]:
-    """Settle SDK work before a failed attempt retries or releases its slot."""
-    # The SDK annotates this as AsyncIterator, but implements an async generator with aclose.
-    events = cast(AsyncGenerator[StreamEvent, None], result.stream_events())
-    try:
-        yield events
-    finally:
-        failed = sys.exc_info()[0] is not None
-        if failed:
-            result.cancel()
-
-        async def close() -> None:
-            try:
-                await events.aclose()
-            finally:
-                if result.run_loop_task is not None:
-                    await wait_for_owned_task(result.run_loop_task)
-                    if not result.run_loop_task.cancelled():
-                        result.run_loop_task.exception()
-
-        closing = asyncio.create_task(close())
-        cancellation = await wait_for_owned_task(closing)
-        try:
-            closing.result()
-        except Exception:
-            if not failed:
-                raise
-            logger.debug("task_generation.provider_cleanup.failure.details", exc_info=True)
-        if cancellation is not None:
-            raise cancellation
-
-
 class GenerationAgentRunner:
-    def __init__(
-        self, *, project_id: str | None, judge: LlmProviderPort, openai_client: AsyncOpenAI | None = None
-    ) -> None:
-        self._slots = asyncio.Semaphore(20)
-        self._source_fetcher = PublicSourceFetcher()
-        self._judge = judge
-        self._project_id = project_id
-        self._client = openai_client
-        self._http: httpx2.AsyncClient | None = None
-        self._reference_parallel_client: ParallelClient | None = None
+    """Existing Gemini challenge and Pro assessment; no construction model roles."""
 
-    async def _openai(self, *, stage: StageName = "question_generation") -> AsyncOpenAI:
-        if self._client is None:
-            client = httpx2.AsyncClient(event_hooks={"request": [record_openai_request]}, timeout=600)
-            try:
-                self._client = AsyncOpenAI(http_client=client, max_retries=0)
-            except BaseException as exc:
-                await client.aclose()
-                if isinstance(exc, OpenAIError):
-                    raise BatchTerminalGenerationError(
-                        "provider_configuration",
-                        "OpenAI initialization failed; check provider credentials",
-                        stage=stage,
-                    ) from exc
-                raise
-            self._http = client
-        if stage == "reference":
-            from .reference_runner import own_reference_response
-
-            hooks = self._client._client.event_hooks["request"]
-            if record_openai_request not in hooks:
-                hooks.append(record_openai_request)
-            response_hooks = self._client._client.event_hooks["response"]
-            if own_reference_response not in response_hooks:
-                response_hooks.append(own_reference_response)
-        return self._client
-
-    def _reference_parallel(self) -> ParallelClient:
-        if self._reference_parallel_client is None:
-            from .reference_generation import build_reference_parallel
-
-            self._reference_parallel_client = build_reference_parallel()
-        return self._reference_parallel_client
+    def __init__(self, *, project_id: str | None, judge: LlmProviderPort) -> None:
+        self._judge, self._project_id = judge, project_id
 
     async def aclose(self) -> None:
-        try:
-            if self._client is not None:
-                await self._client.close()
-            if self._http is not None:
-                await self._http.aclose()
-            await self._judge.aclose()
-        finally:
-            if self._reference_parallel_client is not None:
-                await self._reference_parallel_client.aclose()
+        await self._judge.aclose()
 
     async def invoke(self, role: str, message: str, session: CandidateSession, deadline: float) -> AgentResult:
-        if role in {"solver", "grounded_solver"}:
-            from .solver_runner import solve
+        if role not in {"solver", "grounded_solver"}:
+            raise ValueError("Only Gemini solver roles are available in this runner")
+        from .solver_runner import solve
 
-            return await solve(role, message, session, deadline, project_id=self._project_id)
-        async with asyncio.timeout(max(0, deadline - monotonic())):
-            async with self._slots:
-                return await self._invoke_openai(role, message, session, deadline)
-
-    async def _invoke_openai(self, role: str, message: str, session: CandidateSession, deadline: float) -> AgentResult:
-        capture = CallCapture(session, role, AUTHOR_MODEL, "openai")
-        instruction = ("" if role == "seed" else temporal_instruction(session) + "\n") + role_prompt(role, session.mode)
-        output_type = (
-            Seeds
-            if role == "seed"
-            else ReviewDecision
-            if role in {"reviewer", "verifier"}
-            else StructuredQuestionDraft
-            if role == "author" and session.mode == "structured"
-            else QuestionDraft
-            if role == "author"
-            else None
-        )
-        agent = Agent(
-            name=role,
-            instructions=instruction,
-            model=OpenAIResponsesModel(model=AUTHOR_MODEL, openai_client=await self._openai()),
-            tools=[WebSearchTool()],
-            output_type=output_type,
-            model_settings=ModelSettings(
-                reasoning=Reasoning(
-                    effort="max" if role == "verifier" else "high", summary="auto" if role == "seed" else "detailed"
-                ),
-                truncation="disabled",
-                response_include=["web_search_call.action.sources"],
-            ),
-        )
-        request = LlmRequest(
-            provider="openai",
-            model=AUTHOR_MODEL,
-            temperature=None,
-            max_output_tokens=None,
-            messages=(
-                LlmMessage(role="system", content=(LlmMessageContentPart.input_text(instruction),)),
-                LlmMessage(role="user", content=(LlmMessageContentPart.input_text(message),)),
-            ),
-            use_case=f"miner_task_generation.{role}",
-            reasoning_effort="max" if role == "verifier" else "high",
-        )
-        author_input: str | list[TResponseInputItem] = (
-            cast(list[TResponseInputItem], [*session.author_history, {"role": "user", "content": message}])
-            if role == "author"
-            else message
-        )
-
-        async def call() -> str:
-            result = Runner.run_streamed(agent, author_input, max_turns=1, run_config=RunConfig(tracing_disabled=True))
-            latest_usage: LlmUsage | None = None
-            try:
-                async with openai_stream(result) as events:
-                    async for event in events:
-                        if isinstance(event, RawResponsesStreamEvent):
-                            data = event.data.model_dump(mode="json", exclude_none=True)
-                            capture.event(data)
-                            if data["type"] in {"response.completed", "response.incomplete", "response.failed"}:
-                                raw = data["response"].get("usage")
-                                if raw is not None:
-                                    latest_usage = LlmUsage(
-                                        prompt_tokens=raw["input_tokens"],
-                                        completion_tokens=raw["output_tokens"],
-                                        total_tokens=raw["total_tokens"],
-                                        prompt_cached_tokens=raw.get("input_tokens_details", {}).get("cached_tokens"),
-                                        prompt_cache_write_tokens=raw.get("input_tokens_details", {}).get(
-                                            "cache_write_tokens"
-                                        ),
-                                        reasoning_tokens=raw.get("output_tokens_details", {}).get("reasoning_tokens"),
-                                        web_search_calls=data["response"]
-                                        .get("tool_usage", {})
-                                        .get("web_search", {})
-                                        .get("num_requests"),
-                                    )
-                            if data["type"] in {"response.failed", "response.incomplete", "error"}:
-                                code = None
-                                if (
-                                    isinstance(event.data, ResponseFailedEvent)
-                                    and event.data.response.error is not None
-                                ):
-                                    code = event.data.response.error.code
-                                elif isinstance(event.data, ResponseErrorEvent):
-                                    code = event.data.code
-                                raise OpenAIStreamError(code)
-                final = result.final_output
-                answer = final.model_dump_json(by_alias=True) if isinstance(final, BaseModel) else final
-                if not isinstance(answer, str) or not answer.strip():
-                    raise ModelBehaviorError("Agent did not return a complete answer")
-                if role == "author":
-                    session.author_history = result.to_input_list()
-                return answer
-            finally:
-                capture.account(latest_usage)
-
-        token = ACTIVE_CAPTURE.set(capture)
-        try:
-            with start_llm_generation(provider_label="openai", request=request) as generation:
-                text = await retry_request(call, capture, deadline, solver=False)
-                answer = AgentResult(
-                    answer=text,
-                    request={"message": message, "instruction": instruction, "model": AUTHOR_MODEL},
-                    provider_responses=capture.responses,
-                )
-                update_generation_best_effort(
-                    generation,
-                    output=answer.model_dump(mode="json"),
-                    usage_details={
-                        "input": capture.tool_usage.llm.prompt_tokens,
-                        "output": capture.tool_usage.llm.completion_tokens,
-                    },
-                    metadata=capture.identity(),
-                )
-                logger.info(
-                    "task_generation.stage.completed",
-                    extra={
-                        "data": capture.identity()
-                        | {"attempts": capture.attempted, "usage_missing": capture.attempted - capture.usage_records}
-                    },
-                )
-                return answer
-        finally:
-            ACTIVE_CAPTURE.reset(token)
-            capture.finish()
-
-    async def generate_seeds(
-        self,
-        count: int,
-        session: CandidateSession,
-        deadline: float,
-        *,
-        start: date,
-        end: date,
-        previous_seeds: list[Seed],
-    ) -> list[Seed]:
-        packet = {
-            "requested_count": count,
-            "previous_seeds": [seed.model_dump() for seed in previous_seeds],
-            "as_of_date": str(session.effective_date),
-            "event_date_window": {"start": str(start), "end": str(end)},
-        }
-        result = await self.invoke("seed", json.dumps(packet, ensure_ascii=False), session, deadline)
-        seeds = Seeds.model_validate_json(result.answer).seeds
-        if len(seeds) != count or len({seed.seed_id for seed in seeds}) != count:
-            raise ValueError("Seed count or identifiers differ from requested contract")
-        if len({seed.seed_question for seed in seeds}) != count:
-            raise ValueError("Duplicate seed questions")
-        for seed in seeds:
-            if not start <= date.fromisoformat(seed.event_date) <= end:
-                raise ValueError("Seed event outside requested window")
-        return seeds
+        return await solve(role, message, session, deadline, project_id=self._project_id)
 
     async def assess(
         self, draft: QuestionDraft, result: AgentResult, session: CandidateSession, deadline: float
     ) -> FastJudgeAssessment:
         return await self._assess_response(draft, Response(text=result.answer), session, deadline)
+
+    async def assess_reference(
+        self, draft: QuestionDraft, reference: TerminalReference, session: CandidateSession, deadline: float
+    ) -> FastJudgeAssessment:
+        answer = reference.reference_answer
+        if answer is None:
+            raise ValueError("Reference consistency requires a rendered answer")
+        return await self._assess_response(
+            draft,
+            Response(text=answer.text, note=answer.note),
+            session,
+            deadline,
+            role="reference_consistency",
+        )
 
     async def _assess_response(
         self,
@@ -682,46 +419,3 @@ class GenerationAgentRunner:
             return await retry_request(call, capture, deadline, solver=False)
         finally:
             capture.finish()
-
-    async def derive_reference(
-        self, draft: QuestionDraft, verification: ReviewDecision | None, session: CandidateSession, deadline: float
-    ) -> TerminalReference:
-        from .reference_generation import derive_reference
-
-        reference = await derive_reference(
-            draft,
-            verification,
-            session,
-            deadline,
-            parallel=self._reference_parallel(),
-            client=await self._openai(stage="reference"),
-            slots=self._slots,
-            fetcher=self._source_fetcher,
-        )
-        if (
-            verification is not None
-            and verification.passed
-            and not isinstance(draft, StructuredQuestionDraft)
-            and reference.reference_answer is not None
-            and not reference.factual_correction
-        ):
-            answer = reference.reference_answer
-            assessment = await self._assess_response(
-                draft,
-                Response(text=answer.text, note=answer.note),
-                session,
-                deadline,
-                role="reference_assessment",
-            )
-            score = calculate_fast_f1(assessment)
-            logger.info(
-                "task_generation.reference.assessed",
-                extra={"data": {"task_id": session.task_id, "f1": score}},
-            )
-            if score < 1:
-                reference = reference.model_copy(
-                    update={
-                        "unsupported_reason": "Terminal reference disagrees with the verified proposal",
-                    }
-                )
-        return reference

@@ -32,7 +32,6 @@ from .agent_runner import CallCapture, logger, retry_request, shared_provider_fa
 from .contracts import AgentResult, BatchTerminalGenerationError, CandidateSession, CandidateStageError
 from .prompts import role_prompt
 
-SOLVER_TURNS = 8
 SOLVER_SEARCH_CALLS = 8
 WORKER_MODEL = "gemini-3.8-flash"
 NATIVE_MODEL = "gemini-3.1-pro-preview"
@@ -267,24 +266,14 @@ async def solve(
             ) from exc
         raise
     workers = SearchWorkers(client, capture, deadline)
-    turn = 0
 
     async def before(callback_context: CallbackContext, llm_request: AdkRequest) -> None:
-        nonlocal turn
-        turn += 1
         if role == "grounded_solver":
             llm_request.config.system_instruction = None
         else:
-            if turn > SOLVER_TURNS:
-                raise RuntimeError("Solver exceeded its model-turn allowance")
             remaining = SOLVER_SEARCH_CALLS - workers.started
-            llm_request.append_instructions(
-                [
-                    f"Model turn {turn}/{SOLVER_TURNS}; {remaining} grounded workers remain. "
-                    f"Turn {SOLVER_TURNS} is final synthesis. Answer sooner if ready."
-                ]
-            )
-            if turn == SOLVER_TURNS or remaining == 0:
+            llm_request.append_instructions([f"{remaining} grounded workers remain. Answer when ready."])
+            if remaining == 0:
                 workers.closed = True
                 llm_request.config.tool_config = types.ToolConfig(
                     function_calling_config=types.FunctionCallingConfig(mode=types.FunctionCallingConfigMode.NONE)
@@ -339,7 +328,7 @@ async def solve(
                         session_id=sdk_session.id,
                         new_message=types.Content(role="user", parts=[types.Part(text=message)]),
                         run_config=RunConfig(
-                            streaming_mode=StreamingMode.SSE, max_llm_calls=SOLVER_TURNS if role == "solver" else 1
+                            streaming_mode=StreamingMode.SSE, max_llm_calls=0 if role == "solver" else 1
                         ),
                     )
                 ) as events:

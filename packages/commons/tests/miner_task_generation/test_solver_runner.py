@@ -1,5 +1,6 @@
 """Commit complete provider attempts to ADK while streaming diagnostics immediately."""
 
+import asyncio
 from datetime import UTC, datetime
 from time import monotonic
 from types import SimpleNamespace
@@ -467,3 +468,49 @@ async def test_solver_initialization_credentials_failure_is_terminal_and_closes_
     assert caught.value.failure_class == "provider_auth"
     assert transports[0].is_closed
     assert observed.session.stage_summaries[0].outcome == "failed"
+
+
+@pytest.mark.parametrize("finish", [True, False], ids=["final-answer", "deadline"])
+async def test_solver_can_synthesize_after_eight_research_turns_but_still_obeys_deadline(monkeypatch, finish):
+    """Research on turn eight must not prevent synthesis on turn nine or disable cancellation."""
+    model_calls, searches, closed = [], [], []
+
+    class Models:
+        async def generate_content(self, **kwargs):
+            searches.append(kwargs)
+            return chunk("source evidence", stop=True)
+
+    class Aio:
+        models = Models()
+
+        async def aclose(self):
+            closed.append("async-client")
+
+    class Client:
+        aio = Aio()
+
+        def close(self):
+            closed.append("client")
+
+    async def research_then_answer(self, llm_request, stream=False):
+        model_calls.append(llm_request)
+        if len(model_calls) <= 8:
+            part = types.Part(function_call=types.FunctionCall(name="search", args={"query": "public evidence"}))
+        else:
+            if not finish:
+                await asyncio.Event().wait()
+            part = types.Part(text="Final supported answer")
+        yield AdkResponse(content=types.Content(role="model", parts=[part]))
+
+    monkeypatch.setattr("harnyx_commons.miner_task_generation.solver_runner.genai.Client", lambda **kwargs: Client())
+    monkeypatch.setattr(GenerationGemini, "generate_content_async", research_then_answer)
+    observed = capture()
+    if finish:
+        result = await solve("solver", "Public question?", observed.session, monotonic() + 5, project_id="test")
+        assert result.answer == "Final supported answer"
+    else:
+        with pytest.raises(TimeoutError):
+            await solve("solver", "Public question?", observed.session, monotonic() + 1, project_id="test")
+    assert len(model_calls) == 9 and len(searches) == 8
+    assert model_calls[-1].config.tool_config.function_calling_config.mode == types.FunctionCallingConfigMode.NONE
+    assert closed == ["async-client", "client"]

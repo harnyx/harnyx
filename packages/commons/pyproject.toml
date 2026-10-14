@@ -26,9 +26,6 @@ dependencies = [
   "google-auth>=2.28",
   "anthropic>=0.75.0",
   "claude-agent-sdk==0.2.128",
-  "pymupdf>=1.26.0,<2",
-  "beautifulsoup4>=4.13.0,<5",
-  "openpyxl>=3.1.5,<4",
   "regex>=2026.2.28,<2027",
   "opentelemetry-sdk>=1.39",
   "opentelemetry-exporter-otlp-proto-http>=1.39",
@@ -48,6 +45,7 @@ build-backend = "hatchling.build"
 packages = ["src/harnyx_commons"]
 include = [
   "src/harnyx_commons/miner_task_generation/prompts/*.txt",
+  "src/harnyx_commons/miner_task_generation/prompts/dataset_examples.json",
   "src/harnyx_commons/sandbox/seccomp/*.json",
   "src/harnyx_commons/miner_task_benchmark/browsecomp/data/current_version.json",
   "src/harnyx_commons/miner_task_benchmark/browsecomp/data/versions/*/*.csv",
@@ -83,9 +81,6 @@ google-genai = "google"
 google-adk = "google"
 openai-agents = "agents"
 claude-agent-sdk = "claude_agent_sdk"
-beautifulsoup4 = "bs4"
-openpyxl = "openpyxl"
-pymupdf = "fitz"
 regex = "regex"
 langfuse = "langfuse"
 sentry-sdk = "sentry_sdk"

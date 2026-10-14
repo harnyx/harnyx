@@ -9,7 +9,6 @@ from .contracts import (
     MinerTaskDatasetRequest,
 )
 from .dataset_builder import MinerTaskDatasetBuilder, UnderfilledDatasetError
-from .source_fetch import PublicSourceFetcher, SourceDocument, SourceFetchError
 
 __all__ = [
     "MinerTaskDatasetRequest",
@@ -20,7 +19,4 @@ __all__ = [
     "FinalizedTaskCallback",
     "BatchTerminalGenerationError",
     "CandidateStageError",
-    "SourceDocument",
-    "SourceFetchError",
-    "PublicSourceFetcher",
 ]
