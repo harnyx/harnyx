@@ -344,13 +344,23 @@ async def test_output_in_one_call_does_not_disable_another_calls_prefill_retry()
 
 
 @pytest.mark.parametrize("status", [429, 503])
-@pytest.mark.parametrize("header_kind", ["seconds", "date", "invalid", "absent"])
+@pytest.mark.parametrize(
+    "header_kind, expected_delay", [("seconds", 30), ("date", 29.5), ("invalid", 0), ("absent", 0)]
+)
 async def test_retry_after_controls_delay_before_retry(
-    monkeypatch: pytest.MonkeyPatch, status: int, header_kind: str
+    monkeypatch: pytest.MonkeyPatch, status: int, header_kind: str, expected_delay: float
 ) -> None:
     delays = []
     attempts = 0
-    retry_at = datetime.now(UTC) + timedelta(seconds=30)
+    now = datetime(2026, 10, 13, 12, 0, 0, 500_000, tzinfo=UTC)
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now
+
+    monkeypatch.setattr("harnyx_commons.llm.providers.saygm.datetime", FixedDatetime)
+    retry_at = now + timedelta(seconds=30)
     headers = {
         "seconds": {"Retry-After": "30"},
         "date": {"Retry-After": format_datetime(retry_at, usegmt=True)},
@@ -375,10 +385,7 @@ async def test_retry_after_controls_delay_before_retry(
     assert response.raw_text == "ok"
     assert attempts == 2
     assert len(delays) == 1
-    if header_kind in {"seconds", "date"}:
-        assert 29 <= delays[0] <= 30
-    else:
-        assert delays[0] == 0
+    assert delays[0] == expected_delay
 
 
 async def test_retry_after_cannot_outlive_total_request_deadline() -> None:
