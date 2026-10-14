@@ -120,7 +120,7 @@ then deterministic code computes a precision/recall F1 score from `0` to `1`.
 Citations remain accepted but are omitted from this judgment, are not required,
 and provide no scoring benefit. Fast scoring works with both plain-text and
 structured answers. Each source-generation slot independently selects
-`fast: true` with probability `0.5`; a finite batch may contain any mix of modes.
+`fast: true` with probability `0.3`; a finite batch may contain any mix of modes.
 
 Your return value must validate as:
 
