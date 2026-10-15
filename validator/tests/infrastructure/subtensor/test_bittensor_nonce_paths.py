@@ -5,7 +5,9 @@ from typing import Any, cast
 
 import httpx
 import pytest
+from bittensor.core.errors import SubstrateRequestException
 from bittensor.core.types import ExtrinsicResponse
+from bittensor.utils import format_error_message
 
 import harnyx_validator.infrastructure.subtensor.bittensor as bittensor_mod
 from harnyx_commons.config.subtensor import SubtensorSettings
@@ -494,13 +496,13 @@ def test_submit_weights_plain_keeps_other_chain_errors_hard(
     subtensor.set_weights_extrinsic_side_effects = [
         SimpleNamespace(
             success=False,
-            message="SubtensorModule.TxRateLimitExceeded",
-            error={"name": "TxRateLimitExceeded"},
+            message="SubtensorModule.HotKeyNotRegisteredInSubNet",
+            error={"name": "HotKeyNotRegisteredInSubNet"},
         )
     ] * 5
     client = _make_client(monkeypatch, subtensor=subtensor)
 
-    with pytest.raises(RuntimeError, match="set_weights failed: SubtensorModule.TxRateLimitExceeded"):
+    with pytest.raises(RuntimeError, match="set_weights failed: SubtensorModule.HotKeyNotRegisteredInSubNet"):
         client.submit_weights({7: 1.0})
 
     assert len(subtensor.set_weights_extrinsic_calls) == 5
@@ -516,6 +518,103 @@ def test_submit_weights_commit_reveal_raises_too_early_for_chain_cadence_error(
             message="SubtensorModule.CommittingWeightsTooFast",
             error={"name": "CommittingWeightsTooFast"},
         )
+    ]
+    client = _make_client(monkeypatch, subtensor=subtensor)
+
+    with pytest.raises(WeightSubmissionTooEarlyError):
+        client.submit_weights({7: 1.0})
+
+    assert len(subtensor.sign_calls) == 1
+    assert subtensor.set_reveal_commitment_calls == []
+    assert subtensor.set_weights_calls == []
+
+
+@pytest.mark.parametrize("commit_reveal_enabled", [False, True])
+@pytest.mark.parametrize("wrap_error", [False, True])
+@pytest.mark.parametrize("serialize_error", [False, True])
+def test_submit_weights_defers_rpc_rate_limit_until_next_tick(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    commit_reveal_enabled: bool,
+    wrap_error: bool,
+    serialize_error: bool,
+) -> None:
+    """A runtime validity rate limit must not exhaust retries or become a fatal worker error."""
+    _patch_set_weights_extrinsic(monkeypatch)
+    rpc_error: dict[str, object] = {"code": 1010, "message": "Invalid Transaction", "data": "Custom error: 6"}
+    if wrap_error:
+        rpc_error = {"error": rpc_error}
+    error = SubstrateRequestException(str(rpc_error) if serialize_error else rpc_error)
+    message = format_error_message(error) if serialize_error else str(error)
+    response = ExtrinsicResponse(success=False, message=message, error=error)
+    subtensor = _SubtensorStub(commit_reveal_enabled=commit_reveal_enabled)
+    subtensor.sign_side_effects = [response]
+    client = _make_client(monkeypatch, subtensor=subtensor)
+
+    with caplog.at_level("WARNING", logger="harnyx_validator.subtensor"):
+        with pytest.raises(WeightSubmissionTooEarlyError):
+            client.submit_weights({7: 1.0})
+
+    assert len(subtensor.sign_calls) == 1
+    record = next(
+        record for record in caplog.records if record.message == "weight submission rate limited; retrying next tick"
+    )
+    assert record.set_weights_error == "RateLimitExceeded"
+
+
+@pytest.mark.parametrize("error_name", ["TxRateLimitExceeded", "NetworkTxRateLimitExceeded", "RateLimitExceeded"])
+@pytest.mark.parametrize("commit_reveal_enabled", [False, True])
+def test_submit_weights_defers_named_rate_limits(
+    monkeypatch: pytest.MonkeyPatch,
+    error_name: str,
+    commit_reveal_enabled: bool,
+) -> None:
+    """Named rate limits use the same next-tick policy as transaction validity code 6."""
+    _patch_set_weights_extrinsic(monkeypatch)
+    subtensor = _SubtensorStub(commit_reveal_enabled=commit_reveal_enabled)
+    subtensor.sign_side_effects = [
+        SimpleNamespace(success=False, message=error_name, error={"name": error_name})
+    ]
+    client = _make_client(monkeypatch, subtensor=subtensor)
+
+    with pytest.raises(WeightSubmissionTooEarlyError):
+        client.submit_weights({7: 1.0})
+
+    assert len(subtensor.sign_calls) == 1
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        SubstrateRequestException(str({"code": 1010, "message": "Invalid Transaction", "data": "Custom error: 60"})),
+        SubstrateRequestException(str({"code": 1010, "message": "Invalid Transaction", "data": "Custom error: 4"})),
+        SubstrateRequestException(str({"code": -32603, "message": "Internal error", "data": "Custom error: 6"})),
+        SubstrateRequestException("diagnostic text mentioned Custom error: 6"),
+        RuntimeError(str({"code": 1010, "message": "Invalid Transaction", "data": "Custom error: 6"})),
+    ],
+)
+def test_submit_weights_keeps_other_rpc_failures_hard(
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+) -> None:
+    """Only an actual rate-limit validity response may suppress a hard submission failure."""
+    subtensor = _SubtensorStub(commit_reveal_enabled=True)
+    subtensor.sign_side_effects = [ExtrinsicResponse(success=False, message=str(error), error=error)] * 5
+    client = _make_client(monkeypatch, subtensor=subtensor)
+
+    with pytest.raises(RuntimeError, match="set_weights failed:"):
+        client.submit_weights({7: 1.0})
+
+    assert len(subtensor.sign_calls) == 5
+
+
+def test_submit_weights_defers_raised_rpc_rate_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The exception path must honor the same refusal policy as an SDK failure response."""
+    subtensor = _SubtensorStub(commit_reveal_enabled=True)
+    subtensor.sign_side_effects = [
+        SubstrateRequestException(str({"code": 1010, "message": "Invalid Transaction", "data": "Custom error: 6"}))
     ]
     client = _make_client(monkeypatch, subtensor=subtensor)
 

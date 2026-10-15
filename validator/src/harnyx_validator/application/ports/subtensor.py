@@ -32,7 +32,7 @@ class ValidatorNodeInfo:
 
 
 class WeightSubmissionTooEarlyError(RuntimeError):
-    """Raised when the chain rejects a weight submission because it is too early."""
+    """Raised when the chain rate-limits weights or rejects their submission cadence."""
 
 
 class SubtensorClientPort(Protocol):
@@ -66,7 +66,8 @@ class SubtensorClientPort(Protocol):
         """Submit normalized weights and return the transaction reference/hash.
 
         Raises ``WeightSubmissionTooEarlyError`` when the chain explicitly reports
-        the submission cadence is not open yet.
+        a rate limit or the submission cadence is not open yet. Retry on the next
+        scheduled worker tick.
         """
 
     def fetch_weight(self, uid: int) -> float:

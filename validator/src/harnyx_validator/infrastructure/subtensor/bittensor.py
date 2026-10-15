@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import logging
 import math
 from collections.abc import Mapping, Sequence
@@ -9,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any, TypeAlias, cast
 
 import bittensor as bt
-from bittensor.core.errors import MetadataError
+from bittensor.core.errors import MetadataError, SubstrateRequestException
 from bittensor.core.extrinsics.pallets import SubtensorModule
 from bittensor.core.extrinsics.weights import set_weights_extrinsic
 from bittensor.core.settings import version_as_int
@@ -45,6 +46,8 @@ _CHAIN_TOO_EARLY_REFUSAL_ERROR_NAMES = frozenset(
         "CommittingWeightsTooFast",
     }
 )
+_CHAIN_RATE_LIMIT_ERROR_NAMES = frozenset({"RateLimitExceeded", "TxRateLimitExceeded", "NetworkTxRateLimitExceeded"})
+_RETRYABLE_WEIGHT_ERROR_NAMES = _CHAIN_TOO_EARLY_REFUSAL_ERROR_NAMES | _CHAIN_RATE_LIMIT_ERROR_NAMES
 _LastUpdateValue: TypeAlias = int | None
 _LastUpdateValues: TypeAlias = dict[int, _LastUpdateValue] | list[_LastUpdateValue]
 
@@ -391,8 +394,7 @@ class BittensorSubtensorClient(SubtensorClientPort):
                     wait_for_finalization=self.settings.wait_for_finalization,
                 )
             except Exception as exc:
-                if self._error_name_from_object(exc) in _CHAIN_TOO_EARLY_REFUSAL_ERROR_NAMES:
-                    raise WeightSubmissionTooEarlyError(str(exc)) from exc
+                self._raise_if_weight_submission_too_early(self._error_name_from_object(exc), str(exc))
                 cause = classify_transient_network_failure(exc)
                 if cause is None:
                     all_failures_transient = False
@@ -403,8 +405,7 @@ class BittensorSubtensorClient(SubtensorClientPort):
                 message = str(exc)
                 continue
             message = result.message
-            if self._is_chain_too_early_refusal(result):
-                raise WeightSubmissionTooEarlyError(result.message)
+            self._raise_if_weight_submission_too_early(result.error_name, result.message)
             if result.success:
                 return True, f"reveal_round:{reveal_round}"
             all_failures_transient = False
@@ -442,8 +443,7 @@ class BittensorSubtensorClient(SubtensorClientPort):
             )
             result = self._extrinsic_response_result(response)
             message = result.message
-            if self._is_chain_too_early_refusal(result):
-                raise WeightSubmissionTooEarlyError(result.message)
+            self._raise_if_weight_submission_too_early(result.error_name, result.message)
             if result.success:
                 return True, message
             logger.warning(
@@ -524,8 +524,15 @@ class BittensorSubtensorClient(SubtensorClientPort):
         )
 
     @staticmethod
-    def _is_chain_too_early_refusal(result: _WeightExtrinsicResult) -> bool:
-        return result.error_name in _CHAIN_TOO_EARLY_REFUSAL_ERROR_NAMES
+    def _raise_if_weight_submission_too_early(error_name: str | None, message: str) -> None:
+        if error_name not in _RETRYABLE_WEIGHT_ERROR_NAMES:
+            return
+        if error_name in _CHAIN_RATE_LIMIT_ERROR_NAMES:
+            logger.warning(
+                "weight submission rate limited; retrying next tick",
+                extra={"set_weights_message": message, "set_weights_error": error_name},
+            )
+        raise WeightSubmissionTooEarlyError(message)
 
     @classmethod
     def _extrinsic_error_name(cls, response: ExtrinsicResponse | object) -> str | None:
@@ -540,9 +547,17 @@ class BittensorSubtensorClient(SubtensorClientPort):
             return None
         if isinstance(value, Mapping):
             mapping_value = cast(Mapping[object, object], value)
+            # Runtime validity code 6 combines weight cadence and network rate limits.
+            # Require the RPC validity envelope, not a substring in diagnostic text.
+            if (
+                mapping_value.get("code") == 1010
+                and mapping_value.get("message") == "Invalid Transaction"
+                and mapping_value.get("data") == "Custom error: 6"
+            ):
+                return "RateLimitExceeded"
             for key in ("name", "error", "error_name"):
                 nested = mapping_value.get(key)
-                if isinstance(nested, str) and nested in _CHAIN_TOO_EARLY_REFUSAL_ERROR_NAMES:
+                if isinstance(nested, str) and nested in _RETRYABLE_WEIGHT_ERROR_NAMES:
                     return nested
             for nested in mapping_value.values():
                 error_name = cls._error_name_from_object(nested)
@@ -551,6 +566,13 @@ class BittensorSubtensorClient(SubtensorClientPort):
             return None
         if isinstance(value, BaseException):
             for nested in value.args:
+                # The pinned SDK retains the original substrate RPC error in .error;
+                # its transport may serialize the envelope into an exception argument.
+                if isinstance(value, SubstrateRequestException) and isinstance(nested, str):
+                    try:
+                        nested = ast.literal_eval(nested)
+                    except (ValueError, SyntaxError, MemoryError, RecursionError, TypeError):
+                        continue
                 if isinstance(nested, Mapping):
                     error_name = cls._error_name_from_object(nested)
                     if error_name is not None:
@@ -563,7 +585,7 @@ class BittensorSubtensorClient(SubtensorClientPort):
             return None
         for attr in ("name", "error", "error_name"):
             nested = getattr(value, attr, None)
-            if isinstance(nested, str) and nested in _CHAIN_TOO_EARLY_REFUSAL_ERROR_NAMES:
+            if isinstance(nested, str) and nested in _RETRYABLE_WEIGHT_ERROR_NAMES:
                 return nested
         return None
 

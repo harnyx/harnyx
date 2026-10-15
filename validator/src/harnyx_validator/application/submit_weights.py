@@ -42,12 +42,12 @@ class WeightSubmissionService:
         """Try to submit weights.
 
         Returns the submission result if weights were submitted, or None if the
-        chain says the validator must wait before submitting again.
+        chain rate-limits the validator or says it must wait before submitting again.
         """
         try:
             return self.submit()
         except WeightSubmissionTooEarlyError as exc:
-            # A chain-level too-early refusal is harmless; the next scheduled attempt will retry.
+            # The adapter logs rate limits; retry all too-early refusals on the next tick.
             weights_logger.debug(
                 "weight submission skipped because chain reported the attempt is too early",
                 exc_info=exc,

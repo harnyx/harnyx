@@ -3,6 +3,7 @@ from __future__ import annotations
 import errno
 import logging
 import socket
+from datetime import UTC, datetime
 
 import pytest
 
@@ -52,6 +53,32 @@ def test_weight_worker_success_log_includes_submitted_weights(
         "champion_uid": 5,
         "weights": {5: 0.6, 1: 0.4},
     }
+
+
+def test_weight_worker_preserves_submission_across_refused_tick_then_recovers(monkeypatch) -> None:
+    """A clean deferred attempt must neither erase a successful submission nor report a new one."""
+    captured: list[BaseException] = []
+    monkeypatch.setattr(worker_mod, "capture_exception", captured.append)
+    status = StatusProvider()
+    previous_submission = datetime(2026, 10, 14, tzinfo=UTC)
+    status.state.last_weight_submission_at = previous_submission
+    status.state.last_weight_error = "weight submission failed (see logs)"
+    result = WeightSubmissionResult(champion_uid=5, weights={5: 1.0}, tx_hash="0xabc")
+    worker = WeightWorker(
+        submission_service=_SequenceSubmissionService([None, result]),
+        status_provider=status,
+    )
+
+    worker._tick()
+
+    assert status.state.last_weight_error is None
+    assert status.state.last_weight_submission_at == previous_submission
+
+    worker._tick()
+
+    assert status.state.last_weight_error is None
+    assert status.state.last_weight_submission_at > previous_submission
+    assert captured == []
 
 
 def test_weight_worker_captures_sanitized_transient_network_outage_once_at_threshold(monkeypatch) -> None:
