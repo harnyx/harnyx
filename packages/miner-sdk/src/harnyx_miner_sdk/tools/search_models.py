@@ -14,6 +14,7 @@ from harnyx_miner_sdk.tools.search_provider_extra import (
 from harnyx_miner_sdk.tools.types import ToolInvocationTimeout
 
 SearchProviderName = Literal["desearch", "parallel", "firecrawl", "exa", "tavily"]
+FetchProviderName = Literal[SearchProviderName, "expand"]
 AiSearchProviderName = Literal["desearch", "parallel"]
 
 
@@ -236,7 +237,7 @@ class FetchPageRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    provider: SearchProviderName
+    provider: FetchProviderName
     url: str = Field(min_length=1)
     provider_extra: FetchPageProviderExtra | None = None
     timeout: ToolInvocationTimeout | None = None
@@ -275,6 +276,7 @@ __all__ = [
     "ToolInvocationTimeout",
     "AiSearchProviderName",
     "SearchProviderName",
+    "FetchProviderName",
     "SearchWebSearchRequest",
     "SearchWebSearchResponse",
     "SearchWebResult",

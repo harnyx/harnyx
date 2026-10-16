@@ -10,14 +10,16 @@ from typing import Annotated, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, SecretStr, ValidationError
 
-from harnyx_commons.clients import DESEARCH, EXA, FIRECRAWL, PARALLEL, TAVILY
+from harnyx_commons.clients import DESEARCH, EXA, EXPAND, FIRECRAWL, PARALLEL, TAVILY
 from harnyx_commons.config.bedrock import BedrockSettings
 from harnyx_commons.config.llm import (
     AI_SEARCH_PROVIDER_NAMES,
     AiSearchProviderName,
+    FetchProviderName,
     LlmSettings,
     SearchProviderName,
     parse_ai_search_provider_name,
+    parse_fetch_provider_name,
     parse_search_provider_name,
 )
 from harnyx_commons.config.vertex import VertexSettings
@@ -58,6 +60,7 @@ from harnyx_commons.tools.embedding_models import (
     parse_miner_selected_embedding_provider,
 )
 from harnyx_commons.tools.exa import ExaClient
+from harnyx_commons.tools.expand import ExpandClient
 from harnyx_commons.tools.firecrawl import FirecrawlClient
 from harnyx_commons.tools.parallel import ParallelClient
 from harnyx_commons.tools.ports import (
@@ -66,6 +69,7 @@ from harnyx_commons.tools.ports import (
     DecisionProviderResult,
     EmbeddingProviderPort,
     EmbeddingProviderResult,
+    FetchPageProviderPort,
     WebSearchProviderPort,
 )
 from harnyx_commons.tools.provider_billing import ProviderBillingMetadata, SearchProviderResult
@@ -157,7 +161,7 @@ class CachedWebSearchProviderRegistry:
     def __init__(self, *, llm_settings: LlmSettings, include_payloads_in_logs: bool = True) -> None:
         self._llm_settings = llm_settings
         self._include_payloads_in_logs = include_payloads_in_logs
-        self._cache: dict[SearchProviderName, WebSearchProviderPort] = {}
+        self._cache: dict[FetchProviderName, FetchPageProviderPort] = {}
 
     def resolve_web(self, provider: SearchProviderName | str) -> WebSearchProviderPort:
         provider_name = parse_search_provider_name(provider)
@@ -170,7 +174,21 @@ class CachedWebSearchProviderRegistry:
                 include_payloads_in_logs=self._include_payloads_in_logs,
             )
             self._cache[provider_name] = search_provider
-        return search_provider
+        return cast(WebSearchProviderPort, search_provider)
+
+    def resolve_fetch(self, provider: FetchProviderName | str) -> FetchPageProviderPort:
+        name = parse_fetch_provider_name(provider)
+        if name != "expand":
+            return self.resolve_web(name)
+        client = self._cache.get(name)
+        if client is None:
+            if not self._llm_settings.expand_api_key_value.strip():
+                raise ProviderCredentialUnavailableError(name)
+            client = build_fetch_page_provider_for_name(
+                self._llm_settings, name, include_payloads_in_logs=self._include_payloads_in_logs
+            )
+            self._cache[name] = client
+        return client
 
     def resolve_ai(self, provider: AiSearchProviderName | str) -> AiSearchProviderPort:
         provider_name = parse_ai_search_provider_name(provider)
@@ -340,6 +358,44 @@ def build_miner_paid_web_search_provider(
             include_payloads_in_logs=include_payloads_in_logs,
         )
     raise AssertionError(f"unsupported parsed miner-paid search provider: {provider_name}")
+
+
+def build_fetch_page_provider_for_name(
+    llm_settings: LlmSettings,
+    provider: FetchProviderName | str,
+    *,
+    include_payloads_in_logs: bool = True,
+) -> FetchPageProviderPort:
+    name = parse_fetch_provider_name(provider)
+    if name != "expand":
+        return build_web_search_provider_for_name(llm_settings, name, include_payloads_in_logs=include_payloads_in_logs)
+    return ExpandClient(
+        base_url=EXPAND.base_url, api_key=llm_settings.expand_api_key_value,
+        timeout=EXPAND.timeout_seconds, max_concurrent=llm_settings.expand_max_concurrent,
+        include_payloads_in_logs=include_payloads_in_logs,
+    )
+
+
+def build_miner_paid_fetch_page_provider(
+    *,
+    provider: FetchProviderName | str,
+    api_key: SecretStr | str,
+    llm_settings: LlmSettings,
+    timeout: float | None = None,
+    max_response_bytes: int | None = None,
+    include_payloads_in_logs: bool = True,
+) -> FetchPageProviderPort:
+    name = parse_fetch_provider_name(provider)
+    if name != "expand":
+        return build_miner_paid_web_search_provider(
+            provider=name, api_key=api_key, llm_settings=llm_settings, timeout=timeout,
+            max_response_bytes=max_response_bytes, include_payloads_in_logs=include_payloads_in_logs,
+        )
+    return ExpandClient(
+        base_url=EXPAND.base_url, api_key=_explicit_api_key_value(api_key, provider=name),
+        timeout=_effective_client_timeout(EXPAND.timeout_seconds, timeout), max_concurrent=None,
+        max_response_bytes=max_response_bytes, include_payloads_in_logs=include_payloads_in_logs,
+    )
 
 
 def build_miner_paid_ai_search_provider(
@@ -713,6 +769,8 @@ __all__ = [
     "ToolInvocationClients",
     "build_miner_paid_embedding_provider",
     "build_miner_paid_web_search_provider",
+    "build_miner_paid_fetch_page_provider",
+    "build_fetch_page_provider_for_name",
     "build_optional_tool_embedding_provider",
     "build_tool_invocation_clients",
     "build_web_search_provider",

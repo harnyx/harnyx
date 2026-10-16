@@ -456,6 +456,9 @@ class LocalEvaluationRuntime:
             resolved=settings,
             search_client=search_client,
             ai_search_client=ai_search_client,
+            fetch_page_provider_resolver=lambda requested_provider, _context: search_provider_registry.resolve_fetch(
+                requested_provider
+            ),
             web_search_provider_resolver=lambda requested_provider, _context: search_provider_registry.resolve_web(
                 requested_provider
             ),

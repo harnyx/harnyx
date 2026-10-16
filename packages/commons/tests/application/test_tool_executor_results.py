@@ -415,6 +415,16 @@ async def test_tool_executor_rejects_invalid_provider_cost_before_settling_usage
             id="fetch-page",
         ),
         pytest.param(
+            "fetch_page",
+            {"data": [
+                {"url": "https://example.com/page", "content": "Markdown evidence", "title": "Page"},
+                {"url": "https://example.com/page", "content": '{"json": []}', "title": "Page"},
+            ]},
+            ((0, "https://example.com/page", "Markdown evidence", "Page"),
+             (1, "https://example.com/page", '{"json": []}', "Page")),
+            id="fetch-same-url-two-representations",
+        ),
+        pytest.param(
             "search_ai",
             {"data": [{"url": "https://example.com/answer", "note": "AI note", "title": "Answer"}]},
             ((0, "https://example.com/answer", "AI note", "Answer"),),

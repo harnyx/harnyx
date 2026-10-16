@@ -188,3 +188,29 @@ async def test_decision_helper_returns_typed_answer_and_receipt() -> None:
     assert result.receipt_id == "receipt-decision_query"
     assert result.response.answers["b"].probability == 0.8
     assert result.result_policy == "log_only"
+
+
+async def test_expand_fetch_sdk_preserves_ordered_content_and_independent_citation_ids():
+    import json
+
+    captured = []
+    markdown, json_text = "Markdown evidence", '{"meta": {"snapshotId": "snapshot-1"}, "json": []}'
+
+    class ExpandInvoker(_ResponseInvoker):
+        async def invoke(self, name, *, args=(), kwargs=None):
+            captured.append((name, kwargs))
+            result = await super().invoke(name, args=args, kwargs=kwargs)
+            result["response"] = {"data": [{"url": "https://example.com", "content": content}
+                                             for content in [markdown, json_text]]}
+            result["results"] = [{"index": i, "result_id": f"format-{i}", "url": "https://example.com", "note": content}
+                                 for i, content in enumerate([markdown, json_text])]
+            result["result_policy"] = "referenceable"
+            return result
+
+    with bind_tool_invoker(ExpandInvoker()):
+        fetched = await fetch_page("https://example.com", provider="expand", timeout=20)
+    assert captured == [("fetch_page", {"provider": "expand", "url": "https://example.com", "timeout": 20.0})]
+    assert fetched.response.data[0].content == fetched.results[0].note == markdown
+    assert fetched.response.data[1].content == fetched.results[1].note == json_text
+    assert json.loads(fetched.response.data[1].content)["json"] == []
+    assert fetched.results[0].result_id != fetched.results[1].result_id

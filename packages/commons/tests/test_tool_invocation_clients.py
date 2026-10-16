@@ -290,3 +290,45 @@ def test_miner_paid_web_search_provider_rejects_unknown_provider() -> None:
             api_key="miner-key",
             llm_settings=LlmSettings.model_construct(),
         )
+
+
+@pytest.mark.anyio("asyncio")
+async def test_fetch_registry_reuses_web_clients_and_closes_expand_once(monkeypatch):
+    created = []
+
+    class Client:
+        def __init__(self, **kwargs):
+            self.kwargs, self.closed = kwargs, 0
+            created.append(self)
+
+        async def aclose(self):
+            self.closed += 1
+
+    monkeypatch.setattr(invocation_clients, "TavilyClient", Client)
+    monkeypatch.setattr(invocation_clients, "ExpandClient", Client)
+    registry = invocation_clients.CachedWebSearchProviderRegistry(llm_settings=LlmSettings(
+        TAVILY_API_KEY="tavily-key", EXPAND_API_KEY="platform-key", EXPAND_MAX_CONCURRENT=7,
+    ))
+    assert registry.resolve_fetch("tavily") is registry.resolve_web("tavily")
+    expand = registry.resolve_fetch("expand")
+    assert expand is registry.resolve_fetch("expand")
+    assert expand.kwargs["api_key"] == "platform-key" and expand.kwargs["max_concurrent"] == 7
+    for resolve in [registry.resolve_web, registry.resolve_ai]:
+        with pytest.raises(ValueError):
+            resolve("expand")
+    await registry.aclose()
+    assert len(created) == 2 and all(client.closed == 1 for client in created)
+
+
+def test_explicit_fetch_key_and_limits_are_isolated_from_operator_settings(monkeypatch):
+    captured = []
+    monkeypatch.setattr(invocation_clients, "ExpandClient", lambda **kwargs: captured.append(kwargs) or object())
+    invocation_clients.build_miner_paid_fetch_page_provider(
+        provider="expand", api_key="miner-key", llm_settings=LlmSettings(EXPAND_API_KEY="platform-key"),
+        timeout=12, max_response_bytes=1234, include_payloads_in_logs=False,
+    )
+    assert captured[0]["api_key"] == "miner-key"
+    assert captured[0]["max_concurrent"] is None
+    assert captured[0]["max_response_bytes"] == 1234
+    assert captured[0]["include_payloads_in_logs"] is False
+    assert captured[0]["timeout"] >= 12

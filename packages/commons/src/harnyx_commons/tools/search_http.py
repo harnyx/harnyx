@@ -6,7 +6,8 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from typing import Any
 
@@ -43,6 +44,13 @@ async def read_search_response(
     return bytes(body)
 
 
+@dataclass(frozen=True, slots=True)
+class HttpErrorDecision:
+    retryable: bool
+    error: ToolProviderError
+    retry_after_seconds: float | None = None
+
+
 class JsonSearchProviderClient:
     """Own retry, concurrency, timeout, authentication, and safe request logging."""
 
@@ -60,9 +68,11 @@ class JsonSearchProviderClient:
         max_concurrent: int | None,
         include_payloads_in_logs: bool,
         max_response_bytes: int | None = None,
+        error_classifier: Callable[[httpx.Response, bytes], HttpErrorDecision] | None = None,
     ) -> None:
         if not api_key.strip():
             raise ValueError(f"{provider.title()} API key must be provided")
+        self._error_classifier = error_classifier
         self._provider = provider
         self._max_response_bytes = max_response_bytes
         self._owns_client = client is None
@@ -128,18 +138,30 @@ class JsonSearchProviderClient:
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code
                 reasons.append(f"http_{status}")
-                if status not in _RETRYABLE_STATUSES or attempt + 1 >= self._retry_policy.attempts:
-                    raise ToolProviderError(
-                        "tool provider failed",
-                        failure_code=(
-                            ToolProviderFailureCode.AUTHENTICATION_FAILED
-                            if status in {401, 403}
-                            else ToolProviderFailureCode.PROVIDER_FAILED
+                decision = (
+                    self._error_classifier(exc.response, body)
+                    if self._error_classifier is not None
+                    else HttpErrorDecision(
+                        retryable=status in _RETRYABLE_STATUSES,
+                        error=ToolProviderError(
+                            "tool provider failed",
+                            failure_code=(
+                                ToolProviderFailureCode.AUTHENTICATION_FAILED
+                                if status in {401, 403}
+                                else ToolProviderFailureCode.PROVIDER_FAILED
+                            ),
+                            provider=self._provider,
+                            http_status=status,
                         ),
-                        provider=self._provider,
-                        http_status=status,
-                    ) from exc
-                await asyncio.sleep(_retry_delay_seconds(exc.response, attempt, self._retry_policy))
+                    )
+                )
+                if not decision.retryable or attempt + 1 >= self._retry_policy.attempts:
+                    raise decision.error from exc
+                await asyncio.sleep(
+                    _retry_delay_seconds(
+                        exc.response, attempt, self._retry_policy, retry_after_seconds=decision.retry_after_seconds
+                    )
+                )
             except httpx.HTTPError as exc:
                 reasons.append(exc.__class__.__name__)
                 if attempt + 1 >= self._retry_policy.attempts:
@@ -148,7 +170,11 @@ class JsonSearchProviderClient:
         raise ToolProviderError("tool provider failed", provider=self._provider)
 
 
-def _retry_delay_seconds(response: httpx.Response, attempt: int, policy: RetryPolicy) -> float:
+def _retry_delay_seconds(
+    response: httpx.Response, attempt: int, policy: RetryPolicy, *, retry_after_seconds: float | None = None
+) -> float:
+    if retry_after_seconds is not None:
+        return max(retry_after_seconds, backoff_ms(attempt, policy) / 1000)
     retry_after = response.headers.get("Retry-After")
     if retry_after:
         try:
@@ -161,4 +187,4 @@ def _retry_delay_seconds(response: httpx.Response, attempt: int, policy: RetryPo
     return backoff_ms(attempt, policy) / 1000
 
 
-__all__ = ["JsonSearchProviderClient", "read_search_response"]
+__all__ = ["HttpErrorDecision", "JsonSearchProviderClient", "read_search_response"]

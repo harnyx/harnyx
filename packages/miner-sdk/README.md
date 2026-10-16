@@ -312,17 +312,30 @@ Use the citation only when that result actually supports a material claim in you
 
 These helpers call validator-hosted tools when running inside the sandbox:
 - `search_web(query, provider="parallel" | "desearch" | "firecrawl" | "exa" | "tavily", timeout=..., provider_extra=..., **kwargs)`
-- `fetch_page(url, provider="parallel" | "desearch" | "firecrawl" | "exa" | "tavily", timeout=..., provider_extra=...)`
+- `fetch_page(url, provider="parallel" | "desearch" | "firecrawl" | "exa" | "tavily" | "expand", timeout=..., provider_extra=...)`
 
 `provider_extra` is strictly validated for the selected provider and operation. It exposes retrieval and extraction controls only; provider answers, deep research, autonomous reasoning, and generated-output controls are rejected.
 
-| Provider | `search_web.provider_extra` | `fetch_page.provider_extra` |
-|---|---|---|
-| `desearch` | `start` | `format`, `js`, `wait` |
-| `parallel` | `mode` (`turbo`, `basic`, or `advanced`), `max_chars_total`, `source_policy`, `fetch_policy`, `excerpt_settings`, `location` | `objective`, `max_chars_total`, `fetch_policy`, `excerpt_settings`, `full_content` |
-| `firecrawl` | `categories`, domain filters, `tbs`, `location`, `country`, invalid-URL and privacy controls | `formats` (`markdown` and/or `rawHtml`), main-content/tag/cache/wait/mobile/PDF/location/image/ad/proxy/cache-retention controls |
-| `exa` | `type` (`auto`, `instant`, or `fast`), category, domain/date/location/moderation filters | `text` (`true` or text options), `max_age_hours`, `livecrawl_timeout` |
-| `tavily` | `search_depth` (`basic`, `fast`, `advanced`, or `ultra-fast`), chunks, topic/time/date/domain/country/exact/safe controls | `query`, `chunks_per_source`, `extract_depth`, `format` |
+### Search providers
+
+| Provider | `search_web.provider_extra` |
+|---|---|
+| `desearch` | `start` |
+| `parallel` | `mode` (`turbo`, `basic`, or `advanced`), `max_chars_total`, `source_policy`, `fetch_policy`, `excerpt_settings`, `location` |
+| `firecrawl` | `categories`, domain filters, `tbs`, `location`, `country`, invalid-URL and privacy controls |
+| `exa` | `type` (`auto`, `instant`, or `fast`), category, domain/date/location/moderation filters |
+| `tavily` | `search_depth` (`basic`, `fast`, `advanced`, or `ultra-fast`), chunks, topic/time/date/domain/country/exact/safe controls |
+
+### Fetch providers
+
+| Provider | `fetch_page.provider_extra` |
+|---|---|
+| `desearch` | `format`, `js`, `wait` |
+| `parallel` | `objective`, `max_chars_total`, `fetch_policy`, `excerpt_settings`, `full_content` |
+| `firecrawl` | `formats` (`markdown` and/or `rawHtml`), main-content/tag/cache/wait/mobile/PDF/location/image/ad/proxy/cache-retention controls |
+| `exa` | `text` (`true` or text options), `max_age_hours`, `livecrawl_timeout` |
+| `tavily` | `query`, `chunks_per_source`, `extract_depth`, `format` |
+| `expand` | Omitted or `{}` only; full-page scrolling, Markdown and State JSON are fixed |
 
 Common `search_queries`, `num`, and `timeout` remain top-level fields and are rejected if duplicated in `provider_extra`. Unknown fields and documented incompatible combinations fail before the tool proxy is called.
 
@@ -338,6 +351,74 @@ markdown, raw_html = page.response.data
 ```
 
 Use `provider_extra={"formats": ["rawHtml"]}` when only raw HTML is needed. If Firecrawl omits or returns blank content for any requested format, the fetch fails instead of substituting another representation.
+
+### Expand fetch results and citations
+
+For **`provider="expand"` only**, every successful fetch returns exactly two
+items in a fixed order. Each item has its own referenceable result:
+
+| Index | `response.data[index].content` | `results[index].note` | Citation target |
+|---|---|---|---|
+| 0 | Original Markdown | The same Markdown | `results[0].result_id` |
+| 1 | Standalone serialized JSON | The same JSON text | `results[1].result_id` |
+
+Both items use the same resolved page URL and title, but have **distinct result
+IDs**. `content` and `note` are strings. Parse the second content with
+`json.loads`; it has no Markdown fences or prefix. Index 1 is not generally JSON
+for other fetch providers. Reordering or replacing an Expand item changes this
+contract.
+
+```python
+import json
+
+from harnyx_miner_sdk.api import fetch_page
+from harnyx_miner_sdk.query import CitationRef, CitationSlice
+
+fetched = await fetch_page("https://taostats.io/subnets/25", provider="expand")
+markdown = fetched.response.data[0].content
+structured = json.loads(fetched.response.data[1].content)
+
+# Cite JSON alone, without calculating offsets into the Markdown.
+json_citation = CitationRef(
+    receipt_id=fetched.receipt_id,
+    result_id=fetched.results[1].result_id,
+)
+
+# Optionally select a narrower excerpt within the JSON result's own note.
+# start/end must meet the existing citation slice limits described above.
+def cite_json_slice(start: int, end: int) -> CitationRef:
+    return CitationRef(
+        receipt_id=fetched.receipt_id,
+        result_id=fetched.results[1].result_id,
+        slices=[CitationSlice(start=start, end=end)],
+    )
+```
+
+Use result 0 for Markdown evidence, result 1 for JSON evidence, or cite both.
+Without slices, a ref selects that result's entire note. Slice offsets address
+only the selected result's original, unstripped `note`, never combined content.
+Existing minimum slice length and total evidence limits still apply; a large
+JSON result may require a narrower slice. Evidence is never silently truncated.
+
+The JSON document contains the returned `meta` object and `json` evidence array,
+plus `data: {"degraded": ...}` when returned. Evidence bodies preserve their JSON
+types and source, omission and pointer metadata. State JSON does not guarantee
+complete coverage of a page; referenced or omitted bodies are not downloaded
+automatically. An empty `json: []` is valid and still occupies index 1. Missing
+required JSON, blank Markdown, malformed responses and source errors fail the
+fetch rather than dropping or shifting an item.
+
+Converted documents use the same two-item contract. Their `json` array is empty,
+and `meta` may omit browser-only fields such as `lang`, `pageType`, and `playground`.
+
+Expand supports fetching only, not `search_web`. It uses
+`POST /v1/fetch/json?include=appendix,statejson` with full-page scrolling;
+`provider_extra` accepts only omission or an empty object. Under existing static
+host settlement, two referenceable results cost **$0.001 per successful fetch**
+($0.0005/result). This is distinct from Expand's external bill: actual vendor
+USD cost remains unknown when the provider does not return it.
+
+### Other tool helpers
 
 - `llm_chat(provider="chutes" | "openrouter" | "ai_gateway" | "saygm", messages=[...], model="<provider-specific model id>", timeout=..., temperature=0.0, thinking={"enabled": True}, provider_extra=...)`
 - `embed_text(texts, input_type="query" | "document", provider="chutes" | "openrouter", model="<provider-specific embedding model id>", instruction=..., dimensions=..., provider_extra=..., timeout=...)`

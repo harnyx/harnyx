@@ -337,3 +337,103 @@ async def test_runtime_invoker_cancels_timed_search_web_provider_when_parent_can
         await invocation
 
     await asyncio.wait_for(provider.cancelled.wait(), timeout=1.0)
+
+
+@pytest.mark.parametrize("source", [None, ProviderCredentialSource.MINER, ProviderCredentialSource.PLATFORM])
+async def test_expand_fetch_routes_credentials_and_settles_both_representations(source):
+    from harnyx_commons.tools.search_models import FetchPageResponse, FetchPageResult
+
+    routes = []
+    usage = {"documentPages": 12, "ocrPages": 3, "audioSeconds": 12.5, "videos": 1}
+
+    class FetchProvider:
+        async def fetch_page(self, request):
+            assert request.provider == "expand"
+            return SearchProviderResult(
+                FetchPageResponse(
+                    data=[
+                        FetchPageResult(url="https://example.com", content="Markdown"),
+                        FetchPageResult(url="https://example.com", content='{"json": []}'),
+                    ]
+                ),
+                ProviderBillingMetadata(actual_cost_provider="expand", source="response_body", provider_usage=usage),
+            )
+
+        async def aclose(self):
+            pass
+
+    def miner(provider, context):
+        routes.append("miner")
+        return FetchProvider()
+
+    def platform(provider, context):
+        routes.append("platform")
+        return FetchProvider()
+
+    invoker = RuntimeToolInvoker(
+        InMemoryReceiptLog(),
+        fetch_page_client=FetchProvider(),
+        fetch_page_provider_name="expand",
+        fetch_page_provider_resolver=miner if source is not None else None,
+        platform_fetch_page_provider_resolver=platform,
+    )
+    result = await invoker.invoke(
+        "fetch_page",
+        args=(),
+        kwargs={"provider": "expand", "url": "https://example.com"},
+        context=_context(source) if source is not None else None,
+    )
+    assert routes == (
+        [] if source is None else ["platform" if source == ProviderCredentialSource.PLATFORM else "miner"]
+    )
+    assert result.actual_cost_usd == pytest.approx(0.001)
+    assert result.actual_cost_provider == "expand"
+    assert result.actual_cost_evidence["referenceable_results"] == 2
+    assert result.actual_cost_evidence["provider_billing"]["provider_usage"] == usage
+
+
+async def test_missing_miner_expand_key_never_uses_platform_key_and_search_is_rejected_before_resolution():
+    from pydantic import ValidationError
+
+    calls = []
+
+    def miner(provider, context):
+        calls.append("miner")
+        raise ProviderCredentialUnavailableError(provider)
+
+    def platform(provider, context):
+        calls.append("platform")
+        raise AssertionError("must not substitute the platform credential")
+
+    invoker = RuntimeToolInvoker(
+        InMemoryReceiptLog(),
+        fetch_page_provider_resolver=miner,
+        platform_fetch_page_provider_resolver=platform,
+        web_search_provider_resolver=platform,
+    )
+    with pytest.raises(ProviderCredentialUnavailableError):
+        await invoker.invoke(
+            "fetch_page",
+            args=(),
+            kwargs={"provider": "expand", "url": "https://example.com"},
+            context=_context(ProviderCredentialSource.MINER),
+        )
+    assert calls == ["miner"]
+    calls.clear()
+    with pytest.raises(ValidationError):
+        await invoker.invoke(
+            "search_web",
+            args=(),
+            kwargs={"provider": "expand", "search_queries": ["query"]},
+            context=_context(ProviderCredentialSource.MINER),
+        )
+    assert calls == []
+
+
+async def test_expand_search_is_invalid_even_without_configured_clients():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        await RuntimeToolInvoker(InMemoryReceiptLog()).invoke(
+            "search_web", args=(), kwargs={"provider": "expand", "search_queries": ["query"]},
+        )

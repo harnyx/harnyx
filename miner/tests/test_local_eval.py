@@ -2479,3 +2479,48 @@ def test_resolve_batch_context_focused_fetch_uses_only_selected_task_results() -
         (f"/v1/monitoring/miner-task-batches/{batch_id}", None),
         (selected_task_path, None),
     ]
+
+
+async def test_local_runtime_fetches_expand_and_records_two_independent_results(monkeypatch, tmp_path):
+    from harnyx_commons.tools.dto import ToolInvocationRequest
+    from harnyx_commons.tools.provider_billing import ProviderBillingMetadata, SearchProviderResult
+    from harnyx_commons.tools.search_models import FetchPageResponse, FetchPageResult
+
+    settings = local_eval.Settings.load()
+    state = local_eval._build_state(settings, progress_storage_root=tmp_path / "progress")
+    selected = []
+
+    class FetchProvider(_FakeAsyncResource):
+        async def fetch_page(self, request):
+            return SearchProviderResult(
+                FetchPageResponse(data=[FetchPageResult(url=request.url, content=text)
+                                        for text in ["Markdown", '{"json": []}']]),
+                ProviderBillingMetadata(actual_cost_provider="expand", source="response_body"),
+            )
+
+    def resolve(provider):
+        selected.append(provider)
+        return FetchProvider()
+
+    monkeypatch.setattr(local_eval, "create_sandbox_manager", lambda **kwargs: _FakeSandboxManager())
+    runtime = local_eval.LocalEvaluationRuntime._from_components(
+        settings=settings, state=state, search_client=None, ai_search_client=None,
+        search_provider_registry=SimpleNamespace(resolve_fetch=resolve), llm_provider_registry=None,
+        tool_embedding_provider=None, embedding_provider_registry=None, scoring_llm_provider=None,
+        scoring_service=object(), scoring_config=EvaluationScoringConfig(
+            provider="chutes", model="openai/gpt-oss-120b-TEE", timeout_seconds=30),
+        execution_time_limit_seconds=300, progress_reporter=None,
+    )
+    session_id, token = uuid4(), uuid4().hex
+    now = datetime.now(UTC)
+    state.session_registry.create(Session(session_id=session_id, uid=1, task_id=uuid4(), issued_at=now,
+                                          expires_at=now + timedelta(hours=1), budget_usd=1))
+    state.token_registry.register(session_id, token)
+    result = await runtime.tool_executor.execute(ToolInvocationRequest(
+        session_id=session_id, token=token, tool="fetch_page",
+        kwargs={"provider": "expand", "url": "https://example.com"},
+    ))
+    assert selected == ["expand"]
+    assert [item.note for item in result.receipt.details.results] == ["Markdown", '{"json": []}']
+    assert result.receipt.details.results[0].result_id != result.receipt.details.results[1].result_id
+    assert result.receipt.details.actual_cost_provider == "expand"

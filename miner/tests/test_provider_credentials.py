@@ -90,11 +90,14 @@ def test_get_config_signs_empty_body_request(monkeypatch: pytest.MonkeyPatch) ->
     assert hotkey.signed[0].startswith(b"GET\n/v1/miner-config\n")
 
 
-def test_put_provider_credential_sends_supported_provider_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("provider", ["chutes", "expand"])
+def test_put_provider_credential_sends_supported_provider_payload(
+    monkeypatch: pytest.MonkeyPatch, provider: str
+) -> None:
     hotkey, requests = _install_fakes(monkeypatch)
 
     config_module.put_provider_credential(
-        provider=" Chutes ",
+        provider=f" {provider.upper()} ",
         api_key="secret-provider-key",
         wallet_name="wallet",
         hotkey_name="hotkey",
@@ -104,7 +107,7 @@ def test_put_provider_credential_sends_supported_provider_payload(monkeypatch: p
     assert requests[0]["path"] == "/v1/miner-config"
     assert requests[0]["headers"]["Content-Type"] == "application/json"
     assert json.loads(requests[0]["content"]) == {
-        "key": "provider_credentials.chutes",
+        "key": f"provider_credentials.{provider}",
         "value": "secret-provider-key",
     }
     assert hotkey.signed[0].startswith(b"PUT\n/v1/miner-config\n")

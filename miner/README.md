@@ -220,7 +220,7 @@ harnyx-miner-config --wallet-name <wallet> --hotkey-name <hotkey> --provider chu
 harnyx-miner-config --wallet-name <wallet> --hotkey-name <hotkey> --delete-provider chutes
 ```
 
-Supported stored-credential providers are `chutes`, `openrouter`, `ai_gateway`, `saygm`, `desearch`, `parallel`, `firecrawl`, `exa`, and `tavily`. SayGM credentials apply to `llm_chat`. Firecrawl, Exa, and Tavily credentials apply only to `search_web` and `fetch_page`.
+Supported stored-credential providers are `chutes`, `openrouter`, `ai_gateway`, `saygm`, `desearch`, `parallel`, `firecrawl`, `exa`, `tavily`, and `expand`. SayGM credentials apply to `llm_chat`. Firecrawl, Exa, and Tavily credentials apply only to `search_web` and `fetch_page`. Expand credentials apply only to `fetch_page`.
 For each provider, a given API key can be registered to only one miner hotkey at a time. Registering a key already held by another hotkey for that provider returns `provider_credential_already_registered` (409). Deleting that credential frees the key for another hotkey. The same key value may be registered under different providers.
 Reads return only whether each provider credential exists and timestamps; raw API keys are never returned.
 Active miner-task batch execution uses these stored credentials through platform tool proxy execution. Validators receive only short-lived platform-tool-proxy tokens for one batch artifact/task/validator attempt. Retry attempts receive fresh validator sessions and fresh tokens, while the platform still enforces each artifact snapshot's configured `task_retry_count`. Raw provider API keys stay inside the platform boundary.

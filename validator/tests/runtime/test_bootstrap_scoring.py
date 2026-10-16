@@ -907,3 +907,11 @@ async def test_close_runtime_resources_closes_platform_tool_proxy_client_once() 
 
     assert blocking_executor.calls == [(False, True)]
     assert closable.close_calls == 1
+
+
+def test_provider_evidence_accepts_expand_only_for_fetch():
+    for tool, valid in [("fetch_page", True), ("search_web", False), ("search_ai", False)]:
+        request = ToolInvocationRequest(session_id=uuid4(), token=TEST_SESSION_TOKEN, tool=tool,
+                                        kwargs={"provider": "expand", "url": "https://example.com"})
+        key = bootstrap._provider_key_from_request(request=request, search_provider_name="desearch")
+        assert key == (("expand", "fetch_page") if valid else None)

@@ -15,6 +15,7 @@ from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.routing import LlmModelProviderOverrides, parse_llm_model_provider_overrides
 from harnyx_commons.tools.embedding_models import EmbeddingProviderName
 from harnyx_miner_sdk.llm import Timeout
+from harnyx_miner_sdk.tools.search_models import FetchProviderName
 
 DEFAULT_MAX_OUTPUT_TOKENS = 1024
 DEFAULT_SCORING_MAX_OUTPUT_TOKENS = 32768
@@ -129,6 +130,7 @@ _OPENAI_COMPATIBLE_ENDPOINTS_ADAPTER = TypeAdapter(list[OpenAiCompatibleEndpoint
 SearchProviderName = Literal["desearch", "parallel", "firecrawl", "exa", "tavily"]
 SEARCH_PROVIDER_NAMES: tuple[SearchProviderName, ...] = ("desearch", "parallel", "firecrawl", "exa", "tavily")
 AiSearchProviderName = Literal["desearch", "parallel"]
+FETCH_PROVIDER_NAMES: tuple[FetchProviderName, ...] = (*SEARCH_PROVIDER_NAMES, "expand")
 AI_SEARCH_PROVIDER_NAMES: tuple[AiSearchProviderName, ...] = ("desearch", "parallel")
 
 
@@ -139,6 +141,15 @@ def parse_search_provider_name(raw: str | None) -> SearchProviderName:
     if value not in SEARCH_PROVIDER_NAMES:
         raise ValueError(f"search provider {value!r} is not supported")
     return cast(SearchProviderName, value)
+
+
+def parse_fetch_provider_name(raw: str | None) -> FetchProviderName:
+    if raw is None:
+        raise ValueError("fetch provider must be specified")
+    value = raw.strip().lower()
+    if value not in FETCH_PROVIDER_NAMES:
+        raise ValueError(f"fetch provider {value!r} is not supported")
+    return cast(FetchProviderName, value)
 
 
 def parse_ai_search_provider_name(raw: str | None) -> AiSearchProviderName:
@@ -293,6 +304,7 @@ class LlmSettings(BaseSettings):
     firecrawl_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="FIRECRAWL_API_KEY")
     exa_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="EXA_API_KEY")
     tavily_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="TAVILY_API_KEY")
+    expand_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="EXPAND_API_KEY")
     parallel_base_url: str = Field(default="https://api.parallel.ai", alias="PARALLEL_BASE_URL")
 
     chutes_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="CHUTES_API_KEY")
@@ -306,6 +318,7 @@ class LlmSettings(BaseSettings):
     firecrawl_max_concurrent: int = Field(default=100, alias="FIRECRAWL_MAX_CONCURRENT")
     exa_max_concurrent: int = Field(default=100, alias="EXA_MAX_CONCURRENT")
     tavily_max_concurrent: int = Field(default=100, alias="TAVILY_MAX_CONCURRENT")
+    expand_max_concurrent: int = Field(default=100, alias="EXPAND_MAX_CONCURRENT")
 
     # --- Validators ---
     @field_validator("desearch_api_key", mode="before")
@@ -335,6 +348,10 @@ class LlmSettings(BaseSettings):
     @property
     def tavily_api_key_value(self) -> str:
         return self.tavily_api_key.get_secret_value()
+
+    @property
+    def expand_api_key_value(self) -> str:
+        return self.expand_api_key.get_secret_value()
 
     @property
     def chutes_api_key_value(self) -> str:
@@ -428,6 +445,9 @@ __all__ = [
     "OpenAiCompatibleNoAuthConfig",
     "SEARCH_PROVIDER_NAMES",
     "SearchProviderName",
+    "FetchProviderName",
+    "FETCH_PROVIDER_NAMES",
+    "parse_fetch_provider_name",
     "parse_openai_compatible_endpoints_json",
     "parse_search_provider_name",
 ]

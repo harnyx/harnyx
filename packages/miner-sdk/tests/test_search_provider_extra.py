@@ -215,3 +215,19 @@ def test_firecrawl_fetch_rejects_empty_or_unsupported_formats(formats: list[str]
                 "provider_extra": {"formats": formats},
             }
         )
+
+
+@pytest.mark.parametrize("extra", [None, {}])
+def test_expand_is_fetch_only_and_accepts_only_fixed_options(extra):
+    fetch = FetchPageRequest.model_validate(
+        {"provider": "expand", "url": "https://example.com", "provider_extra": extra}
+    )
+    assert fetch.provider == "expand"
+    with pytest.raises(ValidationError):
+        SearchWebSearchRequest.model_validate(
+            {"provider": "expand", "search_queries": ["query"], "provider_extra": extra}
+        )
+    with pytest.raises(ValidationError):
+        FetchPageRequest.model_validate(
+            {"provider": "expand", "url": "https://example.com", "provider_extra": {"formats": ["markdown"]}}
+        )

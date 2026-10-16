@@ -36,6 +36,12 @@ class TavilyDefaults:
 
 
 @dataclass(frozen=True, slots=True)
+class ExpandDefaults:
+    base_url: str = "https://api.expand.ai"
+    timeout_seconds: float = 60.0
+
+
+@dataclass(frozen=True, slots=True)
 class ChutesDefaults:
     base_url: str = "https://llm.chutes.ai"
     timeout_seconds: float = 300.0
@@ -52,6 +58,7 @@ PARALLEL = ParallelDefaults()
 FIRECRAWL = FirecrawlDefaults()
 EXA = ExaDefaults()
 TAVILY = TavilyDefaults()
+EXPAND = ExpandDefaults()
 CHUTES = ChutesDefaults()
 PLATFORM = PlatformDefaults()
 
@@ -60,6 +67,8 @@ __all__ = [
     "DESEARCH",
     "FIRECRAWL",
     "EXA",
+    "EXPAND",
+    "ExpandDefaults",
     "PARALLEL",
     "TAVILY",
     "PLATFORM",

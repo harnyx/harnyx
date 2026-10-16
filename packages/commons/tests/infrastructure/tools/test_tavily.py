@@ -117,3 +117,41 @@ async def test_tavily_fetch_maps_extract_controls() -> None:
     ]
     assert result.response.data[0].content == "page"
     await http_client.aclose()
+
+
+@pytest.mark.parametrize("status", [429, 502, 504, 529, 403])
+async def test_shared_transport_keeps_existing_retry_and_auth_behavior_without_classifier(monkeypatch, status):
+    from harnyx_commons.errors import ToolProviderError, ToolProviderFailureCode
+    from harnyx_commons.llm.retry_utils import RetryPolicy
+
+    attempts, delays = [], []
+
+    async def sleep(delay):
+        delays.append(delay)
+
+    monkeypatch.setattr("harnyx_commons.tools.search_http.asyncio.sleep", sleep)
+
+    def handle(request):
+        attempts.append(request)
+        if len(attempts) == 1:
+            return httpx.Response(status, headers={"Retry-After": "2"}, json={"error": "provider failure"})
+        return httpx.Response(200, json={"results": [{"url": "https://example.com", "raw_content": "Evidence"}]})
+
+    async with httpx.AsyncClient(base_url="https://api.tavily.com", transport=httpx.MockTransport(handle)) as http:
+        client = TavilyClient(
+            base_url="https://api.tavily.com", api_key="key", client=http,
+            retry_policy=RetryPolicy(attempts=2, initial_ms=0, max_ms=0, jitter=0),
+        )
+        request = FetchPageRequest(provider="tavily", url="https://example.com")
+        if status in {429, 502, 504}:
+            assert (await client.fetch_page(request)).response.data[0].content == "Evidence"
+            assert len(attempts) == 2
+            assert delays == [2.0]
+        else:
+            with pytest.raises(ToolProviderError) as error:
+                await client.fetch_page(request)
+            expected = (ToolProviderFailureCode.AUTHENTICATION_FAILED if status == 403
+                        else ToolProviderFailureCode.PROVIDER_FAILED)
+            assert error.value.failure_code == expected
+            assert len(attempts) == 1
+            assert delays == []

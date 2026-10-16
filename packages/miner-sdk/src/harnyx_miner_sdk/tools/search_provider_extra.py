@@ -25,6 +25,10 @@ class DeSearchFetchExtra(_SearchExtra):
     wait: int | None = Field(default=None, ge=0)
 
 
+class ExpandFetchExtra(_SearchExtra):
+    """Expand uses the fixed full-page Markdown and State JSON request."""
+
+
 class ParallelSourcePolicy(_SearchExtra):
     include_domains: tuple[str, ...] | None = None
     exclude_domains: tuple[str, ...] | None = None
@@ -198,7 +202,7 @@ SearchWebProviderExtra: TypeAlias = (
     DeSearchSearchExtra | ParallelSearchExtra | FirecrawlSearchExtra | ExaSearchExtra | TavilySearchExtra
 )
 FetchPageProviderExtra: TypeAlias = (
-    DeSearchFetchExtra | ParallelFetchExtra | FirecrawlFetchExtra | ExaFetchExtra | TavilyFetchExtra
+    DeSearchFetchExtra | ParallelFetchExtra | FirecrawlFetchExtra | ExaFetchExtra | TavilyFetchExtra | ExpandFetchExtra
 )
 
 _SEARCH_MODELS = {
@@ -209,6 +213,7 @@ _SEARCH_MODELS = {
     "tavily": TypeAdapter(TavilySearchExtra),
 }
 _FETCH_MODELS = {
+    "expand": TypeAdapter(ExpandFetchExtra),
     "desearch": TypeAdapter(DeSearchFetchExtra),
     "parallel": TypeAdapter(ParallelFetchExtra),
     "firecrawl": TypeAdapter(FirecrawlFetchExtra),
@@ -231,7 +236,7 @@ def validate_search_provider_extra(
 
 
 __all__ = [
-    "DeSearchFetchExtra", "DeSearchSearchExtra", "ExaFetchExtra", "ExaSearchExtra",
+    "ExpandFetchExtra", "DeSearchFetchExtra", "DeSearchSearchExtra", "ExaFetchExtra", "ExaSearchExtra",
     "FetchPageProviderExtra", "FirecrawlFetchExtra", "FirecrawlSearchExtra",
     "ParallelFetchExtra", "ParallelSearchExtra", "SearchWebProviderExtra",
     "TavilyFetchExtra", "TavilySearchExtra", "validate_search_provider_extra",

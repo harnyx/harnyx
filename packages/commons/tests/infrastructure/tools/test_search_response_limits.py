@@ -10,6 +10,7 @@ import pytest
 from harnyx_commons.errors import ToolProviderError
 from harnyx_commons.tools.desearch import DeSearchClient
 from harnyx_commons.tools.exa import ExaClient
+from harnyx_commons.tools.expand import ExpandClient
 from harnyx_commons.tools.firecrawl import FirecrawlClient
 from harnyx_commons.tools.parallel import ParallelClient
 from harnyx_commons.tools.search_http import read_search_response
@@ -41,6 +42,7 @@ class ResponseStream(httpx.AsyncByteStream):
         ("firecrawl", FirecrawlClient),
         ("exa", ExaClient),
         ("tavily", TavilyClient),
+        ("expand", ExpandClient),
     ],
 )
 @pytest.mark.parametrize("status", [200, 500])

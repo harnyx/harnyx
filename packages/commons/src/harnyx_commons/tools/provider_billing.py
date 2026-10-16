@@ -30,6 +30,7 @@ class ProviderBillingMetadata:
     service: str | None = None
     currency: str | None = None
     usage: DecisionUsage | None = None
+    provider_usage: JsonObject | None = None
 
 
 @dataclass(frozen=True, slots=True)

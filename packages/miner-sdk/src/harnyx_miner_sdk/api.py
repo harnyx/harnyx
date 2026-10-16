@@ -50,6 +50,7 @@ from harnyx_miner_sdk.tools.llm_provider_extra import (
 from harnyx_miner_sdk.tools.search_models import (
     FetchPageRequest,
     FetchPageResponse,
+    FetchProviderName,
     SearchProviderName,
     SearchWebSearchRequest,
     SearchWebSearchResponse,
@@ -204,7 +205,7 @@ async def fetch_page(
     url: str,
     /,
     *,
-    provider: SearchProviderName,
+    provider: FetchProviderName,
     provider_extra: Mapping[str, Any] | FetchPageProviderExtra | None = None,
     timeout: float | None = None,
     **kwargs: Any,

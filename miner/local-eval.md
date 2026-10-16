@@ -12,11 +12,11 @@ This is the detailed local-eval guide linked from [`README.md`](README.md).
 - `CHUTES_API_KEY` must be configured when evaluation scoring or the agent's `llm_chat` calls use Chutes.
 - Search-tool configuration is only required if your agent uses search tools:
   - `SEARCH_PROVIDER`
-  - the selected provider key: `DESEARCH_API_KEY`, `PARALLEL_API_KEY`, or `FIRECRAWL_API_KEY`
+  - the selected provider key: `DESEARCH_API_KEY`, `PARALLEL_API_KEY`, `FIRECRAWL_API_KEY`, `EXA_API_KEY`, `TAVILY_API_KEY`, or `EXPAND_API_KEY` (Expand supports `fetch_page` only)
 
 Tool-free agents can create the local-eval runtime without search configuration.
 
-The checked-in default is `SEARCH_PROVIDER=desearch`. `search_web` and `fetch_page` calls also support `parallel`, `firecrawl`, `exa`, and `tavily`; set the matching API key. Provider-specific `provider_extra` values are strictly limited to retrieval and extraction controls.
+The checked-in default is `SEARCH_PROVIDER=desearch`. `search_web` and `fetch_page` calls also support `parallel`, `firecrawl`, `exa`, and `tavily`; set the matching API key. `fetch_page` also supports `expand` with `EXPAND_API_KEY`; Expand is not a `search_web` provider or a valid `SEARCH_PROVIDER` default. Provider-specific `provider_extra` values are strictly limited to retrieval and extraction controls.
 
 ## Tool-LLM Providers
 

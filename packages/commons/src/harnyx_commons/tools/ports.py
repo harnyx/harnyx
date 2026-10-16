@@ -23,13 +23,8 @@ from harnyx_commons.tools.search_models import (
 )
 
 
-class WebSearchProviderPort(Protocol):
-    """Provider seam for miner-facing web search and page fetching."""
-
-    async def search_web(
-        self,
-        request: SearchWebSearchRequest,
-    ) -> SearchProviderResult[SearchWebSearchResponse]: ...
+class FetchPageProviderPort(Protocol):
+    """Provider seam for fetching a known page."""
 
     async def fetch_page(
         self,
@@ -37,6 +32,14 @@ class WebSearchProviderPort(Protocol):
     ) -> SearchProviderResult[FetchPageResponse]: ...
 
     async def aclose(self) -> None: ...
+
+
+class WebSearchProviderPort(FetchPageProviderPort, Protocol):
+    """Provider seam for web search providers that also fetch pages."""
+
+    async def search_web(
+        self, request: SearchWebSearchRequest
+    ) -> SearchProviderResult[SearchWebSearchResponse]: ...
 
 
 class AiSearchProviderPort(Protocol):
@@ -98,6 +101,7 @@ __all__ = [
     "EmbeddingProviderResult",
     "PageExtractionProviderPort",
     "WebSearchProviderPort",
+    "FetchPageProviderPort",
 ]
 
 

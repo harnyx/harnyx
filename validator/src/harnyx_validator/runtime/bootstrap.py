@@ -58,12 +58,13 @@ from harnyx_commons.tools.runtime_invoker import (
     AiSearchProviderResolver,
     DecisionProviderResolver,
     EmbeddingProviderResolver,
+    FetchPageProviderResolver,
     LlmProviderResolver,
     RuntimeToolInvoker,
     WebSearchProviderResolver,
     build_miner_sandbox_tool_invoker,
 )
-from harnyx_commons.tools.search_models import SearchProviderName
+from harnyx_commons.tools.search_models import AiSearchProviderName, FetchProviderName, SearchProviderName
 from harnyx_commons.tools.token_semaphore import DEFAULT_TOOL_CONCURRENCY_LIMITS, ToolConcurrencyLimiter
 from harnyx_commons.tools.usage_tracker import UsageTracker
 from harnyx_miner_sdk.endpoint_protocol import EndpointDelegation
@@ -803,6 +804,7 @@ def _build_local_provider_tooling(
     ai_search_client: AiSearchProviderPort | None,
     tool_embedding_provider: EmbeddingProviderPort | None = None,
     web_search_provider_resolver: WebSearchProviderResolver | None = None,
+    fetch_page_provider_resolver: FetchPageProviderResolver | None = None,
     ai_search_provider_resolver: AiSearchProviderResolver | None = None,
     llm_provider_resolver: LlmProviderResolver | None = None,
     embedding_provider_resolver: EmbeddingProviderResolver | None = None,
@@ -814,6 +816,7 @@ def _build_local_provider_tooling(
         ai_search_client=ai_search_client,
         web_search_provider_name=resolved.llm.search_provider,
         web_search_provider_resolver=web_search_provider_resolver,
+        fetch_page_provider_resolver=fetch_page_provider_resolver,
         ai_search_provider_resolver=ai_search_provider_resolver,
         llm_provider_resolver=llm_provider_resolver,
         embedding_provider=tool_embedding_provider,
@@ -1004,7 +1007,7 @@ def _provider_key_from_request(
     payload = _payload_for_evidence(request)
     has_explicit_provider = "provider" in payload
     if request.tool in _SEARCH_PROVIDER_TOOLS:
-        selected_provider = _explicit_search_provider(payload)
+        selected_provider = _explicit_search_provider(payload, tool=request.tool)
         if selected_provider is not None:
             return selected_provider, request.tool
         if has_explicit_provider:
@@ -1028,13 +1031,20 @@ def _payload_for_evidence(request: ToolInvocationRequest) -> Mapping[str, object
         return {}
 
 
-def _explicit_search_provider(payload: Mapping[str, object]) -> SearchProviderName | None:
+def _explicit_search_provider(
+    payload: Mapping[str, object], *, tool: str = "search_web"
+) -> FetchProviderName | None:
     raw_provider = payload.get("provider")
     if not isinstance(raw_provider, str):
         return None
-    if raw_provider not in _MINER_SELECTED_SEARCH_PROVIDERS:
+    supported = (
+        get_args(FetchProviderName) if tool == "fetch_page"
+        else get_args(AiSearchProviderName) if tool == "search_ai"
+        else _MINER_SELECTED_SEARCH_PROVIDERS
+    )
+    if raw_provider not in supported:
         return None
-    return cast(SearchProviderName, raw_provider)
+    return cast(FetchProviderName, raw_provider)
 
 
 def _explicit_llm_provider_model(payload: Mapping[str, object]) -> tuple[str, str] | None:
