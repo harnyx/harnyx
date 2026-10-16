@@ -47,7 +47,7 @@ from harnyx_commons.miner_task_failure_policy import (
 )
 from harnyx_commons.sandbox.client import SandboxClient
 from harnyx_commons.tools.types import is_search_tool
-from harnyx_miner_sdk.sandbox_protocol import SandboxAdmission
+from harnyx_miner_sdk.sandbox_protocol import SANDBOX_OOM_AFFECTED, SandboxAdmission
 from harnyx_validator.application.assigned_work import AssignedArtifactWork, ClaimedAssignedTask, PhaseRecorder
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptAuditRecord,
@@ -247,6 +247,7 @@ class _ArtifactDispatchState:
 @dataclass(frozen=True, slots=True)
 class _ActiveAssignedTask:
     assignment: MinerTaskWorkAssignment
+    lifecycle: _AssignedAttemptLifecycle | None = None
     session_id: UUID | None = None
 
 
@@ -311,6 +312,7 @@ class _AssignedAttemptLifecycle:
     claimed: ClaimedAssignedTask
     phase_recorder: _AssignedAttemptPhaseRecorder
     issued: SessionIssued | None = None
+    admission: SandboxAdmission | None = None
 
     def start(self) -> _AssignedAttemptStartContext:
         return _AssignedAttemptStartContext(self)
@@ -643,11 +645,24 @@ class EvaluationRunner:
         result_queue: asyncio.Queue[PlatformOwnedTaskResult | PlatformOwnedTaskExecution],
         orchestrator: TaskRunOrchestrator,
         sandbox_client: SandboxClient,
-    ) -> None:
+        sandbox_identifier: str | None = None,
+    ) -> bool:
+        """Return true only when this deployment drained after positive OOM."""
         active: dict[asyncio.Task[_AssignedAttemptRunOutcome], _ActiveAssignedTask] = {}
         queue_waiter: asyncio.Task[ClaimedAssignedTask] | None = None
         claim_to_start: ClaimedAssignedTask | None = None
+        drain_logged = False
         close_waiter = asyncio.create_task(close_requested.wait())
+
+        async def watch_resources() -> None:
+            while not sandbox_client.draining:
+                status = await sandbox_client.resource_status()
+                if status.counter_status == "disabled":
+                    await asyncio.Future()
+                if not sandbox_client.draining:
+                    await asyncio.sleep(0.1)
+
+        oom_waiter = asyncio.create_task(watch_resources())
 
         def fail_unstarted_claim(claimed: ClaimedAssignedTask, exc: Exception) -> bool:
             assignment = claimed.assignment
@@ -664,7 +679,10 @@ class EvaluationRunner:
             claimed.fail_before_start(result)
             return result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE
 
-        def start_assignment(claimed: ClaimedAssignedTask) -> bool:
+        def start_assignment(claimed: ClaimedAssignedTask) -> None:
+            if sandbox_client.draining:
+                claimed.release_to_queue_if_live()
+                return
             assignment = claimed.assignment
             lifecycle = self._assigned_attempt_lifecycle(
                 batch_id=batch_id,
@@ -676,42 +694,8 @@ class EvaluationRunner:
             )
             active[execution_task] = _ActiveAssignedTask(
                 assignment=assignment,
+                lifecycle=lifecycle,
             )
-            return False
-
-        async def drain_completed_active(done: set[asyncio.Task[object]]) -> bool:
-            delivery_failure_seen = False
-            for task in tuple(active):
-                if task not in done:
-                    continue
-                active_task = active.pop(task)
-                try:
-                    outcome = task.result()
-                except Exception as exc:
-                    result = self._platform_result_from_assignment_task_exception(
-                        batch_id=batch_id,
-                        artifact=artifact,
-                        assignment=active_task.assignment,
-                        exc=exc,
-                    )
-                    outcome = _AssignedAttemptRunOutcome(result_to_queue=result)
-                if outcome.execution_to_queue is not None:
-                    await result_queue.put(outcome.execution_to_queue)
-                result = outcome.result_to_queue
-                if result is None:
-                    continue
-                if result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE:
-                    delivery_failure_seen = True
-                if outcome.result_already_queued:
-                    continue
-                await result_queue.put(result)
-            return delivery_failure_seen
-
-        async def cancel_remaining_active() -> None:
-            for remaining in active:
-                remaining.cancel()
-            if active:
-                await asyncio.gather(*active, return_exceptions=True)
 
         async def cancel_queue_waiter() -> None:
             nonlocal queue_waiter
@@ -720,6 +704,8 @@ class EvaluationRunner:
             if not queue_waiter.done():
                 queue_waiter.cancel()
             await asyncio.gather(queue_waiter, return_exceptions=True)
+            if not queue_waiter.cancelled() and queue_waiter.exception() is None:
+                queue_waiter.result().release_to_queue_if_live()
             queue_waiter = None
 
         try:
@@ -727,46 +713,87 @@ class EvaluationRunner:
                 claim_to_start = assigned_work.claim_initial_for_dispatch(assignment)
                 if claim_to_start is None:
                     continue
-                if start_assignment(claim_to_start):
-                    claim_to_start = None
-                    return
+                start_assignment(claim_to_start)
                 claim_to_start = None
 
             while active or not close_requested.is_set():
-                while not close_requested.is_set():
+                if sandbox_client.draining:
+                    if not drain_logged:
+                        logger.warning(
+                            "sandbox OOM draining started",
+                            extra={
+                                "batch_id": str(batch_id),
+                                "artifact_id": str(artifact.artifact_id),
+                                "container": sandbox_identifier,
+                                "active_attempts": [
+                                    {
+                                        "task_id": str(owned.assignment.task.task_id),
+                                        "session_id": (
+                                            str(owned.lifecycle.issued.session.session_id)
+                                            if owned.lifecycle is not None and owned.lifecycle.issued is not None
+                                            else None
+                                        ),
+                                        "compiler_generation": (
+                                            owned.lifecycle.admission.generation
+                                            if owned.lifecycle is not None and owned.lifecycle.admission is not None
+                                            else None
+                                        ),
+                                    }
+                                    for owned in active.values()
+                                ],
+                            },
+                        )
+                        drain_logged = True
+                    await cancel_queue_waiter()
+                    for task, owned in active.items():
+                        if owned.lifecycle is not None and owned.lifecycle.issued is None:
+                            task.cancel()
+                    if not active:
+                        return True
+                while not close_requested.is_set() and not sandbox_client.draining:
                     try:
                         claim_to_start = assigned_work.claim_nowait_for_dispatch()
-                        if start_assignment(claim_to_start):
-                            claim_to_start = None
-                            return
+                        start_assignment(claim_to_start)
                         claim_to_start = None
                     except asyncio.QueueEmpty:
                         break
 
                 wait_for: set[asyncio.Task[object]] = set(active)
-                if not close_requested.is_set():
+                if not sandbox_client.draining:
+                    wait_for.add(oom_waiter)
+                if not close_requested.is_set() and not sandbox_client.draining:
                     if queue_waiter is None:
                         queue_waiter = asyncio.create_task(assigned_work.claim_for_dispatch())
                     wait_for.add(queue_waiter)
                     wait_for.add(close_waiter)
                 elif not active:
-                    break
+                    return sandbox_client.draining
                 done, _pending = await asyncio.wait(wait_for, return_when=asyncio.FIRST_COMPLETED)
 
-                if await drain_completed_active(done):
+                if oom_waiter in done:
+                    oom_waiter.result()
+                if await self._drain_assigned_results(
+                    active=active,
+                    done=done,
+                    batch_id=batch_id,
+                    artifact=artifact,
+                    result_queue=result_queue,
+                    oom_draining=sandbox_client.draining,
+                ):
                     close_requested.set()
                     await cancel_queue_waiter()
                     continue
 
                 if queue_waiter is not None and queue_waiter in done:
                     claim_to_start = queue_waiter.result()
-                    if start_assignment(claim_to_start):
-                        claim_to_start = None
-                        await cancel_remaining_active()
-                        return
+                    start_assignment(claim_to_start)
                     claim_to_start = None
                     queue_waiter = None
+            return sandbox_client.draining
         finally:
+            if claim_to_start is not None and sandbox_client.draining:
+                claim_to_start.release_to_queue_if_live()
+                claim_to_start = None
             if claim_to_start is not None:
                 fail_unstarted_claim(
                     claim_to_start,
@@ -774,15 +801,81 @@ class EvaluationRunner:
                 )
             if queue_waiter is not None and not queue_waiter.done():
                 queue_waiter.cancel()
+            await cancel_queue_waiter()
             close_waiter.cancel()
+            oom_waiter.cancel()
             for task in active:
                 task.cancel()
             await asyncio.gather(
-                *(task for task in (queue_waiter, close_waiter) if task is not None),
+                *(task for task in (queue_waiter, close_waiter, oom_waiter) if task is not None),
                 return_exceptions=True,
             )
             if active:
                 await asyncio.gather(*active, return_exceptions=True)
+
+    async def _drain_assigned_results(
+        self,
+        *,
+        active: dict[asyncio.Task[_AssignedAttemptRunOutcome], _ActiveAssignedTask],
+        done: set[asyncio.Task[object]],
+        batch_id: UUID,
+        artifact: ScriptArtifactSpec,
+        result_queue: asyncio.Queue[PlatformOwnedTaskResult | PlatformOwnedTaskExecution],
+        oom_draining: bool,
+    ) -> bool:
+        delivery_failure_seen = False
+        for task in tuple(active):
+            if task not in done:
+                continue
+            active_task = active.pop(task)
+            try:
+                outcome = task.result()
+            except asyncio.CancelledError:
+                if not oom_draining:
+                    raise
+                continue
+            except Exception as exc:
+                result = self._platform_result_from_assignment_task_exception(
+                    batch_id=batch_id,
+                    artifact=artifact,
+                    assignment=active_task.assignment,
+                    exc=exc,
+                )
+                outcome = _AssignedAttemptRunOutcome(result_to_queue=result)
+            if outcome.execution_to_queue is not None:
+                await result_queue.put(outcome.execution_to_queue)
+            result = outcome.result_to_queue
+            if oom_draining:
+                logger.info(
+                    "sandbox OOM attempt settled",
+                    extra={
+                        "batch_id": str(batch_id),
+                        "artifact_id": str(artifact.artifact_id),
+                        "task_id": str(active_task.assignment.task.task_id),
+                        "session_id": (
+                            str(active_task.lifecycle.issued.session.session_id)
+                            if active_task.lifecycle is not None and active_task.lifecycle.issued is not None
+                            else None
+                        ),
+                        "compiler_generation": (
+                            active_task.lifecycle.admission.generation
+                            if active_task.lifecycle is not None and active_task.lifecycle.admission is not None
+                            else None
+                        ),
+                        "execution_preserved": outcome.execution_to_queue is not None,
+                        "result_preserved": result is not None
+                        and result.terminal_attempt.status is MinerTaskAttemptStatus.SUCCEEDED,
+                        "error_code": result.terminal_attempt.error_code if result is not None else None,
+                    },
+                )
+            if result is None:
+                continue
+            if result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE:
+                delivery_failure_seen = True
+            if outcome.result_already_queued:
+                continue
+            await result_queue.put(result)
+        return delivery_failure_seen
 
     def _assigned_attempt_lifecycle(
         self,
@@ -814,7 +907,8 @@ class EvaluationRunner:
                     self._config.execution_time_limit_seconds,
                     claimed.assignment.assignment_token,
                 ) as admission:
-                    if not claimed.is_live():
+                    lifecycle.admission = admission
+                    if not claimed.is_live() or sandbox_client.draining:
                         return _AssignedAttemptRunOutcome()
                     # The dispatch lease bounds admission, not an already started attempt.
                     admission_wait.reschedule(None)
@@ -824,6 +918,8 @@ class EvaluationRunner:
                 raise
             return _AssignedAttemptRunOutcome()
         except Exception as exc:
+            if sandbox_client.draining:
+                return _AssignedAttemptRunOutcome()
             result = lifecycle.build_failure_result(exc=exc, attempt_started_at=self._clock())
             claimed.fail_before_start(result)
             return _AssignedAttemptRunOutcome(result_to_queue=result, result_already_queued=True)
@@ -2367,6 +2463,20 @@ class EvaluationRunner:
                     error_message=str(exc),
                     rejected_response=exc.rejected_response,
                     log_message="miner returned invalid response payload",
+                    exc=exc,
+                )
+            )
+
+        if isinstance(exc, SandboxInvocationError) and exc.detail_code == SANDBOX_OOM_AFFECTED:
+            return _submission_decision(
+                self._build_task_failure(
+                    batch_id=batch_id,
+                    artifact=artifact,
+                    task=task,
+                    session_id=session_id,
+                    error_code=MinerTaskErrorCode.SANDBOX_OOM_AFFECTED,
+                    error_message="execution lost its result in an OOM-affected sandbox",
+                    log_message="sandbox OOM affected miner task execution",
                     exc=exc,
                 )
             )

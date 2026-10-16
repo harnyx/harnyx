@@ -20,7 +20,10 @@ from harnyx_commons.sandbox.docker import (
     resolve_sandbox_host_container_url,
 )
 from harnyx_commons.sandbox.manager import SandboxDeployment
+from harnyx_commons.sandbox.runtime import ContainerSecurity
+from harnyx_commons.sandbox.seccomp.paths import default_profile_path
 from harnyx_commons.sandbox.state import DEFAULT_STATE_DIR
+from harnyx_miner_sdk.sandbox_protocol import EVALUATION_RESOURCE_POLICY_ENV
 
 _DOCKER_CLI = os.getenv("DOCKER_CLI", "docker")
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -77,11 +80,9 @@ def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
     manager = DockerSandboxManager(docker_binary=docker_bin, host="127.0.0.1")
     deployments = []
     workspace_root = Path(os.getenv("HOST_WORKSPACE", str(_REPO_ROOT)))
-    state_dir = Path(
-        tempfile.mkdtemp(prefix=".harnyx-validator-int-state-", dir=workspace_root)
-    )
+    state_dir = Path(tempfile.mkdtemp(prefix=".harnyx-validator-int-state-", dir=workspace_root))
 
-    def _start(agent_module: str):
+    def _start(agent_module: str, *, source: bytes | None = None, evaluation_policy: bool = False):
         module_rel_path = Path(*agent_module.split(".")).with_suffix(".py")
         module_path = _REPO_ROOT / module_rel_path
         if not module_path.exists():
@@ -91,7 +92,7 @@ def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
             container_root=DEFAULT_STATE_DIR,
             namespace="integration_agents",
             key=agent_module.replace(".", "_"),
-            data=module_path.read_bytes(),
+            data=module_path.read_bytes() if source is None else source,
         )
         port = _find_free_port()
         host_container_url = resolve_sandbox_host_container_url(
@@ -109,11 +110,18 @@ def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
                 "SANDBOX_HOST": "0.0.0.0",  # noqa: S104 - container binding
                 "SANDBOX_PORT": "8000",
                 "AGENT_PATH": artifact.container_path,
+                **({EVALUATION_RESOURCE_POLICY_ENV: "1"} if evaluation_policy else {}),
             },
             volumes=((str(state_dir), DEFAULT_STATE_DIR, "ro"),),
             wait_for_healthz=True,
             healthz_timeout=30.0,
             host_container_url=host_container_url,
+            user="harnyx" if evaluation_policy else None,
+            seccomp_profile=default_profile_path() if evaluation_policy else None,
+            ulimits=ContainerSecurity().ulimits if evaluation_policy else (),
+            extra_args=(
+                (*ContainerSecurity(memory="1536m").extra_args, "--memory-swap", "1536m") if evaluation_policy else ()
+            ),
         )
         deployment = manager.start(options)
         deployments.append(deployment)

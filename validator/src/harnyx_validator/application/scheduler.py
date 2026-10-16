@@ -21,7 +21,7 @@ from harnyx_commons.domain.miner_task import (
     MinerTaskErrorCode,
 )
 from harnyx_commons.sandbox.client import SandboxClient
-from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager
+from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager, SandboxStartError
 from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_commons.tools.session_lifetime import tool_session_ttl_for_execution_limit
 from harnyx_validator.application.assigned_work import AssignedArtifactWork
@@ -78,7 +78,7 @@ class SchedulerConfig:
     token_secret_bytes: int
     execution_time_limit_seconds: float
     artifact_parallelism: int = 4
-    artifact_task_parallelism: int = 20
+    artifact_task_parallelism: int = 10
 
     def __post_init__(self) -> None:
         tool_session_ttl_for_execution_limit(self.execution_time_limit_seconds)
@@ -223,26 +223,69 @@ class EvaluationScheduler:
         deployment: SandboxDeployment | None = None
         attempt_started_at = self._clock()
         try:
-            deployment = await self._start_artifact_with_retry(
-                batch_id=batch_id,
-                artifact=artifact,
-                tasks=tuple(assignment.task for assignment in assignments),
-                blocking_executor=self._blocking_executor,
-            )
-            orchestrator = self._make_orchestrator(deployment.client)
-            assigned_work.mark_dispatch_ready()
-            await self._runner.evaluate_assigned_task_queue(
-                batch_id=batch_id,
-                artifact=artifact,
-                initial_assignments=assignments,
-                assigned_work=assigned_work,
-                close_requested=close_requested,
-                result_queue=result_queue,
-                orchestrator=orchestrator,
-                sandbox_client=deployment.client,
-            )
+            pending_initial = assignments
+            replaced_container: str | None = None
+            while True:
+                deployment = await self._start_artifact_with_retry(
+                    batch_id=batch_id,
+                    artifact=artifact,
+                    tasks=tuple(assignment.task for assignment in assignments),
+                    blocking_executor=self._blocking_executor,
+                )
+                logger.info(
+                    "sandbox evaluation deployment ready",
+                    extra={
+                        "batch_id": str(batch_id),
+                        "artifact_id": str(artifact.artifact_id),
+                        "container": deployment.identifier,
+                        "sandbox_base_url": deployment.base_url,
+                        "replaced_container": replaced_container,
+                    },
+                )
+                orchestrator = self._make_orchestrator(deployment.client)
+                assigned_work.mark_dispatch_ready()
+                oom_drained = await self._runner.evaluate_assigned_task_queue(
+                    batch_id=batch_id,
+                    artifact=artifact,
+                    initial_assignments=pending_initial,
+                    assigned_work=assigned_work,
+                    close_requested=close_requested,
+                    result_queue=result_queue,
+                    orchestrator=orchestrator,
+                    sandbox_client=deployment.client,
+                    sandbox_identifier=deployment.identifier,
+                )
+                if not oom_drained:
+                    break
+                logger.info(
+                    "sandbox OOM drain completed",
+                    extra={
+                        "batch_id": str(batch_id),
+                        "artifact_id": str(artifact.artifact_id),
+                        "container": deployment.identifier,
+                    },
+                )
+                removed = await _run_blocking_call(self._blocking_executor, self._sandboxes.stop, deployment)
+                logger.info(
+                    "sandbox OOM retirement completed",
+                    extra={
+                        "batch_id": str(batch_id),
+                        "artifact_id": str(artifact.artifact_id),
+                        "container": deployment.identifier,
+                        "removal_confirmed": removed,
+                    },
+                )
+                if not removed:
+                    raise RuntimeError("OOM sandbox physical removal remains unconfirmed; replacement blocked")
+                replaced_container = deployment.identifier
+                deployment = None
+                pending_initial = ()
+                if close_requested.is_set():
+                    break
         except ArtifactExecutionFailedError as exc:
-            affected_assignments = (*assignments, *assigned_work.drain_for_setup_failure())
+            affected_assignments = (*pending_initial, *assigned_work.drain_for_setup_failure())
+            if not affected_assignments:
+                return
             if exc.error_code is MinerTaskErrorCode.SCRIPT_VALIDATION_FAILED:
                 results = await self._runner.record_assigned_task_setup_failures(
                     batch_id=batch_id,
@@ -301,6 +344,17 @@ class EvaluationScheduler:
                 return await _run_blocking_call(blocking_executor, self._sandboxes.start, options)
             except Exception as exc:
                 last_error_message = str(exc)
+                if isinstance(exc, SandboxStartError):
+                    try:
+                        removed = await _run_blocking_call(
+                            blocking_executor, self._sandboxes.stop, exc.unremoved_deployment
+                        )
+                    except Exception:
+                        logger.exception("sandbox startup cleanup unconfirmed; replacement blocked")
+                        break
+                    if not removed:
+                        logger.error("sandbox startup removal unconfirmed; replacement blocked")
+                        break
                 if attempt_number < LOCAL_RETRY_ATTEMPTS:
                     self._log_artifact_retry(
                         batch_id=batch_id,

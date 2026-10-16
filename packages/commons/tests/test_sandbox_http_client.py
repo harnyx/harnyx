@@ -554,3 +554,210 @@ async def test_admission_connect_failures_keep_bounded_retry_and_preexecution_cl
                 raise AssertionError("connection failure must not authorize execution")
     assert error.value.remote_state_uncertain is False
     assert requests == ["/admission", "/admission"]
+
+
+@pytest.mark.anyio("asyncio")
+@pytest.mark.parametrize("positive", [False, True])
+async def test_evaluation_failure_requires_positive_trusted_counter(positive):
+    """Future failure: a generic 500/SIGKILL is penalized as OOM without positive evidence."""
+
+    async def handler(request):
+        if request.url.path == "/resources":
+            assert request.headers["x-sandbox-control-token"] == CONTROL_CREDENTIAL
+            return httpx.Response(
+                200, json={"counter_status": "ready", "oom_kill_count": int(positive), "draining": positive}
+            )
+        return httpx.Response(500, json={"detail": {"exception": "WorkerResultProtocolError"}})
+
+    async with httpx.AsyncClient(base_url="http://sandbox.local", transport=httpx.MockTransport(handler)) as http:
+        client = HttpSandboxClient("http://sandbox.local", control_token=CONTROL_CREDENTIAL, client=http)
+        client.configure_resources(lambda: False, lambda: None)
+        with pytest.raises(SandboxInvokeError) as error:
+            await client.invoke(
+                "query",
+                payload={},
+                context=_context(1.0),
+                token=uuid4().hex,
+                session_id=uuid4(),
+                admission=_admission(),
+            )
+        assert (error.value.detail_code == "SandboxOomAffected") is positive
+        assert client.draining is positive
+
+
+@pytest.mark.anyio("asyncio")
+async def test_external_oom_evidence_survives_supervisor_loss():
+    """Future failure: delayed daemon OOM evidence is lost after the supervisor's socket closes."""
+    observations = iter([False, True])
+
+    async def handler(request):
+        raise httpx.ConnectError("supervisor gone", request=request)
+
+    async with httpx.AsyncClient(base_url="http://sandbox.local", transport=httpx.MockTransport(handler)) as http:
+        client = HttpSandboxClient(
+            "http://sandbox.local", control_token=CONTROL_CREDENTIAL, client=http, connect_attempts=1
+        )
+        client.configure_resources(lambda: next(observations, True), lambda: None)
+        with pytest.raises(SandboxInvokeError) as error:
+            await client.invoke(
+                "query",
+                payload={},
+                context=_context(1.0),
+                token=uuid4().hex,
+                session_id=uuid4(),
+                admission=_admission(),
+            )
+        assert error.value.detail_code == "SandboxOomAffected"
+        assert client.draining
+
+
+@pytest.mark.anyio("asyncio")
+@pytest.mark.parametrize("counter_status", ["ready", "unavailable"])
+async def test_external_positive_evidence_is_retained_when_supervisor_responds(counter_status):
+    """A responding supervisor must not hide a positive daemon OOM observation."""
+
+    async def handler(request):
+        return httpx.Response(200, json={"counter_status": counter_status, "oom_kill_count": 0, "draining": False})
+
+    async with httpx.AsyncClient(base_url="http://sandbox.local", transport=httpx.MockTransport(handler)) as http:
+        client = HttpSandboxClient("http://sandbox.local", control_token=CONTROL_CREDENTIAL, client=http)
+        client.configure_resources(lambda: True, lambda: None)
+        assert (await client.resource_status()).draining
+        assert client.draining
+
+
+@pytest.mark.anyio("asyncio")
+async def test_admission_failure_resolves_oom_before_caller_can_fail_unstarted_work():
+    """Compiler OOM before session start must close the gate without a delivery failure race."""
+
+    async def handler(request):
+        if request.url.path == "/resources":
+            return httpx.Response(200, json={"counter_status": "ready", "oom_kill_count": 1, "draining": True})
+        return httpx.Response(500, json={"detail": {"code": "PreloadInfrastructureFailed"}})
+
+    async with httpx.AsyncClient(base_url="http://sandbox.local", transport=httpx.MockTransport(handler)) as http:
+        client = HttpSandboxClient("http://sandbox.local", control_token=CONTROL_CREDENTIAL, client=http)
+        client.configure_resources(lambda: False, lambda: None)
+        with pytest.raises(SandboxInvokeError):
+            async with client.admission(1, uuid4().hex):
+                raise AssertionError("compiler OOM must reject admission")
+        assert client.draining
+
+
+@pytest.mark.anyio("asyncio")
+@pytest.mark.parametrize("available", [True, False])
+async def test_missing_oom_evidence_keeps_original_failure_at_existing_deadline(available):
+    """An absent/failed event source must neither fabricate OOM nor wait indefinitely."""
+    import time
+
+    async def handler(request):
+        raise httpx.ConnectError("supervisor gone", request=request)
+
+    async with httpx.AsyncClient(base_url="http://sandbox.local", transport=httpx.MockTransport(handler)) as http:
+        client = HttpSandboxClient(
+            "http://sandbox.local", control_token=CONTROL_CREDENTIAL, client=http, connect_attempts=1
+        )
+        client.configure_resources(lambda: False if available else None, lambda: None)
+        began = time.monotonic()
+        with pytest.raises(SandboxInvokeError) as failed:
+            await client.invoke(
+                "query",
+                payload={},
+                context=_context(0.1),
+                token=uuid4().hex,
+                session_id=uuid4(),
+                admission=_admission(),
+            )
+        assert failed.value.detail_code != "SandboxOomAffected"
+        assert not client.draining
+        assert time.monotonic() - began < 1
+
+
+@pytest.mark.anyio("asyncio")
+@pytest.mark.parametrize("remaining_seconds", [0, 0.05])
+async def test_failure_classification_cannot_extend_an_existing_admission(remaining_seconds):
+    """Supervisor loss must not restart the budget of an expiring or expired reservation."""
+    import time
+
+    async def handler(request):
+        raise httpx.ConnectError("supervisor gone", request=request)
+
+    async with httpx.AsyncClient(base_url="http://sandbox.local", transport=httpx.MockTransport(handler)) as http:
+        client = HttpSandboxClient(
+            "http://sandbox.local", control_token=CONTROL_CREDENTIAL, client=http, connect_attempts=1
+        )
+        client.configure_resources(lambda: False, lambda: None)
+        admission = _admission().model_copy(
+            update={"deadline_monotonic_ns": time.monotonic_ns() + int(remaining_seconds * 1e9)}
+        )
+        async with asyncio.timeout(0.5):
+            with pytest.raises(SandboxInvokeError) as failed:
+                await client.invoke(
+                    "query",
+                    payload={},
+                    context=_context(3),
+                    token=uuid4().hex,
+                    session_id=uuid4(),
+                    admission=admission,
+                )
+        assert failed.value.remote_state_uncertain
+        assert failed.value.detail_code != "SandboxOomAffected"
+        assert not client.draining
+
+
+@pytest.mark.anyio("asyncio")
+async def test_external_oom_closes_gate_without_waiting_for_resource_poll() -> None:
+    """An already observed daemon OOM must not admit an unstarted task between polls."""
+    observed = False
+
+    async def handler(request):
+        raise AssertionError("reading the admission gate must not perform HTTP I/O")
+
+    async with httpx.AsyncClient(base_url="http://sandbox.local", transport=httpx.MockTransport(handler)) as http:
+        client = HttpSandboxClient("http://sandbox.local", control_token=CONTROL_CREDENTIAL, client=http)
+        client.configure_resources(lambda: observed, lambda: None)
+        assert not client.draining
+        observed = True
+        assert client.draining
+        observed = False
+        assert client.draining
+
+
+@pytest.mark.anyio("asyncio")
+@pytest.mark.parametrize("evidence", ["cgroup_v2", "docker", "docker_reconcile", "none"])
+async def test_oom_gate_records_first_trusted_evidence_once(evidence, caplog) -> None:
+    """Fallback-only incidents must retain their evidence; absence must not invent an OOM incident."""
+    import logging
+
+    async def handler(request):
+        assert request.url.path == "/resources"
+        return httpx.Response(
+            200,
+            json={
+                "counter_status": "ready" if evidence == "cgroup_v2" else "unavailable",
+                "oom_kill_count": 2 if evidence == "cgroup_v2" else 0,
+                "draining": evidence == "cgroup_v2",
+            },
+        )
+
+    async with httpx.AsyncClient(base_url="http://sandbox.local", transport=httpx.MockTransport(handler)) as http:
+        client = HttpSandboxClient("http://sandbox.local", control_token=CONTROL_CREDENTIAL, client=http)
+        client.configure_resources(
+            lambda: evidence == "docker",
+            lambda: None,
+            lambda: evidence == "docker_reconcile",
+        )
+        with caplog.at_level(logging.WARNING, logger="harnyx_commons.sandbox.docker"):
+            for _ in range(2):
+                status = await client.resource_status()
+                assert status.draining is (evidence != "none")
+                assert client.draining is (evidence != "none")
+    transitions = [record for record in caplog.records if record.message == "sandbox OOM gate closed"]
+    if evidence == "none":
+        assert not transitions
+    else:
+        assert len(transitions) == 1
+        assert transitions[0].source == evidence
+        assert transitions[0].oom_kill_count == (2 if evidence == "cgroup_v2" else None)
+        assert transitions[0].sandbox_base_url == "http://sandbox.local"
+        assert CONTROL_CREDENTIAL not in caplog.text

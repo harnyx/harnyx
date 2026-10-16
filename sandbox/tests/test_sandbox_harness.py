@@ -182,3 +182,84 @@ def test_worker_output_reader_keeps_one_continuation_during_repeated_readiness(
     finally:
         reader.close()
         pipe.close_write()
+
+
+async def test_oom_counter_latches_initial_positive_and_rejects_later_reset(tmp_path):
+    """Future failure: a startup OOM or counter reset must not silently reopen admission."""
+    from harnyx_sandbox.sandbox.memory import EvaluationMemoryState
+
+    counter = tmp_path / "memory.events.local"
+    counter.write_text("oom 1\noom_kill 1\n")
+    memory = EvaluationMemoryState(counter)
+    assert memory.refresh().draining
+    counter.write_text("oom 0\noom_kill 0\n")
+    with pytest.raises(RuntimeError, match="backwards"):
+        memory.refresh()
+    assert memory.draining
+
+
+async def test_evaluation_admission_slots_are_not_released_by_active_release(harness, tmp_path):
+    """Future failure: release/expiry must not make an eleventh worker fit beside ten live workers."""
+    from harnyx_sandbox.sandbox.memory import EvaluationMemoryState
+
+    from harnyx_miner_sdk.sandbox_protocol import AdmissionRequest
+
+    counter = tmp_path / "memory.events.local"
+    counter.write_text("oom_kill 0\n")
+    harness._memory = EvaluationMemoryState(counter)
+    harness._slots = asyncio.Semaphore(10)
+    reservations = [await harness.reserve(AdmissionRequest(limit_seconds=5.0), {}) for _ in range(10)]
+    pending = asyncio.create_task(harness.reserve(AdmissionRequest(limit_seconds=5.0), {}))
+    await asyncio.sleep(0.02)
+    assert not pending.done()
+    harness._reservations[reservations[0].reservation_id].activated = True
+    harness.release(reservations[0])
+    await asyncio.sleep(0.02)
+    assert not pending.done()
+    harness.release(reservations[1])
+    following = await asyncio.wait_for(pending, 1)
+    assert len(harness._reservations) == 10
+    harness.release(following)
+    counter.write_text("oom_kill 1\n")
+    with pytest.raises(HTTPException) as rejected:
+        await harness.reserve(AdmissionRequest(limit_seconds=5.0), {})
+    assert rejected.value.detail["code"] == "SandboxOomDraining"
+    assert harness._compiler.generation == reservations[0].generation
+
+
+async def test_unreadable_counter_does_not_become_oom_evidence(harness, tmp_path):
+    """Future failure: observation loss must be infrastructure uncertainty, not miner OOM."""
+    from harnyx_sandbox.sandbox.memory import EvaluationMemoryState
+
+    counter = tmp_path / "memory.events.local"
+    counter.write_text("oom_kill 0\n")
+    harness._memory = EvaluationMemoryState(counter)
+    counter.unlink()
+    status = harness.resource_status()
+    assert status.counter_status == "unavailable"
+    assert not status.draining
+
+
+@pytest.mark.parametrize("mount_root,membership", [("/", "/"), ("/tenant", "/tenant/query")])
+def test_counter_resolution_uses_own_v2_membership(monkeypatch, tmp_path, mount_root, membership):
+    """The trusted reader must resolve the container cgroup rather than a visible ancestor."""
+    from pathlib import Path
+
+    from harnyx_sandbox.sandbox.memory import EvaluationMemoryState
+
+    mount = tmp_path / "cgroup mount"
+    counter = mount / ("query" if membership.endswith("query") else "") / "memory.events.local"
+    counter.parent.mkdir(parents=True)
+    counter.write_text("oom_kill 0\n")
+    original_read = Path.read_text
+
+    def read(path, *args, **kwargs):
+        if str(path) == "/proc/self/cgroup":
+            return f"0::{membership}\n"
+        if str(path) == "/proc/self/mountinfo":
+            escaped = str(mount).replace(" ", r"\040")
+            return f"1 0 0:1 {mount_root} {escaped} ro - cgroup2 cgroup rw\n"
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read)
+    assert EvaluationMemoryState().counter == counter

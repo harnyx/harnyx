@@ -10,6 +10,7 @@ Generated from FastAPI OpenAPI.
 - [Misc](#misc)
   - [POST /admission](#endpoint-post-admission)
   - [GET /healthz](#endpoint-get-healthz)
+  - [GET /resources](#endpoint-get-resources)
 
 ## release
 
@@ -169,6 +170,27 @@ Content-Type: `application/json`
 Body: `object`
 
 (no documented fields)
+
+
+### resources
+
+<a id="endpoint-get-resources"></a>
+#### GET /resources
+
+Resources
+
+**Auth**: SandboxControl
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: [SandboxResourceStatus](#model-sandboxresourcestatus)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `counter_status` |  |  | req | `string` (enum: [ready, unavailable, disabled]) |
+| `draining` |  |  | req | `boolean` |
+| `oom_kill_count` |  |  | req | `integer` |
 
 
 
@@ -424,6 +446,54 @@ Body: `object`
     "deadline_monotonic_ns"
   ],
   "title": "SandboxAdmission",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-sandboxresourcestatus"></a>
+### Model: SandboxResourceStatus
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `counter_status` |  |  | req | `string` (enum: [ready, unavailable, disabled]) |
+| `draining` |  |  | req | `boolean` |
+| `oom_kill_count` |  |  | req | `integer` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "description": "Trusted control response; never accepted from a miner result.",
+  "properties": {
+    "counter_status": {
+      "enum": [
+        "ready",
+        "unavailable",
+        "disabled"
+      ],
+      "title": "Counter Status",
+      "type": "string"
+    },
+    "draining": {
+      "title": "Draining",
+      "type": "boolean"
+    },
+    "oom_kill_count": {
+      "minimum": 0.0,
+      "title": "Oom Kill Count",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "counter_status",
+    "oom_kill_count",
+    "draining"
+  ],
+  "title": "SandboxResourceStatus",
   "type": "object"
 }
 ```

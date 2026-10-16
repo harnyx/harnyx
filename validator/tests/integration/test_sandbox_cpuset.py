@@ -66,6 +66,8 @@ def test_validator_sandbox_cpuset_is_enforced_by_docker() -> None:
         )[0]
         assert inspected["HostConfig"]["CpusetCpus"] == expected_cpuset
         assert inspected["HostConfig"]["NanoCpus"] == 1_000_000_000
+        assert inspected["HostConfig"]["Memory"] == 1536 * 1024 * 1024
+        assert "SANDBOX_EVALUATION_RESOURCE_POLICY=1" in inspected["Config"]["Env"]
         assert inspected["Config"]["Labels"][_CPUSET_LABEL] == expected_cpuset
 
         process_affinity = _run_docker(

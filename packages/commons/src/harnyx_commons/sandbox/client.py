@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from typing import Protocol
 from uuid import UUID
 
 from harnyx_commons.json_types import JsonValue
-from harnyx_miner_sdk.sandbox_protocol import SandboxAdmission
+from harnyx_miner_sdk.sandbox_protocol import SandboxAdmission, SandboxResourceStatus
 
 
 class InvalidSandboxResponseError(ValueError):
@@ -42,6 +42,22 @@ class SandboxInvokeError(RuntimeError):
 
 class SandboxClient(Protocol):
     """Adapter responsible for calling miner entrypoints."""
+
+    @property
+    def draining(self) -> bool:
+        """Whether positive OOM evidence has retired this deployment."""
+        return False
+
+    async def resource_status(self) -> SandboxResourceStatus:
+        return SandboxResourceStatus(counter_status="disabled", oom_kill_count=0, draining=False)
+
+    def configure_resources(
+        self,
+        observe: Callable[[], bool | None],
+        close_observer: Callable[[], None],
+        reconcile: Callable[[], bool | None] | None = None,
+    ) -> None:
+        raise RuntimeError("sandbox client does not support evaluation resource control")
 
     def admission(self, limit_seconds: float, token: str) -> AbstractAsyncContextManager[SandboxAdmission]:
         """Reserve execution before creating a host tool session."""

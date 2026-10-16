@@ -40,7 +40,13 @@ from harnyx_commons.sandbox.diagnostic_files import (
 )
 from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager, SandboxStartError
 from harnyx_commons.sandbox.options import CONTROL_TOKEN_ENV, CONTROL_TOKEN_HEADER, DEFAULT_TOKEN_HEADER, SandboxOptions
-from harnyx_miner_sdk.sandbox_protocol import SandboxAdmission
+from harnyx_miner_sdk.sandbox_protocol import (
+    EVALUATION_RESOURCE_POLICY_ENV,
+    SANDBOX_OOM_AFFECTED,
+    SANDBOX_OOM_DRAINING,
+    SandboxAdmission,
+    SandboxResourceStatus,
+)
 from harnyx_miner_sdk.tools.time_budget import ExecutionTimeBudgetDTO
 
 logger = logging.getLogger(__name__)
@@ -81,6 +87,90 @@ class _UnreadySandboxClient(SandboxClient):
         return None
 
 
+class _DockerOOMObservation:
+    """Positive daemon evidence retained until the deployment client is closed."""
+
+    def __init__(
+        self,
+        docker: str,
+        container: str,
+        run: Callable[..., subprocess.CompletedProcess[str]],
+        popen: Callable[..., subprocess.Popen[str]],
+    ) -> None:
+        self._docker, self._container, self._run = docker, container, run
+        self.oom_seen = False
+        self._process = popen(
+            [
+                docker,
+                "events",
+                "--since",
+                str(int(time.time()) - 1),
+                "--filter",
+                f"container={container}",
+                "--filter",
+                "event=oom",
+                "--format",
+                "{{.Action}}",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        self._thread = threading.Thread(target=self._read, name="sandbox-oom", daemon=True)
+        self._thread.start()
+
+    def check_ready(self) -> None:
+        if self.refresh() is None or self._process.poll() is not None:
+            raise RuntimeError("sandbox external OOM observation unavailable")
+
+    def _read(self) -> None:
+        assert self._process.stdout is not None
+        for line in self._process.stdout:
+            if line.strip() == "oom":
+                self.oom_seen = True
+                logger.warning("sandbox OOM observed", extra={"container": self._container, "source": "docker_event"})
+
+    def observe(self) -> bool | None:
+        if self.oom_seen:
+            return True
+        return False if self._process.poll() is None else None
+
+    def refresh(self) -> bool | None:
+        if self.oom_seen:
+            return True
+        try:
+            result = self._run(
+                [self._docker, "inspect", "--format", "{{.State.OOMKilled}}", self._container],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=2.0,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        value = result.stdout.strip()
+        if value == "true" and not self.oom_seen:
+            self.oom_seen = True
+            logger.warning("sandbox OOM observed", extra={"container": self._container, "source": "docker_inspect"})
+        if value not in {"true", "false"}:
+            return None
+        return True if self.oom_seen else self.observe()
+
+    def close(self) -> None:
+        if self._process.poll() is None:
+            self._process.terminate()
+            try:
+                self._process.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+                self._process.wait(timeout=2.0)
+        self._thread.join(timeout=2.0)
+        if self._thread.is_alive():
+            raise RuntimeError("sandbox OOM observer cleanup unconfirmed")
+        if self._process.stdout is not None:
+            self._process.stdout.close()
+
+
 class HttpSandboxClient(SandboxClient):
     """Sandbox client backed by an HTTP endpoint exposed by the sandbox container."""
 
@@ -98,6 +188,10 @@ class HttpSandboxClient(SandboxClient):
             raise ValueError("sandbox connect_attempts must be at least 1")
         if not control_token:
             raise ValueError("sandbox control credential is required")
+        self._observe_resources: Callable[[], bool | None] | None = None
+        self._close_observer: Callable[[], None] | None = None
+        self._oom_seen = False
+        self._external_available = True
         self._control_token = control_token
         self._token_header = DEFAULT_TOKEN_HEADER
         self._host_container_url = host_container_url
@@ -108,6 +202,76 @@ class HttpSandboxClient(SandboxClient):
             timeout=timeout,
             limits=httpx.Limits(max_keepalive_connections=0),
         )
+
+    def configure_resources(
+        self,
+        observe: Callable[[], bool | None],
+        close_observer: Callable[[], None],
+        reconcile: Callable[[], bool | None] | None = None,
+    ) -> None:
+        self._observe_resources = observe
+        self._reconcile_resources = reconcile or observe
+        self._close_observer = close_observer
+
+    @property
+    def draining(self) -> bool:
+        # The daemon reader may have observed OOM since the last HTTP resource poll.
+        if not self._oom_seen and self._observe_resources is not None and self._observe_resources() is True:
+            self._record_oom(source="docker")
+        return self._oom_seen
+
+    def _record_oom(self, *, source: str, oom_kill_count: int | None = None) -> None:
+        if self._oom_seen:
+            return
+        self._oom_seen = True
+        logger.warning(
+            "sandbox OOM gate closed",
+            extra={
+                "sandbox_base_url": str(self._client.base_url),
+                "source": source,
+                "oom_kill_count": oom_kill_count,
+            },
+        )
+
+    async def resource_status(self) -> SandboxResourceStatus:
+        if self._observe_resources is None:
+            return await super().resource_status()
+        positive = self._observe_resources()
+        self._external_available = positive is not None
+        if positive is True:
+            self._record_oom(source="docker")
+        try:
+            response = await self._client.get(
+                "/resources", headers={CONTROL_TOKEN_HEADER: self._control_token}, timeout=2.0
+            )
+            response.raise_for_status()
+            status = SandboxResourceStatus.model_validate_json(response.content)
+            if status.draining or status.oom_kill_count > 0:
+                self._record_oom(source="cgroup_v2", oom_kill_count=status.oom_kill_count)
+            if status.counter_status == "ready":
+                return status.model_copy(update={"draining": self._oom_seen})
+        except (httpx.HTTPError, ValueError):
+            pass
+        positive = await asyncio.to_thread(self._reconcile_resources)
+        self._external_available = positive is not None
+        if positive is True:
+            self._record_oom(source="docker_reconcile")
+        return SandboxResourceStatus(counter_status="unavailable", oom_kill_count=0, draining=self._oom_seen)
+
+    async def _resolve_failure_resources(self, deadline: float) -> bool:
+        if self._observe_resources is None:
+            return False
+        try:
+            async with asyncio.timeout_at(deadline):
+                while True:
+                    status = await self.resource_status()
+                    if self.draining:
+                        return True
+                    if status.counter_status == "ready" or not self._external_available:
+                        return False
+                    await asyncio.sleep(0.1)
+        except TimeoutError:
+            return self.draining
 
     def configure(
         self,
@@ -135,6 +299,14 @@ class HttpSandboxClient(SandboxClient):
             )
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
+            detail_code = _parse_sandbox_response_detail(
+                _unwrap_response_detail(_response_json_or_text(exc.response))
+            ).code
+            if self._observe_resources is not None:
+                if detail_code == SANDBOX_OOM_DRAINING:
+                    self._record_oom(source="admission_response")
+                else:
+                    await self._resolve_failure_resources(time.monotonic() + limit_seconds)
             raise _sandbox_invoke_error(
                 status_code=exc.response.status_code,
                 detail=_unwrap_response_detail(_response_json_or_text(exc.response)),
@@ -148,6 +320,8 @@ class HttpSandboxClient(SandboxClient):
                 ),
             ) from exc
         except httpx.RequestError as exc:
+            if self._observe_resources is not None:
+                await self._resolve_failure_resources(time.monotonic() + limit_seconds)
             raise _sandbox_invoke_error(
                 status_code=504 if isinstance(exc, httpx.TimeoutException) else 0,
                 detail={"exception": type(exc).__name__, "error": "sandbox admission request failed"},
@@ -220,6 +394,56 @@ class HttpSandboxClient(SandboxClient):
             ) from exc
 
     async def _invoke_admitted(
+        self,
+        entrypoint: str,
+        *,
+        payload: Mapping[str, JsonValue],
+        context: Mapping[str, JsonValue],
+        token: str,
+        session_id: UUID,
+        include_failure_details: bool = True,
+        admission: SandboxAdmission,
+    ) -> Mapping[str, JsonValue]:
+        # Docker callers and their sandbox share the host's monotonic clock.
+        deadline = min(
+            time.monotonic() + ExecutionTimeBudgetDTO.model_validate(context.get("time_budget")).limit_seconds,
+            admission.deadline_monotonic_ns / 1e9,
+        )
+        try:
+            return await self._invoke_admitted_once(
+                entrypoint,
+                payload=payload,
+                context=context,
+                token=token,
+                session_id=session_id,
+                include_failure_details=include_failure_details,
+                admission=admission,
+            )
+        except (SandboxInvokeError, InvalidSandboxResponseError) as exc:
+            if (
+                self._observe_resources is not None
+                and isinstance(exc, SandboxInvokeError)
+                and exc.detail_code == SANDBOX_OOM_AFFECTED
+            ):
+                self._record_oom(source="invocation_response")
+            positive = self.draining
+            if not positive:
+                try:
+                    async with asyncio.timeout_at(deadline):
+                        positive = await self._resolve_failure_resources(deadline)
+                except TimeoutError:
+                    positive = self.draining
+            if positive:
+                raise SandboxInvokeError(
+                    "execution lost its result in an OOM-affected sandbox",
+                    status_code=503,
+                    detail_code=SANDBOX_OOM_AFFECTED,
+                    detail_exception=None,
+                    detail_error=None,
+                ) from exc
+            raise
+
+    async def _invoke_admitted_once(
         self,
         entrypoint: str,
         *,
@@ -388,6 +612,9 @@ class HttpSandboxClient(SandboxClient):
         raise RuntimeError("sandbox connect retry exhausted")
 
     def close(self) -> None:
+        if self._close_observer is not None:
+            self._close_observer()
+            self._close_observer = None
         if not self._owns_client:
             return
         try:
@@ -564,8 +791,24 @@ class DockerSandboxManager(SandboxManager):
         container_id = self._launch_container(options)
         base_url: str | None = None
         client: SandboxClient | None = None
+        observation: _DockerOOMObservation | None = None
+        observer_owned = False
         try:
             base_url, client = self._ready_client(options, container_id=container_id)
+            if options.env.get(EVALUATION_RESOURCE_POLICY_ENV) == "1":
+                observation = _DockerOOMObservation(self._docker, container_id, self._run_command, self._popen)
+                client.configure_resources(observation.observe, observation.close, observation.refresh)
+                observer_owned = True
+                observation.check_ready()
+                response = httpx.get(
+                    base_url + "/resources",
+                    headers={CONTROL_TOKEN_HEADER: options.env[CONTROL_TOKEN_ENV]},
+                    timeout=5.0,
+                )
+                response.raise_for_status()
+                status = SandboxResourceStatus.model_validate_json(response.content)
+                if status.counter_status != "ready":
+                    raise RuntimeError("evaluation sandbox resource counters are not ready")
             self._post_launch_steps(options, base_url, container_id)
         except Exception as exc:
             self._write_failure_diagnostics(
@@ -573,14 +816,22 @@ class DockerSandboxManager(SandboxManager):
                 container_id=container_id,
                 error=exc,
             )
-            if client is not None:
-                client.close()
-            self._stop_log_stream(container_id)
-            removed = self._best_effort_stop_and_remove(
-                container_id,
-                stop_timeout_seconds=options.stop_timeout_seconds,
-            )
-            if not removed:
+            cleanup_failed = False
+            try:
+                if client is not None:
+                    client.close()
+                if observation is not None and not observer_owned:
+                    observation.close()
+            except Exception:
+                cleanup_failed = True
+                logger.exception("sandbox startup client cleanup unconfirmed", extra={"container": container_id})
+            finally:
+                self._stop_log_stream(container_id)
+                removed = self._best_effort_stop_and_remove(
+                    container_id,
+                    stop_timeout_seconds=options.stop_timeout_seconds,
+                )
+            if not removed or cleanup_failed:
                 deployment = SandboxDeployment(
                     client=client or _UnreadySandboxClient(),
                     identifier=container_id,

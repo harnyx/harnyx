@@ -859,3 +859,25 @@ def test_each_container_receives_only_its_clients_control_credential() -> None:
     ]
     assert configured == credentials
     assert len(set(credentials)) == 2
+
+
+def test_start_removes_container_even_when_client_cleanup_raises(monkeypatch):
+    """Observer teardown failure must retain cleanup ownership and still attempt physical removal."""
+    runner = RecordingRunner()
+
+    class FailingCloseClient(DummyClient):
+        def close(self):
+            raise RuntimeError("observer did not stop")
+
+    client = FailingCloseClient("http://sandbox.local", _HOST_CONTAINER_URL)
+    manager = DockerSandboxManager(command_runner=runner)
+    monkeypatch.setattr(manager, "_ready_client", lambda *args, **kwargs: (client.base_url, client))
+
+    def fail(*args):
+        raise RuntimeError("startup failed")
+
+    monkeypatch.setattr(manager, "_post_launch_steps", fail)
+    with pytest.raises(SandboxStartError) as failure:
+        manager.start(SandboxOptions(image="test", container_name="test", host_container_url=_HOST_CONTAINER_URL))
+    assert failure.value.unremoved_deployment.client is client
+    assert any(args[1] == "rm" for args, kwargs in runner.commands)

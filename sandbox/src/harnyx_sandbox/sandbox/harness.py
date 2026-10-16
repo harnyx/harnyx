@@ -24,10 +24,23 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from harnyx_miner_sdk.context import ContextSnapshot
 from harnyx_miner_sdk.sandbox_headers import read_session_id_header
-from harnyx_miner_sdk.sandbox_protocol import AdmissionRequest, SandboxAdmission
+from harnyx_miner_sdk.sandbox_protocol import (
+    EVALUATION_RESOURCE_POLICY_ENV,
+    SANDBOX_OOM_AFFECTED,
+    SANDBOX_OOM_DRAINING,
+    AdmissionRequest,
+    SandboxAdmission,
+    SandboxResourceStatus,
+)
 from harnyx_miner_sdk.tools.http_models import ToolBudgetDTO
 from harnyx_miner_sdk.tools.time_budget import ExecutionTimeBudgetDTO
-from harnyx_sandbox.sandbox.compiler import open_process_handle, protect_process, signal_process_handle
+from harnyx_sandbox.sandbox.compiler import (
+    open_process_handle,
+    protect_process,
+    reap_process_handle,
+    signal_process_handle,
+)
+from harnyx_sandbox.sandbox.memory import EvaluationMemoryState
 from harnyx_sandbox.sandbox.worker_protocol import (
     MAX_FRAME_BYTES,
     Invocation,
@@ -235,7 +248,8 @@ class SandboxCleanupUnconfirmedError(RuntimeError):
 class _Compiler:
     """Own a fresh compiler process and its forked children, never their credentials."""
 
-    def __init__(self, artifact_path: str) -> None:
+    def __init__(self, artifact_path: str, memory: EvaluationMemoryState | None = None) -> None:
+        self.memory = memory
         self.generation = uuid4().hex
         self.path = artifact_path
         self.process: subprocess.Popen[bytes] | None = None
@@ -257,6 +271,9 @@ class _Compiler:
         async with self.send_lock:
             while True:
                 try:
+                    if self.memory is not None and value["kind"] in {"fork", "activate"}:
+                        if self.memory.refresh().draining:
+                            raise HTTPException(503, detail={"code": SANDBOX_OOM_AFFECTED})
                     control.sendmsg([data], ancillary)
                     return
                 except BlockingIOError:
@@ -284,9 +301,13 @@ class _Compiler:
         if not child.requested:
             self.children.pop(key, None)
             return
+        cleanup_confirmed = False
         try:
-            if child.pidfd < 0 or self.failure is not None:
+            if child.pidfd < 0 or (self.failure is not None and not self._oom_draining()):
+                if self._oom_draining():
+                    raise SandboxCleanupUnconfirmedError("worker handle was not registered before compiler loss")
                 await self.close()
+                cleanup_confirmed = True
                 return
             loop = asyncio.get_running_loop()
             exited = loop.create_future()
@@ -302,20 +323,44 @@ class _Compiler:
                     await asyncio.wait_for(asyncio.shield(exited), WORKER_KILL_GRACE_SECONDS)
             finally:
                 loop.remove_reader(child.pidfd)
-            try:
-                await asyncio.wait_for(asyncio.shield(child.exited), WORKER_KILL_GRACE_SECONDS)
-            except TimeoutError:
-                await self.close()
-        except TimeoutError:
+            if self.failure is not None and self._oom_draining():
+                await self._reap_adopted_child(child)
+            else:
+                try:
+                    await asyncio.wait_for(asyncio.shield(child.exited), WORKER_KILL_GRACE_SECONDS)
+                except TimeoutError:
+                    if self._oom_draining():
+                        await self._reap_adopted_child(child)
+                    else:
+                        await self.close()
+            cleanup_confirmed = True
+        except TimeoutError as exc:
+            if self._oom_draining():
+                raise SandboxCleanupUnconfirmedError("worker termination remains unconfirmed") from exc
             await self.close()
+            cleanup_confirmed = True
         finally:
             # Cancellation can abandon the shielded registration waiter before
             # generation retirement completes it with an exception.
             if child.spawned.done() and not child.spawned.cancelled():
                 child.spawned.exception()
-            _close_fd(child.pidfd)
-            child.pidfd = -1
-            self.children.pop(key, None)
+            if cleanup_confirmed:
+                _close_fd(child.pidfd)
+                child.pidfd = -1
+                self.children.pop(key, None)
+
+    async def _reap_adopted_child(self, child: _Child) -> None:
+        # Retire only the compiler so the subreaper can adopt its surviving children.
+        process = self.process
+        async with asyncio.timeout(WORKER_KILL_GRACE_SECONDS):
+            if process is not None:
+                if process.poll() is None:
+                    process.kill()
+                while process.poll() is None:
+                    await asyncio.sleep(0.01)
+            reap_process_handle(child.pidfd)
+            if not child.exited.done():
+                child.exited.set_result(-1)
 
     async def _receive(self, control: socket.socket) -> tuple[bytes, list[int]]:
         loop = asyncio.get_running_loop()
@@ -406,7 +451,12 @@ class _Compiler:
                                 if len(received_fds) != 1 or owned.pidfd >= 0:
                                     raise RuntimeError("invalid worker process handle")
                                 owned.pidfd = received_fds.pop()
-                                await self.command({"kind": "activate", "id": reply["id"]})
+                                try:
+                                    await self.command({"kind": "activate", "id": reply["id"]})
+                                except HTTPException as exc:
+                                    if not owned.spawned.done():
+                                        owned.spawned.set_exception(exc)
+                                    continue
                             future = owned.spawned if reply["kind"] == "spawned" else owned.exited
                             if not future.done():
                                 future.set_result(reply["pid"] if reply["kind"] == "spawned" else reply["status"])
@@ -422,7 +472,7 @@ class _Compiler:
             for owned in self.children.values():
                 if not owned.spawned.done():
                     owned.spawned.set_exception(exc)
-            if self.close_task is None:
+            if not self._oom_draining() and self.close_task is None:
                 self.close_task = asyncio.create_task(self._close())
         finally:
             if child is not None:
@@ -431,6 +481,14 @@ class _Compiler:
                 pipe.close_write()
                 if not self.outputs:
                     pipe.close_read()
+
+    def _oom_draining(self) -> bool:
+        if self.memory is None:
+            return False
+        try:
+            return self.memory.refresh().draining
+        except (OSError, ValueError, KeyError, RuntimeError):
+            return self.memory.draining
 
     async def close(self) -> None:
         if self.close_task is None:
@@ -478,6 +536,9 @@ class _Compiler:
                 owned.spawned.set_exception(RuntimeError("compiler generation retired before worker activation"))
             if not owned.exited.done():
                 owned.exited.set_result(-1)
+            _close_fd(owned.pidfd)
+            owned.pidfd = -1
+        self.children.clear()
         for task in self.outputs:
             with contextlib.suppress(Exception):
                 await task
@@ -493,6 +554,7 @@ class _Reservation:
     admission: SandboxAdmission
     expiry: asyncio.TimerHandle
     activated: bool = False
+    cleanup_confirmed: bool = True
 
 
 class SandboxHarness:
@@ -506,12 +568,66 @@ class SandboxHarness:
         self._closing = False
         self._invocations: set[asyncio.Task[Any]] = set()
         self._startup_waiters = 0
+        self._memory: EvaluationMemoryState | None = None
+        self._slots: asyncio.Semaphore | None = None
+
+    def initialize_resources(self) -> None:
+        if os.getenv(EVALUATION_RESOURCE_POLICY_ENV) == "1" and self._memory is None:
+            self._memory = EvaluationMemoryState()
+            self._slots = asyncio.Semaphore(10)
+
+    def resource_status(self) -> SandboxResourceStatus:
+        if self._memory is None:
+            return SandboxResourceStatus(counter_status="disabled", oom_kill_count=0, draining=False)
+        try:
+            return self._memory.refresh()
+        except (OSError, ValueError, KeyError, RuntimeError):
+            return SandboxResourceStatus(
+                counter_status="unavailable",
+                oom_kill_count=self._memory.oom_kill_count,
+                draining=self._memory.draining,
+            )
+
+    def _check_resources(self, *, started: bool = False) -> None:
+        status = self.resource_status()
+        if status.draining:
+            raise HTTPException(503, detail={"code": SANDBOX_OOM_AFFECTED if started else SANDBOX_OOM_DRAINING})
+        if status.counter_status == "unavailable":
+            raise HTTPException(503, detail={"code": "SandboxResourceUnavailable"})
 
     async def reserve(self, request: AdmissionRequest, headers: ToolHeaders) -> SandboxAdmission:
+        self._check_resources()
+        acquired = False
+        began = time.monotonic_ns()
+        try:
+            if self._slots is not None:
+                async with asyncio.timeout(request.limit_seconds):
+                    while True:
+                        self._check_resources()
+                        try:
+                            await asyncio.wait_for(self._slots.acquire(), 0.1)
+                            acquired = True
+                            break
+                        except TimeoutError:
+                            pass
+            self._check_resources()
+            return await self._reserve(request, headers, began=began)
+        except TimeoutError as exc:
+            if acquired and self._slots is not None:
+                self._slots.release()
+            raise HTTPException(
+                504, detail={"error": "admission deadline exceeded", "exception": "TimeoutError"}
+            ) from exc
+        except BaseException:
+            if acquired and self._slots is not None:
+                self._slots.release()
+            raise
+
+    async def _reserve(self, request: AdmissionRequest, headers: ToolHeaders, *, began: int) -> SandboxAdmission:
         del headers  # Admission does not carry credentials into the compiler.
         if self._closing:
             raise HTTPException(503, detail={"error": "sandbox closing"})
-        began = time.monotonic_ns()
+        self._check_resources()
         compiler = self._compiler
         if compiler is not None and (compiler.failure is not None or compiler.close_task is not None):
             await compiler.close()
@@ -520,13 +636,15 @@ class SandboxHarness:
             compiler = self._compiler
         if self._closing:
             raise HTTPException(503, detail={"error": "sandbox closing"})
+        self._check_resources()
         if compiler is None:
             path = self.artifact_path if self.artifact_path is not None else os.getenv("AGENT_PATH", "")
-            compiler = self._compiler = _Compiler(path)
+            compiler = self._compiler = _Compiler(path, self._memory)
         self._startup_waiters += 1
         try:
             failure = await asyncio.wait_for(asyncio.shield(compiler.ready), request.limit_seconds)
             if failure is not None and failure.code == "PreloadInfrastructureFailed":
+                self._check_resources()
                 self._unwrap_result(QueryResult(error=failure))
         except TimeoutError as exc:
             raise HTTPException(
@@ -541,6 +659,7 @@ class SandboxHarness:
         start = began if request.include_wait_in_budget else time.monotonic_ns()
         if self._closing:
             raise HTTPException(503, detail={"error": "sandbox closing"})
+        self._check_resources()
         admission = SandboxAdmission(
             reservation_id=uuid4().hex,
             generation=compiler.generation,
@@ -554,9 +673,15 @@ class SandboxHarness:
 
     def release(self, admission: SandboxAdmission) -> None:
         item = self._reservations.get(admission.reservation_id)
-        if item is not None and item.admission == admission:
+        if item is not None and item.admission == admission and not item.activated:
+            self._release_slot(admission)
+
+    def _release_slot(self, admission: SandboxAdmission) -> None:
+        item = self._reservations.pop(admission.reservation_id, None)
+        if item is not None:
             item.expiry.cancel()
-            self._reservations.pop(admission.reservation_id)
+            if self._slots is not None:
+                self._slots.release()
 
     async def close(self) -> None:
         self._closing = True
@@ -589,36 +714,46 @@ class SandboxHarness:
             raise HTTPException(409, detail={"error": "expired admission"})
         if item.activated:
             raise HTTPException(409, detail={"error": "admission already consumed"})
+        self._check_resources(started=True)
         item.activated = True
         item.expiry.cancel()
         task = asyncio.current_task()
         if task is not None:
             self._invocations.add(task)
+        cleanup_confirmed = True
         try:
             failure = compiler.ready.result()
             if failure is not None:
                 return self._unwrap_result(QueryResult(error=failure))
             remaining = (admission.deadline_monotonic_ns - time.monotonic_ns()) / 1e9
-            async with asyncio.timeout(max(0, remaining)):
+            async with asyncio.timeout(max(0, remaining)) as execution_deadline:
                 return await self._invoke_child(
                     compiler,
                     admission,
                     Invocation(entrypoint=entrypoint_name, payload=body.payload, context=context_data),
                     body.tool_config,
                     headers or {},
+                    execution_deadline=execution_deadline if self._memory is not None else None,
                 )
         except TimeoutError as exc:
+            self._check_resources(started=True)
             raise HTTPException(
                 504, detail={"error": "entrypoint deadline exceeded", "exception": "TimeoutError"}
             ) from exc
-        except (HTTPException, SandboxCleanupUnconfirmedError):
+        except SandboxCleanupUnconfirmedError:
+            cleanup_confirmed = False
+            raise
+        except HTTPException:
+            self._check_resources(started=True)
             raise
         except Exception as exc:
+            self._check_resources(started=True)
             raise HTTPException(
                 500, detail={"error": "entrypoint worker failed", "exception": type(exc).__name__}
             ) from exc
         finally:
-            self.release(admission)
+            if cleanup_confirmed and item.cleanup_confirmed:
+                self._release_slot(admission)
             if task is not None:
                 self._invocations.discard(task)
 
@@ -629,6 +764,8 @@ class SandboxHarness:
         request: Invocation,
         config: ToolConfig,
         headers: ToolHeaders,
+        *,
+        execution_deadline: asyncio.Timeout | None = None,
     ) -> Any:
         with contextlib.ExitStack() as resources:
             parent, child = socket.socketpair()
@@ -643,6 +780,7 @@ class SandboxHarness:
             calls: set[asyncio.Task[None]] = set()
             proxy = None
             active = True
+            result_received = False
             try:
                 for pipe, stream in ((stdout, "stdout"), (stderr, "stderr")):
                     outputs.append(
@@ -690,7 +828,11 @@ class SandboxHarness:
                             raise WorkerResultProtocolError("worker cannot report infrastructure failures")
                         active = False
                         await asyncio.gather(*calls, return_exceptions=True)
-                        return self._unwrap_result(message)
+                        result = self._unwrap_result(message)
+                        result_received = True
+                        if execution_deadline is not None:
+                            execution_deadline.reschedule(None)
+                        return result
                     if message.call_id in seen:
                         raise WorkerResultProtocolError("duplicate tool call id")
                     seen.add(message.call_id)
@@ -712,13 +854,27 @@ class SandboxHarness:
 
                 async def cleanup() -> None:
                     try:
-                        await compiler.stop_child(admission.reservation_id)
-                        await asyncio.gather(*outputs, *calls, return_exceptions=True)
-                    finally:
-                        if proxy is not None:
-                            await proxy.aclose()
+                        try:
+                            await compiler.stop_child(admission.reservation_id)
+                            await asyncio.gather(*outputs, *calls, return_exceptions=True)
+                        finally:
+                            if proxy is not None:
+                                await proxy.aclose()
+                    except Exception as exc:
+                        # Record ownership before the waiter can propagate caller cancellation.
+                        reservation = self._reservations.get(admission.reservation_id)
+                        if reservation is not None:
+                            reservation.cleanup_confirmed = False
+                        if isinstance(exc, SandboxCleanupUnconfirmedError):
+                            raise
+                        raise SandboxCleanupUnconfirmedError("worker cleanup remains unconfirmed") from exc
 
-                await self._await_owned_cleanup(asyncio.create_task(cleanup()))
+                try:
+                    await self._await_owned_cleanup(asyncio.create_task(cleanup()))
+                except SandboxCleanupUnconfirmedError:
+                    if not result_received or not compiler._oom_draining():
+                        raise
+                    logger.exception("preserving received OOM-drain result while retaining worker cleanup ownership")
 
     @staticmethod
     def _unwrap_result(result: QueryResult) -> Any:

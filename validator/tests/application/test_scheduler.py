@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -23,7 +24,8 @@ from harnyx_commons.domain.miner_task import (
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
 from harnyx_commons.infrastructure.state.session_registry import InMemorySessionRegistry
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
-from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager
+from harnyx_commons.sandbox.client import SandboxClient
+from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager, SandboxStartError
 from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_miner_sdk.sandbox_protocol import SandboxAdmission
 from harnyx_validator.application.dto.evaluation import (
@@ -198,7 +200,7 @@ def blocking_executor() -> ThreadPoolExecutor:
         executor.shutdown(wait=True, cancel_futures=True)
 
 
-class _AdmittingSandbox:
+class _AdmittingSandbox(SandboxClient):
     @asynccontextmanager
     async def admission(self, limit_seconds, token):
         yield SandboxAdmission(
@@ -902,3 +904,164 @@ async def test_evaluation_runner_issues_session_with_task_budget(
     )
     assert issued.session.task_id == task.task_id
     assert issued.session.budget_usd == pytest.approx(0.123)
+
+
+@pytest.mark.parametrize("removal_confirmed", [True, False])
+@pytest.mark.parametrize("startup_failed", [True, False])
+async def test_oom_replacement_waits_for_physical_removal(
+    monkeypatch, blocking_executor, removal_confirmed, startup_failed, caplog
+):
+    """Replacement capacity must never overlap an unremoved OOM deployment."""
+    caplog.set_level(logging.INFO, logger="harnyx_validator.scheduler")
+    events = []
+
+    class Manager(DummySandboxManager):
+        def start(self, options):
+            events.append("start")
+            deployment = super().start(options)
+            deployment = SandboxDeployment(client=deployment.client, identifier=f"container-{len(self.starts)}")
+            if startup_failed:
+                raise SandboxStartError("injected observer cleanup failure", unremoved_deployment=deployment)
+            return deployment
+
+        def stop(self, deployment):
+            events.append("stop")
+            super().stop(deployment)
+            return removal_confirmed
+
+    manager = Manager()
+    task = _task("remaining")
+    artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
+    batch_id = uuid4()
+    assignment = MinerTaskWorkAssignment(
+        batch_id=batch_id,
+        artifact=artifact,
+        task=task,
+        attempt_number=1,
+        max_attempts=3,
+        assignment_token=_ASSIGNMENT_TOKEN,
+    )
+    work = _AssignedWork()
+    scheduler = EvaluationScheduler(
+        tasks=(task,),
+        subtensor_client=FakeSubtensorClient(),
+        sandbox_manager=manager,
+        session_manager=SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry()),
+        evaluation_records=DummyEvaluationRecordStore(),
+        receipt_log=DummyReceiptLog(),
+        blocking_executor=blocking_executor,
+        orchestrator_factory=lambda client: client,
+        sandbox_options_factory=lambda artifact: None,
+        clock=lambda: datetime.now(UTC),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300),
+        progress=DummyProgressRecorder(),
+    )
+    calls = []
+
+    async def run_queue(**kwargs):
+        assert kwargs["assigned_work"] is work
+        calls.append(kwargs["initial_assignments"])
+        return len(calls) == 1
+
+    monkeypatch.setattr(scheduler._runner, "evaluate_assigned_task_queue", run_queue)
+    invocation = scheduler.run_assigned_artifact_queue(
+        batch_id=batch_id,
+        artifact=artifact,
+        initial_assignments=(assignment,),
+        assigned_work=work,
+        close_requested=asyncio.Event(),
+        result_queue=asyncio.Queue(),
+    )
+    if startup_failed:
+        await invocation
+        assert not calls
+        assert len(manager.starts) == (2 if removal_confirmed else 1)
+        assert events == ["start", "stop"] * len(manager.starts)
+    elif removal_confirmed:
+        await invocation
+        assert calls == [(assignment,), ()]
+        assert events == ["start", "stop", "start", "stop"]
+    else:
+        with pytest.raises(RuntimeError, match="removal remains unconfirmed"):
+            await invocation
+        assert calls == [(assignment,)]
+        assert events == ["start", "stop", "stop"]
+
+    if not startup_failed:
+        retirements = [record for record in caplog.records if record.message == "sandbox OOM retirement completed"]
+        assert len(retirements) == 1
+        assert retirements[0].removal_confirmed is removal_confirmed
+        assert retirements[0].container == "container-1"
+        assert retirements[0].batch_id == str(batch_id)
+        ready = [record for record in caplog.records if record.message == "sandbox evaluation deployment ready"]
+        assert len(ready) == (2 if removal_confirmed else 1)
+        if removal_confirmed:
+            assert ready[1].container == "container-2"
+            assert ready[1].replaced_container == "container-1"
+
+
+@pytest.mark.parametrize("remaining_work", [True, False])
+async def test_oom_replacement_startup_failure_never_reuses_completed_assignment(
+    monkeypatch, blocking_executor, remaining_work
+):
+    """A failed replacement must report remaining work, never conflict with an immutable result."""
+
+    class Manager(DummySandboxManager):
+        def start(self, options):
+            deployment = super().start(options)
+            if len(self.starts) > 1:
+                raise RuntimeError("replacement daemon unavailable")
+            return deployment
+
+    manager = Manager()
+    tasks = (_task("completed before replacement"), _task("not started"))
+    artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
+    batch_id = uuid4()
+    assignments = tuple(
+        MinerTaskWorkAssignment(
+            batch_id=batch_id,
+            artifact=artifact,
+            task=task,
+            attempt_number=1,
+            max_attempts=3,
+            assignment_token=f"assignment-{index}",
+        )
+        for index, task in enumerate(tasks)
+    )
+    work = _AssignedWork((assignments[1],) if remaining_work else ())
+    results = asyncio.Queue()
+    scheduler = EvaluationScheduler(
+        tasks=tasks,
+        subtensor_client=FakeSubtensorClient(),
+        sandbox_manager=manager,
+        session_manager=SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry()),
+        evaluation_records=DummyEvaluationRecordStore(),
+        receipt_log=DummyReceiptLog(),
+        blocking_executor=blocking_executor,
+        orchestrator_factory=lambda client: client,
+        sandbox_options_factory=lambda artifact: None,
+        clock=lambda: datetime.now(UTC),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300),
+        progress=DummyProgressRecorder(),
+    )
+
+    async def completed_and_drained(**kwargs):
+        assert kwargs["initial_assignments"] == (assignments[0],)
+        # The initial assignment has a finalized/staged result; only work.queue remains unstarted.
+        return True
+
+    monkeypatch.setattr(scheduler._runner, "evaluate_assigned_task_queue", completed_and_drained)
+    await scheduler.run_assigned_artifact_queue(
+        batch_id=batch_id,
+        artifact=artifact,
+        initial_assignments=(assignments[0],),
+        assigned_work=work,
+        close_requested=asyncio.Event(),
+        result_queue=results,
+    )
+    if remaining_work:
+        failure = results.get_nowait()
+        assert failure.task_id == tasks[1].task_id
+        assert failure.terminal_attempt.error_code == str(MinerTaskErrorCode.SANDBOX_START_FAILED)
+        assert failure.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE
+    assert results.empty()

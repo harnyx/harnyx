@@ -114,6 +114,7 @@ def build_sandbox_options(
     extra_env: dict[str, str] | None = None,
     host_container_url: str | None = None,
     labels: Mapping[str, str] | None = None,
+    security: ContainerSecurity = CONTAINER_SECURITY,
 ) -> SandboxOptions:
     """Build hardened sandbox options shared by platform and validator."""
 
@@ -151,7 +152,7 @@ def build_sandbox_options(
         user=CONTAINER_SECURITY.user,
         seccomp_profile=default_profile_path(),
         ulimits=CONTAINER_SECURITY.ulimits,
-        extra_args=CONTAINER_SECURITY.extra_args,
+        extra_args=security.extra_args,
         labels=labels or {},
     )
 

@@ -19,7 +19,7 @@ from harnyx_miner_sdk.sandbox_headers import (
     read_platform_token_header,
     read_session_id_header,
 )
-from harnyx_miner_sdk.sandbox_protocol import AdmissionRequest, SandboxAdmission
+from harnyx_miner_sdk.sandbox_protocol import AdmissionRequest, SandboxAdmission, SandboxResourceStatus
 from harnyx_miner_sdk.tools.proxy import PLATFORM_TOOL_PROXY_SANDBOX_REQUEST_TIMEOUT_SECONDS
 from harnyx_sandbox.sandbox.harness import (
     SandboxCleanupUnconfirmedError,
@@ -76,6 +76,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if not token:
         raise RuntimeError("SANDBOX_CONTROL_TOKEN is required")
     app.state.control_token = token
+    sandbox_harness.initialize_resources()
     logger.info("harnyx-sandbox starting up")
     try:
         yield
@@ -108,6 +109,11 @@ async def reserve_admission(body: AdmissionRequest, request: Request) -> Sandbox
 async def release_admission(body: SandboxAdmission) -> dict[str, bool]:
     sandbox_harness.release(body)
     return {"ok": True}
+
+
+@app.get("/resources", dependencies=[Depends(require_control_token)])
+async def resources() -> SandboxResourceStatus:
+    return sandbox_harness.resource_status()
 
 
 @app.get("/healthz", tags=["health"], description="Sandbox health check.")

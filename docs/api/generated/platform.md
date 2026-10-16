@@ -6156,6 +6156,7 @@ Body: [StatusResponse](#model-statusresponse)
     "provider_batch_failure",
     "sandbox_failed",
     "sandbox_invocation_failed",
+    "sandbox_oom_affected",
     "sandbox_start_failed",
     "scoring_llm_retry_exhausted",
     "script_validation_failed",

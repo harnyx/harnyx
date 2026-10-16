@@ -47,7 +47,7 @@ from harnyx_commons.miner_task_scoring import (
 )
 from harnyx_commons.sandbox.docker import DockerSandboxManager
 from harnyx_commons.sandbox.options import SandboxOptions
-from harnyx_commons.sandbox.runtime import build_sandbox_options, create_sandbox_manager
+from harnyx_commons.sandbox.runtime import ContainerSecurity, build_sandbox_options, create_sandbox_manager
 from harnyx_commons.tools.decision_models import DecisionQueryRequest
 from harnyx_commons.tools.dto import ToolInvocationRequest, tool_payload_for_invocation
 from harnyx_commons.tools.embedding_models import parse_miner_selected_embedding_provider_model
@@ -67,6 +67,7 @@ from harnyx_commons.tools.search_models import SearchProviderName
 from harnyx_commons.tools.token_semaphore import DEFAULT_TOOL_CONCURRENCY_LIMITS, ToolConcurrencyLimiter
 from harnyx_commons.tools.usage_tracker import UsageTracker
 from harnyx_miner_sdk.endpoint_protocol import EndpointDelegation
+from harnyx_miner_sdk.sandbox_protocol import EVALUATION_RESOURCE_POLICY_ENV
 from harnyx_validator.application.assigned_work import AssignedArtifactWork
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskBatchSpec,
@@ -562,7 +563,7 @@ def _build_platform_work_worker(
         execute_artifact_assignments=execute_artifact_assignments,
         score_execution_by_model=score_execution_by_model,
         scoring_slot_config=_SCORING_SLOT_CONFIG,
-        target_concurrency=config.artifact_task_parallelism,
+        target_concurrency=20,
         max_active_artifacts=config.artifact_parallelism,
     )
 
@@ -1189,6 +1190,8 @@ def _make_options_factory(resolved: Settings) -> Callable[[], SandboxOptions]:
             rpc_port=resolved.rpc_port,
             container_name="harnyx-sandbox-smoke",
             labels={_SANDBOX_CPUSET_LABEL: cpuset_cpus},
+            security=ContainerSecurity(memory="1536m"),
+            extra_env={EVALUATION_RESOURCE_POLICY_ENV: "1"},
         )
         return replace(
             base_options,

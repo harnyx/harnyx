@@ -401,6 +401,7 @@ class MinerTaskErrorCode(StrEnum):
     PROVIDER_BATCH_FAILURE = "provider_batch_failure"
     SANDBOX_FAILED = "sandbox_failed"
     SANDBOX_INVOCATION_FAILED = "sandbox_invocation_failed"
+    SANDBOX_OOM_AFFECTED = "sandbox_oom_affected"
     SANDBOX_START_FAILED = "sandbox_start_failed"
     SCORING_LLM_RETRY_EXHAUSTED = "scoring_llm_retry_exhausted"
     SCRIPT_VALIDATION_FAILED = "script_validation_failed"
@@ -430,6 +431,7 @@ DELIVERY_DISQUALIFYING_VALIDATOR_PAIR_ERROR_CODES: frozenset[MinerTaskErrorCode]
 
 MINER_ATTRIBUTED_PAIR_ERROR_CODES: frozenset[MinerTaskErrorCode] = frozenset(
     (
+        MinerTaskErrorCode.SANDBOX_OOM_AFFECTED,
         MinerTaskErrorCode.MINER_RESPONSE_INVALID,
         MinerTaskErrorCode.MINER_UNHANDLED_EXCEPTION,
         MinerTaskErrorCode.SCRIPT_VALIDATION_FAILED,

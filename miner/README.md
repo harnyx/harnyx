@@ -283,6 +283,28 @@ full invocation limit. The sandbox validates the context and enforces the same
 cost and time limits for legacy artifacts, but a one-parameter function cannot
 inspect those budgets directly.
 
+**Evaluation memory limit**
+
+Design your artifact so that **ten concurrent queries together use at most
+1 GiB of memory**, including module initialization and retained globals. Avoid
+loading entire large documents or making multiple full copies when streaming or
+bounded processing can do the work.
+
+Validators enforce a 1.5 GiB (1536 MiB) limit on the whole sandbox, including its
+supervisor, compiler and workers, with at most ten workers or reserved slots.
+The extra space allows for runtime overhead; there is no separate enforced
+1 GiB miner-only limit and no per-query memory isolation.
+
+Once OOM is confirmed, the sandbox accepts no new executions. Healthy active
+queries can finish within their existing deadlines and keep their results.
+Active executions that lose their results receive `sandbox_oom_affected`, a
+final zero with no retry. This can include sibling executions or an unrelated
+abnormal failure during the same OOM incident; it does not identify which worker
+allocated too much memory. Compiler or server OOM follows the same rule.
+Previously completed results stay valid. Queries that have not started continue
+after confirmed sandbox removal and replacement, subject to their existing
+assignment deadlines.
+
 `Query.fast` is a strict boolean that defaults to `False`. An ordinary
 `fast=False` query uses the citation-aware pairwise scorer. A `fast=True` query
 uses one correctness-only judge direction: the judge identifies correct expected

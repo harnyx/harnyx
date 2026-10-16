@@ -49,6 +49,11 @@ async def probe(request: dict[str, object]) -> dict[str, object]:
             pass
     if mode == "sleep":
         await asyncio.sleep(0.1)
+    if mode == "wait_for_release":
+        with open(request["started_path"], "w") as started:
+            started.write(str(os.getpid()))
+        while not os.path.exists(request["release_path"]):
+            await asyncio.sleep(0.001)
     if mode == "cancel":
         raise asyncio.CancelledError()
     if mode == "crash":
@@ -676,3 +681,268 @@ async def decision(request: dict[str, object]) -> object:
             }
     finally:
         await runtime.close()
+
+
+async def test_confirmed_oom_compiler_death_preserves_healthy_children(harness, tmp_path):
+    """Future failure: compiler teardown or first-child cleanup kills recoverable siblings."""
+    from harnyx_sandbox.sandbox.memory import EvaluationMemoryState
+
+    counter = tmp_path / "memory.events.local"
+    counter.write_text("oom_kill 0\n")
+    harness._memory = EvaluationMemoryState(counter)
+    harness._slots = asyncio.Semaphore(10)
+    await harness.invoke("probe", body())
+    compiler = harness._compiler
+    started = [tmp_path / f"started-{index}" for index in range(3)]
+    release = tmp_path / "release"
+    active = [
+        asyncio.create_task(
+            harness.invoke(
+                "probe",
+                body({"mode": "wait_for_release", "started_path": str(marker), "release_path": str(release)}),
+            )
+        )
+        for marker in started
+    ]
+    async with asyncio.timeout(5):
+        # spawned only confirms activate was sent; entrypoint markers prove execution.
+        while not all(marker.exists() for marker in started):
+            await asyncio.sleep(0.001)
+    # Deterministic trusted-evidence fixture; real kernel OOM is covered by the Docker lane.
+    counter.write_text("oom_kill 1\n")
+    os.kill(compiler.process.pid, signal.SIGKILL)
+    release.touch()
+    results = await asyncio.wait_for(asyncio.gather(*active), 5)
+    assert all(result["counter"] == 1 for result in results)
+    assert not compiler.children
+    assert harness._slots._value == 10
+    with pytest.raises(HTTPException) as rejected:
+        await harness.invoke("probe", body())
+    assert rejected.value.detail["code"] == "SandboxOomDraining"
+    with pytest.raises(ChildProcessError):
+        os.waitpid(-compiler.process.pid, os.WNOHANG)
+
+
+async def test_confirmed_oom_compiler_death_before_activation_preserves_running_sibling(harness, tmp_path, monkeypatch):
+    """Compiler loss before gate consumption fails that invocation without killing running siblings."""
+    from harnyx_sandbox.sandbox.memory import EvaluationMemoryState
+
+    counter = tmp_path / "memory.events.local"
+    counter.write_text("oom_kill 0\n")
+    harness._memory = EvaluationMemoryState(counter)
+    harness._slots = asyncio.Semaphore(10)
+    healthy_reservation = await harness.reserve(AdmissionRequest(limit_seconds=5), {})
+    blocked_reservation = await harness.reserve(AdmissionRequest(limit_seconds=5), {})
+    started = tmp_path / "started"
+    release = tmp_path / "release"
+    healthy_body = body({"mode": "wait_for_release", "started_path": str(started), "release_path": str(release)})
+    healthy_body.admission = healthy_reservation
+    healthy = asyncio.create_task(harness.invoke("probe", healthy_body))
+    async with asyncio.timeout(5):
+        while not started.exists():
+            await asyncio.sleep(0.001)
+
+    compiler = harness._compiler
+    original_command = compiler.command
+
+    async def queue_activation(value, fds=()):
+        if value == {"kind": "activate", "id": blocked_reservation.reservation_id}:
+            os.kill(compiler.process.pid, signal.SIGSTOP)
+            async with asyncio.timeout(5):
+                while True:
+                    pid, status = os.waitpid(compiler.process.pid, os.WUNTRACED | os.WNOHANG)
+                    if pid:
+                        assert os.WIFSTOPPED(status)
+                        break
+                    await asyncio.sleep(0.001)
+        await original_command(value, fds)
+
+    monkeypatch.setattr(compiler, "command", queue_activation)
+    blocked_body = body()
+    blocked_body.admission = blocked_reservation
+    blocked = asyncio.create_task(harness.invoke("probe", blocked_body))
+    try:
+        async with asyncio.timeout(5):
+            while (
+                blocked_reservation.reservation_id not in compiler.children
+                or not compiler.children[blocked_reservation.reservation_id].spawned.done()
+            ):
+                await asyncio.sleep(0.001)
+        counter.write_text("oom_kill 1\n")
+        os.kill(compiler.process.pid, signal.SIGKILL)
+        with pytest.raises(HTTPException) as failed:
+            await asyncio.wait_for(blocked, 5)
+        assert failed.value.status_code == 503
+        assert failed.value.detail["code"] == "SandboxOomAffected"
+        assert not healthy.done()
+        release.touch()
+        assert (await asyncio.wait_for(healthy, 5))["counter"] == 1
+        assert not compiler.children
+        assert not harness._reservations
+        assert harness._slots._value == 10
+        with pytest.raises(ChildProcessError):
+            os.waitpid(-compiler.process.pid, os.WNOHANG)
+    finally:
+        if compiler.process.poll() is None:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(compiler.process.pid, signal.SIGCONT)
+
+
+async def test_oom_gate_at_activation_preserves_already_running_worker(harness, tmp_path, monkeypatch):
+    """OOM after fork but before activation must not execute the gated child or kill its sibling."""
+    from harnyx_sandbox.sandbox.memory import EvaluationMemoryState
+
+    counter = tmp_path / "memory.events.local"
+    counter.write_text("oom_kill 0\n")
+    harness._memory = EvaluationMemoryState(counter)
+    harness._slots = asyncio.Semaphore(10)
+    healthy_reservation = await harness.reserve(AdmissionRequest(limit_seconds=5), {})
+    blocked_reservation = await harness.reserve(AdmissionRequest(limit_seconds=5), {})
+    started = tmp_path / "started"
+    release = tmp_path / "release"
+    healthy_body = body({"mode": "wait_for_release", "started_path": str(started), "release_path": str(release)})
+    healthy_body.admission = healthy_reservation
+    healthy = asyncio.create_task(harness.invoke("probe", healthy_body))
+    compiler = harness._compiler
+    async with asyncio.timeout(5):
+        while not started.exists():
+            await asyncio.sleep(0.001)
+    original = compiler.command
+
+    async def command(value, fds=()):
+        if value == {"kind": "activate", "id": blocked_reservation.reservation_id}:
+            counter.write_text("oom_kill 1\n")
+        return await original(value, fds)
+
+    monkeypatch.setattr(compiler, "command", command)
+    blocked_body = body()
+    blocked_body.admission = blocked_reservation
+    with pytest.raises(HTTPException) as failure:
+        await harness.invoke("probe", blocked_body)
+    assert failure.value.detail["code"] == "SandboxOomAffected"
+    assert not healthy.done()
+    release.touch()
+    assert (await healthy)["counter"] == 1
+    assert not compiler.children
+    assert harness._slots._value == 10
+
+
+@pytest.mark.parametrize("failure_source", ["unconfirmed", "process", "proxy"])
+@pytest.mark.parametrize("external_cancel", [False, True])
+async def test_received_oom_result_survives_unconfirmed_cleanup(
+    harness, tmp_path, monkeypatch, failure_source, external_cancel
+):
+    """A received success stays valid while unconfirmed cleanup retains its slot and handle."""
+    from harnyx_sandbox.sandbox.memory import EvaluationMemoryState
+
+    counter = tmp_path / "memory.events.local"
+    counter.write_text("oom_kill 0\n")
+    harness._memory = EvaluationMemoryState(counter)
+    harness._slots = asyncio.Semaphore(10)
+    admission = await harness.reserve(AdmissionRequest(limit_seconds=5), {})
+    compiler = harness._compiler
+    cleaning = asyncio.Event()
+    fail_cleanup = asyncio.Event()
+
+    async def cleanup_failure():
+        counter.write_text("oom_kill 1\n")
+        cleaning.set()
+        await fail_cleanup.wait()
+        if failure_source == "unconfirmed":
+            raise harness_module.SandboxCleanupUnconfirmedError("injected cleanup uncertainty")
+        if failure_source == "process":
+            raise OSError("injected process-handle cleanup failure")
+        raise RuntimeError("injected proxy close failure")
+
+    if failure_source == "proxy":
+
+        class Proxy:
+            async def aclose(self):
+                await cleanup_failure()
+
+        harness._tool_factory = lambda _config, _headers: Proxy()
+    else:
+
+        async def uncertain_stop(key):
+            await cleanup_failure()
+
+        monkeypatch.setattr(compiler, "stop_child", uncertain_stop)
+    request = body()
+    request.admission = admission
+    invocation = asyncio.create_task(harness.invoke("probe", request))
+    await asyncio.wait_for(cleaning.wait(), 2)
+    if external_cancel:
+        invocation.cancel()
+    fail_cleanup.set()
+    if external_cancel:
+        with pytest.raises(asyncio.CancelledError):
+            await invocation
+    else:
+        assert (await invocation)["counter"] == 1
+    if failure_source != "proxy":
+        assert compiler.children[admission.reservation_id].pidfd >= 0
+    assert not harness._reservations[admission.reservation_id].cleanup_confirmed
+    assert harness._slots._value == 9
+    await compiler.close()
+    assert not compiler.children
+
+
+async def test_cleanup_failure_without_oom_retains_ownership_and_reports_uncertainty(harness, tmp_path, monkeypatch):
+    """A cleanup error alone must not be accepted as success or manufacture an OOM penalty."""
+    from harnyx_sandbox.sandbox.memory import EvaluationMemoryState
+
+    counter = tmp_path / "memory.events.local"
+    counter.write_text("oom_kill 0\n")
+    harness._memory = EvaluationMemoryState(counter)
+    harness._slots = asyncio.Semaphore(10)
+    admission = await harness.reserve(AdmissionRequest(limit_seconds=5), {})
+    compiler = harness._compiler
+
+    async def uncertain_stop(key):
+        raise OSError("injected process-handle cleanup failure")
+
+    monkeypatch.setattr(compiler, "stop_child", uncertain_stop)
+    request = body()
+    request.admission = admission
+    with pytest.raises(harness_module.SandboxCleanupUnconfirmedError) as error:
+        await harness.invoke("probe", request)
+    assert isinstance(error.value.__cause__, OSError)
+    assert not harness.resource_status().draining
+    assert compiler.children[admission.reservation_id].pidfd >= 0
+    assert not harness._reservations[admission.reservation_id].cleanup_confirmed
+    assert harness._slots._value == 9
+    await compiler.close()
+
+
+@pytest.mark.parametrize("external_cancel", [False, True])
+async def test_received_oom_result_cleanup_outlives_execution_deadline(harness, tmp_path, monkeypatch, external_cancel):
+    """An expired execution deadline cannot erase success; caller cancellation still propagates."""
+    from harnyx_sandbox.sandbox.memory import EvaluationMemoryState
+
+    counter = tmp_path / "memory.events.local"
+    counter.write_text("oom_kill 0\n")
+    harness._memory = EvaluationMemoryState(counter)
+    harness._slots = asyncio.Semaphore(10)
+    await harness.invoke("probe", body())  # Compile before the short execution budget.
+    compiler = harness._compiler
+    original_stop = compiler.stop_child
+    cleaning = asyncio.Event()
+
+    async def slow_stop(key):
+        counter.write_text("oom_kill 1\n")
+        cleaning.set()
+        await asyncio.sleep(0.3)
+        await original_stop(key)
+
+    monkeypatch.setattr(compiler, "stop_child", slow_stop)
+    invocation = asyncio.create_task(harness.invoke("probe", body(seconds=0.2)))
+    await asyncio.wait_for(cleaning.wait(), 2)
+    if external_cancel:
+        invocation.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await invocation
+    else:
+        assert (await invocation)["counter"] == 1
+    assert not compiler.children
+    assert not harness._reservations
+    assert harness._slots._value == 10

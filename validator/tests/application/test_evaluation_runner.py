@@ -38,6 +38,7 @@ from harnyx_commons.domain.tool_usage import SearchToolUsageSummary, ToolUsageSu
 from harnyx_commons.errors import SessionBudgetExhaustedError
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
+from harnyx_commons.sandbox.client import SandboxClient
 from harnyx_miner_sdk.sandbox_protocol import SandboxAdmission
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptAuditRecord,
@@ -83,7 +84,7 @@ _FAILED_ASSIGNMENT_TOKEN = "failed-assignment-token"  # noqa: S105 - fixed test-
 _COMPLETED_ASSIGNMENT_TOKEN = "completed-assignment-token"  # noqa: S105 - fixed test-only assignment token
 
 
-class _AdmittingSandbox:
+class _AdmittingSandbox(SandboxClient):
     @asynccontextmanager
     async def admission(self, limit_seconds, token):
         yield SandboxAdmission(
@@ -585,7 +586,7 @@ async def test_evaluate_assigned_task_queue_success_queues_execution_before_scor
     admit = asyncio.Event()
     assigned_work = _AssignedWork()
 
-    class _PausedSandbox:
+    class _PausedSandbox(SandboxClient):
         @asynccontextmanager
         async def admission(self, limit_seconds, token):
             from harnyx_commons.sandbox.docker import HttpSandboxClient
@@ -5541,3 +5542,213 @@ def test_unpriced_failed_decision_receipt_keeps_actual_total_unknown() -> None:
     assert usage.actual_total_cost_usd is None
     assert usage.total_cost_usd == 0
     assert usage.actual_cost_by_provider == {}
+
+
+async def test_oom_affected_attempt_is_final_zero_even_with_attempts_remaining(tmp_path: Path) -> None:
+    """An OOM-affected execution must not retry or fail the delivery."""
+    from harnyx_miner_sdk.sandbox_protocol import SANDBOX_OOM_AFFECTED
+
+    runner, batch_id, artifact, task, _, _, _, _ = _assigned_task_test_context(tmp_path)
+
+    class OomOrchestrator:
+        async def evaluate(self, request):
+            raise _sandbox_invocation_error("lost worker", status_code=503, detail_code=SANDBOX_OOM_AFFECTED)
+
+    result = await runner.evaluate_assigned_task(
+        batch_id=batch_id,
+        artifact=artifact,
+        task=task,
+        attempt_number=1,
+        max_attempts=3,
+        assignment_token=_ASSIGNMENT_TOKEN,
+        orchestrator=cast(TaskRunOrchestrator, OomOrchestrator()),
+    )
+    assert result.result is not None
+    assert result.result.score == 0
+    attempt = result.terminal_attempt
+    assert attempt.error_code == str(MinerTaskErrorCode.SANDBOX_OOM_AFFECTED)
+    assert attempt.retry_decision is MinerTaskAttemptRetryDecision.WILL_NOT_RETRY
+    assert attempt.terminal_effect is MinerTaskAttemptTerminalEffect.TASK_RESULT
+    assert attempt.delivery_failure_detail is None
+
+
+async def test_oom_drain_preserves_success_and_returns_unstarted_claims(tmp_path: Path, caplog) -> None:
+    """Draining must preserve healthy siblings and leave admission waiters unscored."""
+    from harnyx_miner_sdk.sandbox_protocol import SANDBOX_OOM_AFFECTED, SandboxResourceStatus
+    from harnyx_validator.runtime.platform_work_worker import _ArtifactGroupState, _AssignedArtifactGroup
+
+    caplog.set_level(logging.INFO, logger="harnyx_validator.scheduler")
+    runner, batch_id, artifact, first_task, sessions, _, _, _ = _assigned_task_test_context(tmp_path)
+    tasks = (first_task, *(first_task.model_copy(update={"task_id": uuid4()}) for _ in range(2)))
+    assignments = tuple(
+        MinerTaskWorkAssignment(
+            batch_id=batch_id,
+            artifact=artifact,
+            task=task,
+            attempt_number=1,
+            max_attempts=3,
+            assignment_token=f"assignment-{index}",
+        )
+        for index, task in enumerate(tasks)
+    )
+    queue = asyncio.Queue()
+    close = asyncio.Event()
+    group = _AssignedArtifactGroup(
+        artifact_id=artifact.artifact_id,
+        state=_ArtifactGroupState.OPEN,
+        assignment_queue=asyncio.Queue(),
+        close_requested=close,
+        result_queue=queue,
+        assignment_records={},
+        starting_records={},
+        monotonic_clock=time.monotonic,
+    )
+    for assignment in assignments:
+        group.put_nowait(assignment)
+    group.mark_dispatch_ready()
+    initial = group.take_nowait_for_startup()
+    all_admitted = asyncio.Event()
+    healthy_started = asyncio.Event()
+    waiting = asyncio.Event()
+    oom = asyncio.Event()
+
+    class Sandbox(_AdmittingSandbox):
+        @property
+        def draining(self):
+            return oom.is_set()
+
+        async def resource_status(self):
+            return SandboxResourceStatus(
+                counter_status="ready", oom_kill_count=int(self.draining), draining=self.draining
+            )
+
+        @asynccontextmanager
+        async def admission(self, limit_seconds, token):
+            if token == assignments[2].assignment_token:
+                waiting.set()
+                await asyncio.Future()
+            async with super().admission(limit_seconds, token) as admission:
+                yield admission
+
+    class Orchestrator:
+        async def evaluate(self, request):
+            if request.task.task_id == tasks[0].task_id:
+                await healthy_started.wait()
+                await waiting.wait()
+                oom.set()
+                all_admitted.set()
+                raise _sandbox_invocation_error("lost worker", status_code=503, detail_code=SANDBOX_OOM_AFFECTED)
+            healthy_started.set()
+            await all_admitted.wait()
+            await asyncio.sleep(0.15)  # Complete after the resource watcher closes admission.
+            return _successful_outcome(request)
+
+    drained = await asyncio.wait_for(
+        runner.evaluate_assigned_task_queue(
+            batch_id=batch_id,
+            artifact=artifact,
+            initial_assignments=(initial,),
+            assigned_work=group,
+            close_requested=close,
+            result_queue=queue,
+            orchestrator=cast(TaskRunOrchestrator, Orchestrator()),
+            sandbox_client=Sandbox(),
+            sandbox_identifier="oom-container",
+        ),
+        3,
+    )
+    assert drained is True
+    assert not close.is_set()
+    results = [queue.get_nowait(), queue.get_nowait()]
+    by_task = {result.task_id: result for result in results}
+    assert by_task[tasks[0].task_id].result.score == 0
+    assert by_task[tasks[1].task_id].result.score > 0
+    assert all(
+        result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.TASK_RESULT for result in results
+    )
+    assert queue.empty()
+    returned = group.claim_nowait_for_dispatch()
+    assert returned.assignment == assignments[2]
+    assert returned.remaining_dispatch_seconds() < 300
+    assert not group.starting_records.keys() - {returned.key}
+    assert not sessions._sessions
+
+    transitions = [record for record in caplog.records if record.message == "sandbox OOM draining started"]
+    assert len(transitions) == 1
+    transition = transitions[0]
+    assert transition.container == "oom-container"
+    assert transition.batch_id == str(batch_id)
+    assert transition.artifact_id == str(artifact.artifact_id)
+    started = [attempt for attempt in transition.active_attempts if attempt["session_id"] is not None]
+    assert started
+    assert all(attempt["compiler_generation"] is not None for attempt in started)
+    settled = [record for record in caplog.records if record.message == "sandbox OOM attempt settled"]
+    assert any(record.result_preserved for record in settled)
+
+
+async def test_external_oom_after_admission_returns_claim_without_starting_session(tmp_path: Path) -> None:
+    """Observed OOM before session start must return the original lease without a zero result."""
+    from harnyx_commons.sandbox.docker import HttpSandboxClient
+    from harnyx_validator.runtime.platform_work_worker import _ArtifactGroupState, _AssignedArtifactGroup
+
+    runner, batch_id, artifact, task, sessions, _, _, _ = _assigned_task_test_context(tmp_path)
+    assignment = MinerTaskWorkAssignment(
+        batch_id=batch_id,
+        artifact=artifact,
+        task=task,
+        attempt_number=1,
+        max_attempts=3,
+        assignment_token=uuid4().hex,
+    )
+    group = _AssignedArtifactGroup(
+        artifact_id=artifact.artifact_id,
+        state=_ArtifactGroupState.OPEN,
+        assignment_queue=asyncio.Queue(),
+        close_requested=asyncio.Event(),
+        result_queue=asyncio.Queue(),
+        assignment_records={},
+        starting_records={},
+        monotonic_clock=time.monotonic,
+    )
+    group.put_nowait(assignment)
+    group.mark_dispatch_ready()
+    claimed = group.claim_nowait_for_dispatch()
+    lease_before = claimed.remaining_dispatch_seconds()
+    observed = False
+    requests = []
+
+    async def handler(request):
+        nonlocal observed
+        requests.append(request.url.path)
+        if request.url.path == "/admission":
+            observed = True
+            return httpx.Response(
+                200,
+                json={
+                    "reservation_id": "reserved",
+                    "generation": "compiler-before-oom",
+                    "deadline_monotonic_ns": 99999999999999999,
+                },
+            )
+        assert request.url.path == "/admission/release"
+        return httpx.Response(200, json={})
+
+    class Orchestrator:
+        async def evaluate(self, request):
+            raise AssertionError("unstarted query must not run on a retired sandbox")
+
+    async with httpx.AsyncClient(base_url="http://sandbox.local", transport=httpx.MockTransport(handler)) as http:
+        client = HttpSandboxClient("http://sandbox.local", control_token=uuid4().hex, client=http)
+        client.configure_resources(lambda: observed, lambda: None)
+        outcome = await runner._run_admitted_assignment(
+            runner._assigned_attempt_lifecycle(batch_id=batch_id, artifact=artifact, claimed=claimed),
+            orchestrator=cast(TaskRunOrchestrator, Orchestrator()),
+            sandbox_client=client,
+        )
+    assert outcome.result_to_queue is None
+    assert not sessions._sessions
+    assert group.result_queue.empty()
+    returned = group.claim_nowait_for_dispatch()
+    assert returned.assignment == assignment
+    assert 0 < returned.remaining_dispatch_seconds() <= lease_before
+    assert requests == ["/admission", "/admission/release"]

@@ -56,6 +56,17 @@ def signal_process_handle(fd: int, number: int) -> None:
         raise OSError(ctypes.get_errno(), "cannot signal worker process handle")
 
 
+def reap_process_handle(fd: int) -> None:
+    """Reap an already-exited adopted child using its pinned process handle."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    info = ctypes.create_string_buffer(128)  # Linux siginfo_t; result status is not used for attribution.
+    # Linux P_PIDFD is 3. Some supported CPython builds omit os.P_PIDFD despite kernel support.
+    if libc.waitid(3, fd, ctypes.byref(info), os.WEXITED) != 0:
+        number = ctypes.get_errno()
+        if number != errno.ECHILD:  # The compiler may already have reaped the exited child.
+            raise OSError(number, "cannot reap adopted worker process handle")
+
+
 def protect_process(*, subreaper: bool = False) -> None:
     """Prevent same-UID processes reading this process's memory and descriptors."""
     libc = ctypes.CDLL(None, use_errno=True)
