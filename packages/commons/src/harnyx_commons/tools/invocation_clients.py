@@ -10,7 +10,7 @@ from typing import Annotated, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, SecretStr, ValidationError
 
-from harnyx_commons.clients import DESEARCH, EXA, EXPAND, FIRECRAWL, PARALLEL, TAVILY
+from harnyx_commons.clients import DEEPSEEK, DESEARCH, EXA, EXPAND, FIRECRAWL, PARALLEL, TAVILY
 from harnyx_commons.config.bedrock import BedrockSettings
 from harnyx_commons.config.llm import (
     AI_SEARCH_PROVIDER_NAMES,
@@ -49,6 +49,7 @@ from harnyx_commons.tools.decision_models import (
     parse_decision_provider,
     validate_decision_answers,
 )
+from harnyx_commons.tools.deepseek import DeepSeekClient
 from harnyx_commons.tools.desearch import DeSearchClient
 from harnyx_commons.tools.embedding_models import (
     QWEN3_DEFAULT_QUERY_INSTRUCTION,
@@ -288,6 +289,12 @@ def build_web_search_provider_for_name(
             max_concurrent=llm_settings.exa_max_concurrent,
             include_payloads_in_logs=include_payloads_in_logs,
         )
+    if provider_name == "deepseek":
+        return DeepSeekClient(
+            base_url=DEEPSEEK.base_url, api_key=llm_settings.deepseek_api_key_value,
+            timeout=DEEPSEEK.timeout_seconds, max_concurrent=llm_settings.deepseek_max_concurrent,
+            include_payloads_in_logs=include_payloads_in_logs,
+        )
     if provider_name == "tavily":
         return TavilyClient(
             base_url=TAVILY.base_url,
@@ -346,6 +353,13 @@ def build_miner_paid_web_search_provider(
             timeout=_effective_client_timeout(EXA.timeout_seconds, timeout),
             max_concurrent=None,
             max_response_bytes=max_response_bytes,
+            include_payloads_in_logs=include_payloads_in_logs,
+        )
+    if provider_name == "deepseek":
+        return DeepSeekClient(
+            base_url=DEEPSEEK.base_url, api_key=explicit_key,
+            timeout=_effective_client_timeout(DEEPSEEK.timeout_seconds, timeout),
+            max_concurrent=None, max_response_bytes=max_response_bytes,
             include_payloads_in_logs=include_payloads_in_logs,
         )
     if provider_name == "tavily":
@@ -473,6 +487,7 @@ def _require_configured_search_credential(*, provider: SearchProviderName, llm_s
         "firecrawl": llm_settings.firecrawl_api_key_value,
         "exa": llm_settings.exa_api_key_value,
         "tavily": llm_settings.tavily_api_key_value,
+        "deepseek": llm_settings.deepseek_api_key_value,
     }[provider]
     if not api_key.strip():
         raise ProviderCredentialUnavailableError(provider)

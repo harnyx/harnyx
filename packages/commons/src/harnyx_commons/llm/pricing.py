@@ -37,6 +37,8 @@ from harnyx_commons.tools.embedding_models import (
 )
 from harnyx_commons.tools.types import SearchToolName
 
+DEEPSEEK_SEARCH_USD_PER_SUCCESSFUL_REQUEST = 0.00075
+
 # Per-referenceable-result rates for search tools, keyed by tool name.
 SEARCH_PRICING_PER_REFERENCEABLE_RESULT: dict[SearchToolName, float] = {
     "search_web": 0.0001,
@@ -118,6 +120,7 @@ MINER_TOOL_LLM_PRICING: Mapping[MinerSelectedLlmProviderName, Mapping[str, Model
         "deepseek/deepseek-v4-flash": ModelPricing(0.14, 0.28, 0.0),
         "deepseek/deepseek-v4-flash-0731": ModelPricing(0.09, 0.18, 0.0),
         "deepseek/deepseek-v4.1-flash": ModelPricing(0.30, 1.20, 0.0),
+        "deepseek/deepseek-v4.1-flash-1017": ModelPricing(0.15, 0.60, 0.0),
         "deepseek/deepseek-v4-pro": ModelPricing(0.435, 0.87, 0.0),
         "z-ai/glm-5.2": ModelPricing(0.8008, 2.5168, 0.0),
         "z-ai/glm-5.3-flash": ModelPricing(0.075, 0.25, 0.0),
@@ -163,6 +166,7 @@ MINER_TOOL_LLM_PRICING: Mapping[MinerSelectedLlmProviderName, Mapping[str, Model
         "deepseek/deepseek-v4-flash": ModelPricing(0.14, 0.28, 0.0),
         "deepseek/deepseek-v4-flash-0731": ModelPricing(0.13, 0.26, 0.0),
         "deepseek/deepseek-v4.1-flash": ModelPricing(0.15, 0.60, 0.0),
+        "deepseek/deepseek-v4.1-flash-1017": ModelPricing(0.075, 0.30, 0.0),
         "deepseek/deepseek-v4-pro": ModelPricing(0.435, 0.87, 0.0),
         "meta/muse-glimmer-30b": ModelPricing(0.35, 1.50, 0.0),
         "alibaba/qwen3.8-27b": ModelPricing(0.10, 0.40, 0.0),
@@ -433,6 +437,7 @@ def price_parallel_extract(*, url_count: int) -> float:
 
 
 __all__ = [
+    "DEEPSEEK_SEARCH_USD_PER_SUCCESSFUL_REQUEST",
     "PARALLEL_EXTRACT_URL_COST_USD",
     "PARALLEL_SEARCH_ADDITIONAL_RESULT_COST_USD",
     "PARALLEL_SEARCH_BASE_COST_USD",

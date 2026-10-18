@@ -623,3 +623,22 @@ async def test_runtime_invoker_rejects_removed_fields_before_provider(field: str
         )
 
     assert llm_provider.requests == []
+
+
+@pytest.mark.parametrize("provider,thinking", [
+    ("openrouter", {"enabled": True}), ("ai_gateway", {"enabled": True}), ("ai_gateway", None),
+])
+@pytest.mark.parametrize("padding", ["", " \t", "\n"])
+async def test_flash_thinking_rejects_forced_tools_before_provider_dispatch(provider, thinking, padding):
+    llm_provider = _CapturingLlmProvider()
+    invoker = RuntimeToolInvoker(
+        InMemoryReceiptLog(), llm_provider=llm_provider, llm_provider_name=provider,
+    )
+    with pytest.raises(ValidationError, match="thinking mode does not support"):
+        await invoker.invoke("llm_chat", args=(), kwargs={
+            "provider": provider, "model": padding + "deepseek/deepseek-v4.1-flash-1017" + padding,
+            "messages": [{"role": "user", "content": "Weather?"}],
+            "tools": [{"type": "function", "function": {"name": "lookup_weather"}}],
+            "tool_choice": "required", "thinking": thinking,
+        })
+    assert llm_provider.requests == []

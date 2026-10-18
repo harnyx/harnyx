@@ -5,10 +5,56 @@ from pydantic import ValidationError
 
 from harnyx_miner_sdk.tools.search_models import FetchPageRequest, SearchWebSearchRequest
 from harnyx_miner_sdk.tools.search_provider_extra import (
+    DeepSeekSearchExtra,
     ExaSearchExtra,
     FirecrawlFetchExtra,
     TavilyFetchExtra,
 )
+
+
+@pytest.mark.parametrize("queries,num", [(["x" * 129], 5), (["x" * 65, "y" * 65], 5), (["query"], 51)])
+def test_deepseek_rejects_requests_that_exceed_vendor_limits_before_execution(queries, num):
+    with pytest.raises(ValidationError, match="DeepSeek"):
+        SearchWebSearchRequest(provider="deepseek", search_queries=queries, num=num)
+
+
+def test_deepseek_preserves_native_retrieval_options_and_rejects_foreign_options():
+    request = SearchWebSearchRequest.model_validate({
+        "provider": "deepseek", "search_queries": ["x" * 128], "num": 50,
+        "provider_extra": {"need_content": True, "ori_question": "original", "localization": "8.8.8.8"},
+    })
+    assert isinstance(request.provider_extra, DeepSeekSearchExtra)
+    assert request.provider_extra.to_provider_payload() == {
+        "need_content": True, "ori_question": "original", "localization": "8.8.8.8",
+    }
+    with pytest.raises(ValidationError, match="Extra inputs"):
+        FetchPageRequest(provider="deepseek", url="https://example.com", provider_extra={"format": "html"})
+    with pytest.raises(ValidationError, match="Extra inputs"):
+        SearchWebSearchRequest(provider="deepseek", search_queries=["query"], provider_extra={"include_answer": True})
+
+
+@pytest.mark.parametrize("localization", ["8.8.8.8", "2001:db8::1", "", None])
+def test_deepseek_localization_preserves_valid_ips_and_unlocalized_defaults(localization):
+    request = SearchWebSearchRequest.model_validate({
+        "provider": "deepseek", "search_queries": ["query"],
+        "provider_extra": {"localization": localization},
+    })
+    assert isinstance(request.provider_extra, DeepSeekSearchExtra)
+    payload = request.provider_extra.to_provider_payload()
+    assert payload.get("localization") == localization
+    assert request.model_dump(mode="json")["provider_extra"]["localization"] == localization
+    if localization is None:
+        assert "localization" not in payload
+    assert DeepSeekSearchExtra().to_provider_payload() == {"need_content": False}
+
+
+@pytest.mark.parametrize("localization", ["not-an-ip", "999.1.2.3", "2001:db8::xyz", "8.8.8.8/24", 123])
+def test_deepseek_rejects_invalid_localization_before_a_provider_request(localization):
+    with pytest.raises(ValidationError, match="localization"):
+        SearchWebSearchRequest.model_validate({
+            "provider": "deepseek", "search_queries": ["query"],
+            "provider_extra": {"localization": localization},
+        })
 
 
 def test_exa_search_extra_is_selected_by_provider() -> None:
@@ -231,3 +277,29 @@ def test_expand_is_fetch_only_and_accepts_only_fixed_options(extra):
         FetchPageRequest.model_validate(
             {"provider": "expand", "url": "https://example.com", "provider_extra": {"formats": ["markdown"]}}
         )
+
+
+@pytest.mark.parametrize("url", [
+    "file:///tmp/page", "ftp://example.com/page", "https:///page",
+    "https://user@example.com", "https://user:pass@example.com",
+    "https://@example.com", "https://example .com/page", "https://example.com:invalid/",
+    "https://example.com/" + "a" * 8192,
+])
+def test_deepseek_fetch_rejects_urls_outside_vendor_contract(url):
+    with pytest.raises(ValidationError):
+        FetchPageRequest(provider="deepseek", url=url)
+
+
+@pytest.mark.parametrize("url", [
+    "https://EXAMPLE.com/a%2Fb?q=x#fragment",
+    "http://localhost:8080/page", "https://[2001:db8::1]/page",
+    "https://example.com/" + "a" * (8192 - len("https://example.com/")),
+])
+def test_deepseek_fetch_preserves_valid_url_and_citation_identity(url):
+    request = FetchPageRequest(provider="deepseek", url=url)
+    assert request.url == url
+    assert request.model_dump(mode="json")["url"] == url
+
+
+def test_deepseek_url_constraints_do_not_change_other_providers():
+    assert FetchPageRequest(provider="tavily", url="custom-page-id").url == "custom-page-id"

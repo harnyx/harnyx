@@ -562,7 +562,7 @@ Body: [ErrorResponse](#model-errorresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
-|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway, deepseek]) |
 |  | `actual_cost_usd` |  | req | `number` |
 |  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
 |  |  | `input_tokens` | opt | `integer` (nullable) |
@@ -590,7 +590,7 @@ Body: [ErrorResponse](#model-errorresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
-|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway, deepseek]) |
 |  | `actual_cost_usd` |  | req | `number` |
 |  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
 |  |  | `input_tokens` | opt | `integer` (nullable) |
@@ -708,7 +708,7 @@ Body: [ErrorResponse](#model-errorresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
-|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway, deepseek]) |
 |  | `actual_cost_usd` |  | req | `number` |
 |  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
 |  |  | `input_tokens` | opt | `integer` (nullable) |
@@ -808,7 +808,7 @@ Body: [ErrorResponse](#model-errorresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
-|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway, deepseek]) |
 |  | `actual_cost_usd` |  | req | `number` |
 |  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
 |  |  | `input_tokens` | opt | `integer` (nullable) |
@@ -1322,7 +1322,7 @@ Body: [ErrorResponse](#model-errorresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
-|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway, deepseek]) |
 |  | `actual_cost_usd` |  | req | `number` |
 |  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
 |  |  | `input_tokens` | opt | `integer` (nullable) |
@@ -1337,7 +1337,7 @@ Body: [ErrorResponse](#model-errorresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
-|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway, deepseek]) |
 |  | `actual_cost_usd` |  | req | `number` |
 |  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
 |  |  | `input_tokens` | opt | `integer` (nullable) |
@@ -1352,7 +1352,7 @@ Body: [ErrorResponse](#model-errorresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
-|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway, deepseek]) |
 |  | `actual_cost_usd` |  | req | `number` |
 |  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
 |  |  | `input_tokens` | opt | `integer` (nullable) |
@@ -1367,7 +1367,7 @@ Body: [ErrorResponse](#model-errorresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
-|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway, deepseek]) |
 |  | `actual_cost_usd` |  | req | `number` |
 |  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
 |  |  | `input_tokens` | opt | `integer` (nullable) |
@@ -1382,7 +1382,7 @@ Body: [ErrorResponse](#model-errorresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
-|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway, deepseek]) |
 |  | `actual_cost_usd` |  | req | `number` |
 |  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
 |  |  | `input_tokens` | opt | `integer` (nullable) |
@@ -1397,7 +1397,7 @@ Body: [ErrorResponse](#model-errorresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
-|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway, deepseek]) |
 |  | `actual_cost_usd` |  | req | `number` |
 |  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
 |  |  | `input_tokens` | opt | `integer` (nullable) |
@@ -1584,7 +1584,7 @@ Body: [ErrorResponse](#model-errorresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
-|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway, deepseek]) |
 |  | `actual_cost_usd` |  | req | `number` |
 |  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
 |  |  | `input_tokens` | opt | `integer` (nullable) |
@@ -1599,7 +1599,7 @@ Body: [ErrorResponse](#model-errorresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
-|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway, deepseek]) |
 |  | `actual_cost_usd` |  | req | `number` |
 |  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
 |  |  | `input_tokens` | opt | `integer` (nullable) |
@@ -1614,7 +1614,7 @@ Body: [ErrorResponse](#model-errorresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
-|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway, deepseek]) |
 |  | `actual_cost_usd` |  | req | `number` |
 |  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
 |  |  | `input_tokens` | opt | `integer` (nullable) |
@@ -3513,7 +3513,7 @@ Body: [StatusResponse](#model-statusresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `actual_cost_provider` |  |  | req | `string` (enum: [openrouter, ai_gateway]) |
+| `actual_cost_provider` |  |  | req | `string` (enum: [openrouter, ai_gateway, deepseek]) |
 | `actual_cost_usd` |  |  | req | `number` |
 | `usage` |  |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
 |  | `input_tokens` |  | opt | `integer` (nullable) |
@@ -3529,7 +3529,8 @@ Body: [StatusResponse](#model-statusresponse)
     "actual_cost_provider": {
       "enum": [
         "openrouter",
-        "ai_gateway"
+        "ai_gateway",
+        "deepseek"
       ],
       "title": "Actual Cost Provider",
       "type": "string"
@@ -3567,7 +3568,7 @@ Body: [StatusResponse](#model-statusresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `billing` |  |  | opt | [ErrorBillingDTO](#model-errorbillingdto) (nullable) |
-|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway]) |
+|  | `actual_cost_provider` |  | req | `string` (enum: [openrouter, ai_gateway, deepseek]) |
 |  | `actual_cost_usd` |  | req | `number` |
 |  | `usage` |  | opt | [DecisionUsage](#model-decisionusage) (nullable) |
 |  |  | `input_tokens` | opt | `integer` (nullable) |

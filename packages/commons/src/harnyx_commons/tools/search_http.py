@@ -69,10 +69,12 @@ class JsonSearchProviderClient:
         include_payloads_in_logs: bool,
         max_response_bytes: int | None = None,
         error_classifier: Callable[[httpx.Response, bytes], HttpErrorDecision] | None = None,
+        retry_uncertain_transport_errors: bool = True,
     ) -> None:
         if not api_key.strip():
             raise ValueError(f"{provider.title()} API key must be provided")
         self._error_classifier = error_classifier
+        self._retry_uncertain_transport_errors = retry_uncertain_transport_errors
         self._provider = provider
         self._max_response_bytes = max_response_bytes
         self._owns_client = client is None
@@ -163,8 +165,12 @@ class JsonSearchProviderClient:
                     )
                 )
             except httpx.HTTPError as exc:
+                uncertain = not isinstance(exc, httpx.ConnectError | httpx.ConnectTimeout | httpx.PoolTimeout)
                 reasons.append(exc.__class__.__name__)
-                if attempt + 1 >= self._retry_policy.attempts:
+                if (
+                    (uncertain and not self._retry_uncertain_transport_errors)
+                    or attempt + 1 >= self._retry_policy.attempts
+                ):
                     raise ToolProviderError("tool provider failed", provider=self._provider) from exc
                 await asyncio.sleep(backoff_ms(attempt, self._retry_policy) / 1000)
         raise ToolProviderError("tool provider failed", provider=self._provider)

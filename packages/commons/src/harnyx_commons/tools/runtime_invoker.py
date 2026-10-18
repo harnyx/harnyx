@@ -27,6 +27,7 @@ from harnyx_commons.errors import (
 from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.llm.cost_settlement import llm_cost_settlement_order, settled_cost_from_metadata
 from harnyx_commons.llm.pricing import (
+    DEEPSEEK_SEARCH_USD_PER_SUCCESSFUL_REQUEST,
     MINER_TOOL_DECISION_PRICING,
     MINER_TOOL_EMBEDDING_PRICING,
     MINER_TOOL_LLM_PRICING,
@@ -77,6 +78,7 @@ from harnyx_commons.tools.ports import (
 from harnyx_commons.tools.provider_billing import (
     ProviderBillingMetadata,
     billing_evidence_payload,
+    failure_billing,
 )
 from harnyx_commons.tools.search_models import (
     AiSearchProviderName,
@@ -114,6 +116,7 @@ _AUTHENTICATION_STATUSES_BY_PROVIDER: Mapping[str, frozenset[int]] = {
     "firecrawl": frozenset({401}),
     "exa": frozenset({401}),
     "tavily": frozenset({401}),
+    "deepseek": frozenset({401}),
     "vertex": frozenset({401}),
     "expand": frozenset({401}),
 }
@@ -419,7 +422,7 @@ class RuntimeToolInvoker(ToolInvoker):
                 failure_code=exc.failure_code,
                 provider=exc.provider,
                 http_status=exc.http_status,
-                billing=exc.billing if tool_name == "decision_query" else None,
+                billing=failure_billing(tool_name, exc.billing),
             ) from None
 
     def _invoke_test_tool(
@@ -468,6 +471,12 @@ class RuntimeToolInvoker(ToolInvoker):
                 "kind": "per_referenceable_result",
                 "settlement_order": ["provider_returned", "static_pricing"],
                 "usd_per_referenceable_result": usd_per_referenceable_result,
+                "providers": {
+                    "deepseek": {
+                        "kind": "per_successful_nonempty_request",
+                        "usd_per_request": DEEPSEEK_SEARCH_USD_PER_SUCCESSFUL_REQUEST,
+                    },
+                } if tool_name in {"search_web", "fetch_page"} else {},
             }
 
         if "llm_chat" in visible_tool_names:
@@ -1149,6 +1158,21 @@ def _settle_search_cost(
     billing: ProviderBillingMetadata | None,
     request_provider: FetchProviderName,
 ) -> _ActualCost:
+    if request_provider == "deepseek":
+        if (
+            billing is None or billing.actual_cost_provider != "deepseek"
+            or billing.billable_units not in {0, 1} or tool_name not in {"search_web", "fetch_page"}
+        ):
+            raise ValueError(f"{tool_name} DeepSeek success missing billable request evidence")
+        return _ActualCost(
+            billing.billable_units * DEEPSEEK_SEARCH_USD_PER_SUCCESSFUL_REQUEST,
+            "deepseek",
+            {
+                "settlement_source": "static_pricing", "provider": "deepseek",
+                "usd_per_successful_request": DEEPSEEK_SEARCH_USD_PER_SUCCESSFUL_REQUEST,
+                "provider_billing": cast(JsonObject, billing_evidence_payload(billing) or {}),
+            },
+        )
     if billing is not None and billing.actual_cost_usd is not None:
         if billing.actual_cost_provider not in {"desearch", "parallel", "exa"}:
             raise ValueError(f"{tool_name} provider-backed success missing supported provider cost evidence")

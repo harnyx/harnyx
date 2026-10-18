@@ -27,6 +27,7 @@ NEW_AI_GATEWAY_MODELS = (
     "deepseek/deepseek-v4-flash",
     "deepseek/deepseek-v4-flash-0731",
     "deepseek/deepseek-v4.1-flash",
+    "deepseek/deepseek-v4.1-flash-1017",
     "deepseek/deepseek-v4-pro",
     "zai/glm-5.3-flash",
     "meta/muse-glimmer-30b",
@@ -343,7 +344,9 @@ async def test_new_ai_gateway_model_tool_roundtrip_contract_live(model: str) -> 
     }
 
     # DeepSeek's default thinking mode rejects forced tool selection.
-    automatic_tool_choice = model == "deepseek/deepseek-v4.1-flash"
+    automatic_tool_choice = model in {
+        "deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4.1-flash-1017",
+    }
 
     try:
         first = await provider.invoke(

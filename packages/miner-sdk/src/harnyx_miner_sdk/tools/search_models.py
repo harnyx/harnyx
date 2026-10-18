@@ -2,9 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, cast
+from urllib.parse import urlsplit
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    AnyHttpUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    UrlConstraints,
+    field_validator,
+    model_validator,
+)
 
 from harnyx_miner_sdk.tools.search_provider_extra import (
     FetchPageProviderExtra,
@@ -13,9 +24,10 @@ from harnyx_miner_sdk.tools.search_provider_extra import (
 )
 from harnyx_miner_sdk.tools.types import ToolInvocationTimeout
 
-SearchProviderName = Literal["desearch", "parallel", "firecrawl", "exa", "tavily"]
+SearchProviderName = Literal["desearch", "parallel", "firecrawl", "exa", "tavily", "deepseek"]
 FetchProviderName = Literal[SearchProviderName, "expand"]
 AiSearchProviderName = Literal["desearch", "parallel"]
+_DEEPSEEK_FETCH_URL = TypeAdapter(Annotated[AnyHttpUrl, UrlConstraints(max_length=8192)])
 
 
 class SearchWebSearchRequest(BaseModel):
@@ -58,7 +70,15 @@ class SearchWebSearchRequest(BaseModel):
         return payload
 
     @model_validator(mode="after")
-    def _validate_firecrawl_query_length(self) -> SearchWebSearchRequest:
+    def _validate_provider_limits(self) -> SearchWebSearchRequest:
+        if self.provider == "deepseek":
+            query = self.search_queries[0] if len(self.search_queries) == 1 else " OR ".join(
+                f"({term})" for term in self.search_queries
+            )
+            if len(query) > 128:
+                raise ValueError("DeepSeek search query must not exceed 128 characters")
+            if self.num is not None and self.num > 50:
+                raise ValueError("DeepSeek search num must not exceed 50")
         if self.provider == "firecrawl":
             query = " OR ".join(f"({term})" for term in self.search_queries)
             if len(query) > 500:
@@ -241,6 +261,21 @@ class FetchPageRequest(BaseModel):
     url: str = Field(min_length=1)
     provider_extra: FetchPageProviderExtra | None = None
     timeout: ToolInvocationTimeout | None = None
+
+    @model_validator(mode="after")
+    def _validate_deepseek_url(self) -> FetchPageRequest:
+        if self.provider == "deepseek":
+            _DEEPSEEK_FETCH_URL.validate_python(self.url)
+            parsed = urlsplit(self.url)
+            if (
+                not parsed.netloc
+                or parsed.username is not None
+                or parsed.password is not None
+            ):
+                raise ValueError(
+                    "DeepSeek Fetch requires an HTTP(S) URL with a host, no credentials, and at most 8192 characters"
+                )
+        return self
 
     @model_validator(mode="before")
     @classmethod

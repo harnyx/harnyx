@@ -280,7 +280,7 @@ class LlmChatRequest(_StrictModel):
     def _validate_model(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("model must be non-empty")
-        return value
+        return value.strip()
 
     @model_validator(mode="before")
     @classmethod
@@ -302,6 +302,13 @@ class LlmChatRequest(_StrictModel):
     def _validate_provider_thinking(self) -> LlmChatRequest:
         if self.provider == "saygm" and self.thinking is not None and self.thinking.budget is not None:
             raise ValueError("SayGM does not support thinking.budget; use thinking.effort instead")
+        if (
+            self.provider in {"openrouter", "ai_gateway"}
+            and self.model == "deepseek/deepseek-v4.1-flash-1017"
+            and (self.tool_choice == "required" or isinstance(self.tool_choice, LlmChatNamedToolChoice))
+            and (self.thinking.enabled if self.thinking is not None else self.provider == "ai_gateway")
+        ):
+            raise ValueError("DeepSeek Flash 1017 thinking mode does not support required or named tool_choice")
         return self
 
     @model_validator(mode="after")

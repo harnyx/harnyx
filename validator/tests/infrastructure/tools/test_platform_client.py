@@ -1854,3 +1854,32 @@ async def test_decision_proxy_unrecognized_error_keeps_typed_http_failure(body) 
         assert error.billing is None
     finally:
         await client.aclose()
+
+
+@pytest.mark.anyio("asyncio")
+@pytest.mark.parametrize("tool", ["search_web", "fetch_page"])
+@pytest.mark.parametrize("cost", [0.0, 0.01, -1.0, "0", True])
+async def test_deepseek_proxy_rejection_preserves_strict_zero_cost(tool, cost):
+    from pydantic import ValidationError
+
+    client = AsyncPlatformToolProxyPlatformClient(
+        base_url="https://mock.local", hotkey=_keypair(),
+        transport=httpx.MockTransport(lambda _: httpx.Response(502, json={
+            "error_code": "provider_failed", "message": "rejected",
+            "billing": {"actual_cost_usd": cost, "actual_cost_provider": "deepseek"},
+        })),
+    )
+    try:
+        expected_error = PlatformToolProxyProviderError if type(cost) is float and cost == 0 else ValidationError
+        with pytest.raises(expected_error) as error:
+            await client.execute_platform_tool_proxy_tool(
+                token=uuid4().hex, uid=7, artifact_id=uuid4(), task_id=uuid4(),
+                validator_session_id=uuid4(), attempt_number=1, receipt_id=str(uuid4()),
+                tool=tool, args=(), kwargs={"provider": "deepseek"},
+                transport_timeout_seconds=11.0,
+            )
+        if expected_error is PlatformToolProxyProviderError:
+            assert error.value.billing.actual_cost_usd == 0.0
+            assert error.value.billing.actual_cost_provider == "deepseek"
+    finally:
+        await client.aclose()

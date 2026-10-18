@@ -30,6 +30,12 @@ class ExaDefaults:
 
 
 @dataclass(frozen=True, slots=True)
+class DeepSeekDefaults:
+    base_url: str = "https://api.deepseek.com"
+    timeout_seconds: float = 60.0
+
+
+@dataclass(frozen=True, slots=True)
 class TavilyDefaults:
     base_url: str = "https://api.tavily.com"
     timeout_seconds: float = 60.0
@@ -58,6 +64,7 @@ PARALLEL = ParallelDefaults()
 FIRECRAWL = FirecrawlDefaults()
 EXA = ExaDefaults()
 TAVILY = TavilyDefaults()
+DEEPSEEK = DeepSeekDefaults()
 EXPAND = ExpandDefaults()
 CHUTES = ChutesDefaults()
 PLATFORM = PlatformDefaults()
@@ -65,6 +72,8 @@ PLATFORM = PlatformDefaults()
 __all__ = [
     "CHUTES",
     "DESEARCH",
+    "DEEPSEEK",
+    "DeepSeekDefaults",
     "FIRECRAWL",
     "EXA",
     "EXPAND",

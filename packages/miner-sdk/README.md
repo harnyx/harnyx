@@ -311,8 +311,8 @@ Use the citation only when that result actually supports a material claim in you
 ## Tool helpers
 
 These helpers call validator-hosted tools when running inside the sandbox:
-- `search_web(query, provider="parallel" | "desearch" | "firecrawl" | "exa" | "tavily", timeout=..., provider_extra=..., **kwargs)`
-- `fetch_page(url, provider="parallel" | "desearch" | "firecrawl" | "exa" | "tavily" | "expand", timeout=..., provider_extra=...)`
+- `search_web(query, provider="parallel" | "desearch" | "firecrawl" | "exa" | "tavily" | "deepseek", timeout=..., provider_extra=..., **kwargs)`
+- `fetch_page(url, provider="parallel" | "desearch" | "firecrawl" | "exa" | "tavily" | "deepseek" | "expand", timeout=..., provider_extra=...)`
 
 `provider_extra` is strictly validated for the selected provider and operation. It exposes retrieval and extraction controls only; provider answers, deep research, autonomous reasoning, and generated-output controls are rejected.
 
@@ -324,6 +324,7 @@ These helpers call validator-hosted tools when running inside the sandbox:
 | `parallel` | `mode` (`turbo`, `basic`, or `advanced`), `max_chars_total`, `source_policy`, `fetch_policy`, `excerpt_settings`, `location` |
 | `firecrawl` | `categories`, domain filters, `tbs`, `location`, `country`, invalid-URL and privacy controls |
 | `exa` | `type` (`auto`, `instant`, or `fast`), category, domain/date/location/moderation filters |
+| `deepseek` | `ori_question` (1–128 characters), `localization` (IP address), `need_content` (default `false`) |
 | `tavily` | `search_depth` (`basic`, `fast`, `advanced`, or `ultra-fast`), chunks, topic/time/date/domain/country/exact/safe controls |
 
 ### Fetch providers
@@ -335,7 +336,12 @@ These helpers call validator-hosted tools when running inside the sandbox:
 | `firecrawl` | `formats` (`markdown` and/or `rawHtml`), main-content/tag/cache/wait/mobile/PDF/location/image/ad/proxy/cache-retention controls |
 | `exa` | `text` (`true` or text options), `max_age_hours`, `livecrawl_timeout` |
 | `tavily` | `query`, `chunks_per_source`, `extract_depth`, `format` |
+| `deepseek` | Omitted or `{}` only; returns Markdown |
 | `expand` | Omitted or `{}` only; full-page scrolling, Markdown and State JSON are fixed |
+
+DeepSeek search forwards one query unchanged, or joins multiple queries with `OR` and parentheses. The resulting query must be at most 128 characters; `num` must be 0–50. Zero skips the API call. Results use full content when requested and available, otherwise the long summary or short snippet. Fetch requires an HTTP(S) URL with a host, no username/password, and at most 8192 characters. It returns Markdown using the original URL. Both tools cost $0.00075 per successful nonempty API call, independent of result count. Empty responses and confirmed HTTP rejections cost zero; transport failures have unknown cost. To avoid possibly duplicate charges, DeepSeek retries connection-establishment failures and confirmed unbilled HTTP failures, but stops after transport failures where the request may already have reached the provider. Direct API calls do not receive the temporary server-side-tools promotion. Configure `DEEPSEEK_API_KEY` for local evaluation or register a DeepSeek credential for hosted miner calls. See the [DeepSeek contract](https://api-docs.deepseek.com/guides/search).
+
+Model IDs have surrounding whitespace removed before provider-specific validation. The October 17 Flash release is available to `llm_chat` as `deepseek/deepseek-v4.1-flash-1017` with `provider="openrouter"` or `provider="ai_gateway"`. Existing undated model selections remain available. With thinking enabled, omit forced `tool_choice` and replay assistant reasoning alongside tool results, as required by DeepSeek.
 
 Common `search_queries`, `num`, and `timeout` remain top-level fields and are rejected if duplicated in `provider_extra`. Unknown fields and documented incompatible combinations fail before the tool proxy is called.
 
@@ -625,7 +631,7 @@ The SDK still accepts the legacy top-level `provider.only` input and normalizes 
 
 Do not pass `provider_extra={"provider": "cerebras"}`. The SDK/runtime rejects the raw string form.
 
-AI Gateway model ids currently allowed by the tool contract are `thinkingmachines/inkling`, `zai/glm-5.2-fast`, `zai/glm-5.3-flash`, `openai/gpt-oss-20b`, `zai/glm-4.7`, `google/gemma-4-31b-it`, `openai/gpt-oss-120b`, `minimax/minimax-m2.7`, `zai/glm-4.7-flash`, `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-flash-0731`, `deepseek/deepseek-v4.1-flash`, `deepseek/deepseek-v4-pro`, `meta/muse-glimmer-30b`, `alibaba/qwen3.8-27b`, `tencent/hy4-preview`, `xiaomi/mimo-v2.6-flash`, `xiaomi/mimo-v2.6-pro`, and `xiaomi/mimo-v2.6-pro-ultraspeed`. Use `tooling_info().response["pricing"]["llm_chat"]["provider_models"]["ai_gateway"]` for representative static rates; actual AI Gateway returned cost wins when present.
+AI Gateway model ids currently allowed by the tool contract are `thinkingmachines/inkling`, `zai/glm-5.2-fast`, `zai/glm-5.3-flash`, `openai/gpt-oss-20b`, `zai/glm-4.7`, `google/gemma-4-31b-it`, `openai/gpt-oss-120b`, `minimax/minimax-m2.7`, `zai/glm-4.7-flash`, `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-flash-0731`, `deepseek/deepseek-v4.1-flash`, `deepseek/deepseek-v4.1-flash-1017`, `deepseek/deepseek-v4-pro`, `meta/muse-glimmer-30b`, `alibaba/qwen3.8-27b`, `tencent/hy4-preview`, `xiaomi/mimo-v2.6-flash`, `xiaomi/mimo-v2.6-pro`, and `xiaomi/mimo-v2.6-pro-ultraspeed`. Use `tooling_info().response["pricing"]["llm_chat"]["provider_models"]["ai_gateway"]` for representative static rates; actual AI Gateway returned cost wins when present.
 
 OpenRouter also allows `xiaomi/mimo-v2.6-flash`, `xiaomi/mimo-v2.6-pro`, and `xiaomi/mimo-v2.6-pro-ultraspeed`. The UltraSpeed route serves Pro; the open-weight `MiMo-V2.6-Distill-Qwen-9B` checkpoint has no verified route through a miner-supported provider. Use `tooling_info().response["allowed_llm_provider_models"][provider]` for the current complete list of allowed model ids.
 
@@ -637,14 +643,14 @@ Do not put common behavior in `provider_extra`. For example, reasoning controls 
 |----------|-------|----------------------------------|----------|----------|
 | `openrouter` | `openai/gpt-oss-20b`, `openai/gpt-oss-120b` | Supported via OpenRouter `reasoning.enabled` / `reasoning.effort="none"` | Supported via OpenRouter `reasoning.effort` | Supported via OpenRouter `reasoning.max_tokens` |
 | `openrouter` | `deepseek/deepseek-v3.2`, `z-ai/glm-5`, `qwen/qwen3.6-27b`, `qwen/qwen3.8-27b`, `google/gemma-4-31b-it` | Supported via OpenRouter `reasoning.enabled` / `reasoning.effort="none"` | Supported via OpenRouter `reasoning.effort` | Supported via OpenRouter `reasoning.max_tokens` |
-| `openrouter` | `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-flash-0731`, `deepseek/deepseek-v4.1-flash`, `deepseek/deepseek-v4-pro`, `z-ai/glm-5.2`, `z-ai/glm-5.3-flash`, `thinkingmachines/inkling`, `qwen/qwen3.5-397b-a17b`, `meta/muse-glimmer-30b`, `tencent/hy4-preview` | Supported via OpenRouter `reasoning.enabled` / `reasoning.effort="none"` | Supported via OpenRouter `reasoning.effort` | Supported via OpenRouter `reasoning.max_tokens` |
+| `openrouter` | `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-flash-0731`, `deepseek/deepseek-v4.1-flash`, `deepseek/deepseek-v4.1-flash-1017`, `deepseek/deepseek-v4-pro`, `z-ai/glm-5.2`, `z-ai/glm-5.3-flash`, `thinkingmachines/inkling`, `qwen/qwen3.5-397b-a17b`, `meta/muse-glimmer-30b`, `tencent/hy4-preview` | Supported via OpenRouter `reasoning.enabled` / `reasoning.effort="none"` | Supported via OpenRouter `reasoning.effort` | Supported via OpenRouter `reasoning.max_tokens` |
 | `saygm` | Allowed SayGM Chat Completions models | Supported via `reasoning_effort="medium"` / `"none"` | Supported via `reasoning_effort` | Unsupported; rejected before dispatch |
 | `ai_gateway` | Allowed AI Gateway models | Supported via AI Gateway `reasoning.enabled` / `reasoning.effort="none"` | Supported via AI Gateway `reasoning.effort` | Supported via AI Gateway `reasoning.max_tokens` |
 | `chutes` | `deepseek-ai/DeepSeek-V3.2-TEE` | Supported via `chat_template_kwargs.thinking` | Unsupported for Chutes; not serialized | Unsupported for Chutes; not serialized |
 | `chutes` | `Qwen/Qwen3.6-27B-TEE`, `Qwen/Qwen3.8-27B-TEE`, `google/gemma-4-31B-turbo-TEE` | Supported via `chat_template_kwargs.enable_thinking` | Unsupported for Chutes; not serialized | Unsupported for Chutes; not serialized |
 | `chutes` | `moonshotai/Kimi-K2.6-TEE`, `zai-org/GLM-5.2-TEE`, `Qwen/Qwen3.5-397B-A17B-TEE` | No verified Chutes toggle; typed hints are not serialized and provider defaults apply | Unsupported for Chutes; not serialized | Unsupported for Chutes; not serialized |
 
-For `deepseek/deepseek-v4.1-flash` on OpenRouter or AI Gateway, omit `tool_choice` when thinking is enabled. DeepSeek rejects forced tool selection in thinking mode; preserve the assistant reasoning when replaying tool results.
+For `deepseek/deepseek-v4.1-flash` and `deepseek/deepseek-v4.1-flash-1017` on OpenRouter or AI Gateway, omit `tool_choice` when thinking is enabled. DeepSeek rejects forced tool selection in thinking mode; preserve the assistant reasoning when replaying tool results. For Flash 1017, the SDK rejects required or named tool choices with thinking enabled, including AI Gateway's default thinking mode; explicitly disable thinking when forced selection is needed.
 
 ```python
 await llm_chat(

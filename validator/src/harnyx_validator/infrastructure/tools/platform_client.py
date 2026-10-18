@@ -37,7 +37,7 @@ from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.protocol_headers import PLATFORM_TOOL_PROXY_TOKEN_HEADER
 from harnyx_commons.rating_competition import RATING_JUDGMENT_ALREADY_ACCEPTED, RatingJudgment, RatingWorkPage
 from harnyx_commons.tools.decision_models import DecisionUsage
-from harnyx_commons.tools.provider_billing import ProviderBillingMetadata
+from harnyx_commons.tools.provider_billing import ProviderBillingMetadata, failure_billing
 from harnyx_commons.tools.types import ToolName
 from harnyx_miner_sdk.endpoint_protocol import EndpointCallbackAcknowledgement, EndpointDelegation
 from harnyx_validator.application.dto.evaluation import (
@@ -661,18 +661,25 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
         if response.status_code != httpx.codes.OK:
             error_code = _platform_error_code(response)
             billing = None
-            if tool == "decision_query":
+            if tool in {"decision_query", "search_web", "fetch_page"}:
                 try:
                     error_payload = response.json()
                 except ValueError:
                     error_payload = None
                 if isinstance(error_payload, dict) and error_payload.get("billing") is not None:
-                    parsed_billing = _DecisionProxyBilling.model_validate(error_payload["billing"])
-                    billing = ProviderBillingMetadata(
-                        actual_cost_usd=parsed_billing.actual_cost_usd,
-                        actual_cost_provider=parsed_billing.actual_cost_provider,
-                        source="response_body",
-                        usage=parsed_billing.usage,
+                    parsed_billing = (
+                        _DecisionProxyBilling.model_validate(error_payload["billing"])
+                        if tool == "decision_query"
+                        else _DeepSeekProxyBilling.model_validate(error_payload["billing"])
+                    )
+                    billing = failure_billing(
+                        tool,
+                        ProviderBillingMetadata(
+                            actual_cost_usd=parsed_billing.actual_cost_usd,
+                            actual_cost_provider=parsed_billing.actual_cost_provider,
+                            source="response_body",
+                            usage=parsed_billing.usage,
+                        ),
                     )
             if error_code == "platform_interrupted":
                 raise PlatformToolProxyInterruptedError(
@@ -1101,3 +1108,10 @@ class _DecisionProxyBilling(BaseModel):
     actual_cost_usd: float = Field(ge=0, allow_inf_nan=False)
     actual_cost_provider: Literal["openrouter", "ai_gateway"]
     usage: DecisionUsage | None = None
+
+
+class _DeepSeekProxyBilling(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    actual_cost_usd: float = Field(ge=0, le=0, allow_inf_nan=False)
+    actual_cost_provider: Literal["deepseek"]
+    usage: None = None

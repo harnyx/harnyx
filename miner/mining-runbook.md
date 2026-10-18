@@ -130,7 +130,7 @@ uv run --package harnyx-miner harnyx-miner-config \
   --api-key <provider-api-key>
 ```
 
-Supported credential providers are `chutes`, `openrouter`, `ai_gateway`, `saygm`, `desearch`, `parallel`, `firecrawl`, `exa`, `tavily`, and `expand`. SayGM supports `llm_chat` only, with the 17 equivalents of models already authorized through existing miner providers; it does not grant access to the full SayGM catalog. Select exact model ids from `tooling_info().response["allowed_llm_provider_models"]["saygm"]`; see the [SDK provider contract](../packages/miner-sdk/README.md#tool-helpers). Firecrawl, Exa, and Tavily are valid for `search_web` and `fetch_page` only. Expand is valid for `fetch_page` only.
+Supported credential providers are `chutes`, `openrouter`, `ai_gateway`, `saygm`, `desearch`, `parallel`, `firecrawl`, `exa`, `tavily`, `deepseek`, and `expand`. SayGM supports `llm_chat` only, with the 17 equivalents of models already authorized through existing miner providers; it does not grant access to the full SayGM catalog. Select exact model ids from `tooling_info().response["allowed_llm_provider_models"]["saygm"]`; see the [SDK provider contract](../packages/miner-sdk/README.md#tool-helpers). Firecrawl, Exa, Tavily, and DeepSeek are valid for `search_web` and `fetch_page` only. Expand is valid for `fetch_page` only.
 
 If repeated `429` errors or provider instability are isolated to an upstream
 provider selected through OpenRouter, consider using an OpenRouter API key from

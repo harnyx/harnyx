@@ -127,8 +127,10 @@ class OpenAiCompatibleEndpointConfig(BaseModel):
 
 _OPENAI_COMPATIBLE_ENDPOINTS_ADAPTER = TypeAdapter(list[OpenAiCompatibleEndpointConfig])
 
-SearchProviderName = Literal["desearch", "parallel", "firecrawl", "exa", "tavily"]
-SEARCH_PROVIDER_NAMES: tuple[SearchProviderName, ...] = ("desearch", "parallel", "firecrawl", "exa", "tavily")
+SearchProviderName = Literal["desearch", "parallel", "firecrawl", "exa", "tavily", "deepseek"]
+SEARCH_PROVIDER_NAMES: tuple[SearchProviderName, ...] = (
+    "desearch", "parallel", "firecrawl", "exa", "tavily", "deepseek",
+)
 AiSearchProviderName = Literal["desearch", "parallel"]
 FETCH_PROVIDER_NAMES: tuple[FetchProviderName, ...] = (*SEARCH_PROVIDER_NAMES, "expand")
 AI_SEARCH_PROVIDER_NAMES: tuple[AiSearchProviderName, ...] = ("desearch", "parallel")
@@ -303,6 +305,7 @@ class LlmSettings(BaseSettings):
     parallel_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="PARALLEL_API_KEY")
     firecrawl_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="FIRECRAWL_API_KEY")
     exa_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="EXA_API_KEY")
+    deepseek_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="DEEPSEEK_API_KEY")
     tavily_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="TAVILY_API_KEY")
     expand_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="EXPAND_API_KEY")
     parallel_base_url: str = Field(default="https://api.parallel.ai", alias="PARALLEL_BASE_URL")
@@ -317,6 +320,7 @@ class LlmSettings(BaseSettings):
     parallel_max_concurrent: int = Field(default=100, alias="PARALLEL_MAX_CONCURRENT")
     firecrawl_max_concurrent: int = Field(default=100, alias="FIRECRAWL_MAX_CONCURRENT")
     exa_max_concurrent: int = Field(default=100, alias="EXA_MAX_CONCURRENT")
+    deepseek_max_concurrent: int = Field(default=5, alias="DEEPSEEK_MAX_CONCURRENT")
     tavily_max_concurrent: int = Field(default=100, alias="TAVILY_MAX_CONCURRENT")
     expand_max_concurrent: int = Field(default=100, alias="EXPAND_MAX_CONCURRENT")
 
@@ -344,6 +348,10 @@ class LlmSettings(BaseSettings):
     @property
     def exa_api_key_value(self) -> str:
         return self.exa_api_key.get_secret_value()
+
+    @property
+    def deepseek_api_key_value(self) -> str:
+        return self.deepseek_api_key.get_secret_value()
 
     @property
     def tavily_api_key_value(self) -> str:

@@ -8,13 +8,14 @@ import httpx
 import pytest
 
 from harnyx_commons.errors import ToolProviderError
+from harnyx_commons.tools.deepseek import DeepSeekClient
 from harnyx_commons.tools.desearch import DeSearchClient
 from harnyx_commons.tools.exa import ExaClient
 from harnyx_commons.tools.expand import ExpandClient
 from harnyx_commons.tools.firecrawl import FirecrawlClient
 from harnyx_commons.tools.parallel import ParallelClient
 from harnyx_commons.tools.search_http import read_search_response
-from harnyx_commons.tools.search_models import FetchPageRequest
+from harnyx_commons.tools.search_models import FetchPageRequest, SearchWebSearchRequest
 from harnyx_commons.tools.tavily import TavilyClient
 
 
@@ -43,6 +44,7 @@ class ResponseStream(httpx.AsyncByteStream):
         ("exa", ExaClient),
         ("tavily", TavilyClient),
         ("expand", ExpandClient),
+        ("deepseek", DeepSeekClient),
     ],
 )
 @pytest.mark.parametrize("status", [200, 500])
@@ -169,3 +171,29 @@ async def test_valid_stream_at_limit_keeps_provider_evidence(provider, client_ty
         result = await client.fetch_page(FetchPageRequest.model_validate(request))
         assert result.response.data[0].content == "evidence"
         assert stream.closed
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("provider,client_type", [("exa", ExaClient), ("tavily", TavilyClient)])
+async def test_other_search_providers_keep_existing_transport_retries(provider, client_type):
+    from harnyx_commons.llm.retry_utils import RetryPolicy
+
+    attempts = 0
+
+    def handler(request):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.ReadTimeout("temporary transport failure", request=request)
+        return httpx.Response(200, json={"results": []})
+
+    async with httpx.AsyncClient(
+        base_url="https://provider.example", transport=httpx.MockTransport(handler),
+    ) as http:
+        client = client_type(
+            base_url="https://provider.example", api_key="key", client=http,
+            retry_policy=RetryPolicy(attempts=2, initial_ms=0, max_ms=0, jitter=0),
+        )
+        result = await client.search_web(SearchWebSearchRequest(provider=provider, search_queries=("query",)))
+    assert result.response.data == []
+    assert attempts == 2

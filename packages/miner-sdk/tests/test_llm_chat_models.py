@@ -453,3 +453,30 @@ def test_missing_duplicate_unknown_or_interrupted_tool_results_are_rejected(
 
     with pytest.raises(ValidationError, match="tool"):
         LlmChatRequest.model_validate(payload)
+
+
+@pytest.mark.parametrize("padding", ["", " \t", "\n"])
+@pytest.mark.parametrize("provider", ["openrouter", "ai_gateway"])
+@pytest.mark.parametrize("thinking", [None, {"enabled": True}, {"enabled": False}])
+@pytest.mark.parametrize("choice", [
+    None, "auto", "none", "required", {"type": "function", "function": {"name": "lookup_weather"}},
+])
+def test_flash_1017_rejects_forced_tools_only_when_thinking_is_active(provider, thinking, choice, padding):
+    payload = _request_payload() | {
+        "provider": provider, "model": padding + "deepseek/deepseek-v4.1-flash-1017" + padding,
+        "thinking": thinking, "tool_choice": choice,
+    }
+    thinking_active = thinking["enabled"] if thinking is not None else provider == "ai_gateway"
+    forced = choice == "required" or isinstance(choice, dict)
+    if thinking_active and forced:
+        with pytest.raises(ValidationError, match="thinking mode does not support"):
+            LlmChatRequest.model_validate(payload)
+    else:
+        request = LlmChatRequest.model_validate(payload)
+        assert request.model_dump(mode="json")["tool_choice"] == choice
+        assert request.to_tool_request().model == "deepseek/deepseek-v4.1-flash-1017"
+
+
+def test_flash_tool_guard_preserves_other_models():
+    payload = _request_payload() | {"thinking": {"enabled": True}}
+    assert LlmChatRequest.model_validate(payload).to_tool_request().tool_choice is not None

@@ -125,6 +125,7 @@ def test_tool_invocation_clients_can_require_search_provider() -> None:
     [
         ("exa", "ExaClient", "exa_api_key", "exa_max_concurrent", "https://api.exa.ai"),
         ("tavily", "TavilyClient", "tavily_api_key", "tavily_max_concurrent", "https://api.tavily.com"),
+        ("deepseek", "DeepSeekClient", "deepseek_api_key", "deepseek_max_concurrent", "https://api.deepseek.com"),
     ],
 )
 def test_internal_new_search_providers_use_configured_credentials_and_concurrency(

@@ -198,6 +198,8 @@ Create a `.env` at the repo root (copy from `.env.example`) and fill:
 | `DESEARCH_API_KEY` | Optional: required if your agent uses search tools |
 | `FIRECRAWL_API_KEY` | Optional: required for local `search_web` and `fetch_page` calls with `SEARCH_PROVIDER=firecrawl`; miner-paid calls use the stored Firecrawl credential |
 | `EXA_API_KEY` | Optional: required for local `search_web` and `fetch_page` calls with `SEARCH_PROVIDER=exa`; miner-paid calls use the stored Exa credential |
+| `DEEPSEEK_API_KEY` | Optional: required for local `search_web` and `fetch_page` calls with `SEARCH_PROVIDER=deepseek`; miner-paid calls use the stored DeepSeek credential |
+| `DEEPSEEK_MAX_CONCURRENT` | Optional DeepSeek client concurrency limit; defaults to `5` (not an account-wide QPS limiter) |
 | `TAVILY_API_KEY` | Optional: required for local `search_web` and `fetch_page` calls with `SEARCH_PROVIDER=tavily`; miner-paid calls use the stored Tavily credential |
 | `FIRECRAWL_MAX_CONCURRENT` | Optional Firecrawl client concurrency limit; defaults to `100` |
 | `SEARCH_PROVIDER` | Optional: required if your agent uses search tools |
@@ -207,7 +209,7 @@ Create a `.env` at the repo root (copy from `.env.example`) and fill:
 | `BENCHMARK_RUBRIC_JUDGE_LLM_PROVIDER` | Required with `BENCHMARK_RUBRIC_JUDGE_LLM_MODEL` for `weighted-rubric-v1` local benchmark scoring |
 | `BENCHMARK_RUBRIC_JUDGE_LLM_MODEL` | Required with `BENCHMARK_RUBRIC_JUDGE_LLM_PROVIDER` for `weighted-rubric-v1` local benchmark scoring |
 
-The checked-in default is `SEARCH_PROVIDER=desearch`. `search_web` and `fetch_page` calls also support `parallel`, `firecrawl`, `exa`, and `tavily`; set the matching provider and API key. Provider-specific `provider_extra` values are retrieval-only and strictly validated; deep research, provider answers, and autonomous reasoning controls are not supported.
+The checked-in default is `SEARCH_PROVIDER=desearch`. `search_web` and `fetch_page` calls also support `parallel`, `firecrawl`, `exa`, `tavily`, and `deepseek`; set the matching provider and API key. Provider-specific `provider_extra` values are retrieval-only and strictly validated; deep research, provider answers, and autonomous reasoning controls are not supported.
 If you set either benchmark judge provider to `vertex`, also configure Vertex credentials such as `GCP_PROJECT_ID` and `GCP_LOCATION`. For DRACO with Gemini 3.1 Pro Preview, use `BENCHMARK_RUBRIC_JUDGE_LLM_PROVIDER=vertex`, `BENCHMARK_RUBRIC_JUDGE_LLM_MODEL=gemini-3.1-pro-preview`, and `GCP_LOCATION=global`. `BENCHMARK_LLM_*` settings do not enable `weighted-rubric-v1` by fallback; rubric scoring uses only the dedicated `BENCHMARK_RUBRIC_JUDGE_LLM_*` settings.
 
 #### Provider credentials on the platform
@@ -220,7 +222,7 @@ harnyx-miner-config --wallet-name <wallet> --hotkey-name <hotkey> --provider chu
 harnyx-miner-config --wallet-name <wallet> --hotkey-name <hotkey> --delete-provider chutes
 ```
 
-Supported stored-credential providers are `chutes`, `openrouter`, `ai_gateway`, `saygm`, `desearch`, `parallel`, `firecrawl`, `exa`, `tavily`, and `expand`. SayGM credentials apply to `llm_chat`. Firecrawl, Exa, and Tavily credentials apply only to `search_web` and `fetch_page`. Expand credentials apply only to `fetch_page`.
+Supported stored-credential providers are `chutes`, `openrouter`, `ai_gateway`, `saygm`, `desearch`, `parallel`, `firecrawl`, `exa`, `tavily`, `deepseek`, and `expand`. SayGM credentials apply to `llm_chat`. Firecrawl, Exa, Tavily, and DeepSeek credentials apply only to `search_web` and `fetch_page`. Expand credentials apply only to `fetch_page`.
 For each provider, a given API key can be registered to only one miner hotkey at a time. Registering a key already held by another hotkey for that provider returns `provider_credential_already_registered` (409). Deleting that credential frees the key for another hotkey. The same key value may be registered under different providers.
 Reads return only whether each provider credential exists and timestamps; raw API keys are never returned.
 Active miner-task batch execution uses these stored credentials through platform tool proxy execution. Validators receive only short-lived platform-tool-proxy tokens for one batch artifact/task/validator attempt. Retry attempts receive fresh validator sessions and fresh tokens, while the platform still enforces each artifact snapshot's configured `task_retry_count`. Raw provider API keys stay inside the platform boundary.
@@ -504,8 +506,8 @@ SayGM supports only equivalents of models already authorized through the existin
 | Provider | Model ids |
 |----------|-----------|
 | `chutes` | `deepseek-ai/DeepSeek-V3.2-TEE`, `moonshotai/Kimi-K2.6-TEE`, `Qwen/Qwen3.6-27B-TEE`, `Qwen/Qwen3.8-27B-TEE`, `google/gemma-4-31B-turbo-TEE`, `zai-org/GLM-5.2-TEE`, `Qwen/Qwen3.5-397B-A17B-TEE` |
-| `openrouter` | `openai/gpt-oss-20b`, `openai/gpt-oss-120b`, `deepseek/deepseek-v3.2`, `z-ai/glm-5`, `qwen/qwen3.6-27b`, `qwen/qwen3.8-27b`, `google/gemma-4-31b-it`, `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-flash-0731`, `deepseek/deepseek-v4.1-flash`, `deepseek/deepseek-v4-pro`, `z-ai/glm-5.2`, `z-ai/glm-5.3-flash`, `thinkingmachines/inkling`, `qwen/qwen3.5-397b-a17b`, `meta/muse-glimmer-30b`, `tencent/hy4-preview`, `xiaomi/mimo-v2.6-flash`, `xiaomi/mimo-v2.6-pro`, `xiaomi/mimo-v2.6-pro-ultraspeed` |
-| `ai_gateway` | `thinkingmachines/inkling`, `zai/glm-5.2-fast`, `zai/glm-5.3-flash`, `openai/gpt-oss-20b`, `zai/glm-4.7`, `google/gemma-4-31b-it`, `openai/gpt-oss-120b`, `minimax/minimax-m2.7`, `zai/glm-4.7-flash`, `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-flash-0731`, `deepseek/deepseek-v4.1-flash`, `deepseek/deepseek-v4-pro`, `meta/muse-glimmer-30b`, `alibaba/qwen3.8-27b`, `tencent/hy4-preview`, `xiaomi/mimo-v2.6-flash`, `xiaomi/mimo-v2.6-pro`, `xiaomi/mimo-v2.6-pro-ultraspeed` |
+| `openrouter` | `openai/gpt-oss-20b`, `openai/gpt-oss-120b`, `deepseek/deepseek-v3.2`, `z-ai/glm-5`, `qwen/qwen3.6-27b`, `qwen/qwen3.8-27b`, `google/gemma-4-31b-it`, `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-flash-0731`, `deepseek/deepseek-v4.1-flash`, `deepseek/deepseek-v4.1-flash-1017`, `deepseek/deepseek-v4-pro`, `z-ai/glm-5.2`, `z-ai/glm-5.3-flash`, `thinkingmachines/inkling`, `qwen/qwen3.5-397b-a17b`, `meta/muse-glimmer-30b`, `tencent/hy4-preview`, `xiaomi/mimo-v2.6-flash`, `xiaomi/mimo-v2.6-pro`, `xiaomi/mimo-v2.6-pro-ultraspeed` |
+| `ai_gateway` | `thinkingmachines/inkling`, `zai/glm-5.2-fast`, `zai/glm-5.3-flash`, `openai/gpt-oss-20b`, `zai/glm-4.7`, `google/gemma-4-31b-it`, `openai/gpt-oss-120b`, `minimax/minimax-m2.7`, `zai/glm-4.7-flash`, `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-flash-0731`, `deepseek/deepseek-v4.1-flash`, `deepseek/deepseek-v4.1-flash-1017`, `deepseek/deepseek-v4-pro`, `meta/muse-glimmer-30b`, `alibaba/qwen3.8-27b`, `tencent/hy4-preview`, `xiaomi/mimo-v2.6-flash`, `xiaomi/mimo-v2.6-pro`, `xiaomi/mimo-v2.6-pro-ultraspeed` |
 
 `tooling_info().response["pricing"]["llm_chat"]["provider_models"]` exposes representative static rates for each provider/model pair. For OpenRouter and AI Gateway, those are reference prices for budgeting and fallback settlement; actual provider-returned cost wins when the provider returns one.
 
@@ -679,14 +681,14 @@ Thinking controls are provider/model specific:
 | `openrouter` | `openai/gpt-oss-20b` | Supported via OpenRouter `reasoning.enabled` / `reasoning.effort="none"` | Supported via OpenRouter `reasoning.effort` | Supported via OpenRouter `reasoning.max_tokens` |
 | `openrouter` | `openai/gpt-oss-120b` | Supported via OpenRouter `reasoning.enabled` / `reasoning.effort="none"` | Supported via OpenRouter `reasoning.effort` | Supported via OpenRouter `reasoning.max_tokens` |
 | `openrouter` | `deepseek/deepseek-v3.2`, `z-ai/glm-5`, `qwen/qwen3.6-27b`, `qwen/qwen3.8-27b`, `google/gemma-4-31b-it` | Supported via OpenRouter `reasoning.enabled` / `reasoning.effort="none"` | Supported via OpenRouter `reasoning.effort` | Supported via OpenRouter `reasoning.max_tokens` |
-| `openrouter` | `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-flash-0731`, `deepseek/deepseek-v4.1-flash`, `deepseek/deepseek-v4-pro`, `z-ai/glm-5.2`, `z-ai/glm-5.3-flash`, `thinkingmachines/inkling`, `qwen/qwen3.5-397b-a17b`, `meta/muse-glimmer-30b` | Supported via OpenRouter `reasoning.enabled` / `reasoning.effort="none"` | Supported via OpenRouter `reasoning.effort` | Supported via OpenRouter `reasoning.max_tokens` |
+| `openrouter` | `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-flash-0731`, `deepseek/deepseek-v4.1-flash`, `deepseek/deepseek-v4.1-flash-1017`, `deepseek/deepseek-v4-pro`, `z-ai/glm-5.2`, `z-ai/glm-5.3-flash`, `thinkingmachines/inkling`, `qwen/qwen3.5-397b-a17b`, `meta/muse-glimmer-30b` | Supported via OpenRouter `reasoning.enabled` / `reasoning.effort="none"` | Supported via OpenRouter `reasoning.effort` | Supported via OpenRouter `reasoning.max_tokens` |
 | `ai_gateway` | Allowed AI Gateway models except `google/gemma-4-31b-it` pinned to Cerebras | Supported via AI Gateway `reasoning.enabled` / `reasoning.effort="none"` | Supported via AI Gateway `reasoning.effort` | Supported via AI Gateway `reasoning.max_tokens` |
 | `ai_gateway` | `google/gemma-4-31b-it` pinned to Cerebras | Enable by supplying an explicit `effort`; disabling uses Gemma's disabled provider default | Supported via Cerebras `reasoningEffort` | Unsupported for this route; not serialized into a Cerebras provider option |
 | `chutes` | `deepseek-ai/DeepSeek-V3.2-TEE` | Supported via `chat_template_kwargs.thinking` | Unsupported for Chutes; not serialized | Unsupported for Chutes; not serialized |
 | `chutes` | `Qwen/Qwen3.6-27B-TEE`, `Qwen/Qwen3.8-27B-TEE`, `google/gemma-4-31B-turbo-TEE` | Supported via `chat_template_kwargs.enable_thinking` | Unsupported for Chutes; not serialized | Unsupported for Chutes; not serialized |
 | `chutes` | `moonshotai/Kimi-K2.6-TEE`, `zai-org/GLM-5.2-TEE`, `Qwen/Qwen3.5-397B-A17B-TEE` | No verified Chutes toggle; typed hints are not serialized and provider defaults apply | Unsupported for Chutes; not serialized | Unsupported for Chutes; not serialized |
 
-For `deepseek/deepseek-v4.1-flash` on OpenRouter or AI Gateway, omit `tool_choice` when thinking is enabled. DeepSeek rejects forced tool selection in thinking mode; preserve the assistant reasoning when replaying tool results.
+For `deepseek/deepseek-v4.1-flash` and `deepseek/deepseek-v4.1-flash-1017` on OpenRouter or AI Gateway, omit `tool_choice` when thinking is enabled. DeepSeek rejects forced tool selection in thinking mode; preserve the assistant reasoning when replaying tool results. For Flash 1017, the SDK rejects required or named tool choices with thinking enabled, including AI Gateway's default thinking mode; explicitly disable thinking when forced selection is needed.
 
 ```python
 from harnyx_miner_sdk.api import llm_chat

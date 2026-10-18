@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from ipaddress import ip_address
 from typing import Any, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
 
 class _SearchExtra(BaseModel):
@@ -23,6 +24,23 @@ class DeSearchFetchExtra(_SearchExtra):
     format: Literal["text", "html"] = "text"
     js: bool | None = None
     wait: int | None = Field(default=None, ge=0)
+
+
+class DeepSeekSearchExtra(_SearchExtra):
+    ori_question: str | None = Field(default=None, min_length=1, max_length=128)
+    localization: str | None = None
+    need_content: bool = False
+
+    @field_validator("localization")
+    @classmethod
+    def _validate_localization(cls, value: str | None) -> str | None:
+        if value:
+            ip_address(value)
+        return value
+
+
+class DeepSeekFetchExtra(_SearchExtra):
+    """DeepSeek fetch accepts only the common URL argument."""
 
 
 class ExpandFetchExtra(_SearchExtra):
@@ -199,13 +217,16 @@ class TavilyFetchExtra(_SearchExtra):
 
 
 SearchWebProviderExtra: TypeAlias = (
-    DeSearchSearchExtra | ParallelSearchExtra | FirecrawlSearchExtra | ExaSearchExtra | TavilySearchExtra
+    DeepSeekSearchExtra | DeSearchSearchExtra | ParallelSearchExtra
+    | FirecrawlSearchExtra | ExaSearchExtra | TavilySearchExtra
 )
 FetchPageProviderExtra: TypeAlias = (
-    DeSearchFetchExtra | ParallelFetchExtra | FirecrawlFetchExtra | ExaFetchExtra | TavilyFetchExtra | ExpandFetchExtra
+    DeepSeekFetchExtra | DeSearchFetchExtra | ParallelFetchExtra | FirecrawlFetchExtra
+    | ExaFetchExtra | TavilyFetchExtra | ExpandFetchExtra
 )
 
 _SEARCH_MODELS = {
+    "deepseek": TypeAdapter(DeepSeekSearchExtra),
     "desearch": TypeAdapter(DeSearchSearchExtra),
     "parallel": TypeAdapter(ParallelSearchExtra),
     "firecrawl": TypeAdapter(FirecrawlSearchExtra),
@@ -213,6 +234,7 @@ _SEARCH_MODELS = {
     "tavily": TypeAdapter(TavilySearchExtra),
 }
 _FETCH_MODELS = {
+    "deepseek": TypeAdapter(DeepSeekFetchExtra),
     "expand": TypeAdapter(ExpandFetchExtra),
     "desearch": TypeAdapter(DeSearchFetchExtra),
     "parallel": TypeAdapter(ParallelFetchExtra),
@@ -236,6 +258,7 @@ def validate_search_provider_extra(
 
 
 __all__ = [
+    "DeepSeekSearchExtra", "DeepSeekFetchExtra",
     "ExpandFetchExtra", "DeSearchFetchExtra", "DeSearchSearchExtra", "ExaFetchExtra", "ExaSearchExtra",
     "FetchPageProviderExtra", "FirecrawlFetchExtra", "FirecrawlSearchExtra",
     "ParallelFetchExtra", "ParallelSearchExtra", "SearchWebProviderExtra",

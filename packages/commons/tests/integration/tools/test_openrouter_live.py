@@ -42,6 +42,7 @@ NEW_OPENROUTER_MODELS = (
     "deepseek/deepseek-v4-flash",
     "deepseek/deepseek-v4-flash-0731",
     "deepseek/deepseek-v4.1-flash",
+    "deepseek/deepseek-v4.1-flash-1017",
     "deepseek/deepseek-v4-pro",
     "z-ai/glm-5.2",
     "z-ai/glm-5.3-flash",
@@ -412,7 +413,9 @@ async def test_new_openrouter_model_exact_route_contract_live(model: str) -> Non
     }
 
     # DeepSeek thinking mode rejects forced tool selection.
-    automatic_tool_choice = model == "deepseek/deepseek-v4.1-flash"
+    automatic_tool_choice = model in {
+        "deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4.1-flash-1017",
+    }
 
     try:
         direct = await provider.invoke(LlmRequest(messages=direct_messages, **common))

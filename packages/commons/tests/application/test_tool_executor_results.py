@@ -728,3 +728,35 @@ async def test_opt_in_typed_failure_billing_keeps_available_tokens() -> None:
     assert usage.total_cost_usd == pytest.approx(0.003)
     assert usage.llm_usage_totals["openai"]["gpt-6-luna"].total_tokens == 15
     assert receipts.for_session(session.session_id) == tuple(recorder.terminals)
+
+
+@pytest.mark.parametrize("confirmed_rejection", [True, False])
+async def test_deepseek_failure_receipt_distinguishes_zero_from_unknown(confirmed_rejection):
+    from harnyx_commons.errors import ToolProviderError
+    from harnyx_commons.tools.provider_billing import ProviderBillingMetadata
+
+    now = datetime.now(UTC)
+    recorder = RecordingEvidence()
+    executor, receipts, session, token = _build_search_executor(
+        now=now, expires_at=now + timedelta(minutes=1), payload={}, recorder=recorder,
+    )
+    executor._account_provider_failures = True
+
+    async def invoke(tool_name, *, args, kwargs, context):
+        context.on_provider_dispatch()
+        raise ToolProviderError(
+            "rejected or interrupted", provider="deepseek",
+            billing=ProviderBillingMetadata(
+                actual_cost_provider="deepseek", actual_cost_usd=0.0, source="response_headers",
+            ) if confirmed_rejection else None,
+        )
+
+    executor._tool_invoker.invoke = invoke
+    with pytest.raises(ToolProviderError):
+        await executor.execute(ToolInvocationRequest(
+            session.session_id, token, "search_web", (), {"provider": "deepseek", "search_queries": ["query"]},
+        ))
+    receipt = receipts.for_session(session.session_id)[0]
+    assert receipt.details.actual_cost_usd == (0.0 if confirmed_rejection else None)
+    assert receipt.details.actual_cost_provider == "deepseek"
+    assert receipts.for_session(session.session_id) == tuple(recorder.terminals)
