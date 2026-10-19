@@ -589,7 +589,7 @@ decision = await decision_query(
 probability = decision.response.answers["publish"].probability
 ```
 
-Use `tooling_info().response["allowed_decision_provider_models"]` for availability and `response["pricing"]["decision_query"]["provider_models"]` for fallback rates. OpenRouter supports `cloudflare/clef-flash`, `cloudflare/clef`, and `jaredpalmer/kev-4b`. AI Gateway has an adapter, but currently lists none of these requested models; those combinations are rejected. Provider adapters translate OpenRouter's native `noul` question type to public `boolean`.
+Use `tooling_info().response["allowed_decision_provider_models"]` for availability and `response["pricing"]["decision_query"]["provider_models"]` for fallback rates. OpenRouter supports `cloudflare/clef-flash`, `cloudflare/clef`, `jaredpalmer/kev-4b`, `nace-ai/drex-v2.0`, and `respan/span-02`. AI Gateway has an adapter, but currently lists none of these requested models; those combinations are rejected. Provider adapters translate OpenRouter's native `noul` question type to public `boolean`.
 
 Choice answers contain `choice`; score answers contain `score`; both may contain `probabilities`. Boolean answers contain `probability`. Absent distributions remain absent, and rounded values are preserved. Native token usage stays in the response and receipt, outside chat token summaries. Decision results are log-only and do not become citation sources.
 

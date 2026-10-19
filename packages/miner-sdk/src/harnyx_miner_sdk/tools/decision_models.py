@@ -14,7 +14,13 @@ DecisionProviderName = Literal["openrouter", "ai_gateway"]
 DecisionContext = str | dict[str, JsonValue] | list[JsonValue]
 Probability = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 MINER_SELECTED_DECISION_PROVIDER_MODELS: Mapping[DecisionProviderName, tuple[str, ...]] = {
-    "openrouter": ("cloudflare/clef-flash", "cloudflare/clef", "jaredpalmer/kev-4b"),
+    "openrouter": (
+        "cloudflare/clef-flash",
+        "cloudflare/clef",
+        "jaredpalmer/kev-4b",
+        "nace-ai/drex-v2.0",
+        "respan/span-02",
+    ),
     "ai_gateway": (),
 }
 

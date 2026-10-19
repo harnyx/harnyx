@@ -14,7 +14,10 @@ pytestmark = [
 ]
 
 
-@pytest.mark.parametrize("model", ["cloudflare/clef-flash", "cloudflare/clef", "jaredpalmer/kev-4b"])
+@pytest.mark.parametrize(
+    "model",
+    ["cloudflare/clef-flash", "cloudflare/clef", "jaredpalmer/kev-4b", "nace-ai/drex-v2.0", "respan/span-02"],
+)
 async def test_openrouter_decision_model_live(model: str) -> None:
     settings = LlmSettings()
     assert settings.openrouter_api_key_value, "OPENROUTER_API_KEY must be configured"

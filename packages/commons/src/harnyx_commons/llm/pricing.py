@@ -110,6 +110,8 @@ MINER_TOOL_LLM_PRICING: Mapping[MinerSelectedLlmProviderName, Mapping[str, Model
         "Qwen/Qwen3.5-397B-A17B-TEE": ModelPricing(0.45, 3.00, 0.0),
     },
     OPENROUTER_PROVIDER: {
+        # Verified 2026-10-19: https://openrouter.ai/api/v1/models
+        "stepfun/step-5-preview": ModelPricing(1.0, 2.7, 0.0, cached_input_per_million=0.1),
         "openai/gpt-oss-20b": ModelPricing(0.03, 0.14, 0.0),
         "openai/gpt-oss-120b": ModelPricing(0.037, 0.17, 0.0),
         "deepseek/deepseek-v3.2": ModelPricing(0.269, 0.40, 0.0),
@@ -477,6 +479,9 @@ MINER_TOOL_DECISION_PRICING: Mapping[DecisionProviderName, Mapping[str, ModelPri
         "cloudflare/clef-flash": ModelPricing(0.09, 0.0, 0.0),
         "cloudflare/clef": ModelPricing(0.24, 0.0, 0.0),
         "jaredpalmer/kev-4b": ModelPricing(0.042, 0.0, 0.0),
+        # Published model pages, verified 2026-10-19.
+        "nace-ai/drex-v2.0": ModelPricing(0.06, 0.0, 0.0),
+        "respan/span-02": ModelPricing(0.01, 0.0, 0.0),
     },
     "ai_gateway": {},
 }

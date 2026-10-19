@@ -64,6 +64,7 @@ MINER_SELECTED_LLM_PROVIDER_MODELS: Mapping[
         "Qwen/Qwen3.5-397B-A17B-TEE",
     ),
     OPENROUTER_PROVIDER: (
+        "stepfun/step-5-preview",
         "openai/gpt-oss-20b",
         "openai/gpt-oss-120b",
         "deepseek/deepseek-v3.2",

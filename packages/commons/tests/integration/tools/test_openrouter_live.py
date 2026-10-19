@@ -39,6 +39,7 @@ MIMO_V26_MODELS = (
     "xiaomi/mimo-v2.6-pro-ultraspeed",
 )
 NEW_OPENROUTER_MODELS = (
+    "stepfun/step-5-preview",
     "deepseek/deepseek-v4-flash",
     "deepseek/deepseek-v4-flash-0731",
     "deepseek/deepseek-v4.1-flash",
