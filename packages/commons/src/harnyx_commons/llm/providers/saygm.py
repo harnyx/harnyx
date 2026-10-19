@@ -21,7 +21,6 @@ from harnyx_commons.llm.providers.openai_compatible import (
 from harnyx_commons.llm.providers.thinking import resolve_request_thinking
 from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
-from harnyx_commons.llm.timeout import resolve_timeout
 from harnyx_miner_sdk.llm import Timeout
 
 SAYGM_BASE_URL = "https://api.saygm.com/v1"
@@ -98,10 +97,6 @@ class SayGmLlmProvider(OpenAiCompatibleLlmProvider):
             return await super()._invoke(replace(request, provider=SAYGM_PROVIDER))
         finally:
             _stream_output_started.reset(token)
-
-    def _retry_timeout(self, request: AbstractLlmRequest) -> Timeout:
-        timeout = resolve_timeout(request.timeout)
-        return Timeout(timeout.total if timeout is not None else 300.0)
 
     async def _request_chat(
         self, payload: _OpenAiCompatibleChatRequest, *, timeout: float | Timeout | None

@@ -1,4 +1,4 @@
-"""Content-free stream progress events for similarity-judge LLM attempts."""
+"""Content-free stream progress events for judge LLM attempts."""
 
 from __future__ import annotations
 
@@ -15,6 +15,11 @@ from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse, LlmUsage
 from harnyx_commons.llm.timeout import LlmAttemptTimeoutError
 
 SIMILARITY_JUDGE_USE_CASE = "miner_task_similarity_judge"
+_JUDGE_EVENT_PREFIXES = {
+    SIMILARITY_JUDGE_USE_CASE: "similarity_judge",
+    "miner_task_pairwise_judge": "scoring_judge",
+    "miner_task_fast_correctness_judge": "scoring_judge",
+}
 _PROGRESS_LOG_INTERVAL_SECONDS = 60.0
 _IDENTITY_FIELDS = (
     "similarity_invocation_id",
@@ -24,6 +29,7 @@ _IDENTITY_FIELDS = (
     "candidate_model",
     "candidate_position",
     "candidate_count",
+    "scoring_invocation_id",
 )
 _LOGGER = logging.getLogger("harnyx_commons.llm.calls")
 
@@ -51,7 +57,7 @@ def similarity_judge_observability_metadata(
 
 
 @dataclass(slots=True)
-class SimilarityLlmAttemptObservation:
+class JudgeLlmAttemptObservation:
     """Track one actual provider attempt without retaining streamed content."""
 
     provider: str
@@ -59,6 +65,7 @@ class SimilarityLlmAttemptObservation:
     attempt_number: int
     attempt_limit: int
     identity: Mapping[str, object]
+    use_case: str = SIMILARITY_JUDGE_USE_CASE
     logger: logging.Logger = _LOGGER
     clock: Callable[[], float] = time.perf_counter
     attempt_id: str = field(default_factory=lambda: str(uuid4()))
@@ -152,7 +159,7 @@ class SimilarityLlmAttemptObservation:
 
     def _common_data(self) -> dict[str, object]:
         return {
-            "use_case": SIMILARITY_JUDGE_USE_CASE,
+            "use_case": self.use_case,
             "attempt_id": self.attempt_id,
             "provider": self.provider,
             "model": self.model,
@@ -196,7 +203,7 @@ class SimilarityLlmAttemptObservation:
     def _log(self, phase: str, data: Mapping[str, object]) -> None:
         try:
             self.logger.info(
-                f"similarity_judge.llm_attempt.{phase}",
+                f"{_JUDGE_EVENT_PREFIXES[self.use_case]}.llm_attempt.{phase}",
                 extra={"data": dict(data)},
             )
         except Exception:
@@ -204,30 +211,32 @@ class SimilarityLlmAttemptObservation:
             return
 
 
-_ACTIVE_ATTEMPT: ContextVar[SimilarityLlmAttemptObservation | None] = ContextVar(
-    "similarity_llm_attempt",
+_ACTIVE_ATTEMPT: ContextVar[JudgeLlmAttemptObservation | None] = ContextVar(
+    "judge_llm_attempt",
     default=None,
 )
 
 
 @contextmanager
-def observe_similarity_llm_attempt(
+def observe_judge_llm_attempt(
     *,
     provider: str,
     request: AbstractLlmRequest,
     attempt_number: int,
     attempt_limit: int,
-) -> Iterator[SimilarityLlmAttemptObservation | None]:
-    """Activate attempt tracking only for the similarity-judge use case."""
-    if request.use_case != SIMILARITY_JUDGE_USE_CASE:
+) -> Iterator[JudgeLlmAttemptObservation | None]:
+    """Observe judge calls without enabling stream logging for miner tool calls."""
+    use_case = request.use_case
+    if use_case is None or use_case not in _JUDGE_EVENT_PREFIXES:
         yield None
         return
-    observation = SimilarityLlmAttemptObservation(
+    observation = JudgeLlmAttemptObservation(
         provider=provider,
         model=request.model,
         attempt_number=attempt_number,
         attempt_limit=attempt_limit,
         identity=request.internal_metadata or {},
+        use_case=use_case,
     )
     token = _ACTIVE_ATTEMPT.set(observation)
     try:
@@ -236,13 +245,13 @@ def observe_similarity_llm_attempt(
         _ACTIVE_ATTEMPT.reset(token)
 
 
-def record_similarity_stream_headers_received(*, response_id: str | None = None) -> None:
+def record_judge_stream_headers_received(*, response_id: str | None = None) -> None:
     observation = _ACTIVE_ATTEMPT.get()
     if observation is not None:
         observation.headers_received(response_id=response_id)
 
 
-def record_similarity_stream_event(
+def record_judge_stream_event(
     *,
     saw_output: bool,
     usage: LlmUsage | None = None,
@@ -272,8 +281,8 @@ def _safe_identity(metadata: Mapping[str, Any]) -> dict[str, object]:
 
 __all__ = [
     "SIMILARITY_JUDGE_USE_CASE",
-    "observe_similarity_llm_attempt",
-    "record_similarity_stream_event",
-    "record_similarity_stream_headers_received",
+    "observe_judge_llm_attempt",
+    "record_judge_stream_event",
+    "record_judge_stream_headers_received",
     "similarity_judge_observability_metadata",
 ]

@@ -145,7 +145,33 @@ async def test_encrypted_reasoning_counts_as_output_but_empty_data_does_not(prov
     await _assert_stream_deadline(provider_name, f"encrypted_{phase}", phase)
 
 
-async def _assert_stream_deadline(provider_name: str, scenario: str, expected_phase: str) -> None:
+@pytest.mark.parametrize("phase", ["prefill", "total"])
+async def test_scoring_timeout_keeps_first_output_evidence_and_closes_stream(
+    phase: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Future failure: an aborted judge loses the evidence distinguishing no output from slow output."""
+    caplog.set_level("INFO", logger="harnyx_commons.llm.calls")
+    await _assert_stream_deadline("chutes", phase, phase, use_case="miner_task_pairwise_judge")
+    finished = next(r.data for r in caplog.records if r.message == "scoring_judge.llm_attempt.finished")
+    assert finished["timeout_phase"] == phase
+    assert finished["outcome"] == "failed"
+    assert finished["elapsed_ms"] > 0
+    if phase == "prefill":
+        assert finished["first_output_ms"] is None
+        assert finished["last_output_ms"] is None
+    else:
+        assert finished["first_output_ms"] is not None
+        assert finished["last_output_ms"] >= finished["first_output_ms"]
+        assert finished["output_event_count"] > 1
+
+
+async def _assert_stream_deadline(
+    provider_name: str,
+    scenario: str,
+    expected_phase: str,
+    *,
+    use_case: str = "miner_task_similarity_judge",
+) -> None:
     stream = _Stream(scenario)
     client = httpx.AsyncClient(
         base_url="https://example.com",
@@ -174,7 +200,7 @@ async def _assert_stream_deadline(provider_name: str, scenario: str, expected_ph
         max_output_tokens=None,
         timeout=Timeout(0.15, prefill=0.05, inactivity=0.05),
         retry_policy=RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0),
-        use_case="miner_task_similarity_judge",
+        use_case=use_case,
     )
     try:
         with pytest.raises(LlmRetryExhaustedError) as exc:

@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from harnyx_commons.domain.judge_usage import JudgeUsageSummary
 from harnyx_commons.json_types import JsonObject
 from harnyx_commons.llm.json_utils import pydantic_postprocessor
+from harnyx_commons.llm.judge_observability import similarity_judge_observability_metadata
 from harnyx_commons.llm.judge_usage import (
     JudgeUsageMetadataError,
     judge_usage_from_response,
@@ -35,7 +36,6 @@ from harnyx_commons.llm.schema import (
     LlmResponse,
     Timeout,
 )
-from harnyx_commons.llm.similarity_observability import similarity_judge_observability_metadata
 from harnyx_commons.miner_task_similarity import SimilarityJudgeRequest, SimilarityJudgeResult
 
 logger = logging.getLogger(__name__)

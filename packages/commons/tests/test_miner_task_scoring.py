@@ -29,6 +29,7 @@ from harnyx_commons.llm.schema import (
     LlmMessageContentPart,
     LlmResponse,
     LlmUsage,
+    Timeout,
 )
 from harnyx_commons.miner_task_fast_scoring import FastJudgeAssessment
 from harnyx_commons.miner_task_scoring import (
@@ -713,7 +714,7 @@ async def test_scoring_service_tries_next_candidate_after_true_retry_exhaustion(
 
 
 @pytest.mark.parametrize("failure", ["prefill", "after_billable_response"])
-async def test_saygm_total_deadline_advances_scoring_fallback_and_retains_settled_charges(failure: str) -> None:
+async def test_saygm_retry_exhaustion_advances_scoring_fallback_and_retains_settled_charges(failure: str) -> None:
     calls: dict[tuple[str, str], int] = {}
 
     def stream(content: str, cost: int) -> bytes:
@@ -741,7 +742,7 @@ async def test_saygm_total_deadline_advances_scoring_fallback_and_retains_settle
                 await asyncio.sleep(1)
             elif calls[key] == 1:
                 return httpx.Response(200, content=stream("invalid verdict", 100000))
-            return httpx.Response(429, headers={"Retry-After": "60"})
+            return httpx.Response(429, headers={"Retry-After": "0"})
         return httpx.Response(200, content=stream('{"preferred_position":"first"}', 200000))
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
@@ -760,6 +761,7 @@ async def test_saygm_total_deadline_advances_scoring_fallback_and_retains_settle
                 model="gpt-oss-20b",
                 fallback_models=("glm-5.2",),
                 timeout_seconds=0.5,
+                prefill_timeout_seconds=0.02,
                 retry_policy=RetryPolicy(attempts=3, initial_ms=0, max_ms=0, jitter=0),
             ),
         )
@@ -775,7 +777,7 @@ async def test_saygm_total_deadline_advances_scoring_fallback_and_retains_settle
     assert result.judge_usage.actual_cost_usd == pytest.approx(
         0.0006 if failure == "after_billable_response" else 0.0004
     )
-    assert result.evaluation_trace.scoring_judge_attempt_count == (6 if failure == "after_billable_response" else 4)
+    assert result.evaluation_trace.scoring_judge_attempt_count == 8
     assert result.evaluation_trace.scoring_judge_selected_routes == ("saygm/gpt-oss-20b", "saygm/glm-5.2")
 
 
@@ -1295,10 +1297,20 @@ def test_structured_string_renders_as_json_string_not_legacy_text() -> None:
     assert rendered["answer_text"] == '"structured string"'
 
 
-def test_evaluation_scoring_config_default_timeout_is_300_seconds() -> None:
+async def test_scoring_requests_enforce_separate_first_output_and_total_limits() -> None:
+    """Future failure: a judge receives a scalar timeout and aborts productive generation at the prefill limit."""
     config = EvaluationScoringConfig(provider="chutes", model="judge-model")
+    llm = StubLlmProvider([("first", None, None), ("second", None, None)])
+    service = EvaluationScoringService(llm_provider=llm, config=config)
+    task = MinerTask(
+        task_id=uuid4(), query=Query(text="What is the answer?"), reference_answer=ReferenceAnswer(text="42")
+    )
 
-    assert config.timeout_seconds == pytest.approx(300.0)
+    await service.score(task=task, response=Response(text="42"))
+
+    assert len(llm.requests) == 2
+    assert all(request.timeout == Timeout(900.0, prefill=300.0) for request in llm.requests)
+    assert len({request.internal_metadata["scoring_invocation_id"] for request in llm.requests}) == 2
 
 
 async def test_scoring_service_preserves_positional_citations_and_caps_without_remapping() -> None:

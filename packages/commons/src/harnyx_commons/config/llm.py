@@ -223,7 +223,6 @@ class LlmSettings(BaseSettings):
     reference_llm_timeout_seconds: float | None = Field(default=None, alias="REFERENCE_LLM_TIMEOUT_SECONDS")
     benchmark_llm_timeout_seconds: float | None = Field(default=None, alias="BENCHMARK_LLM_TIMEOUT_SECONDS")
     digest_llm_timeout_seconds: float | None = Field(default=None, alias="DIGEST_LLM_TIMEOUT_SECONDS")
-    scoring_llm_timeout_seconds: float = Field(default=300.0, alias="SCORING_LLM_TIMEOUT_SECONDS")
     similarity_llm_timeout_seconds: float = Field(
         default=900.0, alias="SIMILARITY_LLM_TIMEOUT_SECONDS", gt=0, allow_inf_nan=False
     )

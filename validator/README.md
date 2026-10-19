@@ -37,7 +37,6 @@ Edit `.env` and set at least:
 | `OPENROUTER_API_KEY` | API key required only when an explicit validator route uses OpenRouter, including the Brightmount-managed DeepSeek similarity route |
 | `SCORING_LLM_PROVIDER` | Optional miner-task scoring provider selector; defaults to `chutes` |
 | `SCORING_LLM_TEMPERATURE` | Optional miner-task scoring request temperature; defaults to provider default |
-| `SCORING_LLM_TIMEOUT_SECONDS` | Optional miner-task scoring LLM request timeout; defaults to `300` |
 | `SCORING_LLM_MAX_OUTPUT_TOKENS` | Optional miner-task scoring max output tokens; defaults to `32768` |
 | `SCORING_LLM_RETRY_ATTEMPTS` | Optional miner-task scoring LLM request retry attempts; defaults to `6` |
 | `SCORING_LLM_RETRY_INITIAL_MS` | Optional miner-task scoring LLM request retry initial backoff; defaults to `30000` |
@@ -53,6 +52,8 @@ Edit `.env` and set at least:
 | `SIMILARITY_LLM_RETRY_INITIAL_MS` | Optional duplicate-preflight similarity LLM request retry initial backoff; defaults to `0` |
 | `SIMILARITY_LLM_RETRY_MAX_MS` | Optional duplicate-preflight similarity LLM request retry maximum backoff; defaults to `0` |
 | `SIMILARITY_LLM_RETRY_JITTER` | Optional duplicate-preflight similarity LLM request retry jitter ratio; defaults to `0.0` |
+
+Scoring attempts use fixed limits of 300 seconds to first text or reasoning output and 900 seconds total. These limits have no environment settings.
 
 Similarity limits apply separately to each provider attempt. Headers,
 heartbeats, and empty metadata do not count as output. The total does not restart

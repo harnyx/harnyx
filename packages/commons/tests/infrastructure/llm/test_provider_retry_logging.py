@@ -6,6 +6,11 @@ from dataclasses import replace
 
 import pytest
 
+from harnyx_commons.llm.judge_observability import (
+    JudgeLlmAttemptObservation,
+    record_judge_stream_event,
+    record_judge_stream_headers_received,
+)
 from harnyx_commons.llm.provider import BaseLlmProvider, LlmProviderError, LlmRetryExhaustedError
 from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import (
@@ -17,11 +22,6 @@ from harnyx_commons.llm.schema import (
     LlmRequest,
     LlmResponse,
     LlmUsage,
-)
-from harnyx_commons.llm.similarity_observability import (
-    SimilarityLlmAttemptObservation,
-    record_similarity_stream_event,
-    record_similarity_stream_headers_received,
 )
 
 pytestmark = pytest.mark.anyio("asyncio")
@@ -36,8 +36,8 @@ class _RetryOnceExceptionProvider(BaseLlmProvider):
     async def _invoke(self, request: AbstractLlmRequest) -> LlmResponse:
         del request
         self._attempt += 1
-        record_similarity_stream_headers_received()
-        record_similarity_stream_event(
+        record_judge_stream_headers_received()
+        record_judge_stream_event(
             saw_output=True,
             usage=LlmUsage(prompt_tokens=100, completion_tokens=10) if self._attempt == 1 else None,
         )
@@ -204,13 +204,23 @@ async def test_provider_failure_summary_does_not_include_exception_content(caplo
     assert details.exc_info is not None
 
 
-async def test_similarity_retry_logs_each_stream_attempt_without_content(
+@pytest.mark.parametrize(
+    ("use_case", "event_prefix"),
+    (
+        ("miner_task_similarity_judge", "similarity_judge"),
+        ("miner_task_pairwise_judge", "scoring_judge"),
+        ("miner_task_fast_correctness_judge", "scoring_judge"),
+    ),
+)
+async def test_judge_retry_logs_each_stream_attempt_without_content(
     caplog: pytest.LogCaptureFixture,
+    use_case: str,
+    event_prefix: str,
 ) -> None:
-    """Future failure: a slow similarity fallback cannot be separated from a stalled retry."""
+    """Future failure: a slow judge fallback cannot be separated from a stalled retry."""
     provider = _RetryOnceExceptionProvider()
     request = replace(
-        _request(use_case="miner_task_similarity_judge"),
+        _request(use_case=use_case),
         internal_metadata={
             "batch_id": "batch-1",
             "candidate_artifact_id": "candidate-1",
@@ -226,22 +236,23 @@ async def test_similarity_retry_logs_each_stream_attempt_without_content(
 
     await provider.invoke_with_retry(request)
 
-    records = [record for record in caplog.records if record.message.startswith("similarity_judge.llm_attempt.")]
+    records = [record for record in caplog.records if record.message.startswith(f"{event_prefix}.llm_attempt.")]
     assert [record.message for record in records] == [
-        "similarity_judge.llm_attempt.started",
-        "similarity_judge.llm_attempt.headers_received",
-        "similarity_judge.llm_attempt.progress",
-        "similarity_judge.llm_attempt.finished",
-        "similarity_judge.llm_attempt.started",
-        "similarity_judge.llm_attempt.headers_received",
-        "similarity_judge.llm_attempt.progress",
-        "similarity_judge.llm_attempt.finished",
+        f"{event_prefix}.llm_attempt.started",
+        f"{event_prefix}.llm_attempt.headers_received",
+        f"{event_prefix}.llm_attempt.progress",
+        f"{event_prefix}.llm_attempt.finished",
+        f"{event_prefix}.llm_attempt.started",
+        f"{event_prefix}.llm_attempt.headers_received",
+        f"{event_prefix}.llm_attempt.progress",
+        f"{event_prefix}.llm_attempt.finished",
     ]
     data = [record.data for record in records]
     assert {item["attempt_number"] for item in data} == {1, 2}
     assert len({item["attempt_id"] for item in data}) == 2
     assert {item["attempt_limit"] for item in data} == {2}
     assert all(item["batch_id"] == "batch-1" for item in data)
+    assert all(item["use_case"] == use_case for item in data)
     assert data[3]["outcome"] == "failed"
     assert data[3]["exception_type"] == "RuntimeError"
     assert data[3]["retryable"] is True
@@ -264,7 +275,7 @@ async def test_similarity_stream_reports_first_output_and_periodic_progress(
     """Future failure: metadata-only events hide when productive model output actually starts."""
     clock_values = iter((0.0, 0.1, 1.0, 2.0, 61.0, 62.0, 70.0))
     caplog.set_level(logging.INFO, logger="harnyx_commons.llm.calls")
-    observation = SimilarityLlmAttemptObservation(
+    observation = JudgeLlmAttemptObservation(
         provider="openrouter",
         model="deepseek/deepseek-v4-flash",
         attempt_number=1,
@@ -297,7 +308,7 @@ async def test_similarity_attempt_logging_failure_does_not_change_provider_resul
             del msg, args, kwargs
             raise RuntimeError("log sink unavailable")
 
-    observation = SimilarityLlmAttemptObservation(
+    observation = JudgeLlmAttemptObservation(
         provider="openrouter",
         model="deepseek/deepseek-v4-flash",
         attempt_number=1,
@@ -318,7 +329,7 @@ async def test_similarity_usage_timestamp_stays_at_last_counter_update(
     """Future failure: a stall moves the usage timestamp or partial zero counters disappear as missing."""
     times = iter((0.0, 1.0, 2.0, 20.0, 100.0))
     caplog.set_level(logging.INFO, logger="harnyx_commons.llm.calls")
-    observation = SimilarityLlmAttemptObservation(
+    observation = JudgeLlmAttemptObservation(
         provider="chutes", model="model", attempt_number=1, attempt_limit=1, identity={}, clock=lambda: next(times)
     )
     observation.stream_event(saw_output=False, usage=LlmUsage(prompt_tokens=11, completion_tokens=0))
@@ -390,7 +401,7 @@ async def test_request_retry_policy_attempts_one_disables_retry() -> None:
 async def test_owned_timeout_retries_with_fresh_budget_despite_logging_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from harnyx_commons.llm import similarity_observability
+    from harnyx_commons.llm import judge_observability
     from harnyx_commons.llm.timeout import record_output_progress
     from harnyx_miner_sdk.llm import Timeout
 
@@ -401,9 +412,9 @@ async def test_owned_timeout_retries_with_fresh_budget_despite_logging_failure(
     from functools import partial
 
     monkeypatch.setattr(
-        similarity_observability,
-        "SimilarityLlmAttemptObservation",
-        partial(SimilarityLlmAttemptObservation, logger=_ExplodingLogger("exploding")),
+        judge_observability,
+        "JudgeLlmAttemptObservation",
+        partial(JudgeLlmAttemptObservation, logger=_ExplodingLogger("exploding")),
     )
 
     class Provider(_RetryOnceExceptionProvider):

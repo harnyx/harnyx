@@ -7,6 +7,7 @@ import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Generic, Literal, TypeVar
+from uuid import uuid4
 
 if TYPE_CHECKING:
     from harnyx_commons.rating_competition import RatingQualityEvidence
@@ -34,6 +35,7 @@ from harnyx_commons.llm.schema import (
     LlmMessageContentPart,
     LlmRequest,
     LlmResponse,
+    Timeout,
 )
 from harnyx_commons.miner_task_fast_scoring import (
     FAST_SCORING_VERSION,
@@ -264,7 +266,8 @@ class EvaluationScoringConfig:
     temperature: float | None = None
     max_output_tokens: int | None = 256
     reasoning_effort: str | None = None
-    timeout_seconds: float = 300.0
+    timeout_seconds: float = 900.0
+    prefill_timeout_seconds: float = 300.0
     scoring_version: str = "v1"
     retry_policy: RetryPolicy | None = None
 
@@ -469,13 +472,21 @@ class EvaluationScoringService:
         last_error: LlmRetryExhaustedError | None = None
         failed_candidate_usage: list[JudgeUsageSummary] = []
         failed_retry_metadata: list[dict[str, object]] = []
-        for model in _judge_candidate_models(self._config):
+        invocation_id = str(uuid4())
+        candidates = _judge_candidate_models(self._config)
+        for position, model in enumerate(candidates, start=1):
             request = self._build_structured_judge_request(
                 model=model,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 output_model=output_model,
                 use_case=use_case,
+                internal_metadata={
+                    "scoring_invocation_id": invocation_id,
+                    "candidate_model": model,
+                    "candidate_position": position,
+                    "candidate_count": len(candidates),
+                },
             )
             try:
                 response = await self._llm.invoke(request)
@@ -543,6 +554,7 @@ class EvaluationScoringService:
         user_prompt: str,
         output_model: type[BaseModel],
         use_case: str,
+        internal_metadata: dict[str, object],
     ) -> LlmRequest:
         return LlmRequest(
             provider=self._config.provider,
@@ -563,9 +575,10 @@ class EvaluationScoringService:
             temperature=self._config.temperature,
             max_output_tokens=self._config.max_output_tokens,
             reasoning_effort=self._config.reasoning_effort,
-            timeout=self._config.timeout_seconds,
+            timeout=Timeout(self._config.timeout_seconds, prefill=self._config.prefill_timeout_seconds),
             retry_policy=self._config.retry_policy,
             use_case=use_case,
+            internal_metadata=internal_metadata,
         )
 
 

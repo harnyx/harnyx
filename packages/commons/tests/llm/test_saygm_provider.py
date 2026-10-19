@@ -388,23 +388,54 @@ async def test_retry_after_controls_delay_before_retry(
     assert delays[0] == expected_delay
 
 
-async def test_retry_after_cannot_outlive_total_request_deadline() -> None:
+async def test_retry_after_does_not_consume_next_attempt_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
     attempts = 0
+    delays = []
+    real_sleep = asyncio.sleep
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+        # Model a provider-directed delay longer than a complete attempt budget.
+        await real_sleep(0.1)
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal attempts
         attempts += 1
-        return httpx.Response(429, headers={"Retry-After": "60"})
+        if attempts == 1:
+            return httpx.Response(429, headers={"Retry-After": "60"})
+        return httpx.Response(200, content=_stream(delta={"content": "ok"}, usage={"cost_nano_usd": 1}))
 
+    monkeypatch.setattr("harnyx_commons.llm.provider.asyncio.sleep", sleep)
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         provider = SayGmLlmProvider(api_key=SecretStr("key"), client=client)
-        with pytest.raises(LlmRetryExhaustedError, match="total request deadline"):
-            await provider.invoke(_retry_request(timeout=0.03))
-    assert attempts == 1
+        response = await provider.invoke(_retry_request(timeout=Timeout(0.05, prefill=0.02)))
+    assert response.raw_text == "ok"
+    assert attempts == 2
+    assert delays == [60]
+
+
+@pytest.mark.parametrize("phase", ["prefill", "total"])
+async def test_timeout_before_output_gives_retry_fresh_deadlines(phase: str) -> None:
+    attempts = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            await asyncio.sleep(1)
+        return httpx.Response(200, content=_stream(delta={"content": "ok"}, usage={"cost_nano_usd": 1}))
+
+    timeout = Timeout(0.2, prefill=0.02) if phase == "prefill" else Timeout(0.05)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = SayGmLlmProvider(api_key=SecretStr("key"), client=client)
+        response = await provider.invoke(_retry_request(timeout=timeout))
+    assert response.raw_text == "ok"
+    assert attempts == 2
+    assert response.metadata["retry_reasons"] == (f"{phase}_timeout",)
 
 
 @pytest.mark.parametrize("failure", ["backoff", "before_output", "after_output"])
-async def test_total_deadline_preserves_previous_settled_charge_and_attempt_count(failure: str) -> None:
+async def test_retry_failure_preserves_previous_settled_charge_and_attempt_count(failure: str) -> None:
     attempts = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -413,7 +444,7 @@ async def test_total_deadline_preserves_previous_settled_charge_and_attempt_coun
         if attempts == 1:
             return httpx.Response(200, content=_stream(delta={"content": ""}, usage={"cost_nano_usd": 100000}))
         if failure == "backoff":
-            return httpx.Response(429, headers={"Retry-After": "60"})
+            return httpx.Response(429, headers={"Retry-After": "0"})
         return httpx.Response(
             200,
             stream=_InterruptedStream({"content": "partial"} if failure == "after_output" else None, "inactivity"),
@@ -429,13 +460,13 @@ async def test_total_deadline_preserves_previous_settled_charge_and_attempt_coun
                     retry_policy=RetryPolicy(attempts=3, initial_ms=0, max_ms=0, jitter=0),
                 )
             )
-    assert attempts == 2
+    assert attempts == (2 if failure == "after_output" else 3)
     response = raised.value.response
     assert response is not None
     assert response.usage.prompt_tokens == 12
     assert response.metadata["actual_cost_usd_total"] == pytest.approx(0.0001)
     assert response.metadata["billable_response_count"] == 1
-    assert response.metadata["attempts"] == 2
+    assert response.metadata["attempts"] == attempts
     assert response.metadata["retry_reasons"][0] == "empty_output"
 
 

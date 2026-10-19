@@ -114,7 +114,6 @@ async def test_evaluation_scoring_live_uses_real_structured_runtime_flow(
             reasoning_effort=bootstrap._SCORING_LLM_REASONING_EFFORT,
             temperature=0.0,
             max_output_tokens=settings.llm.scoring_llm_max_output_tokens,
-            timeout_seconds=float(settings.llm.scoring_llm_timeout_seconds),
         ),
     )
     citations = (
@@ -232,7 +231,6 @@ async def test_evaluation_scoring_live_accepts_fallback_candidate_route(
             reasoning_effort=bootstrap._SCORING_LLM_REASONING_EFFORT,
             temperature=0.0,
             max_output_tokens=settings.llm.scoring_llm_max_output_tokens,
-            timeout_seconds=float(settings.llm.scoring_llm_timeout_seconds),
         ),
     )
     task = MinerTask(

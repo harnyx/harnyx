@@ -630,7 +630,6 @@ def test_create_scoring_service_does_not_require_vertex_config_at_bootstrap() ->
             scoring_llm_provider="chutes",
             scoring_llm_temperature=None,
             scoring_llm_max_output_tokens=20480,
-            scoring_llm_timeout_seconds=30.0,
             chutes_api_key=SecretStr("test-key"),
         ),
         vertex=VertexSettings.model_construct(
@@ -692,7 +691,6 @@ def test_create_scoring_service_uses_effective_route_model_and_default_provider(
             scoring_llm_provider="vertex",
             scoring_llm_temperature=None,
             scoring_llm_max_output_tokens=20480,
-            scoring_llm_timeout_seconds=30.0,
             chutes_api_key=SecretStr("test-key"),
         ),
         vertex=VertexSettings.model_construct(

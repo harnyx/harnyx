@@ -13,6 +13,10 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from harnyx_commons.llm.cost_settlement import SettledLlmCost, with_settled_llm_cost
+from harnyx_commons.llm.judge_observability import (
+    record_judge_stream_event,
+    record_judge_stream_headers_received,
+)
 from harnyx_commons.llm.provider import BaseLlmProvider
 from harnyx_commons.llm.providers.chutes_codec import (
     _ChutesChatRequest,
@@ -30,10 +34,6 @@ from harnyx_commons.llm.schema import (
     AbstractLlmRequest,
     LlmMessageToolCall,
     LlmResponse,
-)
-from harnyx_commons.llm.similarity_observability import (
-    record_similarity_stream_event,
-    record_similarity_stream_headers_received,
 )
 from harnyx_commons.llm.timeout import record_output_progress, streaming_transport_timeout
 from harnyx_miner_sdk.llm import Timeout
@@ -153,7 +153,7 @@ class ChutesLlmProvider(BaseLlmProvider):
         reasoning_state = _ChutesReasoningStreamState()
         ttft_ms: float | None = None
         async with self._client.stream("POST", "v1/chat/completions", **request_kwargs) as response:
-            record_similarity_stream_headers_received()
+            record_judge_stream_headers_received()
             if response.is_error:
                 await response.aread()
             response.raise_for_status()
@@ -170,7 +170,7 @@ class ChutesLlmProvider(BaseLlmProvider):
                     # Optional monitoring cannot turn an intermediate usage error into a failed generation.
                     logger.warning("chutes.stream.invalid_usage")
                     usage = None
-                record_similarity_stream_event(
+                record_judge_stream_event(
                     saw_output=saw_output,
                     usage=usage.to_usage() if usage is not None else None,
                     response_id=event.id,

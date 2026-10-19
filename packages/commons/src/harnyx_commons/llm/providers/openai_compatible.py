@@ -24,6 +24,10 @@ from harnyx_commons.config.llm import (
 from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.llm.adapter import canonical_model_for_provider_model
 from harnyx_commons.llm.cost_settlement import settled_response_cost, with_settled_llm_cost
+from harnyx_commons.llm.judge_observability import (
+    record_judge_stream_event,
+    record_judge_stream_headers_received,
+)
 from harnyx_commons.llm.provider import BaseLlmProvider
 from harnyx_commons.llm.provider_types import custom_openai_compatible_target
 from harnyx_commons.llm.providers.openai_chat_codec import OpenAiChatRequestParts
@@ -45,10 +49,6 @@ from harnyx_commons.llm.schema import (
     LlmMessageToolCall,
     LlmResponse,
     LlmUsage,
-)
-from harnyx_commons.llm.similarity_observability import (
-    record_similarity_stream_event,
-    record_similarity_stream_headers_received,
 )
 from harnyx_commons.llm.timeout import record_output_progress, streaming_transport_timeout
 from harnyx_miner_sdk.llm import Timeout
@@ -145,7 +145,7 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
         response_metadata: JsonObject | None = None
         ttft_ms: float | None = None
         async with self._client.stream("POST", self._chat_completions_url, **request_kwargs) as response:
-            record_similarity_stream_headers_received(response_id=response.headers.get("x-generation-id"))
+            record_judge_stream_headers_received(response_id=response.headers.get("x-generation-id"))
             if response.is_error:
                 await response.aread()
             response.raise_for_status()
@@ -181,7 +181,7 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
                 except ValidationError:
                     self._llm_logger.warning("openai_compatible.stream.invalid_identity")
                     stream_identity = _OpenAiCompatibleStreamIdentity()
-                record_similarity_stream_event(
+                record_judge_stream_event(
                     saw_output=saw_output,
                     usage=usage.to_usage() if usage is not None else None,
                     response_id=event.id,

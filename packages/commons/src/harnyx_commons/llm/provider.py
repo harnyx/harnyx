@@ -21,6 +21,7 @@ from opentelemetry.util.types import AttributeValue
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from harnyx_commons.config.external_client import ExternalClientRetrySettings
+from harnyx_commons.llm.judge_observability import observe_judge_llm_attempt
 from harnyx_commons.llm.provider_types import (
     ALLOWED_LLM_PROVIDERS,
     CHUTES_PROVIDER,
@@ -48,7 +49,6 @@ from harnyx_commons.llm.schema import (
     PostprocessResult,
     supports_tool_result_messages,
 )
-from harnyx_commons.llm.similarity_observability import observe_similarity_llm_attempt
 from harnyx_commons.llm.timeout import LlmAttemptTimeoutError, enforce_attempt_deadlines, resolve_timeout
 from harnyx_commons.observability.langfuse import (
     build_generation_metadata,
@@ -58,7 +58,6 @@ from harnyx_commons.observability.langfuse import (
     start_llm_generation,
     update_generation_best_effort,
 )
-from harnyx_miner_sdk.llm import Timeout
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 
@@ -412,45 +411,24 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         policy = policy or self._retry_policy
         ctx = RetryContext(policy)
         current_request = request
-        attempt = 0
-        try:
-            async with enforce_attempt_deadlines(self._retry_timeout(request)):
-                for attempt in range(policy.attempts):
-                    # Phase 1: Attempt
-                    response = await self._try_call(attempt, ctx, current_request, call_coro, classify_exception)
-                    if response is None:
-                        continue
+        for attempt in range(policy.attempts):
+            # Phase 1: Attempt
+            response = await self._try_call(attempt, ctx, current_request, call_coro, classify_exception)
+            if response is None:
+                continue
 
-                    # Phase 2: Verify
-                    if not await self._try_verify(attempt, ctx, current_request, response, verifier):
-                        continue
+            # Phase 2: Verify
+            if not await self._try_verify(attempt, ctx, current_request, response, verifier):
+                continue
 
-                    # Phase 3: Postprocess
-                    processed, retry, next_request = await self._try_postprocess(
-                        attempt, ctx, current_request, response
-                    )
-                    if retry:
-                        current_request = next_request or current_request
-                        continue
+            # Phase 3: Postprocess
+            processed, retry, next_request = await self._try_postprocess(attempt, ctx, current_request, response)
+            if retry:
+                current_request = next_request or current_request
+                continue
 
-                    # Success
-                    return self._build_response(request, response, ctx, processed)
-        except LlmAttemptTimeoutError as exc:
-            # The total deadline includes backoff and may expire before all attempts.
-            ctx.total_latency_ms = exc.elapsed_seconds * 1000
-            response = self._build_response_for_error(ctx.last_response, ctx)
-            if response is not None:
-                response = replace(response, metadata={**(response.metadata or {}), "attempts": attempt + 1})
-            retryable, reason = self._classify_retry_exception(exc, classify_exception)
-            if not retryable:
-                raise LlmProviderError(reason, response=response) from exc
-            raise LlmRetryExhaustedError(
-                "LLM total timeout: total request deadline exceeded",
-                response=response,
-                attempts=attempt + 1,
-                retry_reasons=tuple(ctx.reasons),
-                latency_ms_total=round(ctx.total_latency_ms, 2),
-            ) from exc
+            # Success
+            return self._build_response(request, response, ctx, processed)
 
         raise LlmRetryExhaustedError(
             "LLM call exhausted all retry attempts",
@@ -459,9 +437,6 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             retry_reasons=tuple(ctx.reasons),
             latency_ms_total=round(ctx.total_latency_ms, 2),
         )
-
-    def _retry_timeout(self, request: AbstractLlmRequest) -> Timeout | None:
-        return None
 
     async def _try_call(
         self,
@@ -473,7 +448,7 @@ class BaseLlmProvider(ABC, LlmProviderPort):
     ) -> LlmResponse | None:
         """Attempt the LLM call. Returns None if retry needed."""
         start = time.perf_counter()
-        with observe_similarity_llm_attempt(
+        with observe_judge_llm_attempt(
             provider=self._provider_label,
             request=request,
             attempt_number=attempt + 1,
