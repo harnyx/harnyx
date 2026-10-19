@@ -501,6 +501,11 @@ class RuntimeToolInvoker(ToolInvoker):
                             "input_per_million": rates.input_per_million,
                             "output_per_million": rates.output_per_million,
                             "reasoning_per_million": rates.billable_reasoning_per_million,
+                            **(
+                                {"cached_input_per_million": rates.cached_input_per_million}
+                                if rates.cached_input_per_million is not None
+                                else {}
+                            ),
                         }
                         for model, rates in model_pricing.items()
                     }

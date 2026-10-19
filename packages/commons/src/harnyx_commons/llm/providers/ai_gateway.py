@@ -251,6 +251,12 @@ class _AiGatewayUsageDetails(BaseModel):
     reasoning_tokens: int | None = None
 
 
+class _AiGatewayPromptTokenDetails(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    cached_tokens: int | None = None
+
+
 class _AiGatewayUsagePayload(BaseModel):
     model_config = ConfigDict(extra="ignore", strict=True)
 
@@ -259,11 +265,13 @@ class _AiGatewayUsagePayload(BaseModel):
     total_tokens: int | None = None
     reasoning_tokens: int | None = None
     completion_tokens_details: _AiGatewayUsageDetails | None = None
+    prompt_tokens_details: _AiGatewayPromptTokenDetails | None = None
 
     def to_usage(self) -> LlmUsage:
         reasoning_tokens = self._reasoning_tokens()
         return LlmUsage(
             prompt_tokens=self.prompt_tokens,
+            prompt_cached_tokens=self.prompt_tokens_details.cached_tokens if self.prompt_tokens_details else None,
             completion_tokens=_completion_tokens_excluding_reasoning(
                 completion_tokens=self.completion_tokens,
                 reasoning_tokens=reasoning_tokens,

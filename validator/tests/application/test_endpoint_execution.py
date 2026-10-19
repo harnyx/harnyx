@@ -103,14 +103,36 @@ async def test_restart_callback_authentication_blocks_concurrent_new_miner_attem
 
 
 @pytest.mark.parametrize("answer", ["unknown", "invalid", "absent", "not_attempted"])
-async def test_failure_requires_actual_attempt_and_definitive_absence_of_valid_answer(answer):
-    service, work, authority, _, miner = _setup(duration=0.2)
+async def test_failure_requires_actual_attempt_and_definitive_absence_of_valid_answer(answer, monkeypatch):
+    service, work, authority, _, miner = _setup()
+    now = authority.started_at
+    polling, resume = asyncio.Event(), asyncio.Event()
+    real_sleep = asyncio.sleep
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now
+
+    async def advance_poll(delay):
+        nonlocal now
+        if not polling.is_set():
+            # Pause after transport/status so the callback arrives before expiry.
+            polling.set()
+            await resume.wait()
+            now = authority.deadline_at + timedelta(milliseconds=1)
+        else:
+            # Finish after one reporting iteration, including the no-failure cases.
+            now = authority.report_cutoff + timedelta(milliseconds=1)
+        await real_sleep(0)
+
+    monkeypatch.setattr("harnyx_validator.application.endpoint_execution.datetime", Clock)
+    monkeypatch.setattr("harnyx_validator.application.endpoint_execution.asyncio.sleep", advance_poll)
     if answer == "not_attempted":
         service.miner.send_assignment.return_value = MinerRequestAttempt()
     try:
         await service.execute(work)
-        for _ in range(5):
-            await asyncio.sleep(0)
+        await asyncio.wait_for(polling.wait(), 5)
         if answer in {"unknown", "invalid"}:
             error = (
                 TimeoutError("Platform unavailable")
@@ -123,7 +145,8 @@ async def test_failure_requires_actual_attempt_and_definitive_absence_of_valid_a
                 await service.accept_callback(
                     **_callback(authority, work, miner, received_at=authority.deadline_at - timedelta(milliseconds=100))
                 )
-        await asyncio.sleep(1.1)
+        resume.set()
+        await asyncio.wait_for(service._executions[authority.assignment_id].task, 5)
         if answer in {"invalid", "absent"}:
             report = service.platform.fail_endpoint.call_args.args[1]
             assert authority.started_at <= report.attempted_at < authority.deadline_at <= report.observed_through

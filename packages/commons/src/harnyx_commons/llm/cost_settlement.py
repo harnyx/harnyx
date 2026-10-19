@@ -194,6 +194,8 @@ def settled_static_llm_cost(
             "provider": provider,
             "model": model,
             "prompt_tokens": usage.prompt_tokens or 0,
+            "prompt_cached_tokens": usage.prompt_cached_tokens,
+            "prompt_cache_write_tokens": usage.prompt_cache_write_tokens,
             "completion_tokens": usage.completion_tokens or 0,
             "reasoning_tokens": usage.reasoning_tokens,
         }

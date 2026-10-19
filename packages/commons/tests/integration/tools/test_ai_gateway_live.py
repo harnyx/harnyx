@@ -31,6 +31,7 @@ NEW_AI_GATEWAY_MODELS = (
     "deepseek/deepseek-v4-pro",
     "zai/glm-5.3-flash",
     "meta/muse-glimmer-30b",
+    "meta/muse-spark-open",
     "alibaba/qwen3.8-27b",
     "tencent/hy4-preview",
 )
@@ -268,6 +269,8 @@ async def test_ai_gateway_two_turn_function_tool_loop_live() -> None:
 
 
 def _assert_new_ai_gateway_response(response: LlmResponse, model: str) -> None:
+    if model == "meta/muse-spark-open":
+        assert response.usage.prompt_cached_tokens is not None
     assert response.finish_reason not in {"length", "max_tokens"}, (
         f"{model}: output budget exhausted; finish_reason={response.finish_reason!r}, usage={response.usage!r}"
     )

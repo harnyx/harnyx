@@ -634,6 +634,49 @@ def _request(
     )
 
 
+@pytest.mark.parametrize("returned_cost", [None, True, 0.0042])
+async def test_openrouter_cached_input_settlement(returned_cost: object) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        chunk = {
+            "id": "resp-cache",
+            "choices": [{"index": 0, "delta": {"content": "ok"}, "finish_reason": "stop"}],
+            "usage": {
+                "prompt_tokens": 1000,
+                "prompt_tokens_details": {"cached_tokens": 800},
+                "completion_tokens": 6,
+                "completion_tokens_details": {"reasoning_tokens": 4},
+                "total_tokens": 1006,
+                "cost": returned_cost,
+            },
+        }
+        return httpx.Response(
+            200,
+            text=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n",
+            request=request,
+            headers={"content-type": "text/event-stream"},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        endpoint = OpenAiCompatibleEndpointConfig.model_validate(
+            {"id": OPENROUTER_ENDPOINT_ID, "base_url": OPENROUTER_BASE_URL, "auth": {"type": "none"}}
+        )
+        chat = OpenAiCompatibleLlmProvider(endpoint=endpoint, client=client)
+        provider = OpenRouterLlmProvider(
+            openrouter_api_key=SecretStr("test-key"),
+            openrouter_chat_provider_factory=lambda key: (chat, client),
+        )
+        try:
+            response = await provider.invoke(_request(model="meta/muse-spark-open"))
+        finally:
+            await provider.aclose()
+
+    assert response.usage.prompt_cached_tokens == 800
+    assert response.usage.completion_tokens == 2
+    assert response.usage.reasoning_tokens == 4
+    assert response.metadata is not None
+    assert response.metadata["actual_cost_usd"] == pytest.approx(0.0042 if returned_cost == 0.0042 else 0.0003955)
+
+
 async def test_decision_native_transport_and_client_ownership() -> None:
     import json
 

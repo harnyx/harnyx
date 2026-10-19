@@ -102,6 +102,12 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
             assert model_prices[provider][model]["reasoning_per_million"] == pytest.approx(
                 rates.billable_reasoning_per_million
             )
+            if rates.cached_input_per_million is not None:
+                assert model_prices[provider][model]["cached_input_per_million"] == pytest.approx(
+                    rates.cached_input_per_million
+                )
+            else:
+                assert "cached_input_per_million" not in model_prices[provider][model]
     assert "openai/gpt-oss-20b-TEE" not in provider_models["openrouter"]
     assert "openai/gpt-oss-120b-TEE" not in provider_models["openrouter"]
     assert "openai/gpt-oss-20b" in provider_models["openrouter"]

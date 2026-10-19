@@ -137,6 +137,41 @@ def test_openrouter_missing_usage_cost_uses_static_pricing() -> None:
     assert cost.evidence["upstream_inference_cost_status"] == "missing"
 
 
+@pytest.mark.parametrize("provider", ["openrouter", "ai_gateway"])
+@pytest.mark.parametrize("cached_tokens", [None, 0, 800, 1000])
+def test_miner_fallback_prices_cached_and_uncached_input(provider: str, cached_tokens: int | None) -> None:
+    cost = settled_response_cost(
+        _response(usage=LlmUsage(prompt_tokens=1000, prompt_cached_tokens=cached_tokens, completion_tokens=2)),
+        provider=provider,
+        model="meta/muse-spark-open",
+    )
+    assert cost is not None
+    expected_input = ((1000 - (cached_tokens or 0)) * 1.25 + (cached_tokens or 0) * 0.15) / 1_000_000
+    assert cost.cost_usd == pytest.approx(expected_input + 2 * 4.25 / 1_000_000)
+    assert cost.evidence["prompt_cached_tokens"] == cached_tokens
+    assert cost.evidence["settlement_source"] == "static_pricing"
+
+
+def test_miner_fallback_without_cached_rate_preserves_standard_input_price() -> None:
+    cost = settled_response_cost(
+        _response(usage=LlmUsage(prompt_tokens=1000, prompt_cached_tokens=800, completion_tokens=2000)),
+        provider="openrouter",
+        model="deepseek/deepseek-v3.2",
+    )
+    assert cost is not None
+    assert cost.cost_usd == pytest.approx(0.001069)
+
+
+@pytest.mark.parametrize("cached_tokens", [-1, 1001])
+def test_miner_fallback_rejects_cached_counts_outside_prompt(cached_tokens: int) -> None:
+    with pytest.raises(ValueError, match="disjoint subsets"):
+        settled_response_cost(
+            _response(usage=LlmUsage(prompt_tokens=1000, prompt_cached_tokens=cached_tokens)),
+            provider="openrouter",
+            model="meta/muse-spark-open",
+        )
+
+
 def test_ai_gateway_provider_metadata_cost_wins() -> None:
     cost = settled_response_cost(
         _response(

@@ -49,6 +49,7 @@ NEW_OPENROUTER_MODELS = (
     "thinkingmachines/inkling",
     "qwen/qwen3.5-397b-a17b",
     "meta/muse-glimmer-30b",
+    "meta/muse-spark-open",
     "qwen/qwen3.8-27b",
     "tencent/hy4-preview",
 )
@@ -370,6 +371,8 @@ async def test_openrouter_two_turn_function_tool_loop_with_reasoning_replay_live
 
 
 def _assert_not_truncated(response: LlmResponse, *, model: str) -> None:
+    if model == "meta/muse-spark-open":
+        assert response.usage.prompt_cached_tokens is not None
     assert response.finish_reason != "length", (
         f"OpenRouter contract response from {model} exhausted its output budget: {response.usage}"
     )

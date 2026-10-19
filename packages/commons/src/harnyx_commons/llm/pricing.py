@@ -127,6 +127,7 @@ MINER_TOOL_LLM_PRICING: Mapping[MinerSelectedLlmProviderName, Mapping[str, Model
         "thinkingmachines/inkling": ModelPricing(1.00, 4.05, 0.0),
         "qwen/qwen3.5-397b-a17b": ModelPricing(0.39, 2.34, 0.0),
         "meta/muse-glimmer-30b": ModelPricing(0.35, 1.50, 0.0),
+        "meta/muse-spark-open": ModelPricing(1.25, 4.25, 0.0, cached_input_per_million=0.15),
         "tencent/hy4-preview": ModelPricing(0.834, 2.501, 0.0),
         "xiaomi/mimo-v2.6-flash": ModelPricing(0.14, 0.28, 0.0),
         "xiaomi/mimo-v2.6-pro": ModelPricing(0.435, 0.87, 0.0),
@@ -169,6 +170,7 @@ MINER_TOOL_LLM_PRICING: Mapping[MinerSelectedLlmProviderName, Mapping[str, Model
         "deepseek/deepseek-v4.1-flash-1017": ModelPricing(0.075, 0.30, 0.0),
         "deepseek/deepseek-v4-pro": ModelPricing(0.435, 0.87, 0.0),
         "meta/muse-glimmer-30b": ModelPricing(0.35, 1.50, 0.0),
+        "meta/muse-spark-open": ModelPricing(1.25, 4.25, 0.0, cached_input_per_million=0.15),
         "alibaba/qwen3.8-27b": ModelPricing(0.10, 0.40, 0.0),
         "tencent/hy4-preview": ModelPricing(0.834, 2.501, 0.0),
         "xiaomi/mimo-v2.6-flash": ModelPricing(0.14, 0.28, 0.0),
@@ -332,19 +334,7 @@ def generation_usage_cost_breakdown(
             "usd_cost": grounded_cost,
         }
 
-    if (
-        prompt_cached_tokens < 0
-        or prompt_cache_write_tokens < 0
-        or prompt_cached_tokens + prompt_cache_write_tokens > prompt_tokens
-    ):
-        raise ValueError("Cached input and cache writes must be disjoint subsets of prompt tokens")
-    cached_rate = pricing.cached_input_per_million
-    write_rate = pricing.cache_write_per_million
-    cost_input = (
-        (prompt_tokens - prompt_cached_tokens - prompt_cache_write_tokens) * pricing.input_per_million
-        + prompt_cached_tokens * (cached_rate if cached_rate is not None else pricing.input_per_million)
-        + prompt_cache_write_tokens * (write_rate if write_rate is not None else pricing.input_per_million)
-    ) / 1_000_000
+    cost_input = _price_input_tokens(pricing, usage)
     # OpenAI output_tokens already includes reasoning; Gemini candidates_token_count does not.
     if provider.strip().lower() == "openai":
         completion_tokens = max(completion_tokens - reasoning_tokens, 0.0)
@@ -363,14 +353,28 @@ def generation_usage_cost_breakdown(
 def _price_tokens(pricing: ModelPricing, usage: LlmUsage) -> float:
     """Return USD cost for token usage under the supplied per-model rates."""
 
-    prompt_tokens = float(usage.prompt_tokens or 0)
     completion_tokens = float(usage.completion_tokens or 0)
     reasoning_tokens = float(usage.reasoning_tokens or 0)
 
-    cost_input = (prompt_tokens / 1_000_000) * pricing.input_per_million
+    cost_input = _price_input_tokens(pricing, usage)
     cost_output = (completion_tokens / 1_000_000) * pricing.output_per_million
     cost_reasoning = (reasoning_tokens / 1_000_000) * pricing.billable_reasoning_per_million
     return cost_input + cost_output + cost_reasoning
+
+
+def _price_input_tokens(pricing: ModelPricing, usage: LlmUsage) -> float:
+    prompt_tokens = float(usage.prompt_tokens or 0)
+    cached_tokens = float(usage.prompt_cached_tokens or 0)
+    cache_write_tokens = float(usage.prompt_cache_write_tokens or 0)
+    if cached_tokens < 0 or cache_write_tokens < 0 or cached_tokens + cache_write_tokens > prompt_tokens:
+        raise ValueError("Cached input and cache writes must be disjoint subsets of prompt tokens")
+    cached_rate = pricing.cached_input_per_million
+    write_rate = pricing.cache_write_per_million
+    return (
+        (prompt_tokens - cached_tokens - cache_write_tokens) * pricing.input_per_million
+        + cached_tokens * (cached_rate if cached_rate is not None else pricing.input_per_million)
+        + cache_write_tokens * (write_rate if write_rate is not None else pricing.input_per_million)
+    ) / 1_000_000
 
 
 def _normalized_generation_model(*, provider: str, model: str) -> str:
