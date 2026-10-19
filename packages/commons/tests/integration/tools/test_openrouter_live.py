@@ -399,7 +399,13 @@ async def test_new_openrouter_model_exact_route_contract_live(model: str) -> Non
     direct_messages = (
         LlmMessage(
             role="user",
-            content=(LlmMessageContentPart.input_text('Think briefly, then reply with only "ok".'),),
+            # A trivial acknowledgement may return no reasoning even when thinking is enabled.
+            content=(
+                LlmMessageContentPart.input_text(
+                    "Find the least positive n with n%7=3, n%11=5, n%13=7. "
+                    "Reason briefly; answer with n only.",
+                ),
+            ),
         ),
     )
     user_message = LlmMessage(
