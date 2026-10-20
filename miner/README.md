@@ -749,15 +749,16 @@ uv run --package harnyx-miner harnyx-miner-local-benchmark --list-suites
 uv run --package harnyx-miner harnyx-miner-local-benchmark \
   --suite webwalkerqa \
   --agent-path ./agent.py \
-  --source-batch-id <completed-batch-id> \
-  --query-execution-time-limit-seconds 300
+  --source-batch-id <completed-batch-id>
 ```
 
 This writes a structured JSON report with the decoded benchmark question, reference answer or rubric payload, generated answer, score, optional `score_detail`, cost, runtime, and errors for each item.
-The query execution limit defaults to 300 seconds. The explicit benchmark-only
-flag accepts any positive finite number, so an operator can run a later
-benchmark with a longer limit without changing ordinary batch or local-eval
-policy.
+Execution defaults to each task's saved timeout, reduced to 70% for fast-mode
+tasks. Imported benchmark tasks default to 300 seconds before that reduction.
+For experiments, explicitly pass `--query-execution-time-limit-seconds 450` (or
+another positive finite number) to override the effective limit verbatim. The
+report records the override and each item's actual execution limit. This option
+does not change ordinary batch or local-eval policy.
 The local benchmark uses the public `harnyx_commons.miner_task_benchmark` boundary for packaged benchmark data, deterministic benchmark IDs, scoring, sampling, metric aggregation, and scoring-version checks. Sampling selects the same fixed 20 source item indices for every run of the same dataset/scoring snapshot; a new dataset or scoring version may select a new panel, and populations of 20 or fewer use every item. `--source-batch-id` still derives run, backing-batch, and task identities, but it does not change panel membership. Miners must pass `--suite` so the report names the exact benchmark suite and version under test; there is no default suite. Current-suite listing shows active public benchmark suites, including DRACO. DRACO local runs require dedicated `BENCHMARK_RUBRIC_JUDGE_LLM_*` settings and use the current weighted-rubric snapshot when dataset/scoring flags are omitted. The command does not depend on private platform internals.
 
 BrowseComp local reports contain decoded questions, reference answers, and model responses. Keep those reports private: do not post their JSON, Markdown, screenshots, or extracted examples online. Public Platform monitoring omits BrowseComp content and exact execution logs, but the local command intentionally keeps plaintext so miners can diagnose their own runs.

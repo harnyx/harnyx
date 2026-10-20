@@ -205,7 +205,7 @@ async def test_terminal_outcomes_do_not_publish_unqualified_drafts(status, chang
     assert result.author_declaration is not None
 
 
-async def test_one_solver_succeeding_prevents_publication():
+async def test_solver_success_before_final_round_prevents_publication():
     result = await run(runner=FakeRunner(expected=2))
     assert result.finalized is None and result.error_type == "not_paired_miss"
 
@@ -225,6 +225,32 @@ async def test_sixth_round_is_a_contract_error_without_sixth_pair():
 async def test_five_round_exhaustion_retains_every_challenge_without_rerolls():
     result = await run(FakeAuthor(rounds=5, status="exhausted"), FakeRunner(expected=2))
     assert result.status == "exhausted" and len(result.cycles) == 5 and result.finalized is None
+
+
+@pytest.mark.parametrize("structured", [False, True])
+@pytest.mark.parametrize(
+    "successful_roles,saved",
+    [((), 300), (("solver",), 200), (("grounded_solver",), 200), (("solver", "grounded_solver"), 100)],
+)
+async def test_fifth_round_retains_final_draft_with_timeout_from_its_scores(structured, successful_roles, saved):
+    """Earlier versions' scores must never assign the final task's execution limit."""
+
+    class RoundRunner(FakeRunner):
+        async def assess(self, draft, result, session, deadline):
+            correct = session.cycle < 5 or result.answer in successful_roles
+            return FastJudgeAssessment.model_validate(
+                {"expected_components": [{"component_id": "item", "is_correct": correct}], "excessive_components": []}
+            )
+
+    author, runner = FakeAuthor(structured=structured, rounds=5), RoundRunner()
+    result = await run(author, runner)
+    assert result.finalized is not None
+    assert result.finalized.task.timeout_seconds == saved
+    assert result.finalized.task.effective_timeout_seconds() == saved * 0.7
+    assert result.finalized.task.query.text == "Revised question for round 5"
+    assert len(result.cycles) == 5 and len(runner.calls) == 10
+    assert author.feedback[-1].must_revise is False and author.feedback[-1].rounds_remaining == 0
+    assert len(runner.reference_calls) == 1
 
 
 async def test_paired_miss_stops_development_before_another_paid_round():

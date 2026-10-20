@@ -178,7 +178,9 @@ class CandidatePipeline:
                     )
                 )
             logger.debug("task_generation.cycle.completed", extra={"data": record.model_dump(mode="json")})
-            return ChallengeFeedback(cycle, fingerprint, record, paired_miss, not paired_miss, MAX_CYCLES - cycle)
+            return ChallengeFeedback(
+                cycle, fingerprint, record, paired_miss, not paired_miss and cycle < MAX_CYCLES, MAX_CYCLES - cycle
+            )
 
         async def challenge(draft: QuestionDraft, cycle: int) -> ChallengeFeedback:
             nonlocal last_tested_draft
@@ -226,7 +228,7 @@ class CandidatePipeline:
                 else:
                     _, last_task = rounds[len(rounds)]
                     feedback = last_task.result()  # Operational failure never becomes an assessment.
-                    if not feedback.paired_miss:
+                    if not feedback.paired_miss and feedback.round < MAX_CYCLES:
                         decision = FinishDecision(False, "exhausted", "not_paired_miss")
                     elif final.reference is None:
                         raise ReferenceValidationError("Reference completion omitted the author-built reference")
@@ -283,11 +285,15 @@ class CandidatePipeline:
                         result.error_type = result.reference.unsupported_reason
                     else:
                         schema = strict_json(last_tested_draft.output_schema_json) if mode == "structured" else None
+                        solved_count = sum(
+                            result.cycles[-1].f1_scores[role] > SOLVER_MISS_F1 for role in SOLVER_ROLES
+                        )
                         result.finalized = FinalizedTask(
                             task=MinerTask(
                                 task_id=uuid4(),
                                 query=Query(text=last_tested_draft.question, output_schema=schema, fast=fast),
                                 reference_answer=result.reference.reference_answer,
+                                timeout_seconds=300 - 100 * solved_count,
                             ),
                             tool_usage=session.tool_usage,
                             stage_summaries=tuple(session.stage_summaries),

@@ -1,14 +1,40 @@
 from __future__ import annotations
 
+import json
+from uuid import uuid4
+
 import pytest
 from pydantic import ValidationError
 
-from harnyx_commons.domain.miner_task import AnswerCitation
+from harnyx_commons.domain.miner_task import AnswerCitation, MinerTask, ReferenceAnswer
 from harnyx_commons.domain.miner_task import Query as CommonsQuery
 from harnyx_commons.domain.miner_task import Response as CommonsResponse
 from harnyx_miner_sdk.query import CitationRef, CitationSlice
 from harnyx_miner_sdk.query import Query as MinerSdkQuery
 from harnyx_miner_sdk.query import Response as MinerSdkResponse
+
+
+@pytest.mark.parametrize(
+    "saved,fast,expected", [(300, False, 300), (300, True, 210), (200, True, 140), (100, True, 70)]
+)
+def test_saved_timeout_survives_serialization_without_fast_mode_reduction(saved, fast, expected):
+    task = MinerTask(
+        task_id=uuid4(),
+        query=CommonsQuery(text="question", fast=fast),
+        reference_answer=ReferenceAnswer(text="answer"),
+        timeout_seconds=saved,
+    )
+    restored = MinerTask.model_validate_json(task.model_dump_json())
+    assert restored.timeout_seconds == saved
+    assert restored.effective_timeout_seconds() == expected
+    legacy = task.model_dump(mode="json")
+    legacy.pop("timeout_seconds")
+    assert MinerTask.model_validate_json(json.dumps(legacy)).timeout_seconds == 300
+    for invalid in (0, -1, True, 1.5):
+        payload = task.model_dump(mode="json")
+        payload["timeout_seconds"] = invalid
+        with pytest.raises(ValidationError):
+            MinerTask.model_validate_json(json.dumps(payload))
 
 
 def _relevant_model_config(model: type[object]) -> tuple[object, object, object, object]:
@@ -64,12 +90,8 @@ def test_response_contracts_share_answer_modes_with_distinct_citation_types() ->
     assert CommonsResponse(output=None).answer_text == "null"
     assert CommonsResponse(output=None).model_dump(mode="json", exclude_none=True) == {"output": None}
     assert MinerSdkResponse(output=None).model_dump(mode="json", exclude_none=True) == {"output": None}
-    assert CommonsResponse(text="answer", output=None).model_dump(mode="json", exclude_none=True) == {
-        "text": "answer"
-    }
-    assert MinerSdkResponse(text="answer", output=None).model_dump(mode="json", exclude_none=True) == {
-        "text": "answer"
-    }
+    assert CommonsResponse(text="answer", output=None).model_dump(mode="json", exclude_none=True) == {"text": "answer"}
+    assert MinerSdkResponse(text="answer", output=None).model_dump(mode="json", exclude_none=True) == {"text": "answer"}
 
 
 def test_response_contracts_share_optional_note_semantics() -> None:

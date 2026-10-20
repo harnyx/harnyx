@@ -257,7 +257,7 @@ def _assigned_task_test_context(
         session_manager=session_manager,
         evaluation_records=evaluation_records,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300.0),
+        config=SchedulerConfig(token_secret_bytes=8),
         clock=clock or _ClockSequence(datetime(2025, 10, 17, 12, 0, tzinfo=UTC)),
         progress=progress,
     )
@@ -569,10 +569,12 @@ async def _run_assigned_task_queue_until_results(
 
 
 @pytest.mark.parametrize("transient_connect_failure", [False, True])
+@pytest.mark.parametrize("saved,fast,expected", [(300, False, 300), (200, True, 140), (100, True, 70)])
 async def test_evaluate_assigned_task_queue_success_queues_execution_before_scoring(
-    tmp_path: Path, transient_connect_failure: bool
+    tmp_path: Path, transient_connect_failure: bool, saved: int, fast: bool, expected: float
 ) -> None:
     runner, batch_id, artifact, task, sessions, _, _, _ = _assigned_task_test_context(tmp_path)
+    task = task.model_copy(update={"timeout_seconds": saved, "query": Query(text=task.query.text, fast=fast)})
     assignment = MinerTaskWorkAssignment(
         batch_id=batch_id,
         artifact=artifact,
@@ -589,6 +591,7 @@ async def test_evaluate_assigned_task_queue_success_queues_execution_before_scor
     class _PausedSandbox(SandboxClient):
         @asynccontextmanager
         async def admission(self, limit_seconds, token):
+            assert limit_seconds == expected
             from harnyx_commons.sandbox.docker import HttpSandboxClient
 
             attempts = 0
@@ -624,7 +627,9 @@ async def test_evaluate_assigned_task_queue_success_queues_execution_before_scor
             self, request: MinerTaskRunRequest, *, phase_recorder=None, admission=None
         ) -> TaskExecutionOutcome:
             _ = phase_recorder
-            assert request.execution_time_limit_seconds == 300.0
+            assert request.execution_time_limit_seconds == expected
+            issued = sessions._sessions[request.session_id]
+            assert issued.expires_at - issued.issued_at == timedelta(seconds=expected + 60)
             return TaskExecutionOutcome(
                 batch_id=request.batch_id,
                 artifact_id=request.artifact_id,

@@ -876,6 +876,7 @@ Body: [MinerTaskBatchModel](#model-minertaskbatchmodel)
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `text` | req | `string` |
 |  | `task_id` |  | req | `string` (format: uuid) |
+|  | `timeout_seconds` |  | opt | `integer` (default: 300) |
 
 `422` Validation Error
 Content-Type: `application/json`
@@ -1173,6 +1174,7 @@ Body: [MinerTaskWorkScoreableExecutionsResponse](#model-minertaskworkscoreableex
 |  |  | `query` | req | [Query](#model-query) |
 |  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `task_id` | req | `string` (format: uuid) |
+|  |  | `timeout_seconds` | opt | `integer` (default: 300) |
 |  | `total_tool_usage` |  | req | [ToolUsageSummary](#model-toolusagesummary) |
 |  |  | `actual_cost_by_provider` | opt | `object` |
 |  |  | `actual_total_cost_usd` | opt | `number` (nullable) |
@@ -1266,6 +1268,7 @@ Body: [MinerTaskWorkTasksResponse](#model-minertaskworktasksresponse)
 |  |  | `query` | req | [Query](#model-query) |
 |  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `task_id` | req | `string` (format: uuid) |
+|  |  | `timeout_seconds` | opt | `integer` (default: 300) |
 
 `422` Validation Error
 Content-Type: `application/json`
@@ -5481,6 +5484,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `note` |  | opt | `string` (nullable) |
 |  | `text` |  | req | `string` |
 | `task_id` |  |  | req | `string` (format: uuid) |
+| `timeout_seconds` |  |  | opt | `integer` (default: 300) |
 
 <details>
 <summary>JSON schema</summary>
@@ -5505,6 +5509,12 @@ Body: [StatusResponse](#model-statusresponse)
       "format": "uuid",
       "title": "Task Id",
       "type": "string"
+    },
+    "timeout_seconds": {
+      "default": 300,
+      "exclusiveMinimum": 0.0,
+      "title": "Timeout Seconds",
+      "type": "integer"
     }
   },
   "required": [
@@ -6042,6 +6052,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `text` | req | `string` |
 |  | `task_id` |  | req | `string` (format: uuid) |
+|  | `timeout_seconds` |  | opt | `integer` (default: 300) |
 
 <details>
 <summary>JSON schema</summary>
@@ -6540,6 +6551,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `text` | req | `string` |
 |  | `task_id` |  | req | `string` (format: uuid) |
+|  | `timeout_seconds` |  | opt | `integer` (default: 300) |
 
 <details>
 <summary>JSON schema</summary>
@@ -7381,6 +7393,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `text` | req | `string` |
 |  | `task_id` |  | req | `string` (format: uuid) |
+|  | `timeout_seconds` |  | opt | `integer` (default: 300) |
 | `total_tool_usage` |  |  | req | [ToolUsageSummary](#model-toolusagesummary) |
 |  | `actual_cost_by_provider` |  | opt | `object` |
 |  | `actual_total_cost_usd` |  | opt | `number` (nullable) |
@@ -7613,6 +7626,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `query` | req | [Query](#model-query) |
 |  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `task_id` | req | `string` (format: uuid) |
+|  |  | `timeout_seconds` | opt | `integer` (default: 300) |
 |  | `total_tool_usage` |  | req | [ToolUsageSummary](#model-toolusagesummary) |
 |  |  | `actual_cost_by_provider` | opt | `object` |
 |  |  | `actual_total_cost_usd` | opt | `number` (nullable) |
@@ -7750,6 +7764,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `query` | req | [Query](#model-query) |
 |  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `task_id` | req | `string` (format: uuid) |
+|  |  | `timeout_seconds` | opt | `integer` (default: 300) |
 
 <details>
 <summary>JSON schema</summary>

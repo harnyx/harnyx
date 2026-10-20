@@ -38,16 +38,14 @@ from harnyx_validator.application.dto.evaluation import (
 from harnyx_validator.domain.evaluation import MinerTaskRun
 
 
-def test_local_benchmark_execution_time_limit_defaults_to_current_five_minutes() -> None:
+def test_local_benchmark_execution_time_limit_defaults_to_task_timeout() -> None:
     args = local_benchmark._parse_args([])
 
-    assert args.query_execution_time_limit_seconds == 300.0
+    assert args.query_execution_time_limit_seconds is None
 
 
 def test_local_benchmark_execution_time_limit_can_be_selected_explicitly() -> None:
-    args = local_benchmark._parse_args(
-        ["--query-execution-time-limit-seconds", "450"]
-    )
+    args = local_benchmark._parse_args(["--query-execution-time-limit-seconds", "450"])
 
     assert args.query_execution_time_limit_seconds == 450.0
 
@@ -233,6 +231,21 @@ def test_local_benchmark_builds_platform_compatible_tasks() -> None:
     ]
     assert all(task.query.fast for task in tasks)
     assert tasks[0].task_id != tasks[1].task_id
+
+
+@pytest.mark.parametrize("override,expected", [(None, 70), (450.5, 450.5)])
+def test_local_benchmark_reports_task_timeout_or_explicit_experimental_override(override, expected):
+    snapshot = _snapshot()
+    task = local_benchmark._build_tasks(run_id=uuid4(), snapshot=snapshot, items=snapshot.items)[0]
+    task = task.model_copy(update={"timeout_seconds": 100})
+    result = local_benchmark._BenchmarkItemResult(
+        item=snapshot.items[0], task=task, submission=None, score=None, error_code="failed", error_message="No response"
+    )
+    report = local_benchmark._item_report(
+        result, scoring=_correctness_scoring_bundle(), execution_time_override=override
+    )
+    assert report["timeout_seconds"] == 100
+    assert report["execution_time_limit_seconds"] == expected
 
 
 def test_local_benchmark_keeps_weighted_rubric_tasks_in_ordinary_mode() -> None:
@@ -433,6 +446,7 @@ def test_local_benchmark_report_includes_answers_and_summary(tmp_path: Path) -> 
     )
 
     assert report["evaluation_config"]["query_execution_time_limit_seconds"] == 450.0
+    assert all(item["execution_time_limit_seconds"] == 450.0 for item in report["items"])
     assert report["summary"]["item_count"] == 2
     assert report["summary"]["completed_item_count"] == 1
     assert report["summary"]["failed_item_count"] == 1

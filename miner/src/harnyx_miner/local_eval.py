@@ -95,7 +95,6 @@ _CLI_LOGGER_ROOTS = (
 _LOCAL_VALIDATOR_UID = 0
 _LOCAL_SELECTION_VALIDATOR_ID = UUID(int=0)
 _DEFAULT_OUTPUT_PREFIX = "local-eval-report"
-_LOCAL_EVALUATION_EXECUTION_TIME_LIMIT_SECONDS = 300.0
 _DEFAULT_LOCAL_ARTIFACT_TASK_PARALLELISM = SchedulerConfig.artifact_task_parallelism
 _LOCAL_SANDBOX_HOST_PROBE_ADDRESS = "127.0.0.1"
 _LOCAL_EVAL_FAILURE_ROOT = Path(tempfile.gettempdir()) / "harnyx-local-eval-failures"
@@ -348,9 +347,8 @@ class LocalEvaluationRuntime:
     _run_id: str
     _progress_reporter: _CliProgressReporter | None
 
-    @property
-    def session_ttl(self) -> timedelta:
-        return self._runner._config.session_ttl
+    def session_ttl_for(self, task: MinerTask) -> timedelta:
+        return self._runner._config.session_ttl_for(task)
 
     @classmethod
     def create(
@@ -394,7 +392,7 @@ class LocalEvaluationRuntime:
             scoring_llm_provider=scoring_llm_provider,
             scoring_service=scoring_service,
             scoring_config=scoring_config,
-            execution_time_limit_seconds=_LOCAL_EVALUATION_EXECUTION_TIME_LIMIT_SECONDS,
+            execution_time_limit_seconds=None,
             progress_reporter=progress_reporter,
         )
 
@@ -405,7 +403,7 @@ class LocalEvaluationRuntime:
         scoring_service: EvaluationScoringService,
         scoring_config: EvaluationScoringConfig,
         run_progress_root: Path,
-        execution_time_limit_seconds: float,
+        execution_time_limit_seconds: float | None,
         progress_reporter: _CliProgressReporter | None = None,
     ) -> LocalEvaluationRuntime:
         settings = Settings.load()
@@ -448,7 +446,7 @@ class LocalEvaluationRuntime:
         scoring_llm_provider: Any | None,
         scoring_service: EvaluationScoringService,
         scoring_config: EvaluationScoringConfig,
-        execution_time_limit_seconds: float,
+        execution_time_limit_seconds: float | None,
         progress_reporter: _CliProgressReporter | None,
     ) -> LocalEvaluationRuntime:
         _, tool_executor = _build_local_provider_tooling(
@@ -999,7 +997,7 @@ async def _amain(argv: Sequence[str] | None) -> None:
             sandbox_pull_policy=runtime.settings.sandbox.sandbox_pull_policy,
             scoring_config=runtime.scoring_config,
             validator_version=VALIDATOR_RELEASE_VERSION,
-            session_ttl=runtime.session_ttl,
+            session_ttl=max(runtime.session_ttl_for(task) for task in tasks),
         )
         json_path, markdown_path = _write_reports(
             report=report,
@@ -1326,6 +1324,8 @@ def _task_report(
 ) -> dict[str, object]:
     return {
         "task_id": str(task.task_id),
+        "timeout_seconds": task.timeout_seconds,
+        "execution_time_limit_seconds": task.effective_timeout_seconds(),
         "question": task.query.text,
         "reference_answer": _serialize_answer(task.reference_answer),
         "reference_context": {

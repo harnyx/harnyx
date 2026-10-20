@@ -164,6 +164,7 @@ Body: [ReferenceSelectionRequest](#model-referenceselectionrequest)
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `text` | req | `string` |
 |  | `task_id` |  | req | `string` (format: uuid) |
+|  | `timeout_seconds` |  | opt | `integer` (default: 300) |
 
 **Responses**
 `200` Successful Response
@@ -1500,6 +1501,7 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `text` | req | `string` |
 |  | `task_id` |  | req | `string` (format: uuid) |
+|  | `timeout_seconds` |  | opt | `integer` (default: 300) |
 
 <details>
 <summary>JSON schema</summary>
@@ -1877,6 +1879,7 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
 |  | `note` |  | opt | `string` (nullable) |
 |  | `text` |  | req | `string` |
 | `task_id` |  |  | req | `string` (format: uuid) |
+| `timeout_seconds` |  |  | opt | `integer` (default: 300) |
 
 <details>
 <summary>JSON schema</summary>
@@ -1901,6 +1904,12 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
       "format": "uuid",
       "title": "Task Id",
       "type": "string"
+    },
+    "timeout_seconds": {
+      "default": 300,
+      "exclusiveMinimum": 0,
+      "title": "Timeout Seconds",
+      "type": "integer"
     }
   },
   "required": [

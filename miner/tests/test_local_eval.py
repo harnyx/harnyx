@@ -359,7 +359,9 @@ def _batch_detail(
 
 def test_load_batch_tasks_projects_monitoring_evaluation_stage() -> None:
     tasks = (
-        _task(uuid4(), "Qualifying task"),
+        _task(uuid4(), "Qualifying task").model_copy(
+            update={"timeout_seconds": 100, "query": Query(text="Question", fast=True)}
+        ),
         _task(uuid4(), "Main task"),
     )
     detail = _batch_detail(
@@ -602,9 +604,8 @@ class _FakeRuntime:
         self.closed = False
         self.progress_reporter: Any | None = None
 
-    @property
-    def session_ttl(self) -> timedelta:
-        return timedelta(seconds=360)
+    def session_ttl_for(self, task: MinerTask) -> timedelta:
+        return timedelta(seconds=task.effective_timeout_seconds() + 60)
 
     async def evaluate_artifact(
         self,
@@ -873,7 +874,7 @@ def test_local_eval_runtime_starts_with_unused_tool_provider_and_binds_to_loopba
     assert captured["host"] == "127.0.0.1"
     assert captured["published_port_bind_host"] == "127.0.0.1"
     assert runtime._sandbox_manager is not None
-    assert runtime._runner._config.execution_time_limit_seconds == 300.0
+    assert runtime._runner._config.execution_time_limit_seconds == (300.0 if invocation_only else None)
 
 
 async def test_local_runtime_closes_llm_provider_registry_not_routed_wrappers() -> None:

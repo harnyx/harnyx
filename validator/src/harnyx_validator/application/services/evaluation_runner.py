@@ -904,7 +904,7 @@ class EvaluationRunner:
         try:
             async with admission_wait:
                 async with sandbox_client.admission(
-                    self._config.execution_time_limit_seconds,
+                    self._config.execution_limit_for(claimed.assignment.task),
                     claimed.assignment.assignment_token,
                 ) as admission:
                     lifecycle.admission = admission
@@ -1690,7 +1690,7 @@ class EvaluationRunner:
             uid=artifact.uid,
             artifact_id=artifact.artifact_id,
             task=task,
-            execution_time_limit_seconds=self._config.execution_time_limit_seconds,
+            execution_time_limit_seconds=self._config.execution_limit_for(task),
         )
         try:
             if phase_recorder is None or not _orchestrator_accepts_phase_recorder(orchestrator):
@@ -1827,7 +1827,7 @@ class EvaluationRunner:
             uid=artifact.uid,
             artifact_id=artifact.artifact_id,
             task=task,
-            execution_time_limit_seconds=self._config.execution_time_limit_seconds,
+            execution_time_limit_seconds=self._config.execution_limit_for(task),
         )
         try:
             if admission is not None:
@@ -2968,7 +2968,7 @@ class EvaluationRunner:
         phase_recorder: PhaseRecorder | None = None,
     ) -> SessionIssued:
         issued_at = self._clock()
-        expires_at = issued_at + self._config.session_ttl
+        expires_at = issued_at + self._config.session_ttl_for(task)
         token = secrets.token_urlsafe(self._config.token_secret_bytes)
         request = SessionTokenRequest(
             session_id=uuid4(),

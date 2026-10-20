@@ -76,16 +76,21 @@ class SchedulerConfig:
     """Static configuration used for session issuance."""
 
     token_secret_bytes: int
-    execution_time_limit_seconds: float
+    execution_time_limit_seconds: float | None = None
     artifact_parallelism: int = 4
     artifact_task_parallelism: int = 10
 
     def __post_init__(self) -> None:
-        tool_session_ttl_for_execution_limit(self.execution_time_limit_seconds)
+        if self.execution_time_limit_seconds is not None:
+            tool_session_ttl_for_execution_limit(self.execution_time_limit_seconds)
 
-    @property
-    def session_ttl(self) -> timedelta:
-        return tool_session_ttl_for_execution_limit(self.execution_time_limit_seconds)
+    def execution_limit_for(self, task: MinerTask) -> float:
+        if self.execution_time_limit_seconds is not None:
+            return self.execution_time_limit_seconds
+        return task.effective_timeout_seconds()
+
+    def session_ttl_for(self, task: MinerTask) -> timedelta:
+        return tool_session_ttl_for_execution_limit(self.execution_limit_for(task))
 
 
 class EvaluationScheduler:

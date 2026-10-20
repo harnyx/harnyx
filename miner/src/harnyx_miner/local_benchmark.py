@@ -205,7 +205,7 @@ def _create_invocation_only_runtime(
     scoring_service: EvaluationScoringService,
     scoring_config: EvaluationScoringConfig,
     run_progress_root: Path,
-    execution_time_limit_seconds: float,
+    execution_time_limit_seconds: float | None,
 ) -> LocalEvaluationRuntime:
     from harnyx_miner.local_eval import LocalEvaluationRuntime
 
@@ -255,8 +255,8 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--query-execution-time-limit-seconds",
         type=_positive_finite_seconds,
-        default=300.0,
-        help="Maximum seconds for each miner artifact invocation. Default: 300.",
+        default=None,
+        help="Experimental execution-time override in seconds. Default: use each task's timeout.",
     )
     parser.add_argument(
         "--output-dir",
@@ -350,10 +350,7 @@ async def _amain(argv: Sequence[str] | None) -> None:
             execution_time_limit_seconds=args.query_execution_time_limit_seconds,
         )
         scoring = _build_benchmark_scoring_bundle(snapshot.manifest.scoring_version)
-        _emit_progress(
-            "running candidate against benchmark items: "
-            f"parallelism={args.parallelism}"
-        )
+        _emit_progress(f"running candidate against benchmark items: parallelism={args.parallelism}")
         results = await _evaluate_and_score_items(
             runtime=runtime,
             target_bytes=target_bytes,
@@ -583,11 +580,7 @@ async def _evaluate_and_score_items(
                 scoring_service=scoring_service,
             )
 
-    return tuple(
-        await asyncio.gather(
-            *(_run_item(item, task) for item, task in zip(items, tasks, strict=True))
-        )
-    )
+    return tuple(await asyncio.gather(*(_run_item(item, task) for item, task in zip(items, tasks, strict=True))))
 
 
 async def _evaluate_and_score_item(
@@ -712,7 +705,7 @@ def _build_report(
     output_dir: Path,
     elapsed_seconds: float,
     parallelism: int,
-    query_execution_time_limit_seconds: float,
+    query_execution_time_limit_seconds: float | None,
 ) -> dict[str, object]:
     metrics = _aggregate_local_report_metrics(results=results, scoring=scoring)
     cost_totals = _aggregate_cost_totals(
@@ -782,7 +775,10 @@ def _build_report(
             "total_seconds": round(elapsed_seconds, 3),
             "cost_totals": cost_totals,
         },
-        "items": [_item_report(result, scoring=scoring) for result in results],
+        "items": [
+            _item_report(result, scoring=scoring, execution_time_override=query_execution_time_limit_seconds)
+            for result in results
+        ],
     }
 
 
@@ -808,10 +804,16 @@ def _item_outcome(result: _BenchmarkItemResult) -> BenchmarkItemOutcome:
     )
 
 
-def _item_report(result: _BenchmarkItemResult, *, scoring: _BenchmarkScoringBundle) -> dict[str, object]:
+def _item_report(
+    result: _BenchmarkItemResult, *, scoring: _BenchmarkScoringBundle, execution_time_override: float | None = None
+) -> dict[str, object]:
     return {
         "item_index": result.item.item_index,
         "task_id": str(result.task.task_id),
+        "timeout_seconds": result.task.timeout_seconds,
+        "execution_time_limit_seconds": (
+            execution_time_override if execution_time_override is not None else result.task.effective_timeout_seconds()
+        ),
         "problem": result.item.problem,
         "problem_category": result.item.problem_category,
         "reference_answer": result.item.answer,

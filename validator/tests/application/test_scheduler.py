@@ -63,7 +63,20 @@ _ASSIGNMENT_TOKEN_2 = "assignment-token-2"  # noqa: S105 - fixed test-only assig
 def test_scheduler_config_derives_session_ttl_from_execution_time_limit() -> None:
     config = SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=3_600.0)
 
-    assert config.session_ttl == timedelta(seconds=3_660)
+    assert config.session_ttl_for(_task("question")) == timedelta(seconds=3_660)
+
+
+@pytest.mark.parametrize(
+    "saved,fast,expected", [(300, False, 300), (300, True, 210), (200, True, 140), (100, True, 70)]
+)
+def test_scheduler_uses_task_timeout_unless_explicitly_overridden(saved, fast, expected):
+    task = _task("question").model_copy(update={"timeout_seconds": saved, "query": Query(text="question", fast=fast)})
+    config = SchedulerConfig(token_secret_bytes=8)
+    assert config.execution_limit_for(task) == expected
+    assert config.session_ttl_for(task) == timedelta(seconds=expected + 60)
+    override = SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=450.5)
+    assert override.execution_limit_for(task) == 450.5
+    assert override.session_ttl_for(task) == timedelta(seconds=510.5)
 
 
 @pytest.mark.parametrize("value", [True, "300"])

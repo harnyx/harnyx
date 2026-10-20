@@ -140,7 +140,6 @@ class BatchExecutionPlanner:
             clock=lambda: datetime.now(UTC),
             config=SchedulerConfig(
                 token_secret_bytes=run_ctx.config.token_secret_bytes,
-                execution_time_limit_seconds=300.0,
                 artifact_parallelism=run_ctx.config.artifact_parallelism,
                 artifact_task_parallelism=run_ctx.config.artifact_task_parallelism,
             ),
