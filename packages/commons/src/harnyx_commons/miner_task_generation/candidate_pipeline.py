@@ -1,4 +1,4 @@
-"""One author context, bounded Gemini challenges and exact tested-draft admission."""
+"""One author context, bounded Luna challenges and exact tested-draft admission."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Preserved Gemini work orders and the adapted BRI-1594 sole HIGH author."""
+"""Luna solver work orders and the adapted BRI-1594 sole HIGH author."""
 
 from __future__ import annotations
 
@@ -13,11 +13,8 @@ BASELINE_SHA256 = "d88c10c44e32ebd7069615ef53a23457e8fc431efbe50cdd123668e676098
 
 
 def role_prompt(role: str, mode: str) -> str:
-    if role == "solver":
+    if role in {"solver", "grounded_solver"}:
         name = "structured_solver_system_prompt" if mode == "structured" else "solver_system_prompt"
-    elif role == "grounded_solver":
-        # The grounded solver has its existing native work order in solver_runner.
-        raise ValueError("Grounded solver does not use a construction-role prompt")
     else:
         raise ValueError("Construction roles have been replaced by the sole Codex author")
     return (PROMPT_ROOT / f"{name}.txt").read_text()

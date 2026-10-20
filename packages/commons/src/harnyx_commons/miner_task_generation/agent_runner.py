@@ -1,4 +1,4 @@
-"""Gemini provider calls, accounting and exposed streaming diagnostics."""
+"""Generation provider calls, accounting and exposed streaming diagnostics."""
 
 from __future__ import annotations
 
@@ -144,7 +144,7 @@ class CallCapture:
             summary.search_tool.reference_cost
             if provider in {"vertex", "openai"} and usage.web_search_calls is not None
             else None
-            if provider in {"vertex", "openai"} or usage.web_search_calls
+            if provider in {"vertex", "openai", "codex-lb"} or usage.web_search_calls
             else 0.0
         )
         summary = replace(summary, search_tool=replace(summary.search_tool, actual_cost=search_cost))
@@ -219,7 +219,12 @@ def transient_error(exc: Exception) -> bool:
     if isinstance(exc, ModelBehaviorError):
         return True
     if isinstance(exc, OpenAIStreamError):
-        return exc.code in {"server_error", "rate_limit_exceeded"}
+        return exc.code in {
+            "server_error",
+            "rate_limit_exceeded",
+            "server_is_overloaded",
+            "upstream_stream_truncated",
+        }
     if isinstance(exc, LlmProviderError) and isinstance(exc.__cause__, Exception):
         return transient_error(exc.__cause__)
     if isinstance(exc, CandidateStageError):
@@ -325,20 +330,20 @@ async def retry_request(call: Callable[[], Awaitable[T]], capture: CallCapture, 
 
 
 class GenerationAgentRunner:
-    """Existing Gemini challenge and Pro assessment; no construction model roles."""
+    """Identical Luna challenges and the existing Gemini Pro assessments."""
 
-    def __init__(self, *, project_id: str | None, judge: LlmProviderPort) -> None:
-        self._judge, self._project_id = judge, project_id
+    def __init__(
+        self, *, judge: LlmProviderPort, solve: Callable[[str, str, CandidateSession, float], Awaitable[AgentResult]]
+    ) -> None:
+        self._judge, self._solve = judge, solve
 
     async def aclose(self) -> None:
         await self._judge.aclose()
 
     async def invoke(self, role: str, message: str, session: CandidateSession, deadline: float) -> AgentResult:
         if role not in {"solver", "grounded_solver"}:
-            raise ValueError("Only Gemini solver roles are available in this runner")
-        from .solver_runner import solve
-
-        return await solve(role, message, session, deadline, project_id=self._project_id)
+            raise ValueError("Only difficulty solver roles are available in this runner")
+        return await self._solve(role, message, session, deadline)
 
     async def assess(
         self, draft: QuestionDraft, result: AgentResult, session: CandidateSession, deadline: float

@@ -4,6 +4,7 @@ import json
 import logging
 from datetime import UTC, datetime
 from time import monotonic
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -57,7 +58,7 @@ async def test_report_grader_receives_frozen_key_and_full_report_with_separate_u
     report = "The archive identifies item [[1]]. Here is the full supporting research."
     rendered = ReferenceAnswer(text='{"item":"item"}' if structured else report, note=report if structured else None)
     session = CandidateSession(task_id="report", effective_date=datetime.now(UTC).date())
-    grade = await GenerationAgentRunner(project_id="project", judge=Judge()).assess_reference(
+    grade = await GenerationAgentRunner(solve=AsyncMock(), judge=Judge()).assess_reference(
         draft(structured), TerminalReference(reference_answer=rendered), session, monotonic() + 5
     )
     assert grade.model_dump(mode="json") == assessment and len(requests) == 1
@@ -289,7 +290,6 @@ async def test_pricing_uses_each_attempt_start_date_even_if_receipt_crosses_midn
     from harnyx_commons.llm.cost_settlement import settled_generation_llm_cost
     from harnyx_commons.llm.schema import LlmUsage
     from harnyx_commons.miner_task_generation import agent_runner
-    from harnyx_commons.miner_task_generation.solver_runner import WORKER_MODEL
 
     dates = [date(2026, 12, 31), date(2027, 1, 1)]
     current = [dates[0]]
@@ -302,7 +302,7 @@ async def test_pricing_uses_each_attempt_start_date_even_if_receipt_crosses_midn
     monkeypatch.setattr(agent_runner, "datetime", Clock)
     monkeypatch.setattr(agent_runner, "backoff_ms", lambda *args: 0)
     observed = capture()
-    observed.model = WORKER_MODEL
+    observed.model = JUDGE_MODEL
     observed.session.effective_date = date(2026, 11, 1)
     usage = LlmUsage(prompt_tokens=1000, completion_tokens=100, total_tokens=1100, web_search_calls=0)
 
@@ -315,7 +315,7 @@ async def test_pricing_uses_each_attempt_start_date_even_if_receipt_crosses_midn
 
     assert await retry_request(call, observed, monotonic() + 2, solver=True) == "complete"
     expected = sum(
-        settled_generation_llm_cost(usage=usage, model=WORKER_MODEL, provider="vertex", pricing_date=value).cost_usd
+        settled_generation_llm_cost(usage=usage, model=JUDGE_MODEL, provider="vertex", pricing_date=value).cost_usd
         for value in dates
     )
     observed.finish()
