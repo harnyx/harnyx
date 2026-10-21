@@ -1,23 +1,34 @@
-"""Hardcoded OpenRouter provider for repo-owned OpenRouter routes."""
+"""OpenRouter chat, embedding and Decision adapters."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
+from decimal import Decimal
 from typing import Any, cast
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError
 
 from harnyx_commons.config.llm import OpenAiCompatibleEndpointConfig
+from harnyx_commons.errors import ToolInvocationCancelledError, ToolProviderError
 from harnyx_commons.json_types import JsonObject, JsonValue
+from harnyx_commons.llm.cost_settlement import normalized_provider_cost, settled_response_cost
 from harnyx_commons.llm.provider import LlmProviderConfigurationError, LlmProviderPort
 from harnyx_commons.llm.provider_types import OPENROUTER_PROVIDER
 from harnyx_commons.llm.providers.openai_compatible import OpenAiCompatibleLlmProvider
+from harnyx_commons.llm.providers.openrouter_pricing import (
+    OpenRouterPricingCatalog,
+    OpenRouterPricingSnapshot,
+    shared_openrouter_pricing_catalog,
+)
 from harnyx_commons.llm.providers.thinking import resolve_request_thinking
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse, LlmThinkingConfig
-from harnyx_commons.llm.tool_models import MINER_SELECTED_LLM_PROVIDER_MODELS
+from harnyx_commons.llm.tool_models import MINER_SELECTED_LLM_PROVIDER_MODELS, validate_paid_openrouter_model
+from harnyx_commons.tools.provider_billing import OpenRouterChatAccounting, ProviderBillingMetadata
+from harnyx_miner_sdk.tools.llm_provider_extra import OpenRouterProviderSelection
 
 OPENROUTER_ENDPOINT_ID = "openrouter"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -38,6 +49,98 @@ OPENROUTER_SUPPORTED_MODELS = tuple(
 
 
 OpenRouterChatProviderFactory = Callable[[str], tuple[OpenAiCompatibleLlmProvider, httpx.AsyncClient]]
+
+
+class _MinerBillingUsage(BaseModel):
+    model_config = ConfigDict(extra="ignore", allow_inf_nan=False)
+    cost: Decimal | None = Field(default=None, ge=0)
+    is_byok: bool | None = Field(default=None, strict=True)
+    cost_details: JsonObject | None = None
+
+
+class _MinerBillingResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    model: str | None = None
+    provider: str | None = None
+    usage: _MinerBillingUsage
+    openrouter_metadata: JsonObject | None = None
+
+
+class _MinerCostDetails(BaseModel):
+    model_config = ConfigDict(extra="ignore", allow_inf_nan=False)
+    upstream_inference_cost: Decimal = Field(ge=0)
+
+
+def _miner_openrouter_billing(
+    response: LlmResponse | None,
+    *,
+    snapshot: OpenRouterPricingSnapshot | None,
+    requested_model: str,
+) -> ProviderBillingMetadata:
+    actual: float | None = None
+    reference: float | None = None
+    evidence: JsonObject = {"settlement_source": "unavailable", "requested_model": requested_model}
+    if response is not None and response.usage is not None:
+        evidence["token_usage"] = asdict(response.usage)
+    if snapshot is not None:
+        evidence.update(
+            snapshot_model=snapshot.model,
+            snapshot_time=snapshot.fetched_at,
+            snapshot_source="openrouter_public_endpoints",
+        )
+    try:
+        if response is None or snapshot is None:
+            raise ValueError("no original response and pricing snapshot")
+        settled = settled_response_cost(response, provider=OPENROUTER_PROVIDER, model=requested_model)
+        if settled is not None and settled.evidence.get("settlement_source") == "provider_returned":
+            actual = settled.cost_usd
+            evidence.update(settled.evidence)
+        if actual is None:
+            raise ValueError("original OpenRouter billing unavailable; static estimates are not actual charges")
+        aggregate = (response.metadata or {}).get("actual_cost_usd_total")
+        if (response.metadata or {}).get("billable_response_count", 1) != 1:
+            actual = normalized_provider_cost(aggregate, field_name="actual_cost_usd_total")
+            raise ValueError("multiple billable responses cannot use one serving-provider discount")
+        raw = _MinerBillingResponse.model_validate((response.metadata or {}).get("raw_response"))
+        evidence["original_usage"] = raw.usage.model_dump(mode="json")
+        resolved_model, serving_provider = raw.model, raw.provider
+        if resolved_model is None or serving_provider is None:
+            routing = _OpenRouterRouterMetadata.model_validate(raw.openrouter_metadata)
+            selected = () if routing.endpoints is None else tuple(e for e in routing.endpoints.available if e.selected)
+            providers = {e.provider.casefold() for e in selected}
+            models = {e.model for e in selected if e.model is not None}
+            if serving_provider is None and len(providers) == 1:
+                serving_provider = selected[0].provider
+            if resolved_model is None and len(models) == 1:
+                resolved_model = next(iter(models))
+        if not isinstance(resolved_model, str) or not isinstance(serving_provider, str):
+            raise ValueError("original OpenRouter serving model/provider is missing")
+        validate_paid_openrouter_model(resolved_model)
+        resolved = resolved_model.split(":", 1)[0]
+        if resolved != snapshot.model and not any(e.model_id.split(":", 1)[0] == resolved for e in snapshot.endpoints):
+            raise ValueError("resolved OpenRouter model does not match the pricing snapshot")
+        if raw.usage.cost is None:
+            raise ValueError("original OpenRouter charge is missing")
+        inference, separate = raw.usage.cost, Decimal(0)
+        if raw.usage.is_byok is True:
+            inference = _MinerCostDetails.model_validate(raw.usage.cost_details).upstream_inference_cost
+            separate = raw.usage.cost
+        reference, discount = snapshot.reference_cost(
+            provider=serving_provider, inference=inference, separate_charge=separate
+        )
+        evidence.update(
+            resolved_model=resolved_model,
+            upstream_provider=serving_provider,
+            maximum_discount=float(discount),
+        )
+    except (ValueError, ArithmeticError) as exc:
+        evidence["reference_unavailable_reason"] = str(exc)
+    return OpenRouterChatAccounting(
+        inference="attempted",
+        actual_cost_usd=actual,
+        reference_cost_usd=reference,
+        llm_usage=None if response is None else response.usage,
+    ).to_billing(evidence)
 
 
 class _OpenRouterEmbeddingDatum(BaseModel):
@@ -186,7 +289,9 @@ class OpenRouterLlmProvider(LlmProviderPort):
         openrouter_api_key: SecretStr,
         openrouter_chat_provider_factory: OpenRouterChatProviderFactory | None = None,
         additional_supported_models: Sequence[str] = (),
+        pricing_catalog: OpenRouterPricingCatalog | None = None,
     ) -> None:
+        self._pricing_catalog = pricing_catalog or shared_openrouter_pricing_catalog()
         self._openrouter_api_key = openrouter_api_key
         self._openrouter_chat_provider_factory = openrouter_chat_provider_factory or build_openrouter_chat_provider
         self._supported_models = frozenset(
@@ -197,6 +302,8 @@ class OpenRouterLlmProvider(LlmProviderPort):
 
     async def invoke(self, request: AbstractLlmRequest) -> LlmResponse:
         model = request.model.strip()
+        if request.use_case == "tool_runtime_invoker":
+            return await self._invoke_miner(request)
         if model not in self._supported_models:
             raise ValueError(f"OpenRouter provider does not support model {request.model!r}")
         openrouter_provider = self._ensure_openrouter_provider(model=model)
@@ -209,6 +316,67 @@ class OpenRouterLlmProvider(LlmProviderPort):
         if routing_evidence and isinstance(cost_evidence, Mapping):
             metadata["actual_cost_evidence"] = {**cost_evidence, **routing_evidence}
         return replace(response, metadata=metadata)
+
+    async def _invoke_miner(self, request: AbstractLlmRequest) -> LlmResponse:
+        dispatched = False
+        snapshot: OpenRouterPricingSnapshot | None = None
+        response: LlmResponse | None = None
+
+        def dispatch() -> None:
+            nonlocal dispatched
+            dispatched = True
+            if request.on_provider_dispatch is not None:
+                request.on_provider_dispatch()
+
+        try:
+            model = validate_paid_openrouter_model(request.model)
+            if request.retry_policy is None or request.retry_policy.attempts != 1:
+                raise ValueError("miner OpenRouter accounting requires one provider attempt")
+            provider = self._ensure_openrouter_provider(model=model)
+            selection_payload = (request.extra or {}).get("provider")
+            selection = (
+                None if selection_payload is None else OpenRouterProviderSelection.model_validate(selection_payload)
+            )
+            snapshot = await self._pricing_catalog.snapshot(
+                model, provider_only=None if selection is None else selection.only
+            )
+            response = await provider.invoke(
+                replace(self._openrouter_request(request, model=model), on_provider_dispatch=dispatch)
+            )
+            billing = _miner_openrouter_billing(response, snapshot=snapshot, requested_model=model)
+            if billing.reference_cost_unavailable:
+                raise ToolProviderError(
+                    "OpenRouter regular cost unavailable", provider=OPENROUTER_PROVIDER, billing=billing
+                )
+            metadata = dict(response.metadata or {})
+            metadata.update(
+                actual_cost_usd=billing.actual_cost_usd,
+                actual_cost_provider=OPENROUTER_PROVIDER,
+                actual_cost_evidence=billing.provider_usage,
+                reference_cost_usd=billing.reference_cost_usd,
+                effective_provider=OPENROUTER_PROVIDER,
+                effective_model=model,
+            )
+            return replace(response, metadata=metadata)
+        except BaseException as exc:
+            if isinstance(exc, ToolProviderError) and exc.billing is not None:
+                raise
+            # Rejected completions can still be billable; retry wrappers retain their last response.
+            failed_response = getattr(exc, "response", None)
+            if isinstance(failed_response, LlmResponse):
+                response = failed_response
+            billing = (
+                _miner_openrouter_billing(response, snapshot=snapshot, requested_model=request.model)
+                if dispatched or response is not None
+                else OpenRouterChatAccounting(
+                    inference="not_dispatched", actual_cost_usd=0.0, reference_cost_usd=0.0
+                ).to_billing({"settlement_source": "pre_dispatch", "reason": str(exc)}, source="request_body")
+            )
+            if isinstance(exc, asyncio.CancelledError):
+                raise ToolInvocationCancelledError("OpenRouter call cancelled", billing=billing) from exc
+            if not isinstance(exc, Exception):
+                raise
+            raise ToolProviderError(str(exc), provider=OPENROUTER_PROVIDER, billing=billing) from exc
 
     async def aclose(self) -> None:
         errors: list[Exception] = []
@@ -307,10 +475,14 @@ class _OpenRouterResponseIdentity(BaseModel):
 
 
 def _openrouter_response_metadata(payload: Mapping[str, Any]) -> JsonObject | None:
-    metadata = payload.get("openrouter_metadata")
-    if not isinstance(metadata, Mapping):
-        return None
-    return {"openrouter_metadata": dict(metadata)}
+    metadata: JsonObject = {}
+    router_metadata = payload.get("openrouter_metadata")
+    if isinstance(router_metadata, Mapping):
+        metadata["openrouter_metadata"] = dict(router_metadata)
+    for key in ("model", "provider"):
+        if isinstance(payload.get(key), str):
+            metadata[key] = payload[key]
+    return metadata or None
 
 
 def _openrouter_routing_evidence(raw_response: object) -> JsonObject:

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+from unittest.mock import AsyncMock
+
+import httpx
 import pytest
 
 from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
@@ -12,6 +16,7 @@ from harnyx_commons.llm.pricing import (
     price_miner_llm,
     price_parallel_search,
 )
+from harnyx_commons.llm.providers.openrouter_pricing import OpenRouterPricingCatalog
 from harnyx_commons.llm.schema import LlmUsage
 from harnyx_commons.llm.tool_models import (
     ALLOWED_TOOL_MODELS,
@@ -28,6 +33,53 @@ from harnyx_commons.tools.runtime_invoker import build_miner_sandbox_tool_invoke
 pytestmark = pytest.mark.anyio("asyncio")
 
 
+@pytest.mark.parametrize("failure", ["http", "malformed", "slow"])
+async def test_discovery_failure_preserves_other_tools_and_honors_timeout(failure: str) -> None:
+    async def serve(request: httpx.Request) -> httpx.Response:
+        if failure == "slow":
+            await asyncio.sleep(60)
+        if failure == "malformed":
+            return httpx.Response(200, json={"data": "invalid"})
+        return httpx.Response(503)
+
+    catalog = OpenRouterPricingCatalog(transport=httpx.MockTransport(serve))
+    invoker = build_miner_sandbox_tool_invoker(InMemoryReceiptLog(), openrouter_pricing_catalog=catalog)
+    async with asyncio.timeout(1):
+        info = await invoker.invoke("tooling_info", args=(), kwargs={"timeout": 0.01})
+    assert info["allowed_llm_provider_models"]["chutes"]
+    assert info["pricing"]["search_web"]
+    assert info["allowed_llm_provider_models"]["openrouter"] == []
+    assert info["pricing"]["llm_chat"]["openrouter"]["discovery_available"] is False
+
+
+async def test_discovery_uses_fresh_cache_and_recovers_after_expired_refresh_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 0.0
+    monkeypatch.setattr("harnyx_commons.llm.providers.openrouter_pricing.monotonic", lambda: now)
+    available = True
+    calls = 0
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"data": [{"id": "inception/mercury-3"}]}) if available else httpx.Response(503)
+
+    catalog = OpenRouterPricingCatalog(transport=httpx.MockTransport(serve))
+    invoker = build_miner_sandbox_tool_invoker(InMemoryReceiptLog(), openrouter_pricing_catalog=catalog)
+    first = await invoker.invoke("tooling_info", args=(), kwargs={})
+    available = False
+    assert await invoker.invoke("tooling_info", args=(), kwargs={}) == first
+    assert calls == 1
+    now = 301.0
+    expired = await invoker.invoke("tooling_info", args=(), kwargs={})
+    assert expired["pricing"]["llm_chat"]["openrouter"]["discovery_available"] is False
+    with pytest.raises(httpx.HTTPStatusError):
+        await catalog.snapshot("inception/mercury-3")
+    available = True
+    assert await invoker.invoke("tooling_info", args=(), kwargs={}) == first
+
+
 def test_tool_model_pricing_covers_every_allowed_tool_model() -> None:
     assert set(MODEL_PRICING) == set(ALLOWED_TOOL_MODELS)
     assert set(MINER_TOOL_LLM_PRICING) == set(MINER_SELECTED_LLM_PROVIDER_MODELS)
@@ -39,7 +91,9 @@ def test_tool_model_pricing_covers_every_allowed_tool_model() -> None:
 
 
 async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
-    invoker = build_miner_sandbox_tool_invoker(InMemoryReceiptLog())
+    catalog = OpenRouterPricingCatalog()
+    catalog.models = AsyncMock(return_value=("inception/mercury-3",))
+    invoker = build_miner_sandbox_tool_invoker(InMemoryReceiptLog(), openrouter_pricing_catalog=catalog)
 
     payload = await invoker.invoke("tooling_info", args=(), kwargs={})
 
@@ -74,27 +128,32 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
     assert "allowed_tool_models" not in payload
     assert "models" not in payload["pricing"]["llm_chat"]
     assert payload["pricing"]["llm_chat"]["settlement_order"] == [
-        "provider_returned", "cached_provider_pricing", "static_pricing"
+        "provider_returned",
+        "cached_provider_pricing",
+        "static_pricing",
     ]
     assert payload["pricing"]["llm_chat"]["provider_settlement_order"] == {
         "chutes": ["cached_provider_pricing", "static_pricing"],
-        "openrouter": ["provider_returned", "static_pricing"],
+        "openrouter": ["provider_returned"],
         "ai_gateway": ["provider_returned", "static_pricing"],
         "saygm": ["provider_returned"],
     }
     assert payload["pricing"]["llm_chat"]["provider_rate_usage"] == {
         "chutes": "budget_estimate_and_settlement_fallback",
-        "openrouter": "budget_estimate_and_settlement_fallback",
+        "openrouter": "dynamic_reference_and_actual",
         "ai_gateway": "budget_estimate_and_settlement_fallback",
         "saygm": "budget_estimate_only",
     }
     model_prices = payload["pricing"]["llm_chat"]["provider_models"]
     provider_models = payload["allowed_llm_provider_models"]
     assert provider_models == {
-        provider: list(models) for provider, models in MINER_SELECTED_LLM_PROVIDER_MODELS.items()
+        provider: list(models) if provider != "openrouter" else ["inception/mercury-3"]
+        for provider, models in MINER_SELECTED_LLM_PROVIDER_MODELS.items()
     }
-    assert set(model_prices) == set(provider_models)
+    assert set(model_prices) == set(provider_models) - {"openrouter"}
     for provider, pricing_by_model in MINER_TOOL_LLM_PRICING.items():
+        if provider == "openrouter":
+            continue
         assert set(model_prices[provider]) == set(provider_models[provider])
         for model, rates in pricing_by_model.items():
             assert model_prices[provider][model]["input_per_million"] == pytest.approx(rates.input_per_million)
@@ -110,14 +169,8 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
                 assert "cached_input_per_million" not in model_prices[provider][model]
     assert "openai/gpt-oss-20b-TEE" not in provider_models["openrouter"]
     assert "openai/gpt-oss-120b-TEE" not in provider_models["openrouter"]
-    assert "openai/gpt-oss-20b" in provider_models["openrouter"]
-    assert model_prices["openrouter"]["openai/gpt-oss-20b"]["input_per_million"] == pytest.approx(0.03)
-    assert model_prices["openrouter"]["openai/gpt-oss-20b"]["output_per_million"] == pytest.approx(0.14)
-    assert model_prices["openrouter"]["openai/gpt-oss-20b"]["reasoning_per_million"] == pytest.approx(0.14)
-    assert "openai/gpt-oss-120b" in provider_models["openrouter"]
-    assert model_prices["openrouter"]["openai/gpt-oss-120b"]["input_per_million"] == pytest.approx(0.037)
-    assert model_prices["openrouter"]["openai/gpt-oss-120b"]["output_per_million"] == pytest.approx(0.17)
-    assert model_prices["openrouter"]["openai/gpt-oss-120b"]["reasoning_per_million"] == pytest.approx(0.17)
+    assert provider_models["openrouter"] == ["inception/mercury-3"]
+    assert payload["pricing"]["llm_chat"]["openrouter"]["kind"] == "dynamic_provider_pricing"
     assert "zai-org/GLM-5-TEE" not in provider_models["chutes"]
     assert "zai-org/GLM-5-TEE" not in model_prices["chutes"]
     assert "moonshotai/Kimi-K2.6-TEE" in provider_models["chutes"]
@@ -146,13 +199,6 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
     assert model_prices["chutes"]["google/gemma-4-31B-turbo-TEE"]["reasoning_per_million"] == pytest.approx(0.37)
     model = "deepseek-ai/DeepSeek-V3.2-TEE"
     assert model in provider_models["chutes"]
-    assert "deepseek/deepseek-v3.2" in provider_models["openrouter"]
-    assert model_prices["openrouter"]["deepseek/deepseek-v3.2"]["input_per_million"] == pytest.approx(0.269)
-    assert model_prices["openrouter"]["z-ai/glm-5.3-flash"]["input_per_million"] == pytest.approx(0.075)
-    assert model_prices["openrouter"]["z-ai/glm-5.3-flash"]["output_per_million"] == pytest.approx(0.25)
-    assert "tencent/hy4-preview" in provider_models["openrouter"]
-    assert model_prices["openrouter"]["tencent/hy4-preview"]["input_per_million"] == pytest.approx(0.834)
-    assert model_prices["openrouter"]["tencent/hy4-preview"]["output_per_million"] == pytest.approx(2.501)
     assert provider_models["ai_gateway"] == list(MINER_SELECTED_LLM_PROVIDER_MODELS["ai_gateway"])
     assert model_prices["ai_gateway"]["thinkingmachines/inkling"]["input_per_million"] == pytest.approx(1.00)
     assert model_prices["ai_gateway"]["thinkingmachines/inkling"]["output_per_million"] == pytest.approx(4.05)

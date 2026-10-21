@@ -41,6 +41,7 @@ from harnyx_commons.llm.provider import (
     LlmProviderPort,
     LlmRetryExhaustedError,
 )
+from harnyx_commons.llm.providers.openrouter_pricing import OpenRouterPricingCatalog, shared_openrouter_pricing_catalog
 from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import (
     LlmChoice,
@@ -152,6 +153,7 @@ class _ActualCost:
     cost_usd: float | None
     provider: str | None
     evidence: JsonObject | None = None
+    reference_cost_usd: float | None = None
 
 
 class _ToolingInfoInvocation(BaseModel):
@@ -197,6 +199,7 @@ def build_miner_sandbox_tool_invoker(
     decision_provider_resolver: DecisionProviderResolver | None = None,
     platform_decision_provider_resolver: DecisionProviderResolver | None = None,
     allowed_models: tuple[ToolModelName, ...] = ALLOWED_TOOL_MODELS,
+    openrouter_pricing_catalog: OpenRouterPricingCatalog | None = None,
 ) -> RuntimeToolInvoker:
     return RuntimeToolInvoker(
         receipt_log,
@@ -224,6 +227,7 @@ def build_miner_sandbox_tool_invoker(
         platform_decision_provider_resolver=platform_decision_provider_resolver,
         advertised_tool_names=MINER_SANDBOX_TOOL_NAMES,
         allowed_models=allowed_models,
+        openrouter_pricing_catalog=openrouter_pricing_catalog,
     )
 
 
@@ -357,7 +361,9 @@ class RuntimeToolInvoker(ToolInvoker):
         platform_decision_provider_resolver: DecisionProviderResolver | None = None,
         advertised_tool_names: tuple[ToolName, ...] | None = None,
         allowed_models: tuple[ToolModelName, ...] = ALLOWED_TOOL_MODELS,
+        openrouter_pricing_catalog: OpenRouterPricingCatalog | None = None,
     ) -> None:
+        self._openrouter_pricing_catalog = openrouter_pricing_catalog or shared_openrouter_pricing_catalog()
         self._receipts = receipt_log
         self._logger = logging.getLogger("harnyx_commons.tools.runtime_invoker")
         self._fetch_page = fetch_page_client
@@ -399,7 +405,7 @@ class RuntimeToolInvoker(ToolInvoker):
             if tool_name == "test_tool":
                 return self._invoke_test_tool(args, kwargs)
             if tool_name == "tooling_info":
-                return self._invoke_tooling_info(args, kwargs)
+                return await self._invoke_tooling_info(args, kwargs)
             if is_search_tool(tool_name):
                 args, kwargs = _with_default_tool_timeout(tool_name, args=args, kwargs=kwargs)
                 return await self._dispatch_search(tool_name, args, kwargs, context=context)
@@ -445,14 +451,14 @@ class RuntimeToolInvoker(ToolInvoker):
             "echo": invocation.message,
         }
 
-    def _invoke_tooling_info(
+    async def _invoke_tooling_info(
         self,
         args: Sequence[JsonValue],
         kwargs: Mapping[str, JsonValue],
     ) -> JsonObject:
         if args:
             raise ValueError("tooling_info does not accept positional arguments")
-        _ToolingInfoInvocation.model_validate(dict(kwargs))
+        invocation = _ToolingInfoInvocation.model_validate(dict(kwargs))
 
         visible_tool_names = set(self._advertised_tool_names)
         pricing: dict[str, JsonValue] = {}
@@ -476,7 +482,9 @@ class RuntimeToolInvoker(ToolInvoker):
                         "kind": "per_successful_nonempty_request",
                         "usd_per_request": DEEPSEEK_SEARCH_USD_PER_SUCCESSFUL_REQUEST,
                     },
-                } if tool_name in {"search_web", "fetch_page"} else {},
+                }
+                if tool_name in {"search_web", "fetch_page"}
+                else {},
             }
 
         if "llm_chat" in visible_tool_names:
@@ -510,6 +518,7 @@ class RuntimeToolInvoker(ToolInvoker):
                         for model, rates in model_pricing.items()
                     }
                     for provider, model_pricing in MINER_TOOL_LLM_PRICING.items()
+                    if provider != "openrouter"
                 },
             }
         if "embed_text" in visible_tool_names:
@@ -545,6 +554,28 @@ class RuntimeToolInvoker(ToolInvoker):
             provider: [str(model) for model in models]
             for provider, models in MINER_SELECTED_LLM_PROVIDER_MODELS.items()
         }
+        if "llm_chat" in visible_tool_names:
+            discovery_available = True
+            try:
+                discovery_timeout = min(invocation.timeout or 2.0, 2.0)
+                # Bound lock contention and the full refresh, not just each HTTP operation.
+                async with asyncio.timeout(discovery_timeout):
+                    models = await self._openrouter_pricing_catalog.models(timeout=discovery_timeout)
+            except (httpx.HTTPError, ValueError, TimeoutError):
+                models = ()
+                discovery_available = False
+            allowed_provider_models["openrouter"] = list(models)
+            llm_pricing = cast(dict[str, JsonValue], pricing["llm_chat"])
+            llm_pricing["openrouter"] = {
+                "kind": "dynamic_provider_pricing",
+                "reference": "maximum_provider_discount_reversal",
+                "actual": "original_provider_charge",
+                "discovery_available": discovery_available,
+            }
+            cast(dict[str, JsonValue], llm_pricing["provider_settlement_order"])["openrouter"] = ["provider_returned"]
+            cast(dict[str, JsonValue], llm_pricing["provider_rate_usage"])["openrouter"] = (
+                "dynamic_reference_and_actual"
+            )
         return {
             "tool_names": tool_names,
             "allowed_llm_provider_models": allowed_provider_models,
@@ -662,9 +693,12 @@ class RuntimeToolInvoker(ToolInvoker):
             )
             elapsed_ms = (time.perf_counter() - started_at) * 1000.0
         except ToolProviderError as exc:
-            if _uses_platform_credentials(context) and exc.failure_code is ToolProviderFailureCode.PROVIDER_FAILED:
+            if (
+                _uses_platform_credentials(context) or invocation.provider == "openrouter"
+            ) and exc.failure_code is ToolProviderFailureCode.PROVIDER_FAILED:
                 typed = _typed_provider_error(exc, provider=invocation.provider)
                 if typed.http_status is not None:
+                    typed.billing = exc.billing
                     raise typed from exc
             raise
         except ToolInvocationTimeoutError:
@@ -686,6 +720,7 @@ class RuntimeToolInvoker(ToolInvoker):
             actual_cost_usd=actual_cost.cost_usd,
             actual_cost_provider=actual_cost.provider,
             actual_cost_evidence=actual_cost.evidence,
+            reference_cost_usd=actual_cost.reference_cost_usd,
         )
 
     async def _dispatch_embedding(
@@ -999,6 +1034,7 @@ class RuntimeToolInvoker(ToolInvoker):
             timeout=Timeout(provider_total, prefill=prefill, inactivity=inactivity),
             thinking=normalized.thinking,
             extra=invocation.provider_extra_payload(),
+            on_provider_dispatch=None if context is None else context.on_provider_dispatch,
             use_case="tool_runtime_invoker",
             retry_policy=RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0.0),
             include_payloads_in_observability=not _uses_platform_credentials(context),
@@ -1165,15 +1201,18 @@ def _settle_search_cost(
 ) -> _ActualCost:
     if request_provider == "deepseek":
         if (
-            billing is None or billing.actual_cost_provider != "deepseek"
-            or billing.billable_units not in {0, 1} or tool_name not in {"search_web", "fetch_page"}
+            billing is None
+            or billing.actual_cost_provider != "deepseek"
+            or billing.billable_units not in {0, 1}
+            or tool_name not in {"search_web", "fetch_page"}
         ):
             raise ValueError(f"{tool_name} DeepSeek success missing billable request evidence")
         return _ActualCost(
             billing.billable_units * DEEPSEEK_SEARCH_USD_PER_SUCCESSFUL_REQUEST,
             "deepseek",
             {
-                "settlement_source": "static_pricing", "provider": "deepseek",
+                "settlement_source": "static_pricing",
+                "provider": "deepseek",
                 "usd_per_successful_request": DEEPSEEK_SEARCH_USD_PER_SUCCESSFUL_REQUEST,
                 "provider_billing": cast(JsonObject, billing_evidence_payload(billing) or {}),
             },
@@ -1259,7 +1298,7 @@ def _require_settled_llm_cost(response: LlmResponse) -> _ActualCost:
     settled = settled_cost_from_metadata(response.metadata or {})
     if settled is None:
         raise ValueError("llm_chat provider-backed success missing settled cost")
-    return _ActualCost(settled.cost_usd, settled.provider, settled.evidence)
+    return _ActualCost(settled.cost_usd, settled.provider, settled.evidence, settled.reference_cost_usd)
 
 
 __all__ = [

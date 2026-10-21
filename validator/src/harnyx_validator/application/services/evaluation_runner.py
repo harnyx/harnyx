@@ -12,7 +12,6 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from math import isclose
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
@@ -30,7 +29,7 @@ from harnyx_commons.domain.miner_task import (
     MinerTaskErrorCode,
     is_delivery_disqualifying_validator_pair_error,
 )
-from harnyx_commons.domain.session import LlmUsageTotals, SessionStatus, SessionUsage
+from harnyx_commons.domain.session import SessionStatus
 from harnyx_commons.domain.tool_call import ToolCall
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
 from harnyx_commons.errors import SessionBudgetExhaustedError
@@ -46,7 +45,7 @@ from harnyx_commons.miner_task_failure_policy import (
     is_uncaught_platform_tool_proxy_timeout_sandbox_invocation,
 )
 from harnyx_commons.sandbox.client import SandboxClient
-from harnyx_commons.tools.types import is_search_tool
+from harnyx_commons.tools.receipt_accounting import usage_from_receipts as _usage_from_receipts
 from harnyx_miner_sdk.sandbox_protocol import SANDBOX_OOM_AFFECTED, SandboxAdmission
 from harnyx_validator.application.assigned_work import AssignedArtifactWork, ClaimedAssignedTask, PhaseRecorder
 from harnyx_validator.application.dto.evaluation import (
@@ -1782,6 +1781,11 @@ class EvaluationRunner:
                 final_attempt=final_attempt,
             )
 
+        unpriceable = self._unpriceable_attempt_decision(
+            batch_id=batch_id, artifact=artifact, task=task, session_id=issued.session.session_id
+        )
+        if unpriceable is not None:
+            return unpriceable
         control_failure_decision = self._platform_tool_proxy_control_failure_decision(
             artifact=artifact,
             task=task,
@@ -1921,6 +1925,11 @@ class EvaluationRunner:
                 final_attempt=final_attempt,
             )
 
+        unpriceable = self._unpriceable_attempt_decision(
+            batch_id=batch_id, artifact=artifact, task=task, session_id=issued.session.session_id
+        )
+        if unpriceable is not None:
+            return unpriceable
         control_failure_decision = self._platform_tool_proxy_control_failure_decision(
             artifact=artifact,
             task=task,
@@ -2428,6 +2437,30 @@ class EvaluationRunner:
                 return receipt
         return None
 
+    def _unpriceable_attempt_decision(
+        self,
+        *,
+        batch_id: UUID,
+        artifact: ScriptArtifactSpec,
+        task: MinerTask,
+        session_id: UUID,
+    ) -> TaskAttemptDecision | None:
+        envelope = self._sessions.inspect(session_id)
+        receipts = self._current_attempt_receipts(session_id=session_id, active_attempt=envelope.session.active_attempt)
+        if not any((r.details.extra or {}).get("reference_cost_unavailable") for r in receipts):
+            return None
+        return _submission_decision(
+            self._build_failed_submission(
+                batch_id=batch_id,
+                session_id=session_id,
+                uid=artifact.uid,
+                artifact_id=artifact.artifact_id,
+                task=task,
+                error_code=MinerTaskErrorCode.TOOL_PROVIDER_FAILED,
+                error_message="OpenRouter regular reference cost unavailable after dispatch",
+            )
+        )
+
     def _non_timeout_failure_decision(
         self,
         *,
@@ -2438,6 +2471,11 @@ class EvaluationRunner:
         exc: Exception,
         final_attempt: bool,
     ) -> TaskAttemptDecision:
+        unpriceable = self._unpriceable_attempt_decision(
+            batch_id=batch_id, artifact=artifact, task=task, session_id=session_id
+        )
+        if unpriceable is not None:
+            return unpriceable
         if isinstance(exc, LlmRetryExhaustedError):
             return _submission_decision(
                 self._build_task_failure(
@@ -3071,209 +3109,6 @@ class EvaluationRunner:
     ) -> tuple[TokenUsageSummary, ToolUsageSummary]:
         session = envelope.session.with_usage(_usage_from_receipts(receipts))
         return self._usage.summarize(session, receipts)
-
-
-def _usage_from_receipts(receipts: tuple[ToolCall, ...]) -> SessionUsage:
-    llm_usage_totals: dict[str, dict[str, LlmUsageTotals]] = {}
-    cost_by_provider: dict[str, float] = {}
-    actual_cost_by_provider: dict[str, float] = {}
-    total_cost_usd = 0.0
-    actual_total_cost_usd: float | None = 0.0
-    llm_tokens_last_call = 0
-
-    for receipt in receipts:
-        session_cost = _receipt_session_cost(receipt)
-        if session_cost is not None:
-            provider = _receipt_session_cost_provider(receipt)
-            total_cost_usd += session_cost
-            if provider is not None:
-                cost_by_provider[provider] = cost_by_provider.get(provider, 0.0) + session_cost
-                actual_cost_by_provider[provider] = actual_cost_by_provider.get(provider, 0.0) + session_cost
-        actual_total_cost_usd = _accumulate_receipt_actual_cost(
-            actual_total_cost_usd,
-            receipt=receipt,
-            cost_usd=session_cost,
-        )
-        if not receipt.is_successful() or receipt.tool != "llm_chat":
-            continue
-        model = _receipt_llm_model(receipt)
-        usage = _receipt_llm_usage(receipt)
-        if model is None:
-            continue
-        if usage is None and session_cost is not None:
-            usage = _ReceiptLlmUsage(
-                prompt_tokens=0,
-                completion_tokens=0,
-                total_tokens=0,
-                reasoning_tokens=None,
-            )
-        if usage is None:
-            continue
-        provider = _receipt_llm_provider(receipt)
-        provider_totals = llm_usage_totals.setdefault(provider, {})
-        existing = provider_totals.get(model, LlmUsageTotals())
-        provider_totals[model] = existing.accumulate(
-            prompt_tokens=usage.prompt_tokens,
-            completion_tokens=usage.completion_tokens,
-            total_tokens=usage.total_tokens,
-            reasoning_tokens=usage.reasoning_tokens,
-        )
-        llm_tokens_last_call = usage.total_tokens
-
-    return SessionUsage(
-        total_cost_usd=total_cost_usd,
-        cost_by_provider=cost_by_provider,
-        reference_total_cost_usd=total_cost_usd,
-        reference_cost_by_provider=cost_by_provider,
-        actual_total_cost_usd=actual_total_cost_usd,
-        actual_cost_by_provider=actual_cost_by_provider,
-        llm_tokens_last_call=llm_tokens_last_call,
-        llm_usage_totals=llm_usage_totals,
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class _ReceiptLlmUsage:
-    prompt_tokens: int
-    completion_tokens: int
-    total_tokens: int
-    reasoning_tokens: int | None
-
-
-def _receipt_llm_usage(receipt: ToolCall) -> _ReceiptLlmUsage | None:
-    response_payload = receipt.details.response_payload
-    if not isinstance(response_payload, dict):
-        return None
-    usage = response_payload.get("usage")
-    if not isinstance(usage, dict):
-        return None
-    prompt_tokens = _non_negative_int(usage.get("prompt_tokens"))
-    completion_tokens = _non_negative_int(usage.get("completion_tokens"))
-    total_tokens = _non_negative_int(usage.get("total_tokens"))
-    reasoning_tokens = _non_negative_int(usage.get("reasoning_tokens"))
-    resolved_total = (
-        total_tokens
-        if total_tokens is not None
-        else (prompt_tokens or 0) + (completion_tokens or 0) + (reasoning_tokens or 0)
-    )
-    return _ReceiptLlmUsage(
-        prompt_tokens=prompt_tokens or 0,
-        completion_tokens=completion_tokens or 0,
-        total_tokens=resolved_total,
-        reasoning_tokens=reasoning_tokens,
-    )
-
-
-def _receipt_llm_model(receipt: ToolCall) -> str | None:
-    request_payload = receipt.details.request_payload
-    if not isinstance(request_payload, dict):
-        return None
-    direct_model = request_payload.get("model")
-    if isinstance(direct_model, str):
-        return direct_model
-    kwargs = request_payload.get("kwargs")
-    if isinstance(kwargs, dict):
-        kwargs_model = kwargs.get("model")
-        if isinstance(kwargs_model, str):
-            return kwargs_model
-    args = request_payload.get("args")
-    if isinstance(args, list) and args:
-        first_arg = args[0]
-        if isinstance(first_arg, dict):
-            arg_model = first_arg.get("model")
-            if isinstance(arg_model, str):
-                return arg_model
-    return None
-
-
-def _receipt_llm_provider(receipt: ToolCall) -> str:
-    provider = _receipt_request_provider(receipt)
-    if provider is None or not provider.strip():
-        raise ValueError("llm_chat receipt requires request provider")
-    return provider.strip()
-
-
-def _receipt_actual_cost(receipt: ToolCall) -> float | None:
-    return None if receipt.details.actual_cost_usd is None else float(receipt.details.actual_cost_usd)
-
-
-def _receipt_session_cost(receipt: ToolCall) -> float | None:
-    cost_usd = None if receipt.details.cost_usd is None else float(receipt.details.cost_usd)
-    actual_cost_usd = _receipt_actual_cost(receipt)
-    if cost_usd is None:
-        if actual_cost_usd is not None:
-            raise ValueError("receipt actual_cost_usd requires matching cost_usd")
-        return None
-    if actual_cost_usd is not None and not isclose(actual_cost_usd, cost_usd, rel_tol=0.0, abs_tol=1e-12):
-        raise ValueError("receipt cost_usd and actual_cost_usd must match")
-    return cost_usd
-
-
-def _accumulate_receipt_actual_cost(
-    current: float | None,
-    *,
-    receipt: ToolCall,
-    cost_usd: float | None,
-) -> float | None:
-    if cost_usd is None:
-        if receipt.tool == "decision_query":
-            return None
-        if (
-            receipt.is_successful()
-            and receipt.details.extra is not None
-            and receipt.details.extra.get("actual_cost_settlement_source") == "unavailable"
-        ):
-            return None
-        return current
-    if current is None:
-        return None
-    return current + cost_usd
-
-
-def _receipt_session_cost_provider(receipt: ToolCall) -> str | None:
-    if receipt.tool == "llm_chat":
-        _receipt_llm_provider(receipt)
-    if receipt.details.actual_cost_provider is not None:
-        return receipt.details.actual_cost_provider
-    return _receipt_request_cost_provider(receipt)
-
-
-def _receipt_request_cost_provider(receipt: ToolCall) -> str | None:
-    provider = _receipt_request_provider(receipt)
-    if receipt.tool == "decision_query":
-        return provider if provider in {"openrouter", "ai_gateway"} else None
-    if provider is not None and provider.strip():
-        return provider.strip()
-    if receipt.tool == "llm_chat":
-        raise ValueError("llm_chat receipt requires request provider")
-    return "desearch" if is_search_tool(receipt.tool) else "chutes"
-
-
-def _receipt_request_provider(receipt: ToolCall) -> str | None:
-    request_payload = receipt.details.request_payload
-    if isinstance(request_payload, dict):
-        direct_provider = request_payload.get("provider")
-        if isinstance(direct_provider, str):
-            return direct_provider
-        kwargs = request_payload.get("kwargs")
-        if isinstance(kwargs, dict):
-            kwargs_provider = kwargs.get("provider")
-            if isinstance(kwargs_provider, str):
-                return kwargs_provider
-        args = request_payload.get("args")
-        if isinstance(args, list) and args:
-            first_arg = args[0]
-            if isinstance(first_arg, dict):
-                arg_provider = first_arg.get("provider")
-                if isinstance(arg_provider, str):
-                    return arg_provider
-    return None
-
-
-def _non_negative_int(value: object) -> int | None:
-    if isinstance(value, int) and value >= 0:
-        return value
-    return None
 
 
 def _submission_decision(

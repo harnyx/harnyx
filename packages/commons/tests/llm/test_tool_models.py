@@ -183,10 +183,15 @@ def test_miner_selected_provider_model_sets_are_provider_namespaces() -> None:
     )
 
 
-def test_miner_selected_openrouter_rejects_chutes_model_ids() -> None:
-    for model in MINER_SELECTED_LLM_PROVIDER_MODELS["chutes"]:
-        with pytest.raises(ValueError, match="not supported for miner-selected provider 'openrouter'"):
-            parse_miner_selected_llm_provider_model(provider="openrouter", model=model)
+@pytest.mark.parametrize("model", ["inception/mercury-3", "new-provider/new-model"])
+def test_openrouter_native_ids_do_not_require_a_repository_whitelist(model: str) -> None:
+    assert parse_miner_selected_llm_provider_model(provider="openrouter", model=model).model == model
+
+
+@pytest.mark.parametrize("model", ["openrouter/free", "provider/model:free", "provider/model:free:nitro"])
+def test_openrouter_rejects_explicit_free_models(model: str) -> None:
+    with pytest.raises(ValueError, match="free"):
+        parse_miner_selected_llm_provider_model(provider="openrouter", model=model)
 
 
 def test_miner_selected_ai_gateway_rejects_chutes_model_ids() -> None:

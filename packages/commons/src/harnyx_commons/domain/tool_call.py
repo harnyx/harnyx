@@ -92,14 +92,18 @@ class ToolCallDetails:
             raise ValueError("request_hash must not be empty")
         if self.response_hash == "":
             raise ValueError("response_hash must not be empty when supplied")
-        if self.actual_cost_usd is not None:
+        if (
+            self.cost_usd is None
+            and self.reference_cost_usd is None
+            and not (self.extra or {}).get("reference_cost_unavailable")
+        ):
             object.__setattr__(self, "cost_usd", self.actual_cost_usd)
-            object.__setattr__(self, "reference_cost_usd", self.actual_cost_usd)
-        else:
-            if self.reference_cost_usd is None and self.cost_usd is not None:
-                object.__setattr__(self, "reference_cost_usd", self.cost_usd)
-            if self.cost_usd is None and self.reference_cost_usd is not None:
-                object.__setattr__(self, "cost_usd", self.reference_cost_usd)
+        if self.reference_cost_usd is None and self.cost_usd is not None:
+            object.__setattr__(self, "reference_cost_usd", self.cost_usd)
+        if self.cost_usd is None and self.reference_cost_usd is not None:
+            object.__setattr__(self, "cost_usd", self.reference_cost_usd)
+        if self.cost_usd != self.reference_cost_usd:
+            raise ValueError("cost_usd and reference_cost_usd must match")
         if self.cost_usd is not None and self.cost_usd < 0.0:
             raise ValueError("cost_usd must be non-negative when supplied")
         if self.reference_cost_usd is not None and self.reference_cost_usd < 0.0:
@@ -185,9 +189,8 @@ class StartedToolCall:
         execution: ToolExecutionFacts | None = None,
     ) -> ToolCall:
         """Build the final receipt for this started invocation."""
-        if actual_cost_usd is not None:
+        if cost_usd is None and reference_cost_usd is None and not (extra or {}).get("reference_cost_unavailable"):
             cost_usd = actual_cost_usd
-            reference_cost_usd = actual_cost_usd
         if reference_cost_usd is None and cost_usd is not None:
             reference_cost_usd = cost_usd
         merged_extra: dict[str, JsonValue] = {
@@ -204,11 +207,6 @@ class StartedToolCall:
             merged_extra["actual_cost_provider"] = actual_cost_provider
         if extra is not None:
             merged_extra.update(extra)
-        if actual_cost_usd is not None:
-            formatted_cost = f"{actual_cost_usd:.6f}"
-            merged_extra["cost_usd"] = formatted_cost
-            merged_extra["reference_cost_usd"] = formatted_cost
-            merged_extra["actual_cost_usd"] = formatted_cost
 
         return ToolCall(
             receipt_id=self.receipt_id,

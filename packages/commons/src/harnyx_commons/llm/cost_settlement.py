@@ -29,6 +29,7 @@ class SettledLlmCost:
     cost_usd: float
     provider: str
     evidence: JsonObject
+    reference_cost_usd: float | None = None
 
 
 def llm_cost_settlement_order(provider: str) -> tuple[str, ...]:
@@ -102,6 +103,9 @@ def settled_cost_from_metadata(metadata: Mapping[str, object]) -> SettledLlmCost
         cost_usd=selected_cost,
         provider=provider.strip(),
         evidence=evidence_payload,
+        reference_cost_usd=normalized_provider_cost(
+            metadata.get("reference_cost_usd"), field_name="reference_cost_usd"
+        ),
     )
 
 

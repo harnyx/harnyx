@@ -137,9 +137,7 @@ class RecordingEvidence:
         self.fail_start = False
         self.fail_terminal = False
 
-    async def record_started(
-        self, session: Session, call: StartedToolCall, *, on_recorded: Callable[[], None]
-    ) -> None:
+    async def record_started(self, session: Session, call: StartedToolCall, *, on_recorded: Callable[[], None]) -> None:
         self.start_entered.set()
         await self.release_start.wait()
         if self.fail_start:
@@ -416,12 +414,16 @@ async def test_tool_executor_rejects_invalid_provider_cost_before_settling_usage
         ),
         pytest.param(
             "fetch_page",
-            {"data": [
-                {"url": "https://example.com/page", "content": "Markdown evidence", "title": "Page"},
-                {"url": "https://example.com/page", "content": '{"json": []}', "title": "Page"},
-            ]},
-            ((0, "https://example.com/page", "Markdown evidence", "Page"),
-             (1, "https://example.com/page", '{"json": []}', "Page")),
+            {
+                "data": [
+                    {"url": "https://example.com/page", "content": "Markdown evidence", "title": "Page"},
+                    {"url": "https://example.com/page", "content": '{"json": []}', "title": "Page"},
+                ]
+            },
+            (
+                (0, "https://example.com/page", "Markdown evidence", "Page"),
+                (1, "https://example.com/page", '{"json": []}', "Page"),
+            ),
             id="fetch-same-url-two-representations",
         ),
         pytest.param(
@@ -616,11 +618,16 @@ async def test_opt_in_provider_failure_settles_zero_or_unknown_once(dispatched) 
     assert executor._sessions.get(session.session_id).usage.actual_total_cost_usd == expected
 
 
-async def test_opt_in_failure_after_returned_output_retains_tokens_and_cost_once() -> None:
+async def test_opt_in_failure_after_returned_output_retains_payload_tokens_and_cost_once() -> None:
     now = datetime.now(UTC)
     recorder = RecordingEvidence()
     response = LlmResponse(
-        id="charged", choices=(), usage=LlmUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+        id="charged",
+        choices=(),
+        usage=LlmUsage(
+            prompt_tokens=10, completion_tokens=5, total_tokens=17, prompt_cached_tokens=3, reasoning_tokens=2
+        ),
+        metadata={"provider_status": "incomplete"},
     )
     executor, receipts, session, token = _build_search_executor(
         now=now, expires_at=now + timedelta(minutes=1), payload=response.to_payload(), recorder=recorder
@@ -646,7 +653,12 @@ async def test_opt_in_failure_after_returned_output_retains_tokens_and_cost_once
         )
     updated = executor._sessions.get(session.session_id)
     assert updated.usage.total_cost_usd == pytest.approx(0.001)
-    assert updated.usage.llm_usage_totals["openai"]["gpt-6-luna"].total_tokens == 15
+    assert updated.usage.llm_usage_totals["openai"]["gpt-6-luna"].total_tokens == 17
+    retained = receipts.for_session(session.session_id)[0].details.response_payload
+    assert retained["metadata"] == {"provider_status": "incomplete"}
+    assert retained["id"] == "charged"
+    assert retained["choices"] == []
+    assert retained["usage"] == response.to_payload()["usage"]
     assert len(recorder.terminals) == 1
     assert receipts.for_session(session.session_id) == tuple(recorder.terminals)
 
@@ -738,25 +750,172 @@ async def test_deepseek_failure_receipt_distinguishes_zero_from_unknown(confirme
     now = datetime.now(UTC)
     recorder = RecordingEvidence()
     executor, receipts, session, token = _build_search_executor(
-        now=now, expires_at=now + timedelta(minutes=1), payload={}, recorder=recorder,
+        now=now,
+        expires_at=now + timedelta(minutes=1),
+        payload={},
+        recorder=recorder,
     )
     executor._account_provider_failures = True
 
     async def invoke(tool_name, *, args, kwargs, context):
         context.on_provider_dispatch()
         raise ToolProviderError(
-            "rejected or interrupted", provider="deepseek",
+            "rejected or interrupted",
+            provider="deepseek",
             billing=ProviderBillingMetadata(
-                actual_cost_provider="deepseek", actual_cost_usd=0.0, source="response_headers",
-            ) if confirmed_rejection else None,
+                actual_cost_provider="deepseek",
+                actual_cost_usd=0.0,
+                source="response_headers",
+            )
+            if confirmed_rejection
+            else None,
         )
 
     executor._tool_invoker.invoke = invoke
     with pytest.raises(ToolProviderError):
-        await executor.execute(ToolInvocationRequest(
-            session.session_id, token, "search_web", (), {"provider": "deepseek", "search_queries": ["query"]},
-        ))
+        await executor.execute(
+            ToolInvocationRequest(
+                session.session_id,
+                token,
+                "search_web",
+                (),
+                {"provider": "deepseek", "search_queries": ["query"]},
+            )
+        )
     receipt = receipts.for_session(session.session_id)[0]
     assert receipt.details.actual_cost_usd == (0.0 if confirmed_rejection else None)
     assert receipt.details.actual_cost_provider == "deepseek"
     assert receipts.for_session(session.session_id) == tuple(recorder.terminals)
+
+
+@pytest.mark.parametrize("reference", [0.008, None])
+async def test_openrouter_billed_failure_preserves_financial_charge_and_stops_unknown_reference(
+    reference: float | None,
+) -> None:
+    from harnyx_commons.errors import ToolProviderError
+    from harnyx_commons.llm.schema import LlmUsage
+    from harnyx_commons.tools.provider_billing import ProviderBillingMetadata
+    from harnyx_commons.tools.receipt_accounting import usage_from_receipts
+
+    now = datetime.now(UTC)
+    executor, receipts, session, token = _build_search_executor(
+        now=now, expires_at=now + timedelta(minutes=1), payload={}
+    )
+
+    async def invoke(tool_name, *, args, kwargs, context):
+        context.on_provider_dispatch()
+        raise ToolProviderError(
+            "unpriceable" if reference is None else "rejected output",
+            provider="openrouter",
+            billing=ProviderBillingMetadata(
+                actual_cost_provider="openrouter",
+                source="response_body",
+                actual_cost_usd=0.004,
+                reference_cost_usd=reference,
+                reference_cost_unavailable=reference is None,
+                llm_usage=LlmUsage(prompt_tokens=10, completion_tokens=5, total_tokens=19, reasoning_tokens=4),
+                provider_usage={"inference": "attempted"},
+            ),
+        )
+
+    executor._tool_invoker.invoke = invoke
+    request = ToolInvocationRequest(
+        session.session_id, token, "llm_chat", (), {"provider": "openrouter", "model": "inception/mercury-3"}
+    )
+    with pytest.raises(ToolProviderError):
+        await executor.execute(request)
+    receipt = receipts.for_session(session.session_id)[0]
+    assert receipt.details.cost_usd == reference
+    assert receipt.details.actual_cost_usd == pytest.approx(0.004)
+    updated = executor._sessions.get(session.session_id)
+    assert updated.usage.total_cost_usd == pytest.approx(reference or 0)
+    assert updated.usage.actual_total_cost_usd == pytest.approx(0.004)
+    assert updated.usage == usage_from_receipts((receipt,))
+    totals = updated.usage.llm_usage_totals["openrouter"]["inception/mercury-3"]
+    assert (totals.total_tokens, totals.reasoning_tokens, totals.call_count) == (19, 4, 1)
+    if reference is None:
+        assert updated.status is SessionStatus.ERROR
+        with pytest.raises(Exception, match="active|error|inactive"):
+            await executor.execute(request)
+    else:
+        assert updated.status is SessionStatus.ACTIVE
+
+
+@pytest.mark.parametrize("account_failures", [False, True])
+@pytest.mark.parametrize("inference", ["not_dispatched", "attempted"])
+async def test_openrouter_zero_charge_failure_distinguishes_rejection_from_inference(
+    account_failures: bool, inference: str
+) -> None:
+    from harnyx_commons.errors import ToolProviderError
+    from harnyx_commons.tools.provider_billing import ProviderBillingMetadata
+    from harnyx_commons.tools.receipt_accounting import usage_from_receipts
+
+    now = datetime.now(UTC)
+    executor, receipts, session, token = _build_search_executor(
+        now=now, expires_at=now + timedelta(minutes=1), payload={}
+    )
+    executor._account_provider_failures = account_failures
+
+    async def invoke(tool_name, *, args, kwargs, context):
+        context.on_provider_dispatch()  # The validator contacted Platform, which rejected before inference.
+        raise ToolProviderError(
+            "rejected before inference",
+            provider="openrouter",
+            billing=ProviderBillingMetadata(
+                actual_cost_provider="openrouter",
+                source="response_body",
+                actual_cost_usd=0.0,
+                reference_cost_usd=0.0,
+                provider_usage={"inference": inference},
+            ),
+        )
+
+    executor._tool_invoker.invoke = invoke
+    with pytest.raises(ToolProviderError):
+        await executor.execute(
+            ToolInvocationRequest(
+                session.session_id, token, "llm_chat", (), {"provider": "openrouter", "model": "inception/mercury-3"}
+            )
+        )
+    usage = executor._sessions.get(session.session_id).usage
+    assert usage == usage_from_receipts(receipts.for_session(session.session_id))
+    if inference == "not_dispatched":
+        assert usage.llm_usage_totals == {}
+    else:
+        assert usage.llm_usage_totals["openrouter"]["inception/mercury-3"].call_count == 1
+    assert usage.total_cost_usd == usage.actual_total_cost_usd == 0.0
+    assert executor._sessions.get(session.session_id).status is SessionStatus.ACTIVE
+
+
+async def test_openrouter_success_missing_reference_fails_and_retains_observed_charge() -> None:
+    from harnyx_commons.errors import ToolProviderError
+
+    now = datetime.now(UTC)
+    executor, receipts, session, token = _build_search_executor(
+        now=now, expires_at=now + timedelta(minutes=1), payload={}
+    )
+
+    async def invoke(tool_name, *, args, kwargs, context):
+        context.on_provider_dispatch()
+        return ToolInvocationOutput(
+            public_payload={"usage": {"prompt_tokens": 10, "completion_tokens": 5}},
+            actual_cost_usd=0.004,
+            actual_cost_provider="openrouter",
+            actual_cost_evidence={
+                "inference": "attempted",
+                "token_usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            },
+        )
+
+    executor._tool_invoker.invoke = invoke
+    with pytest.raises(ToolProviderError, match="reference cost is missing"):
+        await executor.execute(
+            ToolInvocationRequest(
+                session.session_id, token, "llm_chat", (), {"provider": "openrouter", "model": "inception/mercury-3"}
+            )
+        )
+    receipt = receipts.for_session(session.session_id)[0]
+    assert not receipt.is_successful()
+    assert receipt.details.reference_cost_usd is None
+    assert receipt.details.actual_cost_usd == pytest.approx(0.004)
+    assert executor._sessions.get(session.session_id).status is SessionStatus.ERROR

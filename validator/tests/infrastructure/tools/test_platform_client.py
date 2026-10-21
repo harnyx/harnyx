@@ -1863,23 +1863,100 @@ async def test_deepseek_proxy_rejection_preserves_strict_zero_cost(tool, cost):
     from pydantic import ValidationError
 
     client = AsyncPlatformToolProxyPlatformClient(
-        base_url="https://mock.local", hotkey=_keypair(),
-        transport=httpx.MockTransport(lambda _: httpx.Response(502, json={
-            "error_code": "provider_failed", "message": "rejected",
-            "billing": {"actual_cost_usd": cost, "actual_cost_provider": "deepseek"},
-        })),
+        base_url="https://mock.local",
+        hotkey=_keypair(),
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(
+                502,
+                json={
+                    "error_code": "provider_failed",
+                    "message": "rejected",
+                    "billing": {"actual_cost_usd": cost, "actual_cost_provider": "deepseek"},
+                },
+            )
+        ),
     )
     try:
         expected_error = PlatformToolProxyProviderError if type(cost) is float and cost == 0 else ValidationError
         with pytest.raises(expected_error) as error:
             await client.execute_platform_tool_proxy_tool(
-                token=uuid4().hex, uid=7, artifact_id=uuid4(), task_id=uuid4(),
-                validator_session_id=uuid4(), attempt_number=1, receipt_id=str(uuid4()),
-                tool=tool, args=(), kwargs={"provider": "deepseek"},
+                token=uuid4().hex,
+                uid=7,
+                artifact_id=uuid4(),
+                task_id=uuid4(),
+                validator_session_id=uuid4(),
+                attempt_number=1,
+                receipt_id=str(uuid4()),
+                tool=tool,
+                args=(),
+                kwargs={"provider": "deepseek"},
                 transport_timeout_seconds=11.0,
             )
         if expected_error is PlatformToolProxyProviderError:
             assert error.value.billing.actual_cost_usd == 0.0
             assert error.value.billing.actual_cost_provider == "deepseek"
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.anyio("asyncio")
+@pytest.mark.parametrize("reference,actual", [(0.008, 0.004), (None, 0.004), (None, None)])
+@pytest.mark.parametrize("usage_in_evidence", [False, True])
+async def test_openrouter_chat_failure_transports_reference_and_observed_charge(
+    reference: float | None, actual: float | None, usage_in_evidence: bool
+) -> None:
+    usage = {
+        "prompt_tokens": 10,
+        "completion_tokens": 5,
+        "total_tokens": 19,
+        "reasoning_tokens": 4,
+        "prompt_cached_tokens": 2,
+    }
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            502,
+            json={
+                "error_code": "provider_failed",
+                "message": "unpriceable or rejected",
+                "billing": {
+                    "actual_cost_usd": actual,
+                    "actual_cost_provider": "openrouter",
+                    "reference_cost_usd": reference,
+                    "reference_cost_unavailable": reference is None,
+                    "cost_evidence": {
+                        "maximum_discount": 0.5,
+                        "inference": "attempted",
+                        **({"token_usage": usage} if usage_in_evidence else {}),
+                    },
+                    **({} if usage_in_evidence else {"llm_usage": usage}),
+                },
+            },
+        )
+
+    client = AsyncPlatformToolProxyPlatformClient(
+        base_url="https://mock.local", hotkey=_keypair(), transport=httpx.MockTransport(handler)
+    )
+    try:
+        with pytest.raises(PlatformToolProxyProviderError) as caught:
+            await client.execute_platform_tool_proxy_tool(
+                token=uuid4().hex,
+                uid=7,
+                artifact_id=uuid4(),
+                task_id=uuid4(),
+                validator_session_id=uuid4(),
+                attempt_number=1,
+                receipt_id=str(uuid4()),
+                tool="llm_chat",
+                args=(),
+                kwargs={"provider": "openrouter", "model": "inception/mercury-3"},
+                transport_timeout_seconds=11.0,
+            )
+        assert caught.value.billing.reference_cost_usd == reference
+        assert caught.value.billing.reference_cost_unavailable is (reference is None)
+        assert caught.value.billing.actual_cost_usd == actual
+        assert caught.value.billing.llm_usage.total_tokens == 19
+        assert caught.value.billing.llm_usage.reasoning_tokens == 4
+        assert caught.value.billing.llm_usage.prompt_cached_tokens == 2
     finally:
         await client.aclose()

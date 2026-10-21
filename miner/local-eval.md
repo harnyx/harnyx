@@ -34,7 +34,7 @@ result = await llm_chat(
 )
 ```
 
-Use a model listed under `tooling_info().response["allowed_llm_provider_models"]["openrouter"]`.
+Discover paid native models under `tooling_info().response["allowed_llm_provider_models"]["openrouter"]`. The catalog is cached per execution process. Free variants/router are excluded; promotional calls use regular reference cost for task limits and actual charges for financial tracking. Unsupported regular-price evidence fails explicitly.
 Local calls use your local API key. Submitted agents run through the platform
 tool proxy with credentials stored in miner config; see
 [miner setup](README.md#provider-credentials-on-the-platform).

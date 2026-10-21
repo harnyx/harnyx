@@ -45,6 +45,7 @@ class AbstractLlmRequest(ToolLlmRequest, ABC):
     output_mode: str = "text"
     output_schema: type[BaseModel] | None = None
     postprocessor: Callable[[LlmResponse], PostprocessResult] | None = None
+    on_provider_dispatch: Callable[[], None] | None = None
     use_case: str | None = None
     internal_metadata: Mapping[str, object] | None = None
     extra: Mapping[str, Any] | None = None

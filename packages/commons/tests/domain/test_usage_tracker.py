@@ -100,40 +100,32 @@ def test_usage_tracker_accumulates_one_cost_space_for_cost_only_and_actual_cost_
     }
 
 
-def test_usage_tracker_rejects_divergent_actual_cost() -> None:
-    tracker = UsageTracker()
-    session = make_session(budget_usd=0.2)
-
-    with pytest.raises(ValueError, match="must match"):
-        tracker.record_tool_call(
-            session,
-            tool_name="llm_chat",
-            llm_tokens=15,
-            usage=ToolCallUsage(
-                provider="chutes",
-                model="openai/gpt-oss-20b",
-                prompt_tokens=10,
-                completion_tokens=5,
-                total_tokens=15,
-            ),
-            cost_usd=0.04,
-            actual_cost_usd=0.0,
-            actual_cost_provider="openrouter",
-        )
+def test_usage_tracker_uses_reference_for_limits_and_actual_for_financial_totals() -> None:
+    updated = UsageTracker().record_tool_call(
+        make_session(budget_usd=0.2),
+        tool_name="llm_chat",
+        llm_tokens=15,
+        usage=ToolCallUsage(provider="openrouter", model="inception/mercury-3", total_tokens=15),
+        cost_usd=0.04,
+        actual_cost_usd=0.02,
+        actual_cost_provider="openrouter",
+    )
+    assert updated.usage.total_cost_usd == pytest.approx(0.04)
+    assert updated.usage.reference_total_cost_usd == pytest.approx(0.04)
+    assert updated.usage.actual_total_cost_usd == pytest.approx(0.02)
+    assert updated.usage.actual_cost_by_provider == {"openrouter": pytest.approx(0.02)}
 
 
-def test_usage_tracker_rejects_actual_cost_without_matching_cost() -> None:
-    tracker = UsageTracker()
-    session = make_session(budget_usd=0.2)
-
-    with pytest.raises(ValueError, match="requires matching cost_usd"):
-        tracker.record_tool_call(
-            session,
-            tool_name="search_web",
-            llm_tokens=0,
-            actual_cost_usd=0.005,
-            actual_cost_provider="parallel",
-        )
+def test_usage_tracker_retains_observed_charge_without_reference() -> None:
+    updated = UsageTracker().record_tool_call(
+        make_session(budget_usd=0.2),
+        tool_name="llm_chat",
+        llm_tokens=0,
+        actual_cost_usd=0.005,
+        actual_cost_provider="openrouter",
+    )
+    assert updated.usage.total_cost_usd == 0
+    assert updated.usage.actual_total_cost_usd == pytest.approx(0.005)
 
 
 def test_usage_tracker_rejects_boolean_cost() -> None:
@@ -302,3 +294,64 @@ def test_usage_tracker_accumulates_llm_usage() -> None:
     assert combined.completion_tokens == 13
     assert combined.total_tokens == 35
     assert combined.call_count == 2
+
+
+def test_recovered_chat_costs_preserve_other_providers_nonchat_charges_and_unknown_actual_total() -> None:
+    from harnyx_commons.domain.session import LlmUsageTotals
+    from harnyx_commons.domain.tool_call import ToolCall, ToolCallDetails, ToolCallOutcome
+    from harnyx_commons.domain.tool_usage import LlmModelUsageCost, LlmUsageSummary, ToolUsageSummary
+    from harnyx_commons.tools.receipt_accounting import recover_openrouter_chat_usage
+    from harnyx_commons.tools.types import ToolName
+
+    def receipt(tool: ToolName, actual: float, reference: float, provider: str = "openrouter") -> ToolCall:
+        return ToolCall(
+            receipt_id=str(uuid4()),
+            session_id=uuid4(),
+            uid=1,
+            tool=tool,
+            issued_at=datetime.now(UTC),
+            outcome=ToolCallOutcome.OK,
+            details=ToolCallDetails(
+                request_hash=uuid4().hex,
+                request_payload={"kwargs": {"provider": provider, "model": "promo/model"}},
+                response_payload={
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 19, "reasoning_tokens": 4}
+                },
+                cost_usd=reference,
+                actual_cost_usd=actual,
+                actual_cost_provider=provider,
+            ),
+        )
+
+    gateway = LlmModelUsageCost(usage=LlmUsageTotals(call_count=1, total_tokens=7), cost=0.03, actual_cost=0.03)
+    old_chat = LlmModelUsageCost(usage=LlmUsageTotals(call_count=2, total_tokens=9), cost=0.02, actual_cost=None)
+    submitted = ToolUsageSummary(
+        llm=LlmUsageSummary(
+            providers={"openrouter": {"promo/model": old_chat}, "ai_gateway": {"gateway/model": gateway}}, cost=0.05
+        ),
+        llm_cost=0.05,
+        reference_total_cost_usd=0.055,
+        reference_cost_by_provider={"openrouter": 0.025, "ai_gateway": 0.03},
+        actual_total_cost_usd=None,
+        actual_cost_by_provider={"openrouter": 0.015, "ai_gateway": 0.03},
+    )
+    recovered = recover_openrouter_chat_usage(
+        submitted,
+        (
+            receipt("llm_chat", 0.01, 0.02),
+            receipt("llm_chat", 0.01, 0.02),
+            receipt("decision_query", 0.005, 0.005),
+            # A newly observed non-chat charge must not be recovered by chat replacement.
+            receipt("decision_query", 0.02, 0.02),
+            receipt("llm_chat", 0.07, 0.07, "ai_gateway"),
+            receipt("search_web", 0.09, 0.09, "tavily"),
+        ),
+    )
+    assert recovered.llm.providers["ai_gateway"]["gateway/model"] == gateway
+    assert recovered.reference_total_cost_usd == pytest.approx(0.075)
+    assert recovered.reference_cost_by_provider["openrouter"] == pytest.approx(0.045)
+    assert recovered.actual_cost_by_provider == pytest.approx({"openrouter": 0.025, "ai_gateway": 0.03})
+    assert recovered.actual_total_cost_usd is None
+    assert recovered.llm.call_count == 3 and recovered.llm.total_tokens == 45
+    assert recovered.llm.reasoning_tokens == 8
+    assert submitted.actual_cost_by_provider["openrouter"] == 0.015

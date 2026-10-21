@@ -432,7 +432,15 @@ USD cost remains unknown when the provider does not return it.
 - `tooling_info(timeout=...)`
 - `test_tool(message, timeout=...)`
 
-Every hosted tool helper accepts an optional positive finite `timeout` in seconds. For provider-backed tools other than `llm_chat`, the tool host bounds the complete provider-backed invocation, including host-owned retries/backoff, and raises a tool invocation error if the deadline expires. `llm_chat` makes one provider attempt per SDK call; retry loops belong in miner script code when desired. `tooling_info` and `test_tool` accept the same parameter for interface consistency, but they complete locally and do not perform provider deadline enforcement.
+Every hosted tool helper accepts an optional positive finite `timeout` in seconds. For provider-backed tools other than `llm_chat`, the tool host bounds the complete provider-backed invocation, including host-owned retries/backoff, and raises a tool invocation error if the deadline expires. `llm_chat` makes one provider attempt per SDK call; retry loops belong in miner script code when desired. `test_tool` completes locally and accepts the same parameter for interface consistency.
+
+`tooling_info` uses a five-minute process cache for OpenRouter model discovery.
+On a cold or expired cache, refresh takes at most two seconds, or the supplied
+`timeout` if shorter. If refresh fails, other tool information remains available;
+the OpenRouter model list is empty and
+`pricing.llm_chat.openrouter.discovery_available` is `false`. This indicates
+unavailable discovery, not that every OpenRouter model is disallowed. Paid calls
+independently require fresh pricing and never use stale prices after a failed refresh.
 
 For `llm_chat`, `timeout` also accepts `Timeout(total, prefill=..., inactivity=...)`:
 
@@ -472,9 +480,9 @@ enforce the miner entrypoint deadline.
 
 Firecrawl is an ordinary-web provider: it supports `search_web` and `fetch_page`.
 
-`llm_chat` model ids are provider-specific. Use `tooling_info().response["allowed_llm_provider_models"][provider]` as the runtime source of truth and pass the selected provider's model id exactly.
+`llm_chat` model ids are provider-specific. Use `tooling_info().response["allowed_llm_provider_models"][provider]` for discovery and pass the selected provider's model id exactly. OpenRouter discovery uses its cached public catalog rather than a repository whitelist. Explicit `:free` variants and `openrouter/free` are excluded. Paid promotions are allowed when their regular reference cost can be established. Other providers retain their existing model lists.
 
-SayGM uses native Chat Completions ids such as `gpt-oss-20b`, `glm-5.2`, and `gemma-4-31b-turbo-tee`. Miner access is limited to equivalents of models already authorized through the existing miner providers, not the full SayGM catalog. GPT frontier models, Kimi K3, GLM 5.1/full 5.3, and other newly available models are rejected. Claude and Gemini native API models are outside this provider's current scope. Register a `saygm` credential with the platform before hosted calls. SayGM does not accept `provider_extra`, embeddings, or `decision_query`. Its settled `usage.cost_nano_usd` (or `usage.cost` when the integer field is absent) owns actual-cost accounting; published retail ceiling rates are budget estimates only. Missing, invalid, or inconsistent settlement never falls back to those estimates. `tooling_info().response["pricing"]["llm_chat"]["provider_settlement_order"]` lists each provider’s actual-charge sources, while `provider_rate_usage` distinguishes budget-only estimates from rates also usable for settlement fallback. The `provider_models` rate-table shape is unchanged. The legacy `settlement_order` list remains available for existing clients; `provider_settlement_order[provider]` owns the actual policy, including SayGM's returned-settlement-only rule.
+SayGM uses native Chat Completions ids such as `gpt-oss-20b`, `glm-5.2`, and `gemma-4-31b-turbo-tee`. Miner access is limited to equivalents of models already authorized through the existing miner providers, not the full SayGM catalog. GPT frontier models, Kimi K3, GLM 5.1/full 5.3, and other newly available models are rejected. Claude and Gemini native API models are outside this provider's current scope. Register a `saygm` credential with the platform before hosted calls. SayGM does not accept `provider_extra`, embeddings, or `decision_query`. Its settled `usage.cost_nano_usd` (or `usage.cost` when the integer field is absent) owns actual-cost accounting; published retail ceiling rates are budget estimates only. Missing, invalid, or inconsistent settlement never falls back to those estimates. `tooling_info().response["pricing"]["llm_chat"]["provider_settlement_order"]` lists each provider’s actual-charge sources, while `provider_rate_usage` distinguishes budget-only estimates from rates also usable for settlement fallback. OpenRouter is omitted from the static `provider_models` rate table; `pricing.llm_chat.openrouter` describes its dynamic accounting. Regular reference cost governs miner limits and comparison, and actual provider charge governs financial tracking. The legacy `settlement_order` list remains available for existing clients; `provider_settlement_order[provider]` owns the actual policy, including SayGM's returned-settlement-only rule.
 
 ### Function tool calls
 

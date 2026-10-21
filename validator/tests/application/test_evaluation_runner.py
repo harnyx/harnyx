@@ -1866,7 +1866,7 @@ def test_receipt_usage_rejects_successful_llm_receipt_without_provider() -> None
         evaluation_runner_module._usage_from_receipts((receipt,))
 
 
-def test_receipt_usage_rejects_divergent_search_receipt_costs() -> None:
+def test_receipt_usage_preserves_reference_and_actual_costs() -> None:
     receipt = ToolCall(
         receipt_id="search-parallel",
         session_id=uuid4(),
@@ -1886,8 +1886,9 @@ def test_receipt_usage_rejects_divergent_search_receipt_costs() -> None:
     )
     object.__setattr__(receipt.details, "cost_usd", 0.0)
 
-    with pytest.raises(ValueError, match="must match"):
-        evaluation_runner_module._usage_from_receipts((receipt,))
+    usage = evaluation_runner_module._usage_from_receipts((receipt,))
+    assert usage.reference_total_cost_usd == 0.0
+    assert usage.actual_total_cost_usd == pytest.approx(0.005)
 
 
 def test_receipt_usage_uses_cost_usd_when_actual_cost_is_missing() -> None:
@@ -1904,7 +1905,7 @@ def test_receipt_usage_uses_cost_usd_when_actual_cost_is_missing() -> None:
             response_hash="cost-only-res",
             response_payload={"message": {"role": "assistant", "content": "ok"}},
             cost_usd=0.02,
-            reference_cost_usd=0.01,
+            reference_cost_usd=0.02,
             actual_cost_usd=None,
         ),
     )
@@ -5518,6 +5519,7 @@ def test_mixed_chat_and_decision_reconstruction_retains_generic_totals() -> None
             request_payload={"kwargs": {"provider": "openrouter", "model": "deepseek/deepseek-v3.2"}},
             response_payload={"usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}},
             cost_usd=0.01,
+            reference_cost_usd=0.01,
             actual_cost_usd=0.01,
         ),
     )
@@ -5757,3 +5759,79 @@ async def test_external_oom_after_admission_returns_claim_without_starting_sessi
     assert returned.assignment == assignment
     assert 0 < returned.remaining_dispatch_seconds() <= lease_before
     assert requests == ["/admission", "/admission/release"]
+
+
+async def test_caught_unpriceable_openrouter_call_cannot_become_a_successful_comparison(tmp_path: Path) -> None:
+    runner, batch_id, artifact, task, _, receipt_log, _, _ = _assigned_task_test_context(tmp_path)
+
+    class CatchesAccountingError:
+        async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
+            receipt_log.record(
+                ToolCall(
+                    receipt_id="unpriceable",
+                    session_id=request.session_id,
+                    uid=request.uid,
+                    tool="llm_chat",
+                    issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
+                    outcome=ToolCallOutcome.PROVIDER_ERROR,
+                    details=ToolCallDetails(
+                        request_hash="unknown-ref",
+                        request_payload={"kwargs": {"provider": "openrouter", "model": "inception/mercury-3"}},
+                        actual_cost_usd=0.004,
+                        actual_cost_provider="openrouter",
+                        extra={
+                            "session_active_attempt": "1",
+                            "reference_cost_unavailable": True,
+                            "openrouter_failure_accounted": True,
+                        },
+                    ),
+                )
+            )
+            return _successful_outcome(request)
+
+    result = await runner.evaluate_assigned_task(
+        batch_id=batch_id,
+        artifact=artifact,
+        task=task,
+        attempt_number=1,
+        max_attempts=1,
+        assignment_token=_ASSIGNMENT_TOKEN,
+        orchestrator=cast(TaskRunOrchestrator, CatchesAccountingError()),
+    )
+    assert result.terminal_attempt.error_code == "tool_provider_failed"
+    assert result.terminal_attempt.status.value == "failed"
+
+
+def test_promotion_replay_and_per_model_summary_keep_independent_amounts() -> None:
+    receipt = ToolCall(
+        receipt_id="promo",
+        session_id=uuid4(),
+        uid=7,
+        tool="llm_chat",
+        issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
+        outcome=ToolCallOutcome.OK,
+        details=ToolCallDetails(
+            request_hash="promo-request",
+            request_payload={"kwargs": {"provider": "openrouter", "model": "inception/mercury-3"}},
+            response_payload={"usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}},
+            cost_usd=0.008,
+            actual_cost_usd=0.004,
+            actual_cost_provider="openrouter",
+        ),
+    )
+    replay = evaluation_runner_module._usage_from_receipts((receipt,))
+    assert replay.reference_total_cost_usd == pytest.approx(0.008)
+    assert replay.actual_total_cost_usd == pytest.approx(0.004)
+    session = Session(
+        session_id=receipt.session_id,
+        uid=7,
+        task_id=uuid4(),
+        issued_at=receipt.issued_at,
+        expires_at=receipt.issued_at + timedelta(hours=1),
+        budget_usd=1.0,
+        usage=replay,
+    )
+    _, summary = UsageSummarizer().summarize(session, (receipt,))
+    model = summary.llm.providers["openrouter"]["inception/mercury-3"]
+    assert model.reference_cost == pytest.approx(0.008)
+    assert model.actual_cost == pytest.approx(0.004)

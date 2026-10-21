@@ -402,8 +402,7 @@ async def test_new_openrouter_model_exact_route_contract_live(model: str) -> Non
             # A trivial acknowledgement may return no reasoning even when thinking is enabled.
             content=(
                 LlmMessageContentPart.input_text(
-                    "Find the least positive n with n%7=3, n%11=5, n%13=7. "
-                    "Reason briefly; answer with n only.",
+                    "Find the least positive n with n%7=3, n%11=5, n%13=7. Reason briefly; answer with n only.",
                 ),
             ),
         ),
@@ -424,7 +423,8 @@ async def test_new_openrouter_model_exact_route_contract_live(model: str) -> Non
 
     # DeepSeek thinking mode rejects forced tool selection.
     automatic_tool_choice = model in {
-        "deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4.1-flash-1017",
+        "deepseek/deepseek-v4.1-flash",
+        "deepseek/deepseek-v4.1-flash-1017",
     }
 
     try:
@@ -487,3 +487,32 @@ async def test_new_openrouter_model_exact_route_contract_live(model: str) -> Non
         assert response.usage.total_tokens is not None
         assert response.usage.total_tokens > 0
     assert second.raw_text
+
+
+@pytest.mark.flaky(reruns=0)
+async def test_mercury_promotion_reference_actual_contract_live() -> None:
+    """Protect the live original-response billing/discount normalization contract."""
+    settings = LlmSettings()
+    assert settings.openrouter_api_key_value, "OPENROUTER_API_KEY must be configured"
+    provider = OpenRouterLlmProvider(openrouter_api_key=settings.openrouter_api_key)
+    request = LlmRequest(
+        provider="openrouter",
+        model="inception/mercury-3",
+        use_case="tool_runtime_invoker",
+        temperature=0.0,
+        max_output_tokens=None,
+        messages=(LlmMessage(role="user", content=(LlmMessageContentPart.input_text("Reply with exactly OK."),)),),
+        retry_policy=RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0.0),
+        timeout=60.0,
+    )
+    try:
+        response = await provider.invoke(request)
+    finally:
+        await provider.aclose()
+    assert response.raw_text
+    metadata = response.metadata or {}
+    evidence = metadata["actual_cost_evidence"]
+    assert evidence["maximum_discount"] == 0.5, "promotion changed; inspect the returned catalog evidence"
+    assert metadata["reference_cost_usd"] == pytest.approx(metadata["actual_cost_usd"] * 2)
+    assert evidence["settlement_source"] == "provider_returned"
+    assert response.finish_reason != "length"

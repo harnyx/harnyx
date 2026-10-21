@@ -63,6 +63,7 @@ MINER_SELECTED_LLM_PROVIDER_MODELS: Mapping[
         "zai-org/GLM-5.2-TEE",
         "Qwen/Qwen3.5-397B-A17B-TEE",
     ),
+    # Internal route/pricing baseline; miner OpenRouter authorization is dynamic.
     OPENROUTER_PROVIDER: (
         "stepfun/step-5-preview",
         "openai/gpt-oss-20b",
@@ -178,6 +179,22 @@ def parse_miner_selected_llm_provider(raw: str | None) -> MinerSelectedLlmProvid
     return cast(MinerSelectedLlmProviderName, value)
 
 
+def is_free_openrouter_model(model: str) -> bool:
+    parts = model.strip().lower().split(":")
+    return parts[0] == "openrouter/free" or "free" in parts[1:]
+
+
+def validate_paid_openrouter_model(model: str) -> str:
+    """Validate native routing syntax, preserving paid promotions at zero price."""
+    value = model.strip()
+    if is_free_openrouter_model(value):
+        raise ValueError("explicitly free OpenRouter models are not allowed")
+    if "/" not in value or any(char.isspace() for char in value) or any(c in value for c in "?#\\"):
+        raise ValueError("OpenRouter model must be a native model id")
+    return value
+
+
+
 def parse_miner_selected_llm_provider_model(
     *,
     provider: str | None,
@@ -189,7 +206,9 @@ def parse_miner_selected_llm_provider_model(
     selected_model = model.strip()
     if not selected_model:
         raise ValueError("model must be provided for validator tools")
-    if selected_model not in MINER_SELECTED_LLM_PROVIDER_MODELS[selected_provider]:
+    if selected_provider == OPENROUTER_PROVIDER:
+        validate_paid_openrouter_model(selected_model)
+    elif selected_model not in MINER_SELECTED_LLM_PROVIDER_MODELS[selected_provider]:
         raise ValueError(f"model {selected_model!r} is not supported for miner-selected provider {selected_provider!r}")
     return MinerSelectedLlmProviderModel(provider=selected_provider, model=selected_model)
 

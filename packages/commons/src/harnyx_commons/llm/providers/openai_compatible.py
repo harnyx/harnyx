@@ -8,6 +8,8 @@ import json
 import os
 import time
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar
+from dataclasses import replace
 from typing import Any
 
 import httpx
@@ -28,7 +30,7 @@ from harnyx_commons.llm.judge_observability import (
     record_judge_stream_event,
     record_judge_stream_headers_received,
 )
-from harnyx_commons.llm.provider import BaseLlmProvider
+from harnyx_commons.llm.provider import BaseLlmProvider, LlmProviderError, LlmRetryExhaustedError
 from harnyx_commons.llm.provider_types import custom_openai_compatible_target
 from harnyx_commons.llm.providers.openai_chat_codec import OpenAiChatRequestParts
 from harnyx_commons.llm.providers.openai_stream import (
@@ -52,6 +54,19 @@ from harnyx_commons.llm.schema import (
 )
 from harnyx_commons.llm.timeout import record_output_progress, streaming_transport_timeout
 from harnyx_miner_sdk.llm import Timeout
+
+_provider_dispatch: ContextVar[Callable[[], None] | None] = ContextVar("openai_compatible_dispatch", default=None)
+
+_observed_billing_response: ContextVar[list[LlmResponse] | None] = ContextVar(
+    "observed_openrouter_billing", default=None
+)
+
+
+class _BilledStreamCancelled(asyncio.CancelledError):
+    def __init__(self, response: LlmResponse) -> None:
+        super().__init__("OpenRouter stream cancelled after billing was observed")
+        self.response = response
+
 
 OpenAiCompatibleResponseMetadataExtractor = Callable[[Mapping[str, Any]], JsonObject | None]
 
@@ -78,16 +93,33 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
         )
 
     async def _invoke(self, request: AbstractLlmRequest) -> LlmResponse:
-        return await self._call_with_retry(
-            request,
-            call_coro=lambda current_request: self._request_chat(
-                self._build_request(current_request),
-                timeout=current_request.timeout,
-            ),
-            verifier=self._verify_response,
-            classify_exception=self._classify_exception,
-            policy=request.retry_policy,
+        token = _provider_dispatch.set(request.on_provider_dispatch)
+        observed: list[LlmResponse] | None = (
+            [] if request.provider == "openrouter" and request.use_case == "tool_runtime_invoker" else None
         )
+        billing_token = _observed_billing_response.set(observed)
+        try:
+            return await self._call_with_retry(
+                request,
+                call_coro=lambda current_request: self._request_chat(
+                    self._build_request(current_request),
+                    timeout=current_request.timeout,
+                ),
+                verifier=self._verify_response,
+                classify_exception=self._classify_exception,
+                policy=request.retry_policy,
+            )
+        except (LlmProviderError, LlmRetryExhaustedError) as exc:
+            if observed and exc.response is None:
+                exc.response = observed[-1]
+            raise
+        except asyncio.CancelledError as exc:
+            if observed:
+                raise _BilledStreamCancelled(observed[-1]) from exc
+            raise
+        finally:
+            _observed_billing_response.reset(billing_token)
+            _provider_dispatch.reset(token)
 
     async def _annotate_response_cost(
         self,
@@ -122,6 +154,8 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
         }
         if timeout is not None:
             request_kwargs["timeout"] = streaming_transport_timeout(timeout)
+        if (dispatch := _provider_dispatch.get()) is not None:
+            dispatch()
         body, ttft_ms = await self._stream_chat_completions(**request_kwargs)
         response = body.to_llm_response()
         metadata = dict(response.metadata or {})
@@ -155,7 +189,9 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
                 invalid_event_message="OpenAI-compatible chat completions SSE event must be a JSON object",
             ):
                 if self._response_metadata_extractor is not None:
-                    response_metadata = self._response_metadata_extractor(payload) or response_metadata
+                    extracted = self._response_metadata_extractor(payload)
+                    if extracted is not None:
+                        response_metadata = {**(response_metadata or {}), **extracted}
                 try:
                     event = _OpenAiStreamEvent.model_validate(payload)
                 except ValidationError as exc:
@@ -187,6 +223,14 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
                     response_id=event.id,
                     upstream_provider=stream_identity.provider,
                 )
+                if usage is not None and (observed := _observed_billing_response.get()) is not None:
+                    # Continuous usage can precede complete tool-call arguments. Capture billing only;
+                    # accumulated choices are validated once the stream has finished.
+                    body = _OpenAiCompatibleChatResponse(
+                        id=state.response_id, usage=usage, response_metadata=response_metadata
+                    )
+                    partial = body.to_llm_response()
+                    observed[:] = [replace(partial, metadata={"raw_response": body.raw_payload()})]
                 if saw_output:
                     self._record_stream_output()
                     if ttft_ms is None:

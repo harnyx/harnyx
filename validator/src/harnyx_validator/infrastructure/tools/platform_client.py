@@ -12,7 +12,7 @@ from uuid import UUID
 
 import bittensor as bt
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from harnyx_commons.bittensor import build_canonical_request
 from harnyx_commons.domain.miner_task import EvaluationTrace, MinerTask, Response
@@ -37,7 +37,8 @@ from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.protocol_headers import PLATFORM_TOOL_PROXY_TOKEN_HEADER
 from harnyx_commons.rating_competition import RATING_JUDGMENT_ALREADY_ACCEPTED, RatingJudgment, RatingWorkPage
 from harnyx_commons.tools.decision_models import DecisionUsage
-from harnyx_commons.tools.provider_billing import ProviderBillingMetadata, failure_billing
+from harnyx_commons.tools.http_models import LlmUsageDTO
+from harnyx_commons.tools.provider_billing import OpenRouterChatAccounting, ProviderBillingMetadata, failure_billing
 from harnyx_commons.tools.types import ToolName
 from harnyx_miner_sdk.endpoint_protocol import EndpointCallbackAcknowledgement, EndpointDelegation
 from harnyx_validator.application.dto.evaluation import (
@@ -661,7 +662,7 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
         if response.status_code != httpx.codes.OK:
             error_code = _platform_error_code(response)
             billing = None
-            if tool in {"decision_query", "search_web", "fetch_page"}:
+            if tool in {"decision_query", "search_web", "fetch_page", "llm_chat"}:
                 try:
                     error_payload = response.json()
                 except ValueError:
@@ -670,16 +671,27 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
                     parsed_billing = (
                         _DecisionProxyBilling.model_validate(error_payload["billing"])
                         if tool == "decision_query"
+                        else _OpenRouterProxyBilling.model_validate(error_payload["billing"])
+                        if tool == "llm_chat"
                         else _DeepSeekProxyBilling.model_validate(error_payload["billing"])
                     )
-                    billing = failure_billing(
-                        tool,
-                        ProviderBillingMetadata(
+                    billing = (
+                        OpenRouterChatAccounting.from_fields(
                             actual_cost_usd=parsed_billing.actual_cost_usd,
-                            actual_cost_provider=parsed_billing.actual_cost_provider,
-                            source="response_body",
-                            usage=parsed_billing.usage,
-                        ),
+                            reference_cost_usd=parsed_billing.reference_cost_usd,
+                            evidence=parsed_billing.cost_evidence,
+                            llm_usage=parsed_billing.llm_usage,
+                        ).to_billing(parsed_billing.cost_evidence)
+                        if isinstance(parsed_billing, _OpenRouterProxyBilling)
+                        else failure_billing(
+                            tool,
+                            ProviderBillingMetadata(
+                                actual_cost_usd=parsed_billing.actual_cost_usd,
+                                actual_cost_provider=parsed_billing.actual_cost_provider,
+                                source="response_body",
+                                usage=parsed_billing.usage,
+                            ),
+                        )
                     )
             if error_code == "platform_interrupted":
                 raise PlatformToolProxyInterruptedError(
@@ -782,6 +794,7 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
             response=cast(JsonObject, response_payload),
             execution=execution,
             actual_cost_usd=actual_cost_usd,
+            reference_cost_usd=_optional_float(payload.get("reference_cost_usd")),
             actual_cost_provider=(
                 str(payload["actual_cost_provider"]) if payload.get("actual_cost_provider") is not None else None
             ),
@@ -1115,3 +1128,25 @@ class _DeepSeekProxyBilling(BaseModel):
     actual_cost_usd: float = Field(ge=0, le=0, allow_inf_nan=False)
     actual_cost_provider: Literal["deepseek"]
     usage: None = None
+
+
+class _OpenRouterProxyBilling(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    actual_cost_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    actual_cost_provider: Literal["openrouter"]
+    reference_cost_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    reference_cost_unavailable: bool = False
+    cost_evidence: JsonObject | None = None
+    llm_usage: LlmUsageDTO | None = None
+
+    @model_validator(mode="after")
+    def validate_settlement(self) -> _OpenRouterProxyBilling:
+        fact = OpenRouterChatAccounting.from_fields(
+            actual_cost_usd=self.actual_cost_usd,
+            reference_cost_usd=self.reference_cost_usd,
+            evidence=self.cost_evidence,
+            llm_usage=self.llm_usage,
+        )
+        if fact.reference_cost_unavailable != self.reference_cost_unavailable:
+            raise ValueError("OpenRouter failure has conflicting reference availability")
+        return self

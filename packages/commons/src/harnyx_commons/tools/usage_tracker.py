@@ -7,9 +7,12 @@ from math import isclose
 from typing import TYPE_CHECKING
 
 from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
+from harnyx_commons.domain.tool_call import ToolCall
 from harnyx_commons.errors import BudgetExceededError
+from harnyx_commons.llm.cost_settlement import normalized_provider_cost
 from harnyx_commons.tools.cost_accumulator import accumulate_costs, resolve_provider
 from harnyx_commons.tools.llm_usage_accumulator import accumulate_llm_usage
+from harnyx_commons.tools.receipt_accounting import usage_from_receipts
 from harnyx_commons.tools.types import ToolName
 
 if TYPE_CHECKING:
@@ -31,6 +34,10 @@ class ToolCallUsage:
 
 class UsageTracker:
     """Records per-session tool usage for already-completed invocations."""
+
+    def record_receipt(self, session: Session, receipt: ToolCall) -> Session:
+        self._validate_session(session, 0)
+        return session.with_usage(usage_from_receipts((receipt,), initial=session.usage))
 
     def record_tool_call(
         self,
@@ -174,12 +181,17 @@ def accumulate_actual_costs(
     usage: ToolCallUsage | None,
     normalized_tool_name: str,
 ) -> tuple[float | None, dict[str, float]]:
-    """Produce updated compatibility actual-cost totals from the one cost value."""
-    resolved_cost = _resolve_one_cost_value(
-        cost_usd=cost_usd,
-        reference_cost_usd=reference_cost_usd,
-        actual_cost_usd=actual_cost_usd,
-        usage=usage,
+    """Accumulate observed financial charges independently of reference limits."""
+    actual_cost_usd = normalized_provider_cost(actual_cost_usd, field_name="actual_cost_usd")
+    resolved_cost = (
+        actual_cost_usd
+        if actual_cost_provider is not None or actual_cost_usd is not None
+        else _resolve_one_cost_value(
+            cost_usd=cost_usd,
+            reference_cost_usd=reference_cost_usd,
+            actual_cost_usd=None,
+            usage=usage,
+        )
     )
     if resolved_cost is None:
         if actual_cost_provider is not None:
@@ -209,7 +221,7 @@ def _resolve_one_cost_value(
 ) -> float | None:
     usage_cost_usd = None if usage is None else usage.cost_usd
     supplied = []
-    for value in (cost_usd, reference_cost_usd, usage_cost_usd, actual_cost_usd):
+    for value in (cost_usd, reference_cost_usd, usage_cost_usd):
         if value is None:
             continue
         if isinstance(value, bool) or not isinstance(value, int | float):
@@ -217,8 +229,6 @@ def _resolve_one_cost_value(
         supplied.append(float(value))
     if not supplied:
         return None
-    if actual_cost_usd is not None and cost_usd is None and reference_cost_usd is None and usage_cost_usd is None:
-        raise ValueError("actual_cost_usd requires matching cost_usd")
 
     resolved = supplied[0]
     if resolved < 0.0:
@@ -227,7 +237,7 @@ def _resolve_one_cost_value(
         if value < 0.0:
             raise ValueError("cost_usd must be non-negative")
         if not isclose(value, resolved, rel_tol=0.0, abs_tol=1e-12):
-            raise ValueError("cost_usd, reference_cost_usd, and actual_cost_usd must match")
+            raise ValueError("cost_usd and reference_cost_usd must match")
     return resolved
 
 

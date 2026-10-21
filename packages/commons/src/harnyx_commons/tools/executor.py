@@ -43,7 +43,11 @@ from harnyx_commons.tools.dto import (
     session_budget_snapshot,
     tool_payload_for_invocation,
 )
-from harnyx_commons.tools.provider_billing import billing_evidence_payload
+from harnyx_commons.tools.provider_billing import (
+    OpenRouterChatAccounting,
+    billing_evidence_payload,
+    billing_usage_payload,
+)
 from harnyx_commons.tools.token_semaphore import ToolConcurrencyLimiter
 from harnyx_commons.tools.types import (
     DECISION_TOOLS,
@@ -114,8 +118,25 @@ class ToolInvocationOutput:
     actual_cost_usd: float | None = None
     actual_cost_provider: str | None = None
     actual_cost_evidence: JsonObject | None = None
+    reference_cost_usd: float | None = None
     # Retain a rejected provider response for failed-receipt accounting before raising.
     provider_error: ToolProviderError | None = None
+
+    def require_reference(self, tool: str, provider: str | None = None) -> None:
+        if (
+            tool == "llm_chat"
+            and (provider == "openrouter" or self.actual_cost_provider == "openrouter")
+            and self.reference_cost_usd is None
+        ):
+            raise ToolProviderError(
+                "OpenRouter regular reference cost is missing",
+                provider="openrouter",
+                billing=OpenRouterChatAccounting.from_fields(
+                    actual_cost_usd=self.actual_cost_usd,
+                    reference_cost_usd=self.reference_cost_usd,
+                    evidence=self.actual_cost_evidence,
+                ).to_billing(self.actual_cost_evidence),
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,26 +315,6 @@ class ToolExecutor:
             return 0, None
         raise LookupError(f"unsupported tool {request.tool!r}")
 
-    def _record_usage(
-        self,
-        session: Session,
-        request: ToolInvocationRequest,
-        llm_tokens: int,
-        usage_details: ToolCallUsage | None,
-        settled_cost_usd: float | None,
-        actual_cost_usd: float | None,
-        actual_cost_provider: str | None,
-    ) -> Session:
-        return self._usage_tracker.record_tool_call(
-            session,
-            tool_name=request.tool,
-            llm_tokens=llm_tokens,
-            usage=usage_details if usage_details is not None else None,
-            cost_usd=settled_cost_usd,
-            actual_cost_usd=actual_cost_usd,
-            actual_cost_provider=actual_cost_provider,
-        )
-
     async def _execute_and_record_async(
         self,
         session: Session,
@@ -408,6 +409,8 @@ class ToolExecutor:
             recording.dispatched = True
         invocation_output = await self._invoke_tool_output_async(request, context=invocation_context)
         recording.output = invocation_output
+        if request.tool == "llm_chat":
+            invocation_output.require_reference(request.tool, str(tool_payload_for_invocation(request).get("provider")))
         if invocation_output.provider_error is not None:
             raise invocation_output.provider_error
         finished_at = self._clock()
@@ -453,7 +456,9 @@ class ToolExecutor:
             response_payload=invocation_output.public_payload,
             results=results,
             result_policy=result_policy,
-            cost_usd=settled_cost_usd,
+            cost_usd=invocation_output.reference_cost_usd
+            if invocation_output.reference_cost_usd is not None
+            else settled_cost_usd,
             actual_cost_usd=settled_cost_usd,
             actual_cost_provider=invocation_output.actual_cost_provider,
             extra=receipt_extra or None,
@@ -468,15 +473,7 @@ class ToolExecutor:
             await self._record_terminal(session, receipt)
         completion = self._receipts.complete_pending_receipt(
             receipt,
-            settle_usage=lambda: self._settle_usage(
-                session_id=session.session_id,
-                request=request,
-                llm_tokens=llm_tokens,
-                usage_details=usage_details,
-                settled_cost_usd=settled_cost_usd,
-                actual_cost_usd=settled_cost_usd,
-                actual_cost_provider=invocation_output.actual_cost_provider,
-            ),
+            settle_usage=lambda: self._settle_usage(session_id=session.session_id, receipt=receipt),
         )
         if completion is None:
             raise RuntimeError("tool completion arrived after pending receipt was abandoned")
@@ -535,10 +532,10 @@ class ToolExecutor:
         failure_payload: JsonObject | None = None
         if accounted_failure:
             error_extra["account_provider_failures"] = True
+            error_extra["provider_dispatched"] = recording.dispatched
         billing = (
             exc.billing
-            if (request.tool == "decision_query" or accounted_failure)
-            and isinstance(
+            if isinstance(
                 exc,
                 ToolProviderError
                 | ToolInvocationRejectedError
@@ -548,6 +545,24 @@ class ToolExecutor:
             )
             else None
         )
+        openrouter_failure = (
+            request.tool == "llm_chat" and billing is not None and billing.actual_cost_provider == "openrouter"
+        )
+        if not (request.tool == "decision_query" or accounted_failure or openrouter_failure):
+            billing = None
+        if openrouter_failure and billing is not None:
+            accounting = OpenRouterChatAccounting.from_billing(billing)
+            billing = accounting.to_billing(billing.provider_usage, source=billing.source)
+            provider_failure = accounting.counts_as_inference
+            error_extra["openrouter_failure_accounted"] = provider_failure
+            if accounting.reference_cost_unavailable:
+                error_extra["reference_cost_unavailable"] = True
+                self._sessions.mutate(
+                    session.session_id,
+                    lambda current: current.mark_failure_code(
+                        SessionFailureCode.PROVIDER_REFERENCE_COST_UNAVAILABLE
+                    ).mark_error(),
+                )
         failure_provider = None if billing is None else billing.actual_cost_provider
         if (request.tool == "decision_query" or accounted_failure) and failure_provider is None:
             if isinstance(exc, ToolProviderError) and exc.provider is not None:
@@ -585,7 +600,30 @@ class ToolExecutor:
                         error_extra["usage_unavailable"] = True
                 except (ValueError, TypeError):
                     error_extra["usage_unavailable"] = True
-        elif accounted_failure and billing is not None and billing.usage is not None and request.tool in LLM_TOOLS:
+        elif openrouter_failure and billing is not None and billing.llm_usage is not None:
+            failure_payload = billing_usage_payload(billing)
+            observed = billing.llm_usage
+            failure_tokens = _resolve_llm_total_tokens(
+                prompt_tokens=observed.prompt_tokens,
+                completion_tokens=observed.completion_tokens,
+                total_tokens=observed.total_tokens,
+                reasoning_tokens=observed.reasoning_tokens,
+            )
+            payload = tool_payload_for_invocation(request)
+            failure_usage = ToolCallUsage(
+                provider=_extract_llm_provider(payload),
+                model=_extract_llm_model(payload),
+                prompt_tokens=observed.prompt_tokens,
+                completion_tokens=observed.completion_tokens,
+                total_tokens=observed.total_tokens,
+                reasoning_tokens=observed.reasoning_tokens,
+            )
+        elif (
+            (accounted_failure or openrouter_failure)
+            and billing is not None
+            and billing.usage is not None
+            and request.tool in LLM_TOOLS
+        ):
             failure_payload = {"usage": billing.usage.model_dump(mode="json", exclude_none=True)}
             payload = tool_payload_for_invocation(request)
             failure_tokens = _resolve_llm_total_tokens(
@@ -601,27 +639,46 @@ class ToolExecutor:
                 completion_tokens=billing.usage.output_tokens,
                 total_tokens=failure_tokens,
             )
-        if accounted_failure and recording.dispatched and failure_usage is None and request.tool in LLM_TOOLS:
+        if openrouter_failure and billing is not None and billing.usage is not None:
+            failure_payload = {
+                "usage": {
+                    "prompt_tokens": billing.usage.input_tokens,
+                    "completion_tokens": billing.usage.output_tokens,
+                    "total_tokens": failure_tokens,
+                }
+            }
+        # Returned outputs already carry complete usage and provider evidence.
+        if failure_usage is not None and recording.output is None and (billing is None or billing.llm_usage is None):
+            failure_payload = {
+                "usage": {
+                    "prompt_tokens": failure_usage.prompt_tokens,
+                    "completion_tokens": failure_usage.completion_tokens,
+                    "total_tokens": failure_usage.total_tokens,
+                    "reasoning_tokens": failure_usage.reasoning_tokens,
+                },
+            }
+        if provider_failure and recording.dispatched and failure_usage is None and request.tool in LLM_TOOLS:
             payload = tool_payload_for_invocation(request)
             failure_usage = ToolCallUsage(provider=_extract_llm_provider(payload), model=_extract_llm_model(payload))
             error_extra["usage_unavailable"] = True
-        if billing is not None and failure_cost is not None:
+        if billing is not None:
             error_extra["actual_cost_evidence"] = billing_evidence_payload(billing)
         elif recording.output is not None and recording.output.actual_cost_evidence is not None:
             error_extra["actual_cost_evidence"] = recording.output.actual_cost_evidence
         elif provider_failure and failure_cost is None:
             error_extra["actual_cost_settlement_source"] = "unavailable"
+        failure_reference = billing.reference_cost_usd if openrouter_failure and billing is not None else failure_cost
         failed_receipt = started_call.materialize(
             outcome=_tool_failure_outcome(exc),
             response_payload=(
                 failure_payload
-                if accounted_failure
+                if accounted_failure or openrouter_failure
                 else None
                 if billing is None or billing.usage is None
                 else {"usage": billing.usage.model_dump(mode="json", exclude_none=True)}
             ),
             results=(),
-            cost_usd=failure_cost,
+            cost_usd=failure_reference,
             actual_cost_usd=failure_cost,
             actual_cost_provider=failure_provider,
             extra=error_extra,
@@ -663,15 +720,7 @@ class ToolExecutor:
             settle_usage=lambda: (
                 (session, False)
                 if failure_cost is None and not provider_failure
-                else self._settle_usage(
-                    session_id=session.session_id,
-                    request=request,
-                    llm_tokens=failure_tokens,
-                    usage_details=failure_usage,
-                    settled_cost_usd=failure_cost,
-                    actual_cost_usd=failure_cost,
-                    actual_cost_provider=failure_provider,
-                )
+                else self._settle_usage(session_id=session.session_id, receipt=failed_receipt)
             ),
         )
         if completion is None:
@@ -731,23 +780,16 @@ class ToolExecutor:
             self._sessions.mutate(session.session_id, lambda current: current.mark_error())
             raise
 
-    def _settle_usage(
-        self,
-        *,
-        session_id: UUID,
-        request: ToolInvocationRequest,
-        llm_tokens: int,
-        usage_details: ToolCallUsage | None,
-        settled_cost_usd: float | None,
-        actual_cost_usd: float | None,
-        actual_cost_provider: str | None,
-    ) -> tuple[Session, bool]:
+    def _settle_usage(self, *, session_id: UUID, receipt: ToolCall) -> tuple[Session, bool]:
         budget_exhausted_by_this_call = False
 
         def mutate(current: Session) -> Session:
             nonlocal budget_exhausted_by_this_call
 
-            accounting_after_error = self._account_provider_failures and current.status is SessionStatus.ERROR
+            accounting_after_error = current.status is SessionStatus.ERROR and (
+                self._account_provider_failures
+                or current.failure_code is SessionFailureCode.PROVIDER_REFERENCE_COST_UNAVAILABLE
+            )
             if current.status not in {SessionStatus.ACTIVE, SessionStatus.EXHAUSTED} and not accounting_after_error:
                 raise RuntimeError(f"session {session_id} became {current.status.value} during tool accounting")
 
@@ -757,15 +799,7 @@ class ToolExecutor:
                 if accounting_after_error
                 else _session_for_usage_accounting(current)
             )
-            updated = self._record_usage(
-                session_for_accounting,
-                request,
-                llm_tokens,
-                usage_details,
-                settled_cost_usd,
-                actual_cost_usd,
-                actual_cost_provider,
-            )
+            updated = self._usage_tracker.record_receipt(session_for_accounting, receipt)
             if accounting_after_error:
                 return updated.mark_error()
             exhausted = _mark_session_exhausted_if_needed(updated)
