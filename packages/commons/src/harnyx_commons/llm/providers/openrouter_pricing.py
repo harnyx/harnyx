@@ -159,7 +159,8 @@ class OpenRouterPricingCatalog:
         # Catalog ids are authoritative. Documented routing modifiers retain the same model price basis.
         key = "" if output_modality is None else "?output_modalities=" + output_modality
         entries = cast(tuple[_Model, ...], await self._get(key, timeout=timeout))
-        routes = {route: entry for entry in entries for route in (entry.id, entry.canonical_slug) if route is not None}
+        routes = {entry.canonical_slug: entry for entry in entries if entry.canonical_slug is not None}
+        routes.update({entry.id: entry for entry in entries})
         catalog_model = model
         if model not in routes:
             base_model, *modifiers = model.split(":")

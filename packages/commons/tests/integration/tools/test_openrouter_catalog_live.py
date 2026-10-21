@@ -11,6 +11,12 @@ from harnyx_commons.llm.providers.openrouter_pricing import OpenRouterPricingCat
 pytestmark = [pytest.mark.integration, pytest.mark.anyio("asyncio")]
 
 
+async def test_public_chat_catalog_preserves_exact_model_id() -> None:
+    snapshot = await OpenRouterPricingCatalog().snapshot("openai/gpt-oss-20b")
+    assert snapshot.model == "openai/gpt-oss-20b"
+    snapshot.preflight()
+
+
 async def test_public_endpoint_tags_support_pinned_provider_pricing() -> None:
     catalog = OpenRouterPricingCatalog()
     snapshot = await catalog.snapshot("inception/mercury-3", provider_only=("inception",))

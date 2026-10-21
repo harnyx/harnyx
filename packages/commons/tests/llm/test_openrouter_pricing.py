@@ -149,3 +149,55 @@ async def test_expired_catalog_never_silently_reuses_stale_prices() -> None:
     available = False
     with pytest.raises(httpx.HTTPStatusError):
         await catalog.snapshot("inception/mercury-3")
+
+
+@pytest.mark.parametrize("reverse_catalog", [False, True], ids=["regular-first", "batch-first"])
+@pytest.mark.parametrize(
+    "requested_model,expected_model,serving_provider,expected_reference,expected_discount",
+    [
+        ("openai/gpt-oss-20b", "openai/gpt-oss-20b", "Darkbloom", 0.008, Decimal("0.5")),
+        ("openai/gpt-oss-20b:batch", "openai/gpt-oss-20b:batch", "DeepInfra", 0.005, Decimal("0.2")),
+        ("openai/gpt-oss-20b:nitro", "openai/gpt-oss-20b", "Darkbloom", 0.008, Decimal("0.5")),
+        ("openai/gpt-oss-20b:floor", "openai/gpt-oss-20b", "Darkbloom", 0.008, Decimal("0.5")),
+    ],
+)
+async def test_exact_catalog_id_wins_over_shared_alias(
+    reverse_catalog: bool,
+    requested_model: str,
+    expected_model: str,
+    serving_provider: str,
+    expected_reference: float,
+    expected_discount: Decimal,
+) -> None:
+    regular = "openai/gpt-oss-20b"
+    batch = regular + ":batch"
+    entries = [{"id": regular, "canonical_slug": regular}, {"id": batch, "canonical_slug": regular}]
+    if reverse_catalog:
+        entries.reverse()
+    endpoints = {
+        regular: endpoint("Darkbloom", 0.5).model_copy(update={"model_id": regular}),
+        batch: endpoint("DeepInfra", 0.2).model_copy(update={"model_id": batch}),
+    }
+    responses = {
+        f"/api/v1/models/{model}/endpoints": {
+            "data": {"id": model, "endpoints": [pricing.model_dump(mode="json")]}
+        }
+        for model, pricing in endpoints.items()
+    }
+    calls: list[str] = []
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        payload = {"data": entries} if request.url.path == "/api/v1/models" else responses[request.url.path]
+        return httpx.Response(200, json=payload)
+
+    catalog = OpenRouterPricingCatalog(transport=httpx.MockTransport(serve))
+    snapshot = await catalog.snapshot(requested_model)
+
+    assert calls == ["/api/v1/models", f"/api/v1/models/{expected_model}/endpoints"]
+    assert snapshot.model == expected_model
+    reference, discount = snapshot.reference_cost(
+        provider=serving_provider, inference=Decimal("0.004"), separate_charge=Decimal(0)
+    )
+    assert reference == pytest.approx(expected_reference)
+    assert discount == expected_discount
