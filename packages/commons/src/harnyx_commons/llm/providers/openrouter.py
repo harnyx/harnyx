@@ -349,6 +349,9 @@ class OpenRouterLlmProvider(LlmProviderPort):
                     "OpenRouter regular cost unavailable", provider=OPENROUTER_PROVIDER, billing=billing
                 )
             metadata = dict(response.metadata or {})
+            # The canonical single-response settlement supersedes the delegate's
+            # retry total, which would otherwise rewrap and hide these billing facts.
+            metadata.pop("actual_cost_usd_total", None)
             metadata.update(
                 actual_cost_usd=billing.actual_cost_usd,
                 actual_cost_provider=OPENROUTER_PROVIDER,

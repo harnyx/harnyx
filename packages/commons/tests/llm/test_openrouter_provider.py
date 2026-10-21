@@ -815,6 +815,70 @@ async def test_miner_promotion_separates_inference_discount_from_actual_and_rout
     await provider.aclose()
 
 
+@pytest.mark.parametrize("byok,expected_actual,expected_reference", [(False, 0.004, 0.008), (True, 0.006, 0.008)])
+async def test_successful_miner_stream_keeps_accounting_through_runtime_settlement(
+    byok: bool, expected_actual: float, expected_reference: float
+) -> None:
+    """A successful paid answer must retain billing facts through the real retry adapter and runtime reader."""
+    from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
+    from harnyx_commons.tools.executor import ToolInvocationOutput
+    from harnyx_commons.tools.provider_billing import OpenRouterChatAccounting
+    from harnyx_commons.tools.runtime_invoker import RuntimeToolInvoker
+
+    frame = {
+        "id": "mercury-canary",
+        "model": "inception/mercury-3",
+        "provider": "Inception",
+        "choices": [{"index": 0, "delta": {"content": "Mercury 3 canary OK."}, "finish_reason": "stop"}],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "cost": 0.004,
+            "is_byok": byok,
+            "cost_details": {"upstream_inference_cost": 0.002},
+        },
+    }
+    body = f"data: {json.dumps(frame)}\n\ndata: [DONE]\n\n"
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, text=body)))
+    delegate = OpenAiCompatibleLlmProvider(
+        endpoint=OpenAiCompatibleEndpointConfig.model_validate(
+            {"id": "openrouter", "base_url": OPENROUTER_BASE_URL, "auth": {"type": "none"}}
+        ),
+        client=client,
+        response_metadata_extractor=_openrouter_response_metadata,
+    )
+    provider = OpenRouterLlmProvider(
+        openrouter_api_key=SecretStr("test"),
+        pricing_catalog=_miner_pricing_catalog(),
+        openrouter_chat_provider_factory=lambda _: (delegate, client),
+    )
+    invoker = RuntimeToolInvoker(InMemoryReceiptLog(), llm_provider=provider, llm_provider_name="openrouter")
+    try:
+        output = await invoker.invoke(
+            "llm_chat",
+            args=(),
+            kwargs={
+                "provider": "openrouter",
+                "model": "inception/mercury-3",
+                "messages": [{"role": "user", "content": "Reply exactly: Mercury 3 canary OK."}],
+            },
+        )
+        assert isinstance(output, ToolInvocationOutput)
+        fact = OpenRouterChatAccounting.from_fields(
+            actual_cost_usd=output.actual_cost_usd,
+            reference_cost_usd=output.reference_cost_usd,
+            evidence=output.actual_cost_evidence,
+        )
+        assert fact.inference == "attempted"
+        assert fact.actual_cost_usd == pytest.approx(expected_actual)
+        assert fact.reference_cost_usd == pytest.approx(expected_reference)
+        assert fact.llm_usage == LlmUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+        assert output.public_payload["choices"][0]["message"]["content"][0]["text"] == "Mercury 3 canary OK."
+    finally:
+        await provider.aclose()
+
+
 @pytest.mark.parametrize("dispatched", [False, True])
 async def test_miner_provider_error_keeps_dispatch_evidence_without_a_response(dispatched: bool) -> None:
     """A typed delegate error must preserve known dispatch instead of bypassing billing facts."""
