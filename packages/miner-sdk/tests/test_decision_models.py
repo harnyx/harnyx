@@ -89,3 +89,16 @@ def test_missing_answer_and_changed_type_are_rejected() -> None:
     for answers in ({}, {**_response()["answers"], "b": {"type": "score", "score": 0.0}}):
         with pytest.raises(ValueError):
             validate_decision_answers(request, DecisionQueryResponse.model_validate({"model": "m", "answers": answers}))
+
+
+@pytest.mark.parametrize("model", ["new-vendor/new-decision", "vendor/decision:nitro", "vendor/decision-20261021"])
+def test_native_openrouter_models_do_not_need_a_release_to_be_selected(model: str) -> None:
+    assert DecisionQueryRequest.model_validate({**_request(), "model": model}).model == model
+
+
+@pytest.mark.parametrize(
+    "model", ["openrouter/free", "vendor/model:free", "vendor/model:free:nitro", "vendor/model?x=y"]
+)
+def test_free_routes_and_non_native_ids_are_rejected(model: str) -> None:
+    with pytest.raises(ValidationError):
+        DecisionQueryRequest.model_validate({**_request(), "model": model})

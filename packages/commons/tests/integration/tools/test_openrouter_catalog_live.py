@@ -22,3 +22,16 @@ async def test_public_endpoint_tags_support_pinned_provider_pricing() -> None:
     )
     assert 0 <= discount < 1
     assert reference >= 1
+
+
+async def test_public_decision_catalog_binds_native_and_canonical_ids_without_paid_inference() -> None:
+    catalog = OpenRouterPricingCatalog()
+    models = await catalog.decision_models()
+    assert models and "cloudflare/clef-flash" in models
+    snapshot = await catalog.snapshot("cloudflare/clef-flash", output_modality="decisions")
+    assert snapshot.model in models
+    if snapshot.canonical_model is not None:
+        assert snapshot.canonical_model in models
+        pinned = await catalog.snapshot(snapshot.canonical_model, output_modality="decisions")
+        assert pinned.model == snapshot.model
+    snapshot.preflight()

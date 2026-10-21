@@ -77,6 +77,7 @@ from harnyx_commons.tools.ports import (
     WebSearchProviderPort,
 )
 from harnyx_commons.tools.provider_billing import (
+    OpenRouterAccounting,
     ProviderBillingMetadata,
     billing_evidence_payload,
     failure_billing,
@@ -554,16 +555,26 @@ class RuntimeToolInvoker(ToolInvoker):
             provider: [str(model) for model in models]
             for provider, models in MINER_SELECTED_LLM_PROVIDER_MODELS.items()
         }
-        if "llm_chat" in visible_tool_names:
-            discovery_available = True
+
+        async def discover(tool: str) -> tuple[tuple[str, ...], bool]:
+            timeout = min(invocation.timeout or 2.0, 2.0)
             try:
-                discovery_timeout = min(invocation.timeout or 2.0, 2.0)
-                # Bound lock contention and the full refresh, not just each HTTP operation.
-                async with asyncio.timeout(discovery_timeout):
-                    models = await self._openrouter_pricing_catalog.models(timeout=discovery_timeout)
+                # Bound lock contention and the full refresh, not each HTTP operation.
+                async with asyncio.timeout(timeout):
+                    if tool == "decision_query":
+                        return await self._openrouter_pricing_catalog.decision_models(timeout=timeout), True
+                    return await self._openrouter_pricing_catalog.models(timeout=timeout), True
             except (httpx.HTTPError, ValueError, TimeoutError):
-                models = ()
-                discovery_available = False
+                return (), False
+
+        discovery_tools = tuple(tool for tool in ("llm_chat", "decision_query") if tool in visible_tool_names)
+        # Both catalogs share the original discovery deadline instead of adding
+        # a second cold-cache wait to the tooling_info call.
+        discovery = dict(
+            zip(discovery_tools, await asyncio.gather(*(discover(tool) for tool in discovery_tools)), strict=True)
+        )
+        if "llm_chat" in visible_tool_names:
+            models, discovery_available = discovery["llm_chat"]
             allowed_provider_models["openrouter"] = list(models)
             llm_pricing = cast(dict[str, JsonValue], pricing["llm_chat"])
             llm_pricing["openrouter"] = {
@@ -576,6 +587,21 @@ class RuntimeToolInvoker(ToolInvoker):
             cast(dict[str, JsonValue], llm_pricing["provider_rate_usage"])["openrouter"] = (
                 "dynamic_reference_and_actual"
             )
+        allowed_decision_models: dict[str, JsonValue] = {
+            provider: list(models) for provider, models in MINER_SELECTED_DECISION_PROVIDER_MODELS.items()
+        }
+        if "decision_query" in visible_tool_names:
+            models, discovery_available = discovery["decision_query"]
+            allowed_decision_models["openrouter"] = list(models)
+            decision_pricing = cast(dict[str, JsonValue], pricing["decision_query"])
+            cast(dict[str, JsonValue], decision_pricing["provider_models"]).pop("openrouter", None)
+            decision_pricing["openrouter"] = {
+                "kind": "dynamic_provider_pricing",
+                "reference": "maximum_provider_discount_reversal",
+                "actual": "original_provider_charge",
+                "settlement_order": ["provider_returned"],
+                "discovery_available": discovery_available,
+            }
         return {
             "tool_names": tool_names,
             "allowed_llm_provider_models": allowed_provider_models,
@@ -583,10 +609,7 @@ class RuntimeToolInvoker(ToolInvoker):
                 provider: [str(model) for model in models]
                 for provider, models in MINER_SELECTED_EMBEDDING_PROVIDER_MODELS.items()
             },
-            "allowed_decision_provider_models": {
-                provider: [str(model) for model in models]
-                for provider, models in MINER_SELECTED_DECISION_PROVIDER_MODELS.items()
-            },
+            "allowed_decision_provider_models": allowed_decision_models,
             "pricing": pricing,
         }
 
@@ -788,6 +811,7 @@ class RuntimeToolInvoker(ToolInvoker):
             if _uses_platform_credentials(context)
             else self._decision_provider_resolver
         )
+        dispatched = False
         try:
             if resolver is not None:
                 provider = await _resolve_maybe_awaitable(resolver(request.provider, context))
@@ -800,6 +824,8 @@ class RuntimeToolInvoker(ToolInvoker):
             started = time.perf_counter()
 
             async def query() -> DecisionProviderResult:
+                nonlocal dispatched
+                dispatched = True
                 if context is not None and context.on_provider_dispatch is not None:
                     context.on_provider_dispatch()
                 return await provider.query(request)
@@ -811,11 +837,32 @@ class RuntimeToolInvoker(ToolInvoker):
             )
         except ProviderCredentialUnavailableError as exc:
             raise _credential_unavailable(exc.provider) from exc
-        except (ToolProviderError, ToolInvocationTimeoutError):
-            raise
-        except Exception as exc:
-            raise _typed_provider_error(exc, provider=request.provider) from exc
-        cost = _ActualCost(result.actual_cost_usd, result.actual_cost_provider, result.actual_cost_evidence)
+        except BaseException as exc:
+            if request.provider != "openrouter":
+                if isinstance(exc, Exception) and not isinstance(exc, (ToolProviderError, ToolInvocationTimeoutError)):
+                    raise _typed_provider_error(exc, provider=request.provider) from exc
+                raise
+            if (
+                isinstance(exc, (ToolProviderError, ToolInvocationTimeoutError, ToolInvocationCancelledError))
+                and exc.billing is not None
+            ):
+                raise
+            billing = OpenRouterAccounting(
+                "attempted" if dispatched else "not_dispatched",
+                None if dispatched else 0.0,
+                None if dispatched else 0.0,
+            ).to_billing()
+            if isinstance(exc, ToolProviderError | ToolInvocationTimeoutError | ToolInvocationCancelledError):
+                exc.billing = billing
+                raise
+            if isinstance(exc, asyncio.CancelledError):
+                raise ToolInvocationCancelledError("OpenRouter decision cancelled", billing=billing) from exc
+            if not isinstance(exc, Exception):
+                raise
+            raise ToolProviderError(str(exc), provider="openrouter", billing=billing) from exc
+        cost = _ActualCost(
+            result.actual_cost_usd, result.actual_cost_provider, result.actual_cost_evidence, result.reference_cost_usd
+        )
         try:
             _require_actual_cost(cost, tool_name="decision_query")
         except ValueError as exc:
@@ -826,6 +873,7 @@ class RuntimeToolInvoker(ToolInvoker):
             actual_cost_usd=cost.cost_usd,
             actual_cost_provider=cost.provider,
             actual_cost_evidence=cost.evidence,
+            reference_cost_usd=cost.reference_cost_usd,
         )
 
     def _parse_invocation(

@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from functools import lru_cache
 from time import monotonic
-from typing import cast
+from typing import Literal, cast
 from urllib.parse import quote
 
 import httpx
@@ -52,6 +52,7 @@ class _EndpointsResponse(BaseModel):
 
 class _Model(BaseModel):
     id: str
+    canonical_slug: str | None = None
 
 
 class _ModelsResponse(BaseModel):
@@ -64,6 +65,7 @@ class OpenRouterPricingSnapshot:
     endpoints: tuple[PricingEndpoint, ...]
     fetched_at: str
     provider_only: tuple[str, ...] | None = None
+    canonical_model: str | None = None
 
     def _selectable_endpoints(self) -> tuple[PricingEndpoint, ...]:
         if self.provider_only is None:
@@ -124,39 +126,56 @@ class OpenRouterPricingCatalog:
                 response.raise_for_status()
                 value: object = response.json()
             # Parse before publishing, so malformed refreshes cannot replace a valid snapshot.
-            if key:
+            if key and not key.startswith("?"):
                 parsed = _EndpointsResponse.model_validate(value).data
                 result: object = OpenRouterPricingSnapshot(
                     model=parsed.id, endpoints=parsed.endpoints, fetched_at=datetime.now(UTC).isoformat()
                 )
             else:
                 result = tuple(
-                    m.id for m in _ModelsResponse.model_validate(value).data if not is_free_openrouter_model(m.id)
+                    m for m in _ModelsResponse.model_validate(value).data if not is_free_openrouter_model(m.id)
                 )
             self._cache[key] = (monotonic(), result)
             return result
 
     async def models(self, *, timeout: float = 30) -> tuple[str, ...]:
-        return cast(tuple[str, ...], await self._get("", timeout=timeout))
+        return tuple(model.id for model in cast(tuple[_Model, ...], await self._get("", timeout=timeout)))
+
+    async def decision_models(self, *, timeout: float = 30) -> tuple[str, ...]:
+        models = cast(tuple[_Model, ...], await self._get("?output_modalities=decisions", timeout=timeout))
+        return tuple(
+            dict.fromkeys(route for model in models for route in (model.id, model.canonical_slug) if route is not None)
+        )
 
     async def snapshot(
-        self, model: str, *, timeout: float = 30, provider_only: tuple[str, ...] | None = None
+        self,
+        model: str,
+        *,
+        timeout: float = 30,
+        provider_only: tuple[str, ...] | None = None,
+        output_modality: Literal["decisions"] | None = None,
     ) -> OpenRouterPricingSnapshot:
         validate_paid_openrouter_model(model)
         # Catalog ids are authoritative. Documented routing modifiers retain the same model price basis.
-        models = await self.models(timeout=timeout)
+        key = "" if output_modality is None else "?output_modalities=" + output_modality
+        entries = cast(tuple[_Model, ...], await self._get(key, timeout=timeout))
+        routes = {route: entry for entry in entries for route in (entry.id, entry.canonical_slug) if route is not None}
         catalog_model = model
-        if model not in models:
+        if model not in routes:
             base_model, *modifiers = model.split(":")
             if not modifiers or any(modifier not in {"nitro", "floor"} for modifier in modifiers):
                 raise ValueError("OpenRouter route has no public regular-price basis")
             catalog_model = base_model
-        if catalog_model not in models:
+        if catalog_model not in routes:
             raise ValueError("OpenRouter model has no public regular-price basis")
+        entry = routes[catalog_model]
+        catalog_model = entry.id
         result = cast(
             OpenRouterPricingSnapshot,
             await self._get("/" + quote(catalog_model, safe="/") + "/endpoints", timeout=timeout),
         )
+        if entry.canonical_slug is not None and result.canonical_model != entry.canonical_slug:
+            result = replace(result, canonical_model=entry.canonical_slug)
         validate_paid_openrouter_model(result.model)
         if provider_only is not None:
             result = replace(result, provider_only=provider_only)

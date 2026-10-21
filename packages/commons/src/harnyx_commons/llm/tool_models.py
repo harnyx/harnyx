@@ -14,6 +14,8 @@ from harnyx_commons.llm.provider_types import (
     SAYGM_PROVIDER,
     VERTEX_PROVIDER,
 )
+from harnyx_miner_sdk.tools.openrouter_models import is_free_openrouter_model as is_free_openrouter_model
+from harnyx_miner_sdk.tools.openrouter_models import validate_paid_openrouter_model
 
 ToolModelName = Literal[
     "openai/gpt-oss-20b",
@@ -177,22 +179,6 @@ def parse_miner_selected_llm_provider(raw: str | None) -> MinerSelectedLlmProvid
     if value not in MINER_SELECTED_LLM_PROVIDERS:
         raise ValueError(f"miner-selected llm provider {value!r} is not supported")
     return cast(MinerSelectedLlmProviderName, value)
-
-
-def is_free_openrouter_model(model: str) -> bool:
-    parts = model.strip().lower().split(":")
-    return parts[0] == "openrouter/free" or "free" in parts[1:]
-
-
-def validate_paid_openrouter_model(model: str) -> str:
-    """Validate native routing syntax, preserving paid promotions at zero price."""
-    value = model.strip()
-    if is_free_openrouter_model(value):
-        raise ValueError("explicitly free OpenRouter models are not allowed")
-    if "/" not in value or any(char.isspace() for char in value) or any(c in value for c in "?#\\"):
-        raise ValueError("OpenRouter model must be a native model id")
-    return value
-
 
 
 def parse_miner_selected_llm_provider_model(

@@ -38,7 +38,7 @@ from harnyx_commons.protocol_headers import PLATFORM_TOOL_PROXY_TOKEN_HEADER
 from harnyx_commons.rating_competition import RATING_JUDGMENT_ALREADY_ACCEPTED, RatingJudgment, RatingWorkPage
 from harnyx_commons.tools.decision_models import DecisionUsage
 from harnyx_commons.tools.http_models import LlmUsageDTO
-from harnyx_commons.tools.provider_billing import OpenRouterChatAccounting, ProviderBillingMetadata, failure_billing
+from harnyx_commons.tools.provider_billing import OpenRouterAccounting, ProviderBillingMetadata, failure_billing
 from harnyx_commons.tools.types import ToolName
 from harnyx_miner_sdk.endpoint_protocol import EndpointCallbackAcknowledgement, EndpointDelegation
 from harnyx_validator.application.dto.evaluation import (
@@ -671,16 +671,18 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
                     parsed_billing = (
                         _DecisionProxyBilling.model_validate(error_payload["billing"])
                         if tool == "decision_query"
+                        and error_payload["billing"].get("actual_cost_provider") != "openrouter"
                         else _OpenRouterProxyBilling.model_validate(error_payload["billing"])
-                        if tool == "llm_chat"
+                        if tool in {"llm_chat", "decision_query"}
                         else _DeepSeekProxyBilling.model_validate(error_payload["billing"])
                     )
                     billing = (
-                        OpenRouterChatAccounting.from_fields(
+                        OpenRouterAccounting.from_fields(
                             actual_cost_usd=parsed_billing.actual_cost_usd,
                             reference_cost_usd=parsed_billing.reference_cost_usd,
                             evidence=parsed_billing.cost_evidence,
                             llm_usage=parsed_billing.llm_usage,
+                            decision_usage=parsed_billing.usage,
                         ).to_billing(parsed_billing.cost_evidence)
                         if isinstance(parsed_billing, _OpenRouterProxyBilling)
                         else failure_billing(
@@ -1137,15 +1139,17 @@ class _OpenRouterProxyBilling(BaseModel):
     reference_cost_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     reference_cost_unavailable: bool = False
     cost_evidence: JsonObject | None = None
+    usage: DecisionUsage | None = None
     llm_usage: LlmUsageDTO | None = None
 
     @model_validator(mode="after")
     def validate_settlement(self) -> _OpenRouterProxyBilling:
-        fact = OpenRouterChatAccounting.from_fields(
+        fact = OpenRouterAccounting.from_fields(
             actual_cost_usd=self.actual_cost_usd,
             reference_cost_usd=self.reference_cost_usd,
             evidence=self.cost_evidence,
             llm_usage=self.llm_usage,
+            decision_usage=self.usage,
         )
         if fact.reference_cost_unavailable != self.reference_cost_unavailable:
             raise ValueError("OpenRouter failure has conflicting reference availability")

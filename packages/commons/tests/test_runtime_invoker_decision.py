@@ -25,6 +25,25 @@ from harnyx_commons.tools.usage_tracker import UsageTracker
 pytestmark = pytest.mark.anyio("asyncio")
 
 
+def _snapshot():
+    from harnyx_commons.llm.providers.openrouter_pricing import OpenRouterPricingSnapshot, PricingEndpoint
+
+    return OpenRouterPricingSnapshot(
+        "cloudflare/clef-flash",
+        (
+            PricingEndpoint.model_validate(
+                {
+                    "provider_name": "Cloudflare",
+                    "tag": "cloudflare",
+                    "model_id": "cloudflare/clef-flash-versioned",
+                    "pricing": {"prompt": "0.00000009", "completion": "0", "discount": 0},
+                }
+            ),
+        ),
+        "now",
+    )
+
+
 class _Provider:
     def __init__(self, *, fail: bool | str | None = False) -> None:
         self.fail = fail
@@ -45,9 +64,11 @@ class _Provider:
                 request,
                 {
                     "model": request.model,
+                    "provider": "Cloudflare",
                     "answers": {},
                     "usage": {"input_tokens": 100, "output_tokens": 10, "cost": 0.02},
                 },
+                snapshot=_snapshot(),
             )
         if self.fail is not False:
             raise ToolProviderError(
@@ -70,7 +91,8 @@ class _Provider:
             ),
             0.02,
             "openrouter",
-            {"settlement_source": "provider_returned"},
+            {"settlement_source": "provider_returned", "inference": "attempted"},
+            0.02,
         )
 
     async def aclose(self) -> None:
@@ -252,4 +274,4 @@ async def test_failed_decision_cost_distinguishes_provider_dispatch(failure: str
         if failure == "gateway"
         else "openrouter"
     )
-    assert (failed_call.details.extra.get("actual_cost_settlement_source") == "unavailable") is dispatched
+    assert bool(failed_call.details.extra.get("reference_cost_unavailable")) is dispatched

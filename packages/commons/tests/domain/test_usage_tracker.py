@@ -300,7 +300,7 @@ def test_recovered_chat_costs_preserve_other_providers_nonchat_charges_and_unkno
     from harnyx_commons.domain.session import LlmUsageTotals
     from harnyx_commons.domain.tool_call import ToolCall, ToolCallDetails, ToolCallOutcome
     from harnyx_commons.domain.tool_usage import LlmModelUsageCost, LlmUsageSummary, ToolUsageSummary
-    from harnyx_commons.tools.receipt_accounting import recover_openrouter_chat_usage
+    from harnyx_commons.tools.receipt_accounting import recover_openrouter_usage
     from harnyx_commons.tools.types import ToolName
 
     def receipt(tool: ToolName, actual: float, reference: float, provider: str = "openrouter") -> ToolCall:
@@ -332,25 +332,25 @@ def test_recovered_chat_costs_preserve_other_providers_nonchat_charges_and_unkno
         llm_cost=0.05,
         reference_total_cost_usd=0.055,
         reference_cost_by_provider={"openrouter": 0.025, "ai_gateway": 0.03},
+        decision_reference_cost_by_provider={"openrouter": 0.005},
         actual_total_cost_usd=None,
         actual_cost_by_provider={"openrouter": 0.015, "ai_gateway": 0.03},
     )
-    recovered = recover_openrouter_chat_usage(
-        submitted,
-        (
-            receipt("llm_chat", 0.01, 0.02),
-            receipt("llm_chat", 0.01, 0.02),
-            receipt("decision_query", 0.005, 0.005),
-            # A newly observed non-chat charge must not be recovered by chat replacement.
-            receipt("decision_query", 0.02, 0.02),
-            receipt("llm_chat", 0.07, 0.07, "ai_gateway"),
-            receipt("search_web", 0.09, 0.09, "tavily"),
-        ),
+    recovered_receipts = (
+        receipt("llm_chat", 0.01, 0.02),
+        receipt("llm_chat", 0.01, 0.02),
+        receipt("decision_query", 0.005, 0.005),
+        # A lost Decision response is recovered through the same inference policy.
+        receipt("decision_query", 0.02, 0.02),
+        receipt("llm_chat", 0.07, 0.07, "ai_gateway"),
+        receipt("search_web", 0.09, 0.09, "tavily"),
     )
+    recovered = recover_openrouter_usage(submitted, recovered_receipts)
+    assert recover_openrouter_usage(recovered, recovered_receipts) == recovered
     assert recovered.llm.providers["ai_gateway"]["gateway/model"] == gateway
-    assert recovered.reference_total_cost_usd == pytest.approx(0.075)
-    assert recovered.reference_cost_by_provider["openrouter"] == pytest.approx(0.045)
-    assert recovered.actual_cost_by_provider == pytest.approx({"openrouter": 0.025, "ai_gateway": 0.03})
+    assert recovered.reference_total_cost_usd == pytest.approx(0.095)
+    assert recovered.reference_cost_by_provider["openrouter"] == pytest.approx(0.065)
+    assert recovered.actual_cost_by_provider == pytest.approx({"openrouter": 0.045, "ai_gateway": 0.03})
     assert recovered.actual_total_cost_usd is None
     assert recovered.llm.call_count == 3 and recovered.llm.total_tokens == 45
     assert recovered.llm.reasoning_tokens == 8

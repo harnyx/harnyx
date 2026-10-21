@@ -23,7 +23,7 @@ from harnyx_commons.config.llm import (
     parse_search_provider_name,
 )
 from harnyx_commons.config.vertex import VertexSettings
-from harnyx_commons.errors import ProviderCredentialUnavailableError, ToolProviderError
+from harnyx_commons.errors import ProviderCredentialUnavailableError, ToolInvocationCancelledError, ToolProviderError
 from harnyx_commons.json_types import JsonObject
 from harnyx_commons.llm.cost_settlement import normalized_provider_cost
 from harnyx_commons.llm.pricing import MINER_TOOL_EMBEDDING_PRICING, price_decision, price_embedding
@@ -33,7 +33,18 @@ from harnyx_commons.llm.provider_factory import (
 )
 from harnyx_commons.llm.providers.ai_gateway import AiGatewayDecisionClient
 from harnyx_commons.llm.providers.chutes import ChutesTextEmbeddingClient
-from harnyx_commons.llm.providers.openrouter import OpenRouterDecisionClient, OpenRouterEmbeddingClient
+from harnyx_commons.llm.providers.openrouter import (
+    OpenRouterDecisionClient,
+    OpenRouterEmbeddingClient,
+    _MinerBillingResponse,
+    _MinerCostDetails,
+    _openrouter_reference_cost,
+)
+from harnyx_commons.llm.providers.openrouter_pricing import (
+    OpenRouterPricingCatalog,
+    OpenRouterPricingSnapshot,
+    shared_openrouter_pricing_catalog,
+)
 from harnyx_commons.platform_tool_proxy import platform_tool_proxy_effective_provider_timeout_seconds
 from harnyx_commons.tools.decision_models import (
     BooleanAnswer,
@@ -73,7 +84,7 @@ from harnyx_commons.tools.ports import (
     FetchPageProviderPort,
     WebSearchProviderPort,
 )
-from harnyx_commons.tools.provider_billing import ProviderBillingMetadata, SearchProviderResult
+from harnyx_commons.tools.provider_billing import OpenRouterAccounting, ProviderBillingMetadata, SearchProviderResult
 from harnyx_commons.tools.search_models import (
     FetchPageRequest,
     FetchPageResponse,
@@ -291,8 +302,10 @@ def build_web_search_provider_for_name(
         )
     if provider_name == "deepseek":
         return DeepSeekClient(
-            base_url=DEEPSEEK.base_url, api_key=llm_settings.deepseek_api_key_value,
-            timeout=DEEPSEEK.timeout_seconds, max_concurrent=llm_settings.deepseek_max_concurrent,
+            base_url=DEEPSEEK.base_url,
+            api_key=llm_settings.deepseek_api_key_value,
+            timeout=DEEPSEEK.timeout_seconds,
+            max_concurrent=llm_settings.deepseek_max_concurrent,
             include_payloads_in_logs=include_payloads_in_logs,
         )
     if provider_name == "tavily":
@@ -357,9 +370,11 @@ def build_miner_paid_web_search_provider(
         )
     if provider_name == "deepseek":
         return DeepSeekClient(
-            base_url=DEEPSEEK.base_url, api_key=explicit_key,
+            base_url=DEEPSEEK.base_url,
+            api_key=explicit_key,
             timeout=_effective_client_timeout(DEEPSEEK.timeout_seconds, timeout),
-            max_concurrent=None, max_response_bytes=max_response_bytes,
+            max_concurrent=None,
+            max_response_bytes=max_response_bytes,
             include_payloads_in_logs=include_payloads_in_logs,
         )
     if provider_name == "tavily":
@@ -384,8 +399,10 @@ def build_fetch_page_provider_for_name(
     if name != "expand":
         return build_web_search_provider_for_name(llm_settings, name, include_payloads_in_logs=include_payloads_in_logs)
     return ExpandClient(
-        base_url=EXPAND.base_url, api_key=llm_settings.expand_api_key_value,
-        timeout=EXPAND.timeout_seconds, max_concurrent=llm_settings.expand_max_concurrent,
+        base_url=EXPAND.base_url,
+        api_key=llm_settings.expand_api_key_value,
+        timeout=EXPAND.timeout_seconds,
+        max_concurrent=llm_settings.expand_max_concurrent,
         include_payloads_in_logs=include_payloads_in_logs,
     )
 
@@ -402,13 +419,20 @@ def build_miner_paid_fetch_page_provider(
     name = parse_fetch_provider_name(provider)
     if name != "expand":
         return build_miner_paid_web_search_provider(
-            provider=name, api_key=api_key, llm_settings=llm_settings, timeout=timeout,
-            max_response_bytes=max_response_bytes, include_payloads_in_logs=include_payloads_in_logs,
+            provider=name,
+            api_key=api_key,
+            llm_settings=llm_settings,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            include_payloads_in_logs=include_payloads_in_logs,
         )
     return ExpandClient(
-        base_url=EXPAND.base_url, api_key=_explicit_api_key_value(api_key, provider=name),
-        timeout=_effective_client_timeout(EXPAND.timeout_seconds, timeout), max_concurrent=None,
-        max_response_bytes=max_response_bytes, include_payloads_in_logs=include_payloads_in_logs,
+        base_url=EXPAND.base_url,
+        api_key=_explicit_api_key_value(api_key, provider=name),
+        timeout=_effective_client_timeout(EXPAND.timeout_seconds, timeout),
+        max_concurrent=None,
+        max_response_bytes=max_response_bytes,
+        include_payloads_in_logs=include_payloads_in_logs,
     )
 
 
@@ -843,19 +867,15 @@ class _GatewayDecisionPayload(BaseModel):
     provider_metadata: dict[str, JsonValue] | None = Field(default=None, alias="providerMetadata")
 
 
-def _decision_cost(
+def _gateway_decision_cost(
     request: DecisionQueryRequest,
     raw: JsonObject,
 ) -> tuple[float | None, JsonObject]:
     probe = _DecisionBillingProbe.model_validate(raw)
-    raw_usage = probe.usage if isinstance(probe.usage, dict) else {}
-    if request.provider == "openrouter":
-        reported = raw_usage.get("cost")
-    else:
-        metadata = probe.provider_metadata if isinstance(probe.provider_metadata, dict) else {}
-        gateway = metadata.get("gateway")
-        reported = gateway.get("cost") if isinstance(gateway, dict) else None
-    if request.provider == "ai_gateway" and isinstance(reported, str):
+    metadata = probe.provider_metadata if isinstance(probe.provider_metadata, dict) else {}
+    gateway = metadata.get("gateway")
+    reported = gateway.get("cost") if isinstance(gateway, dict) else None
+    if isinstance(reported, str):
         reported = float(reported)
     cost = normalized_provider_cost(reported, field_name="decision provider cost")
     evidence: JsonObject = {"provider": request.provider, "model": request.model}
@@ -890,21 +910,61 @@ def _decision_usage(request: DecisionQueryRequest, raw: JsonObject) -> DecisionU
     return usage if usage.input_tokens is not None or usage.output_tokens is not None else None
 
 
-def _decision_result(request: DecisionQueryRequest, raw: JsonObject) -> DecisionProviderResult:
-    try:
-        cost, evidence = _decision_cost(request, raw)
-    except (ValueError, TypeError) as exc:
-        raise ToolProviderError("decision provider returned invalid billing", provider=request.provider) from exc
-    billing = (
-        None
-        if cost is None
-        else ProviderBillingMetadata(
+def _decision_result(
+    request: DecisionQueryRequest, raw: JsonObject, *, snapshot: OpenRouterPricingSnapshot | None = None
+) -> DecisionProviderResult:
+    reference: float | None = None
+    if request.provider == "openrouter":
+        actual: float | None = None
+        evidence: JsonObject = {"requested_model": request.model, "settlement_source": "unavailable"}
+        try:
+            usage = raw.get("usage")
+            actual = normalized_provider_cost(
+                usage.get("cost") if isinstance(usage, dict) else None, field_name="decision provider cost"
+            )
+            if actual is None:
+                raise ValueError("original OpenRouter charge is missing")
+            reported_charge = actual
+            actual = None
+            native_billing = _MinerBillingResponse.model_validate(raw)
+            actual = reported_charge
+            if native_billing.usage.is_byok is True:
+                actual = None
+                actual = reported_charge + float(
+                    _MinerCostDetails.model_validate(native_billing.usage.cost_details).upstream_inference_cost
+                )
+            evidence["original_usage"] = native_billing.usage.model_dump(mode="json")
+            evidence["settlement_source"] = "provider_returned"
+            if snapshot is None:
+                raise ValueError("bound OpenRouter pricing snapshot is missing")
+            evidence.update(
+                snapshot_model=snapshot.model,
+                snapshot_time=snapshot.fetched_at,
+                snapshot_source="openrouter_public_endpoints",
+            )
+            reference, reference_evidence = _openrouter_reference_cost(native_billing, snapshot)
+            evidence.update(reference_evidence)
+        except (ValueError, ArithmeticError) as exc:
+            evidence["reference_unavailable_reason"] = str(exc)
+        billing = OpenRouterAccounting(
+            "attempted", actual, reference, decision_usage=_decision_usage(request, raw)
+        ).to_billing(evidence)
+        evidence = billing.provider_usage or {}
+        cost = actual
+        if billing.reference_cost_unavailable:
+            raise ToolProviderError("OpenRouter regular cost unavailable", provider=request.provider, billing=billing)
+    else:
+        try:
+            cost, evidence = _gateway_decision_cost(request, raw)
+        except (ValidationError, ValueError, TypeError) as exc:
+            raise ToolProviderError("decision provider returned invalid billing", provider=request.provider) from exc
+        billing = ProviderBillingMetadata(
             actual_cost_provider=request.provider,
-            actual_cost_usd=cost,
             source="response_body",
+            actual_cost_usd=cost,
             usage=_decision_usage(request, raw),
+            provider_usage=evidence,
         )
-    )
     try:
         if request.provider == "openrouter":
             native = _OpenRouterDecisionPayload.model_validate(raw)
@@ -949,38 +1009,67 @@ def _decision_result(request: DecisionQueryRequest, raw: JsonObject) -> Decision
         ) from exc
     if cost is None:
         raise ToolProviderError("decision provider response missing settled cost", provider=request.provider)
-    return DecisionProviderResult(response, cost, request.provider, evidence)
+    return DecisionProviderResult(response, cost, request.provider, evidence, reference)
 
 
 class OpenRouterDecisionProvider(DecisionProviderPort):
-    def __init__(self, *, api_key: SecretStr, timeout_seconds: float) -> None:
+    def __init__(
+        self,
+        *,
+        api_key: SecretStr,
+        timeout_seconds: float,
+        pricing_catalog: OpenRouterPricingCatalog | None = None,
+    ) -> None:
         self._api_key = api_key
         self._timeout_seconds = timeout_seconds
+        self._pricing_catalog = pricing_catalog or shared_openrouter_pricing_catalog()
         self._clients: dict[str, OpenRouterDecisionClient] = {}
 
     async def query(self, request: DecisionQueryRequest) -> DecisionProviderResult:
-        if request.provider != "openrouter":
-            raise ValueError("OpenRouter decision adapter requires openrouter")
-        client = self._clients.get(request.model)
-        if client is None:
-            client = OpenRouterDecisionClient(
-                model=request.model,
-                api_key=self._api_key,
-                timeout_seconds=self._timeout_seconds,
+        dispatched = False
+        try:
+            if request.provider != "openrouter":
+                raise ValueError("OpenRouter decision adapter requires openrouter")
+            models = await self._pricing_catalog.decision_models(timeout=self._timeout_seconds)
+            if request.model.split(":", 1)[0] not in models:
+                raise ValueError("OpenRouter model does not support decisions")
+            snapshot = await self._pricing_catalog.snapshot(
+                request.model, timeout=self._timeout_seconds, output_modality="decisions"
             )
-            self._clients[request.model] = client
-        native = await client.query(
-            request.state,
-            cast(
-                JsonObject,
-                {
-                    key: question.model_dump(mode="json", exclude_none=True)
-                    for key, question in request.questions.items()
-                },
-            ),
-            timeout_seconds=_effective_client_timeout(self._timeout_seconds, request.timeout),
-        )
-        return _decision_result(request, native.raw_payload)
+            client = self._clients.get(request.model)
+            if client is None:
+                client = OpenRouterDecisionClient(
+                    model=request.model,
+                    api_key=self._api_key,
+                    timeout_seconds=self._timeout_seconds,
+                )
+                self._clients[request.model] = client
+            dispatched = True
+            native = await client.query(
+                request.state,
+                cast(
+                    JsonObject,
+                    {
+                        key: question.model_dump(mode="json", exclude_none=True)
+                        for key, question in request.questions.items()
+                    },
+                ),
+                timeout_seconds=_effective_client_timeout(self._timeout_seconds, request.timeout),
+            )
+            return _decision_result(request, native.raw_payload, snapshot=snapshot)
+        except BaseException as exc:
+            if isinstance(exc, ToolProviderError) and exc.billing is not None:
+                raise
+            billing = OpenRouterAccounting(
+                "attempted" if dispatched else "not_dispatched",
+                None if dispatched else 0.0,
+                None if dispatched else 0.0,
+            ).to_billing({"settlement_source": "unavailable" if dispatched else "pre_dispatch"})
+            if isinstance(exc, asyncio.CancelledError):
+                raise ToolInvocationCancelledError("OpenRouter decision cancelled", billing=billing) from exc
+            if not isinstance(exc, Exception):
+                raise
+            raise ToolProviderError(str(exc), provider="openrouter", billing=billing) from exc
 
     async def aclose(self) -> None:
         errors: list[Exception] = []

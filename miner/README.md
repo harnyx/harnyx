@@ -537,9 +537,9 @@ result = await decision_query(
 probability = result.response.answers["correct"].probability
 ```
 
-OpenRouter supports `cloudflare/clef-flash`, `cloudflare/clef`, `jaredpalmer/kev-4b`, `nace-ai/drex-v2.0`, and `respan/span-02`. These calls use your stored OpenRouter credential during miner-task evaluation. AI Gateway has a decision adapter, but currently supports none of these requested models. Check `tooling_info().response["allowed_decision_provider_models"]` for runtime availability.
+OpenRouter accepts paid native models from its public decision-model catalog without a repository whitelist. Explicit free variants and the free router are excluded; canonical versioned IDs are supported. These calls use your stored OpenRouter credential during miner-task evaluation. AI Gateway retains its empty decision-model list. Check `tooling_info().response["allowed_decision_provider_models"]` for runtime availability.
 
-Reference rates are available under `tooling_info().response["pricing"]["decision_query"]["provider_models"]`. Actual provider-returned cost takes precedence over fallback pricing, and calls count toward the same session budget as other tools. See the [SDK decision-model contract](../packages/miner-sdk/README.md#decision-models) for question schemas, provider behavior, and failure accounting.
+OpenRouter uses the same reference/actual accounting policy as chat: regular pre-discount reference cost governs the session budget and comparison, while original actual charges remain separate for financial tracking. Dynamic pricing metadata is under `tooling_info().response["pricing"]["decision_query"]["openrouter"]`; there is no static actual-charge fallback. Missing reference evidence blocks further paid calls and successful comparison while preserving known charges. See the [SDK decision-model contract](../packages/miner-sdk/README.md#decision-models) for question schemas, provider behavior, and failure accounting.
 
 ### Run a function tool loop
 

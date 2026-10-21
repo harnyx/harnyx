@@ -27,7 +27,7 @@ from harnyx_commons.llm.providers.openrouter_pricing import (
 from harnyx_commons.llm.providers.thinking import resolve_request_thinking
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse, LlmThinkingConfig
 from harnyx_commons.llm.tool_models import MINER_SELECTED_LLM_PROVIDER_MODELS, validate_paid_openrouter_model
-from harnyx_commons.tools.provider_billing import OpenRouterChatAccounting, ProviderBillingMetadata
+from harnyx_commons.tools.provider_billing import OpenRouterAccounting, ProviderBillingMetadata
 from harnyx_miner_sdk.tools.llm_provider_extra import OpenRouterProviderSelection
 
 OPENROUTER_ENDPOINT_ID = "openrouter"
@@ -103,44 +103,55 @@ def _miner_openrouter_billing(
             raise ValueError("multiple billable responses cannot use one serving-provider discount")
         raw = _MinerBillingResponse.model_validate((response.metadata or {}).get("raw_response"))
         evidence["original_usage"] = raw.usage.model_dump(mode="json")
-        resolved_model, serving_provider = raw.model, raw.provider
-        if resolved_model is None or serving_provider is None:
-            routing = _OpenRouterRouterMetadata.model_validate(raw.openrouter_metadata)
-            selected = () if routing.endpoints is None else tuple(e for e in routing.endpoints.available if e.selected)
-            providers = {e.provider.casefold() for e in selected}
-            models = {e.model for e in selected if e.model is not None}
-            if serving_provider is None and len(providers) == 1:
-                serving_provider = selected[0].provider
-            if resolved_model is None and len(models) == 1:
-                resolved_model = next(iter(models))
-        if not isinstance(resolved_model, str) or not isinstance(serving_provider, str):
-            raise ValueError("original OpenRouter serving model/provider is missing")
-        validate_paid_openrouter_model(resolved_model)
-        resolved = resolved_model.split(":", 1)[0]
-        if resolved != snapshot.model and not any(e.model_id.split(":", 1)[0] == resolved for e in snapshot.endpoints):
-            raise ValueError("resolved OpenRouter model does not match the pricing snapshot")
-        if raw.usage.cost is None:
-            raise ValueError("original OpenRouter charge is missing")
-        inference, separate = raw.usage.cost, Decimal(0)
-        if raw.usage.is_byok is True:
-            inference = _MinerCostDetails.model_validate(raw.usage.cost_details).upstream_inference_cost
-            separate = raw.usage.cost
-        reference, discount = snapshot.reference_cost(
-            provider=serving_provider, inference=inference, separate_charge=separate
-        )
-        evidence.update(
-            resolved_model=resolved_model,
-            upstream_provider=serving_provider,
-            maximum_discount=float(discount),
-        )
+        reference, reference_evidence = _openrouter_reference_cost(raw, snapshot)
+        evidence.update(reference_evidence)
     except (ValueError, ArithmeticError) as exc:
         evidence["reference_unavailable_reason"] = str(exc)
-    return OpenRouterChatAccounting(
+    return OpenRouterAccounting(
         inference="attempted",
         actual_cost_usd=actual,
         reference_cost_usd=reference,
         llm_usage=None if response is None else response.usage,
     ).to_billing(evidence)
+
+
+def _openrouter_reference_cost(
+    raw: _MinerBillingResponse, snapshot: OpenRouterPricingSnapshot
+) -> tuple[float, JsonObject]:
+    evidence: JsonObject = {}
+    resolved_model, serving_provider = raw.model, raw.provider
+    if resolved_model is None or serving_provider is None:
+        routing = _OpenRouterRouterMetadata.model_validate(raw.openrouter_metadata)
+        selected = () if routing.endpoints is None else tuple(e for e in routing.endpoints.available if e.selected)
+        providers = {e.provider.casefold() for e in selected}
+        models = {e.model for e in selected if e.model is not None}
+        if serving_provider is None and len(providers) == 1:
+            serving_provider = selected[0].provider
+        if resolved_model is None and len(models) == 1:
+            resolved_model = next(iter(models))
+    if not isinstance(resolved_model, str) or not isinstance(serving_provider, str):
+        raise ValueError("original OpenRouter serving model/provider is missing")
+    validate_paid_openrouter_model(resolved_model)
+    resolved = resolved_model.split(":", 1)[0]
+    if resolved not in {snapshot.model, snapshot.canonical_model} and not any(
+        e.model_id.split(":", 1)[0] == resolved for e in snapshot.endpoints
+    ):
+        raise ValueError("resolved OpenRouter model does not match the pricing snapshot")
+    if raw.usage.cost is None:
+        raise ValueError("original OpenRouter charge is missing")
+    inference, separate = raw.usage.cost, Decimal(0)
+    if raw.usage.is_byok is True:
+        inference = _MinerCostDetails.model_validate(raw.usage.cost_details).upstream_inference_cost
+        separate = raw.usage.cost
+    reference, discount = snapshot.reference_cost(
+        provider=serving_provider, inference=inference, separate_charge=separate
+    )
+    evidence.update(
+        resolved_model=resolved_model,
+        upstream_provider=serving_provider,
+        maximum_discount=float(discount),
+    )
+    return reference, evidence
 
 
 class _OpenRouterEmbeddingDatum(BaseModel):
@@ -371,7 +382,7 @@ class OpenRouterLlmProvider(LlmProviderPort):
             billing = (
                 _miner_openrouter_billing(response, snapshot=snapshot, requested_model=request.model)
                 if dispatched or response is not None
-                else OpenRouterChatAccounting(
+                else OpenRouterAccounting(
                     inference="not_dispatched", actual_cost_usd=0.0, reference_cost_usd=0.0
                 ).to_billing({"settlement_source": "pre_dispatch", "reason": str(exc)}, source="request_body")
             )

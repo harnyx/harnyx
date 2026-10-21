@@ -46,6 +46,7 @@ async def test_openrouter_decision_model_live(model: str) -> None:
         assert set(result.response.answers) == {"color", "number", "red"}
         assert result.actual_cost_usd is not None and result.actual_cost_usd >= 0
         assert result.actual_cost_provider == "openrouter"
+        assert result.reference_cost_usd is not None and result.reference_cost_usd >= result.actual_cost_usd
         assert result.response.usage is not None
     finally:
         await provider.aclose()

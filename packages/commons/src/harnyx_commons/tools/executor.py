@@ -44,7 +44,7 @@ from harnyx_commons.tools.dto import (
     tool_payload_for_invocation,
 )
 from harnyx_commons.tools.provider_billing import (
-    OpenRouterChatAccounting,
+    OpenRouterAccounting,
     billing_evidence_payload,
     billing_usage_payload,
 )
@@ -124,14 +124,14 @@ class ToolInvocationOutput:
 
     def require_reference(self, tool: str, provider: str | None = None) -> None:
         if (
-            tool == "llm_chat"
+            tool in {"llm_chat", "decision_query"}
             and (provider == "openrouter" or self.actual_cost_provider == "openrouter")
             and self.reference_cost_usd is None
         ):
             raise ToolProviderError(
                 "OpenRouter regular reference cost is missing",
                 provider="openrouter",
-                billing=OpenRouterChatAccounting.from_fields(
+                billing=OpenRouterAccounting.from_fields(
                     actual_cost_usd=self.actual_cost_usd,
                     reference_cost_usd=self.reference_cost_usd,
                     evidence=self.actual_cost_evidence,
@@ -409,7 +409,7 @@ class ToolExecutor:
             recording.dispatched = True
         invocation_output = await self._invoke_tool_output_async(request, context=invocation_context)
         recording.output = invocation_output
-        if request.tool == "llm_chat":
+        if request.tool in {"llm_chat", "decision_query"}:
             invocation_output.require_reference(request.tool, str(tool_payload_for_invocation(request).get("provider")))
         if invocation_output.provider_error is not None:
             raise invocation_output.provider_error
@@ -546,12 +546,14 @@ class ToolExecutor:
             else None
         )
         openrouter_failure = (
-            request.tool == "llm_chat" and billing is not None and billing.actual_cost_provider == "openrouter"
+            request.tool in {"llm_chat", "decision_query"}
+            and billing is not None
+            and billing.actual_cost_provider == "openrouter"
         )
         if not (request.tool == "decision_query" or accounted_failure or openrouter_failure):
             billing = None
         if openrouter_failure and billing is not None:
-            accounting = OpenRouterChatAccounting.from_billing(billing)
+            accounting = OpenRouterAccounting.from_billing(billing)
             billing = accounting.to_billing(billing.provider_usage, source=billing.source)
             provider_failure = accounting.counts_as_inference
             error_extra["openrouter_failure_accounted"] = provider_failure
@@ -639,7 +641,7 @@ class ToolExecutor:
                 completion_tokens=billing.usage.output_tokens,
                 total_tokens=failure_tokens,
             )
-        if openrouter_failure and billing is not None and billing.usage is not None:
+        if openrouter_failure and request.tool == "llm_chat" and billing is not None and billing.usage is not None:
             failure_payload = {
                 "usage": {
                     "prompt_tokens": billing.usage.input_tokens,
@@ -647,6 +649,8 @@ class ToolExecutor:
                     "total_tokens": failure_tokens,
                 }
             }
+        if request.tool == "decision_query" and billing is not None:
+            failure_payload = billing_usage_payload(billing)
         # Returned outputs already carry complete usage and provider evidence.
         if failure_usage is not None and recording.output is None and (billing is None or billing.llm_usage is None):
             failure_payload = {

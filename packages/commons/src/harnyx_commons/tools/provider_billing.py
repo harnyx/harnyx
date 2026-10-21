@@ -25,13 +25,14 @@ _LLM_USAGE = TypeAdapter(LlmUsage)
 
 
 @dataclass(frozen=True, slots=True)
-class OpenRouterChatAccounting:
+class OpenRouterAccounting:
     """Complete accounting meaning established at the OpenRouter execution boundary."""
 
     inference: Literal["not_dispatched", "attempted", "unresolved"]
     actual_cost_usd: float | None
     reference_cost_usd: float | None
     llm_usage: LlmUsage | None = None
+    decision_usage: DecisionUsage | None = None
 
     def __post_init__(self) -> None:
         if self.inference not in ("not_dispatched", "attempted", "unresolved"):
@@ -42,7 +43,10 @@ class OpenRouterChatAccounting:
             ):
                 raise ValueError("OpenRouter accounting amounts must be finite and nonnegative")
         if self.inference == "not_dispatched" and (
-            self.actual_cost_usd != 0 or self.reference_cost_usd != 0 or self.llm_usage is not None
+            self.actual_cost_usd != 0
+            or self.reference_cost_usd != 0
+            or self.llm_usage is not None
+            or self.decision_usage is not None
         ):
             raise ValueError("undispatched OpenRouter call requires zero costs and no usage")
         if self.reference_cost_usd is not None and self.actual_cost_usd is None:
@@ -66,10 +70,21 @@ class OpenRouterChatAccounting:
         reference_cost_usd: float | None,
         evidence: JsonObject | None,
         llm_usage: LlmUsage | None = None,
-    ) -> OpenRouterChatAccounting:
+        decision_usage: DecisionUsage | None = None,
+    ) -> OpenRouterAccounting:
         inference = (evidence or {}).get("inference")
         if inference not in ("not_dispatched", "attempted", "unresolved"):
             raise ValueError("OpenRouter accounting requires explicit inference classification")
+        raw_decision_usage = (evidence or {}).get("decision_usage")
+        recorded_decision_usage = (
+            None if raw_decision_usage is None else DecisionUsage.model_validate(raw_decision_usage)
+        )
+        if (
+            decision_usage is not None
+            and recorded_decision_usage is not None
+            and decision_usage != recorded_decision_usage
+        ):
+            raise ValueError("OpenRouter accounting has conflicting decision usage evidence")
         raw_usage = (evidence or {}).get("token_usage")
         recorded_usage = None if raw_usage is None else _LLM_USAGE.validate_python(raw_usage)
         if llm_usage is not None and recorded_usage is not None and llm_usage != recorded_usage:
@@ -79,10 +94,11 @@ class OpenRouterChatAccounting:
             actual_cost_usd=actual_cost_usd,
             reference_cost_usd=reference_cost_usd,
             llm_usage=llm_usage if llm_usage is not None else recorded_usage,
+            decision_usage=decision_usage if decision_usage is not None else recorded_decision_usage,
         )
 
     @classmethod
-    def from_billing(cls, billing: ProviderBillingMetadata) -> OpenRouterChatAccounting:
+    def from_billing(cls, billing: ProviderBillingMetadata) -> OpenRouterAccounting:
         if billing.actual_cost_provider != "openrouter":
             raise ValueError("OpenRouter chat accounting requires OpenRouter billing")
         fact = cls.from_fields(
@@ -90,6 +106,7 @@ class OpenRouterChatAccounting:
             reference_cost_usd=billing.reference_cost_usd,
             evidence=billing.provider_usage,
             llm_usage=billing.llm_usage,
+            decision_usage=billing.usage,
         )
         if fact.reference_cost_unavailable != billing.reference_cost_unavailable:
             raise ValueError("OpenRouter accounting has conflicting reference availability")
@@ -98,6 +115,9 @@ class OpenRouterChatAccounting:
     def to_evidence(self, raw: JsonObject | None = None) -> JsonObject:
         evidence = dict(raw or {})
         evidence["inference"] = self.inference
+        evidence.pop("decision_usage", None)
+        if self.decision_usage is not None:
+            evidence["decision_usage"] = self.decision_usage.model_dump(mode="json", exclude_none=True)
         evidence.pop("token_usage", None)
         if self.llm_usage is not None:
             evidence["token_usage"] = asdict(self.llm_usage)
@@ -116,6 +136,7 @@ class OpenRouterChatAccounting:
             reference_cost_usd=self.reference_cost_usd,
             reference_cost_unavailable=self.reference_cost_unavailable,
             llm_usage=self.llm_usage,
+            usage=self.decision_usage,
             provider_usage=self.to_evidence(evidence),
         )
 
@@ -186,7 +207,7 @@ def _is_json_value(value: object) -> bool:
 
 
 __all__ = [
-    "OpenRouterChatAccounting",
+    "OpenRouterAccounting",
     "ProviderBillingMetadata",
     "ProviderBillingSource",
     "SearchProviderResult",

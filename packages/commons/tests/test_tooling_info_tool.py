@@ -70,7 +70,7 @@ async def test_discovery_uses_fresh_cache_and_recovers_after_expired_refresh_fai
     first = await invoker.invoke("tooling_info", args=(), kwargs={})
     available = False
     assert await invoker.invoke("tooling_info", args=(), kwargs={}) == first
-    assert calls == 1
+    assert calls == 2
     now = 301.0
     expired = await invoker.invoke("tooling_info", args=(), kwargs={})
     assert expired["pricing"]["llm_chat"]["openrouter"]["discovery_available"] is False
@@ -93,6 +93,7 @@ def test_tool_model_pricing_covers_every_allowed_tool_model() -> None:
 async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
     catalog = OpenRouterPricingCatalog()
     catalog.models = AsyncMock(return_value=("inception/mercury-3",))
+    catalog.decision_models = AsyncMock(return_value=("new/decision",))
     invoker = build_miner_sandbox_tool_invoker(InMemoryReceiptLog(), openrouter_pricing_catalog=catalog)
 
     payload = await invoker.invoke("tooling_info", args=(), kwargs={})

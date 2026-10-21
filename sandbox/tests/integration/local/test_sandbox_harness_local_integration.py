@@ -616,15 +616,16 @@ async def decision(request: dict[str, object]) -> object:
         async def query(self, request):
             assert request.state == {"draft": "hello"}
             if fail:
-                from harnyx_commons.tools.invocation_clients import _decision_result
+                from harnyx_commons.errors import ToolProviderError
+                from harnyx_commons.tools.decision_models import DecisionUsage
+                from harnyx_commons.tools.provider_billing import OpenRouterAccounting
 
-                return _decision_result(
-                    request,
-                    {
-                        "model": request.model,
-                        "answers": {},
-                        "usage": {"input_tokens": 100, "output_tokens": 0, "cost": 0.02},
-                    },
+                raise ToolProviderError(
+                    "invalid native answers",
+                    provider="openrouter",
+                    billing=OpenRouterAccounting(
+                        "attempted", 0.02, 0.02, decision_usage=DecisionUsage(input_tokens=100, output_tokens=0)
+                    ).to_billing(),
                 )
             return DecisionProviderResult(
                 DecisionQueryResponse.model_validate(
@@ -636,7 +637,8 @@ async def decision(request: dict[str, object]) -> object:
                 ),
                 0.02,
                 "openrouter",
-                {"settlement_source": "provider_returned"},
+                {"settlement_source": "provider_returned", "inference": "attempted"},
+                0.02,
             )
 
         async def aclose(self):

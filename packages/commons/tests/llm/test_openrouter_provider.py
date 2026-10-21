@@ -822,7 +822,7 @@ async def test_successful_miner_stream_keeps_accounting_through_runtime_settleme
     """A successful paid answer must retain billing facts through the real retry adapter and runtime reader."""
     from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
     from harnyx_commons.tools.executor import ToolInvocationOutput
-    from harnyx_commons.tools.provider_billing import OpenRouterChatAccounting
+    from harnyx_commons.tools.provider_billing import OpenRouterAccounting
     from harnyx_commons.tools.runtime_invoker import RuntimeToolInvoker
 
     frame = {
@@ -865,7 +865,7 @@ async def test_successful_miner_stream_keeps_accounting_through_runtime_settleme
             },
         )
         assert isinstance(output, ToolInvocationOutput)
-        fact = OpenRouterChatAccounting.from_fields(
+        fact = OpenRouterAccounting.from_fields(
             actual_cost_usd=output.actual_cost_usd,
             reference_cost_usd=output.reference_cost_usd,
             evidence=output.actual_cost_evidence,
@@ -883,7 +883,7 @@ async def test_successful_miner_stream_keeps_accounting_through_runtime_settleme
 async def test_miner_provider_error_keeps_dispatch_evidence_without_a_response(dispatched: bool) -> None:
     """A typed delegate error must preserve known dispatch instead of bypassing billing facts."""
     from harnyx_commons.errors import ToolProviderError
-    from harnyx_commons.tools.provider_billing import OpenRouterChatAccounting
+    from harnyx_commons.tools.provider_billing import OpenRouterAccounting
 
     class Delegate:
         async def invoke(self, request: LlmRequest) -> LlmResponse:
@@ -902,7 +902,7 @@ async def test_miner_provider_error_keeps_dispatch_evidence_without_a_response(d
     try:
         with pytest.raises(ToolProviderError) as caught:
             await provider.invoke(_miner_promo_request())
-        fact = OpenRouterChatAccounting.from_billing(caught.value.billing)
+        fact = OpenRouterAccounting.from_billing(caught.value.billing)
         assert fact.inference == ("attempted" if dispatched else "not_dispatched")
         assert fact.actual_cost_usd == (None if dispatched else 0.0)
         assert fact.reference_cost_unavailable is dispatched

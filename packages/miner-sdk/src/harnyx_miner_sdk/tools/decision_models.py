@@ -8,12 +8,14 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
+from harnyx_miner_sdk.tools.openrouter_models import validate_paid_openrouter_model
 from harnyx_miner_sdk.tools.types import ToolInvocationTimeout
 
 DecisionProviderName = Literal["openrouter", "ai_gateway"]
 DecisionContext = str | dict[str, JsonValue] | list[JsonValue]
 Probability = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 MINER_SELECTED_DECISION_PROVIDER_MODELS: Mapping[DecisionProviderName, tuple[str, ...]] = {
+    # Historical pricing baseline; OpenRouter eligibility uses its live catalog.
     "openrouter": (
         "cloudflare/clef-flash",
         "cloudflare/clef",
@@ -34,7 +36,9 @@ def parse_decision_provider(provider: str) -> DecisionProviderName:
 
 
 def validate_decision_provider_model(provider: DecisionProviderName, model: str) -> None:
-    if model not in MINER_SELECTED_DECISION_PROVIDER_MODELS[provider]:
+    if provider == "openrouter":
+        validate_paid_openrouter_model(model)
+    elif model not in MINER_SELECTED_DECISION_PROVIDER_MODELS[provider]:
         raise ValueError(f"decision model {model!r} is not available through {provider!r}")
 
 
@@ -123,6 +127,7 @@ class DecisionQueryRequest(_DecisionModel):
 
     @model_validator(mode="after")
     def _selection(self) -> DecisionQueryRequest:
+        self.model = self.model.strip()
         validate_decision_provider_model(self.provider, self.model)
         if any(not key for key in self.questions):
             raise ValueError("question IDs must not be empty")

@@ -976,6 +976,7 @@ Body: [MinerTaskWorkExecutionsRequest](#model-minertaskworkexecutionsrequest)
 |  | `total_tool_usage` |  | req | [ToolUsageSummary](#model-toolusagesummary) |
 |  |  | `actual_cost_by_provider` | opt | `object` |
 |  |  | `actual_total_cost_usd` | opt | `number` (nullable) |
+|  |  | `decision_reference_cost_by_provider` | opt | `object` |
 |  |  | `embedding` | opt | [EmbeddingToolUsageSummary](#model-embeddingtoolusagesummary) |
 |  |  | `embedding_cost` | opt | `number` (default: 0.0) |
 |  |  | `llm` | opt | [LlmUsageSummary](#model-llmusagesummary) |
@@ -1178,6 +1179,7 @@ Body: [MinerTaskWorkScoreableExecutionsResponse](#model-minertaskworkscoreableex
 |  | `total_tool_usage` |  | req | [ToolUsageSummary](#model-toolusagesummary) |
 |  |  | `actual_cost_by_provider` | opt | `object` |
 |  |  | `actual_total_cost_usd` | opt | `number` (nullable) |
+|  |  | `decision_reference_cost_by_provider` | opt | `object` |
 |  |  | `embedding` | opt | [EmbeddingToolUsageSummary](#model-embeddingtoolusagesummary) |
 |  |  | `embedding_cost` | opt | `number` (default: 0.0) |
 |  |  | `llm` | opt | [LlmUsageSummary](#model-llmusagesummary) |
@@ -3658,6 +3660,7 @@ Body: [StatusResponse](#model-statusresponse)
 | `total_tool_usage` |  |  | opt | [ToolUsageSummary](#model-toolusagesummary) |
 |  | `actual_cost_by_provider` |  | opt | `object` |
 |  | `actual_total_cost_usd` |  | opt | `number` (nullable) |
+|  | `decision_reference_cost_by_provider` |  | opt | `object` |
 |  | `embedding` |  | opt | [EmbeddingToolUsageSummary](#model-embeddingtoolusagesummary) |
 |  |  | `actual_cost` | opt | `number` (nullable) |
 |  |  | `call_count` | opt | `integer` (default: 0) |
@@ -6298,6 +6301,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `total_tool_usage` |  | opt | [ToolUsageSummary](#model-toolusagesummary) |
 |  |  | `actual_cost_by_provider` | opt | `object` |
 |  |  | `actual_total_cost_usd` | opt | `number` (nullable) |
+|  |  | `decision_reference_cost_by_provider` | opt | `object` |
 |  |  | `embedding` | opt | [EmbeddingToolUsageSummary](#model-embeddingtoolusagesummary) |
 |  |  | `embedding_cost` | opt | `number` (default: 0.0) |
 |  |  | `llm` | opt | [LlmUsageSummary](#model-llmusagesummary) |
@@ -6651,6 +6655,7 @@ Body: [StatusResponse](#model-statusresponse)
 | `total_tool_usage` |  |  | req | [ToolUsageSummary](#model-toolusagesummary) |
 |  | `actual_cost_by_provider` |  | opt | `object` |
 |  | `actual_total_cost_usd` |  | opt | `number` (nullable) |
+|  | `decision_reference_cost_by_provider` |  | opt | `object` |
 |  | `embedding` |  | opt | [EmbeddingToolUsageSummary](#model-embeddingtoolusagesummary) |
 |  |  | `actual_cost` | opt | `number` (nullable) |
 |  |  | `call_count` | opt | `integer` (default: 0) |
@@ -6920,6 +6925,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `total_tool_usage` |  | req | [ToolUsageSummary](#model-toolusagesummary) |
 |  |  | `actual_cost_by_provider` | opt | `object` |
 |  |  | `actual_total_cost_usd` | opt | `number` (nullable) |
+|  |  | `decision_reference_cost_by_provider` | opt | `object` |
 |  |  | `embedding` | opt | [EmbeddingToolUsageSummary](#model-embeddingtoolusagesummary) |
 |  |  | `embedding_cost` | opt | `number` (default: 0.0) |
 |  |  | `llm` | opt | [LlmUsageSummary](#model-llmusagesummary) |
@@ -7397,6 +7403,7 @@ Body: [StatusResponse](#model-statusresponse)
 | `total_tool_usage` |  |  | req | [ToolUsageSummary](#model-toolusagesummary) |
 |  | `actual_cost_by_provider` |  | opt | `object` |
 |  | `actual_total_cost_usd` |  | opt | `number` (nullable) |
+|  | `decision_reference_cost_by_provider` |  | opt | `object` |
 |  | `embedding` |  | opt | [EmbeddingToolUsageSummary](#model-embeddingtoolusagesummary) |
 |  |  | `actual_cost` | opt | `number` (nullable) |
 |  |  | `call_count` | opt | `integer` (default: 0) |
@@ -7630,6 +7637,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `total_tool_usage` |  | req | [ToolUsageSummary](#model-toolusagesummary) |
 |  |  | `actual_cost_by_provider` | opt | `object` |
 |  |  | `actual_total_cost_usd` | opt | `number` (nullable) |
+|  |  | `decision_reference_cost_by_provider` | opt | `object` |
 |  |  | `embedding` | opt | [EmbeddingToolUsageSummary](#model-embeddingtoolusagesummary) |
 |  |  | `embedding_cost` | opt | `number` (default: 0.0) |
 |  |  | `llm` | opt | [LlmUsageSummary](#model-llmusagesummary) |
@@ -10319,6 +10327,7 @@ Body: [StatusResponse](#model-statusresponse)
 | --- | --- | --- | --- | --- |
 | `actual_cost_by_provider` |  |  | opt | `object` |
 | `actual_total_cost_usd` |  |  | opt | `number` (nullable) |
+| `decision_reference_cost_by_provider` |  |  | opt | `object` |
 | `embedding` |  |  | opt | [EmbeddingToolUsageSummary](#model-embeddingtoolusagesummary) |
 |  | `actual_cost` |  | opt | `number` (nullable) |
 |  | `call_count` |  | opt | `integer` (default: 0) |
@@ -10368,6 +10377,13 @@ Body: [StatusResponse](#model-statusresponse)
         }
       ],
       "title": "Actual Total Cost Usd"
+    },
+    "decision_reference_cost_by_provider": {
+      "additionalProperties": {
+        "type": "number"
+      },
+      "title": "Decision Reference Cost By Provider",
+      "type": "object"
     },
     "embedding": {
       "$ref": "#/components/schemas/EmbeddingToolUsageSummary"

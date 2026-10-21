@@ -591,8 +591,9 @@ async def test_hosted_decision_failure_preserves_prior_actual_total(failure: str
                     },
                     "execution": None,
                     "actual_cost_usd": 0.02,
+                    "reference_cost_usd": 0.04,
                     "actual_cost_provider": "openrouter",
-                    "actual_cost_evidence": {"source": "provider"},
+                    "actual_cost_evidence": {"source": "provider", "inference": "attempted"},
                 },
             )
         if failure == "transport":
@@ -606,11 +607,18 @@ async def test_hosted_decision_failure_preserves_prior_actual_total(failure: str
             "message": "decision rejected",
         }
         if known_zero:
-            error["billing"] = {"actual_cost_usd": 0.0, "actual_cost_provider": "openrouter"}
+            error["billing"] = {
+                "actual_cost_usd": 0.0,
+                "reference_cost_usd": 0.0,
+                "actual_cost_provider": "openrouter",
+                "cost_evidence": {"inference": "not_dispatched"},
+            }
         elif billed_failure:
             error["billing"] = {
                 "actual_cost_usd": 0.01,
+                "reference_cost_usd": 0.02,
                 "actual_cost_provider": "openrouter",
+                "cost_evidence": {"inference": "attempted"},
                 "usage": {"input_tokens": 100, "output_tokens": 0},
             }
         return httpx.Response(400, json=error)
@@ -657,7 +665,7 @@ async def test_hosted_decision_failure_preserves_prior_actual_total(failure: str
         await client.aclose()
     updated = sessions.get(session_id)
     assert updated is not None
-    assert updated.usage.total_cost_usd == (0.03 if billed_failure else 0.02)
+    assert updated.usage.total_cost_usd == (0.06 if billed_failure else 0.04)
     assert updated.usage.actual_total_cost_usd == (0.03 if billed_failure else 0.02 if known_zero else None)
     failed = next(call for call in receipts.for_session(session_id) if call.outcome is not ToolCallOutcome.OK)
     assert failed.details.actual_cost_usd == (0.01 if billed_failure else 0.0 if known_zero else None)

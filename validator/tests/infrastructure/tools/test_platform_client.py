@@ -1746,7 +1746,12 @@ async def test_decision_proxy_error_preserves_charge() -> None:
             json={
                 "error_code": "provider_failed",
                 "message": "bad answer",
-                "billing": {"actual_cost_usd": 0.02, "actual_cost_provider": "openrouter"},
+                "billing": {
+                    "actual_cost_usd": 0.02,
+                    "actual_cost_provider": "openrouter",
+                    "reference_cost_usd": 0.04,
+                    "cost_evidence": {"inference": "attempted"},
+                },
             },
         )
 

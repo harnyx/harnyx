@@ -120,6 +120,7 @@ class ToolUsageSummary:
     embedding_cost: float = 0.0
     reference_total_cost_usd: float = 0.0
     reference_cost_by_provider: dict[str, float] = field(default_factory=dict)
+    decision_reference_cost_by_provider: dict[str, float] = field(default_factory=dict)
     actual_total_cost_usd: float | None = None
     actual_cost_by_provider: dict[str, float] = field(default_factory=dict)
 

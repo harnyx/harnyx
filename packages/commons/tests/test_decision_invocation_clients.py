@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import copy
+from decimal import Decimal
 from typing import cast
 
+import httpx
 import pytest
 from pydantic import SecretStr
 
@@ -13,6 +15,25 @@ from harnyx_commons.tools.decision_models import DecisionQueryRequest
 from harnyx_commons.tools.invocation_clients import CachedDecisionProviderRegistry, _decision_result
 
 pytestmark = pytest.mark.anyio("asyncio")
+
+
+def _snapshot():
+    from harnyx_commons.llm.providers.openrouter_pricing import OpenRouterPricingSnapshot, PricingEndpoint
+
+    return OpenRouterPricingSnapshot(
+        "cloudflare/clef-flash",
+        (
+            PricingEndpoint.model_validate(
+                {
+                    "provider_name": "Cloudflare",
+                    "tag": "cloudflare",
+                    "model_id": "cloudflare/clef-flash-versioned",
+                    "pricing": {"prompt": "0.00000009", "completion": "0", "discount": 0},
+                }
+            ),
+        ),
+        "now",
+    )
 
 
 def _request() -> DecisionQueryRequest:
@@ -45,21 +66,133 @@ def _raw() -> JsonObject:
 
 
 def test_reported_cost_wins_and_native_answers_and_usage_normalize() -> None:
-    result = _decision_result(_request(), _raw())
+    result = _decision_result(_request(), _raw(), snapshot=_snapshot())
     assert result.actual_cost_usd == 0.002
     assert result.response.answers["b"].model_dump() == {"type": "boolean", "probability": 0.9}
     assert result.response.usage is not None and result.response.usage.input_tokens == 1000
     assert result.response.model.endswith("versioned")
 
 
-def test_absent_cost_requires_known_card_and_complete_token_evidence() -> None:
+def test_missing_original_charge_never_uses_static_estimate() -> None:
     raw = _raw()
-    usage = cast(JsonObject, raw["usage"])
-    usage.pop("cost")
-    assert _decision_result(_request(), raw).actual_cost_usd == pytest.approx(0.00009)
-    usage.pop("input_tokens")
-    with pytest.raises(ToolProviderError):
-        _decision_result(_request(), raw)
+    cast(JsonObject, raw["usage"]).pop("cost")
+    with pytest.raises(ToolProviderError) as caught:
+        _decision_result(_request(), raw, snapshot=_snapshot())
+    assert caught.value.billing is not None
+    assert caught.value.billing.actual_cost_usd is None
+    assert caught.value.billing.reference_cost_unavailable
+
+
+def test_promotions_use_the_maximum_provider_discount_and_keep_actual_charge() -> None:
+    snapshot = _snapshot()
+    endpoint = snapshot.endpoints[0]
+    snapshot = snapshot.__class__(
+        snapshot.model,
+        (
+            endpoint.model_copy(update={"pricing": endpoint.pricing.model_copy(update={"discount": Decimal("0.25")})}),
+            endpoint.model_copy(update={"pricing": endpoint.pricing.model_copy(update={"discount": Decimal("0.5")})}),
+        ),
+        snapshot.fetched_at,
+    )
+    result = _decision_result(_request(), _raw(), snapshot=snapshot)
+    assert result.actual_cost_usd == 0.002
+    assert result.reference_cost_usd == 0.004
+    assert result.actual_cost_evidence["maximum_discount"] == 0.5
+    assert result.billing.usage == result.response.usage
+
+
+def test_missing_serving_provider_preserves_actual_charge_and_blocks_reference_comparison() -> None:
+    raw = _raw()
+    raw.pop("provider")
+    with pytest.raises(ToolProviderError) as caught:
+        _decision_result(_request(), raw, snapshot=_snapshot())
+    assert caught.value.billing is not None
+    assert caught.value.billing.actual_cost_usd == 0.002
+    assert caught.value.billing.reference_cost_unavailable
+
+
+def test_byok_separate_router_charge_is_not_discount_normalized() -> None:
+    raw = _raw()
+    raw["usage"] = {
+        "input_tokens": 10,
+        "output_tokens": 0,
+        "cost": 0.001,
+        "is_byok": True,
+        "cost_details": {"upstream_inference_cost": 0.004},
+    }
+    snapshot = _snapshot()
+    endpoint = snapshot.endpoints[0]
+    snapshot = snapshot.__class__(
+        snapshot.model,
+        (endpoint.model_copy(update={"pricing": endpoint.pricing.model_copy(update={"discount": Decimal("0.5")})}),),
+        snapshot.fetched_at,
+    )
+    result = _decision_result(_request(), raw, snapshot=snapshot)
+    assert result.actual_cost_usd == 0.005
+    assert result.reference_cost_usd == 0.009
+
+
+@pytest.mark.parametrize("unpriceable", [False, True])
+async def test_dynamic_decision_route_binds_filtered_catalog_before_one_paid_dispatch(unpriceable: bool) -> None:
+    from harnyx_commons.llm.providers.openrouter import OpenRouterDecisionClient
+    from harnyx_commons.llm.providers.openrouter_pricing import OpenRouterPricingCatalog
+    from harnyx_commons.tools.invocation_clients import OpenRouterDecisionProvider
+
+    posts = 0
+    requested_model = "new/decision-20261021"
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        nonlocal posts
+        if request.method == "POST":
+            posts += 1
+            return httpx.Response(200, json={**_raw(), "model": requested_model})
+        if request.url.path.endswith("/endpoints"):
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "id": "new/decision",
+                        "endpoints": [
+                            {
+                                "provider_name": "Cloudflare",
+                                "tag": "cloudflare",
+                                "model_id": "new/decision",
+                                "pricing": {
+                                    "prompt": "0.00001",
+                                    "completion": "0",
+                                    "discount": 1 if unpriceable else 0.5,
+                                },
+                            }
+                        ],
+                    }
+                },
+            )
+        assert request.url.params["output_modalities"] == "decisions"
+        return httpx.Response(200, json={"data": [{"id": "new/decision", "canonical_slug": requested_model}]})
+
+    transport = httpx.MockTransport(serve)
+    provider = OpenRouterDecisionProvider(
+        api_key=SecretStr("test"), timeout_seconds=1, pricing_catalog=OpenRouterPricingCatalog(transport=transport)
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="https://openrouter.ai/api/alpha/") as client:
+        provider._clients[requested_model] = OpenRouterDecisionClient(
+            model=requested_model, api_key=SecretStr("test"), client=client
+        )
+        try:
+            request = _request().model_copy(update={"model": requested_model})
+            if unpriceable:
+                with pytest.raises(ToolProviderError) as caught:
+                    await provider.query(request)
+                assert caught.value.billing is not None
+                assert caught.value.billing.actual_cost_usd == caught.value.billing.reference_cost_usd == 0
+                assert caught.value.billing.provider_usage["inference"] == "not_dispatched"
+                assert posts == 0
+            else:
+                result = await provider.query(request)
+                assert posts == 1
+                assert result.actual_cost_usd == 0.002 and result.reference_cost_usd == 0.004
+        finally:
+            await provider.aclose()
 
 
 @pytest.mark.parametrize(
@@ -74,7 +207,7 @@ def test_schema_invalid_answers_keep_independently_valid_charge(bad_answer: Json
     raw = _raw()
     cast(JsonObject, raw["answers"])["b"] = bad_answer
     with pytest.raises(ToolProviderError) as caught:
-        _decision_result(_request(), raw)
+        _decision_result(_request(), raw, snapshot=_snapshot())
     assert caught.value.billing is not None
     assert caught.value.billing.actual_cost_usd == 0.002
     assert caught.value.billing.usage is not None
@@ -86,7 +219,7 @@ def test_invalid_cost_never_becomes_free_or_static_success(bad_cost: object) -> 
     raw = _raw()
     cast(dict, raw["usage"])["cost"] = bad_cost
     with pytest.raises(ToolProviderError):
-        _decision_result(_request(), raw)
+        _decision_result(_request(), raw, snapshot=_snapshot())
 
 
 def test_gateway_normalizes_camel_case_usage_string_cost_and_metadata() -> None:

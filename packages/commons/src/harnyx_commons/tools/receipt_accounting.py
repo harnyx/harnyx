@@ -8,13 +8,13 @@ from dataclasses import asdict, dataclass, replace
 from harnyx_commons.domain.session import LlmUsageTotals, SessionUsage
 from harnyx_commons.domain.tool_call import ToolCall
 from harnyx_commons.domain.tool_usage import LlmModelUsageCost, LlmUsageSummary, ToolUsageSummary
-from harnyx_commons.tools.provider_billing import OpenRouterChatAccounting
+from harnyx_commons.tools.provider_billing import OpenRouterAccounting
 from harnyx_commons.tools.types import is_search_tool
 
 
-def openrouter_chat_accounting(receipt: ToolCall) -> OpenRouterChatAccounting | None:
+def openrouter_accounting(receipt: ToolCall) -> OpenRouterAccounting | None:
     """Decode explicit miner accounting; generic/internal receipts retain their policy."""
-    if receipt.tool != "llm_chat" or _receipt_llm_provider(receipt) != "openrouter":
+    if receipt.tool not in {"llm_chat", "decision_query"} or _receipt_llm_provider(receipt) != "openrouter":
         return None
     raw = (receipt.details.extra or {}).get("actual_cost_evidence")
     if not isinstance(raw, dict):
@@ -23,7 +23,7 @@ def openrouter_chat_accounting(receipt: ToolCall) -> OpenRouterChatAccounting | 
     evidence = raw.get("provider_usage", raw)
     if not isinstance(evidence, dict) or "inference" not in evidence:
         return None
-    return OpenRouterChatAccounting.from_fields(
+    return OpenRouterAccounting.from_fields(
         actual_cost_usd=receipt.details.actual_cost_usd,
         reference_cost_usd=receipt.details.reference_cost_usd,
         evidence=evidence,
@@ -31,7 +31,7 @@ def openrouter_chat_accounting(receipt: ToolCall) -> OpenRouterChatAccounting | 
 
 
 def include_llm_receipt(receipt: ToolCall) -> bool:
-    fact = openrouter_chat_accounting(receipt)
+    fact = openrouter_accounting(receipt)
     if fact is not None:
         return fact.counts_as_inference
     extra = receipt.details.extra or {}
@@ -42,16 +42,19 @@ def include_llm_receipt(receipt: ToolCall) -> bool:
     return bool(extra.get("account_provider_failures") and extra.get("provider_dispatched", True))
 
 
-def recover_openrouter_chat_usage(submitted: ToolUsageSummary, receipts: Sequence[ToolCall]) -> ToolUsageSummary:
-    """Replace Platform-owned chat accounting, preserving other tool policies."""
+def recover_openrouter_usage(submitted: ToolUsageSummary, receipts: Sequence[ToolCall]) -> ToolUsageSummary:
+    """Replace Platform-owned inference costs, preserving embedding and other-provider policies."""
+    decisions = tuple(r for r in receipts if r.tool == "decision_query" and _receipt_llm_provider(r) == "openrouter")
+    prior_decision_reference = submitted.decision_reference_cost_by_provider.get("openrouter", 0.0)
+    decision_reference = sum(r.details.cost_usd or 0.0 for r in decisions)
     chat = tuple(r for r in receipts if r.tool == "llm_chat" and _receipt_llm_provider(r) == "openrouter")
-    if not chat:
+    if not chat and not decisions:
         return submitted
-    canonical = usage_from_receipts(chat)
+    canonical = usage_from_receipts((*chat, *decisions))
     normalized, canonical_reference = summarize_llm_usage(canonical, chat)
     previous = submitted.llm.providers.get("openrouter", {})
     previous_reference = sum(model.reference_cost for model in previous.values())
-    reference_delta = canonical_reference - previous_reference
+    reference_delta = canonical_reference - previous_reference + decision_reference - prior_decision_reference
     providers = {provider: dict(models) for provider, models in submitted.llm.providers.items()}
     providers["openrouter"] = normalized.providers.get("openrouter", {})
     entries = [entry for models in providers.values() for entry in models.values()]
@@ -75,13 +78,18 @@ def recover_openrouter_chat_usage(submitted: ToolUsageSummary, receipts: Sequenc
     reference_providers = dict(submitted.reference_cost_by_provider)
     reference_providers["openrouter"] = reference_providers.get("openrouter", 0.0) + reference_delta
     actual_providers = dict(submitted.actual_cost_by_provider)
-    # Existing OpenRouter non-chat policy has equal reference/actual known
-    # charges. Its submitted reference remainder preserves that contribution
-    # without recovering unrelated lost calls or subtracting nullable model sums.
-    nonchat_known = submitted.reference_cost_by_provider.get("openrouter", previous_reference) - previous_reference
+    # Only embedding remains outside authoritative inference recovery. Its known
+    # reference and actual amounts are equal; preserve the submitted contribution.
+    nonchat_known = (
+        submitted.reference_cost_by_provider.get("openrouter", previous_reference)
+        - previous_reference
+        - prior_decision_reference
+    )
     if nonchat_known < -1e-12:
         raise ValueError("OpenRouter provider reference is smaller than its chat contribution")
-    actual_providers["openrouter"] = max(nonchat_known, 0.0) + sum(r.details.actual_cost_usd or 0.0 for r in chat)
+    actual_providers["openrouter"] = max(nonchat_known, 0.0) + sum(
+        r.details.actual_cost_usd or 0.0 for r in (*chat, *decisions)
+    )
     actual_total = submitted.actual_total_cost_usd
     if actual_total is not None:
         actual_total = (
@@ -97,9 +105,24 @@ def recover_openrouter_chat_usage(submitted: ToolUsageSummary, receipts: Sequenc
         llm_cost=llm_cost,
         reference_total_cost_usd=submitted.reference_total_cost_usd + reference_delta,
         reference_cost_by_provider=reference_providers,
+        decision_reference_cost_by_provider={
+            **submitted.decision_reference_cost_by_provider,
+            "openrouter": decision_reference,
+        },
         actual_total_cost_usd=actual_total,
         actual_cost_by_provider=actual_providers,
     )
+
+
+def decision_reference_costs(receipts: Sequence[ToolCall]) -> dict[str, float]:
+    costs: dict[str, float] = {}
+    for receipt in receipts:
+        if receipt.tool != "decision_query" or receipt.details.cost_usd is None:
+            continue
+        provider = _receipt_request_provider(receipt)
+        if provider is not None:
+            costs[provider] = costs.get(provider, 0.0) + receipt.details.cost_usd
+    return costs
 
 
 def summarize_llm_usage(budget: SessionUsage, receipts: Sequence[ToolCall]) -> tuple[LlmUsageSummary, float]:
@@ -218,7 +241,7 @@ class _ReceiptLlmUsage:
 
 
 def _receipt_llm_usage(receipt: ToolCall) -> _ReceiptLlmUsage | None:
-    fact = openrouter_chat_accounting(receipt)
+    fact = openrouter_accounting(receipt)
     if fact is not None:
         usage = None if fact.llm_usage is None else asdict(fact.llm_usage)
     else:

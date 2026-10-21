@@ -104,6 +104,10 @@ def merge_tool_usage_summaries(left: ToolUsageSummary, right: ToolUsageSummary) 
             left.reference_cost_by_provider,
             right.reference_cost_by_provider,
         ),
+        decision_reference_cost_by_provider=_merge_cost_by_provider(
+            left.decision_reference_cost_by_provider,
+            right.decision_reference_cost_by_provider,
+        ),
         actual_total_cost_usd=_merge_optional_cost(left.actual_total_cost_usd, right.actual_total_cost_usd),
         actual_cost_by_provider=_merge_cost_by_provider(
             left.actual_cost_by_provider,
@@ -128,10 +132,7 @@ def merge_complete_actual_cost_usage(left: ToolUsageSummary, right: ToolUsageSum
     if left.actual_total_cost_usd is not None and right.actual_total_cost_usd is not None:
         return merged
     providers = {
-        provider: {
-            model: replace(model_usage, actual_cost=None)
-            for model, model_usage in model_usage_by_name.items()
-        }
+        provider: {model: replace(model_usage, actual_cost=None) for model, model_usage in model_usage_by_name.items()}
         for provider, model_usage_by_name in merged.llm.providers.items()
     }
     return replace(
@@ -167,10 +168,7 @@ def _merge_optional_cost(left: float | None, right: float | None) -> float | Non
 
 
 def _merge_cost_by_provider(left: Mapping[str, float], right: Mapping[str, float]) -> dict[str, float]:
-    return {
-        provider: left.get(provider, 0.0) + right.get(provider, 0.0)
-        for provider in set(left) | set(right)
-    }
+    return {provider: left.get(provider, 0.0) + right.get(provider, 0.0) for provider in set(left) | set(right)}
 
 
 def _merge_llm_provider_usage(
@@ -207,8 +205,7 @@ def _merge_model_usage(
         ),
         cost=(left.cost if left is not None else 0.0) + (right.cost if right is not None else 0.0),
         reference_cost=(
-            (left.reference_cost if left is not None else 0.0)
-            + (right.reference_cost if right is not None else 0.0)
+            (left.reference_cost if left is not None else 0.0) + (right.reference_cost if right is not None else 0.0)
         ),
         actual_cost=_merge_optional_cost(
             left.actual_cost if left is not None else None,

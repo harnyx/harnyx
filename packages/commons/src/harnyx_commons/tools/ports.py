@@ -37,9 +37,7 @@ class FetchPageProviderPort(Protocol):
 class WebSearchProviderPort(FetchPageProviderPort, Protocol):
     """Provider seam for web search providers that also fetch pages."""
 
-    async def search_web(
-        self, request: SearchWebSearchRequest
-    ) -> SearchProviderResult[SearchWebSearchResponse]: ...
+    async def search_web(self, request: SearchWebSearchRequest) -> SearchProviderResult[SearchWebSearchResponse]: ...
 
 
 class AiSearchProviderPort(Protocol):
@@ -111,6 +109,7 @@ class DecisionProviderResult:
     actual_cost_usd: float | None
     actual_cost_provider: str
     actual_cost_evidence: JsonObject
+    reference_cost_usd: float | None = None
 
     @property
     def billing(self) -> ProviderBillingMetadata:
@@ -119,6 +118,8 @@ class DecisionProviderResult:
             actual_cost_provider=self.actual_cost_provider,
             source="response_body",
             usage=self.response.usage,
+            reference_cost_usd=self.reference_cost_usd,
+            provider_usage=self.actual_cost_evidence,
         )
 
 

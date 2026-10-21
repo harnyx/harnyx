@@ -479,7 +479,8 @@ class _TrackedDecisionProvider:
             ),
             actual_cost_usd=0.001,
             actual_cost_provider=request.provider,
-            actual_cost_evidence={"source": "provider"},
+            actual_cost_evidence={"source": "provider", "inference": "attempted"},
+            reference_cost_usd=0.001,
         )
 
 
