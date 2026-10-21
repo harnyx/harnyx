@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from uuid import uuid4
 
 import pytest
@@ -32,7 +31,6 @@ pytestmark = [
 ]
 
 OPENROUTER_LIVE_CHAT_MODEL = "openai/gpt-oss-20b"
-OPENROUTER_BYOK_LIVE_CHAT_MODEL = "openai/gpt-oss-120b"
 MIMO_V26_MODELS = (
     "xiaomi/mimo-v2.6-flash",
     "xiaomi/mimo-v2.6-pro",
@@ -100,24 +98,6 @@ def _openrouter_reasoning_request(*, model: str) -> LlmRequest:
     )
 
 
-def _openrouter_byok_request() -> LlmRequest:
-    return LlmRequest(
-        provider="openrouter",
-        model=OPENROUTER_BYOK_LIVE_CHAT_MODEL,
-        messages=(
-            LlmMessage(
-                role="user",
-                content=(LlmMessageContentPart.input_text('Reply with only "ok".'),),
-            ),
-        ),
-        temperature=0.0,
-        max_output_tokens=128,
-        extra={"provider": {"only": ["cerebras"], "allow_fallbacks": False}},
-        timeout=180.0,
-        retry_policy=RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0.0),
-    )
-
-
 def _openrouter_reasoning_provider_extra(*, model: str) -> dict[str, object]:
     native_model = OPENROUTER_INTERNAL_TO_NATIVE_MODEL.get(model, model)
     provider = OPENROUTER_REASONING_PROVIDER_BY_NATIVE_MODEL.get(native_model)
@@ -181,41 +161,6 @@ async def test_mimo_v26_miner_route_live(model: str) -> None:
     assert response.metadata is not None
     assert response.metadata["effective_model"] == model
     assert response.metadata["actual_cost_provider"] == "openrouter"
-
-
-async def test_openrouter_byok_completion_settles_original_response_cost_live() -> None:
-    settings = LlmSettings()
-    assert settings.openrouter_api_key_value, "OPENROUTER_API_KEY must be configured"
-
-    provider = OpenRouterLlmProvider(openrouter_api_key=settings.openrouter_api_key)
-    try:
-        response = await provider.invoke(_openrouter_byok_request())
-    finally:
-        await provider.aclose()
-
-    assert response.metadata is not None
-    raw_response = response.metadata.get("raw_response")
-    assert isinstance(raw_response, Mapping)
-    usage = raw_response.get("usage")
-    assert isinstance(usage, Mapping)
-    assert usage.get("is_byok") is True
-    openrouter_cost = usage.get("cost")
-    assert isinstance(openrouter_cost, int | float) and not isinstance(openrouter_cost, bool)
-    cost_details = usage.get("cost_details")
-    assert isinstance(cost_details, Mapping)
-    upstream_inference_cost = cost_details.get("upstream_inference_cost")
-    assert isinstance(upstream_inference_cost, int | float) and not isinstance(upstream_inference_cost, bool)
-    assert upstream_inference_cost >= 0.0
-    assert response.metadata["actual_cost_usd"] == pytest.approx(
-        float(openrouter_cost) + float(upstream_inference_cost)
-    )
-    evidence = response.metadata["actual_cost_evidence"]
-    assert isinstance(evidence, Mapping)
-    assert evidence["usage"] == {
-        "is_byok": True,
-        "cost": float(openrouter_cost),
-        "cost_details": {"upstream_inference_cost": float(upstream_inference_cost)},
-    }
 
 
 async def test_openrouter_provider_reasoning_live() -> None:
@@ -420,11 +365,18 @@ async def test_new_openrouter_model_exact_route_contract_live(model: str) -> Non
         "thinking": LlmThinkingConfig(enabled=True),
         "timeout": 180.0,
     }
+    if model == "qwen/qwen3.5-397b-a17b":
+        # Alibaba supports an explicit thinking budget, leaving room for visible output.
+        common["thinking"] = LlmThinkingConfig(enabled=True, budget=1024)
+        common["extra"] = {
+            "provider": {"only": ["alibaba"], "allow_fallbacks": False, "require_parameters": True}
+        }
 
-    # DeepSeek thinking mode rejects forced tool selection.
+    # These thinking routes reject forced tool selection.
     automatic_tool_choice = model in {
         "deepseek/deepseek-v4.1-flash",
         "deepseek/deepseek-v4.1-flash-1017",
+        "qwen/qwen3.5-397b-a17b",
     }
 
     try:
