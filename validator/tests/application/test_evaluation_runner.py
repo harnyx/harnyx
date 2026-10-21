@@ -38,7 +38,7 @@ from harnyx_commons.domain.tool_usage import SearchToolUsageSummary, ToolUsageSu
 from harnyx_commons.errors import SessionBudgetExhaustedError
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
-from harnyx_commons.sandbox.client import SandboxClient
+from harnyx_commons.sandbox.client import SandboxClient, SandboxInvokeError
 from harnyx_miner_sdk.sandbox_protocol import SandboxAdmission
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptAuditRecord,
@@ -170,8 +170,9 @@ class _ClaimedAssignedTaskFake:
     def mark_started(self, validator_session_id: UUID, **_: object) -> None:
         self._owner._mark_started(self._assignment, validator_session_id)
 
-    def fail_before_start(self, result: PlatformOwnedTaskResult) -> None:
+    def fail_before_start(self, result: PlatformOwnedTaskResult) -> bool:
         self._owner._fail_before_start(self._assignment, result)
+        return True
 
 
 def _progress(tmp_path: Path) -> FileBackedRunProgress:
@@ -5676,7 +5677,7 @@ async def test_oom_drain_preserves_success_and_returns_unstarted_claims(tmp_path
     assert queue.empty()
     returned = group.claim_nowait_for_dispatch()
     assert returned.assignment == assignments[2]
-    assert returned.remaining_dispatch_seconds() < 300
+    assert returned.remaining_dispatch_seconds() < group.dispatch_start_lease_seconds
     assert not group.starting_records.keys() - {returned.key}
     assert not sessions._sessions
 
@@ -5691,6 +5692,143 @@ async def test_oom_drain_preserves_success_and_returns_unstarted_claims(tmp_path
     assert all(attempt["compiler_generation"] is not None for attempt in started)
     settled = [record for record in caplog.records if record.message == "sandbox OOM attempt settled"]
     assert any(record.result_preserved for record in settled)
+
+
+@pytest.mark.parametrize("second_start_succeeds", (True, False))
+@pytest.mark.parametrize("timeout_source", ("validator", "sandbox"))
+async def test_task_start_wait_retries_once_then_reports_validator_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, second_start_succeeds: bool, timeout_source: str
+) -> None:
+    """A start wait gets one further chance, then must unblock the batch without a miner zero."""
+    runner, batch_id, artifact, task, sessions, _, _, _ = _assigned_task_test_context(tmp_path)
+    assignment = MinerTaskWorkAssignment(
+        batch_id=batch_id,
+        artifact=artifact,
+        task=task,
+        attempt_number=1,
+        max_attempts=2,
+        assignment_token=_ASSIGNMENT_TOKEN,
+    )
+    work = _AssignedWork()
+    claimed = work.claim_initial_for_dispatch(assignment)
+    admission_count = 0
+    monkeypatch.setattr(evaluation_runner_module, "TASK_START_WAIT_SECONDS", 0.01, raising=False)
+
+    class Sandbox(_AdmittingSandbox):
+        @asynccontextmanager
+        async def admission(self, limit_seconds, token):
+            nonlocal admission_count
+            admission_count += 1
+            if admission_count == 1 or not second_start_succeeds:
+                if timeout_source == "sandbox":
+                    raise SandboxInvokeError(
+                        "sandbox admission rejected",
+                        status_code=504,
+                        detail_code=None,
+                        detail_exception="TimeoutError",
+                        detail_error="admission deadline exceeded",
+                    )
+                await asyncio.Event().wait()
+            async with super().admission(limit_seconds, token) as reserved:
+                yield reserved
+
+    class Orchestrator:
+        async def execute(self, request, **_kwargs):
+            return _successful_execution(request)
+
+    outcome = await asyncio.wait_for(
+        runner._run_admitted_assignment(
+            runner._assigned_attempt_lifecycle(batch_id=batch_id, artifact=artifact, claimed=claimed),
+            orchestrator=cast(TaskRunOrchestrator, Orchestrator()),
+            sandbox_client=Sandbox(),
+        ),
+        timeout=1.0,
+    )
+    assert admission_count == 2
+    if second_start_succeeds:
+        assert outcome.execution_to_queue is not None
+        assert not work.failed_before_start
+    else:
+        assert not sessions._sessions
+        assert len(work.failed_before_start) == 1
+        result = work.failed_before_start[0][1]
+        assert result.result is None
+        assert result.terminal_attempt.error_code == str(MinerTaskErrorCode.VALIDATOR_INTERNAL_TIMEOUT)
+        assert result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE
+        assert result.terminal_attempt.retry_decision is MinerTaskAttemptRetryDecision.WILL_NOT_RETRY
+
+
+@pytest.mark.parametrize("failure_kind", ("timeout", "admission-error", "session-error"))
+async def test_stale_start_failure_cannot_close_replacement_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_kind: str
+) -> None:
+    """A late start failure must not make the runner close a newer task preparation."""
+    from harnyx_validator.runtime.platform_work_worker import _ArtifactGroupState, _AssignedArtifactGroup
+
+    runner, batch_id, artifact, task, _, _, _, _ = _assigned_task_test_context(tmp_path)
+    assignment = MinerTaskWorkAssignment(
+        batch_id=batch_id,
+        artifact=artifact,
+        task=task,
+        attempt_number=1,
+        max_attempts=2,
+        assignment_token=_ASSIGNMENT_TOKEN,
+    )
+    now = 0.0
+    group = _AssignedArtifactGroup(
+        artifact_id=artifact.artifact_id,
+        state=_ArtifactGroupState.OPEN,
+        assignment_queue=asyncio.Queue(),
+        close_requested=asyncio.Event(),
+        result_queue=asyncio.Queue(),
+        assignment_records={},
+        starting_records={},
+        monotonic_clock=lambda: now,
+    )
+    group.put_nowait(assignment)
+    group.mark_dispatch_ready()
+    stale = group.claim_nowait_for_dispatch()
+    replacement = None
+
+    def replace_preparation():
+        nonlocal now, replacement
+        now = 601.0
+        group.fail_expired_dispatches(now=now, dispatch_start_lease_seconds=600)
+        group.result_queue.get_nowait()
+        group.put_nowait(assignment)
+        replacement = group.claim_nowait_for_dispatch()
+
+    class Sandbox(_AdmittingSandbox):
+        @asynccontextmanager
+        async def admission(self, limit_seconds, token):
+            if failure_kind != "session-error":
+                replace_preparation()
+                if failure_kind == "timeout":
+                    raise SandboxInvokeError(
+                        "admission timed out",
+                        status_code=504,
+                        detail_code=None,
+                        detail_exception="TimeoutError",
+                        detail_error="admission deadline exceeded",
+                    )
+                raise RuntimeError("admission failed after replacement")
+            async with super().admission(limit_seconds, token) as reserved:
+                yield reserved
+
+    def fail_session_issue(**_kwargs):
+        replace_preparation()
+        raise RuntimeError("session issue failed after replacement")
+
+    if failure_kind == "session-error":
+        monkeypatch.setattr(runner, "_issue_session", fail_session_issue)
+    outcome = await runner._run_admitted_assignment(
+        runner._assigned_attempt_lifecycle(batch_id=batch_id, artifact=artifact, claimed=stale),
+        orchestrator=cast(TaskRunOrchestrator, object()),
+        sandbox_client=Sandbox(),
+    )
+    assert outcome.result_to_queue is None
+    assert replacement is not None and replacement.is_live()
+    assert group.result_queue.empty()
 
 
 async def test_external_oom_after_admission_returns_claim_without_starting_session(tmp_path: Path) -> None:

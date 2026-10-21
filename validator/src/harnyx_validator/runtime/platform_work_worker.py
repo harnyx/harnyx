@@ -13,7 +13,11 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from harnyx_validator.application.assigned_work import AssignedArtifactWork
+from harnyx_validator.application.assigned_work import (
+    TASK_START_TIMEOUT_SECONDS,
+    AssignedArtifactWork,
+    task_start_timeout_result,
+)
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptTerminalEffect,
     MinerTaskWorkAssignment,
@@ -24,11 +28,11 @@ from harnyx_validator.application.ports.platform import PlatformPort, PlatformTa
 from harnyx_validator.infrastructure.observability.sentry import capture_exception
 
 logger = logging.getLogger("harnyx_validator.platform_work_worker")
-_PLATFORM_WORK_DISPATCH_START_LEASE_SECONDS = 300.0
+_PLATFORM_WORK_DISPATCH_START_LEASE_SECONDS = TASK_START_TIMEOUT_SECONDS
 """Bounded dispatch-start lease.
 
-This applies only after an assigned artifact has started and a specific
-assignment is dispatchable but still queued.
+This starts after artifact startup and includes one additional five-minute
+chance to obtain execution admission. Expiry fails the validator delivery.
 """
 
 ArtifactAssignmentExecutor = Callable[
@@ -131,7 +135,7 @@ class _ClaimedAssignment:
     def is_live(self) -> bool:
         return (
             not self.closed
-            and self.key in self.group.starting_records
+            and self.group.starting_records.get(self.key) is self.record
             and not self.group.close_requested.is_set()
             and self.remaining_dispatch_seconds() > 0
         )
@@ -139,11 +143,16 @@ class _ClaimedAssignment:
     def release_to_queue_if_live(self) -> None:
         if self.closed:
             return
+        if self.group.starting_records.get(self.key) is not self.record:
+            self.closed = True
+            return
         live = self.is_live()
         self.group.starting_records.pop(self.key, None)
         if live:
             self.group.assignment_records[self.key] = self.record
             self.group.assignment_queue.put_nowait(self.assignment)
+        elif not self.group.close_requested.is_set():
+            self.group.result_queue.put_nowait(task_start_timeout_result(self.assignment, datetime.now(UTC)))
         self.closed = True
 
     @property
@@ -155,8 +164,8 @@ class _ClaimedAssignment:
             started_at = datetime.now(UTC)
         self.group._finish_starting_claim(self, validator_session_id, started_at=started_at)
 
-    def fail_before_start(self, result: PlatformOwnedTaskResult) -> None:
-        self.group._fail_starting_claim(self, result)
+    def fail_before_start(self, result: PlatformOwnedTaskResult) -> bool:
+        return self.group._fail_starting_claim(self, result)
 
 
 @dataclass(slots=True)
@@ -225,26 +234,28 @@ class _AssignedArtifactGroup:
             if claimed is not None:
                 return claimed
 
-    def release_expired_queued(self, *, now: float, dispatch_start_lease_seconds: float) -> int:
+    def fail_expired_dispatches(self, *, now: float, dispatch_start_lease_seconds: float) -> int:
         expired_starting = [
             key
             for key, record in self.starting_records.items()
             if record.dispatchable_at is not None and now - record.dispatchable_at >= dispatch_start_lease_seconds
         ]
         for key in expired_starting:
-            self.starting_records.pop(key, None)
+            record = self.starting_records.pop(key)
+            self.result_queue.put_nowait(task_start_timeout_result(record.assignment, datetime.now(UTC)))
         expired_keys = frozenset(
             key
             for key, record in self.assignment_records.items()
             if record.state is _AssignmentState.DISPATCHABLE_QUEUED
             and record.dispatchable_at is not None
-            and now - record.dispatchable_at > dispatch_start_lease_seconds
+            and now - record.dispatchable_at >= dispatch_start_lease_seconds
         )
         if not expired_keys:
             return len(expired_starting)
         removed_keys = _remove_assignments_from_queue(self.assignment_queue, expired_keys)
         for key in removed_keys:
-            self.assignment_records.pop(key, None)
+            record = self.assignment_records.pop(key)
+            self.result_queue.put_nowait(task_start_timeout_result(record.assignment, datetime.now(UTC)))
         return len(removed_keys) + len(expired_starting)
 
     def reportable_identities(self) -> tuple[PlatformTaskAttemptIdentity, ...]:
@@ -309,12 +320,16 @@ class _AssignedArtifactGroup:
         self.starting_records.pop(claimed.key, None)
         claimed.closed = True
 
-    def _fail_starting_claim(self, claimed: _ClaimedAssignment, result: PlatformOwnedTaskResult) -> None:
+    def _fail_starting_claim(self, claimed: _ClaimedAssignment, result: PlatformOwnedTaskResult) -> bool:
         if claimed.closed:
-            return
+            return False
+        if self.starting_records.get(claimed.key) is not claimed.record:
+            claimed.closed = True
+            return False
         self.result_queue.put_nowait(result)
         self.starting_records.pop(claimed.key, None)
         claimed.closed = True
+        return True
 
     def _clear_not_started_assignments(self) -> None:
         self.starting_records.clear()
@@ -417,7 +432,8 @@ class PlatformWorkWorker:
     async def run_once(self) -> None:
         self._collect_artifact_group_results()
         self._collect_scoring_results()
-        self._release_expired_dispatchable_assignments()
+        self._fail_expired_dispatchable_assignments()
+        self._collect_artifact_group_results()
         self._collect_closed_artifact_groups()
         if self._pending_executions:
             if not await self._submit_pending_executions():
@@ -599,20 +615,20 @@ class PlatformWorkWorker:
             group.state = _ArtifactGroupState.CLOSING
             group.close_requested.set()
 
-    def _release_expired_dispatchable_assignments(self) -> None:
+    def _fail_expired_dispatchable_assignments(self) -> None:
         now = self._monotonic_clock()
         for group_key, group in tuple(self._active_artifacts.items()):
             if group.state is not _ArtifactGroupState.OPEN:
                 continue
             if group.task is not None and group.task.done():
                 continue
-            removed_count = group.release_expired_queued(
+            removed_count = group.fail_expired_dispatches(
                 now=now,
                 dispatch_start_lease_seconds=self._dispatch_start_lease_seconds,
             )
             if removed_count:
                 logger.warning(
-                    "released platform artifact assignments that stayed queued after dispatch readiness",
+                    "validator task-start waiting limit exhausted",
                     extra={
                         "batch_id": str(group_key[0]),
                         "artifact_id": str(group_key[1]),

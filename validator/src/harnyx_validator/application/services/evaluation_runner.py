@@ -44,10 +44,17 @@ from harnyx_commons.miner_task_failure_policy import (
     is_timeout_sandbox_invocation,
     is_uncaught_platform_tool_proxy_timeout_sandbox_invocation,
 )
-from harnyx_commons.sandbox.client import SandboxClient
+from harnyx_commons.sandbox.client import SandboxClient, SandboxInvokeError
 from harnyx_commons.tools.receipt_accounting import usage_from_receipts as _usage_from_receipts
 from harnyx_miner_sdk.sandbox_protocol import SANDBOX_OOM_AFFECTED, SandboxAdmission
-from harnyx_validator.application.assigned_work import AssignedArtifactWork, ClaimedAssignedTask, PhaseRecorder
+from harnyx_validator.application.assigned_work import (
+    TASK_START_WAIT_ATTEMPTS,
+    TASK_START_WAIT_SECONDS,
+    AssignedArtifactWork,
+    ClaimedAssignedTask,
+    PhaseRecorder,
+    task_start_timeout_result,
+)
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptAuditRecord,
     MinerTaskAttemptDiagnostics,
@@ -379,11 +386,11 @@ class _AssignedAttemptStartContext:
                 attempt_started_at=attempt_started_at,
             )
             if self.lifecycle.issued is None:
-                self.lifecycle.claimed.fail_before_start(result)
+                published = self.lifecycle.claimed.fail_before_start(result)
                 raise _AssignmentStartFailedError(
                     _AssignedAttemptRunOutcome(
-                        result_to_queue=result,
-                        result_already_queued=True,
+                        result_to_queue=result if published else None,
+                        result_already_queued=published,
                     )
                 ) from exc
             self.lifecycle.runner._cleanup_attempt_session_best_effort(
@@ -392,11 +399,11 @@ class _AssignedAttemptStartContext:
                 artifact_id=self.lifecycle.artifact.artifact_id,
                 task_id=assignment.task.task_id,
             )
-            self.lifecycle.claimed.fail_before_start(result)
+            published = self.lifecycle.claimed.fail_before_start(result)
             raise _AssignmentStartFailedError(
                 _AssignedAttemptRunOutcome(
-                    result_to_queue=result,
-                    result_already_queued=True,
+                    result_to_queue=result if published else None,
+                    result_already_queued=published,
                 )
             ) from exc
 
@@ -675,8 +682,10 @@ class EvaluationRunner:
                 started_at=self._clock(),
                 exc=exc,
             )
-            claimed.fail_before_start(result)
-            return result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE
+            published = claimed.fail_before_start(result)
+            return (
+                published and result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE
+            )
 
         def start_assignment(claimed: ClaimedAssignedTask) -> None:
             if sandbox_client.draining:
@@ -899,29 +908,44 @@ class EvaluationRunner:
         sandbox_client: SandboxClient,
     ) -> _AssignedAttemptRunOutcome:
         claimed = lifecycle.claimed
-        admission_wait = asyncio.timeout(claimed.remaining_dispatch_seconds())
         try:
-            async with admission_wait:
-                async with sandbox_client.admission(
-                    self._config.execution_limit_for(claimed.assignment.task),
-                    claimed.assignment.assignment_token,
-                ) as admission:
-                    lifecycle.admission = admission
-                    if not claimed.is_live() or sandbox_client.draining:
-                        return _AssignedAttemptRunOutcome()
-                    # The dispatch lease bounds admission, not an already started attempt.
-                    admission_wait.reschedule(None)
-                    return await self._run_assigned_attempt(lifecycle, orchestrator=orchestrator, admission=admission)
-        except TimeoutError:
-            if not admission_wait.expired():
-                raise
-            return _AssignedAttemptRunOutcome()
+            for _ in range(TASK_START_WAIT_ATTEMPTS):
+                admission_wait = asyncio.timeout(min(claimed.remaining_dispatch_seconds(), TASK_START_WAIT_SECONDS))
+                try:
+                    async with admission_wait:
+                        async with sandbox_client.admission(
+                            self._config.execution_limit_for(claimed.assignment.task),
+                            claimed.assignment.assignment_token,
+                        ) as admission:
+                            lifecycle.admission = admission
+                            if not claimed.is_live() or sandbox_client.draining:
+                                return _AssignedAttemptRunOutcome()
+                            # The waiting deadline must not shorten a started execution.
+                            admission_wait.reschedule(None)
+                            return await self._run_assigned_attempt(
+                                lifecycle, orchestrator=orchestrator, admission=admission
+                            )
+                except TimeoutError:
+                    if not admission_wait.expired():
+                        raise
+                except SandboxInvokeError as exc:
+                    if exc.status_code != 504 or exc.detail_exception != "TimeoutError":
+                        raise
+                if not claimed.is_live():
+                    break
+            result = task_start_timeout_result(claimed.assignment, self._clock())
+            published = claimed.fail_before_start(result)
+            return _AssignedAttemptRunOutcome(
+                result_to_queue=result if published else None, result_already_queued=published
+            )
         except Exception as exc:
             if sandbox_client.draining:
                 return _AssignedAttemptRunOutcome()
             result = lifecycle.build_failure_result(exc=exc, attempt_started_at=self._clock())
-            claimed.fail_before_start(result)
-            return _AssignedAttemptRunOutcome(result_to_queue=result, result_already_queued=True)
+            published = claimed.fail_before_start(result)
+            return _AssignedAttemptRunOutcome(
+                result_to_queue=result if published else None, result_already_queued=published
+            )
         finally:
             claimed.release_to_queue_if_live()
 

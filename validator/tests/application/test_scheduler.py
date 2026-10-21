@@ -200,8 +200,9 @@ class _ClaimedAssignedTaskFake:
     def mark_started(self, validator_session_id: UUID, **_: object) -> None:
         self._owner._mark_started(self._assignment, validator_session_id)
 
-    def fail_before_start(self, result: PlatformOwnedTaskResult) -> None:
+    def fail_before_start(self, result: PlatformOwnedTaskResult) -> bool:
         self._owner._fail_before_start(self._assignment, result)
+        return True
 
 
 @pytest.fixture

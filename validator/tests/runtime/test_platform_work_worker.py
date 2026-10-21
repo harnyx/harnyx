@@ -1415,108 +1415,84 @@ async def test_worker_polls_platform_with_unstarted_admission_waiter() -> None:
     assert worker._local_inflight_count() == 1
 
 
-async def test_worker_expires_queued_reservation_inside_started_group_without_dropping_reassignment() -> None:
+async def test_worker_exhausted_start_wait_fails_delivery_after_extra_five_minutes() -> None:
+    """Bound task-start waiting while submitting started sibling execution evidence first."""
     clock = _MonotonicClock()
     batch_id = uuid4()
     artifact = _artifact(uid=1)
-    started_assignment = _assignment(batch_id=batch_id, artifact=artifact, task=_task("started"))
-    queued_assignment = _assignment(batch_id=batch_id, artifact=artifact, task=_task("queued"))
-    session_id = uuid4()
-    request_active_attempts: list[tuple[PlatformTaskAttemptIdentity, ...]] = []
+    running = _assignment(batch_id=batch_id, artifact=artifact, task=_task("running"))
+    waiting = _assignment(batch_id=batch_id, artifact=artifact, task=_task("waiting"))
     started = asyncio.Event()
+    finish_running = asyncio.Event()
+    submitted: list[PlatformOwnedTaskResult | PlatformOwnedTaskExecution] = []
 
-    class _Platform:
-        def __init__(self) -> None:
-            self.request_count = 0
+    class Platform:
+        request_count = 0
 
-        async def request_miner_task_work(
-            self,
-            *,
-            active_attempts: tuple[PlatformTaskAttemptIdentity, ...],
-            **_kwargs: object,
-        ) -> tuple[MinerTaskWorkAssignment, ...]:
-            request_active_attempts.append(active_attempts)
+        async def request_miner_task_work(self, **_kwargs):
             self.request_count += 1
-            if self.request_count == 1:
-                return (started_assignment, queued_assignment)
-            if self.request_count == 2:
-                return (queued_assignment,)
-            return ()
+            return (running, waiting) if self.request_count == 1 else ()
 
-        def submit_miner_task_work_results(self, _results: object) -> tuple[object, ...]:
-            return ()
+        def submit_miner_task_work_executions(self, executions):
+            submitted.extend(executions)
+            return tuple(_ack(execution) for execution in executions)
 
-    async def starts_only_first_assignment(
-        _artifact_id: UUID,
-        assigned_work,
-        close_requested: asyncio.Event,
-        _result_queue: asyncio.Queue[PlatformOwnedTaskResult],
-    ) -> None:
-        assigned_work.mark_dispatch_ready()
-        claimed = await assigned_work.claim_for_dispatch()
-        assert claimed.assignment.task.task_id == started_assignment.task.task_id
-        claimed.mark_started(session_id)
+        def submit_miner_task_work_results(self, results):
+            submitted.extend(results)
+            return tuple(_ack(result) for result in results)
+
+    async def executor(_artifact_id, work, close_requested, results):
+        work.mark_dispatch_ready()
+        first = await work.claim_for_dispatch()
+        first.mark_started(uuid4())
         started.set()
+        await finish_running.wait()
+        results.put_nowait(_platform_execution(batch_id=batch_id, artifact=artifact, task=running.task))
         await close_requested.wait()
 
-    platform = _Platform()
+    platform = Platform()
     worker = PlatformWorkWorker(
-        platform=platform,  # type: ignore[arg-type]
-        execute_artifact_assignments=starts_only_first_assignment,
+        platform=platform,
+        execute_artifact_assignments=executor,
         target_concurrency=2,
         max_active_artifacts=1,
-        dispatch_start_lease_seconds=10.0,
         monotonic_clock=clock,
     )
+    try:
+        await _run_once_and_consume_platform_work(worker)
+        await asyncio.wait_for(started.wait(), timeout=1)
+        group = next(iter(worker._active_artifacts.values()))
+        clock.advance(301)
+        await worker.run_once()
+        assert group.local_inflight_count() == 2
+        assert not submitted
+        assert not group.close_requested.is_set()
 
-    await _run_once_and_consume_platform_work(worker)
-    await asyncio.wait_for(started.wait(), timeout=1.0)
-    group = next(iter(worker._active_artifacts.values()))
-    assert group.assignment_queue.qsize() == 1
-    assert group.local_inflight_count() == 2
-
-    clock.advance(11.0)
-    await _run_once_and_consume_platform_work(worker)
-
-    assert platform.request_count == 2
-    assert request_active_attempts[-1] == (
-        PlatformTaskAttemptIdentity(
-            batch_id=started_assignment.batch_id,
-            artifact_id=started_assignment.artifact.artifact_id,
-            task_id=started_assignment.task.task_id,
-            attempt_number=started_assignment.attempt_number,
-            validator_session_id=session_id,
-        ),
-    )
-    assert group.local_inflight_count() == 2
-    assert {
-        record.assignment.task.task_id
-        for record in group.assignment_records.values()
-        if record.state is _AssignmentState.DISPATCHABLE_QUEUED
-    } == {queued_assignment.task.task_id}
-    assert group.assignment_queue.qsize() == 1
-
-    await _run_once_and_consume_platform_work(worker)
-
-    assert group.local_inflight_count() == 2
-    assert {
-        record.assignment.task.task_id
-        for record in group.assignment_records.values()
-        if record.state is _AssignmentState.DISPATCHABLE_QUEUED
-    } == {queued_assignment.task.task_id}
-    assert group.assignment_queue.qsize() == 1
-
-    clock.advance(11.0)
-    await _run_once_and_consume_platform_work(worker)
-
-    assert group.local_inflight_count() == 1
-    assert {record.assignment.task.task_id for record in group.assignment_records.values()} == {
-        started_assignment.task.task_id
-    }
-    assert group.assignment_queue.empty()
-
-    worker._request_all_artifact_groups_close()
-    await worker._cancel_artifact_group_tasks()
+        clock.advance(300)
+        await worker.run_once()
+        assert group.close_requested.is_set()
+        assert group.local_inflight_count() == 1
+        assert platform.request_count == 1
+        assert not submitted
+        finish_running.set()
+        for _ in range(100):
+            await worker.run_once()
+            if len(submitted) == 2:
+                break
+            await asyncio.sleep(0.01)
+        outcomes = {result.task_id: result for result in submitted}
+        assert isinstance(submitted[0], PlatformOwnedTaskExecution)
+        assert submitted[0].task_id == running.task.task_id
+        failure = outcomes[waiting.task.task_id]
+        assert isinstance(failure, PlatformOwnedTaskResult)
+        assert failure.result is None
+        assert failure.terminal_attempt.error_code == "validator_internal_timeout"
+        assert failure.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE
+    finally:
+        finish_running.set()
+        worker._request_all_artifact_groups_close()
+        await worker._cancel_artifact_group_tasks()
+        await worker._cancel_work_request_task()
 
 
 async def test_worker_defers_delivery_failure_until_started_sibling_result_is_collected() -> None:
@@ -1837,6 +1813,36 @@ def _assignment(
     )
 
 
+@pytest.mark.parametrize("finalization", ("release", "failure"))
+async def test_expired_preparation_cannot_finalize_a_newer_preparation(finalization: str) -> None:
+    """Late cleanup or failure from an expired preparation must not cancel its replacement."""
+    artifact = _artifact(uid=54)
+    assignment = _assignment(batch_id=uuid4(), artifact=artifact, task=_task("reoffered"))
+    group = _assigned_group(artifact_id=artifact.artifact_id)
+    clock = _MonotonicClock()
+    group.monotonic_clock = clock
+    group.put_nowait(assignment)
+    group.mark_dispatch_ready()
+    old_preparation = group.claim_nowait_for_dispatch()
+    clock.advance(301)
+    group.fail_expired_dispatches(now=clock(), dispatch_start_lease_seconds=300)
+    group.result_queue.get_nowait()
+    group.put_nowait(assignment)
+    new_preparation = group.claim_nowait_for_dispatch()
+
+    if finalization == "release":
+        old_preparation.release_to_queue_if_live()
+    else:
+        assert not old_preparation.fail_before_start(_platform_result(assignment))
+
+    assert new_preparation.is_live()
+    assert group.local_inflight_count() == 1
+    assert group.result_queue.empty()
+    session_id = uuid4()
+    new_preparation.mark_started(session_id)
+    assert group.reportable_identities()[0].validator_session_id == session_id
+
+
 async def test_admission_waiter_expires_without_resetting_dispatch_lease() -> None:
     artifact = _artifact(uid=1)
     assignment = _assignment(batch_id=uuid4(), artifact=artifact, task=_task("waiting"))
@@ -1851,11 +1857,42 @@ async def test_admission_waiter_expires_without_resetting_dispatch_lease() -> No
     claimed = group.claim_nowait_for_dispatch()
     assert claimed.remaining_dispatch_seconds() == 100.0
     clock.advance(101.0)
-    assert group.release_expired_queued(now=clock(), dispatch_start_lease_seconds=300.0) == 1
+    assert group.fail_expired_dispatches(now=clock(), dispatch_start_lease_seconds=300.0) == 1
     assert not claimed.is_live()
     with pytest.raises(RuntimeError):
         claimed.mark_started(uuid4())
     assert group.local_inflight_count() == 0
+    failure = group.result_queue.get_nowait()
+    assert failure.result is None
+    assert failure.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE
+    assert group.result_queue.empty()
+
+
+@pytest.mark.parametrize("closing", (False, True))
+async def test_expired_preparation_cleanup_before_watchdog_cannot_renew_wait(closing: bool) -> None:
+    """OOM cancellation at the deadline must publish failure before losing the waiting record."""
+    artifact = _artifact(uid=54)
+    assignment = _assignment(batch_id=uuid4(), artifact=artifact, task=_task("oom-waiting"))
+    group = _assigned_group(artifact_id=artifact.artifact_id)
+    clock = _MonotonicClock()
+    group.monotonic_clock = clock
+    group.put_nowait(assignment)
+    group.mark_dispatch_ready()
+    preparation = group.claim_nowait_for_dispatch()
+    clock.advance(301)
+    if closing:
+        group.close_requested.set()
+
+    preparation.release_to_queue_if_live()
+    preparation.release_to_queue_if_live()
+
+    assert group.local_inflight_count() == 0
+    assert group.fail_expired_dispatches(now=clock(), dispatch_start_lease_seconds=300) == 0
+    if not closing:
+        failure = group.result_queue.get_nowait()
+        assert failure.result is None
+        assert failure.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE
+        assert failure.terminal_attempt.error_code == "validator_internal_timeout"
     assert group.result_queue.empty()
 
 
@@ -1869,6 +1906,7 @@ def _assigned_group(*, artifact_id: UUID) -> _AssignedArtifactGroup:
         assignment_records={},
         starting_records={},
         monotonic_clock=_MonotonicClock(),
+        dispatch_start_lease_seconds=300.0,
     )
 
 
@@ -1989,7 +2027,7 @@ def _platform_execution(
 
 
 def _ack(
-    result: PlatformOwnedTaskResult,
+    result: PlatformOwnedTaskResult | PlatformOwnedTaskExecution,
     *,
     outcome: str = "accepted",
     reason_code: str | None = None,

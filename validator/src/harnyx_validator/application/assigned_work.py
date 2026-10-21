@@ -4,9 +4,59 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from harnyx_validator.application.dto.evaluation import MinerTaskWorkAssignment, PlatformOwnedTaskResult
+from harnyx_commons.domain.miner_task import MinerTaskErrorCode
+from harnyx_validator.application.dto.evaluation import (
+    MinerTaskAttemptAuditRecord,
+    MinerTaskAttemptRetryDecision,
+    MinerTaskAttemptStatus,
+    MinerTaskAttemptTerminalEffect,
+    MinerTaskWorkAssignment,
+    PlatformOwnedTaskResult,
+    ValidatorBatchFailureDetail,
+)
+
+TASK_START_WAIT_SECONDS = 300.0
+TASK_START_WAIT_ATTEMPTS = 2
+TASK_START_TIMEOUT_SECONDS = TASK_START_WAIT_SECONDS * TASK_START_WAIT_ATTEMPTS
+
+
+def task_start_timeout_result(assignment: MinerTaskWorkAssignment, occurred_at: datetime) -> PlatformOwnedTaskResult:
+    """Close a validator delivery when its bounded pre-execution waiting is exhausted."""
+    error_code = str(MinerTaskErrorCode.VALIDATOR_INTERNAL_TIMEOUT)
+    return PlatformOwnedTaskResult(
+        batch_id=assignment.batch_id,
+        artifact_id=assignment.artifact.artifact_id,
+        task_id=assignment.task.task_id,
+        attempt_number=assignment.attempt_number,
+        terminal_attempt=MinerTaskAttemptAuditRecord(
+            validator_session_id=uuid4(),
+            batch_id=assignment.batch_id,
+            artifact_id=assignment.artifact.artifact_id,
+            task_id=assignment.task.task_id,
+            attempt_number=assignment.attempt_number,
+            uid=assignment.artifact.uid,
+            miner_hotkey_ss58=assignment.artifact.miner_hotkey_ss58 or "unknown-miner-hotkey",
+            started_at=occurred_at,
+            finished_at=occurred_at,
+            status=MinerTaskAttemptStatus.FAILED,
+            error_code=error_code,
+            error_summary_code=error_code,
+            retry_decision=MinerTaskAttemptRetryDecision.WILL_NOT_RETRY,
+            terminal_effect=MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE,
+            max_attempts=assignment.max_attempts,
+            delivery_failure_detail=ValidatorBatchFailureDetail(
+                error_code=error_code,
+                error_message="Validator could not start the task within its two five-minute waiting periods",
+                occurred_at=occurred_at,
+                artifact_id=assignment.artifact.artifact_id,
+                task_id=assignment.task.task_id,
+                uid=assignment.artifact.uid,
+                exception_type="TimeoutError",
+            ),
+        ),
+    )
 
 
 class ClaimedAssignedTask(Protocol):
@@ -31,8 +81,8 @@ class ClaimedAssignedTask(Protocol):
     def mark_started(self, validator_session_id: UUID, *, started_at: datetime) -> None:
         """Attach the issued validator session and make the claim reportable."""
 
-    def fail_before_start(self, result: PlatformOwnedTaskResult) -> None:
-        """Publish a terminal result and release the claim before sandbox execution starts."""
+    def fail_before_start(self, result: PlatformOwnedTaskResult) -> bool:
+        """Publish and return True only if this preparation still owns the task."""
 
 
 class AssignedArtifactWork(Protocol):
