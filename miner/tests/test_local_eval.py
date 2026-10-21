@@ -49,6 +49,7 @@ from harnyx_miner.platform_monitoring import (
     RecordedResultsError,
     RecordedResultsScope,
     SelectedBatchContext,
+    load_batch_tasks,
 )
 from harnyx_miner_sdk.json_types import JsonValue
 from harnyx_validator.application.dto.evaluation import (
@@ -371,7 +372,7 @@ def test_load_batch_tasks_projects_monitoring_evaluation_stage() -> None:
         evaluation_stages=("qualifying", "main"),
     )
 
-    assert local_eval._load_batch_tasks(detail) == tasks
+    assert load_batch_tasks(detail) == tasks
 
 
 def test_load_batch_tasks_still_requires_miner_task_fields() -> None:
@@ -386,7 +387,7 @@ def test_load_batch_tasks_still_requires_miner_task_fields() -> None:
     del raw_task["query"]
 
     with pytest.raises(ValidationError, match="query"):
-        local_eval._load_batch_tasks(detail)
+        load_batch_tasks(detail)
 
 
 def test_load_batch_tasks_rejects_unrecognized_fields() -> None:
@@ -401,7 +402,7 @@ def test_load_batch_tasks_rejects_unrecognized_fields() -> None:
     raw_task["budegt_usd"] = raw_task.pop("budget_usd")
 
     with pytest.raises(ValidationError, match="budegt_usd"):
-        local_eval._load_batch_tasks(detail)
+        load_batch_tasks(detail)
 
 
 def _recorded_rows(*, batch_id, champion_artifact_id, tasks: tuple[MinerTask, ...]) -> tuple[dict[str, object], ...]:

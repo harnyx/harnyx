@@ -52,7 +52,9 @@ from harnyx_miner.platform_monitoring import (
     PlatformMonitoringClient,
     RecordedBatchResultsSnapshot,
     SelectedBatchContext,
+    load_batch_tasks,
     platform_base_url_from_env,
+    select_batch_tasks,
 )
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptAuditRecord,
@@ -895,8 +897,8 @@ async def _amain(argv: Sequence[str] | None) -> None:
             task_id=requested_task_id,
         )
         _log_recorded_results_status(progress=progress, batch_context=batch_context)
-        tasks = _select_batch_tasks(
-            _load_batch_tasks(batch_context.detail),
+        tasks = select_batch_tasks(
+            load_batch_tasks(batch_context.detail),
             task_id=requested_task_id,
         )
         progress.log(
@@ -1101,29 +1103,6 @@ def _compact_submission_for_local_report(
     submission: MinerTaskRunSubmission,
 ) -> MinerTaskRunSubmission:
     return submission.model_copy(update={"execution_log": ()})
-
-
-def _load_batch_tasks(detail: Mapping[str, object]) -> tuple[MinerTask, ...]:
-    batch = _require_mapping(detail.get("batch"), label="batch detail batch")
-    raw_tasks = _require_sequence(batch.get("tasks"), label="batch tasks")
-    parsed: list[MinerTask] = []
-    for raw_task in raw_tasks:
-        if isinstance(raw_task, MinerTask):
-            parsed.append(raw_task)
-            continue
-        miner_task_payload = dict(_require_mapping(raw_task, label="batch task"))
-        miner_task_payload.pop("evaluation_stage", None)
-        parsed.append(MinerTask.model_validate_json(json.dumps(miner_task_payload)))
-    return tuple(parsed)
-
-
-def _select_batch_tasks(tasks: tuple[MinerTask, ...], *, task_id: UUID | None) -> tuple[MinerTask, ...]:
-    if task_id is None:
-        return tasks
-    selected = tuple(task for task in tasks if task.task_id == task_id)
-    if not selected:
-        raise RuntimeError(f"task {task_id} is not present in the selected batch")
-    return selected
 
 
 def _build_target_artifact_spec(
