@@ -30,6 +30,20 @@ async def test_public_endpoint_tags_support_pinned_provider_pricing() -> None:
     assert reference >= 1
 
 
+async def test_public_zero_discount_conditional_route_has_regular_price_basis() -> None:
+    """The shared catalog must admit a real conditional route without an experiment adapter."""
+    snapshot = await OpenRouterPricingCatalog().snapshot("openai/gpt-6-luna")
+    assert snapshot.endpoints
+    assert any(endpoint.pricing.overrides for endpoint in snapshot.endpoints)
+    for endpoint in snapshot.endpoints:
+        assert endpoint.pricing.discount == 0
+        reference, discount = snapshot.reference_cost(
+            provider=endpoint.provider_name, inference=Decimal("0.0123"), separate_charge=Decimal("0.001")
+        )
+        assert discount == 0
+        assert reference == 0.0133
+
+
 async def test_public_decision_catalog_binds_native_and_canonical_ids_without_paid_inference() -> None:
     catalog = OpenRouterPricingCatalog()
     models = await catalog.decision_models()

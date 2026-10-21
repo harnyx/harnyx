@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import replace
 from typing import Any, cast
@@ -746,7 +747,7 @@ class _MinerChatDelegate:
         pass
 
 
-def _miner_pricing_catalog(*, discount: float = 0.5, unsupported_other: bool = False):
+def _miner_pricing_catalog(*, discount: float = 0.5, unsupported_other: bool = False, conditional: bool = False):
     from harnyx_commons.llm.providers.openrouter_pricing import OpenRouterPricingCatalog
 
     def serve(request: httpx.Request) -> httpx.Response:
@@ -761,7 +762,21 @@ def _miner_pricing_catalog(*, discount: float = 0.5, unsupported_other: bool = F
                                 "provider_name": "Inception",
                                 "tag": "inception",
                                 "model_id": "inception/mercury-3",
-                                "pricing": {"prompt": "0.1", "completion": "0.35", "discount": discount},
+                                "pricing": {
+                                    "prompt": "0.1",
+                                    "completion": "0.35",
+                                    "discount": discount,
+                                    **(
+                                        {
+                                            "overrides": [{"min_prompt_tokens": 272000, "prompt": "0.2"}],
+                                            "request": "0.001",
+                                            "web_search": "0.01",
+                                            "input_cache_read": "0.01",
+                                        }
+                                        if conditional
+                                        else {}
+                                    ),
+                                },
                             }
                         ]
                         + (
@@ -815,9 +830,24 @@ async def test_miner_promotion_separates_inference_discount_from_actual_and_rout
     await provider.aclose()
 
 
-@pytest.mark.parametrize("byok,expected_actual,expected_reference", [(False, 0.004, 0.008), (True, 0.006, 0.008)])
+@pytest.mark.parametrize(
+    "discount,byok,charge,prompt_tokens,expected_actual,expected_reference",
+    [
+        (0.5, False, 0.004, 10, 0.004, 0.008),
+        (0.5, True, 0.004, 10, 0.006, 0.008),
+        (0, False, 0.014, 10, 0.014, 0.014),
+        (0, False, 0.024, 272001, 0.024, 0.024),
+        (0, True, 0.001, 272001, 0.003, 0.003),
+        (0, True, 0, 10, 0.002, 0.002),
+    ],
+)
 async def test_successful_miner_stream_keeps_accounting_through_runtime_settlement(
-    byok: bool, expected_actual: float, expected_reference: float
+    discount: float,
+    byok: bool,
+    charge: float,
+    prompt_tokens: int,
+    expected_actual: float,
+    expected_reference: float,
 ) -> None:
     """A successful paid answer must retain billing facts through the real retry adapter and runtime reader."""
     from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
@@ -831,10 +861,11 @@ async def test_successful_miner_stream_keeps_accounting_through_runtime_settleme
         "provider": "Inception",
         "choices": [{"index": 0, "delta": {"content": "Mercury 3 canary OK."}, "finish_reason": "stop"}],
         "usage": {
-            "prompt_tokens": 10,
+            "prompt_tokens": prompt_tokens,
+            "prompt_tokens_details": {"cached_tokens": 8},
             "completion_tokens": 5,
-            "total_tokens": 15,
-            "cost": 0.004,
+            "total_tokens": prompt_tokens + 5,
+            "cost": charge,
             "is_byok": byok,
             "cost_details": {"upstream_inference_cost": 0.002},
         },
@@ -850,7 +881,7 @@ async def test_successful_miner_stream_keeps_accounting_through_runtime_settleme
     )
     provider = OpenRouterLlmProvider(
         openrouter_api_key=SecretStr("test"),
-        pricing_catalog=_miner_pricing_catalog(),
+        pricing_catalog=_miner_pricing_catalog(discount=discount, conditional=discount == 0),
         openrouter_chat_provider_factory=lambda _: (delegate, client),
     )
     invoker = RuntimeToolInvoker(InMemoryReceiptLog(), llm_provider=provider, llm_provider_name="openrouter")
@@ -873,7 +904,9 @@ async def test_successful_miner_stream_keeps_accounting_through_runtime_settleme
         assert fact.inference == "attempted"
         assert fact.actual_cost_usd == pytest.approx(expected_actual)
         assert fact.reference_cost_usd == pytest.approx(expected_reference)
-        assert fact.llm_usage == LlmUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+        assert fact.llm_usage == LlmUsage(
+            prompt_tokens=prompt_tokens, prompt_cached_tokens=8, completion_tokens=5, total_tokens=prompt_tokens + 5
+        )
         assert output.public_payload["choices"][0]["message"]["content"][0]["text"] == "Mercury 3 canary OK."
     finally:
         await provider.aclose()
@@ -911,23 +944,25 @@ async def test_miner_provider_error_keeps_dispatch_evidence_without_a_response(d
 
 
 @pytest.mark.parametrize("serving_provider,unavailable", [("Inception", False), ("Unknown", True)])
+@pytest.mark.parametrize("discount", [0, 0.5])
 async def test_rejected_billable_promotion_keeps_both_amounts_or_explicit_unknown(
     serving_provider: str,
     unavailable: bool,
+    discount: float,
 ) -> None:
     from harnyx_commons.errors import ToolProviderError
 
     delegate = _MinerChatDelegate(serving_provider=serving_provider, rejected=True)
     provider = OpenRouterLlmProvider(
         openrouter_api_key=SecretStr("test"),
-        pricing_catalog=_miner_pricing_catalog(),
+        pricing_catalog=_miner_pricing_catalog(discount=discount, conditional=discount == 0),
         openrouter_chat_provider_factory=lambda _: (delegate, _FakeClient()),
     )
     with pytest.raises(ToolProviderError) as caught:
         await provider.invoke(_miner_promo_request())
     assert caught.value.billing.actual_cost_usd == pytest.approx(0.004)
     assert caught.value.billing.reference_cost_unavailable is unavailable
-    assert caught.value.billing.reference_cost_usd == (None if unavailable else pytest.approx(0.008))
+    assert caught.value.billing.reference_cost_usd == (None if unavailable else pytest.approx(0.004 / (1 - discount)))
     await provider.aclose()
 
 
@@ -949,19 +984,170 @@ async def test_unpriceable_promotion_rejects_before_paid_dispatch() -> None:
     await provider.aclose()
 
 
+@pytest.mark.parametrize("cost", [None, "invalid", -0.01, "NaN", "Infinity"])
+@pytest.mark.parametrize("byok", [False, True])
+async def test_zero_discount_conditional_route_requires_valid_original_charge(cost: object, byok: bool) -> None:
+    """Relaxed route eligibility must not make missing or malformed billing a free successful answer."""
+    from harnyx_commons.errors import ToolProviderError
+
+    delegate = _FakeOpenAiProvider(
+        raw_response={
+            "model": "inception/mercury-3",
+            "provider": "Inception",
+            "usage": {
+                "cost": 0.001 if byok else cost,
+                "is_byok": byok,
+                "cost_details": {"upstream_inference_cost": cost},
+            },
+        }
+    )
+    provider = OpenRouterLlmProvider(
+        openrouter_api_key=SecretStr("test"),
+        pricing_catalog=_miner_pricing_catalog(discount=0, conditional=True),
+        openrouter_chat_provider_factory=lambda _: (delegate, _FakeClient()),
+    )
+    try:
+        with pytest.raises(ToolProviderError) as caught:
+            await provider.invoke(_miner_promo_request())
+        assert len(delegate.requests) == 1
+        assert caught.value.billing.actual_cost_usd is None
+        assert caught.value.billing.reference_cost_unavailable
+        assert caught.value.billing.reference_cost_usd is None
+    finally:
+        await provider.aclose()
+
+
+async def test_zero_discount_conditional_route_rejects_wrong_model_and_keeps_charge() -> None:
+    """A paid completion for another model must retain its charge without becoming comparable."""
+    from harnyx_commons.errors import ToolProviderError
+
+    delegate = _FakeOpenAiProvider(
+        raw_response={"model": "other/model", "provider": "Inception", "usage": {"cost": 0.014}}
+    )
+    provider = OpenRouterLlmProvider(
+        openrouter_api_key=SecretStr("test"),
+        pricing_catalog=_miner_pricing_catalog(discount=0, conditional=True),
+        openrouter_chat_provider_factory=lambda _: (delegate, _FakeClient()),
+    )
+    try:
+        with pytest.raises(ToolProviderError) as caught:
+            await provider.invoke(_miner_promo_request())
+        assert caught.value.billing.actual_cost_usd == pytest.approx(0.014)
+        assert caught.value.billing.reference_cost_unavailable
+        assert "does not match" in caught.value.billing.provider_usage["reference_unavailable_reason"]
+    finally:
+        await provider.aclose()
+
+
+async def test_zero_discount_conditional_calls_settle_after_concurrent_budget_exhaustion() -> None:
+    """A second admitted paid completion must still reach receipts and both totals after exhaustion."""
+    from datetime import UTC, datetime, timedelta
+    from uuid import uuid4
+
+    from harnyx_commons.domain.session import Session, SessionStatus
+    from harnyx_commons.errors import BudgetExceededError
+    from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
+    from harnyx_commons.infrastructure.state.session_registry import InMemorySessionRegistry
+    from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
+    from harnyx_commons.tools.dto import ToolInvocationRequest
+    from harnyx_commons.tools.executor import ToolExecutor
+    from harnyx_commons.tools.receipt_accounting import usage_from_receipts
+    from harnyx_commons.tools.runtime_invoker import RuntimeToolInvoker
+    from harnyx_commons.tools.usage_tracker import UsageTracker
+
+    releases = (asyncio.Event(), asyncio.Event())
+    both_dispatched = asyncio.Event()
+
+    class ConcurrentDelegate(_MinerChatDelegate):
+        async def invoke(self, request: LlmRequest) -> LlmResponse:
+            response = await super().invoke(request)
+            index = self.calls - 1
+            if self.calls == 2:
+                both_dispatched.set()
+            await releases[index].wait()
+            return response
+
+    delegate = ConcurrentDelegate(byok=True)
+    provider = OpenRouterLlmProvider(
+        openrouter_api_key=SecretStr("test"),
+        pricing_catalog=_miner_pricing_catalog(discount=0, conditional=True),
+        openrouter_chat_provider_factory=lambda _: (delegate, _FakeClient()),
+    )
+    now = datetime.now(UTC)
+    session = Session(
+        session_id=uuid4(),
+        uid=7,
+        task_id=uuid4(),
+        issued_at=now,
+        expires_at=now + timedelta(minutes=1),
+        budget_usd=0.005,
+        hard_limit_usd=0.005,
+    )
+    sessions, receipts, tokens = InMemorySessionRegistry(), InMemoryReceiptLog(), InMemoryTokenRegistry()
+    sessions.create(session)
+    token = uuid4().hex
+    tokens.register(session.session_id, token)
+    invoker = RuntimeToolInvoker(receipts, llm_provider_resolver=lambda _provider, _context: provider)
+    executor = ToolExecutor(
+        session_registry=sessions,
+        receipt_log=receipts,
+        usage_tracker=UsageTracker(),
+        tool_invoker=invoker,
+        token_registry=tokens,
+        clock=lambda: now,
+    )
+    request = ToolInvocationRequest(
+        session.session_id,
+        token,
+        "llm_chat",
+        (),
+        {
+            "provider": "openrouter",
+            "model": "inception/mercury-3",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+    )
+    tasks = [asyncio.create_task(executor.execute(request)) for _ in range(2)]
+    try:
+        await asyncio.wait_for(both_dispatched.wait(), timeout=5)
+        releases[0].set()
+        with pytest.raises(BudgetExceededError):
+            await tasks[0]
+        assert sessions.get(session.session_id).status is SessionStatus.EXHAUSTED
+        releases[1].set()
+        await tasks[1]
+        settled = receipts.for_session(session.session_id)
+        usage = sessions.get(session.session_id).usage
+        assert len(settled) == 2
+        assert usage == usage_from_receipts(settled)
+        assert usage.total_cost_usd == pytest.approx(0.012)
+        assert usage.actual_total_cost_usd == pytest.approx(0.012)
+        assert usage.llm_usage_totals["openrouter"]["inception/mercury-3"].call_count == 2
+        assert sessions.get(session.session_id).status is SessionStatus.EXHAUSTED
+        with pytest.raises(RuntimeError, match="not active"):
+            await executor.execute(request)
+        assert delegate.calls == 2
+    finally:
+        for release in releases:
+            release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await provider.aclose()
+
+
 @pytest.mark.parametrize(
     "only,serving_provider,expected_calls",
     [(None, "Inception", 0), (["inception"], "Inception", 1), (["inception"], "Other", 1)],
 )
+@pytest.mark.parametrize("discount", [0, 0.5])
 async def test_miner_pricing_honors_provider_only_and_checks_actual_serving_provider(
-    only: list[str] | None, serving_provider: str, expected_calls: int
+    only: list[str] | None, serving_provider: str, expected_calls: int, discount: float
 ) -> None:
     from harnyx_commons.errors import ToolProviderError
 
     delegate = _MinerChatDelegate(serving_provider=serving_provider)
     provider = OpenRouterLlmProvider(
         openrouter_api_key=SecretStr("test"),
-        pricing_catalog=_miner_pricing_catalog(unsupported_other=True),
+        pricing_catalog=_miner_pricing_catalog(discount=discount, unsupported_other=True, conditional=discount == 0),
         openrouter_chat_provider_factory=lambda _: (delegate, _FakeClient()),
     )
     request = replace(
@@ -969,7 +1155,7 @@ async def test_miner_pricing_honors_provider_only_and_checks_actual_serving_prov
     )
     if only and serving_provider == "Inception":
         response = await provider.invoke(request)
-        assert response.metadata["reference_cost_usd"] == pytest.approx(0.008)
+        assert response.metadata["reference_cost_usd"] == pytest.approx(0.004 / (1 - discount))
     else:
         with pytest.raises(ToolProviderError) as caught:
             await provider.invoke(request)

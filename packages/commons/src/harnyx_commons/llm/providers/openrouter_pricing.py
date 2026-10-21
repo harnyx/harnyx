@@ -92,7 +92,10 @@ class OpenRouterPricingSnapshot:
             raise ValueError("OpenRouter request has no selectable public pricing endpoint")
         for endpoint in endpoints:
             pricing = endpoint.pricing
-            self._provider_discount(endpoint.provider_name)
+            discount = self._provider_discount(endpoint.provider_name)
+            # Without a promotion, the reported charge already includes applicable tiers and fees.
+            if discount == 0:
+                continue
             if pricing.overrides:
                 raise ValueError("OpenRouter regular price is unavailable: conditional pricing overrides")
             if pricing.request or pricing.web_search:

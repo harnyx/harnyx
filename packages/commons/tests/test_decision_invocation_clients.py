@@ -133,7 +133,18 @@ def test_byok_separate_router_charge_is_not_discount_normalized() -> None:
 
 
 @pytest.mark.parametrize("unpriceable", [False, True])
-async def test_dynamic_decision_route_binds_filtered_catalog_before_one_paid_dispatch(unpriceable: bool) -> None:
+@pytest.mark.parametrize(
+    "discount,byok,charge,expected_actual,expected_reference",
+    [
+        (0.5, False, 0.002, 0.002, 0.004),
+        (0, False, 0.014, 0.014, 0.014),
+        (0, True, 0, 0.004, 0.004),
+        (0, True, 0.001, 0.005, 0.005),
+    ],
+)
+async def test_dynamic_decision_route_binds_filtered_catalog_before_one_paid_dispatch(
+    unpriceable: bool, discount: float, byok: bool, charge: float, expected_actual: float, expected_reference: float
+) -> None:
     from harnyx_commons.llm.providers.openrouter import OpenRouterDecisionClient
     from harnyx_commons.llm.providers.openrouter_pricing import OpenRouterPricingCatalog
     from harnyx_commons.tools.invocation_clients import OpenRouterDecisionProvider
@@ -145,7 +156,11 @@ async def test_dynamic_decision_route_binds_filtered_catalog_before_one_paid_dis
         nonlocal posts
         if request.method == "POST":
             posts += 1
-            return httpx.Response(200, json={**_raw(), "model": requested_model})
+            raw = _raw()
+            cast(JsonObject, raw["usage"]).update(
+                cost=charge, is_byok=byok, cost_details={"upstream_inference_cost": 0.004}
+            )
+            return httpx.Response(200, json={**raw, "model": requested_model})
         if request.url.path.endswith("/endpoints"):
             return httpx.Response(
                 200,
@@ -160,7 +175,16 @@ async def test_dynamic_decision_route_binds_filtered_catalog_before_one_paid_dis
                                 "pricing": {
                                     "prompt": "0.00001",
                                     "completion": "0",
-                                    "discount": 1 if unpriceable else 0.5,
+                                    "discount": 1 if unpriceable else discount,
+                                    **(
+                                        {
+                                            "overrides": [{"min_prompt_tokens": 272000, "prompt": "0.00002"}],
+                                            "request": "0.001",
+                                            "web_search": "0.01",
+                                        }
+                                        if discount == 0
+                                        else {}
+                                    ),
                                 },
                             }
                         ],
@@ -190,7 +214,8 @@ async def test_dynamic_decision_route_binds_filtered_catalog_before_one_paid_dis
             else:
                 result = await provider.query(request)
                 assert posts == 1
-                assert result.actual_cost_usd == 0.002 and result.reference_cost_usd == 0.004
+                assert result.actual_cost_usd == pytest.approx(expected_actual)
+                assert result.reference_cost_usd == pytest.approx(expected_reference)
         finally:
             await provider.aclose()
 

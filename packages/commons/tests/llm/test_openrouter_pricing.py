@@ -100,14 +100,49 @@ def test_pinned_route_excludes_other_prices_but_keeps_provider_maximum_discount(
     [
         {"discount": 1},
         {"discount": None},
-        {"discount": 0, "overrides": [{"utc_start": "00:00", "prompt": "0"}]},
+        {"overrides": [{"utc_start": "00:00", "prompt": "0"}]},
         {"request": "0.1"},
         {"web_search": "0.1"},
     ],
 )
-def test_unsupported_regular_basis_is_rejected_even_with_zero_discount(pricing: dict[str, object]) -> None:
+def test_unsupported_regular_basis_is_rejected(pricing: dict[str, object]) -> None:
     with pytest.raises(ValueError, match="regular price is unavailable"):
         OpenRouterPricingSnapshot("inception/mercury-3", (endpoint(**pricing),), "now").preflight()
+
+
+@pytest.mark.parametrize(
+    "pricing",
+    [
+        {"overrides": [{"min_prompt_tokens": 272000, "prompt": "0.000001"}]},
+        {"request": "0.01"},
+        {"web_search": "0.01"},
+    ],
+)
+def test_zero_discount_preserves_reported_charge_for_conditional_prices_and_fees(pricing: dict[str, object]) -> None:
+    """Tiers, cache prices and fees need no reconstruction when no discount is reversed."""
+    snapshot = OpenRouterPricingSnapshot("inception/mercury-3", (endpoint(discount=0, **pricing),), "now")
+    assert snapshot.reference_cost(
+        provider="Inception", inference=Decimal("0.1234"), separate_charge=Decimal("0.001")
+    ) == (0.1244, Decimal(0))
+
+
+@pytest.mark.parametrize("sibling_discount", [None, 1, 0.5])
+@pytest.mark.parametrize("pricing", [{"overrides": [{"prompt": "0.1"}]}, {"request": "0.01"}, {"web_search": "0.01"}])
+def test_pinned_zero_discount_cannot_bypass_discounted_or_unknown_sibling(
+    sibling_discount: float | None, pricing: dict[str, object]
+) -> None:
+    """Pinning a zero-discount endpoint must not turn a provider-wide promotion into regular pricing."""
+    snapshot = OpenRouterPricingSnapshot(
+        "inception/mercury-3",
+        (
+            endpoint(discount=0, **pricing).model_copy(update={"tag": "inception/standard"}),
+            endpoint(discount=sibling_discount).model_copy(update={"tag": "inception/turbo"}),
+        ),
+        "now",
+        provider_only=("inception/standard",),
+    )
+    with pytest.raises(ValueError, match="regular price is unavailable"):
+        snapshot.preflight()
 
 
 @pytest.mark.parametrize("model", ["openrouter/free", "x/model:free", "x/model:free:nitro", "x/model:nitro:free"])
