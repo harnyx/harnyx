@@ -1708,6 +1708,107 @@ async def test_worker_collects_all_results_before_clearing_closed_artifact_group
     assert worker._results_pending_submission == []
 
 
+async def test_same_batch_artifact_accepts_new_work_after_monitor_shutdown(tmp_path) -> None:
+    """Retain a closing group until teardown, then accept later work without replaying results."""
+    from harnyx_miner_sdk.sandbox_protocol import SandboxResourceStatus
+    from validator.tests.application.test_evaluation_runner import (
+        _AdmittingSandbox,
+        _assigned_task_test_context,
+        _successful_outcome,
+    )
+
+    runner, batch_id, artifact, first_task, _, _, _, _ = _assigned_task_test_context(tmp_path)
+    first = _assignment(batch_id=batch_id, artifact=artifact, task=first_task)
+    second = _assignment(batch_id=batch_id, artifact=artifact, task=_task("later"))
+    teardown_started = asyncio.Event()
+    allow_teardown = asyncio.Event()
+    monitors = []
+    transitions = []
+
+    async def execute(_artifact_id, assigned_work, close, results):
+        polled = asyncio.Event()
+        swallowed = False
+
+        class Sandbox(_AdmittingSandbox):
+            async def resource_status(self):
+                nonlocal swallowed
+                monitors.append(asyncio.current_task())
+                polled.set()
+                try:
+                    await asyncio.Future()
+                except asyncio.CancelledError:
+                    if swallowed:
+                        raise
+                    swallowed = True
+                return SandboxResourceStatus(counter_status="ready", oom_kill_count=0, draining=False)
+
+        class Orchestrator:
+            async def evaluate(self, request):
+                await polled.wait()
+                close.set()
+                return _successful_outcome(request)
+
+        initial = await assigned_work.take_for_startup()
+        assigned_work.mark_dispatch_ready()
+        await runner.evaluate_assigned_task_queue(
+            batch_id=batch_id,
+            artifact=artifact,
+            initial_assignments=(initial,),
+            assigned_work=assigned_work,
+            close_requested=close,
+            result_queue=results,
+            orchestrator=Orchestrator(),
+            sandbox_client=Sandbox(),
+        )
+        assert all(monitor.done() for monitor in monitors)
+        transitions.append("monitor joined")
+        teardown_started.set()
+        await allow_teardown.wait()
+        transitions.append("sandbox removed")
+
+    worker = PlatformWorkWorker(
+        platform=object(),
+        execute_artifact_assignments=execute,
+        target_concurrency=1,
+        max_active_artifacts=1,
+    )
+    key = (batch_id, artifact.artifact_id)
+    try:
+        assert worker._enqueue_assignments((first,)) == {key}
+        group = worker._active_artifacts[key]
+        await asyncio.wait_for(teardown_started.wait(), 1)
+        group.state = platform_work_worker_module._ArtifactGroupState.CLOSING
+        worker._collect_closed_artifact_groups()
+        assert worker._active_artifacts[key] is group
+        assert worker._enqueue_assignments((second,)) == set()
+        allow_teardown.set()
+        done, _ = await asyncio.wait({group.task}, timeout=1)
+        assert group.task in done
+        group.task.result()
+        worker._collect_closed_artifact_groups()
+        assert key not in worker._active_artifacts
+        assert transitions == ["monitor joined", "sandbox removed"]
+        assert worker._enqueue_assignments((second,)) == {key}
+        replacement = worker._active_artifacts[key]
+        assert replacement is not group
+        done, _ = await asyncio.wait({replacement.task}, timeout=1)
+        assert replacement.task in done
+        replacement.task.result()
+        worker._collect_closed_artifact_groups()
+        assert not worker._active_artifacts
+        assert [result.task_id for result in worker._results_pending_submission] == [
+            first.task.task_id,
+            second.task.task_id,
+        ]
+        assert all(monitor.done() for monitor in monitors)
+    finally:
+        allow_teardown.set()
+        for monitor in monitors:
+            if not monitor.done():
+                monitor.cancel()
+        await worker._cancel_artifact_group_tasks()
+
+
 async def test_worker_submits_deferred_delivery_failure_when_executor_closes_with_started_sibling() -> None:
     """Prevent a deferred delivery-wide failure from disappearing during executor-close cleanup."""
 

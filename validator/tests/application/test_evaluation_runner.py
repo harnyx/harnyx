@@ -689,6 +689,161 @@ async def test_evaluate_assigned_task_queue_success_queues_execution_before_scor
     assert queued.session.status is SessionStatus.COMPLETED
 
 
+@pytest.mark.parametrize("counter_status", ["ready", "disabled"])
+async def test_resource_monitor_exits_when_resource_request_consumes_cancellation(
+    tmp_path: Path, counter_status
+) -> None:
+    """A consumed cancellation must not strand a finished group's monitor or accepted result."""
+    from harnyx_miner_sdk.sandbox_protocol import SandboxResourceStatus
+
+    runner, batch_id, artifact, task, sessions, _, _, _ = _assigned_task_test_context(tmp_path)
+    assignment = MinerTaskWorkAssignment(
+        batch_id=batch_id,
+        artifact=artifact,
+        task=task,
+        attempt_number=1,
+        max_attempts=2,
+        assignment_token=_ASSIGNMENT_TOKEN,
+    )
+    polling = asyncio.Event()
+    finish = asyncio.Event()
+    close = asyncio.Event()
+    results = asyncio.Queue()
+    monitors = []
+    polls = 0
+    consumed = asyncio.Event()
+
+    class Sandbox(_AdmittingSandbox):
+        async def resource_status(self):
+            nonlocal polls
+            polls += 1
+            monitors.append(asyncio.current_task())
+            polling.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                if consumed.is_set():
+                    raise
+                consumed.set()
+            return SandboxResourceStatus(counter_status=counter_status, oom_kill_count=0, draining=False)
+
+    class Orchestrator:
+        async def evaluate(self, request):
+            await finish.wait()
+            return _successful_outcome(request)
+
+    queue_task = asyncio.create_task(
+        runner.evaluate_assigned_task_queue(
+            batch_id=batch_id,
+            artifact=artifact,
+            initial_assignments=(assignment,),
+            assigned_work=_AssignedWork(),
+            close_requested=close,
+            result_queue=results,
+            orchestrator=cast(TaskRunOrchestrator, Orchestrator()),
+            sandbox_client=Sandbox(),
+        )
+    )
+    try:
+        await asyncio.wait_for(polling.wait(), 1)
+        close.set()
+        assert not queue_task.done()
+        finish.set()
+        await asyncio.wait_for(consumed.wait(), 1)
+        # Observe the deadline without delivering a second cancellation to the monitor.
+        done, _ = await asyncio.wait({queue_task}, timeout=1)
+        assert queue_task in done, "finished queue hung joining a monitor after lost cancellation"
+        assert queue_task.result() is False
+        assert polls == 1
+        assert monitors[0].done()
+        result = results.get_nowait()
+        assert result.task_id == task.task_id and result.result.score > 0
+        assert results.empty()
+        assert not sessions._sessions
+    finally:
+        finish.set()
+        close.set()
+        for monitor in monitors:
+            if not monitor.done():
+                monitor.cancel()
+        if not queue_task.done():
+            queue_task.cancel()
+        await asyncio.gather(queue_task, *monitors, return_exceptions=True)
+
+
+@pytest.mark.parametrize("counter_status", ["ready", "disabled"])
+async def test_resource_monitor_keeps_active_execution_until_close_drain_finishes(
+    tmp_path: Path, counter_status
+) -> None:
+    """Closing intake must retain OOM protection and let healthy active work finish."""
+    from harnyx_miner_sdk.sandbox_protocol import SandboxResourceStatus
+
+    runner, batch_id, artifact, task, _, _, _, _ = _assigned_task_test_context(tmp_path)
+    assignment = MinerTaskWorkAssignment(
+        batch_id=batch_id,
+        artifact=artifact,
+        task=task,
+        attempt_number=1,
+        max_attempts=2,
+        assignment_token=_ASSIGNMENT_TOKEN,
+    )
+    started, close, finish, observed_after_close = (asyncio.Event() for _ in range(4))
+    monitors = []
+    results = asyncio.Queue()
+    oom = False
+
+    class Sandbox(_AdmittingSandbox):
+        @property
+        def draining(self):
+            return oom
+
+        async def resource_status(self):
+            nonlocal oom
+            monitors.append(asyncio.current_task())
+            if close.is_set():
+                oom = True
+                observed_after_close.set()
+            return SandboxResourceStatus(counter_status=counter_status, oom_kill_count=int(oom), draining=oom)
+
+    class Orchestrator:
+        async def evaluate(self, request):
+            started.set()
+            await finish.wait()
+            return _successful_outcome(request)
+
+    queue_task = asyncio.create_task(
+        runner.evaluate_assigned_task_queue(
+            batch_id=batch_id,
+            artifact=artifact,
+            initial_assignments=(assignment,),
+            assigned_work=_AssignedWork(),
+            close_requested=close,
+            result_queue=results,
+            orchestrator=cast(TaskRunOrchestrator, Orchestrator()),
+            sandbox_client=Sandbox(),
+        )
+    )
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        close.set()
+        if counter_status == "ready":
+            await asyncio.wait_for(observed_after_close.wait(), 1)
+        assert not queue_task.done()
+        finish.set()
+        done, _ = await asyncio.wait({queue_task}, timeout=1)
+        assert queue_task in done
+        assert queue_task.result() is (counter_status == "ready")
+        assert all(monitor.done() for monitor in monitors)
+        assert results.get_nowait().result.score > 0
+        assert results.empty()
+    finally:
+        finish.set()
+        close.set()
+        if not queue_task.done():
+            queue_task.cancel()
+        await asyncio.gather(queue_task, return_exceptions=True)
+
+
 async def test_evaluate_assigned_task_queue_final_invocation_exception_becomes_attempt_failure(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -659,14 +659,21 @@ class EvaluationRunner:
         claim_to_start: ClaimedAssignedTask | None = None
         drain_logged = False
         close_waiter = asyncio.create_task(close_requested.wait())
+        monitor_stop = asyncio.Event()
 
         async def watch_resources() -> None:
-            while not sandbox_client.draining:
+            while not monitor_stop.is_set() and not sandbox_client.draining:
                 status = await sandbox_client.resource_status()
+                if monitor_stop.is_set():
+                    return
                 if status.counter_status == "disabled":
-                    await asyncio.Future()
+                    await monitor_stop.wait()
+                    return
                 if not sandbox_client.draining:
-                    await asyncio.sleep(0.1)
+                    try:
+                        await asyncio.wait_for(monitor_stop.wait(), timeout=0.1)
+                    except TimeoutError:
+                        pass
 
         oom_waiter = asyncio.create_task(watch_resources())
 
@@ -799,6 +806,8 @@ class EvaluationRunner:
                     queue_waiter = None
             return sandbox_client.draining
         finally:
+            # HTTP connection cleanup can consume cancellation; stop cooperatively too.
+            monitor_stop.set()
             if claim_to_start is not None and sandbox_client.draining:
                 claim_to_start.release_to_queue_if_live()
                 claim_to_start = None

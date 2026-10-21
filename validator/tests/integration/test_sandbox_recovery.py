@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from uuid import uuid4
 
+import anyio._backends._asyncio as anyio_backend
 import pytest
 
 from harnyx_commons.application.session_manager import SessionManager
@@ -14,8 +15,9 @@ from harnyx_commons.infrastructure.state.session_registry import InMemorySession
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.sandbox.docker import DockerSandboxManager
 from harnyx_commons.sandbox.options import SandboxOptions
-from harnyx_validator.application.dto.evaluation import ScriptArtifactSpec
+from harnyx_validator.application.dto.evaluation import MinerTaskWorkAssignment, ScriptArtifactSpec
 from harnyx_validator.application.scheduler import EvaluationScheduler, SchedulerConfig
+from validator.tests.application.test_evaluation_runner import _AssignedWork, _successful_outcome
 from validator.tests.application.test_scheduler import (
     DummyEvaluationRecordStore,
     DummyProgressRecorder,
@@ -25,6 +27,138 @@ from validator.tests.application.test_scheduler import (
 from validator.tests.fixtures.subtensor import FakeSubtensorClient
 
 pytestmark = [pytest.mark.anyio("asyncio"), pytest.mark.integration]
+
+
+async def test_real_resource_monitor_cancellation_race_completes_teardown(sandbox_launcher, monkeypatch):
+    """The finalizer's one cancellation can be lost by real AnyIO TCP connection cleanup."""
+    deployment = sandbox_launcher("validator.tests.integration.sandbox.recovery_agent", evaluation_policy=True)
+    loop = asyncio.get_running_loop()
+    previous_factory = loop.get_task_factory()
+    pending_cancel = asyncio.Event()
+    polling = asyncio.Event()
+    monitors = []
+    delayed = False
+    injected = False
+    returned_after_cancel = False
+    close = asyncio.Event()
+    original_status = deployment.client.resource_status
+    original_cancel = anyio_backend.CancelScope.cancel
+    stopped = []
+
+    class MonitorTask(asyncio.Task):
+        def cancel(self, msg=None):
+            nonlocal delayed
+            if msg is None and not delayed:
+                # Delay the finalizer's actual request until the real TCP helper exits.
+                delayed = True
+                pending_cancel.set()
+                return True
+            return super().cancel(msg)
+
+    def task_factory(loop, coro, **kwargs):
+        if coro.__qualname__.endswith("evaluate_assigned_task_queue.<locals>.watch_resources"):
+            task = MonitorTask(coro, loop=loop, **kwargs)
+            monitors.append(task)
+            return task
+        if previous_factory is not None:
+            return previous_factory(loop, coro, **kwargs)
+        return asyncio.Task(coro, loop=loop, **kwargs)
+
+    def cancel_connect_scope(scope, *args, **kwargs):
+        nonlocal injected
+        result = original_cancel(scope, *args, **kwargs)
+        if monitors and scope._host_task is monitors[0] and pending_cancel.is_set() and not injected:
+            injected = True
+            # Match the proven race: AnyIO's tagged cancel, then the native request,
+            # before the host task resumes. Do not add another finalizer cancellation.
+            loop.call_soon(asyncio.Task.cancel, monitors[0])
+        return result
+
+    async def gated_resource_status():
+        nonlocal returned_after_cancel
+        polling.set()
+        await pending_cancel.wait()
+        status = await original_status()
+        returned_after_cancel = injected and asyncio.current_task().cancelling() == 1
+        return status
+
+    class DeploymentManager:
+        def start(self, _options):
+            return deployment
+
+        def stop(self, target):
+            assert all(monitor.done() for monitor in monitors)
+            confirmed = DockerSandboxManager().stop(target)
+            stopped.append(confirmed)
+            return confirmed
+
+    class Orchestrator:
+        async def evaluate(self, request):
+            await polling.wait()
+            close.set()
+            return _successful_outcome(request)
+
+    task = _task("monitor shutdown")
+    artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
+    assignment = MinerTaskWorkAssignment(
+        batch_id=uuid4(),
+        artifact=artifact,
+        task=task,
+        attempt_number=1,
+        max_attempts=1,
+        assignment_token=uuid4().hex,
+    )
+    results = asyncio.Queue()
+    monkeypatch.setattr(deployment.client, "resource_status", gated_resource_status)
+    monkeypatch.setattr(anyio_backend.CancelScope, "cancel", cancel_connect_scope)
+    loop.set_task_factory(task_factory)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        scheduler = EvaluationScheduler(
+            tasks=(task,),
+            subtensor_client=FakeSubtensorClient(),
+            sandbox_manager=DeploymentManager(),
+            session_manager=SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry()),
+            evaluation_records=DummyEvaluationRecordStore(),
+            receipt_log=DummyReceiptLog(),
+            blocking_executor=executor,
+            orchestrator_factory=lambda _client: Orchestrator(),
+            sandbox_options_factory=lambda _artifact: SandboxOptions(image="unused", container_name="unused"),
+            clock=lambda: datetime.now(UTC),
+            config=SchedulerConfig(token_secret_bytes=8),
+            progress=DummyProgressRecorder(),
+        )
+        queue_task = asyncio.create_task(
+            scheduler.run_assigned_artifact_queue(
+                batch_id=assignment.batch_id,
+                artifact=artifact,
+                initial_assignments=(assignment,),
+                assigned_work=_AssignedWork(),
+                close_requested=close,
+                result_queue=results,
+            )
+        )
+        try:
+            done, _ = await asyncio.wait({queue_task}, timeout=10)
+            assert delayed and injected and returned_after_cancel
+            assert queue_task in done, "real HTTP monitor stranded scheduler teardown"
+            queue_task.result()
+            assert len(monitors) == 1 and monitors[0].done()
+            assert stopped == [True]
+            assert results.get_nowait().result.score > 0
+            assert results.empty()
+            inspection = await asyncio.to_thread(
+                subprocess.run, ["docker", "inspect", deployment.identifier], capture_output=True
+            )
+            assert inspection.returncode != 0
+        finally:
+            loop.set_task_factory(previous_factory)
+            monkeypatch.setattr(anyio_backend.CancelScope, "cancel", original_cancel)
+            for monitor in monitors:
+                if not monitor.done():
+                    asyncio.Task.cancel(monitor)
+            if not queue_task.done():
+                queue_task.cancel()
+            await asyncio.gather(queue_task, *monitors, return_exceptions=True)
 
 
 async def test_scheduler_removes_unresponsive_real_deployment(sandbox_launcher):
