@@ -13,10 +13,15 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError
 
 from harnyx_commons.config.llm import OpenAiCompatibleEndpointConfig
-from harnyx_commons.errors import ToolInvocationCancelledError, ToolProviderError
+from harnyx_commons.errors import ToolInvocationCancelledError, ToolInvocationTimeoutError, ToolProviderError
 from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.llm.cost_settlement import normalized_provider_cost, settled_response_cost
-from harnyx_commons.llm.provider import LlmProviderConfigurationError, LlmProviderPort
+from harnyx_commons.llm.provider import (
+    LlmProviderConfigurationError,
+    LlmProviderError,
+    LlmProviderPort,
+    LlmRetryExhaustedError,
+)
 from harnyx_commons.llm.provider_types import OPENROUTER_PROVIDER
 from harnyx_commons.llm.providers.openai_compatible import OpenAiCompatibleLlmProvider
 from harnyx_commons.llm.providers.openrouter_pricing import (
@@ -26,6 +31,7 @@ from harnyx_commons.llm.providers.openrouter_pricing import (
 )
 from harnyx_commons.llm.providers.thinking import resolve_request_thinking
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse, LlmThinkingConfig
+from harnyx_commons.llm.timeout import LlmAttemptTimeoutError
 from harnyx_commons.llm.tool_models import MINER_SELECTED_LLM_PROVIDER_MODELS, validate_paid_openrouter_model
 from harnyx_commons.tools.provider_billing import OpenRouterAccounting, ProviderBillingMetadata
 from harnyx_miner_sdk.tools.llm_provider_extra import OpenRouterProviderSelection
@@ -373,7 +379,7 @@ class OpenRouterLlmProvider(LlmProviderPort):
             )
             return replace(response, metadata=metadata)
         except BaseException as exc:
-            if isinstance(exc, ToolProviderError) and exc.billing is not None:
+            if isinstance(exc, (ToolProviderError, ToolInvocationTimeoutError)) and exc.billing is not None:
                 raise
             # Rejected completions can still be billable; retry wrappers retain their last response.
             failed_response = getattr(exc, "response", None)
@@ -388,6 +394,13 @@ class OpenRouterLlmProvider(LlmProviderPort):
             )
             if isinstance(exc, asyncio.CancelledError):
                 raise ToolInvocationCancelledError("OpenRouter call cancelled", billing=billing) from exc
+            if isinstance(exc, ToolInvocationTimeoutError):
+                exc.billing = billing
+                raise
+            if isinstance(exc, (LlmProviderError, LlmRetryExhaustedError)) and isinstance(
+                exc.__cause__, LlmAttemptTimeoutError
+            ):
+                raise ToolInvocationTimeoutError(str(exc.__cause__), billing=billing) from exc
             if not isinstance(exc, Exception):
                 raise
             raise ToolProviderError(str(exc), provider=OPENROUTER_PROVIDER, billing=billing) from exc

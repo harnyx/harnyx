@@ -943,6 +943,42 @@ async def test_miner_provider_error_keeps_dispatch_evidence_without_a_response(d
         await provider.aclose()
 
 
+@pytest.mark.parametrize("billed", [False, True])
+async def test_miner_typed_timeout_keeps_classification_and_original_billing(billed: bool) -> None:
+    """Adding OpenRouter accounting must not turn an existing tool timeout into a provider error."""
+    from harnyx_commons.errors import ToolInvocationTimeoutError
+    from harnyx_commons.tools.provider_billing import OpenRouterAccounting
+
+    billing = OpenRouterAccounting("attempted", 0.004, 0.008).to_billing() if billed else None
+    timeout = ToolInvocationTimeoutError("tool deadline", billing=billing)
+
+    class Delegate:
+        async def invoke(self, request: LlmRequest) -> LlmResponse:
+            request.on_provider_dispatch()
+            raise timeout
+
+        async def aclose(self) -> None:
+            pass
+
+    provider = OpenRouterLlmProvider(
+        openrouter_api_key=SecretStr("test"),
+        pricing_catalog=_miner_pricing_catalog(),
+        openrouter_chat_provider_factory=lambda _: (Delegate(), _FakeClient()),
+    )
+    try:
+        with pytest.raises(ToolInvocationTimeoutError) as caught:
+            await provider.invoke(_miner_promo_request())
+        assert caught.value is timeout
+        if billed:
+            assert caught.value.billing is billing
+        else:
+            assert OpenRouterAccounting.from_billing(caught.value.billing) == OpenRouterAccounting(
+                "attempted", None, None
+            )
+    finally:
+        await provider.aclose()
+
+
 @pytest.mark.parametrize("serving_provider,unavailable", [("Inception", False), ("Unknown", True)])
 @pytest.mark.parametrize("discount", [0, 0.5])
 async def test_rejected_billable_promotion_keeps_both_amounts_or_explicit_unknown(
