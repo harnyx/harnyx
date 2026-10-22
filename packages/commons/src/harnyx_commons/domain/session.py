@@ -25,7 +25,6 @@ class SessionFailureCode(StrEnum):
     """Transient execution markers attached to a live session."""
 
     TOOL_PROVIDER_FAILED = "tool_provider_failed"
-    PROVIDER_REFERENCE_COST_UNAVAILABLE = "provider_reference_cost_unavailable"
     PROVIDER_CREDENTIAL_UNAVAILABLE = "provider_credential_unavailable"
     PROVIDER_AUTHENTICATION_FAILED = "provider_authentication_failed"
 

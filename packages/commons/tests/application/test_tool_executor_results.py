@@ -789,7 +789,7 @@ async def test_deepseek_failure_receipt_distinguishes_zero_from_unknown(confirme
 
 
 @pytest.mark.parametrize("reference", [0.008, None])
-async def test_openrouter_billed_failure_preserves_financial_charge_and_stops_unknown_reference(
+async def test_openrouter_billed_failure_preserves_charge_and_allows_miner_recovery(
     reference: float | None,
 ) -> None:
     from harnyx_commons.errors import ToolProviderError
@@ -833,12 +833,28 @@ async def test_openrouter_billed_failure_preserves_financial_charge_and_stops_un
     assert updated.usage == usage_from_receipts((receipt,))
     totals = updated.usage.llm_usage_totals["openrouter"]["inception/mercury-3"]
     assert (totals.total_tokens, totals.reasoning_tokens, totals.call_count) == (19, 4, 1)
-    if reference is None:
-        assert updated.status is SessionStatus.ERROR
-        with pytest.raises(Exception, match="active|error|inactive"):
-            await executor.execute(request)
-    else:
-        assert updated.status is SessionStatus.ACTIVE
+    assert updated.status is SessionStatus.ACTIVE
+
+    async def fallback(tool_name, *, args, kwargs, context):
+        return ToolInvocationOutput(
+            public_payload=LlmResponse(
+                id="miner-fallback",
+                choices=(),
+                usage=LlmUsage(prompt_tokens=2, completion_tokens=1, total_tokens=3),
+            ).to_payload(),
+            actual_cost_usd=0.002,
+            reference_cost_usd=0.004,
+            actual_cost_provider="openrouter",
+            actual_cost_evidence={"inference": "attempted"},
+        )
+
+    executor._tool_invoker.invoke = fallback
+    await executor.execute(request)
+    recovered = executor._sessions.get(session.session_id)
+    assert recovered.status is SessionStatus.ACTIVE
+    assert recovered.usage.total_cost_usd == pytest.approx((reference or 0) + 0.004)
+    assert recovered.usage.actual_total_cost_usd == pytest.approx(0.006)
+    assert len(receipts.for_session(session.session_id)) == 2
 
 
 @pytest.mark.parametrize("account_failures", [False, True])
@@ -918,4 +934,4 @@ async def test_openrouter_success_missing_reference_fails_and_retains_observed_c
     assert not receipt.is_successful()
     assert receipt.details.reference_cost_usd is None
     assert receipt.details.actual_cost_usd == pytest.approx(0.004)
-    assert executor._sessions.get(session.session_id).status is SessionStatus.ERROR
+    assert executor._sessions.get(session.session_id).status is SessionStatus.ACTIVE

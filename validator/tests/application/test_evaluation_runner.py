@@ -39,6 +39,7 @@ from harnyx_commons.errors import SessionBudgetExhaustedError
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_commons.sandbox.client import SandboxClient, SandboxInvokeError
+from harnyx_commons.tools.types import ToolName
 from harnyx_miner_sdk.sandbox_protocol import SandboxAdmission
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptAuditRecord,
@@ -6054,7 +6055,12 @@ async def test_external_oom_after_admission_returns_claim_without_starting_sessi
     assert requests == ["/admission", "/admission/release"]
 
 
-async def test_caught_unpriceable_openrouter_call_cannot_become_a_successful_comparison(tmp_path: Path) -> None:
+@pytest.mark.parametrize("outcome", [ToolCallOutcome.PROVIDER_ERROR, ToolCallOutcome.TIMEOUT])
+@pytest.mark.parametrize("tool", ["llm_chat", "decision_query"])
+async def test_caught_openrouter_failure_keeps_the_miners_answer(
+    tmp_path: Path, outcome: ToolCallOutcome, tool: ToolName
+) -> None:
+    """A caught call failure must not become a terminal task failure or trigger a host retry."""
     runner, batch_id, artifact, task, _, receipt_log, _, _ = _assigned_task_test_context(tmp_path)
 
     class CatchesAccountingError:
@@ -6064,9 +6070,9 @@ async def test_caught_unpriceable_openrouter_call_cannot_become_a_successful_com
                     receipt_id="unpriceable",
                     session_id=request.session_id,
                     uid=request.uid,
-                    tool="llm_chat",
+                    tool=tool,
                     issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
-                    outcome=ToolCallOutcome.PROVIDER_ERROR,
+                    outcome=outcome,
                     details=ToolCallDetails(
                         request_hash="unknown-ref",
                         request_payload={"kwargs": {"provider": "openrouter", "model": "inception/mercury-3"}},
@@ -6091,8 +6097,12 @@ async def test_caught_unpriceable_openrouter_call_cannot_become_a_successful_com
         assignment_token=_ASSIGNMENT_TOKEN,
         orchestrator=cast(TaskRunOrchestrator, CatchesAccountingError()),
     )
-    assert result.terminal_attempt.error_code == "tool_provider_failed"
-    assert result.terminal_attempt.status.value == "failed"
+    assert result.terminal_attempt.error_code is None
+    assert result.terminal_attempt.status.value == "succeeded"
+    assert result.terminal_attempt.attempt_number == 1
+    assert result.result is not None
+    assert result.result.run.response is not None
+    assert result.result.run.response.text == f"answer {task.query.text}"
 
 
 def test_promotion_replay_and_per_model_summary_keep_independent_amounts() -> None:

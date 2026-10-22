@@ -559,12 +559,6 @@ class ToolExecutor:
             error_extra["openrouter_failure_accounted"] = provider_failure
             if accounting.reference_cost_unavailable:
                 error_extra["reference_cost_unavailable"] = True
-                self._sessions.mutate(
-                    session.session_id,
-                    lambda current: current.mark_failure_code(
-                        SessionFailureCode.PROVIDER_REFERENCE_COST_UNAVAILABLE
-                    ).mark_error(),
-                )
         failure_provider = None if billing is None else billing.actual_cost_provider
         if (request.tool == "decision_query" or accounted_failure) and failure_provider is None:
             if isinstance(exc, ToolProviderError) and exc.provider is not None:
@@ -790,10 +784,7 @@ class ToolExecutor:
         def mutate(current: Session) -> Session:
             nonlocal budget_exhausted_by_this_call
 
-            accounting_after_error = current.status is SessionStatus.ERROR and (
-                self._account_provider_failures
-                or current.failure_code is SessionFailureCode.PROVIDER_REFERENCE_COST_UNAVAILABLE
-            )
+            accounting_after_error = current.status is SessionStatus.ERROR and self._account_provider_failures
             if current.status not in {SessionStatus.ACTIVE, SessionStatus.EXHAUSTED} and not accounting_after_error:
                 raise RuntimeError(f"session {session_id} became {current.status.value} during tool accounting")
 

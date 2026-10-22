@@ -2480,7 +2480,7 @@ class EvaluationRunner:
     ) -> TaskAttemptDecision | None:
         envelope = self._sessions.inspect(session_id)
         receipts = self._current_attempt_receipts(session_id=session_id, active_attempt=envelope.session.active_attempt)
-        if not any((r.details.extra or {}).get("reference_cost_unavailable") for r in receipts):
+        if not any(r.is_successful() and (r.details.extra or {}).get("reference_cost_unavailable") for r in receipts):
             return None
         return _submission_decision(
             self._build_failed_submission(
