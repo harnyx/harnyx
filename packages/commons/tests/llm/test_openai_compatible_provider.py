@@ -11,7 +11,7 @@ import pytest
 
 from harnyx_commons.config.llm import LlmSettings, parse_openai_compatible_endpoints_json
 from harnyx_commons.llm.adapter import LlmProviderAdapter
-from harnyx_commons.llm.provider import LlmRetryExhaustedError
+from harnyx_commons.llm.provider import LlmProviderError, LlmRetryExhaustedError
 from harnyx_commons.llm.providers import openai_compatible
 from harnyx_commons.llm.providers.openai_compatible import OpenAiCompatibleLlmProvider
 from harnyx_commons.llm.retry_utils import RetryPolicy
@@ -614,15 +614,26 @@ async def test_openai_compatible_provider_uses_request_retry_policy_over_default
     assert response.raw_text == "ok"
 
 
-async def test_openai_compatible_similarity_http_error_still_records_received_headers(
+@pytest.mark.parametrize("status_code", (400, 429))
+@pytest.mark.parametrize(
+    ("use_case", "event_prefix"),
+    (
+        ("miner_task_similarity_judge", "similarity_judge"),
+        ("miner_task_pairwise_judge", "scoring_judge"),
+        ("miner_task_fast_correctness_judge", "scoring_judge"),
+    ),
+)
+async def test_judge_http_rejection_remains_diagnosable_without_request_payload_capture(
     caplog: pytest.LogCaptureFixture,
+    status_code: int,
+    use_case: str,
+    event_prefix: str,
 ) -> None:
-    """Future failure: a provider status error looks like no connection was established."""
+    """Future failure: a rejected judge request loses the provider's actionable rejection reason."""
+    error_body = {"error": {"message": "No endpoints support the requested parameters", "code": status_code}}
     provider = OpenAiCompatibleLlmProvider(
         endpoint=_endpoint(endpoint_id="openrouter", auth={"type": "none"}),
-        client=httpx.AsyncClient(
-            transport=httpx.MockTransport(lambda _: httpx.Response(429, json={"error": "capacity"}))
-        ),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(status_code, json=error_body))),
     )
     request = replace(
         _request(
@@ -630,26 +641,32 @@ async def test_openai_compatible_similarity_http_error_still_records_received_he
             model="deepseek/deepseek-v4-flash",
         ),
         retry_policy=RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0.0),
-        use_case="miner_task_similarity_judge",
+        use_case=use_case,
         internal_metadata={"similarity_invocation_id": "invocation-1"},
         include_payloads_in_observability=False,
     )
     caplog.set_level(logging.INFO, logger="harnyx_commons.llm.calls")
 
     try:
-        with pytest.raises(LlmRetryExhaustedError, match="http_429"):
+        expected_error = LlmRetryExhaustedError if status_code == 429 else LlmProviderError
+        with pytest.raises(expected_error, match=f"http_{status_code}"):
             await provider.invoke(request)
     finally:
         await provider.aclose()
 
-    records = [record for record in caplog.records if record.message.startswith("similarity_judge.llm_attempt.")]
+    records = [record for record in caplog.records if record.message.startswith(f"{event_prefix}.llm_attempt.")]
     assert [record.message for record in records] == [
-        "similarity_judge.llm_attempt.started",
-        "similarity_judge.llm_attempt.headers_received",
-        "similarity_judge.llm_attempt.finished",
+        f"{event_prefix}.llm_attempt.started",
+        f"{event_prefix}.llm_attempt.headers_received",
+        f"{event_prefix}.llm_attempt.finished",
     ]
     assert records[-1].data["headers_received_ms"] is not None
     assert records[-1].data["exception_type"] == "HTTPStatusError"
+    assert records[-1].data["http_status_code"] == status_code
+    assert json.loads(records[-1].data["http_error_body"]) == error_body
+    assert records[-1].data["http_error_body_truncated"] is False
+    assert records[-1].data["retryable"] is (status_code == 429)
+    assert 'Reply with only "ok".' not in repr([record.data for record in records])
 
 
 async def test_openai_compatible_provider_retries_malformed_tool_call_response() -> None:

@@ -1,4 +1,4 @@
-"""Content-free stream progress events for judge LLM attempts."""
+"""Stream progress and HTTP failure diagnostics for judge LLM attempts."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 from uuid import uuid4
 
+import httpx
+
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse, LlmUsage
 from harnyx_commons.llm.timeout import LlmAttemptTimeoutError
 
@@ -21,6 +23,7 @@ _JUDGE_EVENT_PREFIXES = {
     "miner_task_fast_correctness_judge": "scoring_judge",
 }
 _PROGRESS_LOG_INTERVAL_SECONDS = 60.0
+_HTTP_ERROR_BODY_MAX_LENGTH = 2000
 _IDENTITY_FIELDS = (
     "similarity_invocation_id",
     "batch_id",
@@ -139,9 +142,17 @@ class JudgeLlmAttemptObservation:
         self._log("finished", data)
 
     def finish_failure(self, exc: Exception, *, retryable: bool) -> None:
-        timeout_data: dict[str, object] = {}
+        failure_data: dict[str, object] = {}
+        if isinstance(exc, httpx.HTTPStatusError):
+            failure_data["http_status_code"] = exc.response.status_code
+            try:
+                failure_data["http_error_body"] = exc.response.text[:_HTTP_ERROR_BODY_MAX_LENGTH]
+                failure_data["http_error_body_truncated"] = len(exc.response.text) > _HTTP_ERROR_BODY_MAX_LENGTH
+            except httpx.ResponseNotRead:
+                # Logging must not consume a response stream or replace the original failure.
+                pass
         if isinstance(exc, LlmAttemptTimeoutError):
-            timeout_data = {
+            failure_data = {
                 "timeout_phase": exc.phase,
                 "timeout": asdict(exc.timeout),
                 "last_output_ms": (exc.last_output_seconds * 1000 if exc.last_output_seconds is not None else None),
@@ -151,7 +162,7 @@ class JudgeLlmAttemptObservation:
             self._common_data()
             | self._terminal_data("failed")
             | {"exception_type": type(exc).__name__, "retryable": retryable}
-            | timeout_data,
+            | failure_data,
         )
 
     def finish_cancelled(self) -> None:

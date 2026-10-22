@@ -4,6 +4,7 @@ import asyncio
 import logging
 from dataclasses import replace
 
+import httpx
 import pytest
 
 from harnyx_commons.llm.judge_observability import (
@@ -320,6 +321,36 @@ async def test_similarity_attempt_logging_failure_does_not_change_provider_resul
     observation.headers_received()
     observation.stream_event(saw_output=True)
     observation.finish_response(_response())
+
+
+@pytest.mark.parametrize("buffered", (True, False))
+async def test_judge_http_error_logging_is_bounded_and_does_not_consume_unread_streams(
+    caplog: pytest.LogCaptureFixture, buffered: bool
+) -> None:
+    """Future failure: large or unread error bodies disrupt failure handling or flood the log sink."""
+    body = "upstream rejected request " + "x" * 3000
+    request = httpx.Request("POST", "https://example.com/chat/completions")
+    response = (
+        httpx.Response(400, text=body, request=request)
+        if buffered
+        else httpx.Response(400, stream=httpx.ByteStream(body.encode()), request=request)
+    )
+    observation = JudgeLlmAttemptObservation(
+        provider="openrouter", model="deepseek/deepseek-v4-flash", attempt_number=1, attempt_limit=1, identity={}
+    )
+    caplog.set_level(logging.INFO, logger="harnyx_commons.llm.calls")
+    observation.finish_failure(
+        httpx.HTTPStatusError("bad request", request=request, response=response), retryable=False
+    )
+
+    finished = next(record.data for record in caplog.records if record.message.endswith(".finished"))
+    assert finished["http_status_code"] == 400
+    if buffered:
+        assert finished["http_error_body"] == body[:2000]
+        assert finished["http_error_body_truncated"] is True
+    else:
+        assert "http_error_body" not in finished
+        assert response.is_stream_consumed is False
 
 
 @pytest.mark.parametrize("outcome", ("failed", "cancelled", "response_received"))
