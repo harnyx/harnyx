@@ -162,6 +162,20 @@ _BENCHMARK_TARGETS = (
         request_extra={"reasoning": {"effort": "max"}},
     ),
     BenchmarkTarget(
+        test_id="deepseek-v4.1-flash-1017-openrouter-high",
+        model="deepseek/deepseek-v4.1-flash-1017",
+        route_target="openrouter",
+        endpoint_id="openrouter",
+        normalized_base_url=OPENROUTER_BASE_URL,
+        reasoning_profile="high",
+        reasoning_effort="high",
+        request_extra={
+            "provider": {
+                "ignore": list(bootstrap._DUPLICATION_DETECTION_DEEPSEEK_OPENROUTER_IGNORED_PROVIDERS),
+            },
+        },
+    ),
+    BenchmarkTarget(
         test_id="muse-glimmer-30b-openrouter",
         model=_MUSE_GLIMMER_MODEL,
         route_target="openrouter",
@@ -228,6 +242,7 @@ async def test_fixed_dataset_similarity_benchmark(target: BenchmarkTarget) -> No
                     "llm_model_provider_overrides_json": json.dumps(target.provider_overrides),
                     "similarity_llm_provider": "chutes",
                     "similarity_llm_model_override": target.model,
+                    "similarity_llm_fallback_models": (target.model,),
                 }
             )
         }
