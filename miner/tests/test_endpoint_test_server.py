@@ -13,6 +13,7 @@ import httpx
 import pytest
 
 from harnyx_commons.bittensor import build_canonical_request, verify_signed_request
+from harnyx_commons.config.subtensor import SubtensorSettings
 from harnyx_commons.endpoint_execution import (
     ENDPOINT_REPORT_FORWARDING_ALLOWANCE,
     EndpointAuthority,
@@ -21,6 +22,7 @@ from harnyx_commons.endpoint_execution import (
     parse_delegation_header,
 )
 from harnyx_miner.endpoint_test_server import EndpointTestServerState, create_endpoint_test_app
+from harnyx_miner.validator_eligibility import ValidatorEligibility, ValidatorSnapshot
 from harnyx_miner_sdk.endpoint_protocol import (
     ENDPOINT_CALLBACK_CONTEXT_HEADER,
     EndpointAssignment,
@@ -34,6 +36,46 @@ from harnyx_miner_sdk.endpoint_protocol import (
 from harnyx_miner_sdk.query import Query, Response
 
 pytestmark = pytest.mark.anyio("asyncio")
+
+
+async def test_cached_eligibility_admits_new_assignments_but_expired_lookup_failure_returns_503(monkeypatch):
+    validator, miner = (bt.Keypair.create_from_uri(uri) for uri in ("//Alice", "//Bob"))
+    clock = [1000.0]
+    monkeypatch.setattr("harnyx_miner.validator_eligibility.monotonic", lambda: clock[0])
+    reader = ValidatorEligibility(SubtensorSettings())
+    refresh = AsyncMock(
+        return_value=ValidatorSnapshot(block=42, hotkeys=[validator.ss58_address], validator_permit=[True])
+    )
+    monkeypatch.setattr(reader, "_read_snapshot", refresh)
+    state = EndpointTestServerState()
+    app = create_endpoint_test_app(
+        validator_eligibility=reader,
+        miner_hotkey=miner,
+        endpoint_url="https://miner.example",
+        block_at_registration=90,
+        state=state,
+    )
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://miner.example") as client,
+    ):
+        await _accept(client, validator, _assignment(miner))
+        refresh.side_effect = ConnectionError("RPC rate limited")
+        clock[0] += 899
+        await _accept(client, validator, _assignment(miner))
+        refresh.assert_awaited_once()
+        clock[0] += 1
+        for _ in range(2):
+            assignment = _assignment(miner)
+            path = "/v1/endpoint-assignments"
+            body = assignment.model_dump_json().encode()
+            response = await client.post(
+                path, content=body, headers={"Authorization": _authorization(validator, "POST", path, body)}
+            )
+            assert response.status_code == 503
+            assert response.json()["detail"] == "validator eligibility is unavailable"
+            assert assignment.assignment_id not in state.assignments
+        assert refresh.await_count == 2
 
 
 async def test_injected_answerer_reuses_structured_answer_for_continuation_and_lost_ack():
