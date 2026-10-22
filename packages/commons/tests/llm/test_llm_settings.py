@@ -46,3 +46,27 @@ def test_llm_settings_preserve_empty_freeform_model() -> None:
     settings = LlmSettings(DIGEST_LLM_MODEL="")
 
     assert settings.digest_llm_model == ""
+
+
+@pytest.mark.parametrize("prefix", ["SCORING", "SIMILARITY"])
+def test_fallback_models_parse_env_order_and_empty_list(monkeypatch: pytest.MonkeyPatch, prefix: str) -> None:
+    """Future failure: env overrides silently retain the expensive default chain."""
+    key = f"{prefix}_LLM_FALLBACK_MODELS_JSON"
+    attr = f"{prefix.lower()}_llm_fallback_models"
+    monkeypatch.delenv(key, raising=False)
+    assert getattr(LlmSettings(_env_file=None), attr) is None
+    monkeypatch.setenv(key, '[" vendor/model-b ", "vendor/model-a"]')
+    assert getattr(LlmSettings(_env_file=None), attr) == ("vendor/model-b", "vendor/model-a")
+    monkeypatch.setenv(key, '[]')
+    assert getattr(LlmSettings(_env_file=None), attr) == ()
+    monkeypatch.setenv(key, "null")
+    assert getattr(LlmSettings(_env_file=None), attr) is None
+
+
+@pytest.mark.parametrize("prefix", ["SCORING", "SIMILARITY"])
+@pytest.mark.parametrize("raw", ['[""]', '["   "]', '[1]', '["model", " model "]', '{}', '"model"'])
+def test_fallback_models_reject_invalid_env(monkeypatch: pytest.MonkeyPatch, prefix: str, raw: str) -> None:
+    """Future failure: malformed chains start a validator with unintended or repeated calls."""
+    monkeypatch.setenv(f"{prefix}_LLM_FALLBACK_MODELS_JSON", raw)
+    with pytest.raises(ValidationError):
+        LlmSettings(_env_file=None)

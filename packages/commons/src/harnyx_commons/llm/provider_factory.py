@@ -162,6 +162,20 @@ def build_miner_paid_llm_provider(
     raise AssertionError(f"unsupported parsed miner-paid llm provider: {provider_name}")
 
 
+def _openrouter_fallback_models(settings: LlmSettings) -> tuple[str, ...]:
+    fallbacks: dict[LlmRouteSurface, tuple[str, ...] | None] = {
+        "scoring": settings.scoring_llm_fallback_models,
+        "duplication_detection": settings.similarity_llm_fallback_models,
+    }
+    overrides = settings.llm_model_provider_overrides
+    return tuple(sorted({
+        model
+        for surface, models in fallbacks.items()
+        for model in models or ()
+        if overrides.get(surface, {}).get(model) == OPENROUTER_PROVIDER
+    }))
+
+
 def _build_provider(
     *,
     route_target: str,
@@ -175,6 +189,7 @@ def _build_provider(
             provider_name=route_target,
             delegate=OpenRouterLlmProvider(
                 openrouter_api_key=llm_settings.openrouter_api_key,
+                additional_supported_models=_openrouter_fallback_models(llm_settings),
             ),
         )
 

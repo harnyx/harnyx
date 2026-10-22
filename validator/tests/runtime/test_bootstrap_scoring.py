@@ -21,7 +21,10 @@ from harnyx_commons.config.vertex import VertexSettings
 from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
 from harnyx_commons.domain.tool_call import ToolCallOutcome
 from harnyx_commons.errors import BudgetExceededError, ToolProviderError
+from harnyx_commons.llm.provider import LlmProviderError
 from harnyx_commons.llm.routing import ResolvedLlmRoute, RoutedLlmProvider
+from harnyx_commons.llm.schema import AbstractLlmRequest, LlmRequest, LlmResponse
+from harnyx_commons.miner_task_similarity import SimilarityJudgeRequest
 from harnyx_commons.tools.dto import ToolInvocationRequest
 from harnyx_validator.application.ports.platform import PlatformToolProxyGrant
 from harnyx_validator.infrastructure.tools.platform_client import (
@@ -913,3 +916,105 @@ def test_provider_evidence_accepts_expand_only_for_fetch():
                                         kwargs={"provider": "expand", "url": "https://example.com"})
         key = bootstrap._provider_key_from_request(request=request, search_provider_name="desearch")
         assert key == (("expand", "fetch_page") if valid else None)
+
+
+@pytest.mark.parametrize("fallbacks", [("vendor/model-b", "vendor/model-a"), ()])
+def test_env_fallback_overrides_reach_all_judge_services(
+    monkeypatch: pytest.MonkeyPatch, fallbacks: tuple[str, ...],
+) -> None:
+    """Future failure: one scoring slot or duplicate judge keeps hard-coded fallbacks."""
+    monkeypatch.setenv("SCORING_LLM_FALLBACK_MODELS_JSON", json.dumps(fallbacks))
+    monkeypatch.setenv("SIMILARITY_LLM_FALLBACK_MODELS_JSON", json.dumps(fallbacks))
+    monkeypatch.setenv("LLM_MODEL_PROVIDER_OVERRIDES_JSON", json.dumps({
+        surface: {model: "openrouter" for model in fallbacks}
+        for surface in ("scoring", "duplication_detection")
+    }))
+    settings = Settings.model_construct(llm=LlmSettings(_env_file=None))
+    monkeypatch.setattr(bootstrap, "_build_weight_service", lambda *args, **kwargs: SimpleNamespace())
+    routes = bootstrap._resolve_similarity_judge_routes(settings)
+    slot_config = bootstrap._scoring_slot_config(settings)
+    services, similarity, _ = bootstrap._build_services(
+        resolved=settings,
+        scoring_llm_provider=SimpleNamespace(),
+        similarity_llm_provider=SimpleNamespace(),
+        scoring_routes={
+            entry.model: bootstrap._resolve_scoring_judge_route(settings, model=entry.model)
+            for entry in slot_config.entries
+        },
+        similarity_route=routes[0],
+        similarity_request_extra_by_model=bootstrap._similarity_request_extra_by_model(routes),
+        subtensor_client=SimpleNamespace(),
+        platform_client=SimpleNamespace(),
+    )
+    assert len(services) == 2
+    assert all(service._config.fallback_models == fallbacks for service in services.values())
+    assert similarity._config.fallback_models == fallbacks
+    assert [(entry.model, entry.slot_limit) for entry in slot_config.entries] == [
+        (entry.model, entry.slot_limit) for entry in bootstrap._SCORING_SLOT_CONFIG.entries
+    ]
+    assert [(route.model, route.provider) for route in routes[1:]] == [
+        (model, "openrouter") for model in fallbacks
+    ]
+
+
+def test_fallback_overrides_skip_primary_without_discarding_other_candidates() -> None:
+    """Future failure: overriding the similarity primary drops earlier explicit fallback entries."""
+    primary = bootstrap._DIRECT_SCORING_LLM_MODEL
+    settings = Settings.model_construct(llm=LlmSettings(
+        _env_file=None,
+        SCORING_LLM_FALLBACK_MODELS_JSON=["vendor/model-a", primary, "vendor/model-b"],
+        SIMILARITY_LLM_MODEL_OVERRIDE=primary,
+        SIMILARITY_LLM_FALLBACK_MODELS_JSON=["vendor/model-a", primary, "vendor/model-b"],
+    ))
+    assert bootstrap._scoring_slot_config(settings).entries[0].fallback_models == (
+        "vendor/model-a", "vendor/model-b",
+    )
+    assert bootstrap._similarity_judge_fallback_models(settings) == ("vendor/model-a", "vendor/model-b")
+
+
+@pytest.mark.anyio("asyncio")
+async def test_env_similarity_chain_invokes_routed_candidates_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Future failure: configured fallback models never run, run out of order, or use the wrong provider."""
+    fallbacks = ("vendor/model-b", "vendor/model-a")
+    monkeypatch.setenv("SIMILARITY_LLM_FALLBACK_MODELS_JSON", json.dumps(fallbacks))
+    monkeypatch.setenv("LLM_MODEL_PROVIDER_OVERRIDES_JSON", json.dumps({
+        surface: {model: "openrouter" for model in fallbacks}
+        for surface in ("scoring", "duplication_detection")
+    }))
+    settings = Settings.model_construct(llm=LlmSettings(_env_file=None))
+    calls: list[tuple[str, str | None]] = []
+
+    class FailingProvider:
+        async def invoke(self, request: AbstractLlmRequest) -> LlmResponse:
+            calls.append((request.model, request.provider))
+            raise LlmProviderError("provider rejected")
+
+    monkeypatch.setattr(
+        bootstrap, "build_cached_llm_provider_registry",
+        lambda **kwargs: SimpleNamespace(resolve=lambda name: FailingProvider()),
+    )
+    clients = bootstrap._build_llm_clients(settings)
+    judge = bootstrap._create_similarity_judge(
+        settings, clients.similarity_llm_provider,
+        similarity_route=clients.similarity_route,
+        request_extra_by_model=clients.similarity_request_extra_by_model,
+    )
+    with pytest.raises(LlmProviderError, match="provider rejected"):
+        await judge.judge(SimilarityJudgeRequest(
+            batch_id=uuid4(), candidate_artifact_id=uuid4(), reference_artifact_id=uuid4(),
+            candidate_miner_uid=20, reference_miner_uid=10,
+            reference_script="def answer(): return 'old'", candidate_diff="+def answer(): return 'new'",
+        ))
+    assert calls == [(bootstrap._DUPLICATION_DETECTION_LLM_MODEL, "chutes")] + [
+        (model, "openrouter") for model in fallbacks
+    ]
+
+    # Scoring fallbacks use this same runtime router, independently of primary-route validation.
+    assert clients.scoring_llm_provider is not None
+    calls.clear()
+    for model in fallbacks:
+        with pytest.raises(LlmProviderError, match="provider rejected"):
+            await clients.scoring_llm_provider.invoke(LlmRequest(
+                provider="chutes", model=model, messages=(), temperature=None, max_output_tokens=None,
+            ))
+    assert calls == [(model, "openrouter") for model in fallbacks]

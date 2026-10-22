@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from typing import cast
 
+import httpx
 import pytest
 from pydantic import SecretStr
 
@@ -11,7 +13,11 @@ from harnyx_commons.config.vertex import VertexSettings
 from harnyx_commons.errors import ProviderCredentialUnavailableError
 from harnyx_commons.llm import provider_factory
 from harnyx_commons.llm.provider_types import AI_GATEWAY_PROVIDER, CHUTES_PROVIDER, OPENROUTER_PROVIDER
+from harnyx_commons.llm.providers import openrouter as openrouter_module
+from harnyx_commons.llm.providers.openai_compatible import OpenAiCompatibleLlmProvider
 from harnyx_commons.llm.retry_utils import RetryPolicy
+from harnyx_commons.llm.routing import LlmRouteSurface
+from harnyx_commons.llm.schema import LlmRequest
 
 
 @pytest.mark.parametrize(
@@ -463,7 +469,8 @@ def test_build_cached_llm_provider_registry_builds_hardcoded_openrouter_target(
     assert first is second
     assert len(captured_providers) == 1
     assert captured_providers[0]["openrouter_api_key"] == settings.openrouter_api_key
-    assert set(captured_providers[0]) == {"openrouter_api_key"}
+    assert captured_providers[0]["additional_supported_models"] == ()
+    assert set(captured_providers[0]) == {"openrouter_api_key", "additional_supported_models"}
     first_adapter = cast(_FakeAdapter, first)
     assert captured_adapters == [("openrouter", first_adapter.delegate)]
 
@@ -535,3 +542,80 @@ def test_build_cached_llm_provider_registry_does_not_treat_openrouter_as_configu
     registry.resolve("openrouter")
 
     assert len(captured_openrouter) == 1
+
+
+@pytest.mark.anyio("asyncio")
+@pytest.mark.parametrize("surface,prefix", [("scoring", "SCORING"), ("duplication_detection", "SIMILARITY")])
+@pytest.mark.parametrize("explicit_route", [True, False])
+async def test_real_openrouter_provider_accepts_only_configured_openrouter_fallbacks(
+    monkeypatch: pytest.MonkeyPatch, surface: LlmRouteSurface, prefix: str, explicit_route: bool,
+) -> None:
+    """Future failure: routing accepts a native fallback but the real provider rejects it before HTTP dispatch."""
+    model = "vendor/configured-native-fallback"
+    routed_elsewhere = "vendor/chutes-fallback"
+    route_only = "vendor/route-only"
+    routes = {routed_elsewhere: "chutes", route_only: "openrouter"}
+    if explicit_route:
+        routes[model] = "openrouter"
+    settings = LlmSettings(
+        _env_file=None,
+        OPENROUTER_API_KEY="test-key",
+        LLM_MODEL_PROVIDER_OVERRIDES_JSON=json.dumps({surface: routes}),
+        **{
+            f"{prefix}_LLM_FALLBACK_MODELS_JSON": [model, routed_elsewhere],
+            f"{prefix}_LLM_PROVIDER": "chutes",
+        },
+    )
+    requested_models: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_models.append(json.loads(request.content)["model"])
+        event = {
+            "id": "native-response",
+            "choices": [{"index": 0, "delta": {"content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2, "cost": 0.001},
+        }
+        return httpx.Response(
+            200, text="data: " + json.dumps(event) + "\n\ndata: [DONE]\n\n",
+            headers={"content-type": "text/event-stream"},
+        )
+
+    client = httpx.AsyncClient(base_url=openrouter_module.OPENROUTER_BASE_URL, transport=httpx.MockTransport(handler))
+    delegate = OpenAiCompatibleLlmProvider(
+        endpoint=OpenAiCompatibleEndpointConfig.model_validate({
+            "id": "openrouter", "base_url": openrouter_module.OPENROUTER_BASE_URL, "auth": {"type": "none"},
+        }),
+        client=client,
+        response_metadata_extractor=openrouter_module._openrouter_response_metadata,
+    )
+    monkeypatch.setattr(openrouter_module, "build_openrouter_chat_provider", lambda key: (delegate, client))
+    registry = provider_factory.build_cached_llm_provider_registry(
+        llm_settings=settings,
+        bedrock_settings=BedrockSettings.model_construct(),
+        vertex_settings=VertexSettings.model_construct(),
+    )
+    provider = provider_factory.build_routed_llm_provider(
+        surface=surface,
+        default_provider=settings.scoring_llm_provider if surface == "scoring" else settings.similarity_llm_provider,
+        llm_settings=settings,
+        allowed_providers={"chutes", "openrouter"},
+        provider_registry=registry,
+    )
+    try:
+        request = LlmRequest(provider="chutes", model=model, messages=(), temperature=None, max_output_tokens=None)
+        if explicit_route:
+            response = await provider.invoke(request)
+            assert response.raw_text == "ok"
+            assert response.metadata["selected_provider"] == "openrouter"
+        else:
+            with pytest.raises(ValueError, match="does not support model"):
+                await registry.resolve("openrouter").invoke(request)
+        for rejected in (routed_elsewhere, route_only, "vendor/unconfigured"):
+            with pytest.raises(ValueError, match="does not support model"):
+                await registry.resolve("openrouter").invoke(LlmRequest(
+                    provider="openrouter", model=rejected, messages=(), temperature=None, max_output_tokens=None,
+                ))
+    finally:
+        await registry.aclose()
+        await client.aclose()
+    assert requested_models == ([model] if explicit_route else [])

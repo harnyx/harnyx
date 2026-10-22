@@ -16,6 +16,7 @@ import harnyx_validator.runtime.bootstrap as bootstrap_mod
 import harnyx_validator.runtime.registration_worker as registration_worker_mod
 import harnyx_validator.runtime.settings as settings_mod
 import harnyx_validator.runtime.weight_worker as weight_worker_mod
+from harnyx_commons.config.llm import LlmSettings
 from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_commons.sandbox.runtime import CONTAINER_SECURITY
 from harnyx_validator.application.dto.registration import ValidatorRegistrationMetadata
@@ -281,7 +282,7 @@ def test_validator_runtime_separates_startup_registration_from_refresh(
 def test_platform_work_worker_uses_task_capacity_and_artifact_cap() -> None:
     scoring_services = {entry.model: object() for entry in bootstrap_mod._SCORING_SLOT_CONFIG.entries}
     worker = bootstrap_mod._build_platform_work_worker(
-        resolved=SimpleNamespace(),
+        resolved=settings_mod.Settings.model_construct(llm=LlmSettings.model_construct()),
         platform_client=object(),  # type: ignore[arg-type]
         subtensor_client=object(),  # type: ignore[arg-type]
         sandbox_manager=object(),  # type: ignore[arg-type]

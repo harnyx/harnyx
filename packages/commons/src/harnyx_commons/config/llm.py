@@ -7,7 +7,17 @@ import re
 from collections.abc import Mapping
 from typing import Annotated, Literal, cast
 
-from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, field_validator, model_validator
+from pydantic import (
+    AnyHttpUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    StringConstraints,
+    TypeAdapter,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from harnyx_commons.llm.provider_types import LlmProviderName
@@ -29,6 +39,7 @@ DEFAULT_SIMILARITY_LLM_RETRY_INITIAL_MS = 0
 DEFAULT_SIMILARITY_LLM_RETRY_MAX_MS = 0
 DEFAULT_SIMILARITY_LLM_RETRY_JITTER = 0.0
 _ENDPOINT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+_FallbackModel = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
 class OpenAiCompatibleNoAuthConfig(BaseModel):
@@ -235,6 +246,9 @@ class LlmSettings(BaseSettings):
 
     # --- Scoring (validator) ---
     scoring_llm_provider: LlmProviderName = Field(default="chutes", alias="SCORING_LLM_PROVIDER")
+    scoring_llm_fallback_models: tuple[_FallbackModel, ...] | None = Field(
+        default=None, alias="SCORING_LLM_FALLBACK_MODELS_JSON"
+    )
     scoring_llm_temperature: float | None = Field(default=None, alias="SCORING_LLM_TEMPERATURE")
     scoring_llm_max_output_tokens: int = Field(
         default=DEFAULT_SCORING_MAX_OUTPUT_TOKENS, alias="SCORING_LLM_MAX_OUTPUT_TOKENS"
@@ -263,6 +277,9 @@ class LlmSettings(BaseSettings):
 
     # --- Similarity / duplicate preflight (validator) ---
     similarity_llm_provider: LlmProviderName = Field(default="chutes", alias="SIMILARITY_LLM_PROVIDER")
+    similarity_llm_fallback_models: tuple[_FallbackModel, ...] | None = Field(
+        default=None, alias="SIMILARITY_LLM_FALLBACK_MODELS_JSON"
+    )
     similarity_llm_temperature: float | None = Field(default=None, alias="SIMILARITY_LLM_TEMPERATURE")
     similarity_llm_max_output_tokens: int = Field(
         default=DEFAULT_SIMILARITY_MAX_OUTPUT_TOKENS, alias="SIMILARITY_LLM_MAX_OUTPUT_TOKENS"
@@ -324,6 +341,13 @@ class LlmSettings(BaseSettings):
     expand_max_concurrent: int = Field(default=100, alias="EXPAND_MAX_CONCURRENT")
 
     # --- Validators ---
+    @field_validator("scoring_llm_fallback_models", "similarity_llm_fallback_models")
+    @classmethod
+    def _validate_fallback_models(cls, value: tuple[str, ...] | None) -> tuple[str, ...] | None:
+        if value is not None and len(set(value)) != len(value):
+            raise ValueError("fallback model ids must be unique")
+        return value
+
     @field_validator("desearch_api_key", mode="before")
     @classmethod
     def _unescape_env_var(cls, value: object) -> object:

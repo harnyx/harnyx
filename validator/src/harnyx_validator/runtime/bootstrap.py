@@ -563,7 +563,7 @@ def _build_platform_work_worker(
         platform=platform_client,
         execute_artifact_assignments=execute_artifact_assignments,
         score_execution_by_model=score_execution_by_model,
-        scoring_slot_config=_SCORING_SLOT_CONFIG,
+        scoring_slot_config=_scoring_slot_config(resolved),
         target_concurrency=20,
         max_active_artifacts=config.artifact_parallelism,
     )
@@ -635,6 +635,18 @@ def _build_external_clients(
     return platform_client, platform_tool_proxy_client, platform_hotkey, subtensor_client
 
 
+def _scoring_slot_config(settings: Settings) -> ScoringSlotConfig:
+    fallback_models = settings.llm.scoring_llm_fallback_models
+    if fallback_models is None:
+        return _SCORING_SLOT_CONFIG
+    return ScoringSlotConfig(
+        entries=tuple(
+            replace(entry, fallback_models=tuple(model for model in fallback_models if model != entry.model))
+            for entry in _SCORING_SLOT_CONFIG.entries
+        )
+    )
+
+
 def _build_llm_clients(settings: Settings) -> RuntimeLlmClients:
     similarity_routes = _resolve_similarity_judge_routes(settings)
     llm_provider_registry = build_cached_llm_provider_registry(
@@ -643,14 +655,15 @@ def _build_llm_clients(settings: Settings) -> RuntimeLlmClients:
         vertex_settings=settings.vertex,
     )
     scoring_routes = {
-        entry.model: _resolve_scoring_judge_route(settings, model=entry.model) for entry in _SCORING_SLOT_CONFIG.entries
+        entry.model: _resolve_scoring_judge_route(settings, model=entry.model)
+        for entry in _scoring_slot_config(settings).entries
     }
     similarity_route = similarity_routes[0]
     scoring_provider = build_routed_llm_provider(
         surface="scoring",
         default_provider=settings.llm.scoring_llm_provider,
         llm_settings=settings.llm,
-        allowed_providers={"bedrock", "chutes", "vertex", "saygm"},
+        allowed_providers={"bedrock", "chutes", "openrouter", "vertex", "saygm"},
         allow_custom_openai_compatible=True,
         provider_registry=llm_provider_registry,
     )
@@ -710,6 +723,8 @@ def _resolve_similarity_judge_routes(settings: Settings) -> tuple[ResolvedLlmRou
     routes = tuple(_resolve_similarity_judge_route(settings, model=model) for model in models)
     for route in routes:
         if route.provider == OPENROUTER_PROVIDER:
+            if route.model not in _DUPLICATION_DETECTION_CHUTES_CHAIN_MODELS:
+                continue
             if route.model in _DUPLICATION_DETECTION_OPENROUTER_MODELS:
                 continue
             supported_models = ", ".join(sorted(_DUPLICATION_DETECTION_OPENROUTER_MODELS))
@@ -748,6 +763,11 @@ def _effective_similarity_llm_model(settings: Settings) -> str:
 
 
 def _similarity_judge_fallback_models(settings: Settings) -> tuple[str, ...]:
+    if settings.llm.similarity_llm_fallback_models is not None:
+        return tuple(
+            model for model in settings.llm.similarity_llm_fallback_models
+            if model != _effective_similarity_llm_model(settings)
+        )
     return _fallback_tail_after_primary(
         primary_model=_effective_similarity_llm_model(settings),
         ordered_models=(_DUPLICATION_DETECTION_LLM_MODEL, *_DUPLICATION_DETECTION_FALLBACK_MODELS),
@@ -855,7 +875,7 @@ def _build_services(
             scoring_route=scoring_routes[entry.model],
             fallback_models=entry.fallback_models,
         )
-        for entry in _SCORING_SLOT_CONFIG.entries
+        for entry in _scoring_slot_config(resolved).entries
     }
     similarity_judge = _create_similarity_judge(
         resolved,
