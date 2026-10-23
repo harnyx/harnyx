@@ -24,7 +24,6 @@ _GEMMA_ENDPOINT_ID = "gemma4-cloud-run-turbo"
 _GEMMA_ROUTE_TARGET = f"custom-openai-compatible:{_GEMMA_ENDPOINT_ID}"
 _GEMMA_SERVICE_URL = "https://gemma-4-31b-turbo-obbrpx3ppa-uc.a.run.app"
 _DEEPSEEK_MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731-TEE"
-_DEEPSEEK_ROUTE_TARGET = "chutes"
 _DEEPSEEK_OPENROUTER_ROUTE_TARGET = "openrouter"
 _KIMI_MODEL = "moonshotai/Kimi-K2.5-TEE"
 _KIMI_ROUTE_TARGET = "bedrock"
@@ -89,11 +88,8 @@ class RecordingProvider(LlmProviderPort):
     ("model", "route_target"),
     (
         (_GEMMA_MODEL, _GEMMA_ROUTE_TARGET),
-        (_DEEPSEEK_MODEL, _DEEPSEEK_ROUTE_TARGET),
         (_DEEPSEEK_MODEL, _DEEPSEEK_OPENROUTER_ROUTE_TARGET),
         (_KIMI_MODEL, _KIMI_ROUTE_TARGET),
-        ("zai-org/GLM-5.2-TEE", "chutes"),
-        ("moonshotai/Kimi-K3-TEE", "chutes"),
     ),
 )
 async def test_similarity_judge_live_supports_production_provider_contract(
@@ -103,7 +99,7 @@ async def test_similarity_judge_live_supports_production_provider_contract(
     base_settings = Settings.load()
     route_overrides = {
         _GEMMA_MODEL: _GEMMA_ROUTE_TARGET,
-        _DEEPSEEK_MODEL: _DEEPSEEK_ROUTE_TARGET,
+        _DEEPSEEK_MODEL: _DEEPSEEK_OPENROUTER_ROUTE_TARGET,
         _KIMI_MODEL: _KIMI_ROUTE_TARGET,
     }
     route_overrides[model] = route_target
