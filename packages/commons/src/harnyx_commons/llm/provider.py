@@ -18,17 +18,14 @@ from typing import Literal, Protocol, TypeVar, cast
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 from opentelemetry.util.types import AttributeValue
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel
 
 from harnyx_commons.config.external_client import ExternalClientRetrySettings
 from harnyx_commons.llm.judge_observability import observe_judge_llm_attempt
 from harnyx_commons.llm.provider_types import (
     ALLOWED_LLM_PROVIDERS,
-    CHUTES_PROVIDER,
-    VERTEX_PROVIDER,
     LlmProviderName,
     LlmRouteTarget,
-    normalize_reasoning_effort,
     parse_builtin_provider_name,
 )
 from harnyx_commons.llm.retry_utils import RetryPolicy, backoff_ms
@@ -50,14 +47,6 @@ from harnyx_commons.llm.schema import (
     supports_tool_result_messages,
 )
 from harnyx_commons.llm.timeout import LlmAttemptTimeoutError, enforce_attempt_deadlines, resolve_timeout
-from harnyx_commons.observability.langfuse import (
-    build_generation_metadata,
-    build_generation_output_payload,
-    derive_standalone_llm_trace_name,
-    record_child_observation_best_effort,
-    start_llm_generation,
-    update_generation_best_effort,
-)
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 
@@ -242,7 +231,6 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             span_attributes["llm.reasoning_effort"] = str(request.reasoning_effort)
 
         tracer = trace.get_tracer("harnyx_commons.llm")
-        standalone_trace_name = derive_standalone_llm_trace_name(request=request)
         with tracer.start_as_current_span(
             "llm.invoke",
             kind=SpanKind.CLIENT,
@@ -250,137 +238,67 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             record_exception=request.include_payloads_in_observability,
             set_status_on_exception=request.include_payloads_in_observability,
         ) as span:
-            with start_llm_generation(
-                provider_label=self._provider_label,
-                request=request,
-                trace_name=standalone_trace_name,
-            ) as generation:
-                self._llm_logger.debug("llm.invoke.start", extra={"data": data | detailed_metadata})
-                start = time.perf_counter()
-                wait_ms = 0.0
-                try:
-                    if self._semaphore is None or not acquire_semaphore:
-                        response = await self._invoke(request)
-                    else:
-                        wait_start = time.perf_counter()
-                        async with self._semaphore:
-                            wait_ms = (time.perf_counter() - wait_start) * 1000
-                            self._llm_logger.debug(
-                                "llm.invoke.semaphore.wait",
-                                extra={"data": data | {"wait_ms": wait_ms}},
-                            )
-                            response = await self._invoke(request)
-                except Exception as exc:
-                    elapsed = round((time.perf_counter() - start) * 1000, 2)
-                    error_metadata: dict[str, object] = {
-                        "elapsed_ms": elapsed,
-                        "wait_ms": round(wait_ms, 2),
-                    }
-                    if request.include_payloads_in_observability:
-                        error_metadata["error"] = repr(exc)
-                        raw_error_payload = _error_raw_payload_metadata(request=request, exc=exc)
-                        if raw_error_payload is not None:
-                            error_metadata["raw"] = raw_error_payload
-                    update_generation_best_effort(
-                        generation,
-                        metadata=build_generation_metadata(
-                            provider_label=self._provider_label,
-                            request=request,
-                            metadata=error_metadata,
-                        ),
-                    )
-                    self._llm_logger.error(
-                        "llm.invoke.error",
-                        extra={"data": data | {"elapsed_ms": elapsed, "exception_type": type(exc).__name__}},
-                    )
-                    if request.include_payloads_in_observability:
+            self._llm_logger.debug("llm.invoke.start", extra={"data": data | detailed_metadata})
+            start = time.perf_counter()
+            wait_ms = 0.0
+            try:
+                if self._semaphore is None or not acquire_semaphore:
+                    response = await self._invoke(request)
+                else:
+                    wait_start = time.perf_counter()
+                    async with self._semaphore:
+                        wait_ms = (time.perf_counter() - wait_start) * 1000
                         self._llm_logger.debug(
-                            "llm.invoke.error.details",
-                            exc_info=True,
-                            extra={"data": data | detailed_metadata | error_metadata},
+                            "llm.invoke.semaphore.wait",
+                            extra={"data": data | {"wait_ms": wait_ms}},
                         )
-                    span.set_attributes(
-                        {
-                            "llm.elapsed_ms": elapsed,
-                            "llm.wait_ms": round(wait_ms, 2),
-                        }
-                    )
-                    raise
-
+                        response = await self._invoke(request)
+            except Exception as exc:
                 elapsed = round((time.perf_counter() - start) * 1000, 2)
-                usage = response.usage or LlmUsage()
-                web_search_calls = int(usage.web_search_calls or 0)
-                response_metadata = (
-                    _instrumentation_response_metadata(response) if request.include_payloads_in_observability else {}
-                )
-                reasoning_metadata = (
-                    _build_reasoning_metadata(
-                        provider_label=self._provider_label,
-                        request=request,
-                        response=response,
-                        usage=usage,
-                    )
-                    if request.include_payloads_in_observability
-                    else None
-                )
-                grounding_metadata = (
-                    _build_grounding_metadata(
-                        response_metadata=response_metadata,
-                        web_search_calls=web_search_calls,
-                    )
-                    if request.include_payloads_in_observability
-                    else None
-                )
-                generation_metadata: dict[str, object] = {
+                error_metadata: dict[str, object] = {
                     "elapsed_ms": elapsed,
                     "wait_ms": round(wait_ms, 2),
-                    "finish_reason": response.finish_reason,
                 }
                 if request.include_payloads_in_observability:
-                    generation_metadata["response_metadata"] = response_metadata
-                    generation_metadata["raw"] = _build_raw_payload_metadata(
-                        request=request,
-                        response=response,
-                        response_metadata=response_metadata,
+                    error_metadata["error"] = repr(exc)
+                    raw_error_payload = _error_raw_payload_metadata(request=request, exc=exc)
+                    if raw_error_payload is not None:
+                        error_metadata["raw"] = raw_error_payload
+                self._llm_logger.error(
+                    "llm.invoke.error",
+                    extra={"data": data | {"elapsed_ms": elapsed, "exception_type": type(exc).__name__}},
+                )
+                if request.include_payloads_in_observability:
+                    self._llm_logger.debug(
+                        "llm.invoke.error.details",
+                        exc_info=True,
+                        extra={"data": data | detailed_metadata | error_metadata},
                     )
-                if reasoning_metadata is not None:
-                    generation_metadata["reasoning"] = reasoning_metadata
-                if grounding_metadata is not None:
-                    generation_metadata["grounding"] = grounding_metadata
-
                 span.set_attributes(
                     {
                         "llm.elapsed_ms": elapsed,
                         "llm.wait_ms": round(wait_ms, 2),
-                        "llm.usage.total_tokens": int(usage.total_tokens or 0),
-                        "llm.usage.prompt_tokens": int(usage.prompt_tokens or 0),
-                        "llm.usage.completion_tokens": int(usage.completion_tokens or 0),
-                        "llm.usage.web_search_calls": web_search_calls,
                     }
                 )
-                if usage.reasoning_tokens is not None:
-                    span.set_attribute("llm.usage.reasoning_tokens", int(usage.reasoning_tokens))
+                raise
 
-                update_generation_best_effort(
-                    generation,
-                    output=(
-                        build_generation_output_payload(response) if request.include_payloads_in_observability else None
-                    ),
-                    usage=usage,
-                    metadata=build_generation_metadata(
-                        provider_label=self._provider_label,
-                        request=request,
-                        metadata=generation_metadata,
-                    ),
-                )
-                if generation is not None and request.include_payloads_in_observability:
-                    _record_child_observations(
-                        provider_label=self._provider_label,
-                        model=request.model,
-                        response=response,
-                        response_metadata=response_metadata,
-                    )
-                return response
+            elapsed = round((time.perf_counter() - start) * 1000, 2)
+            usage = response.usage or LlmUsage()
+            web_search_calls = int(usage.web_search_calls or 0)
+            span.set_attributes(
+                {
+                    "llm.elapsed_ms": elapsed,
+                    "llm.wait_ms": round(wait_ms, 2),
+                    "llm.usage.total_tokens": int(usage.total_tokens or 0),
+                    "llm.usage.prompt_tokens": int(usage.prompt_tokens or 0),
+                    "llm.usage.completion_tokens": int(usage.completion_tokens or 0),
+                    "llm.usage.web_search_calls": web_search_calls,
+                }
+            )
+            if usage.reasoning_tokens is not None:
+                span.set_attribute("llm.usage.reasoning_tokens", int(usage.reasoning_tokens))
+
+            return response
 
     async def aclose(self) -> None:
         """Providers may override to close network clients."""
@@ -748,7 +666,8 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             self._llm_logger.debug(
                 "llm.invoke.retry.complete.details",
                 extra={
-                    "data": metadata | {
+                    "data": metadata
+                    | {
                         "retry_reasons": tuple(ctx.reasons),
                         "postprocess_recoveries": tuple(ctx.recovery_events),
                     },
@@ -784,12 +703,15 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         if request.include_payloads_in_observability:
             self._llm_logger.debug(
                 f"{message}.details",
-                extra={"data": data | {
-                    "reason": failure.reason,
-                    "exception_message": failure.exception_message,
-                    "exception_repr": failure.exception_repr,
-                    "cause_chain": failure.cause_chain,
-                }},
+                extra={
+                    "data": data
+                    | {
+                        "reason": failure.reason,
+                        "exception_message": failure.exception_message,
+                        "exception_repr": failure.exception_repr,
+                        "cause_chain": failure.cause_chain,
+                    }
+                },
             )
 
 
@@ -885,219 +807,6 @@ def _provider_response_payload(
     return response.payload
 
 
-def _build_reasoning_metadata(
-    *,
-    provider_label: str,
-    request: AbstractLlmRequest,
-    response: LlmResponse,
-    usage: LlmUsage,
-) -> dict[str, object] | None:
-    thought_text_parts, has_thought_signature = _reasoning_details_from_response(
-        provider_label=provider_label,
-        response=response,
-    )
-    include_thoughts_requested = _is_vertex_include_thoughts_request(
-        provider_label=provider_label,
-        model=request.model,
-        reasoning_effort=request.reasoning_effort,
-    )
-    reasoning_tokens = usage.reasoning_tokens
-
-    if not (
-        include_thoughts_requested
-        or thought_text_parts
-        or has_thought_signature
-        or (reasoning_tokens is not None and reasoning_tokens > 0)
-    ):
-        return None
-
-    return {
-        "include_thoughts_requested": include_thoughts_requested,
-        "reasoning_effort": request.reasoning_effort,
-        "reasoning_text_available": bool(thought_text_parts),
-        "thought_text_parts": thought_text_parts,
-        "has_thought_signature": has_thought_signature,
-        "reasoning_tokens": reasoning_tokens,
-    }
-
-
-def _is_vertex_include_thoughts_request(
-    *,
-    provider_label: str,
-    model: str,
-    reasoning_effort: str | None,
-) -> bool:
-    if normalize_reasoning_effort(reasoning_effort) is None:
-        return False
-    if not provider_label.startswith(VERTEX_PROVIDER):
-        return False
-
-    # Must stay aligned with Vertex thinking_config support behavior.
-    normalized_model = model.strip().lower()
-    return "gemini" in normalized_model
-
-
-def _reasoning_details_from_response(
-    *,
-    provider_label: str,
-    response: LlmResponse,
-) -> tuple[tuple[str, ...], bool]:
-    raw_details = _reasoning_details_from_raw_response(
-        provider_label=provider_label,
-        raw_response=(response.metadata or {}).get("raw_response"),
-    )
-    if raw_details is not None:
-        thought_text_parts, has_thought_signature = raw_details
-        if thought_text_parts or has_thought_signature:
-            return thought_text_parts, has_thought_signature
-
-    reasoning_text = _first_reasoning_text(response)
-    if reasoning_text is None:
-        return (), False
-    return (reasoning_text,), False
-
-
-def _reasoning_details_from_raw_response(
-    *,
-    provider_label: str,
-    raw_response: object,
-) -> tuple[tuple[str, ...], bool] | None:
-    if provider_label.startswith(VERTEX_PROVIDER):
-        return _vertex_reasoning_details_from_raw_response(raw_response)
-    if provider_label == CHUTES_PROVIDER:
-        return _chutes_reasoning_details_from_raw_response(raw_response)
-    return None
-
-
-def _first_reasoning_text(response: LlmResponse) -> str | None:
-    for choice in response.choices:
-        reasoning = choice.message.reasoning
-        normalized_reasoning = _normalize_reasoning_text(reasoning)
-        if normalized_reasoning is not None:
-            return normalized_reasoning
-    return None
-
-
-class _RawReasoningObject(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    thought_text_parts: list[str] = Field(default_factory=list)
-    has_thought_signature: bool = False
-    text: str | None = None
-    summary: str | None = None
-    content: str | None = None
-
-    @property
-    def normalized_thought_text_parts(self) -> tuple[str, ...]:
-        return tuple(part.strip() for part in self.thought_text_parts if part.strip())
-
-    @property
-    def reasoning_text(self) -> str | None:
-        for candidate in (self.text, self.summary, self.content):
-            normalized_text = _normalize_reasoning_text(candidate)
-            if normalized_text is not None:
-                return normalized_text
-        return None
-
-
-class _ChutesRawMessage(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    reasoning: str | _RawReasoningObject | None = None
-
-
-class _ChutesRawChoice(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    message: _ChutesRawMessage | None = None
-
-
-class _ChutesRawResponse(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    choices: list[_ChutesRawChoice] = Field(default_factory=list)
-
-
-class _VertexRawPart(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    thought: bool = False
-    text: str | None = None
-    thought_signature: str | None = None
-
-
-class _VertexRawContent(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    parts: list[_VertexRawPart] = Field(default_factory=list)
-
-
-class _VertexRawCandidate(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    content: _VertexRawContent | None = None
-
-
-class _VertexRawResponse(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    candidates: list[_VertexRawCandidate] = Field(default_factory=list)
-
-
-def _vertex_reasoning_details_from_raw_response(raw_response: object) -> tuple[tuple[str, ...], bool]:
-    raw_payload = _validated_model(_VertexRawResponse, raw_response)
-    if raw_payload is None:
-        return (), False
-
-    thought_text_parts: list[str] = []
-    has_thought_signature = False
-    for candidate in raw_payload.candidates:
-        if candidate.content is None:
-            continue
-        for part in candidate.content.parts:
-            if not part.thought:
-                continue
-            thought_text = _normalize_reasoning_text(part.text)
-            if thought_text is not None:
-                thought_text_parts.append(thought_text)
-            if part.thought_signature is not None:
-                has_thought_signature = True
-    return tuple(thought_text_parts), has_thought_signature
-
-
-def _chutes_reasoning_details_from_raw_response(raw_response: object) -> tuple[tuple[str, ...], bool]:
-    raw_payload = _validated_model(_ChutesRawResponse, raw_response)
-    if raw_payload is None:
-        return (), False
-
-    for choice in raw_payload.choices:
-        if choice.message is None:
-            continue
-        reasoning_payload = choice.message.reasoning
-        if isinstance(reasoning_payload, str):
-            reasoning_text = _normalize_reasoning_text(reasoning_payload)
-            return ((reasoning_text,) if reasoning_text is not None else ()), False
-
-        if reasoning_payload is None:
-            continue
-
-        thought_text_parts = reasoning_payload.normalized_thought_text_parts
-        if thought_text_parts:
-            return thought_text_parts, reasoning_payload.has_thought_signature
-
-        fallback_text = reasoning_payload.reasoning_text
-        return ((fallback_text,) if fallback_text is not None else ()), reasoning_payload.has_thought_signature
-
-    return (), False
-
-
-def _normalize_reasoning_text(value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-    normalized_text = value.strip()
-    return normalized_text or None
-
-
 def _failed_response_message(response: LlmResponse) -> LlmMessage | None:
     if not response.choices:
         return None
@@ -1139,46 +848,6 @@ def _base_messages_for_feedback_retry(request: AbstractLlmRequest) -> tuple[LlmM
     return tuple(request.messages[:-2])
 
 
-def _validated_model(model: type[_ModelT], value: object) -> _ModelT | None:
-    try:
-        return model.model_validate(value, strict=True)
-    except ValidationError:
-        return None
-
-
-def _build_grounding_metadata(
-    *,
-    response_metadata: Mapping[str, object],
-    web_search_calls: int,
-) -> dict[str, object] | None:
-    queries = _extract_web_search_queries(response_metadata)
-    if not queries and web_search_calls == 0:
-        return None
-
-    payload: dict[str, object] = {"web_search_calls": web_search_calls}
-    if queries:
-        payload["web_search_queries"] = queries
-    return payload
-
-
-def _extract_web_search_queries(response_metadata: Mapping[str, object]) -> tuple[str, ...]:
-    raw_queries = response_metadata.get("web_search_queries")
-    if isinstance(raw_queries, str):
-        normalized = raw_queries.strip()
-        return (normalized,) if normalized else ()
-    if not isinstance(raw_queries, Sequence):
-        return ()
-
-    queries: list[str] = []
-    for entry in raw_queries:
-        if not isinstance(entry, str):
-            continue
-        normalized = entry.strip()
-        if normalized:
-            queries.append(normalized)
-    return tuple(queries)
-
-
 _TOOL_SECRET_KEYS = frozenset(
     {
         "api_key_string",
@@ -1200,39 +869,6 @@ def _redact_tool_auth_secrets(value: object) -> object:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return [_redact_tool_auth_secrets(item) for item in value]
     return value
-
-
-def _retriever_observation_name(provider_label: str) -> str:
-    if provider_label == "vertex":
-        return "vertex.grounding.search"
-    return f"{provider_label}.search.query"
-
-
-def _record_child_observations(
-    *,
-    provider_label: str,
-    model: str,
-    response: LlmResponse,
-    response_metadata: Mapping[str, object],
-) -> None:
-    queries = _extract_web_search_queries(response_metadata)
-    for index, query in enumerate(queries):
-        record_child_observation_best_effort(
-            as_type="retriever",
-            name=_retriever_observation_name(provider_label),
-            input_payload={"query": query, "index": index},
-            output={"issued": True},
-            metadata={"provider": provider_label, "model": model},
-        )
-
-    for tool_call in response.tool_calls:
-        record_child_observation_best_effort(
-            as_type="tool",
-            name=tool_call.name or "tool",
-            input_payload={"arguments": tool_call.arguments},
-            output={"result": tool_call.output},
-            metadata={"provider": provider_label},
-        )
 
 
 __all__ = [

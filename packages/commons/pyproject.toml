@@ -16,7 +16,6 @@ dependencies = [
   "httpx2==2.13.1",
   "sentry-sdk>=2.64.0",
   "jinja2>=3.1.5",
-  "langfuse>=3.14.1",
   "google-cloud-logging>=3.11",
   "google-genai==2.10.0",
   "google-adk==2.3.0",
@@ -82,7 +81,6 @@ google-adk = "google"
 openai-agents = "agents"
 claude-agent-sdk = "claude_agent_sdk"
 regex = "regex"
-langfuse = "langfuse"
 sentry-sdk = "sentry_sdk"
 opentelemetry-exporter-otlp-proto-http = "opentelemetry"
 opentelemetry-sdk = "opentelemetry"
