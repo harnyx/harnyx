@@ -99,6 +99,13 @@ class _Stream(httpx.AsyncByteStream):
     async def __aiter__(self) -> AsyncIterator[bytes]:
         # Headers, role, empty reasoning, and usage cannot establish output.
         yield b': heartbeat\n\ndata: {"choices":[{"delta":{"role":"assistant","reasoning_details":[]}}]}\n\n'
+        if self.scenario == "output_during_cancellation":
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                # A transport can finish a buffered read while cancellation unwinds.
+                yield _event({"content": "late output"})
+            return
         if self.scenario == "prefill":
             while True:
                 yield b'data: {"choices":[],"usage":{"prompt_tokens":1}}\n\n'
@@ -137,6 +144,12 @@ def _event(delta: dict[str, object]) -> bytes:
 @pytest.mark.parametrize("scenario", ["prefill", "inactivity", "total", "tool_inactivity"])
 async def test_stream_deadlines_and_cleanup_are_consistent(provider_name: str, scenario: str) -> None:
     await _assert_stream_deadline(provider_name, scenario, "inactivity" if scenario == "tool_inactivity" else scenario)
+
+
+@pytest.mark.parametrize("provider_name", ["chutes", "custom", "openrouter", "ai_gateway"])
+async def test_output_during_timeout_cancellation_keeps_timeout_classification(provider_name: str) -> None:
+    """Late buffered output must not hide an expired deadline behind a provider error."""
+    await _assert_stream_deadline(provider_name, "output_during_cancellation", "prefill")
 
 
 @pytest.mark.parametrize("provider_name", ["custom", "openrouter", "ai_gateway"])
