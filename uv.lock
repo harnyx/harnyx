@@ -982,7 +982,7 @@ requires-dist = [
 
 [[package]]
 name = "harnyx-validator"
-version = "20261023.post1"
+version = "20261023.post2"
 source = { editable = "validator" }
 dependencies = [
     { name = "bittensor" },
