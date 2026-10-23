@@ -35,8 +35,6 @@ _QWEN36_MODEL = "Qwen/Qwen3.6-27B-TEE"
 _QWEN36_ENDPOINT_ID = "qwen36-cloud-run"
 _QWEN36_ROUTE_TARGET = "custom-openai-compatible:qwen36-cloud-run"
 _QWEN36_SERVICE_URL = "https://qwen3-6-27b-obbrpx3ppa-uc.a.run.app"
-_GLM_MODEL = "zai-org/GLM-5-TEE"
-_GLM_ROUTE_TARGET = "vertex"
 _KIMI_MODEL = "moonshotai/Kimi-K2.5-TEE"
 _KIMI_ROUTE_TARGET = "bedrock"
 
@@ -185,10 +183,7 @@ async def test_evaluation_scoring_live_uses_real_structured_runtime_flow(
 
 @pytest.mark.parametrize(
     ("model", "route_target"),
-    (
-        (_GLM_MODEL, _GLM_ROUTE_TARGET),
-        (_KIMI_MODEL, _KIMI_ROUTE_TARGET),
-    ),
+    ((_KIMI_MODEL, _KIMI_ROUTE_TARGET),),
 )
 async def test_evaluation_scoring_live_accepts_fallback_candidate_route(
     model: str,

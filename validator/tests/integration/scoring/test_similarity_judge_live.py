@@ -28,8 +28,6 @@ _DEEPSEEK_ROUTE_TARGET = "chutes"
 _DEEPSEEK_OPENROUTER_ROUTE_TARGET = "openrouter"
 _KIMI_MODEL = "moonshotai/Kimi-K2.5-TEE"
 _KIMI_ROUTE_TARGET = "bedrock"
-_GLM_MODEL = "zai-org/GLM-5-TEE"
-_GLM_ROUTE_TARGET = "vertex"
 _REFERENCE_SCRIPT = (
     "def query(agent, question):\n"
     "    messages = [question]\n"
@@ -94,7 +92,6 @@ class RecordingProvider(LlmProviderPort):
         (_DEEPSEEK_MODEL, _DEEPSEEK_ROUTE_TARGET),
         (_DEEPSEEK_MODEL, _DEEPSEEK_OPENROUTER_ROUTE_TARGET),
         (_KIMI_MODEL, _KIMI_ROUTE_TARGET),
-        (_GLM_MODEL, _GLM_ROUTE_TARGET),
         ("zai-org/GLM-5.2-TEE", "chutes"),
         ("moonshotai/Kimi-K3-TEE", "chutes"),
     ),
@@ -108,7 +105,6 @@ async def test_similarity_judge_live_supports_production_provider_contract(
         _GEMMA_MODEL: _GEMMA_ROUTE_TARGET,
         _DEEPSEEK_MODEL: _DEEPSEEK_ROUTE_TARGET,
         _KIMI_MODEL: _KIMI_ROUTE_TARGET,
-        _GLM_MODEL: _GLM_ROUTE_TARGET,
     }
     route_overrides[model] = route_target
     settings = base_settings.model_copy(
