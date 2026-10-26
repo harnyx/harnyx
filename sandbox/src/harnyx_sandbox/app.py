@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import os
 import secrets
@@ -11,8 +12,9 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Security
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.security import APIKeyHeader
+from starlette.types import Message, Receive, Scope, Send
 
 from harnyx_miner_sdk.sandbox_headers import (
     read_host_container_url_header,
@@ -100,9 +102,64 @@ app.include_router(
 )
 
 
-@app.post("/admission", dependencies=[Depends(require_control_token), Depends(require_tool_token)])
-async def reserve_admission(body: AdmissionRequest, request: Request) -> SandboxAdmission:
-    return await sandbox_harness.reserve(body, request.headers)
+class _AdmissionResponse(Response):
+    """Own admission until its response is sent, including client disconnect cleanup."""
+
+    def __init__(self, body: AdmissionRequest, headers: Mapping[str, str], harness: SandboxHarness) -> None:
+        super().__init__()
+        self._request = body
+        self._request_headers = headers
+        self._harness = harness
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        responding = asyncio.create_task(self._respond(scope, receive, send))
+
+        async def listen_for_disconnect() -> None:
+            while True:
+                if (await receive())["type"] == "http.disconnect":
+                    responding.cancel()
+                    return
+
+        disconnected = asyncio.create_task(listen_for_disconnect())
+        try:
+            done, _ = await asyncio.wait((responding, disconnected), return_when=asyncio.FIRST_COMPLETED)
+            if disconnected in done:
+                disconnected.result()
+            else:
+                responding.result()
+        finally:
+            # A second cancellation could interrupt reserve's compiler/slot cleanup.
+            if not responding.cancelling():
+                responding.cancel()
+            disconnected.cancel()
+            await asyncio.gather(responding, disconnected, return_exceptions=True)
+
+    async def _respond(self, scope: Scope, receive: Receive, send: Send) -> None:
+        admission = await self._harness.reserve(self._request, self._request_headers)
+        delivered = False
+
+        async def send_response(message: Message) -> None:
+            nonlocal delivered
+            await send(message)
+            if message["type"] == "http.response.body" and not message.get("more_body", False):
+                delivered = True
+
+        try:
+            await JSONResponse(admission.model_dump(mode="json"), background=self.background)(
+                scope, receive, send_response
+            )
+        finally:
+            if not delivered:
+                self._harness.release(admission)
+
+
+@app.post(
+    "/admission",
+    response_model=SandboxAdmission,
+    dependencies=[Depends(require_control_token), Depends(require_tool_token)],
+)
+async def reserve_admission(body: AdmissionRequest, request: Request) -> Response:
+    return _AdmissionResponse(body, request.headers, sandbox_harness)
 
 
 @app.post("/admission/release", dependencies=[Depends(require_control_token), Depends(require_tool_token)])

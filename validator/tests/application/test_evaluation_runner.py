@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
+from unittest.mock import AsyncMock, Mock
 from uuid import UUID, uuid4
 
 import httpx
@@ -5852,10 +5853,10 @@ async def test_oom_drain_preserves_success_and_returns_unstarted_claims(tmp_path
 
 @pytest.mark.parametrize("second_start_succeeds", (True, False))
 @pytest.mark.parametrize("timeout_source", ("validator", "sandbox"))
-async def test_task_start_wait_retries_once_then_reports_validator_failure(
+async def test_task_start_wait_advances_only_after_window_expiry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, second_start_succeeds: bool, timeout_source: str
 ) -> None:
-    """A start wait gets one further chance, then must unblock the batch without a miner zero."""
+    """Start waiting spends elapsed windows, then unblocks the batch without a miner zero."""
     runner, batch_id, artifact, task, sessions, _, _, _ = _assigned_task_test_context(tmp_path)
     assignment = MinerTaskWorkAssignment(
         batch_id=batch_id,
@@ -5892,6 +5893,7 @@ async def test_task_start_wait_retries_once_then_reports_validator_failure(
         async def execute(self, request, **_kwargs):
             return _successful_execution(request)
 
+    began = time.monotonic()
     outcome = await asyncio.wait_for(
         runner._run_admitted_assignment(
             runner._assigned_attempt_lifecycle(batch_id=batch_id, artifact=artifact, claimed=claimed),
@@ -5905,6 +5907,7 @@ async def test_task_start_wait_retries_once_then_reports_validator_failure(
         assert outcome.execution_to_queue is not None
         assert not work.failed_before_start
     else:
+        assert time.monotonic() - began >= 0.02
         assert not sessions._sessions
         assert len(work.failed_before_start) == 1
         result = work.failed_before_start[0][1]
@@ -5912,6 +5915,193 @@ async def test_task_start_wait_retries_once_then_reports_validator_failure(
         assert result.terminal_attempt.error_code == str(MinerTaskErrorCode.VALIDATOR_INTERNAL_TIMEOUT)
         assert result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE
         assert result.terminal_attempt.retry_decision is MinerTaskAttemptRetryDecision.WILL_NOT_RETRY
+
+
+@pytest.mark.parametrize("fast", (False, True))
+@pytest.mark.parametrize("finish", ("admitted", "expired", "cancelled"))
+async def test_capacity_wait_is_independent_of_execution_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fast: bool, finish: str
+) -> None:
+    """Contended admission obeys its original lease and releases capacity on every exit."""
+    from fastapi import HTTPException
+    from harnyx_sandbox.sandbox.harness import SandboxHarness
+
+    from harnyx_commons.sandbox.docker import HttpSandboxClient
+    from harnyx_miner_sdk.sandbox_protocol import AdmissionRequest
+    from harnyx_validator.runtime.platform_work_worker import _ArtifactGroupState, _AssignedArtifactGroup
+
+    runner, batch_id, artifact, task, sessions, _, _, _ = _assigned_task_test_context(tmp_path)
+    task = task.model_copy(update={"timeout_seconds": 1, "query": task.query.model_copy(update={"fast": fast})})
+    limit = task.effective_timeout_seconds()
+    assignment = MinerTaskWorkAssignment(
+        batch_id=batch_id,
+        artifact=artifact,
+        task=task,
+        attempt_number=1,
+        max_attempts=2,
+        assignment_token=_ASSIGNMENT_TOKEN,
+    )
+    group = _AssignedArtifactGroup(
+        artifact_id=artifact.artifact_id,
+        state=_ArtifactGroupState.OPEN,
+        assignment_queue=asyncio.Queue(),
+        close_requested=asyncio.Event(),
+        result_queue=asyncio.Queue(),
+        assignment_records={},
+        starting_records={},
+        monotonic_clock=time.monotonic,
+        dispatch_start_lease_seconds=0.25 if finish == "expired" else 6.0,
+    )
+    group.put_nowait(assignment)
+    group.mark_dispatch_ready()
+    claimed = group.claim_nowait_for_dispatch()
+    window_seconds = 2 * limit + 0.5
+    monkeypatch.setattr(evaluation_runner_module, "TASK_START_WAIT_SECONDS", window_seconds)
+    harness = SandboxHarness()
+    harness._slots = asyncio.Semaphore(1)
+    await harness._slots.acquire()
+    ready = asyncio.get_running_loop().create_future()
+    ready.set_result(None)
+    # Compiler readiness is already settled; admission and capacity accounting are real.
+    monkeypatch.setattr(
+        harness, "_compiler", Mock(ready=ready, generation="ready", failure=None, close_task=None, close=AsyncMock())
+    )
+    requests = 0
+    timeouts = 0
+    waiting = asyncio.Event()
+
+    async def handler(request):
+        nonlocal requests, timeouts
+        if request.url.path == "/admission/release":
+            harness.release(SandboxAdmission.model_validate_json(request.content))
+            return httpx.Response(200, json={"ok": True})
+        requests += 1
+        waiting.set()
+        if requests == 3 and finish == "admitted":
+            harness._slots.release()
+        try:
+            admission = await harness.reserve(AdmissionRequest.model_validate_json(request.content), {})
+        except HTTPException as exc:
+            timeouts += 1
+            return httpx.Response(exc.status_code, json={"detail": exc.detail})
+        remaining = (admission.deadline_monotonic_ns - time.monotonic_ns()) / 1e9
+        assert 0 < remaining <= limit
+        return httpx.Response(200, json=admission.model_dump())
+
+    class Orchestrator:
+        async def execute(self, request, **_kwargs):
+            assert request.execution_time_limit_seconds == limit
+            # Execution must outlive the remaining capacity-wait window.
+            await asyncio.sleep(0.4)
+            return _successful_execution(request)
+
+    began = time.monotonic()
+    try:
+        async with httpx.AsyncClient(base_url="http://sandbox.local", transport=httpx.MockTransport(handler)) as http:
+            client = HttpSandboxClient("http://sandbox.local", control_token=uuid4().hex, client=http)
+            running = asyncio.create_task(
+                runner._run_admitted_assignment(
+                    runner._assigned_attempt_lifecycle(batch_id=batch_id, artifact=artifact, claimed=claimed),
+                    orchestrator=cast(TaskRunOrchestrator, Orchestrator()),
+                    sandbox_client=client,
+                )
+            )
+            if finish == "cancelled":
+                await asyncio.wait_for(waiting.wait(), 1.0)
+                running.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await running
+                assert group.claim_nowait_for_dispatch().remaining_dispatch_seconds() < 6.0
+            else:
+                outcome = await asyncio.wait_for(running, 5.0)
+                if finish == "admitted":
+                    assert outcome.execution_to_queue is not None
+                    assert time.monotonic() - began > window_seconds
+                    assert requests == 3 and timeouts == 2
+                    assert group.result_queue.empty()
+                else:
+                    assert outcome.execution_to_queue is None
+                    failure = group.result_queue.get_nowait()
+                    assert failure.result is None
+                    assert failure.terminal_attempt.error_code == "validator_internal_timeout"
+                    assert failure.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE
+                    assert claimed.remaining_dispatch_seconds() == 0
+                    assert requests == 1
+            if finish != "admitted":
+                assert not sessions._sessions
+                assert harness._slots.locked()
+                harness._slots.release()
+        assert not harness._reservations
+        assert not harness._slots.locked()
+        following = await harness.reserve(AdmissionRequest(limit_seconds=1.0), {})
+        harness.release(following)
+        assert not harness._reservations
+        assert not harness._slots.locked()
+    finally:
+        await harness.close()
+
+
+@pytest.mark.parametrize(
+    ("status", "detail", "uncertain", "after_admission"),
+    (
+        (504, "entrypoint deadline exceeded", False, False),
+        (504, "admission deadline exceeded", True, False),
+        (503, "admission deadline exceeded", False, False),
+        (504, "admission deadline exceeded", False, True),
+    ),
+)
+async def test_capacity_wait_does_not_retry_other_or_started_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: int,
+    detail: str,
+    uncertain: bool,
+    after_admission: bool,
+) -> None:
+    """Replay is safe only for a confirmed timeout before any reservation was issued."""
+    runner, batch_id, artifact, task, _, _, _, _ = _assigned_task_test_context(tmp_path)
+    assignment = MinerTaskWorkAssignment(
+        batch_id=batch_id,
+        artifact=artifact,
+        task=task,
+        attempt_number=1,
+        max_attempts=2,
+        assignment_token=_ASSIGNMENT_TOKEN,
+    )
+    work = _AssignedWork()
+    claimed = work.claim_initial_for_dispatch(assignment)
+    monkeypatch.setattr(evaluation_runner_module, "TASK_START_WAIT_SECONDS", 0.01)
+    calls = 0
+    error = SandboxInvokeError(
+        "sandbox failed",
+        status_code=status,
+        detail_code=None,
+        detail_exception="TimeoutError",
+        detail_error=detail,
+        remote_state_uncertain=uncertain,
+    )
+
+    class Sandbox(_AdmittingSandbox):
+        @asynccontextmanager
+        async def admission(self, limit_seconds, token):
+            nonlocal calls
+            calls += 1
+            if not after_admission:
+                raise error
+            async with super().admission(limit_seconds, token) as admission:
+                yield admission
+
+    async def fail_started(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(runner, "_run_assigned_attempt", fail_started)
+    await runner._run_admitted_assignment(
+        runner._assigned_attempt_lifecycle(batch_id=batch_id, artifact=artifact, claimed=claimed),
+        orchestrator=cast(TaskRunOrchestrator, object()),
+        sandbox_client=Sandbox(),
+    )
+    assert calls == 1
+    assert len(work.failed_before_start) == 1
 
 
 @pytest.mark.parametrize("failure_kind", ("timeout", "admission-error", "session-error"))

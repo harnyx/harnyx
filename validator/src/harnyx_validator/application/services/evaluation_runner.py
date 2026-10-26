@@ -922,24 +922,37 @@ class EvaluationRunner:
                 admission_wait = asyncio.timeout(min(claimed.remaining_dispatch_seconds(), TASK_START_WAIT_SECONDS))
                 try:
                     async with admission_wait:
-                        async with sandbox_client.admission(
-                            self._config.execution_limit_for(claimed.assignment.task),
-                            claimed.assignment.assignment_token,
-                        ) as admission:
-                            lifecycle.admission = admission
-                            if not claimed.is_live() or sandbox_client.draining:
-                                return _AssignedAttemptRunOutcome()
-                            # The waiting deadline must not shorten a started execution.
-                            admission_wait.reschedule(None)
-                            return await self._run_assigned_attempt(
-                                lifecycle, orchestrator=orchestrator, admission=admission
-                            )
+                        while claimed.is_live() and not sandbox_client.draining:
+                            try:
+                                async with sandbox_client.admission(
+                                    self._config.execution_limit_for(claimed.assignment.task),
+                                    claimed.assignment.assignment_token,
+                                ) as admission:
+                                    lifecycle.admission = admission
+                                    if not claimed.is_live() or sandbox_client.draining:
+                                        return _AssignedAttemptRunOutcome()
+                                    # The waiting deadline must not shorten a started execution.
+                                    admission_wait.reschedule(None)
+                                    return await self._run_assigned_attempt(
+                                        lifecycle, orchestrator=orchestrator, admission=admission
+                                    )
+                            except SandboxInvokeError as exc:
+                                if (
+                                    lifecycle.admission is not None
+                                    or exc.remote_state_uncertain
+                                    or exc.status_code != 504
+                                    or exc.detail_exception != "TimeoutError"
+                                    or exc.detail_error != "admission deadline exceeded"
+                                ):
+                                    raise
+                            # An early admission timeout has not spent this waiting window.
+                            # Pace retries even if the sandbox responds immediately.
+                            await asyncio.sleep(0.1)
                 except TimeoutError:
                     if not admission_wait.expired():
                         raise
-                except SandboxInvokeError as exc:
-                    if exc.status_code != 504 or exc.detail_exception != "TimeoutError":
-                        raise
+                if sandbox_client.draining:
+                    return _AssignedAttemptRunOutcome()
                 if not claimed.is_live():
                     break
             result = task_start_timeout_result(claimed.assignment, self._clock())

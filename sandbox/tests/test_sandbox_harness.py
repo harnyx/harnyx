@@ -6,6 +6,7 @@ import os
 import struct
 from collections.abc import Callable
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import HTTPException
@@ -18,6 +19,8 @@ from harnyx_sandbox.sandbox.harness import (
     _EntrypointContext,
 )
 from harnyx_sandbox.sandbox.worker_protocol import WORKER_MESSAGE, WorkerResultProtocolError, load_json, read_frame
+
+from harnyx_miner_sdk.sandbox_protocol import AdmissionRequest
 
 pytestmark = pytest.mark.anyio("asyncio")
 
@@ -56,6 +59,95 @@ async def test_query_requires_cost_context_before_start(harness):
         await harness.invoke("query", body())
     assert error.value.status_code == 422
     assert harness._compiler is None
+
+
+@pytest.mark.parametrize("boundary", ("capacity", "compiler"))
+async def test_admission_cancellation_wins_over_concurrent_wait_completion(harness, monkeypatch, boundary):
+    """A completed inner wait must not swallow cancellation and allocate an orphan."""
+    ready = asyncio.get_running_loop().create_future()
+    if boundary == "capacity":
+        ready.set_result(None)
+    compiler = Mock(ready=ready, generation="test", failure=None, close_task=None, close=AsyncMock())
+    monkeypatch.setattr(harness, "_compiler", compiler)
+    slots = harness._slots = asyncio.Semaphore(0 if boundary == "capacity" else 1)
+    reserving = asyncio.create_task(harness.reserve(AdmissionRequest(limit_seconds=5.0), {}))
+    try:
+        async with asyncio.timeout(1.0):
+            while not (slots._waiters if boundary == "capacity" else harness._startup_waiters):
+                await asyncio.sleep(0)
+        # Complete and cancel in the same event-loop turn, with no scheduling gap.
+        if boundary == "capacity":
+            slots.release()
+        else:
+            ready.set_result(None)
+        reserving.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await reserving
+        assert not ready.cancelled()
+        assert not harness._reservations
+        assert harness._startup_waiters == 0
+        await asyncio.wait_for(slots.acquire(), 0.1)
+        assert slots.locked()  # Exactly one slot was recovered, not released twice.
+        slots.release()
+    finally:
+        reserving.cancel()
+        await asyncio.gather(reserving, return_exceptions=True)
+
+
+async def test_cancelling_compiler_wait_preserves_other_waiters(harness, monkeypatch):
+    """Cancelling one reservation must not cancel the shared compiler readiness future."""
+    ready = asyncio.get_running_loop().create_future()
+    compiler = Mock(ready=ready, generation="test", failure=None, close_task=None, close=AsyncMock())
+    monkeypatch.setattr(harness, "_compiler", compiler)
+    harness._slots = asyncio.Semaphore(2)
+    first = asyncio.create_task(harness.reserve(AdmissionRequest(limit_seconds=5.0), {}))
+    second = asyncio.create_task(harness.reserve(AdmissionRequest(limit_seconds=5.0), {}))
+    try:
+        async with asyncio.timeout(1.0):
+            while harness._startup_waiters != 2:
+                await asyncio.sleep(0)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        assert not ready.cancelled()
+        compiler.close.assert_not_awaited()
+        ready.set_result(None)
+        admission = await second
+        harness.release(admission)
+        assert not harness._slots.locked()
+        assert not harness._reservations
+    finally:
+        for task in (first, second):
+            task.cancel()
+        await asyncio.gather(first, second, return_exceptions=True)
+
+
+@pytest.mark.parametrize("boundary", ("capacity", "compiler"))
+async def test_admission_timeout_keeps_classification_and_recovers_capacity(harness, monkeypatch, boundary):
+    """Wait expiry remains a settled admission timeout and cannot leak or duplicate a slot."""
+    ready = asyncio.get_running_loop().create_future()
+    if boundary == "capacity":
+        ready.set_result(None)
+    compiler = Mock(ready=ready, generation="test", failure=None, close_task=None, close=AsyncMock())
+    monkeypatch.setattr(harness, "_compiler", compiler)
+    harness._slots = asyncio.Semaphore(0 if boundary == "capacity" else 1)
+    with pytest.raises(HTTPException) as failed:
+        await harness.reserve(AdmissionRequest(limit_seconds=0.01), {})
+    assert failed.value.status_code == 504
+    assert failed.value.detail == {"error": "admission deadline exceeded", "exception": "TimeoutError"}
+    assert not harness._reservations
+    assert not ready.cancelled()
+    assert harness._startup_waiters == 0
+    if boundary == "capacity":
+        assert harness._slots.locked()
+        compiler.close.assert_not_awaited()
+        harness._slots.release()
+    else:
+        compiler.close.assert_awaited_once()
+        assert harness._compiler is None
+    await asyncio.wait_for(harness._slots.acquire(), 0.1)
+    assert harness._slots.locked()
+    harness._slots.release()
 
 
 async def test_frame_rejects_oversize_before_body():

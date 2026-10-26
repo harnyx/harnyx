@@ -133,11 +133,44 @@ async def test_compiler_death_reaps_workers_and_next_admission_recovers(harness)
     assert harness._compiler is not compiler
 
 
-async def test_unused_admission_expires(harness):
+async def test_unused_admission_expires_and_restores_capacity(harness):
     await harness.invoke("probe", body())
+    harness._slots = asyncio.Semaphore(1)
     admission = await harness.reserve(AdmissionRequest(limit_seconds=0.05), {})
+    assert harness._slots.locked()
     await asyncio.sleep(0.06)
     assert admission.reservation_id not in harness._reservations
+    following = await asyncio.wait_for(harness.reserve(AdmissionRequest(limit_seconds=1.0), {}), 1.0)
+    harness.release(following)
+    assert not harness._slots.locked()
+
+
+async def test_contended_admission_timeout_and_cancellation_leave_capacity_reusable(harness):
+    """Failed waiters cannot retain a slot or shorten a later reservation's execution budget."""
+    await harness.invoke("probe", body())
+    harness._slots = asyncio.Semaphore(1)
+    occupied = await harness.reserve(AdmissionRequest(limit_seconds=5.0), {})
+    try:
+        for _ in range(3):
+            with pytest.raises(HTTPException) as failure:
+                await harness.reserve(AdmissionRequest(limit_seconds=0.02), {})
+            assert failure.value.status_code == 504
+            assert set(harness._reservations) == {occupied.reservation_id}
+        waiting = asyncio.create_task(harness.reserve(AdmissionRequest(limit_seconds=5.0), {}))
+        await asyncio.sleep(0.01)
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+        assert harness._slots.locked()
+        assert set(harness._reservations) == {occupied.reservation_id}
+    finally:
+        harness.release(occupied)
+    following = await asyncio.wait_for(harness.reserve(AdmissionRequest(limit_seconds=1.0), {}), 2.0)
+    request = body()
+    request.admission = following
+    assert (await harness.invoke("probe", request))["pid"] > 0
+    assert not harness._reservations
+    assert not harness._slots.locked()
 
 
 async def test_duplicate_and_expired_admissions_are_rejected(harness):

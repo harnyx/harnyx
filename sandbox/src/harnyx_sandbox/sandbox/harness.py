@@ -605,7 +605,8 @@ class SandboxHarness:
                     while True:
                         self._check_resources()
                         try:
-                            await asyncio.wait_for(self._slots.acquire(), 0.1)
+                            async with asyncio.timeout(0.1):
+                                await self._slots.acquire()
                             acquired = True
                             break
                         except TimeoutError:
@@ -642,7 +643,8 @@ class SandboxHarness:
             compiler = self._compiler = _Compiler(path, self._memory)
         self._startup_waiters += 1
         try:
-            failure = await asyncio.wait_for(asyncio.shield(compiler.ready), request.limit_seconds)
+            async with asyncio.timeout(request.limit_seconds):
+                failure = await asyncio.shield(compiler.ready)
             if failure is not None and failure.code == "PreloadInfrastructureFailed":
                 self._check_resources()
                 self._unwrap_result(QueryResult(error=failure))
