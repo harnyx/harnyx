@@ -8,6 +8,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from harnyx_commons.domain.miner_task import FastScoreEvidence, Query, ReferenceAnswer, Response
 from harnyx_commons.llm.json_utils import pydantic_postprocessor
 from harnyx_commons.llm.provider import LlmProviderPort
 from harnyx_commons.llm.provider_types import LlmProviderName
@@ -15,6 +16,11 @@ from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequ
 from harnyx_commons.miner_task_benchmark.rubric_scoring import (
     BENCHMARK_WEIGHTED_RUBRIC_JEV_SCORING_VERSION,
     BENCHMARK_WEIGHTED_RUBRIC_SCORING_VERSION,
+)
+from harnyx_commons.miner_task_fast_scoring import (
+    FastJudgeAssessment,
+    build_fast_judge_messages,
+    build_fast_score_evidence,
 )
 
 _CORRECTNESS_SYSTEM_PROMPT = (
@@ -143,6 +149,40 @@ class BenchmarkCorrectnessScoringService:
     ) -> None:
         self._llm = llm_provider
         self._config = config
+
+    async def score_pass_at_1_f1(
+        self,
+        *,
+        question: str,
+        reference_answer: str,
+        generated_answer: str,
+    ) -> FastScoreEvidence:
+        messages = build_fast_judge_messages(
+            query=Query(text=question, fast=True),
+            reference_answer=ReferenceAnswer(text=reference_answer),
+            miner_response=Response(text=generated_answer),
+        )
+        response = await self._llm.invoke(
+            LlmRequest(
+                provider=self._config.provider,
+                model=self._config.model,
+                messages=(
+                    LlmMessage(role="system", content=(LlmMessageContentPart.input_text(messages.system_prompt),)),
+                    LlmMessage(role="user", content=(LlmMessageContentPart.input_text(messages.user_prompt),)),
+                ),
+                output_mode="structured",
+                output_schema=FastJudgeAssessment,
+                postprocessor=pydantic_postprocessor(FastJudgeAssessment),
+                max_output_tokens=None,
+                temperature=self._config.temperature,
+                reasoning_effort=self._config.reasoning_effort,
+                timeout=self._config.timeout_seconds,
+                use_case="benchmark_pass_at_1_f1_judge",
+            )
+        )
+        if response.postprocessed is None:
+            raise RuntimeError("benchmark F1 judge did not return structured output")
+        return build_fast_score_evidence(FastJudgeAssessment.model_validate(response.postprocessed))
 
     async def score(
         self,
