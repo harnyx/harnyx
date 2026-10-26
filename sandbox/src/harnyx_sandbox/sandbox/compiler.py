@@ -295,11 +295,13 @@ async def run_query(channel: socket.socket, preload_failure: WorkerError | None)
     channel.setblocking(False)
     reader, writer = await asyncio.open_connection(sock=channel)
     receiver = None
+    terminal_sent = False
     phase = "PreloadFailed"
     try:
         request = Invocation.model_validate(load_json(await read_frame(reader)))
         if preload_failure is not None:
             await send(writer, QueryResult(error=preload_failure))
+            terminal_sent = True
             return
         phase = "MissingEntrypoint"
         func = get_entrypoint(request.entrypoint)
@@ -314,16 +316,29 @@ async def run_query(channel: socket.socket, preload_failure: WorkerError | None)
         if isinstance(result, BaseModel):
             result = result.model_dump(mode="json")
         await send(writer, QueryResult(result=result))
+        terminal_sent = True
     except BaseException as exc:
         with contextlib.suppress(Exception):
             await send(
                 writer,
                 QueryResult(error=WorkerError(code=phase, exception=type(exc).__name__, message=str(exc)[:65536])),
             )
+            terminal_sent = True
     finally:
-        if receiver is not None:
-            receiver.cancel()
-        writer.close()
+        try:
+            if terminal_sent:
+                # A late reply write can fail the host's shared reader before
+                # it consumes our result. Keep receiving until the host closes.
+                if receiver is None:
+                    receiver = asyncio.create_task(ConnectionInvoker(reader, writer).receive())
+                await receiver
+        finally:
+            try:
+                if receiver is not None:
+                    receiver.cancel()
+                    await asyncio.gather(receiver, return_exceptions=True)
+            finally:
+                writer.close()
 
 
 def child_main(fds: list[int], code: types.CodeType, path: str) -> None:

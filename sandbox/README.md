@@ -93,4 +93,6 @@ The server starts on `http://127.0.0.1:8000` by default. Set `SANDBOX_HOST` and 
 
 Accepted tool requests stay owned by the invocation. Before returning a worker result (including a reported miner error), the supervisor waits for those requests to complete within the query deadline. On deadline, cancellation, or broken worker transport, it cancels and joins local tool tasks and closes their proxy before returning. This does not guarantee remote provider cancellation or receipt completion after an HTTP request is cancelled; the transport cannot acknowledge that stronger contract.
 
+On normal worker completion, after sending its result or classified error, the worker keeps receiving late tool replies until the supervisor closes the connection or terminates it. This prevents late replies from discarding results during normal completion; abrupt worker loss, cancellation, and OOM retain their existing failure handling. Workers remain resident during tool settlement, subject to the existing query deadline and bounded cleanup.
+
 Worker signal syscalls are restricted to the worker's own PID/thread. Process-group signals and pidfd-based signals are denied, so a miner cannot stop the compiler, supervisor, or sibling worker. Supervisor-to-child termination remains available.

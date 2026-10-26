@@ -4,8 +4,12 @@ import asyncio
 import contextlib
 import json
 import os
+import select
 import signal
+import socket
+import struct
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -16,6 +20,7 @@ from harnyx_sandbox.sandbox.harness import (
     SandboxHarness,
     _EntrypointContext,
 )
+from harnyx_sandbox.sandbox.worker_protocol import Invocation, QueryResult, ToolReply, decode_worker_message
 
 from harnyx_miner_sdk.sandbox_protocol import AdmissionRequest
 
@@ -292,6 +297,177 @@ async def tool(request: dict[str, object]) -> object:
     assert sorted(closed) == ["dummy-a", "dummy-b", "dummy-c"]
 
 
+@pytest.mark.parametrize("terminal", ["success", "error", "local_timeout"])
+@pytest.mark.parametrize("tool_error", [False, True])
+async def test_late_tool_reply_preserves_terminal_result(tmp_path, monkeypatch, terminal, tool_error):
+    """A late reply must not destroy a complete answer/error already in the socket."""
+    path = tmp_path / "agent.py"
+    marker = tmp_path / "tool-started"
+    path.write_text("""
+import asyncio
+import os
+from harnyx_miner_sdk.decorators import entrypoint
+from harnyx_miner_sdk._internal.tool_invoker import _current_tool_invoker
+@entrypoint("probe")
+async def probe(request: dict[str, object]) -> dict[str, object]:
+    mode = request.get("mode")
+    if mode is None:
+        return {"healthy": True}
+    call = asyncio.create_task(_current_tool_invoker().invoke("tooling_info"))
+    while not os.path.exists(request["marker"]):
+        await asyncio.sleep(.001)
+    if mode == "local_timeout":
+        try:
+            await asyncio.wait_for(call, .03)
+        except TimeoutError:
+            return {"fallback": "research deadline reached"}
+        raise AssertionError("local tool did not time out")
+    if mode == "error":
+        raise RuntimeError("synthetic miner error")
+    return {"answer": "complete"}
+""")
+    writer = None
+    terminal_frame = None
+    worker_handle = None
+    reply_attempted = False
+    settled = False
+    closed = False
+    real_send = harness_module.send
+
+    async def inspect_send(connection, message):
+        nonlocal writer, reply_attempted
+        if isinstance(message, Invocation):
+            writer = connection
+        if isinstance(message, ToolReply):
+            assert terminal_frame is not None
+            reply_attempted = True
+        await real_send(connection, message)
+
+    monkeypatch.setattr(harness_module, "send", inspect_send)
+
+    class Proxy:
+        async def invoke(self, method, *, args=None, kwargs=None):
+            nonlocal terminal_frame, worker_handle, settled
+            assert method == "tooling_info"
+            marker.touch()
+            child = next(iter(runtime._compiler.children.values()))
+            worker_handle = os.dup(child.pidfd)
+            peer = writer.get_extra_info("socket")._sock
+            # Deliberately hold ONLY the test supervisor loop. The real isolated
+            # worker independently returns; asyncio cannot consume its frame yet.
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                try:
+                    raw = peer.recv(4096, socket.MSG_PEEK | socket.MSG_DONTWAIT)
+                except BlockingIOError:
+                    raw = b""
+                if len(raw) >= 8:
+                    size = struct.unpack(">Q", raw[:8])[0]
+                    if len(raw) >= 8 + size:
+                        terminal_frame = decode_worker_message(raw[8 : 8 + size])
+                        break
+                time.sleep(0.001)
+            assert isinstance(terminal_frame, QueryResult), "worker did not transmit a complete terminal frame"
+            # Original worker exits here: wait on its actual handle before the
+            # late write. Repaired worker keeps receiving until host closure.
+            select.select([worker_handle], [], [], 0.1)
+            settled = True
+            if tool_error:
+                raise RuntimeError("synthetic tool error")
+            return {"tool": "finished"}
+
+        async def aclose(self):
+            nonlocal closed
+            closed = True
+
+    runtime = SandboxHarness(artifact_path=str(path), tool_factory=lambda *_: Proxy())
+    try:
+        # Exercise reuse before and after the forced ordering on one generation.
+        assert await runtime.invoke("probe", body()) == {"healthy": True}
+        closed = False
+        compiler = runtime._compiler
+        try:
+            outcome = await runtime.invoke("probe", body({"mode": terminal, "marker": str(marker)}))
+        except HTTPException as exc:
+            outcome = {"status": exc.status_code, "detail": exc.detail}
+        assert reply_attempted and settled and closed
+        assert not compiler.children and not runtime._reservations
+        assert select.select([worker_handle], [], [], 0)[0], "worker process survived invocation cleanup"
+        assert compiler.failure is None
+        assert await runtime.invoke("probe", body()) == {"healthy": True}
+        assert runtime._compiler is compiler
+        if terminal == "error":
+            assert outcome == {
+                "status": 500,
+                "detail": {"code": "UnhandledException", "exception": "RuntimeError", "error": "synthetic miner error"},
+            }
+        else:
+            assert outcome == terminal_frame.result
+            assert outcome == (
+                {"answer": "complete"} if terminal == "success" else {"fallback": "research deadline reached"}
+            )
+    finally:
+        await runtime.close()
+        if worker_handle is not None:
+            os.close(worker_handle)
+
+
+@pytest.mark.parametrize("failure", ["preload", "missing_entrypoint"])
+async def test_early_terminal_error_waits_for_supervisor_cleanup(tmp_path, monkeypatch, failure):
+    """Early errors need the same receive lifetime even without an SDK receiver."""
+    marker = tmp_path / "preload-failure"
+    if failure == "preload":
+        marker.touch()
+    path = tmp_path / "agent.py"
+    path.write_text(f"""
+import os
+from harnyx_miner_sdk.decorators import entrypoint
+if os.path.exists({str(marker)!r}):
+    raise RuntimeError("synthetic preload error")
+@entrypoint("probe")
+async def probe(request: dict[str, object]) -> str:
+    return "healthy"
+""")
+    worker_handles = []
+    terminal_codes = []
+    real_send = harness_module.send
+    real_decode = harness_module.decode_worker_message
+
+    async def capture_handle(writer, message):
+        if isinstance(message, Invocation):
+            child = next(iter(runtime._compiler.children.values()))
+            worker_handles.append(os.dup(child.pidfd))
+        await real_send(writer, message)
+
+    def inspect_terminal(frame):
+        message = real_decode(frame)
+        if isinstance(message, QueryResult) and message.error is not None:
+            terminal_codes.append(message.error.code)
+            assert not select.select([worker_handles[-1]], [], [], 0.05)[0], "worker exited before host closure"
+        return message
+
+    monkeypatch.setattr(harness_module, "send", capture_handle)
+    monkeypatch.setattr(harness_module, "decode_worker_message", inspect_terminal)
+    runtime = SandboxHarness(artifact_path=str(path))
+    try:
+        with pytest.raises(HTTPException) as error:
+            await runtime.invoke("missing" if failure == "missing_entrypoint" else "probe", body())
+        code, status = ("PreloadFailed", 500) if failure == "preload" else ("MissingEntrypoint", 404)
+        assert terminal_codes == [code]
+        assert error.value.status_code == status and error.value.detail["code"] == code
+        compiler = runtime._compiler
+        assert not compiler.children and not runtime._reservations
+        assert select.select([worker_handles[-1]], [], [], 0)[0]
+        marker.unlink(missing_ok=True)
+        assert await runtime.invoke("probe", body()) == "healthy"
+        assert runtime._compiler is compiler and compiler.failure is None
+        assert all(select.select([handle], [], [], 0)[0] for handle in worker_handles)
+    finally:
+        await runtime.close()
+        for handle in worker_handles:
+            os.close(handle)
+
+
 async def test_cancellation_before_fork_dispatch_does_not_wait_for_nonexistent_child(harness):
     await harness.invoke("probe", body())
     compiler = harness._compiler
@@ -430,13 +606,17 @@ async def test_slow_worker_decode_keeps_siblings_and_deadlines_responsive(harnes
     assert (await harness.invoke("probe", body()))["counter"] == 1
 
 
-async def test_pending_tool_is_cancelled_and_closed_before_timeout_returns(tmp_path):
+@pytest.mark.parametrize("stop", ["timeout", "cancellation"])
+async def test_pending_tool_cleanup_precedes_invocation_exit(tmp_path, monkeypatch, stop):
+    """A deadline or caller cancellation must join tools before releasing the worker."""
     source = """
 import asyncio
 from harnyx_miner_sdk.decorators import entrypoint
 from harnyx_miner_sdk._internal.tool_invoker import _current_tool_invoker
 @entrypoint("probe")
 async def probe(request: dict[str, object]) -> str:
+    if request.get("healthy"):
+        return "healthy"
     asyncio.create_task(_current_tool_invoker().invoke("pending"))
     await asyncio.sleep(.05)
     return "result before tool completion"
@@ -446,9 +626,23 @@ async def probe(request: dict[str, object]) -> str:
     started = asyncio.Event()
     cancelled = asyncio.Event()
     closed = asyncio.Event()
+    terminal_received = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    real_decode = harness_module.decode_worker_message
+
+    def inspect_terminal(frame):
+        message = real_decode(frame)
+        if isinstance(message, QueryResult):
+            loop.call_soon_threadsafe(terminal_received.set)
+        return message
+
+    monkeypatch.setattr(harness_module, "decode_worker_message", inspect_terminal)
 
     class Proxy:
+        used = False
+
         async def invoke(self, *args, **kwargs):
+            self.used = True
             started.set()
             try:
                 await asyncio.Future()
@@ -456,19 +650,33 @@ async def probe(request: dict[str, object]) -> str:
                 cancelled.set()
 
         async def aclose(self):
-            assert cancelled.is_set()
-            closed.set()
+            if self.used:
+                assert cancelled.is_set()
+                closed.set()
 
     runtime = SandboxHarness(artifact_path=str(path), tool_factory=lambda config, headers: Proxy())
+    invocation = asyncio.create_task(runtime.invoke("probe", body(seconds=2.0)))
     try:
         async with asyncio.timeout(5):
-            with pytest.raises(HTTPException) as error:
-                await runtime.invoke("probe", body(seconds=2.0))
-        assert error.value.status_code == 504
+            await terminal_received.wait()
+            compiler = runtime._compiler
+            # A yielding unsettled tool must not block a sibling query.
+            assert await runtime.invoke("probe", body({"healthy": True})) == "healthy"
+            if stop == "cancellation":
+                invocation.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await invocation
+            else:
+                with pytest.raises(HTTPException) as error:
+                    await invocation
+                assert error.value.status_code == 504
         assert started.is_set() and cancelled.is_set() and closed.is_set()
-        assert not runtime._compiler.children
+        assert not compiler.children and not runtime._reservations
+        assert await runtime.invoke("probe", body({"healthy": True})) == "healthy"
+        assert runtime._compiler is compiler and compiler.failure is None
     finally:
         await runtime.close()
+        await asyncio.gather(invocation, return_exceptions=True)
 
 
 async def test_timeout_terminates_worker_when_compiler_cannot_process_commands(harness):
