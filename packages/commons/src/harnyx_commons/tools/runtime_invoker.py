@@ -111,6 +111,7 @@ TInvocationResult = TypeVar("TInvocationResult")
 _AUTHENTICATION_STATUSES_BY_PROVIDER: Mapping[str, frozenset[int]] = {
     "ai_gateway": frozenset({401}),
     "saygm": frozenset({401}),
+    "cloudflare": frozenset({401, 403}),
     "chutes": frozenset({401}),
     "desearch": frozenset({403}),
     "openrouter": frozenset({401}),

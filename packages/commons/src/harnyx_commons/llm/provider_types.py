@@ -14,6 +14,7 @@ CUSTOM_OPENAI_COMPATIBLE_PROVIDER_TAG = "custom-openai-compatible"
 OPENROUTER_PROVIDER = "openrouter"
 AI_GATEWAY_PROVIDER = "ai_gateway"
 SAYGM_PROVIDER = "saygm"
+CLOUDFLARE_PROVIDER = "cloudflare"
 
 LlmProviderName = Literal["bedrock", "chutes", "vertex"]
 LlmRouteTarget = str
@@ -85,6 +86,7 @@ __all__ = [
     "AI_GATEWAY_PROVIDER",
     "BEDROCK_PROVIDER",
     "CHUTES_PROVIDER",
+    "CLOUDFLARE_PROVIDER",
     "CUSTOM_OPENAI_COMPATIBLE_PROVIDER_TAG",
     "LlmProviderName",
     "LlmRouteTarget",

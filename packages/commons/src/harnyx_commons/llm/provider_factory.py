@@ -25,6 +25,11 @@ from harnyx_commons.llm.provider_types import (
 from harnyx_commons.llm.providers.ai_gateway import AiGatewayLlmProvider
 from harnyx_commons.llm.providers.bedrock import BedrockLlmProvider
 from harnyx_commons.llm.providers.chutes import ChutesLlmProvider
+from harnyx_commons.llm.providers.cloudflare import (
+    CloudflareLlmProvider,
+    configured_cloudflare_credential,
+    parse_cloudflare_credential,
+)
 from harnyx_commons.llm.providers.openai_compatible import OpenAiCompatibleLlmProvider
 from harnyx_commons.llm.providers.openrouter import OpenRouterLlmProvider
 from harnyx_commons.llm.providers.saygm import SayGmLlmProvider
@@ -130,6 +135,11 @@ def build_miner_paid_llm_provider(
 
     provider_name = parse_miner_selected_llm_provider(provider)
     explicit_key = _explicit_api_key_value(api_key, provider=provider_name)
+    if provider_name == "cloudflare":
+        return LlmProviderAdapter(
+            provider_name=provider_name,
+            delegate=CloudflareLlmProvider(credential=parse_cloudflare_credential(explicit_key)),
+        )
     if provider_name == "chutes":
         return LlmProviderAdapter(
             provider_name=provider_name,
@@ -183,6 +193,11 @@ def _build_provider(
     bedrock_settings: BedrockSettings,
     vertex_settings: VertexSettings,
 ) -> LlmProviderPort:
+    if route_target == "cloudflare":
+        credential = configured_cloudflare_credential(
+            account_id=llm_settings.cloudflare_account_id, api_token=llm_settings.cloudflare_api_token,
+        )
+        return LlmProviderAdapter(provider_name="cloudflare", delegate=CloudflareLlmProvider(credential=credential))
     if route_target == OPENROUTER_PROVIDER:
         _require_configured_credential(route_target, llm_settings.openrouter_api_key_value)
         return LlmProviderAdapter(
@@ -264,7 +279,7 @@ def _build_provider(
 
 def _parse_registry_route_target(raw: str | None) -> str:
     value = (raw or "").strip()
-    if value in {OPENROUTER_PROVIDER, AI_GATEWAY_PROVIDER}:
+    if value in {OPENROUTER_PROVIDER, AI_GATEWAY_PROVIDER, "cloudflare"}:
         return value
     return parse_provider_route_target(raw, component="shared")
 

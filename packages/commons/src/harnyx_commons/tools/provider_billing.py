@@ -177,7 +177,7 @@ def billing_evidence_payload(billing: ProviderBillingMetadata | None) -> JsonObj
 
 def failure_billing(tool: str, billing: ProviderBillingMetadata | None) -> ProviderBillingMetadata | None:
     """Keep supported failure evidence without treating uncertain search costs as free."""
-    if tool == "llm_chat" and billing is not None and billing.actual_cost_provider == "openrouter":
+    if tool == "llm_chat" and billing is not None and billing.actual_cost_provider in {"openrouter", "cloudflare"}:
         return billing
     if tool == "decision_query":
         return billing

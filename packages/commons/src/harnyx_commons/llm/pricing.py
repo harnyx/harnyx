@@ -100,6 +100,19 @@ STATIC_LLM_PRICING: Mapping[str, ModelPricing] = {
 }
 
 MINER_TOOL_LLM_PRICING: Mapping[MinerSelectedLlmProviderName, Mapping[str, ModelPricing]] = {
+    # Workers AI published token rates, verified 2026-10-22.
+    # https://developers.cloudflare.com/workers-ai/platform/pricing/
+    "cloudflare": {
+        "@cf/openai/gpt-oss-20b": ModelPricing(0.2, 0.3, 0.0),
+        "@cf/openai/gpt-oss-120b": ModelPricing(0.35, 0.75, 0.0),
+        "@cf/qwen/qwen3.8-27b": ModelPricing(0.45, 3.2, 0.0, cached_input_per_million=0.05),
+        "@cf/zai-org/glm-5.2": ModelPricing(1.4, 4.4, 0.0, cached_input_per_million=0.26),
+        "@cf/zai-org/glm-5.3-flash": ModelPricing(0.15, 0.5, 0.0, cached_input_per_million=0.03),
+        "@cf/moonshotai/kimi-k2.6": ModelPricing(0.95, 4.0, 0.0, cached_input_per_million=0.16),
+        "@cf/deepseek-ai/deepseek-v4.1-flash-1017": ModelPricing(0.3, 1.2, 0.0, cached_input_per_million=0.006),
+        "@cf/meta/llama-3.3-70b-instruct-fp8-fast": ModelPricing(0.293, 2.253, 0.0),
+        "@cf/google/gemma-4-26b-a4b-it": ModelPricing(0.1, 0.3, 0.0),
+    },
     CHUTES_PROVIDER: {
         "deepseek-ai/DeepSeek-V3.2-TEE": ModelPricing(1.00, 1.00, 0.0),
         "moonshotai/Kimi-K2.6-TEE": ModelPricing(0.66, 3.50, 0.0),
@@ -484,6 +497,12 @@ MINER_TOOL_DECISION_PRICING: Mapping[DecisionProviderName, Mapping[str, ModelPri
         "respan/span-02": ModelPricing(0.01, 0.0, 0.0),
     },
     "ai_gateway": {},
+    "cloudflare": {
+        "@cf/cloudflare/clef-flash": ModelPricing(0.038, 0.0, 0.0),
+        "@cf/cloudflare/clef": ModelPricing(0.24, 0.0, 0.0),
+        "@cf/cloudflare/clef-omni": ModelPricing(0.15, 0.0, 0.0),
+        "@cf/cloudflare/clairic": ModelPricing(0.1, 0.0, 0.0),
+    },
 }
 
 

@@ -550,7 +550,16 @@ class ToolExecutor:
             and billing is not None
             and billing.actual_cost_provider == "openrouter"
         )
-        if not (request.tool == "decision_query" or accounted_failure or openrouter_failure):
+        cloudflare_failure = (
+            request.tool in {"llm_chat", "decision_query"}
+            and billing is not None
+            and billing.actual_cost_provider == "cloudflare"
+        )
+        billed_inference_failure = openrouter_failure or cloudflare_failure
+        if cloudflare_failure and billing is not None:
+            provider_failure = recording.dispatched and (billing.llm_usage is not None or billing.usage is not None)
+            error_extra["provider_failure_accounted"] = provider_failure
+        if not (request.tool == "decision_query" or accounted_failure or billed_inference_failure):
             billing = None
         if openrouter_failure and billing is not None:
             accounting = OpenRouterAccounting.from_billing(billing)
@@ -569,7 +578,7 @@ class ToolExecutor:
                 except ValueError:
                     selected_provider = None
             if isinstance(selected_provider, str) and (
-                accounted_failure or selected_provider in {"openrouter", "ai_gateway"}
+                accounted_failure or selected_provider in {"openrouter", "ai_gateway", "cloudflare"}
             ):
                 failure_provider = selected_provider
         failure_cost = (
@@ -596,7 +605,7 @@ class ToolExecutor:
                         error_extra["usage_unavailable"] = True
                 except (ValueError, TypeError):
                     error_extra["usage_unavailable"] = True
-        elif openrouter_failure and billing is not None and billing.llm_usage is not None:
+        elif (accounted_failure or billed_inference_failure) and billing is not None and billing.llm_usage is not None:
             failure_payload = billing_usage_payload(billing)
             observed = billing.llm_usage
             failure_tokens = _resolve_llm_total_tokens(
@@ -615,7 +624,7 @@ class ToolExecutor:
                 reasoning_tokens=observed.reasoning_tokens,
             )
         elif (
-            (accounted_failure or openrouter_failure)
+            (accounted_failure or billed_inference_failure)
             and billing is not None
             and billing.usage is not None
             and request.tool in LLM_TOOLS
@@ -665,12 +674,14 @@ class ToolExecutor:
             error_extra["actual_cost_evidence"] = recording.output.actual_cost_evidence
         elif provider_failure and failure_cost is None:
             error_extra["actual_cost_settlement_source"] = "unavailable"
-        failure_reference = billing.reference_cost_usd if openrouter_failure and billing is not None else failure_cost
+        failure_reference = (
+            billing.reference_cost_usd if billed_inference_failure and billing is not None else failure_cost
+        )
         failed_receipt = started_call.materialize(
             outcome=_tool_failure_outcome(exc),
             response_payload=(
                 failure_payload
-                if accounted_failure or openrouter_failure
+                if accounted_failure or billed_inference_failure
                 else None
                 if billing is None or billing.usage is None
                 else {"usage": billing.usage.model_dump(mode="json", exclude_none=True)}

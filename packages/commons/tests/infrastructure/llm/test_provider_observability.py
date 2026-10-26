@@ -145,3 +145,9 @@ async def test_metadata_only_invoke_keeps_private_payloads_out_of_logs(caplog: p
     serialized_logs = repr([record.__dict__ for record in caplog.records])
     for sentinel in ("metadata-sentinel", "extra-sentinel", "response-sentinel"):
         assert sentinel not in serialized_logs
+
+
+def test_usage_observability_keeps_unavailable_reasoning_tokens_out_of_usage_details() -> None:
+    usage = LlmUsage(prompt_tokens=3, completion_tokens=6, reasoning_tokens=None, total_tokens=9)
+
+    assert "reasoning" not in provider_module._usage_snapshot(usage)

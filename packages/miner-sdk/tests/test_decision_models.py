@@ -102,3 +102,29 @@ def test_native_openrouter_models_do_not_need_a_release_to_be_selected(model: st
 def test_free_routes_and_non_native_ids_are_rejected(model: str) -> None:
     with pytest.raises(ValidationError):
         DecisionQueryRequest.model_validate({**_request(), "model": model})
+
+
+@pytest.mark.parametrize("criteria,legend,valid", [
+    (["Low", "High"], {"1": "High", "0": "Low"}, True),
+    (["Low", "High"], {"0": "High", "1": "Low"}, False),
+    (["Low", "High"], {"0": "Low", "1": "Changed"}, False),
+    ([{"text": "Low"}, ["High"]], {"0": {"text": "Low"}, "1": ["High"]}, True),
+    ([{"text": "Low"}, ["High"]], {"0": {"text": "Changed"}, "1": ["High"]}, False),
+    ([{"paid": True}, {"paid": False}], {"0": {"paid": 1}, "1": {"paid": 0}}, False),
+    ([[True], [False]], {"0": [1], "1": [0]}, False),
+    ([{"count": 1, "paid": False}, [2]], {"0": {"paid": False, "count": 1.0}, "1": [2.0]}, True),
+    (["Low", "High"], None, True),
+])
+def test_native_score_legends_preserve_requested_criteria(criteria, legend, valid) -> None:
+    request = DecisionQueryRequest.model_validate({
+        "provider": "cloudflare", "model": "@cf/cloudflare/clef-flash", "state": "Document",
+        "questions": {"s": {"type": "score", "instructions": "Rate", "criteria": criteria}},
+    })
+    response = DecisionQueryResponse.model_validate({
+        "model": request.model, "answers": {"s": {"type": "score", "score": 0.5, "legend": legend}},
+    })
+    if valid:
+        validate_decision_answers(request, response)
+    else:
+        with pytest.raises(ValueError, match="preserve requested score criteria"):
+            validate_decision_answers(request, response)

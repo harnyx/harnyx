@@ -14,6 +14,7 @@ from harnyx_commons.llm.provider_types import (
     SAYGM_PROVIDER,
     VERTEX_PROVIDER,
 )
+from harnyx_miner_sdk.tools.cloudflare import CLOUDFLARE_CHAT_MODELS
 from harnyx_miner_sdk.tools.openrouter_models import is_free_openrouter_model as is_free_openrouter_model
 from harnyx_miner_sdk.tools.openrouter_models import validate_paid_openrouter_model
 
@@ -33,7 +34,7 @@ ModelThinkingField = Literal[
 ModelThinkingProvider = Literal["chutes", "vertex", "custom-openai-compatible"]
 ToolModelThinkingField: TypeAlias = ModelThinkingField
 ToolModelThinkingProvider: TypeAlias = ModelThinkingProvider
-MinerSelectedLlmProviderName = Literal["chutes", "openrouter", "ai_gateway", "saygm"]
+MinerSelectedLlmProviderName = Literal["chutes", "openrouter", "ai_gateway", "saygm", "cloudflare"]
 MinerSelectedLlmModelName = str
 
 ALLOWED_TOOL_MODELS: tuple[ToolModelName, ...] = (
@@ -50,12 +51,14 @@ MINER_SELECTED_LLM_PROVIDERS: tuple[MinerSelectedLlmProviderName, ...] = (
     OPENROUTER_PROVIDER,
     SAYGM_PROVIDER,
     AI_GATEWAY_PROVIDER,
+    "cloudflare",
 )
 
 MINER_SELECTED_LLM_PROVIDER_MODELS: Mapping[
     MinerSelectedLlmProviderName,
     tuple[MinerSelectedLlmModelName, ...],
 ] = {
+    "cloudflare": CLOUDFLARE_CHAT_MODELS,
     CHUTES_PROVIDER: (
         "deepseek-ai/DeepSeek-V3.2-TEE",
         "moonshotai/Kimi-K2.6-TEE",

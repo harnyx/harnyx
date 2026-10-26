@@ -426,9 +426,9 @@ USD cost remains unknown when the provider does not return it.
 
 ### Other tool helpers
 
-- `llm_chat(provider="chutes" | "openrouter" | "ai_gateway" | "saygm", messages=[...], model="<provider-specific model id>", timeout=..., temperature=0.0, thinking={"enabled": True}, provider_extra=...)`
+- `llm_chat(provider="chutes" | "openrouter" | "ai_gateway" | "saygm" | "cloudflare", messages=[...], model="<provider-specific model id>", timeout=..., temperature=0.0, thinking={"enabled": True}, provider_extra=...)`
 - `embed_text(texts, input_type="query" | "document", provider="chutes" | "openrouter", model="<provider-specific embedding model id>", instruction=..., dimensions=..., provider_extra=..., timeout=...)`
-- `decision_query(provider="openrouter" | "ai_gateway", model="...", state=..., questions=..., timeout=...)`
+- `decision_query(provider="openrouter" | "ai_gateway" | "cloudflare", model="...", state=..., questions=..., timeout=...)`
 - `tooling_info(timeout=...)`
 - `test_tool(message, timeout=...)`
 
@@ -578,6 +578,102 @@ Embedding outputs are ordinary tool responses for miner code. They are not citat
 ### Decision models
 
 `decision_query` answers named questions about a shared `state` (a string, JSON object, or JSON array). It returns typed decisions and probabilities. Question types are `choice` (named criteria), `score` (an ordered criteria list), and `boolean` (a probability between 0 and 1). Boolean criteria, when supplied, must include both `"true"` and `"false"`.
+
+With `provider="cloudflare"`, use `@cf/cloudflare/clef`, `@cf/cloudflare/clef-flash`,
+or `@cf/cloudflare/clef-omni` for these decision questions. Use
+`@cf/cloudflare/clairic` for extraction questions, also under `questions`:
+
+```python
+extracted = await decision_query(
+    provider="cloudflare",
+    model="@cf/cloudflare/clairic",
+    state="Invoice INV-42. Total: USD 120.00. Due: 2026-11-01.",
+    questions={
+        "invoice": {"type": "text", "instructions": "Invoice number"},
+        "total": {"type": "number", "unit": "USD", "decimals": 2},
+        "due": {"type": "date", "instructions": "Payment due date"},
+    },
+)
+total = extracted.response.answers["total"].value
+```
+
+Clairic supports `text`, `number`, `date`, `time`, `datetime`, `duration`, `list`,
+`estimate`, and `forecast`. Lists require `items` (`text`, `number`, or `date`).
+Estimates and forecasts require `min` and `max`; forecasts also require `horizon`
+and `interval`. Calendar steps (`month` and `year`) require date bounds; numeric
+prediction grids use positive numeric steps. Optional `instructions` describe
+the desired value. Numeric
+precision, integer values, units, prediction grids and null thresholds follow
+the [Clairic field contract](https://developers.cloudflare.com/workers-ai/models/clairic/).
+An extraction response preserves `value`, `guess`, source spans and uncertainty
+metadata, including duration `unit`. Forecasts preserve the native parallel arrays
+in `value`, `median`, `p10`, and `p90`; each array matches the requested `horizon`
+and each predicted value respects the requested bounds. Forecasts require either
+that value array or a complete `steps` representation; optional summaries alone
+do not supply the requested values. When both representations are supplied,
+corresponding values and same-name statistics must agree. Each position is
+validated as one estimate, including percentile ordering across the two forms.
+Integer bounds, steps, values and statistics retain their precision during validation.
+Missing list matches return `[]`, never null.
+For scalar extraction, a null `value` means no determined value; do not
+substitute `guess`.
+Predictions can be wrong despite satisfying the requested type. Estimates must
+contain a prediction value or statistic. Estimate summaries
+(`mean`, `median`, `p10`, `p90`) must satisfy the same type and bounds as the value.
+
+Decision and extraction questions cannot be mixed in one request: the selected
+model must support every question type. JSON state is serialized to text for
+Clairic; source spans index that text. Empty extraction text is rejected before
+dispatch. This tool supports text/JSON state rather
+than Cloudflare's separate native media input fields. Clairic's `truncated`
+status is preserved, so callers can detect upstream input truncation. Its
+reported input-token count includes the provider's processing passes and is
+billed once at the published rate. Native decision/extraction models generate
+no output tokens. Independently validated usage retains known charges when
+answer validation fails. No provider inference retry or model fallback is added.
+
+Cloudflare support requires `harnyx-miner-sdk>=0.1.24`.
+
+Upload the Cloudflare account ID and API token together through miner provider
+configuration. They are not tool arguments. `llm_chat(provider="cloudflare", ...)`
+uses the same credential and Cloudflare-native chat model IDs. Runtime discovery
+lists the supported chat/decision models and published token rates. Cloudflare
+chat forwards supported `thinking.effort` settings to the model's native
+`reasoning_effort` field. Provider-documented aliases are preserved (for example,
+GLM 5.2 maps `low` and `medium` to `high`). Qwen 3.8 supports `low` and `medium`
+through this tool; its native `xhigh` setting is outside the shared effort enum.
+Kimi uses its native `reasoning_effort="none"` when thinking is disabled.
+Unsupported settings, including thinking budgets and disabling reasoning on
+models that require it, fail before dispatch.
+
+For Cloudflare chat, decisions and extraction, Harnyx records both actual and
+reference cost as provider-reported token counts multiplied by published model
+rates, including the published cached-token rate where applicable. Neither
+cost deducts account free allowances or promotional credits. These equal
+accounting amounts are calculated by Harnyx; they do not represent a verified
+post-credit Cloudflare invoice charge. Known token usage preserves both amounts
+when answer validation or a chat stream fails, including across retry attempts
+and cancellation. Each attempt uses its latest reported cumulative usage; stream
+updates within that attempt are not added together. Hosted settlement preserves
+these amounts and usage through cleanup, failed-call replay, and late billing
+after interrupted-call recovery.
+
+Cloudflare choice and score distributions must sum to one. A choice must have
+the highest probability (ties are allowed), and a score must match the
+probability-weighted level, allowing floating-point rounding. A supplied score
+legend must preserve the requested criteria at each level. Date prediction
+bounds compare dates regardless of ISO spelling. A supplied text source span
+must select the exact returned text using character offsets, including Unicode.
+Normalized numbers and dates do not require literal source-text equality.
+Supplied duration units must match the requested unit (seconds by default), and
+numeric extraction honors explicitly requested decimal precision. For scalar
+extraction, a supplied null probability above the requested threshold (0.5 by
+default) requires a null result. Estimates and forecasts require ordered
+`p10`, `median`, and `p90` values when supplied; their means may fall between
+grid points or outside the central interval. Optional answer metadata remains
+optional.
+Numeric chat stream fragments are converted to text; formatting lost by the
+provider cannot be recovered.
 
 ```python
 from harnyx_miner_sdk.api import decision_query

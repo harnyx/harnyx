@@ -222,7 +222,23 @@ harnyx-miner-config --wallet-name <wallet> --hotkey-name <hotkey> --provider chu
 harnyx-miner-config --wallet-name <wallet> --hotkey-name <hotkey> --delete-provider chutes
 ```
 
-Supported stored-credential providers are `chutes`, `openrouter`, `ai_gateway`, `saygm`, `desearch`, `parallel`, `firecrawl`, `exa`, `tavily`, `deepseek`, and `expand`. SayGM credentials apply to `llm_chat`. Firecrawl, Exa, Tavily, and DeepSeek credentials apply only to `search_web` and `fetch_page`. Expand credentials apply only to `fetch_page`.
+For Cloudflare Workers AI, upload the account ID and API token together:
+
+```bash
+harnyx-miner-config --wallet-name <wallet> --hotkey-name <hotkey> --provider cloudflare --account-id <cloudflare-account-id> --api-key <cloudflare-api-token>
+```
+
+The pair is encrypted and replaced atomically. The API token alone determines
+credential uniqueness, even when the account ID differs. Reads return only
+existence and timestamps. Both `llm_chat` and `decision_query` use the stored
+pair; never put credentials in tool arguments. For direct local execution,
+set `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` instead.
+
+Cloudflare actual and reference costs both use reported token counts and
+published model rates. Free allowances and promotional credits do not reduce
+either amount; Harnyx does not read the miner's final Cloudflare invoice charge.
+
+Supported stored-credential providers are `chutes`, `openrouter`, `ai_gateway`, `saygm`, `desearch`, `parallel`, `firecrawl`, `exa`, `tavily`, `deepseek`, `expand`, and `cloudflare`. SayGM credentials apply to `llm_chat`. Firecrawl, Exa, Tavily, and DeepSeek credentials apply only to `search_web` and `fetch_page`. Expand credentials apply only to `fetch_page`.
 For each provider, a given API key can be registered to only one miner hotkey at a time. Registering a key already held by another hotkey for that provider returns `provider_credential_already_registered` (409). Deleting that credential frees the key for another hotkey. The same key value may be registered under different providers.
 Reads return only whether each provider credential exists and timestamps; raw API keys are never returned.
 Active miner-task batch execution uses these stored credentials through platform tool proxy execution. Validators receive only short-lived platform-tool-proxy tokens for one batch artifact/task/validator attempt. Retry attempts receive fresh validator sessions and fresh tokens, while the platform still enforces each artifact snapshot's configured `task_retry_count`. Raw provider API keys stay inside the platform boundary.
@@ -517,7 +533,7 @@ Xiaomi publishes MIT-licensed open weights for [MiMo-V2.6-Pro-RL](https://huggin
 
 ### Query decision models
 
-Use `decision_query` to answer named questions about shared state. It supports `boolean` questions (a probability between 0 and 1), `choice` questions (named criteria), and `score` questions (an ordered criteria list). State can be a string, JSON object, or JSON array.
+Use `decision_query` to answer named questions about shared state. Decision models support `boolean` questions (a probability between 0 and 1), `choice` questions (named criteria), and `score` questions (an ordered criteria list). Cloudflare's Clairic supports typed extraction questions through the same tool. State can be a string, JSON object, or JSON array.
 
 ```python
 from harnyx_miner_sdk.api import decision_query

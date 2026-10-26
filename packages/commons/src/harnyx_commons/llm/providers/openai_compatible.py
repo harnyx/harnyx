@@ -30,7 +30,7 @@ from harnyx_commons.llm.judge_observability import (
     record_judge_stream_event,
     record_judge_stream_headers_received,
 )
-from harnyx_commons.llm.provider import BaseLlmProvider, LlmProviderError, LlmRetryExhaustedError
+from harnyx_commons.llm.provider import BaseLlmProvider, record_observed_llm_response
 from harnyx_commons.llm.provider_types import custom_openai_compatible_target
 from harnyx_commons.llm.providers.openai_chat_codec import OpenAiChatRequestParts
 from harnyx_commons.llm.providers.openai_stream import (
@@ -56,17 +56,6 @@ from harnyx_commons.llm.timeout import record_output_progress, streaming_transpo
 from harnyx_miner_sdk.llm import Timeout
 
 _provider_dispatch: ContextVar[Callable[[], None] | None] = ContextVar("openai_compatible_dispatch", default=None)
-
-_observed_billing_response: ContextVar[list[LlmResponse] | None] = ContextVar(
-    "observed_openrouter_billing", default=None
-)
-
-
-class _BilledStreamCancelled(asyncio.CancelledError):
-    def __init__(self, response: LlmResponse) -> None:
-        super().__init__("OpenRouter stream cancelled after billing was observed")
-        self.response = response
-
 
 OpenAiCompatibleResponseMetadataExtractor = Callable[[Mapping[str, Any]], JsonObject | None]
 
@@ -94,10 +83,6 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
 
     async def _invoke(self, request: AbstractLlmRequest) -> LlmResponse:
         token = _provider_dispatch.set(request.on_provider_dispatch)
-        observed: list[LlmResponse] | None = (
-            [] if request.provider == "openrouter" and request.use_case == "tool_runtime_invoker" else None
-        )
-        billing_token = _observed_billing_response.set(observed)
         try:
             return await self._call_with_retry(
                 request,
@@ -109,16 +94,7 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
                 classify_exception=self._classify_exception,
                 policy=request.retry_policy,
             )
-        except (LlmProviderError, LlmRetryExhaustedError) as exc:
-            if observed and exc.response is None:
-                exc.response = observed[-1]
-            raise
-        except asyncio.CancelledError as exc:
-            if observed:
-                raise _BilledStreamCancelled(observed[-1]) from exc
-            raise
         finally:
-            _observed_billing_response.reset(billing_token)
             _provider_dispatch.reset(token)
 
     async def _annotate_response_cost(
@@ -157,6 +133,14 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
         if (dispatch := _provider_dispatch.get()) is not None:
             dispatch()
         body, ttft_ms = await self._stream_chat_completions(**request_kwargs)
+        try:
+            usage = self._parse_stream_usage(body.usage.model_dump(mode="json") if body.usage is not None else None)
+        except ValidationError as exc:
+            raise OpenAiStreamError(
+                message="OpenAI-compatible chat completions returned incomplete or invalid usage",
+                error_type="server_error", code=502,
+            ) from exc
+        body = body.model_copy(update={"usage": usage})
         response = body.to_llm_response()
         metadata = dict(response.metadata or {})
         metadata.setdefault("raw_response", body.raw_payload())
@@ -169,6 +153,12 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
             metadata=metadata,
             finish_reason=response.finish_reason,
         )
+
+    def _parse_stream_usage(self, payload: JsonValue) -> _OpenAiCompatibleUsagePayload | None:
+        return _OpenAiCompatibleUsagePayload.model_validate(payload) if payload is not None else None
+
+    def _parse_stream_event(self, payload: JsonObject) -> _OpenAiStreamEvent:
+        return _OpenAiStreamEvent.model_validate(payload)
 
     async def _stream_chat_completions(
         self,
@@ -193,7 +183,25 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
                     if extracted is not None:
                         response_metadata = {**(response_metadata or {}), **extracted}
                 try:
-                    event = _OpenAiStreamEvent.model_validate(payload)
+                    raw_usage = payload.get("usage")
+                    usage = self._parse_stream_usage(raw_usage) if raw_usage is not None else None
+                except ValidationError:
+                    self._llm_logger.warning("openai_compatible.stream.invalid_usage")
+                    usage = None
+                try:
+                    stream_identity = _OpenAiCompatibleStreamIdentity.model_validate(payload)
+                except ValidationError:
+                    self._llm_logger.warning("openai_compatible.stream.invalid_identity")
+                    stream_identity = _OpenAiCompatibleStreamIdentity()
+                if usage is not None:
+                    # Usage is a cumulative snapshot within this attempt, independent of answer validity.
+                    body = _OpenAiCompatibleChatResponse(
+                        id=state.response_id, usage=usage, response_metadata=response_metadata
+                    )
+                    partial = body.to_llm_response()
+                    record_observed_llm_response(replace(partial, metadata={"raw_response": body.raw_payload()}))
+                try:
+                    event = self._parse_stream_event(payload)
                 except ValidationError as exc:
                     raise OpenAiStreamError(
                         message="OpenAI-compatible chat completions SSE event must be a JSON object",
@@ -205,32 +213,12 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
                     reasoning_keys=("reasoning", "reasoning_content", "reasoning_details"),
                     normalize_reasoning_fragment=normalize_openai_reasoning_fragments,
                 )
-                try:
-                    usage = (
-                        _OpenAiCompatibleUsagePayload.model_validate(event.usage) if event.usage is not None else None
-                    )
-                except ValidationError:
-                    self._llm_logger.warning("openai_compatible.stream.invalid_usage")
-                    usage = None
-                try:
-                    stream_identity = _OpenAiCompatibleStreamIdentity.model_validate(payload)
-                except ValidationError:
-                    self._llm_logger.warning("openai_compatible.stream.invalid_identity")
-                    stream_identity = _OpenAiCompatibleStreamIdentity()
                 record_judge_stream_event(
                     saw_output=saw_output,
                     usage=usage.to_usage() if usage is not None else None,
                     response_id=event.id,
                     upstream_provider=stream_identity.provider,
                 )
-                if usage is not None and (observed := _observed_billing_response.get()) is not None:
-                    # Continuous usage can precede complete tool-call arguments. Capture billing only;
-                    # accumulated choices are validated once the stream has finished.
-                    body = _OpenAiCompatibleChatResponse(
-                        id=state.response_id, usage=usage, response_metadata=response_metadata
-                    )
-                    partial = body.to_llm_response()
-                    observed[:] = [replace(partial, metadata={"raw_response": body.raw_payload()})]
                 if saw_output:
                     self._record_stream_output()
                     if ttft_ms is None:

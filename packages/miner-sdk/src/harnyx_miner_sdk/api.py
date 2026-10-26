@@ -296,7 +296,7 @@ async def decision_query(
     questions: Mapping[str, DecisionQuestion | Mapping[str, Any]],
     timeout: ToolInvocationTimeout | None = None,
 ) -> ToolCallResponse[DecisionQueryResponse]:
-    """Evaluate typed questions against state through a native decision model."""
+    """Evaluate typed decision or extraction questions against shared state."""
     request = DecisionQueryRequest.model_validate(
         {
             "provider": provider,
@@ -355,7 +355,7 @@ async def llm_chat(
 @overload
 async def llm_chat(
     *,
-    provider: Literal["chutes", "saygm"],
+    provider: Literal["chutes", "saygm", "cloudflare"],
     messages: Sequence[Mapping[str, Any] | LlmChatMessage | LlmMessage],
     model: str,
     temperature: float | None = None,
@@ -372,7 +372,7 @@ async def llm_chat(
 
 async def llm_chat(
     *,
-    provider: Literal["chutes", "openrouter", "ai_gateway", "saygm"],
+    provider: Literal["chutes", "openrouter", "ai_gateway", "saygm", "cloudflare"],
     messages: Sequence[Mapping[str, Any] | LlmChatMessage | LlmMessage],
     model: str,
     temperature: float | None = None,

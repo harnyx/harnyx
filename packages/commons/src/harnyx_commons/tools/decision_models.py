@@ -22,6 +22,7 @@ from harnyx_miner_sdk.tools.decision_models import (
     validate_decision_answers,
     validate_decision_provider_model,
 )
+from harnyx_miner_sdk.tools.extraction_models import ExtractionAnswer, ExtractionQuestion
 
 __all__ = [
     "MINER_SELECTED_DECISION_PROVIDER_MODELS",
@@ -39,6 +40,8 @@ __all__ = [
     "DecisionRounding",
     "DecisionUsage",
     "DecisionWarning",
+    "ExtractionAnswer",
+    "ExtractionQuestion",
     "ScoreAnswer",
     "ScoreQuestion",
     "parse_decision_provider",

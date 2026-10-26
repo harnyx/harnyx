@@ -788,9 +788,10 @@ async def test_deepseek_failure_receipt_distinguishes_zero_from_unknown(confirme
     assert receipts.for_session(session.session_id) == tuple(recorder.terminals)
 
 
-@pytest.mark.parametrize("reference", [0.008, None])
-async def test_openrouter_billed_failure_preserves_charge_and_allows_miner_recovery(
-    reference: float | None,
+@pytest.mark.parametrize("provider,reference", [("openrouter", 0.008), ("openrouter", None), ("cloudflare", 0.004)])
+@pytest.mark.parametrize("account_failures", [False, True])
+async def test_billed_failure_preserves_charge_and_allows_miner_recovery(
+    provider: str, reference: float | None, account_failures: bool,
 ) -> None:
     from harnyx_commons.errors import ToolProviderError
     from harnyx_commons.llm.schema import LlmUsage
@@ -802,13 +803,16 @@ async def test_openrouter_billed_failure_preserves_charge_and_allows_miner_recov
         now=now, expires_at=now + timedelta(minutes=1), payload={}
     )
 
+    executor._account_provider_failures = account_failures
+    model = "inception/mercury-3" if provider == "openrouter" else "@cf/openai/gpt-oss-20b"
+
     async def invoke(tool_name, *, args, kwargs, context):
         context.on_provider_dispatch()
         raise ToolProviderError(
             "unpriceable" if reference is None else "rejected output",
-            provider="openrouter",
+            provider=provider,
             billing=ProviderBillingMetadata(
-                actual_cost_provider="openrouter",
+                actual_cost_provider=provider,
                 source="response_body",
                 actual_cost_usd=0.004,
                 reference_cost_usd=reference,
@@ -820,7 +824,7 @@ async def test_openrouter_billed_failure_preserves_charge_and_allows_miner_recov
 
     executor._tool_invoker.invoke = invoke
     request = ToolInvocationRequest(
-        session.session_id, token, "llm_chat", (), {"provider": "openrouter", "model": "inception/mercury-3"}
+        session.session_id, token, "llm_chat", (), {"provider": provider, "model": model}
     )
     with pytest.raises(ToolProviderError):
         await executor.execute(request)
@@ -831,9 +835,11 @@ async def test_openrouter_billed_failure_preserves_charge_and_allows_miner_recov
     assert updated.usage.total_cost_usd == pytest.approx(reference or 0)
     assert updated.usage.actual_total_cost_usd == pytest.approx(0.004)
     assert updated.usage == usage_from_receipts((receipt,))
-    totals = updated.usage.llm_usage_totals["openrouter"]["inception/mercury-3"]
+    totals = updated.usage.llm_usage_totals[provider][model]
     assert (totals.total_tokens, totals.reasoning_tokens, totals.call_count) == (19, 4, 1)
     assert updated.status is SessionStatus.ACTIVE
+
+    fallback_reference = 0.004 if provider == "openrouter" else 0.002
 
     async def fallback(tool_name, *, args, kwargs, context):
         return ToolInvocationOutput(
@@ -843,8 +849,8 @@ async def test_openrouter_billed_failure_preserves_charge_and_allows_miner_recov
                 usage=LlmUsage(prompt_tokens=2, completion_tokens=1, total_tokens=3),
             ).to_payload(),
             actual_cost_usd=0.002,
-            reference_cost_usd=0.004,
-            actual_cost_provider="openrouter",
+            reference_cost_usd=fallback_reference,
+            actual_cost_provider=provider,
             actual_cost_evidence={"inference": "attempted"},
         )
 
@@ -852,7 +858,7 @@ async def test_openrouter_billed_failure_preserves_charge_and_allows_miner_recov
     await executor.execute(request)
     recovered = executor._sessions.get(session.session_id)
     assert recovered.status is SessionStatus.ACTIVE
-    assert recovered.usage.total_cost_usd == pytest.approx((reference or 0) + 0.004)
+    assert recovered.usage.total_cost_usd == pytest.approx((reference or 0) + fallback_reference)
     assert recovered.usage.actual_total_cost_usd == pytest.approx(0.006)
     assert len(receipts.for_session(session.session_id)) == 2
 

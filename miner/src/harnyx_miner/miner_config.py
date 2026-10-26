@@ -9,12 +9,13 @@ import bittensor as bt
 import httpx
 
 from harnyx_miner.submit import _authorization_header, _platform_base_url
+from harnyx_miner_sdk.tools.cloudflare import CloudflareCredential
 
 _CONFIG_PATH = "/v1/miner-config"
 _SUPPORTED_PROVIDERS = frozenset(
     {
         "chutes", "openrouter", "ai_gateway", "saygm", "desearch", "parallel",
-        "firecrawl", "exa", "tavily", "expand", "deepseek",
+        "firecrawl", "exa", "tavily", "expand", "deepseek", "cloudflare",
     }
 )
 _MIN_TASK_RETRY_COUNT = 0
@@ -36,11 +37,20 @@ def put_provider_credential(
     api_key: str,
     wallet_name: str,
     hotkey_name: str,
+    account_id: str | None = None,
 ) -> dict[str, object]:
     normalized_provider = _normalize_provider(provider)
     normalized_api_key = api_key.strip()
     if not normalized_api_key:
         raise ValueError("provider API key must be non-empty")
+    if normalized_provider == "cloudflare":
+        if account_id is None:
+            raise ValueError("Cloudflare requires --account-id together with --api-key (API token)")
+        normalized_api_key = CloudflareCredential.model_validate(
+            {"account_id": account_id, "api_token": normalized_api_key}
+        ).to_credential_value()
+    elif account_id is not None:
+        raise ValueError("--account-id is only supported for Cloudflare")
     return _request_json(
         method="PUT",
         payload={
@@ -142,6 +152,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--get", action="store_true", help="Read redacted miner config.")
     parser.add_argument("--provider", help="Provider to configure.")
     parser.add_argument("--api-key", help="Provider API key to upload.")
+    parser.add_argument("--account-id", help="Cloudflare account ID; required with a Cloudflare API token.")
     parser.add_argument("--delete-provider", help="Provider credential to delete.")
     parser.add_argument("--task-retry-count", type=int, help="Miner task retry count, 0 through 3.")
     args = parser.parse_args(list(argv) if argv is not None else None)
@@ -190,6 +201,7 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object]:
     return put_provider_credential(
         provider=str(args.provider),
         api_key=str(args.api_key),
+        account_id=getattr(args, "account_id", None),
         wallet_name=wallet_name,
         hotkey_name=hotkey_name,
     )

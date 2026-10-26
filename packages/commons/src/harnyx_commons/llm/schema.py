@@ -155,7 +155,7 @@ def supports_tool_result_messages(*, provider: str, model: str) -> bool:
     normalized_provider = provider.strip().lower()
     if parse_custom_openai_compatible_target(normalized_provider) is not None:
         return True
-    if normalized_provider in {OPENROUTER_PROVIDER, "saygm"}:
+    if normalized_provider in {OPENROUTER_PROVIDER, "saygm", "cloudflare"}:
         return True
     if normalized_provider == "chutes":
         return True

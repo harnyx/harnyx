@@ -12,6 +12,7 @@ import math
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from typing import Literal, Protocol, TypeVar, cast
 
@@ -57,6 +58,28 @@ POSTPROCESS_FEEDBACK_POLICY_VERSION = "retry_with_feedback_original_messages_v1"
 def parse_provider_name(raw: str | None, *, component: str) -> LlmProviderName:
     """Parse and validate an LLM provider label."""
     return parse_builtin_provider_name(raw, component=component)
+
+
+@dataclass
+class _AttemptResponseObservation:
+    response: LlmResponse | None = None
+
+
+_attempt_response: ContextVar[_AttemptResponseObservation | None] = ContextVar("llm_attempt_response", default=None)
+
+
+def record_observed_llm_response(response: LlmResponse) -> None:
+    """Replace the current attempt's cumulative billing snapshot, without counting it twice."""
+    if (observation := _attempt_response.get()) is not None:
+        observation.response = response
+
+
+class LlmInvocationCancelledError(asyncio.CancelledError):
+    """Cancellation carrying all responses observed before execution stopped."""
+
+    def __init__(self, response: LlmResponse) -> None:
+        super().__init__("LLM invocation cancelled after a response was observed")
+        self.response = response
 
 
 @dataclass
@@ -329,32 +352,38 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         policy = policy or self._retry_policy
         ctx = RetryContext(policy)
         current_request = request
-        for attempt in range(policy.attempts):
-            # Phase 1: Attempt
-            response = await self._try_call(attempt, ctx, current_request, call_coro, classify_exception)
-            if response is None:
-                continue
+        try:
+            for attempt in range(policy.attempts):
+                # Phase 1: Attempt
+                response = await self._try_call(attempt, ctx, current_request, call_coro, classify_exception)
+                if response is None:
+                    continue
 
-            # Phase 2: Verify
-            if not await self._try_verify(attempt, ctx, current_request, response, verifier):
-                continue
+                # Phase 2: Verify
+                if not await self._try_verify(attempt, ctx, current_request, response, verifier):
+                    continue
 
-            # Phase 3: Postprocess
-            processed, retry, next_request = await self._try_postprocess(attempt, ctx, current_request, response)
-            if retry:
-                current_request = next_request or current_request
-                continue
+                # Phase 3: Postprocess
+                processed, retry, next_request = await self._try_postprocess(attempt, ctx, current_request, response)
+                if retry:
+                    current_request = next_request or current_request
+                    continue
 
-            # Success
-            return self._build_response(request, response, ctx, processed)
+                # Success
+                return self._build_response(request, response, ctx, processed)
 
-        raise LlmRetryExhaustedError(
-            "LLM call exhausted all retry attempts",
-            response=self._build_response_for_error(ctx.last_response, ctx),
-            attempts=len(ctx.reasons) + 1,
-            retry_reasons=tuple(ctx.reasons),
-            latency_ms_total=round(ctx.total_latency_ms, 2),
-        )
+            raise LlmRetryExhaustedError(
+                "LLM call exhausted all retry attempts",
+                response=self._build_response_for_error(ctx.last_response, ctx),
+                attempts=len(ctx.reasons) + 1,
+                retry_reasons=tuple(ctx.reasons),
+                latency_ms_total=round(ctx.total_latency_ms, 2),
+            )
+        except asyncio.CancelledError as exc:
+            response = self._build_response_for_error(ctx.last_response, ctx)
+            if response is not None:
+                raise LlmInvocationCancelledError(response) from exc
+            raise
 
     async def _try_call(
         self,
@@ -372,14 +401,20 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             attempt_number=attempt + 1,
             attempt_limit=ctx.policy.attempts,
         ) as observation:
+            evidence = _AttemptResponseObservation()
+            evidence_token = _attempt_response.set(evidence)
             try:
                 async with enforce_attempt_deadlines(resolve_timeout(request.timeout)):
                     response = await call_coro(request)
             except asyncio.CancelledError:
+                if evidence.response is not None:
+                    await self._record_attempt_response(request, evidence.response, ctx)
                 if observation is not None:
                     observation.finish_cancelled()
                 raise
             except Exception as exc:
+                if evidence.response is not None:
+                    await self._record_attempt_response(request, evidence.response, ctx)
                 latency_ms = (time.perf_counter() - start) * 1000
                 ctx.total_latency_ms += latency_ms
                 retryable, reason = self._classify_retry_exception(exc, classify_exception)
@@ -401,12 +436,20 @@ class BaseLlmProvider(ABC, LlmProviderPort):
                     source_exception=exc,
                 )
                 return None
+            finally:
+                _attempt_response.reset(evidence_token)
             if observation is not None:
                 observation.finish_response(response)
 
-        response = await self._annotate_response_cost(request, response)
+        response = await self._record_attempt_response(request, response, ctx)
         latency_ms = (time.perf_counter() - start) * 1000
         ctx.total_latency_ms += latency_ms
+        return response
+
+    async def _record_attempt_response(
+        self, request: AbstractLlmRequest, response: LlmResponse, ctx: RetryContext,
+    ) -> LlmResponse:
+        response = await self._annotate_response_cost(request, response)
         ctx.total_usage += response.usage or LlmUsage()
         ctx.record_billable_response(response)
         ctx.last_response = response
@@ -576,7 +619,7 @@ class BaseLlmProvider(ABC, LlmProviderPort):
                         source_exception.response = accumulated_response
                     raise source_exception
                 raise LlmProviderError(failure.reason, response=accumulated_response) from source_exception
-            raise LlmProviderError(failure.reason, response=response_for_error)
+            raise LlmProviderError(failure.reason, response=self._build_response_for_error(response_for_error, ctx))
         ctx.reasons.append(failure.reason)
         self._log_retry(phase, request, attempt, failure, ctx.policy)
         await asyncio.sleep(self._retry_delay_seconds(attempt, ctx.policy, source_exception))

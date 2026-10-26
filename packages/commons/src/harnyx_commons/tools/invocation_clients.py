@@ -33,6 +33,11 @@ from harnyx_commons.llm.provider_factory import (
 )
 from harnyx_commons.llm.providers.ai_gateway import AiGatewayDecisionClient
 from harnyx_commons.llm.providers.chutes import ChutesTextEmbeddingClient
+from harnyx_commons.llm.providers.cloudflare import (
+    CloudflareDecisionProvider,
+    configured_cloudflare_credential,
+    parse_cloudflare_credential,
+)
 from harnyx_commons.llm.providers.openrouter import (
     OpenRouterDecisionClient,
     OpenRouterEmbeddingClient,
@@ -1133,6 +1138,8 @@ def build_miner_paid_decision_provider(
     name = parse_decision_provider(provider)
     key = _validated_api_key(api_key, provider=name)
     timeout_seconds = _effective_client_timeout(llm_settings.llm_timeout_seconds, timeout)
+    if name == "cloudflare":
+        return CloudflareDecisionProvider(credential=parse_cloudflare_credential(key), timeout_seconds=timeout_seconds)
     if name == "openrouter":
         return OpenRouterDecisionProvider(api_key=key, timeout_seconds=timeout_seconds)
     return AiGatewayDecisionProvider(api_key=key, timeout_seconds=timeout_seconds)
@@ -1147,7 +1154,12 @@ class CachedDecisionProviderRegistry:
         name = parse_decision_provider(provider)
         adapter = self._cache.get(name)
         if adapter is None:
-            key = self._settings.openrouter_api_key if name == "openrouter" else self._settings.ai_gateway_api_key
+            if name == "cloudflare":
+                key = SecretStr(configured_cloudflare_credential(
+                    account_id=self._settings.cloudflare_account_id, api_token=self._settings.cloudflare_api_token,
+                ).to_credential_value())
+            else:
+                key = self._settings.openrouter_api_key if name == "openrouter" else self._settings.ai_gateway_api_key
             if not key.get_secret_value().strip():
                 raise ProviderCredentialUnavailableError(name)
             adapter = build_miner_paid_decision_provider(provider=name, api_key=key, llm_settings=self._settings)

@@ -34,7 +34,7 @@ from harnyx_miner_sdk.tools.llm_provider_extra import (
 )
 from harnyx_miner_sdk.tools.types import ToolInvocationTimeout
 
-LlmChatProviderName = Literal["chutes", "openrouter", "ai_gateway", "saygm"]
+LlmChatProviderName = Literal["chutes", "openrouter", "ai_gateway", "saygm", "cloudflare"]
 LlmChatToolChoiceName = Literal["none", "auto", "required"]
 
 

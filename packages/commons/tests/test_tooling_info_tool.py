@@ -138,12 +138,14 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
         "openrouter": ["provider_returned"],
         "ai_gateway": ["provider_returned", "static_pricing"],
         "saygm": ["provider_returned"],
+        "cloudflare": ["static_pricing"],
     }
     assert payload["pricing"]["llm_chat"]["provider_rate_usage"] == {
         "chutes": "budget_estimate_and_settlement_fallback",
         "openrouter": "dynamic_reference_and_actual",
         "ai_gateway": "budget_estimate_and_settlement_fallback",
         "saygm": "budget_estimate_only",
+        "cloudflare": "budget_estimate_and_settlement_fallback",
     }
     model_prices = payload["pricing"]["llm_chat"]["provider_models"]
     provider_models = payload["allowed_llm_provider_models"]

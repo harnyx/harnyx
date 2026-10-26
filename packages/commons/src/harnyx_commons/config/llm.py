@@ -227,6 +227,8 @@ class LlmSettings(BaseSettings):
     openrouter_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="OPENROUTER_API_KEY")
     saygm_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="SAYGM_API_KEY")
     ai_gateway_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="AI_GATEWAY_API_KEY")
+    cloudflare_account_id: str = Field(default="", alias="CLOUDFLARE_ACCOUNT_ID")
+    cloudflare_api_token: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="CLOUDFLARE_API_TOKEN")
 
     # --- Timeouts ---
     llm_timeout_seconds: float = Field(default=300.0, alias="PLATFORM_LLM_TIMEOUT_SECONDS")

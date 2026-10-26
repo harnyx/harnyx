@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import json
 import math
+import re
 from collections.abc import Mapping
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
+from harnyx_miner_sdk.tools.extraction_models import ExtractionAnswer, ExtractionQuestion, validate_extraction_answer
 from harnyx_miner_sdk.tools.openrouter_models import validate_paid_openrouter_model
 from harnyx_miner_sdk.tools.types import ToolInvocationTimeout
 
-DecisionProviderName = Literal["openrouter", "ai_gateway"]
+DecisionProviderName = Literal["openrouter", "ai_gateway", "cloudflare"]
 DecisionContext = str | dict[str, JsonValue] | list[JsonValue]
 Probability = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 MINER_SELECTED_DECISION_PROVIDER_MODELS: Mapping[DecisionProviderName, tuple[str, ...]] = {
@@ -24,6 +27,9 @@ MINER_SELECTED_DECISION_PROVIDER_MODELS: Mapping[DecisionProviderName, tuple[str
         "respan/span-02",
     ),
     "ai_gateway": (),
+    "cloudflare": (
+        "@cf/cloudflare/clef", "@cf/cloudflare/clef-flash", "@cf/cloudflare/clef-omni", "@cf/cloudflare/clairic",
+    ),
 }
 
 
@@ -32,6 +38,8 @@ def parse_decision_provider(provider: str) -> DecisionProviderName:
         return "openrouter"
     if provider == "ai_gateway":
         return "ai_gateway"
+    if provider == "cloudflare":
+        return "cloudflare"
     raise ValueError(f"unsupported decision provider {provider!r}")
 
 
@@ -51,6 +59,16 @@ def _validate_finite_json(value: JsonValue) -> None:
     elif isinstance(value, list):
         for item in value:
             _validate_finite_json(item)
+
+
+def _same_json_value(left: JsonValue, right: JsonValue) -> bool:
+    if isinstance(left, bool) != isinstance(right, bool):
+        return False
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(_same_json_value(left[key], right[key]) for key in left)
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(_same_json_value(a, b) for a, b in zip(left, right, strict=True))
+    return left == right
 
 
 class _DecisionModel(BaseModel):
@@ -109,7 +127,9 @@ class BooleanQuestion(_Question):
     criteria: BooleanCriteria | None = None
 
 
-DecisionQuestion = Annotated[ChoiceQuestion | ScoreQuestion | BooleanQuestion, Field(discriminator="type")]
+DecisionQuestion = Annotated[
+    ChoiceQuestion | ScoreQuestion | BooleanQuestion | ExtractionQuestion, Field(discriminator="type")
+]
 
 
 class DecisionQueryRequest(_DecisionModel):
@@ -131,6 +151,23 @@ class DecisionQueryRequest(_DecisionModel):
         validate_decision_provider_model(self.provider, self.model)
         if any(not key for key in self.questions):
             raise ValueError("question IDs must not be empty")
+        extraction = self.provider == "cloudflare" and self.model == "@cf/cloudflare/clairic"
+        if extraction and self.state == "":
+            raise ValueError("Cloudflare extraction requires non-empty state")
+        for key, question in self.questions.items():
+            if isinstance(question, ExtractionQuestion) != extraction:
+                raise ValueError("Clairic requires extraction questions; other models require decision questions")
+            if extraction and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.\-]{0,63}", key) is None:
+                raise ValueError("invalid Clairic question ID")
+            if self.provider == "cloudflare" and not extraction:
+                if len(self.questions) > 64 or re.fullmatch(r"[A-Za-z0-9_.\-]{1,100}", key) is None:
+                    raise ValueError("Clef supports up to 64 named questions with valid IDs")
+                if not question.instructions:
+                    raise ValueError("Clef requires non-empty question instructions")
+                if isinstance(question, ChoiceQuestion) and not 2 <= len(question.criteria) <= 255:
+                    raise ValueError("Clef choice questions require 2 to 255 options")
+                if isinstance(question, ScoreQuestion) and not 2 <= len(question.criteria) <= 10:
+                    raise ValueError("Clef score questions require 2 to 10 levels")
         return self
 
 
@@ -154,7 +191,9 @@ class BooleanAnswer(_DecisionModel):
     probability: Probability
 
 
-DecisionAnswer = Annotated[ChoiceAnswer | ScoreAnswer | BooleanAnswer, Field(discriminator="type")]
+DecisionAnswer = Annotated[
+    ChoiceAnswer | ScoreAnswer | BooleanAnswer | ExtractionAnswer, Field(discriminator="type")
+]
 
 
 class DecisionUsage(_DecisionModel):
@@ -184,6 +223,7 @@ class DecisionQueryResponse(_DecisionModel):
     rounding: DecisionRounding | None = None
     warnings: list[DecisionWarning] | None = None
     provider_metadata: dict[str, JsonValue] | None = None
+    truncated: bool | None = None
 
 
 def validate_decision_answers(request: DecisionQueryRequest, response: DecisionQueryResponse) -> None:
@@ -202,10 +242,32 @@ def validate_decision_answers(request: DecisionQueryRequest, response: DecisionQ
                 raise ValueError("decision score is outside the requested criteria range")
             if answer.legend is not None and set(answer.legend) != options:
                 raise ValueError("decision legend must match requested score indices")
+            if request.provider == "cloudflare" and answer.legend is not None:
+                if any(
+                    not _same_json_value(answer.legend[str(index)], criterion)
+                    for index, criterion in enumerate(question.criteria)
+                ):
+                    raise ValueError("decision legend must preserve requested score criteria")
             probabilities = answer.probabilities
         elif isinstance(question, BooleanQuestion) and isinstance(answer, BooleanAnswer):
+            continue
+        elif isinstance(question, ExtractionQuestion) and isinstance(answer, ExtractionAnswer):
+            state = request.state if isinstance(request.state, str) else json.dumps(request.state, ensure_ascii=False)
+            _validate_finite_json(answer.model_dump(mode="json"))
+            validate_extraction_answer(question, answer, state=state)
             continue
         else:
             raise ValueError("decision answer type must match question type")
         if probabilities is not None and set(probabilities) != options:
             raise ValueError("decision probabilities must match requested options")
+        if request.provider == "cloudflare" and probabilities is not None:
+            if not math.isclose(math.fsum(probabilities.values()), 1.0, rel_tol=0.0, abs_tol=1e-6):
+                raise ValueError("decision probabilities must sum to 1")
+            if isinstance(answer, ChoiceAnswer) and not math.isclose(
+                probabilities[answer.choice], max(probabilities.values()), rel_tol=0.0, abs_tol=1e-6,
+            ):
+                raise ValueError("decision choice must have the highest probability")
+            if isinstance(answer, ScoreAnswer):
+                expected_score = math.fsum(int(level) * probability for level, probability in probabilities.items())
+                if not math.isclose(answer.score, expected_score, rel_tol=0.0, abs_tol=1e-6):
+                    raise ValueError("decision score must equal its probability-weighted level")

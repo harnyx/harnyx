@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -124,6 +125,27 @@ def test_delete_provider_credential_sends_key_only_payload(monkeypatch: pytest.M
 
     assert requests[0]["method"] == "DELETE"
     assert json.loads(requests[0]["content"]) == {"key": "provider_credentials.parallel"}
+
+
+def test_cloudflare_uploads_account_and_token_in_one_signed_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    hotkey, requests = _install_fakes(monkeypatch)
+    config_module.put_provider_credential(
+        provider="cloudflare", api_key=" token ", account_id="a" * 32,
+        wallet_name="wallet", hotkey_name="hotkey",
+    )
+    body = json.loads(requests[0]["content"])
+    assert body["key"] == "provider_credentials.cloudflare"
+    assert json.loads(body["value"]) == {"account_id": "a" * 32, "api_token": "token"}
+    assert hotkey.signed[0].endswith(hashlib.sha256(requests[0]["content"]).hexdigest().encode())
+
+
+def test_cloudflare_missing_account_is_rejected_without_upload(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, requests = _install_fakes(monkeypatch)
+    with pytest.raises(ValueError, match="account-id"):
+        config_module.put_provider_credential(
+            provider="cloudflare", api_key="token", wallet_name="wallet", hotkey_name="hotkey",
+        )
+    assert requests == []
 
 
 def test_put_ai_gateway_provider_credential_sends_supported_provider_payload(

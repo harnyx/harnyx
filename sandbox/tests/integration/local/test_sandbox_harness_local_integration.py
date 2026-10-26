@@ -574,7 +574,8 @@ async def test_blocking_module_initialization_remains_subject_to_query_deadline(
 
 
 @pytest.mark.parametrize("fail", [False, True])
-async def test_decision_sdk_roundtrip_settles_host_receipt(tmp_path, fail):
+@pytest.mark.parametrize("extraction", [False, True])
+async def test_decision_sdk_roundtrip_settles_host_receipt(tmp_path, fail, extraction):
     from dataclasses import asdict
     from datetime import UTC, datetime, timedelta
     from uuid import uuid4
@@ -604,6 +605,14 @@ async def decision(request: dict[str, object]) -> object:
     except Exception:
         return {"failed": True}
 """)
+    if extraction:
+        path.write_text(path.read_text().replace(
+            'provider="openrouter", model="cloudflare/clef-flash"',
+            'provider="cloudflare", model="@cf/cloudflare/clairic"',
+        ).replace(
+            '"type": "boolean", "instructions": "?"', '"type": "duration", "unit": "days", "instructions": "?"',
+        ).replace('answer.response.answers["b"].probability', 'answer.response.answers["b"].value'))
+    selected_provider = "cloudflare" if extraction else "openrouter"
     now = datetime.now(UTC)
     session = Session(
         session_id=uuid4(), uid=1, task_id=uuid4(), issued_at=now, expires_at=now + timedelta(minutes=5), budget_usd=1
@@ -618,12 +627,16 @@ async def decision(request: dict[str, object]) -> object:
             if fail:
                 from harnyx_commons.errors import ToolProviderError
                 from harnyx_commons.tools.decision_models import DecisionUsage
-                from harnyx_commons.tools.provider_billing import OpenRouterAccounting
+                from harnyx_commons.tools.provider_billing import OpenRouterAccounting, ProviderBillingMetadata
 
                 raise ToolProviderError(
                     "invalid native answers",
-                    provider="openrouter",
-                    billing=OpenRouterAccounting(
+                    provider=selected_provider,
+                    billing=ProviderBillingMetadata(
+                        actual_cost_usd=0.02, reference_cost_usd=0.02,
+                        actual_cost_provider="cloudflare", source="response_body",
+                        usage=DecisionUsage(input_tokens=100, output_tokens=0),
+                    ) if extraction else OpenRouterAccounting(
                         "attempted", 0.02, 0.02, decision_usage=DecisionUsage(input_tokens=100, output_tokens=0)
                     ).to_billing(),
                 )
@@ -631,12 +644,14 @@ async def decision(request: dict[str, object]) -> object:
                 DecisionQueryResponse.model_validate(
                     {
                         "model": request.model,
-                        "answers": {"b": {"type": "boolean", "probability": 0.8}},
+                        "answers": {"b": {"type": "duration", "value": 0.8, "unit": "days"} if extraction else {
+                            "type": "boolean", "probability": 0.8,
+                        }},
                         "usage": {"input_tokens": 100, "output_tokens": 0},
                     }
                 ),
                 0.02,
-                "openrouter",
+                selected_provider,
                 {"settlement_source": "provider_returned", "inference": "attempted"},
                 0.02,
             )
@@ -676,7 +691,7 @@ async def decision(request: dict[str, object]) -> object:
         assert sessions.get(session.session_id).usage.total_cost_usd == 0.02
         assert sessions.get(session.session_id).usage.llm_usage_totals == {}
         assert len(receipts.for_session(session.session_id)) == 1
-        assert receipts.for_session(session.session_id)[0].details.actual_cost_provider == "openrouter"
+        assert receipts.for_session(session.session_id)[0].details.actual_cost_provider == selected_provider
         if fail:
             assert receipts.for_session(session.session_id)[0].details.response_payload == {
                 "usage": {"input_tokens": 100, "output_tokens": 0}

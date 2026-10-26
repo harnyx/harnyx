@@ -619,3 +619,25 @@ async def test_real_openrouter_provider_accepts_only_configured_openrouter_fallb
         await registry.aclose()
         await client.aclose()
     assert requested_models == ([model] if explicit_route else [])
+
+
+@pytest.mark.parametrize("account_id,token", [("", "dummy"), ("malformed", "dummy"), ("a" * 32, ""),
+                                            ("a" * 32, "   "), ("", "")])
+@pytest.mark.parametrize("capability", ["chat", "decision"])
+def test_incomplete_cloudflare_credentials_are_unavailable_before_provider_construction(
+    account_id: str, token: str, capability: str,
+) -> None:
+    """Partial local configuration must remain a recoverable credential rejection."""
+    from harnyx_commons.tools.invocation_clients import CachedDecisionProviderRegistry
+
+    settings = LlmSettings(CLOUDFLARE_ACCOUNT_ID=account_id, CLOUDFLARE_API_TOKEN=token, _env_file=None)
+    if capability == "chat":
+        registry = provider_factory.build_cached_llm_provider_registry(
+            llm_settings=settings, bedrock_settings=BedrockSettings(_env_file=None),
+            vertex_settings=VertexSettings(_env_file=None),
+        )
+    else:
+        registry = CachedDecisionProviderRegistry(llm_settings=settings)
+    with pytest.raises(ProviderCredentialUnavailableError) as caught:
+        registry.resolve("cloudflare")
+    assert caught.value.provider == "cloudflare"

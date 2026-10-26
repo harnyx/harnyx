@@ -37,26 +37,37 @@ def include_llm_receipt(receipt: ToolCall) -> bool:
     extra = receipt.details.extra or {}
     if receipt.is_successful():
         return True
+    if "provider_failure_accounted" in extra:
+        return extra["provider_failure_accounted"] is True
     if "openrouter_failure_accounted" in extra:
         return extra["openrouter_failure_accounted"] is True
     return bool(extra.get("account_provider_failures") and extra.get("provider_dispatched", True))
 
 
-def recover_openrouter_usage(submitted: ToolUsageSummary, receipts: Sequence[ToolCall]) -> ToolUsageSummary:
+def recover_inference_usage(submitted: ToolUsageSummary, receipts: Sequence[ToolCall]) -> ToolUsageSummary:
+    """Replace durable hosted inference costs under each provider's receipt policy."""
+    for provider in ("openrouter", "cloudflare"):
+        submitted = _recover_provider_usage(submitted, receipts, provider)
+    return submitted
+
+
+def _recover_provider_usage(
+    submitted: ToolUsageSummary, receipts: Sequence[ToolCall], provider: str
+) -> ToolUsageSummary:
     """Replace Platform-owned inference costs, preserving embedding and other-provider policies."""
-    decisions = tuple(r for r in receipts if r.tool == "decision_query" and _receipt_llm_provider(r) == "openrouter")
-    prior_decision_reference = submitted.decision_reference_cost_by_provider.get("openrouter", 0.0)
+    decisions = tuple(r for r in receipts if r.tool == "decision_query" and _receipt_llm_provider(r) == provider)
+    prior_decision_reference = submitted.decision_reference_cost_by_provider.get(provider, 0.0)
     decision_reference = sum(r.details.cost_usd or 0.0 for r in decisions)
-    chat = tuple(r for r in receipts if r.tool == "llm_chat" and _receipt_llm_provider(r) == "openrouter")
+    chat = tuple(r for r in receipts if r.tool == "llm_chat" and _receipt_llm_provider(r) == provider)
     if not chat and not decisions:
         return submitted
     canonical = usage_from_receipts((*chat, *decisions))
     normalized, canonical_reference = summarize_llm_usage(canonical, chat)
-    previous = submitted.llm.providers.get("openrouter", {})
+    previous = submitted.llm.providers.get(provider, {})
     previous_reference = sum(model.reference_cost for model in previous.values())
     reference_delta = canonical_reference - previous_reference + decision_reference - prior_decision_reference
     providers = {provider: dict(models) for provider, models in submitted.llm.providers.items()}
-    providers["openrouter"] = normalized.providers.get("openrouter", {})
+    providers[provider] = normalized.providers.get(provider, {})
     entries = [entry for models in providers.values() for entry in models.values()]
     actual_llm = (
         None
@@ -76,18 +87,18 @@ def recover_openrouter_usage(submitted: ToolUsageSummary, receipts: Sequence[Too
         actual_cost=actual_llm,
     )
     reference_providers = dict(submitted.reference_cost_by_provider)
-    reference_providers["openrouter"] = reference_providers.get("openrouter", 0.0) + reference_delta
+    reference_providers[provider] = reference_providers.get(provider, 0.0) + reference_delta
     actual_providers = dict(submitted.actual_cost_by_provider)
     # Only embedding remains outside authoritative inference recovery. Its known
     # reference and actual amounts are equal; preserve the submitted contribution.
     nonchat_known = (
-        submitted.reference_cost_by_provider.get("openrouter", previous_reference)
+        submitted.reference_cost_by_provider.get(provider, previous_reference)
         - previous_reference
         - prior_decision_reference
     )
     if nonchat_known < -1e-12:
-        raise ValueError("OpenRouter provider reference is smaller than its chat contribution")
-    actual_providers["openrouter"] = max(nonchat_known, 0.0) + sum(
+        raise ValueError("Inference provider reference is smaller than its chat contribution")
+    actual_providers[provider] = max(nonchat_known, 0.0) + sum(
         r.details.actual_cost_usd or 0.0 for r in (*chat, *decisions)
     )
     actual_total = submitted.actual_total_cost_usd
@@ -96,7 +107,7 @@ def recover_openrouter_usage(submitted: ToolUsageSummary, receipts: Sequence[Too
             None
             if canonical.actual_total_cost_usd is None
             else (
-                actual_total - submitted.actual_cost_by_provider.get("openrouter", 0.0) + actual_providers["openrouter"]
+                actual_total - submitted.actual_cost_by_provider.get(provider, 0.0) + actual_providers[provider]
             )
         )
     return replace(
@@ -107,7 +118,7 @@ def recover_openrouter_usage(submitted: ToolUsageSummary, receipts: Sequence[Too
         reference_cost_by_provider=reference_providers,
         decision_reference_cost_by_provider={
             **submitted.decision_reference_cost_by_provider,
-            "openrouter": decision_reference,
+            provider: decision_reference,
         },
         actual_total_cost_usd=actual_total,
         actual_cost_by_provider=actual_providers,
@@ -343,7 +354,7 @@ def _receipt_session_cost_provider(receipt: ToolCall) -> str | None:
 def _receipt_request_cost_provider(receipt: ToolCall) -> str | None:
     provider = _receipt_request_provider(receipt)
     if receipt.tool == "decision_query":
-        return provider if provider in {"openrouter", "ai_gateway"} else None
+        return provider if provider in {"openrouter", "ai_gateway", "cloudflare"} else None
     if provider is not None and provider.strip():
         return provider.strip()
     if receipt.tool == "llm_chat":

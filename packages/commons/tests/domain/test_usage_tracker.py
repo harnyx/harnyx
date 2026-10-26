@@ -296,14 +296,15 @@ def test_usage_tracker_accumulates_llm_usage() -> None:
     assert combined.call_count == 2
 
 
-def test_recovered_chat_costs_preserve_other_providers_nonchat_charges_and_unknown_actual_total() -> None:
+@pytest.mark.parametrize("provider", ["openrouter", "cloudflare"])
+def test_recovered_chat_costs_preserve_other_providers_nonchat_charges_and_unknown_actual_total(provider: str) -> None:
     from harnyx_commons.domain.session import LlmUsageTotals
     from harnyx_commons.domain.tool_call import ToolCall, ToolCallDetails, ToolCallOutcome
     from harnyx_commons.domain.tool_usage import LlmModelUsageCost, LlmUsageSummary, ToolUsageSummary
-    from harnyx_commons.tools.receipt_accounting import recover_openrouter_usage
+    from harnyx_commons.tools.receipt_accounting import recover_inference_usage
     from harnyx_commons.tools.types import ToolName
 
-    def receipt(tool: ToolName, actual: float, reference: float, provider: str = "openrouter") -> ToolCall:
+    def receipt(tool: ToolName, actual: float, reference: float, receipt_provider: str = provider) -> ToolCall:
         return ToolCall(
             receipt_id=str(uuid4()),
             session_id=uuid4(),
@@ -313,13 +314,13 @@ def test_recovered_chat_costs_preserve_other_providers_nonchat_charges_and_unkno
             outcome=ToolCallOutcome.OK,
             details=ToolCallDetails(
                 request_hash=uuid4().hex,
-                request_payload={"kwargs": {"provider": provider, "model": "promo/model"}},
+                request_payload={"kwargs": {"provider": receipt_provider, "model": "promo/model"}},
                 response_payload={
                     "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 19, "reasoning_tokens": 4}
                 },
                 cost_usd=reference,
                 actual_cost_usd=actual,
-                actual_cost_provider=provider,
+                actual_cost_provider=receipt_provider,
             ),
         )
 
@@ -327,14 +328,14 @@ def test_recovered_chat_costs_preserve_other_providers_nonchat_charges_and_unkno
     old_chat = LlmModelUsageCost(usage=LlmUsageTotals(call_count=2, total_tokens=9), cost=0.02, actual_cost=None)
     submitted = ToolUsageSummary(
         llm=LlmUsageSummary(
-            providers={"openrouter": {"promo/model": old_chat}, "ai_gateway": {"gateway/model": gateway}}, cost=0.05
+            providers={provider: {"promo/model": old_chat}, "ai_gateway": {"gateway/model": gateway}}, cost=0.05
         ),
         llm_cost=0.05,
         reference_total_cost_usd=0.055,
-        reference_cost_by_provider={"openrouter": 0.025, "ai_gateway": 0.03},
-        decision_reference_cost_by_provider={"openrouter": 0.005},
+        reference_cost_by_provider={provider: 0.025, "ai_gateway": 0.03},
+        decision_reference_cost_by_provider={provider: 0.005},
         actual_total_cost_usd=None,
-        actual_cost_by_provider={"openrouter": 0.015, "ai_gateway": 0.03},
+        actual_cost_by_provider={provider: 0.015, "ai_gateway": 0.03},
     )
     recovered_receipts = (
         receipt("llm_chat", 0.01, 0.02),
@@ -345,13 +346,13 @@ def test_recovered_chat_costs_preserve_other_providers_nonchat_charges_and_unkno
         receipt("llm_chat", 0.07, 0.07, "ai_gateway"),
         receipt("search_web", 0.09, 0.09, "tavily"),
     )
-    recovered = recover_openrouter_usage(submitted, recovered_receipts)
-    assert recover_openrouter_usage(recovered, recovered_receipts) == recovered
+    recovered = recover_inference_usage(submitted, recovered_receipts)
+    assert recover_inference_usage(recovered, recovered_receipts) == recovered
     assert recovered.llm.providers["ai_gateway"]["gateway/model"] == gateway
     assert recovered.reference_total_cost_usd == pytest.approx(0.095)
-    assert recovered.reference_cost_by_provider["openrouter"] == pytest.approx(0.065)
-    assert recovered.actual_cost_by_provider == pytest.approx({"openrouter": 0.045, "ai_gateway": 0.03})
+    assert recovered.reference_cost_by_provider[provider] == pytest.approx(0.065)
+    assert recovered.actual_cost_by_provider == pytest.approx({provider: 0.045, "ai_gateway": 0.03})
     assert recovered.actual_total_cost_usd is None
     assert recovered.llm.call_count == 3 and recovered.llm.total_tokens == 45
     assert recovered.llm.reasoning_tokens == 8
-    assert submitted.actual_cost_by_provider["openrouter"] == 0.015
+    assert submitted.actual_cost_by_provider[provider] == 0.015
