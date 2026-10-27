@@ -38,6 +38,7 @@ from harnyx_commons.llm.providers.cloudflare import (
     configured_cloudflare_credential,
     parse_cloudflare_credential,
 )
+from harnyx_commons.llm.providers.jev import JevDecisionProvider
 from harnyx_commons.llm.providers.openrouter import (
     OpenRouterDecisionClient,
     OpenRouterEmbeddingClient,
@@ -804,6 +805,7 @@ __all__ = [
     "AiGatewayDecisionProvider",
     "CachedDecisionProviderRegistry",
     "OpenRouterDecisionProvider",
+    "JevDecisionProvider",
     "build_miner_paid_decision_provider",
     "CachedEmbeddingProviderRegistry",
     "CachedWebSearchProviderRegistry",
@@ -1138,6 +1140,8 @@ def build_miner_paid_decision_provider(
     name = parse_decision_provider(provider)
     key = _validated_api_key(api_key, provider=name)
     timeout_seconds = _effective_client_timeout(llm_settings.llm_timeout_seconds, timeout)
+    if name == "jev":
+        return JevDecisionProvider(api_key=key, timeout_seconds=timeout_seconds)
     if name == "cloudflare":
         return CloudflareDecisionProvider(credential=parse_cloudflare_credential(key), timeout_seconds=timeout_seconds)
     if name == "openrouter":
@@ -1159,7 +1163,11 @@ class CachedDecisionProviderRegistry:
                     account_id=self._settings.cloudflare_account_id, api_token=self._settings.cloudflare_api_token,
                 ).to_credential_value())
             else:
-                key = self._settings.openrouter_api_key if name == "openrouter" else self._settings.ai_gateway_api_key
+                key = {
+                    "openrouter": self._settings.openrouter_api_key,
+                    "ai_gateway": self._settings.ai_gateway_api_key,
+                    "jev": self._settings.typesafe_api_key,
+                }[name]
             if not key.get_secret_value().strip():
                 raise ProviderCredentialUnavailableError(name)
             adapter = build_miner_paid_decision_provider(provider=name, api_key=key, llm_settings=self._settings)

@@ -428,7 +428,7 @@ USD cost remains unknown when the provider does not return it.
 
 - `llm_chat(provider="chutes" | "openrouter" | "ai_gateway" | "saygm" | "cloudflare", messages=[...], model="<provider-specific model id>", timeout=..., temperature=0.0, thinking={"enabled": True}, provider_extra=...)`
 - `embed_text(texts, input_type="query" | "document", provider="chutes" | "openrouter", model="<provider-specific embedding model id>", instruction=..., dimensions=..., provider_extra=..., timeout=...)`
-- `decision_query(provider="openrouter" | "ai_gateway" | "cloudflare", model="...", state=..., questions=..., timeout=...)`
+- `decision_query(provider="openrouter" | "ai_gateway" | "cloudflare" | "jev", model="...", state=..., questions=..., timeout=...)`
 - `tooling_info(timeout=...)`
 - `test_tool(message, timeout=...)`
 
@@ -694,6 +694,10 @@ probability = decision.response.answers["publish"].probability
 ```
 
 Use `tooling_info().response["allowed_decision_provider_models"]` for availability. OpenRouter accepts paid native IDs from its public decision-model catalog, including canonical versioned IDs, without a repository whitelist. Explicit `:free` variants and `openrouter/free` are excluded; paid promotions with zero current prices remain eligible. Discovery and public endpoint pricing use the same five-minute process cache as chat. `pricing.decision_query.openrouter` describes dynamic accounting; its models are omitted from the static `provider_models` table. AI Gateway keeps its existing empty decision-model list; those combinations are rejected. Provider adapters translate OpenRouter's native `noul` question type to public `boolean`.
+
+Direct TypeSafe JEV is available as `provider="jev"`, `model="jev-1.13.0"` for choice, score, and boolean questions. The adapter maps boolean questions to native `noul` and returns their probability through the usual typed answer. JEV is a decision provider; it does not support `llm_chat`, embeddings, or extraction questions. Register your TypeSafe key as `provider_credentials.jev` for hosted calls; direct local execution uses `TYPESAFE_API_KEY`. The platform never substitutes its key for a missing miner credential.
+
+JEV forwards the complete state and questions to TypeSafe without retries, fallback, truncation, or the optional long-context header. The pinned model avoids silently changing behavior through a latest-model alias. Its native response must include token usage and choice/score confidence and probabilities. JEV accounting uses TypeSafe's [published input-only rate](https://docs.typesafe.ai/models): $0.042 per million billable input tokens, with output free. Actual and reference accounting amounts are equal at that rate; these amounts do not claim the miner's net invoice charge. Valid usage still counts when answer validation fails. Dispatched failures without valid usage remain financially unknown. Discovery lists the supported model and rate through `tooling_info`.
 
 Choice answers contain `choice`; score answers contain `score`; both may contain `probabilities`. Boolean answers contain `probability`. Absent distributions remain absent, and rounded values are preserved. Native token usage stays in the response and receipt, outside chat token summaries. Decision results are log-only and do not become citation sources.
 

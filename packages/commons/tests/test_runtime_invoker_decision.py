@@ -115,6 +115,8 @@ async def test_decision_dispatch_discovery_and_unavailable_gateway() -> None:
     assert output.actual_cost_usd == 0.02
     info = await invoker.invoke("tooling_info", args=(), kwargs={})
     assert info["allowed_decision_provider_models"]["ai_gateway"] == []
+    assert info["allowed_decision_provider_models"]["jev"] == ["jev-1.13.0"]
+    assert info["pricing"]["decision_query"]["provider_models"]["jev"]["jev-1.13.0"]["input_per_million"] == 0.042
     with pytest.raises(ValidationError):
         await invoker.invoke("decision_query", args=(), kwargs={**_payload(), "provider": "ai_gateway"})
     assert provider.calls == 1

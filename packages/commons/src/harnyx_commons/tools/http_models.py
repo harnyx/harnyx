@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, TypeAdapter, model_validator
 
@@ -23,11 +23,11 @@ from harnyx_miner_sdk.tools.http_models import (
 LlmUsageDTO = Annotated[LlmUsage, BeforeValidator(TypeAdapter(LlmUsage).validate_python)]
 
 
-class CloudflareErrorBillingDTO(BaseModel):
+class _PublishedRateErrorBillingDTO(BaseModel):
     """Shared hosted failure contract: published-rate costs remain equal."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
-    actual_cost_provider: Literal["cloudflare"] = "cloudflare"
+    actual_cost_provider: str
     actual_cost_usd: float = Field(ge=0, allow_inf_nan=False)
     reference_cost_usd: float = Field(ge=0, allow_inf_nan=False)
     cost_evidence: JsonObject | None = None
@@ -35,13 +35,13 @@ class CloudflareErrorBillingDTO(BaseModel):
     llm_usage: LlmUsageDTO | None = None
 
     @model_validator(mode="after")
-    def _equal_costs(self) -> CloudflareErrorBillingDTO:
+    def _equal_costs(self) -> Self:
         if self.actual_cost_usd != self.reference_cost_usd:
-            raise ValueError("Cloudflare actual and reference costs must be equal")
+            raise ValueError("Published-rate actual and reference costs must be equal")
         return self
 
     @classmethod
-    def from_billing(cls, billing: ProviderBillingMetadata) -> CloudflareErrorBillingDTO:
+    def from_billing(cls, billing: ProviderBillingMetadata) -> Self:
         return cls.model_validate({
             "actual_cost_provider": billing.actual_cost_provider,
             "actual_cost_usd": billing.actual_cost_usd,
@@ -59,8 +59,18 @@ class CloudflareErrorBillingDTO(BaseModel):
         )
 
 
+class CloudflareErrorBillingDTO(_PublishedRateErrorBillingDTO):
+    actual_cost_provider: Literal["cloudflare"] = "cloudflare"
+
+
+class JevErrorBillingDTO(_PublishedRateErrorBillingDTO):
+    actual_cost_provider: Literal["jev"] = "jev"
+    llm_usage: None = None
+
+
 __all__ = [
     "CloudflareErrorBillingDTO",
+    "JevErrorBillingDTO",
     "LlmUsageDTO",
     "ToolBudgetDTO",
     "ToolExecuteRequestDTO",

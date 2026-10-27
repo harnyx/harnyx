@@ -91,7 +91,7 @@ def test_get_config_signs_empty_body_request(monkeypatch: pytest.MonkeyPatch) ->
     assert hotkey.signed[0].startswith(b"GET\n/v1/miner-config\n")
 
 
-@pytest.mark.parametrize("provider", ["chutes", "expand", "deepseek"])
+@pytest.mark.parametrize("provider", ["chutes", "expand", "deepseek", "jev"])
 def test_put_provider_credential_sends_supported_provider_payload(
     monkeypatch: pytest.MonkeyPatch, provider: str
 ) -> None:

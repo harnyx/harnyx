@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass, replace
 from harnyx_commons.domain.session import LlmUsageTotals, SessionUsage
 from harnyx_commons.domain.tool_call import ToolCall
 from harnyx_commons.domain.tool_usage import LlmModelUsageCost, LlmUsageSummary, ToolUsageSummary
-from harnyx_commons.tools.provider_billing import OpenRouterAccounting
+from harnyx_commons.tools.provider_billing import RECOVERABLE_INFERENCE_PROVIDERS, OpenRouterAccounting
 from harnyx_commons.tools.types import is_search_tool
 
 
@@ -46,7 +46,7 @@ def include_llm_receipt(receipt: ToolCall) -> bool:
 
 def recover_inference_usage(submitted: ToolUsageSummary, receipts: Sequence[ToolCall]) -> ToolUsageSummary:
     """Replace durable hosted inference costs under each provider's receipt policy."""
-    for provider in ("openrouter", "cloudflare"):
+    for provider in RECOVERABLE_INFERENCE_PROVIDERS:
         submitted = _recover_provider_usage(submitted, receipts, provider)
     return submitted
 
@@ -354,7 +354,7 @@ def _receipt_session_cost_provider(receipt: ToolCall) -> str | None:
 def _receipt_request_cost_provider(receipt: ToolCall) -> str | None:
     provider = _receipt_request_provider(receipt)
     if receipt.tool == "decision_query":
-        return provider if provider in {"openrouter", "ai_gateway", "cloudflare"} else None
+        return provider if provider in {"openrouter", "ai_gateway", "cloudflare", "jev"} else None
     if provider is not None and provider.strip():
         return provider.strip()
     if receipt.tool == "llm_chat":

@@ -14,7 +14,7 @@ from harnyx_miner_sdk.tools.extraction_models import ExtractionAnswer, Extractio
 from harnyx_miner_sdk.tools.openrouter_models import validate_paid_openrouter_model
 from harnyx_miner_sdk.tools.types import ToolInvocationTimeout
 
-DecisionProviderName = Literal["openrouter", "ai_gateway", "cloudflare"]
+DecisionProviderName = Literal["openrouter", "ai_gateway", "cloudflare", "jev"]
 DecisionContext = str | dict[str, JsonValue] | list[JsonValue]
 Probability = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 MINER_SELECTED_DECISION_PROVIDER_MODELS: Mapping[DecisionProviderName, tuple[str, ...]] = {
@@ -27,6 +27,7 @@ MINER_SELECTED_DECISION_PROVIDER_MODELS: Mapping[DecisionProviderName, tuple[str
         "respan/span-02",
     ),
     "ai_gateway": (),
+    "jev": ("jev-1.13.0",),
     "cloudflare": (
         "@cf/cloudflare/clef", "@cf/cloudflare/clef-flash", "@cf/cloudflare/clef-omni", "@cf/cloudflare/clairic",
     ),
@@ -40,6 +41,8 @@ def parse_decision_provider(provider: str) -> DecisionProviderName:
         return "ai_gateway"
     if provider == "cloudflare":
         return "cloudflare"
+    if provider == "jev":
+        return "jev"
     raise ValueError(f"unsupported decision provider {provider!r}")
 
 
@@ -159,6 +162,11 @@ class DecisionQueryRequest(_DecisionModel):
                 raise ValueError("Clairic requires extraction questions; other models require decision questions")
             if extraction and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.\-]{0,63}", key) is None:
                 raise ValueError("invalid Clairic question ID")
+            if self.provider == "jev":
+                if isinstance(question, ChoiceQuestion) and len(question.criteria) > 255:
+                    raise ValueError("JEV choice questions support up to 255 options")
+                if isinstance(question, ScoreQuestion) and not 2 <= len(question.criteria) <= 10:
+                    raise ValueError("JEV score questions require 2 to 10 levels")
             if self.provider == "cloudflare" and not extraction:
                 if len(self.questions) > 64 or re.fullmatch(r"[A-Za-z0-9_.\-]{1,100}", key) is None:
                     raise ValueError("Clef supports up to 64 named questions with valid IDs")

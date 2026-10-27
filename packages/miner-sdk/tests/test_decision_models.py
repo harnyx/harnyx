@@ -36,6 +36,18 @@ def _response() -> dict:
     }
 
 
+def test_jev_selection_preserves_questions_and_rejects_unsupported_native_models() -> None:
+    """JEV requests must remain typed decisions and cannot silently upgrade the judge model."""
+    payload = {**_request(), "provider": "jev", "model": "jev-1.13.0"}
+    request = DecisionQueryRequest.model_validate(payload)
+    assert request.model_dump(mode="json", exclude_none=True)["questions"] == payload["questions"]
+    with pytest.raises(ValidationError):
+        DecisionQueryRequest.model_validate({**payload, "model": "jev-latest"})
+    payload["questions"]["s"]["criteria"] = ["Only one level"]
+    with pytest.raises(ValidationError):
+        DecisionQueryRequest.model_validate(payload)
+
+
 def test_structured_context_rounded_and_absent_distributions_are_preserved() -> None:
     request = DecisionQueryRequest.model_validate(_request())
     response = DecisionQueryResponse.model_validate(_response())

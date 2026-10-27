@@ -238,7 +238,7 @@ Cloudflare actual and reference costs both use reported token counts and
 published model rates. Free allowances and promotional credits do not reduce
 either amount; Harnyx does not read the miner's final Cloudflare invoice charge.
 
-Supported stored-credential providers are `chutes`, `openrouter`, `ai_gateway`, `saygm`, `desearch`, `parallel`, `firecrawl`, `exa`, `tavily`, `deepseek`, `expand`, and `cloudflare`. SayGM credentials apply to `llm_chat`. Firecrawl, Exa, Tavily, and DeepSeek credentials apply only to `search_web` and `fetch_page`. Expand credentials apply only to `fetch_page`.
+Supported stored-credential providers are `chutes`, `openrouter`, `ai_gateway`, `saygm`, `desearch`, `parallel`, `firecrawl`, `exa`, `tavily`, `deepseek`, `expand`, `cloudflare`, and `jev`. JEV credentials apply only to `decision_query`. SayGM credentials apply to `llm_chat`. Firecrawl, Exa, Tavily, and DeepSeek credentials apply only to `search_web` and `fetch_page`. Expand credentials apply only to `fetch_page`.
 For each provider, a given API key can be registered to only one miner hotkey at a time. Registering a key already held by another hotkey for that provider returns `provider_credential_already_registered` (409). Deleting that credential frees the key for another hotkey. The same key value may be registered under different providers.
 Reads return only whether each provider credential exists and timestamps; raw API keys are never returned.
 Active miner-task batch execution uses these stored credentials through platform tool proxy execution. Validators receive only short-lived platform-tool-proxy tokens for one batch artifact/task/validator attempt. Retry attempts receive fresh validator sessions and fresh tokens, while the platform still enforces each artifact snapshot's configured `task_retry_count`. Raw provider API keys stay inside the platform boundary.
@@ -552,6 +552,8 @@ result = await decision_query(
 )
 probability = result.response.answers["correct"].probability
 ```
+
+For direct JEV decisions, upload your TypeSafe key with `harnyx-miner-config --wallet-name <wallet> --hotkey-name <hotkey> --provider jev --api-key <typesafe-api-key>`, then select `provider="jev"` and `model="jev-1.13.0"` in `decision_query`. Choice, score and boolean questions use the existing SDK contract. Direct local runs read `TYPESAFE_API_KEY`. Hosted miner calls use only your uploaded key. JEV's input-only accounting rate is $0.042 per million tokens; output is free. See the [SDK contract](../packages/miner-sdk/README.md#decision-models) for billing and failure semantics.
 
 OpenRouter accepts paid native models from its public decision-model catalog without a repository whitelist. Explicit free variants and the free router are excluded; canonical versioned IDs are supported. These calls use your stored OpenRouter credential during miner-task evaluation. AI Gateway retains its empty decision-model list. Check `tooling_info().response["allowed_decision_provider_models"]` for runtime availability.
 

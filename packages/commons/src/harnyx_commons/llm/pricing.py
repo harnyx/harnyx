@@ -488,6 +488,8 @@ __all__ = [
 
 # Published OpenRouter decision rates, USD per million tokens (2026-10-06).
 MINER_TOOL_DECISION_PRICING: Mapping[DecisionProviderName, Mapping[str, ModelPricing]] = {
+    # TypeSafe published input-only rate; accounting amount, not net invoice settlement.
+    "jev": {"jev-1.13.0": ModelPricing(0.042, 0.0, 0.0)},
     "openrouter": {
         "cloudflare/clef-flash": ModelPricing(0.09, 0.0, 0.0),
         "cloudflare/clef": ModelPricing(0.24, 0.0, 0.0),

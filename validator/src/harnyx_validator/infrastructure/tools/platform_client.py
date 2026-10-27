@@ -37,7 +37,7 @@ from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.protocol_headers import PLATFORM_TOOL_PROXY_TOKEN_HEADER
 from harnyx_commons.rating_competition import RATING_JUDGMENT_ALREADY_ACCEPTED, RatingJudgment, RatingWorkPage
 from harnyx_commons.tools.decision_models import DecisionUsage
-from harnyx_commons.tools.http_models import CloudflareErrorBillingDTO, LlmUsageDTO
+from harnyx_commons.tools.http_models import CloudflareErrorBillingDTO, JevErrorBillingDTO, LlmUsageDTO
 from harnyx_commons.tools.provider_billing import OpenRouterAccounting, ProviderBillingMetadata, failure_billing
 from harnyx_commons.tools.types import ToolName
 from harnyx_miner_sdk.endpoint_protocol import EndpointCallbackAcknowledgement, EndpointDelegation
@@ -671,6 +671,8 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
                     parsed_billing = (
                         CloudflareErrorBillingDTO.model_validate(error_payload["billing"])
                         if error_payload["billing"].get("actual_cost_provider") == "cloudflare"
+                        else JevErrorBillingDTO.model_validate(error_payload["billing"])
+                        if error_payload["billing"].get("actual_cost_provider") == "jev"
                         else _DecisionProxyBilling.model_validate(error_payload["billing"])
                         if tool == "decision_query"
                         and error_payload["billing"].get("actual_cost_provider") != "openrouter"
@@ -680,7 +682,7 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
                     )
                     billing = (
                         parsed_billing.to_billing()
-                        if isinstance(parsed_billing, CloudflareErrorBillingDTO)
+                        if isinstance(parsed_billing, CloudflareErrorBillingDTO | JevErrorBillingDTO)
                         else OpenRouterAccounting.from_fields(
                             actual_cost_usd=parsed_billing.actual_cost_usd,
                             reference_cost_usd=parsed_billing.reference_cost_usd,

@@ -550,13 +550,13 @@ class ToolExecutor:
             and billing is not None
             and billing.actual_cost_provider == "openrouter"
         )
-        cloudflare_failure = (
+        published_rate_failure = (
             request.tool in {"llm_chat", "decision_query"}
             and billing is not None
-            and billing.actual_cost_provider == "cloudflare"
+            and billing.actual_cost_provider in {"cloudflare", "jev"}
         )
-        billed_inference_failure = openrouter_failure or cloudflare_failure
-        if cloudflare_failure and billing is not None:
+        billed_inference_failure = openrouter_failure or published_rate_failure
+        if published_rate_failure and billing is not None:
             provider_failure = recording.dispatched and (billing.llm_usage is not None or billing.usage is not None)
             error_extra["provider_failure_accounted"] = provider_failure
         if not (request.tool == "decision_query" or accounted_failure or billed_inference_failure):
@@ -578,7 +578,7 @@ class ToolExecutor:
                 except ValueError:
                     selected_provider = None
             if isinstance(selected_provider, str) and (
-                accounted_failure or selected_provider in {"openrouter", "ai_gateway", "cloudflare"}
+                accounted_failure or selected_provider in {"openrouter", "ai_gateway", "cloudflare", "jev"}
             ):
                 failure_provider = selected_provider
         failure_cost = (

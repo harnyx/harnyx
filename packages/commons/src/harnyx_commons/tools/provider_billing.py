@@ -12,6 +12,9 @@ from harnyx_commons.json_types import JsonObject
 from harnyx_commons.llm.schema import LlmUsage
 from harnyx_commons.tools.decision_models import DecisionUsage
 
+# Providers whose accepted inference costs can be completed by hosted receipts.
+RECOVERABLE_INFERENCE_PROVIDERS = ("openrouter", "cloudflare", "jev")
+
 ProviderBillingSource = Literal[
     "response_body",
     "response_headers",
@@ -209,6 +212,7 @@ def _is_json_value(value: object) -> bool:
 __all__ = [
     "OpenRouterAccounting",
     "ProviderBillingMetadata",
+    "RECOVERABLE_INFERENCE_PROVIDERS",
     "ProviderBillingSource",
     "SearchProviderResult",
     "billing_evidence_payload",

@@ -1968,14 +1968,18 @@ async def test_openrouter_chat_failure_transports_reference_and_observed_charge(
 
 
 @pytest.mark.anyio("asyncio")
-@pytest.mark.parametrize("tool", ["llm_chat", "decision_query"])
+@pytest.mark.parametrize("provider,tool", [("cloudflare", "llm_chat"), ("cloudflare", "decision_query"),
+                                          ("jev", "decision_query")])
 @pytest.mark.parametrize("actual", [0.0, 0.000023])
-async def test_cloudflare_failures_keep_equal_costs_and_native_usage(tool: str, actual: float) -> None:
-    """Cloudflare rejection/charged-error DTOs must reach Validator error accounting intact."""
-    from harnyx_commons.tools.http_models import CloudflareErrorBillingDTO
+async def test_published_rate_failures_keep_equal_costs_and_native_usage(
+    provider: str, tool: str, actual: float,
+) -> None:
+    """Rejection/charged-error DTOs must reach Validator error accounting intact."""
+    from harnyx_commons.tools.http_models import CloudflareErrorBillingDTO, JevErrorBillingDTO
     usage = {"prompt_tokens": 100, "completion_tokens": 6, "reasoning_tokens": 4, "total_tokens": 110}
-    wire = CloudflareErrorBillingDTO.model_validate({
-        "actual_cost_provider": "cloudflare", "actual_cost_usd": actual, "reference_cost_usd": actual,
+    dto = JevErrorBillingDTO if provider == "jev" else CloudflareErrorBillingDTO
+    wire = dto.model_validate({
+        "actual_cost_provider": provider, "actual_cost_usd": actual, "reference_cost_usd": actual,
         "llm_usage": usage if tool == "llm_chat" and actual else None,
         "usage": {"input_tokens": 100, "output_tokens": 0} if tool == "decision_query" and actual else None,
         "cost_evidence": {"settlement_source": "static_pricing"} if actual else None,
@@ -1993,7 +1997,7 @@ async def test_cloudflare_failures_keep_equal_costs_and_native_usage(tool: str, 
                 transport_timeout_seconds=11.0,
             )
         billing = caught.value.billing
-        assert billing.actual_cost_provider == "cloudflare"
+        assert billing.actual_cost_provider == provider
         assert billing.actual_cost_usd == billing.reference_cost_usd == actual
         if actual:
             if tool == "llm_chat":

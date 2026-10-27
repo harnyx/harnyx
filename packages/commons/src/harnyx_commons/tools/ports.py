@@ -104,12 +104,21 @@ __all__ = [
 
 
 @dataclass(frozen=True, slots=True)
+class DecisionNativeResponse:
+    """Private provider receipt retained by consumers that own grading evidence."""
+
+    body: str
+    status_code: int
+
+
+@dataclass(frozen=True, slots=True)
 class DecisionProviderResult:
     response: DecisionQueryResponse
     actual_cost_usd: float | None
     actual_cost_provider: str
     actual_cost_evidence: JsonObject
     reference_cost_usd: float | None = None
+    native_response: DecisionNativeResponse | None = None
 
     @property
     def billing(self) -> ProviderBillingMetadata:
