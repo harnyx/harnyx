@@ -48,6 +48,11 @@ class SandboxClient(Protocol):
         """Whether positive OOM evidence has retired this deployment."""
         return False
 
+    @property
+    def cleanup_retirement_required(self) -> bool:
+        """Whether cleanup uncertainty requires physical container retirement."""
+        return False
+
     async def resource_status(self) -> SandboxResourceStatus:
         return SandboxResourceStatus(counter_status="disabled", oom_kill_count=0, draining=False)
 

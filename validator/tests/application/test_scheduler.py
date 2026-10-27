@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -28,6 +27,7 @@ from harnyx_commons.sandbox.client import SandboxClient
 from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager, SandboxStartError
 from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_miner_sdk.sandbox_protocol import SandboxAdmission
+from harnyx_validator.application.assigned_work import QueueStopReason
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptAuditRecord,
     MinerTaskAttemptRetryDecision,
@@ -137,6 +137,11 @@ def test_sandbox_failure_diagnostics_reads_docker_command_error_files(tmp_path) 
 
 
 class _AssignedWork:
+    shutdown_requested = False
+
+    def close_intake(self):
+        pass
+
     def __init__(self, queued: tuple[MinerTaskWorkAssignment, ...] = ()) -> None:
         self.dispatch_ready = False
         self.queue: asyncio.Queue[MinerTaskWorkAssignment] = asyncio.Queue()
@@ -802,7 +807,9 @@ async def test_scheduler_assigned_results_survive_teardown_and_activity_failures
     class FailingStopSandboxManager(DummySandboxManager):
         def stop(self, deployment: SandboxDeployment) -> bool:
             super().stop(deployment)
-            raise RuntimeError("sandbox stop failed")
+            if len(self.stops) == 1:
+                raise RuntimeError("sandbox stop failed")
+            return True
 
     class FailingActivity:
         def mark_batch_started(self, _batch_id: UUID) -> None:
@@ -920,35 +927,38 @@ async def test_evaluation_runner_issues_session_with_task_budget(
     assert issued.session.budget_usd == pytest.approx(0.123)
 
 
-@pytest.mark.parametrize("removal_confirmed", [True, False])
 @pytest.mark.parametrize("startup_failed", [True, False])
-async def test_oom_replacement_waits_for_physical_removal(
-    monkeypatch, blocking_executor, removal_confirmed, startup_failed, caplog
-):
-    """Replacement capacity must never overlap an unremoved OOM deployment."""
-    caplog.set_level(logging.INFO, logger="harnyx_validator.scheduler")
+async def test_oom_replacement_waits_for_physical_removal(monkeypatch, blocking_executor, startup_failed):
+    """False, exceptions and cancellation cannot release a still-owned container."""
     events = []
+    retiring = asyncio.Event()
+    allow_removal = asyncio.Event()
+    loop = asyncio.get_running_loop()
 
     class Manager(DummySandboxManager):
         def start(self, options):
             events.append("start")
             deployment = super().start(options)
             deployment = SandboxDeployment(client=deployment.client, identifier=f"container-{len(self.starts)}")
-            if startup_failed:
-                raise SandboxStartError("injected observer cleanup failure", unremoved_deployment=deployment)
+            if startup_failed and len(self.starts) == 1:
+                raise SandboxStartError("injected startup cleanup failure", unremoved_deployment=deployment)
             return deployment
 
         def stop(self, deployment):
-            events.append("stop")
             super().stop(deployment)
-            return removal_confirmed
+            events.append("stop")
+            if len(self.stops) == 1:
+                loop.call_soon_threadsafe(retiring.set)
+                return False
+            if len(self.stops) == 2:
+                raise RuntimeError("Docker unavailable")
+            return allow_removal.is_set()
 
     manager = Manager()
     task = _task("remaining")
     artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
-    batch_id = uuid4()
     assignment = MinerTaskWorkAssignment(
-        batch_id=batch_id,
+        batch_id=uuid4(),
         artifact=artifact,
         task=task,
         attempt_number=1,
@@ -973,45 +983,33 @@ async def test_oom_replacement_waits_for_physical_removal(
     calls = []
 
     async def run_queue(**kwargs):
-        assert kwargs["assigned_work"] is work
         calls.append(kwargs["initial_assignments"])
-        return len(calls) == 1
+        return QueueStopReason.OOM_DRAINED if len(calls) == 1 and not startup_failed else QueueStopReason.COMPLETED
 
     monkeypatch.setattr(scheduler._runner, "evaluate_assigned_task_queue", run_queue)
-    invocation = scheduler.run_assigned_artifact_queue(
-        batch_id=batch_id,
-        artifact=artifact,
-        initial_assignments=(assignment,),
-        assigned_work=work,
-        close_requested=asyncio.Event(),
-        result_queue=asyncio.Queue(),
+    invocation = asyncio.create_task(
+        scheduler.run_assigned_artifact_queue(
+            batch_id=assignment.batch_id,
+            artifact=artifact,
+            initial_assignments=(assignment,),
+            assigned_work=work,
+            close_requested=asyncio.Event(),
+            result_queue=asyncio.Queue(),
+        )
     )
-    if startup_failed:
-        await invocation
-        assert not calls
-        assert len(manager.starts) == (2 if removal_confirmed else 1)
-        assert events == ["start", "stop"] * len(manager.starts)
-    elif removal_confirmed:
-        await invocation
-        assert calls == [(assignment,), ()]
-        assert events == ["start", "stop", "start", "stop"]
-    else:
-        with pytest.raises(RuntimeError, match="removal remains unconfirmed"):
+    try:
+        async with asyncio.timeout(3):
+            await retiring.wait()
+            await asyncio.sleep(0.22)
+            assert len(manager.starts) == 1
+            assert not invocation.done()
+            allow_removal.set()
             await invocation
-        assert calls == [(assignment,)]
-        assert events == ["start", "stop", "stop"]
-
-    if not startup_failed:
-        retirements = [record for record in caplog.records if record.message == "sandbox OOM retirement completed"]
-        assert len(retirements) == 1
-        assert retirements[0].removal_confirmed is removal_confirmed
-        assert retirements[0].container == "container-1"
-        assert retirements[0].batch_id == str(batch_id)
-        ready = [record for record in caplog.records if record.message == "sandbox evaluation deployment ready"]
-        assert len(ready) == (2 if removal_confirmed else 1)
-        if removal_confirmed:
-            assert ready[1].container == "container-2"
-            assert ready[1].replaced_container == "container-1"
+        assert len(manager.starts) == 2
+        assert calls == ([(assignment,)] if startup_failed else [(assignment,), ()])
+    finally:
+        allow_removal.set()
+        await asyncio.gather(invocation, return_exceptions=True)
 
 
 @pytest.mark.parametrize("remaining_work", [True, False])
@@ -1062,7 +1060,7 @@ async def test_oom_replacement_startup_failure_never_reuses_completed_assignment
     async def completed_and_drained(**kwargs):
         assert kwargs["initial_assignments"] == (assignments[0],)
         # The initial assignment has a finalized/staged result; only work.queue remains unstarted.
-        return True
+        return QueueStopReason.OOM_DRAINED
 
     monkeypatch.setattr(scheduler._runner, "evaluate_assigned_task_queue", completed_and_drained)
     await scheduler.run_assigned_artifact_queue(
@@ -1079,3 +1077,86 @@ async def test_oom_replacement_startup_failure_never_reuses_completed_assignment
         assert failure.terminal_attempt.error_code == str(MinerTaskErrorCode.SANDBOX_START_FAILED)
         assert failure.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE
     assert results.empty()
+
+
+@pytest.mark.parametrize("phase", ["start", "stop", "shutdown_oom"])
+async def test_docker_operation_remains_owned_through_cancel_or_shutdown(monkeypatch, blocking_executor, phase):
+    """Waiter cancellation cannot orphan a late container; shutdown transfers removal exactly once."""
+    import threading
+
+    entered = asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+    work = _AssignedWork()
+    if phase == "shutdown_oom":
+        work.shutdown_requested = True
+
+    class Manager(DummySandboxManager):
+        def start(self, options):
+            if phase == "start":
+                loop.call_soon_threadsafe(entered.set)
+                assert release.wait(3)
+            return super().start(options)
+
+        def stop(self, deployment):
+            super().stop(deployment)
+            if phase == "stop":
+                loop.call_soon_threadsafe(entered.set)
+                assert release.wait(3)
+            return phase != "shutdown_oom"
+
+    manager = Manager()
+    task = _task("owned")
+    artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
+    assignment = MinerTaskWorkAssignment(
+        batch_id=uuid4(),
+        artifact=artifact,
+        task=task,
+        attempt_number=1,
+        max_attempts=3,
+        assignment_token=_ASSIGNMENT_TOKEN,
+    )
+    scheduler = EvaluationScheduler(
+        tasks=(task,),
+        subtensor_client=FakeSubtensorClient(),
+        sandbox_manager=manager,
+        session_manager=SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry()),
+        evaluation_records=DummyEvaluationRecordStore(),
+        receipt_log=DummyReceiptLog(),
+        blocking_executor=blocking_executor,
+        orchestrator_factory=lambda client: client,
+        sandbox_options_factory=lambda _: None,
+        clock=lambda: datetime.now(UTC),
+        config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=300),
+        progress=DummyProgressRecorder(),
+    )
+
+    async def run_queue(**kwargs):
+        return QueueStopReason.OOM_DRAINED if phase == "shutdown_oom" else QueueStopReason.COMPLETED
+
+    monkeypatch.setattr(scheduler._runner, "evaluate_assigned_task_queue", run_queue)
+    invocation = asyncio.create_task(
+        scheduler.run_assigned_artifact_queue(
+            batch_id=assignment.batch_id,
+            artifact=artifact,
+            initial_assignments=(assignment,),
+            assigned_work=work,
+            close_requested=asyncio.Event(),
+            result_queue=asyncio.Queue(),
+        )
+    )
+    try:
+        if phase != "shutdown_oom":
+            await asyncio.wait_for(entered.wait(), 2)
+            invocation.cancel()
+            await asyncio.sleep(0)
+            assert not invocation.done()
+            release.set()
+        await asyncio.wait_for(asyncio.gather(invocation, return_exceptions=True), 3)
+        assert len(manager.starts) == 1
+        assert len(manager.stops) == 1
+        if phase == "start":
+            assert invocation.cancelled()
+    finally:
+        release.set()
+        await asyncio.gather(invocation, return_exceptions=True)

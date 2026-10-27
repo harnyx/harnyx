@@ -103,7 +103,7 @@ async def test_worker_cannot_forge_session_result_or_infrastructure_identity(san
     )
     assert isinstance(malicious, SandboxInvokeError)
     assert malicious.status_code == 500
-    assert malicious.detail_code != "PreloadInfrastructureFailed"
+    assert malicious.detail_code == "UnhandledException"
     assert healthy == {"text": "own response", "citations": None}
 
 

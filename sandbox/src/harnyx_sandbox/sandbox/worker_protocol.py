@@ -10,11 +10,21 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
+MAX_PENDING_WORKER_TOOL_CALLS = 20
+
 MAX_FRAME_BYTES = 64 * 1024 * 1024
 
 
 class WorkerResultProtocolError(RuntimeError):
     """A worker sent an invalid or incomplete frame."""
+
+
+class WorkerMessageViolationError(WorkerResultProtocolError):
+    """Complete input proves this private worker violated its protocol."""
+
+
+class WorkerTransportError(WorkerResultProtocolError):
+    """Worker loss without enough evidence to attribute its cause."""
 
 
 class Message(BaseModel):
@@ -61,17 +71,17 @@ def load_json(payload: bytes) -> object:
     def finite_float(value: str) -> float:
         result = float(value)
         if not math.isfinite(result):
-            raise WorkerResultProtocolError("JSON number exceeds finite float range")
+            raise WorkerMessageViolationError("JSON number exceeds finite float range")
         return result
 
     def reject_constant(value: str) -> object:
-        raise WorkerResultProtocolError(f"invalid JSON constant: {value}")
+        raise WorkerMessageViolationError(f"invalid JSON constant: {value}")
 
     def unique_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
         result: dict[str, object] = {}
         for key, value in pairs:
             if key in result:
-                raise WorkerResultProtocolError(f"duplicate JSON key: {key}")
+                raise WorkerMessageViolationError(f"duplicate JSON key: {key}")
             result[key] = value
         return result
 
@@ -79,13 +89,16 @@ def load_json(payload: bytes) -> object:
 
 
 def decode_worker_message(payload: bytes) -> WorkerMessage:
-    return WORKER_MESSAGE.validate_python(load_json(payload))
+    try:
+        return WORKER_MESSAGE.validate_python(load_json(payload))
+    except RecursionError as exc:
+        raise WorkerMessageViolationError("worker JSON exceeds supported nesting depth") from exc
 
 
 def encode(message: BaseModel) -> bytes:
     payload = json.dumps(message.model_dump(mode="json"), allow_nan=False, separators=(",", ":")).encode()
     if len(payload) > MAX_FRAME_BYTES:
-        raise WorkerResultProtocolError("worker frame exceeds size limit")
+        raise WorkerMessageViolationError("worker frame exceeds size limit")
     return struct.pack(">Q", len(payload)) + payload
 
 
@@ -93,10 +106,10 @@ async def read_frame(reader: asyncio.StreamReader) -> bytes:
     try:
         length = struct.unpack(">Q", await reader.readexactly(8))[0]
         if length > MAX_FRAME_BYTES:
-            raise WorkerResultProtocolError("worker frame exceeds size limit")
+            raise WorkerMessageViolationError("worker frame exceeds size limit")
         return await reader.readexactly(length)
     except asyncio.IncompleteReadError as exc:
-        raise WorkerResultProtocolError("worker connection closed without a complete frame") from exc
+        raise WorkerTransportError("worker connection closed without a complete frame") from exc
 
 
 async def send(writer: asyncio.StreamWriter, message: BaseModel) -> None:

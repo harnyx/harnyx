@@ -53,6 +53,7 @@ from harnyx_validator.application.assigned_work import (
     AssignedArtifactWork,
     ClaimedAssignedTask,
     PhaseRecorder,
+    QueueStopReason,
     task_start_timeout_result,
 )
 from harnyx_validator.application.dto.evaluation import (
@@ -652,8 +653,8 @@ class EvaluationRunner:
         orchestrator: TaskRunOrchestrator,
         sandbox_client: SandboxClient,
         sandbox_identifier: str | None = None,
-    ) -> bool:
-        """Return true only when this deployment drained after positive OOM."""
+    ) -> QueueStopReason:
+        """Finish owned work while keeping cleanup retirement distinct from positive OOM."""
         active: dict[asyncio.Task[_AssignedAttemptRunOutcome], _ActiveAssignedTask] = {}
         queue_waiter: asyncio.Task[ClaimedAssignedTask] | None = None
         claim_to_start: ClaimedAssignedTask | None = None
@@ -732,6 +733,27 @@ class EvaluationRunner:
                 claim_to_start = None
 
             while active or not close_requested.is_set():
+                if sandbox_client.cleanup_retirement_required:
+                    assigned_work.close_intake()
+                    close_requested.set()
+                    await cancel_queue_waiter()
+                    # Started siblings are never replayed or relabeled as OOM.
+                    # Existing cancellation/uncertainty handling resolves their attempts.
+                    for task in active:
+                        if not task.done():
+                            task.cancel()
+                    if active:
+                        done, _ = await asyncio.wait(active)
+                        await self._drain_assigned_results(
+                            active=active,
+                            done=done,
+                            batch_id=batch_id,
+                            artifact=artifact,
+                            result_queue=result_queue,
+                            oom_draining=False,
+                            cleanup_retiring=True,
+                        )
+                    return QueueStopReason.CLEANUP_UNCONFIRMED
                 if sandbox_client.draining:
                     if not drain_logged:
                         logger.warning(
@@ -764,7 +786,7 @@ class EvaluationRunner:
                         if owned.lifecycle is not None and owned.lifecycle.issued is None:
                             task.cancel()
                     if not active:
-                        return True
+                        return QueueStopReason.OOM_DRAINED
                 while not close_requested.is_set() and not sandbox_client.draining:
                     try:
                         claim_to_start = assigned_work.claim_nowait_for_dispatch()
@@ -782,7 +804,7 @@ class EvaluationRunner:
                     wait_for.add(queue_waiter)
                     wait_for.add(close_waiter)
                 elif not active:
-                    return sandbox_client.draining
+                    return QueueStopReason.OOM_DRAINED if sandbox_client.draining else QueueStopReason.COMPLETED
                 done, _pending = await asyncio.wait(wait_for, return_when=asyncio.FIRST_COMPLETED)
 
                 if oom_waiter in done:
@@ -804,7 +826,7 @@ class EvaluationRunner:
                     start_assignment(claim_to_start)
                     claim_to_start = None
                     queue_waiter = None
-            return sandbox_client.draining
+            return QueueStopReason.OOM_DRAINED if sandbox_client.draining else QueueStopReason.COMPLETED
         finally:
             # HTTP connection cleanup can consume cancellation; stop cooperatively too.
             monitor_stop.set()
@@ -839,6 +861,7 @@ class EvaluationRunner:
         artifact: ScriptArtifactSpec,
         result_queue: asyncio.Queue[PlatformOwnedTaskResult | PlatformOwnedTaskExecution],
         oom_draining: bool,
+        cleanup_retiring: bool = False,
     ) -> bool:
         delivery_failure_seen = False
         for task in tuple(active):
@@ -848,9 +871,30 @@ class EvaluationRunner:
             try:
                 outcome = task.result()
             except asyncio.CancelledError:
-                if not oom_draining:
+                if cleanup_retiring:
+                    exc = SandboxInvokeError(
+                        "sandbox retired after cleanup uncertainty",
+                        status_code=503,
+                        detail_code="SandboxCleanupUnconfirmed",
+                        detail_exception=None,
+                        detail_error=None,
+                        remote_state_uncertain=True,
+                    )
+                    result = (
+                        active_task.lifecycle.build_failure_result(exc=exc, attempt_started_at=self._clock())
+                        if active_task.lifecycle is not None
+                        else self._platform_result_from_assignment_task_exception(
+                            batch_id=batch_id,
+                            artifact=artifact,
+                            assignment=active_task.assignment,
+                            exc=exc,
+                        )
+                    )
+                    outcome = _AssignedAttemptRunOutcome(result_to_queue=result)
+                elif not oom_draining:
                     raise
-                continue
+                else:
+                    continue
             except Exception as exc:
                 result = self._platform_result_from_assignment_task_exception(
                     batch_id=batch_id,

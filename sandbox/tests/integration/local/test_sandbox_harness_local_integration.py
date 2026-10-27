@@ -61,6 +61,40 @@ async def probe(request: dict[str, object]) -> dict[str, object]:
             await asyncio.sleep(0.001)
     if mode == "cancel":
         raise asyncio.CancelledError()
+    if mode in ("nested_exit", "detached_exit", "callback_exit"):
+        def fatal():
+            raise KeyboardInterrupt(23) if request.get("interrupt") else SystemExit(23)
+        async def child():
+            fatal()
+        if mode == "nested_exit":
+            await asyncio.gather(child())
+        elif mode == "detached_exit":
+            asyncio.create_task(child())
+            await asyncio.sleep(1)
+        else:
+            asyncio.get_running_loop().call_soon(fatal)
+            await asyncio.sleep(1)
+    if mode == "terminal_drain_exit":
+        from harnyx_miner_sdk._internal.tool_invoker import _current_tool_invoker
+        async def drain():
+            def fatal():
+                raise SystemExit(23)
+            asyncio.get_running_loop().call_soon(fatal)
+            await asyncio.sleep(.01)
+        _current_tool_invoker().writer.drain = drain
+    if mode == "bad_error":
+        class BadMeta(type):
+            @property
+            def __name__(cls):
+                raise RuntimeError("unsafe metaclass name")
+        class BadError(Exception, metaclass=BadMeta):
+            def __str__(self):
+                raise ValueError("formatter failed")
+        class BadName(str):
+            def __getitem__(self, key):
+                raise RuntimeError("unsafe name formatting")
+        vars(type)["__name__"].__set__(BadError, BadName("BadError"))
+        raise BadError()
     if mode == "crash":
         os._exit(7)
     if mode == "error":
@@ -122,6 +156,32 @@ async def test_query_failure_settles_and_does_not_poison_next_query(harness, mod
         await harness.invoke("probe", body({"mode": mode}))
     assert error.value.status_code == 500
     assert (await harness.invoke("probe", body()))["counter"] == 1
+
+
+@pytest.mark.parametrize("mode", ["nested_exit", "detached_exit", "callback_exit", "bad_error"])
+@pytest.mark.parametrize("interrupt", [False, True])
+async def test_miner_failure_keeps_attribution_across_worker_lifecycle(harness, mode, interrupt):
+    """Miner termination and broken error formatting must not disqualify the validator."""
+    failed, healthy = await asyncio.gather(
+        harness.invoke("probe", body({"mode": mode, "interrupt": interrupt})),
+        harness.invoke("probe", body({"mode": "sleep"})),
+        return_exceptions=True,
+    )
+    assert isinstance(failed, HTTPException)
+    assert failed.detail["code"] == "UnhandledException"
+    assert failed.detail["exception"] == (
+        "BadError" if mode == "bad_error" else ("KeyboardInterrupt" if interrupt else "SystemExit")
+    )
+    assert isinstance(healthy, dict)
+    assert (await harness.invoke("probe", body()))["counter"] == 1
+    assert not harness._compiler.children and not harness._reservations
+
+
+async def test_fatal_exit_during_terminal_drain_preserves_single_committed_result(harness):
+    result = await harness.invoke("probe", body({"mode": "terminal_drain_exit"}))
+    assert result["counter"] == 1
+    assert (await harness.invoke("probe", body()))["counter"] == 1
+    assert not harness._compiler.children
 
 
 async def test_compiler_death_reaps_workers_and_next_admission_recovers(harness):
@@ -847,12 +907,18 @@ async def decision(request: dict[str, object]) -> object:
         return {"failed": True}
 """)
     if extraction:
-        path.write_text(path.read_text().replace(
-            'provider="openrouter", model="cloudflare/clef-flash"',
-            'provider="cloudflare", model="@cf/cloudflare/clairic"',
-        ).replace(
-            '"type": "boolean", "instructions": "?"', '"type": "duration", "unit": "days", "instructions": "?"',
-        ).replace('answer.response.answers["b"].probability', 'answer.response.answers["b"].value'))
+        path.write_text(
+            path.read_text()
+            .replace(
+                'provider="openrouter", model="cloudflare/clef-flash"',
+                'provider="cloudflare", model="@cf/cloudflare/clairic"',
+            )
+            .replace(
+                '"type": "boolean", "instructions": "?"',
+                '"type": "duration", "unit": "days", "instructions": "?"',
+            )
+            .replace('answer.response.answers["b"].probability', 'answer.response.answers["b"].value')
+        )
     selected_provider = "cloudflare" if extraction else "openrouter"
     now = datetime.now(UTC)
     session = Session(
@@ -874,10 +940,14 @@ async def decision(request: dict[str, object]) -> object:
                     "invalid native answers",
                     provider=selected_provider,
                     billing=ProviderBillingMetadata(
-                        actual_cost_usd=0.02, reference_cost_usd=0.02,
-                        actual_cost_provider="cloudflare", source="response_body",
+                        actual_cost_usd=0.02,
+                        reference_cost_usd=0.02,
+                        actual_cost_provider="cloudflare",
+                        source="response_body",
                         usage=DecisionUsage(input_tokens=100, output_tokens=0),
-                    ) if extraction else OpenRouterAccounting(
+                    )
+                    if extraction
+                    else OpenRouterAccounting(
                         "attempted", 0.02, 0.02, decision_usage=DecisionUsage(input_tokens=100, output_tokens=0)
                     ).to_billing(),
                 )
@@ -885,9 +955,14 @@ async def decision(request: dict[str, object]) -> object:
                 DecisionQueryResponse.model_validate(
                     {
                         "model": request.model,
-                        "answers": {"b": {"type": "duration", "value": 0.8, "unit": "days"} if extraction else {
-                            "type": "boolean", "probability": 0.8,
-                        }},
+                        "answers": {
+                            "b": {"type": "duration", "value": 0.8, "unit": "days"}
+                            if extraction
+                            else {
+                                "type": "boolean",
+                                "probability": 0.8,
+                            }
+                        },
                         "usage": {"input_tokens": 100, "output_tokens": 0},
                     }
                 ),
@@ -1204,3 +1279,166 @@ async def test_received_oom_result_cleanup_outlives_execution_deadline(harness, 
     assert not compiler.children
     assert not harness._reservations
     assert harness._slots._value == 10
+
+
+@pytest.mark.parametrize("external_cancel", [False, True])
+async def test_uncooperative_query_cleanup_retires_and_closes_preissued_admission(
+    harness, monkeypatch, external_cancel
+):
+    """Cancellation-resistant cleanup cannot hold the HTTP outcome or allow more work."""
+    await harness.invoke("probe", body())
+    reserved = await harness.reserve(AdmissionRequest(limit_seconds=10.0), {})
+    release_cleanup = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    original = harness._compiler.stop_child
+
+    async def stalled(key):
+        cleanup_started.set()
+        while not release_cleanup.is_set():
+            try:
+                await release_cleanup.wait()
+            except asyncio.CancelledError:
+                continue
+        await original(key)
+
+    monkeypatch.setattr(harness._compiler, "stop_child", stalled)
+    monkeypatch.setattr(harness_module, "WORKER_KILL_GRACE_SECONDS", 0.02)
+    try:
+        invocation = asyncio.create_task(harness.invoke("probe", body()))
+        await cleanup_started.wait()
+        if external_cancel:
+            invocation.cancel()
+        async with asyncio.timeout(1):
+            expected = asyncio.CancelledError if external_cancel else harness_module.SandboxCleanupUnconfirmedError
+            with pytest.raises(expected):
+                await invocation
+        assert cleanup_started.is_set()
+        assert any(not item.cleanup_confirmed for item in harness._reservations.values())
+        request = body()
+        request.admission = reserved
+        with pytest.raises(harness_module.SandboxCleanupUnconfirmedError):
+            await harness.invoke("probe", request)
+        with pytest.raises(harness_module.SandboxCleanupUnconfirmedError):
+            await harness.reserve(AdmissionRequest(limit_seconds=1.0), {})
+    finally:
+        release_cleanup.set()
+        await asyncio.gather(*harness._cleanup_tasks, return_exceptions=True)
+
+
+@pytest.mark.parametrize("raw_connection", [False, True])
+@pytest.mark.parametrize("terminal_error", [False, True])
+async def test_tool_fanout_waits_in_bounded_supervisor_window(tmp_path, raw_connection, terminal_error):
+    path = tmp_path / "agent.py"
+    path.write_text("""
+import asyncio
+from harnyx_miner_sdk.decorators import entrypoint
+from harnyx_miner_sdk._internal.tool_invoker import _current_tool_invoker
+@entrypoint("probe")
+async def probe(request: dict[str, object]) -> dict[str, object]:
+    if request.get("raw"):
+        from harnyx_sandbox.sandbox.worker_protocol import ToolCall, encode
+        invoker = _current_tool_invoker()
+        for i in range(45):
+            invoker.writer.write(encode(ToolCall(call_id=i, method="tooling_info", args=[], kwargs={})))
+        await invoker.writer.drain()
+        if request.get("error"):
+            raise RuntimeError("terminal failure at saturation")
+        return {"count": 45}
+    calls = [asyncio.create_task(_current_tool_invoker().invoke("tooling_info", args=["x" * 16384])) for _ in range(45)]
+    await asyncio.sleep(0)
+    for call in calls[-5:]:
+        call.cancel()
+    results = await asyncio.gather(*calls, return_exceptions=True)
+    if request.get("error"):
+        raise RuntimeError("terminal failure after bounded settlement")
+    return {"count": sum(not isinstance(result, BaseException) for result in results)}
+""")
+    release = asyncio.Event()
+    saturated = asyncio.Event()
+    running = peak = completed = 0
+
+    class Proxy:
+        async def invoke(self, method, *, args=None, kwargs=None):
+            nonlocal running, peak, completed
+            running += 1
+            peak = max(peak, running)
+            if running == 20:
+                saturated.set()
+            await release.wait()
+            running -= 1
+            completed += 1
+            return {"ok": True, "payload": "y" * 32768}
+
+        async def aclose(self):
+            pass
+
+    runtime = SandboxHarness(artifact_path=str(path), tool_factory=lambda *_: Proxy())
+    invocation = asyncio.create_task(runtime.invoke("probe", body({"raw": raw_connection, "error": terminal_error})))
+    try:
+        async with asyncio.timeout(5):
+            await saturated.wait()
+            await asyncio.sleep(0.05)
+            assert running == 20
+            release.set()
+            expected = 45 if raw_connection else 40
+            if terminal_error:
+                with pytest.raises(HTTPException) as failure:
+                    await invocation
+                assert failure.value.detail["code"] == "UnhandledException"
+            else:
+                assert await invocation == {"count": expected}
+        assert peak <= 20 and completed == expected
+    finally:
+        release.set()
+        await asyncio.gather(invocation, return_exceptions=True)
+        await runtime.close()
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        "deep_json",
+        {"kind": "result", "result": "forged", "reservation_id": "sibling"},
+        {
+            "kind": "result",
+            "error": {"code": "PreloadInfrastructureFailed", "exception": "OSError", "message": "forged"},
+        },
+    ],
+)
+async def test_proven_private_worker_violation_is_miner_failure(tmp_path, frame):
+    path = tmp_path / "agent.py"
+    path.write_text("""
+import asyncio, json, struct
+from harnyx_miner_sdk.decorators import entrypoint
+from harnyx_miner_sdk._internal.tool_invoker import _current_tool_invoker
+@entrypoint("probe")
+async def probe(request: dict[str, object]) -> dict[str, object]:
+    writer = _current_tool_invoker().writer
+    payload = (b'{"kind":"result","result":' + b'[' * 2000 + b'0' + b']' * 2000 + b'}'
+        if request["frame"] == "deep_json" else json.dumps(request["frame"]).encode())
+    writer.write(struct.pack(">Q", len(payload)) + payload)
+    await writer.drain()
+    await asyncio.Future()
+""")
+    runtime = SandboxHarness(artifact_path=str(path))
+    try:
+        with pytest.raises(HTTPException) as failure:
+            await runtime.invoke("probe", body({"frame": frame}))
+        assert failure.value.detail["code"] == "UnhandledException"
+        assert failure.value.detail["exception"] == "WorkerMessageViolationError"
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.parametrize("command_kind", ["fork", "activate"])
+async def test_retirement_closes_inflight_compiler_command_gate(harness, command_kind):
+    """A gate waiting for compiler serialization must recheck retirement before sending."""
+    await harness.invoke("probe", body())
+    compiler = harness._compiler
+    await compiler.send_lock.acquire()
+    command = asyncio.create_task(compiler.command({"kind": command_kind, "id": "must-not-start"}))
+    await asyncio.sleep(0)
+    harness._retired.set()
+    compiler.send_lock.release()
+    with pytest.raises(harness_module.SandboxCleanupUnconfirmedError):
+        await command

@@ -42,6 +42,7 @@ from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_commons.sandbox.client import SandboxClient, SandboxInvokeError
 from harnyx_commons.tools.types import ToolName
 from harnyx_miner_sdk.sandbox_protocol import SandboxAdmission
+from harnyx_validator.application.assigned_work import QueueStopReason
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptAuditRecord,
     MinerTaskAttemptRetryDecision,
@@ -97,6 +98,11 @@ class _AdmittingSandbox(SandboxClient):
 
 
 class _AssignedWork:
+    shutdown_requested = False
+
+    def close_intake(self):
+        pass
+
     def __init__(
         self,
         queued: tuple[MinerTaskWorkAssignment, ...] = (),
@@ -755,7 +761,7 @@ async def test_resource_monitor_exits_when_resource_request_consumes_cancellatio
         # Observe the deadline without delivering a second cancellation to the monitor.
         done, _ = await asyncio.wait({queue_task}, timeout=1)
         assert queue_task in done, "finished queue hung joining a monitor after lost cancellation"
-        assert queue_task.result() is False
+        assert queue_task.result() is QueueStopReason.COMPLETED
         assert polls == 1
         assert monitors[0].done()
         result = results.get_nowait()
@@ -834,7 +840,9 @@ async def test_resource_monitor_keeps_active_execution_until_close_drain_finishe
         finish.set()
         done, _ = await asyncio.wait({queue_task}, timeout=1)
         assert queue_task in done
-        assert queue_task.result() is (counter_status == "ready")
+        assert queue_task.result() is (
+            QueueStopReason.OOM_DRAINED if counter_status == "ready" else QueueStopReason.COMPLETED
+        )
         assert all(monitor.done() for monitor in monitors)
         assert results.get_nowait().result.score > 0
         assert results.empty()
@@ -5776,6 +5784,7 @@ async def test_oom_drain_preserves_success_and_returns_unstarted_claims(tmp_path
     healthy_started = asyncio.Event()
     waiting = asyncio.Event()
     oom = asyncio.Event()
+    replacing = False
 
     class Sandbox(_AdmittingSandbox):
         @property
@@ -5789,7 +5798,7 @@ async def test_oom_drain_preserves_success_and_returns_unstarted_claims(tmp_path
 
         @asynccontextmanager
         async def admission(self, limit_seconds, token):
-            if token == assignments[2].assignment_token:
+            if token == assignments[2].assignment_token and not replacing:
                 waiting.set()
                 await asyncio.Future()
             async with super().admission(limit_seconds, token) as admission:
@@ -5803,6 +5812,9 @@ async def test_oom_drain_preserves_success_and_returns_unstarted_claims(tmp_path
                 oom.set()
                 all_admitted.set()
                 raise _sandbox_invocation_error("lost worker", status_code=503, detail_code=SANDBOX_OOM_AFFECTED)
+            if replacing:
+                assert request.task.task_id == tasks[2].task_id
+                close.set()
             healthy_started.set()
             await all_admitted.wait()
             await asyncio.sleep(0.15)  # Complete after the resource watcher closes admission.
@@ -5822,7 +5834,7 @@ async def test_oom_drain_preserves_success_and_returns_unstarted_claims(tmp_path
         ),
         3,
     )
-    assert drained is True
+    assert drained is QueueStopReason.OOM_DRAINED
     assert not close.is_set()
     results = [queue.get_nowait(), queue.get_nowait()]
     by_task = {result.task_id: result for result in results}
@@ -5849,6 +5861,34 @@ async def test_oom_drain_preserves_success_and_returns_unstarted_claims(tmp_path
     assert all(attempt["compiler_generation"] is not None for attempt in started)
     settled = [record for record in caplog.records if record.message == "sandbox OOM attempt settled"]
     assert any(record.result_preserved for record in settled)
+    # The same OPEN group executes original queued work after confirmed replacement.
+    lease_remaining = returned.remaining_dispatch_seconds()
+    returned.release_to_queue_if_live()
+    replacing = True
+    oom.clear()
+    group.mark_dispatch_ready()
+    replacement_claim = group.claim_nowait_for_dispatch()
+    assert replacement_claim.remaining_dispatch_seconds() <= lease_remaining
+    replacement_claim.release_to_queue_if_live()
+    assert (
+        await asyncio.wait_for(
+            runner.evaluate_assigned_task_queue(
+                batch_id=batch_id,
+                artifact=artifact,
+                initial_assignments=(),
+                assigned_work=group,
+                close_requested=close,
+                result_queue=queue,
+                orchestrator=Orchestrator(),
+                sandbox_client=Sandbox(),
+            ),
+            3,
+        )
+        is QueueStopReason.COMPLETED
+    )
+    replacement_result = queue.get_nowait()
+    assert replacement_result.task_id == tasks[2].task_id and replacement_result.result.score > 0
+    assert queue.empty()
 
 
 @pytest.mark.parametrize("second_start_succeeds", (True, False))
@@ -6328,3 +6368,74 @@ def test_promotion_replay_and_per_model_summary_keep_independent_amounts() -> No
     model = summary.llm.providers["openrouter"]["inception/mercury-3"]
     assert model.reference_cost == pytest.approx(0.008)
     assert model.actual_cost == pytest.approx(0.004)
+
+
+async def test_cleanup_retirement_resolves_started_sibling_with_original_session(tmp_path):
+    """Cleanup uncertainty must close intake and preserve a cancelled sibling's session identity."""
+    runner, batch_id, artifact, first_task, sessions, _, _, _ = _assigned_task_test_context(tmp_path)
+    tasks = (first_task, first_task.model_copy(update={"task_id": uuid4()}))
+    assignments = tuple(
+        MinerTaskWorkAssignment(
+            batch_id=batch_id,
+            artifact=artifact,
+            task=task,
+            attempt_number=1,
+            max_attempts=3,
+            assignment_token=f"token-{index}",
+        )
+        for index, task in enumerate(tasks)
+    )
+    started = asyncio.Event()
+    retired = False
+    session_ids = {}
+    close = asyncio.Event()
+    results = asyncio.Queue()
+
+    class Work(_AssignedWork):
+        closed = False
+
+        def close_intake(self):
+            self.closed = True
+
+    class Sandbox(_AdmittingSandbox):
+        @property
+        def cleanup_retirement_required(self):
+            return retired
+
+    class Orchestrator:
+        async def evaluate(self, request):
+            nonlocal retired
+            session_ids[request.task.task_id] = request.session_id
+            if request.task.task_id == tasks[1].task_id:
+                started.set()
+                await asyncio.Future()
+            await started.wait()
+            retired = True
+            raise _sandbox_invocation_error(
+                "cleanup unconfirmed", status_code=503, detail_code="SandboxCleanupUnconfirmed"
+            )
+
+    work = Work()
+    reason = await asyncio.wait_for(
+        runner.evaluate_assigned_task_queue(
+            batch_id=batch_id,
+            artifact=artifact,
+            initial_assignments=assignments,
+            assigned_work=work,
+            close_requested=close,
+            result_queue=results,
+            orchestrator=Orchestrator(),
+            sandbox_client=Sandbox(),
+        ),
+        3,
+    )
+    assert reason is QueueStopReason.CLEANUP_UNCONFIRMED
+    assert close.is_set() and work.closed
+    settled = [results.get_nowait(), results.get_nowait()]
+    assert results.empty()
+    assert all(result.terminal_attempt.validator_session_id == session_ids[result.task_id] for result in settled)
+    assert all(result.result is None for result in settled)
+    assert all(result.terminal_attempt.retry_decision is MinerTaskAttemptRetryDecision.WILL_RETRY for result in settled)
+    assert all(result.terminal_attempt.terminal_effect is None for result in settled)
+    assert all(result.terminal_attempt.error_code != str(MinerTaskErrorCode.SANDBOX_OOM_AFFECTED) for result in settled)
+    assert not sessions._sessions

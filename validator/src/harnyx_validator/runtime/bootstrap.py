@@ -587,10 +587,11 @@ def _direct_scoring_service(
 
 
 def _cleanup_stale_sandbox_containers(sandbox_manager: DockerSandboxManager) -> None:
-    sandbox_manager.cleanup_stale_sandbox_containers(
+    if not sandbox_manager.cleanup_stale_sandbox_containers(
         labels=SANDBOX_LABELS,
         name_prefix=f"{SANDBOX_CONTAINER_NAME_PREFIX}-",
-    )
+    ):
+        raise RuntimeError("stale sandbox removal unconfirmed; execution startup blocked")
 
 
 def _build_state(

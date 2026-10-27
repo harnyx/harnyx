@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import StrEnum
 from typing import Protocol
 from uuid import UUID, uuid4
 
@@ -85,8 +86,23 @@ class ClaimedAssignedTask(Protocol):
         """Publish and return True only if this preparation still owns the task."""
 
 
+class QueueStopReason(StrEnum):
+    COMPLETED = "completed"
+    OOM_DRAINED = "oom_drained"
+    CLEANUP_UNCONFIRMED = "cleanup_unconfirmed"
+
+
 class AssignedArtifactWork(Protocol):
     """Worker-owned handle for one platform-owned artifact assignment group."""
+
+    @property
+    def shutdown_requested(self) -> bool:
+        """Service shutdown, distinct from idle artifact closure."""
+        ...
+
+    def close_intake(self) -> None:
+        """Permanently close this artifact group while retaining its ownership."""
+        ...
 
     async def take_for_startup(self) -> MinerTaskWorkAssignment:
         """Read queued work while the artifact sandbox is still starting."""

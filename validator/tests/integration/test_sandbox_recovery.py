@@ -433,3 +433,84 @@ async def test_real_critical_process_oom_uses_positive_daemon_evidence(sandbox_l
         if not active.done():
             active.cancel()
         await asyncio.gather(active, return_exceptions=True)
+
+
+@pytest.mark.parametrize("mode", ["nested_exit", "detached_exit", "callback_exit", "bad_error"])
+async def test_real_worker_failure_stays_miner_attributed_through_evaluator(sandbox_launcher, mode):
+    """Real worker/HTTP/entrypoint failure must remain a canonical task result, not delivery failure."""
+    from harnyx_commons.domain.miner_task import MinerTaskErrorCode, Query
+    from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
+    from harnyx_validator.application.dto.evaluation import EntrypointInvocationRequest, MinerTaskAttemptTerminalEffect
+    from harnyx_validator.application.invoke_entrypoint import EntrypointInvoker
+
+    deployment = sandbox_launcher("validator.tests.integration.sandbox.recovery_agent", evaluation_policy=True)
+    sessions, tokens, receipts = InMemorySessionRegistry(), InMemoryTokenRegistry(), InMemoryReceiptLog()
+    invoker = EntrypointInvoker(
+        session_registry=sessions, sandbox_client=deployment.client, token_registry=tokens, receipt_log=receipts
+    )
+
+    class Orchestrator:
+        async def evaluate(self, request):
+            await invoker.invoke(
+                EntrypointInvocationRequest(
+                    session_id=request.session_id,
+                    token=request.token,
+                    uid=request.uid,
+                    execution_time_limit_seconds=request.execution_time_limit_seconds,
+                    query=request.task.query,
+                )
+            )
+            return _successful_outcome(request)
+
+    tasks = (_task(mode).model_copy(update={"query": Query(text=mode)}), _task("healthy"))
+    artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        scheduler = EvaluationScheduler(
+            tasks=tasks,
+            subtensor_client=FakeSubtensorClient(),
+            sandbox_manager=DummyManager(deployment),
+            session_manager=SessionManager(sessions, tokens),
+            evaluation_records=DummyEvaluationRecordStore(),
+            receipt_log=receipts,
+            blocking_executor=executor,
+            orchestrator_factory=lambda _: Orchestrator(),
+            sandbox_options_factory=lambda _: SandboxOptions(image="unused", container_name="unused"),
+            clock=lambda: datetime.now(UTC),
+            config=SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=3),
+            progress=DummyProgressRecorder(),
+        )
+        # A single real container serves both calls; the launcher owns physical teardown.
+        failed = await scheduler._runner.evaluate_assigned_task(
+            batch_id=uuid4(),
+            artifact=artifact,
+            task=tasks[0],
+            attempt_number=1,
+            max_attempts=1,
+            assignment_token=uuid4().hex,
+            orchestrator=Orchestrator(),
+        )
+        healthy = await scheduler._runner.evaluate_assigned_task(
+            batch_id=uuid4(),
+            artifact=artifact,
+            task=tasks[1],
+            attempt_number=1,
+            max_attempts=1,
+            assignment_token=uuid4().hex,
+            orchestrator=Orchestrator(),
+        )
+    assert failed.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.TASK_RESULT
+    assert failed.result.run.details.error.code is MinerTaskErrorCode.MINER_UNHANDLED_EXCEPTION
+    assert failed.terminal_attempt.delivery_failure_detail is None
+    assert healthy.result.score == 0.75
+    assert not deployment.client.draining and not deployment.client.cleanup_retirement_required
+
+
+class DummyManager:
+    def __init__(self, deployment):
+        self.deployment = deployment
+
+    def start(self, options):
+        return self.deployment
+
+    def stop(self, deployment):
+        return True  # test launcher owns physical teardown

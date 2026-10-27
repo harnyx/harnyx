@@ -7,7 +7,7 @@ import logging
 import time
 from collections import defaultdict
 from collections.abc import Callable, Coroutine, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
@@ -182,6 +182,15 @@ class _AssignedArtifactGroup:
     task: asyncio.Task[None] | None = None
     dispatch_ready: bool = False
     deferred_delivery_failure: PlatformOwnedTaskResult | None = None
+    service_stop: asyncio.Event = field(default_factory=asyncio.Event)
+
+    @property
+    def shutdown_requested(self) -> bool:
+        return self.service_stop.is_set()
+
+    def close_intake(self) -> None:
+        self.state = _ArtifactGroupState.CLOSING
+        self.close_requested.set()
 
     def put_nowait(self, assignment: MinerTaskWorkAssignment) -> bool:
         key = _assignment_key(assignment)
@@ -576,6 +585,7 @@ class PlatformWorkWorker:
             starting_records={},
             monotonic_clock=self._monotonic_clock,
             dispatch_start_lease_seconds=self._dispatch_start_lease_seconds,
+            service_stop=self._stop,
         )
         group.task = asyncio.create_task(
             self._execute_artifact_assignments(
@@ -897,7 +907,9 @@ class PlatformWorkWorker:
         return sum(
             1
             for group in self._active_artifacts.values()
-            if group.state is _ArtifactGroupState.OPEN or group.local_inflight_count()
+            if group.state is _ArtifactGroupState.OPEN
+            or group.local_inflight_count()
+            or (group.task is not None and not group.task.done())
         )
 
 

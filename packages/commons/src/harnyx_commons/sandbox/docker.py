@@ -191,6 +191,7 @@ class HttpSandboxClient(SandboxClient):
         self._observe_resources: Callable[[], bool | None] | None = None
         self._close_observer: Callable[[], None] | None = None
         self._oom_seen = False
+        self._cleanup_retirement_required = False
         self._external_available = True
         self._control_token = control_token
         self._token_header = DEFAULT_TOKEN_HEADER
@@ -219,6 +220,10 @@ class HttpSandboxClient(SandboxClient):
         if not self._oom_seen and self._observe_resources is not None and self._observe_resources() is True:
             self._record_oom(source="docker")
         return self._oom_seen
+
+    @property
+    def cleanup_retirement_required(self) -> bool:
+        return self._cleanup_retirement_required
 
     def _record_oom(self, *, source: str, oom_kill_count: int | None = None) -> None:
         if self._oom_seen:
@@ -302,6 +307,8 @@ class HttpSandboxClient(SandboxClient):
             detail_code = _parse_sandbox_response_detail(
                 _unwrap_response_detail(_response_json_or_text(exc.response))
             ).code
+            if exc.response.status_code == 503 and detail_code == "SandboxCleanupUnconfirmed":
+                self._cleanup_retirement_required = True
             if self._observe_resources is not None:
                 if detail_code == SANDBOX_OOM_DRAINING:
                     self._record_oom(source="admission_response")
@@ -527,6 +534,8 @@ class HttpSandboxClient(SandboxClient):
                     f"sandbox response processing failed: entrypoint={entrypoint} session_id={session_id}"
                 ) from (processing_exc if include_failure_details else None)
             status = exc.response.status_code
+            if status == 503 and detail.code == "SandboxCleanupUnconfirmed":
+                self._cleanup_retirement_required = True
             logger.error(
                 "sandbox entrypoint request failed: entrypoint=%s status=%s session_id=%s",
                 entrypoint,

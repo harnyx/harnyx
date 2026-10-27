@@ -43,11 +43,13 @@ from harnyx_sandbox.sandbox.compiler import (
 from harnyx_sandbox.sandbox.memory import EvaluationMemoryState
 from harnyx_sandbox.sandbox.worker_protocol import (
     MAX_FRAME_BYTES,
+    MAX_PENDING_WORKER_TOOL_CALLS,
     Invocation,
     QueryResult,
     ToolCall,
     ToolReply,
     WorkerError,
+    WorkerMessageViolationError,
     WorkerResultProtocolError,
     decode_worker_message,
     read_frame,
@@ -248,8 +250,15 @@ class SandboxCleanupUnconfirmedError(RuntimeError):
 class _Compiler:
     """Own a fresh compiler process and its forked children, never their credentials."""
 
-    def __init__(self, artifact_path: str, memory: EvaluationMemoryState | None = None) -> None:
+    def __init__(
+        self,
+        artifact_path: str,
+        memory: EvaluationMemoryState | None = None,
+        *,
+        check_accepting: Callable[[], None],
+    ) -> None:
         self.memory = memory
+        self.check_accepting = check_accepting
         self.generation = uuid4().hex
         self.path = artifact_path
         self.process: subprocess.Popen[bytes] | None = None
@@ -271,6 +280,8 @@ class _Compiler:
         async with self.send_lock:
             while True:
                 try:
+                    if value["kind"] in {"fork", "activate"}:
+                        self.check_accepting()
                     if self.memory is not None and value["kind"] in {"fork", "activate"}:
                         if self.memory.refresh().draining:
                             raise HTTPException(503, detail={"code": SANDBOX_OOM_AFFECTED})
@@ -566,6 +577,8 @@ class SandboxHarness:
         self._compiler: _Compiler | None = None
         self._reservations: dict[str, _Reservation] = {}
         self._closing = False
+        self._retired = asyncio.Event()
+        self._cleanup_tasks: set[asyncio.Task[None]] = set()
         self._invocations: set[asyncio.Task[Any]] = set()
         self._startup_waiters = 0
         self._memory: EvaluationMemoryState | None = None
@@ -595,7 +608,14 @@ class SandboxHarness:
         if status.counter_status == "unavailable":
             raise HTTPException(503, detail={"code": "SandboxResourceUnavailable"})
 
+    def _check_accepting(self) -> None:
+        if self._retired.is_set():
+            raise SandboxCleanupUnconfirmedError("sandbox cleanup remains unconfirmed")
+        if self._closing:
+            raise HTTPException(503, detail={"error": "sandbox closing"})
+
     async def reserve(self, request: AdmissionRequest, headers: ToolHeaders) -> SandboxAdmission:
+        self._check_accepting()
         self._check_resources()
         acquired = False
         began = time.monotonic_ns()
@@ -603,6 +623,7 @@ class SandboxHarness:
             if self._slots is not None:
                 async with asyncio.timeout(request.limit_seconds):
                     while True:
+                        self._check_accepting()
                         self._check_resources()
                         try:
                             async with asyncio.timeout(0.1):
@@ -626,8 +647,7 @@ class SandboxHarness:
 
     async def _reserve(self, request: AdmissionRequest, headers: ToolHeaders, *, began: int) -> SandboxAdmission:
         del headers  # Admission does not carry credentials into the compiler.
-        if self._closing:
-            raise HTTPException(503, detail={"error": "sandbox closing"})
+        self._check_accepting()
         self._check_resources()
         compiler = self._compiler
         if compiler is not None and (compiler.failure is not None or compiler.close_task is not None):
@@ -635,16 +655,22 @@ class SandboxHarness:
             if self._compiler is compiler:
                 self._compiler = None
             compiler = self._compiler
-        if self._closing:
-            raise HTTPException(503, detail={"error": "sandbox closing"})
+        self._check_accepting()
         self._check_resources()
         if compiler is None:
             path = self.artifact_path if self.artifact_path is not None else os.getenv("AGENT_PATH", "")
-            compiler = self._compiler = _Compiler(path, self._memory)
+            compiler = self._compiler = _Compiler(path, self._memory, check_accepting=self._check_accepting)
         self._startup_waiters += 1
         try:
             async with asyncio.timeout(request.limit_seconds):
-                failure = await asyncio.shield(compiler.ready)
+                retirement = asyncio.create_task(self._retired.wait())
+                try:
+                    await asyncio.wait((compiler.ready, retirement), return_when=asyncio.FIRST_COMPLETED)
+                    self._check_accepting()
+                    failure = compiler.ready.result()
+                finally:
+                    retirement.cancel()
+                    await asyncio.gather(retirement, return_exceptions=True)
             if failure is not None and failure.code == "PreloadInfrastructureFailed":
                 self._check_resources()
                 self._unwrap_result(QueryResult(error=failure))
@@ -659,8 +685,7 @@ class SandboxHarness:
                 if self._compiler is compiler:
                     self._compiler = None
         start = began if request.include_wait_in_budget else time.monotonic_ns()
-        if self._closing:
-            raise HTTPException(503, detail={"error": "sandbox closing"})
+        self._check_accepting()
         self._check_resources()
         admission = SandboxAdmission(
             reservation_id=uuid4().hex,
@@ -717,6 +742,7 @@ class SandboxHarness:
         if item.activated:
             raise HTTPException(409, detail={"error": "admission already consumed"})
         self._check_resources(started=True)
+        self._check_accepting()
         item.activated = True
         item.expiry.cancel()
         task = asyncio.current_task()
@@ -802,7 +828,7 @@ class SandboxHarness:
                 parent.setblocking(False)
                 reader, writer = await asyncio.open_connection(sock=parent)
                 await send(writer, request)
-                seen: set[int] = set()
+                last_call_id = -1
                 write_lock = asyncio.Lock()
 
                 async def execute(call: ToolCall) -> None:
@@ -819,25 +845,43 @@ class SandboxHarness:
                                 await send(writer, reply)
 
                 while True:
-                    frame = await read_frame(reader)
-                    message = await asyncio.to_thread(decode_worker_message, frame)
-                    if isinstance(message, QueryResult):
-                        if message.error is not None and message.error.code not in {
-                            "PreloadFailed",
-                            "MissingEntrypoint",
-                            "UnhandledException",
-                        }:
-                            raise WorkerResultProtocolError("worker cannot report infrastructure failures")
+                    if len(calls) >= MAX_PENDING_WORKER_TOOL_CALLS:
+                        await asyncio.wait(calls, return_when=asyncio.FIRST_COMPLETED)
+                    try:
+                        frame = await read_frame(reader)
+                        try:
+                            message = await asyncio.to_thread(decode_worker_message, frame)
+                        except (ValueError, WorkerMessageViolationError) as exc:
+                            raise WorkerMessageViolationError("invalid worker message") from exc
+                        if isinstance(message, QueryResult):
+                            if message.error is not None and message.error.code not in {
+                                "PreloadFailed",
+                                "MissingEntrypoint",
+                                "UnhandledException",
+                            }:
+                                raise WorkerMessageViolationError("worker cannot report infrastructure failures")
+                            active = False
+                            await asyncio.gather(*calls, return_exceptions=True)
+                            result = self._unwrap_result(message)
+                            result_received = True
+                            if execution_deadline is not None:
+                                execution_deadline.reschedule(None)
+                            return result
+                        if message.call_id <= last_call_id:
+                            raise WorkerMessageViolationError("worker tool call IDs must increase")
+                        last_call_id = message.call_id
+                    except WorkerMessageViolationError as exc:
                         active = False
                         await asyncio.gather(*calls, return_exceptions=True)
-                        result = self._unwrap_result(message)
-                        result_received = True
-                        if execution_deadline is not None:
-                            execution_deadline.reschedule(None)
-                        return result
-                    if message.call_id in seen:
-                        raise WorkerResultProtocolError("duplicate tool call id")
-                    seen.add(message.call_id)
+                        return self._unwrap_result(
+                            QueryResult(
+                                error=WorkerError(
+                                    code="UnhandledException",
+                                    exception="WorkerMessageViolationError",
+                                    message=str(exc),
+                                )
+                            )
+                        )
                     call_task = asyncio.create_task(execute(message))
                     calls.add(call_task)
                     call_task.add_done_callback(calls.discard)
@@ -872,11 +916,38 @@ class SandboxHarness:
                         raise SandboxCleanupUnconfirmedError("worker cleanup remains unconfirmed") from exc
 
                 try:
-                    await self._await_owned_cleanup(asyncio.create_task(cleanup()))
+                    cleanup_task = asyncio.create_task(cleanup())
+                    self._cleanup_tasks.add(cleanup_task)
+
+                    def cleanup_done(task: asyncio.Task[None]) -> None:
+                        self._cleanup_tasks.discard(task)
+                        if not task.cancelled():
+                            task.exception()
+
+                    cleanup_task.add_done_callback(cleanup_done)
+                    # asyncio.wait does not wait for cancellation-resistant cleanup.
+                    waiter = asyncio.create_task(self._wait_cleanup(cleanup_task, admission))
+                    await self._await_owned_cleanup(waiter)
                 except SandboxCleanupUnconfirmedError:
                     if not result_received or not compiler._oom_draining():
                         raise
                     logger.exception("preserving received OOM-drain result while retaining worker cleanup ownership")
+
+    async def _wait_cleanup(self, task: asyncio.Task[None], admission: SandboxAdmission) -> None:
+        done, _ = await asyncio.wait((task,), timeout=4 * WORKER_KILL_GRACE_SECONDS)
+        if not done:
+            reservation = self._reservations.get(admission.reservation_id)
+            if reservation is not None:
+                reservation.cleanup_confirmed = False
+            self._retired.set()
+            # Keep the task owned until the host removes this container.
+            task.cancel()
+            raise SandboxCleanupUnconfirmedError("query cleanup deadline exceeded")
+        try:
+            task.result()
+        except SandboxCleanupUnconfirmedError:
+            self._retired.set()
+            raise
 
     @staticmethod
     def _unwrap_result(result: QueryResult) -> Any:

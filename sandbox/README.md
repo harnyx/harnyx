@@ -91,7 +91,11 @@ The server starts on `http://127.0.0.1:8000` by default. Set `SANDBOX_HOST` and 
 
 ## Tool completion and worker authority
 
-Accepted tool requests stay owned by the invocation. Before returning a worker result (including a reported miner error), the supervisor waits for those requests to complete within the query deadline. On deadline, cancellation, or broken worker transport, it cancels and joins local tool tasks and closes their proxy before returning. This does not guarantee remote provider cancellation or receipt completion after an HTTP request is cancelled; the transport cannot acknowledge that stronger contract.
+Each private query connection permits 20 outstanding tool calls. Excess calls wait within the original execution deadline; the supervisor enforces this even if a worker bypasses its SDK invoker. The existing frame-size ceiling and shared memory limit still apply, so this is not per-query memory isolation.
+
+Uncaught `SystemExit`/`KeyboardInterrupt` before terminal commitment and proven private-worker protocol violations fail only the miner run. Unexplained worker loss retains conservative infrastructure attribution. Error reporting does not call miner-defined exception formatting hooks.
+
+Accepted tool requests stay owned by the invocation. Before returning a worker result (including a reported miner error), the supervisor waits for those requests to complete within the query deadline. On deadline, cancellation, or broken worker transport, it cancels local tool tasks and attempts process, output and proxy cleanup within four seconds. Cleanup timeout closes new admission and activation, retains unresolved ownership, and reports `503 / SandboxCleanupUnconfirmed` for host retirement. Retirement can interrupt unfinished siblings; it is distinct from positively observed OOM. This does not guarantee remote provider cancellation or receipt completion after an HTTP request is cancelled; the transport cannot acknowledge that stronger contract.
 
 On normal worker completion, after sending its result or classified error, the worker keeps receiving late tool replies until the supervisor closes the connection or terminates it. This prevents late replies from discarding results during normal completion; abrupt worker loss, cancellation, and OOM retain their existing failure handling. Workers remain resident during tool settlement, subject to the existing query deadline and bounded cleanup.
 

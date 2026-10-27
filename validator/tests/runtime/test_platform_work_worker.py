@@ -1955,6 +1955,8 @@ async def test_admission_waiter_expires_without_resetting_dispatch_lease() -> No
     claimed = group.claim_nowait_for_dispatch()
     clock.advance(200.0)
     claimed.release_to_queue_if_live()
+    # Confirmed container replacement re-announces readiness on the same OPEN group.
+    group.mark_dispatch_ready()
     claimed = group.claim_nowait_for_dispatch()
     assert claimed.remaining_dispatch_seconds() == 100.0
     clock.advance(101.0)
@@ -2144,3 +2146,35 @@ def _ack(
         reason_code=reason_code,
         reason=reason,
     )
+
+
+async def test_closing_group_without_assignments_retains_capacity_until_owned_task_finishes():
+    """Physical removal ownership must count even after the last assignment was submitted."""
+    batch_id = uuid4()
+    artifact = _artifact(uid=1)
+    group = _assigned_group(artifact_id=artifact.artifact_id)
+    release = asyncio.Event()
+    group.task = asyncio.create_task(release.wait())
+    group.close_intake()
+
+    class Platform:
+        async def request_miner_task_work(self, **kwargs):
+            raise AssertionError("owned removal still consumes the artifact slot")
+
+    worker = PlatformWorkWorker(
+        platform=Platform(),
+        execute_artifact_assignments=_unexpected_execute_artifact_assignments,
+        target_concurrency=1,
+        max_active_artifacts=1,
+    )
+    worker._active_artifacts[(batch_id, artifact.artifact_id)] = group
+    try:
+        await worker.run_once()
+        assert not group.shutdown_requested
+        worker._stop.set()
+        # The real runtime group receives this same event at construction.
+        group.service_stop = worker._stop
+        assert group.shutdown_requested
+    finally:
+        release.set()
+        await group.task

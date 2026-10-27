@@ -19,8 +19,9 @@ import termios
 import time
 import types
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pyseccomp as seccomp
 from pydantic import BaseModel
@@ -30,11 +31,13 @@ from harnyx_miner_sdk.context import ContextSnapshot
 from harnyx_miner_sdk.decorators import get_entrypoint
 from harnyx_miner_sdk.tools.proxy import ToolInvocationError
 from harnyx_sandbox.sandbox.worker_protocol import (
+    MAX_PENDING_WORKER_TOOL_CALLS,
     Invocation,
     QueryResult,
     ToolCall,
     ToolReply,
     WorkerError,
+    encode,
     load_json,
     read_frame,
     send,
@@ -243,23 +246,25 @@ class ConnectionInvoker:
         self.calls: dict[int, asyncio.Future[Any]] = {}
         self.next_call = 0
         self.write_lock = asyncio.Lock()
+        self.slots = asyncio.Semaphore(MAX_PENDING_WORKER_TOOL_CALLS)
 
     async def invoke(
         self, method: str, *, args: Sequence[Any] | None = None, kwargs: Mapping[str, Any] | None = None
     ) -> Any:
-        call_id = self.next_call
-        self.next_call += 1
-        future = asyncio.get_running_loop().create_future()
-        self.calls[call_id] = future
-        try:
-            async with self.write_lock:
-                await send(
-                    self.writer,
-                    ToolCall(call_id=call_id, method=method, args=list(args or ()), kwargs=dict(kwargs or {})),
-                )
-            return await future
-        finally:
-            self.calls.pop(call_id, None)
+        async with self.slots:
+            call_id = self.next_call
+            self.next_call += 1
+            future = asyncio.get_running_loop().create_future()
+            self.calls[call_id] = future
+            try:
+                async with self.write_lock:
+                    await send(
+                        self.writer,
+                        ToolCall(call_id=call_id, method=method, args=list(args or ()), kwargs=dict(kwargs or {})),
+                    )
+                return await future
+            finally:
+                self.calls.pop(call_id, None)
 
     async def receive(self) -> None:
         try:
@@ -287,58 +292,92 @@ def initialize_module(code: types.CodeType, path: str) -> WorkerError | None:
         sys.argv[0] = path
         exec(code, module.__dict__)  # noqa: S102 — only in the isolated query child
     except BaseException as exc:
-        return WorkerError(code="PreloadFailed", exception=type(exc).__name__, message=str(exc)[:65536])
+        return _miner_error("PreloadFailed", exc)
     return None
 
 
-async def run_query(channel: socket.socket, preload_failure: WorkerError | None) -> None:
+def _miner_error(phase: str, exc: BaseException) -> WorkerError:
+    # Do not call miner-controlled __str__/__repr__ or overridden attribute access.
+    args = cast(types.GetSetDescriptorType, vars(BaseException)["args"]).__get__(exc)
+    message = args[0][:65536] if args and type(args[0]) is str else "miner exception (details unavailable)"
+    name = str.__str__(cast(types.GetSetDescriptorType, vars(type)["__name__"]).__get__(type(exc)))
+    return WorkerError(code=phase, exception=name[:256], message=message)
+
+
+@dataclass
+class _WorkerOutcome:
+    fatal: asyncio.Future[WorkerError]
+    committed: bool = False
+    phase: str = "PreloadFailed"
+
+    def fail(self, exc: BaseException) -> None:
+        if not self.committed and not self.fatal.done():
+            self.fatal.set_result(_miner_error(self.phase, exc))
+
+
+async def run_query(channel: socket.socket, preload_failure: WorkerError | None, outcome: _WorkerOutcome) -> None:
     channel.setblocking(False)
     reader, writer = await asyncio.open_connection(sock=channel)
     receiver = None
-    terminal_sent = False
-    phase = "PreloadFailed"
+    invocation = None
     try:
         request = Invocation.model_validate(load_json(await read_frame(reader)))
         if preload_failure is not None:
-            await send(writer, QueryResult(error=preload_failure))
-            terminal_sent = True
-            return
-        phase = "MissingEntrypoint"
-        func = get_entrypoint(request.entrypoint)
-        phase = "UnhandledException"
-        invoker = ConnectionInvoker(reader, writer)
-        receiver = asyncio.create_task(invoker.receive())
-        with bind_tool_invoker(invoker):
-            if request.entrypoint == "query":
-                result = await func(request=request.payload, context=ContextSnapshot.model_validate(request.context))
+            result = QueryResult(error=preload_failure)
+        else:
+            outcome.phase = "MissingEntrypoint"
+            func = get_entrypoint(request.entrypoint)
+            outcome.phase = "UnhandledException"
+            invoker = ConnectionInvoker(reader, writer)
+            receiver = asyncio.create_task(invoker.receive())
+
+            async def execute() -> Any:
+                with bind_tool_invoker(invoker):
+                    if request.entrypoint == "query":
+                        return await func(
+                            request=request.payload, context=ContextSnapshot.model_validate(request.context)
+                        )
+                    return await func(request=request.payload)
+
+            invocation = asyncio.create_task(execute())
+            await asyncio.wait((invocation, outcome.fatal), return_when=asyncio.FIRST_COMPLETED)
+            if outcome.fatal.done():
+                result = QueryResult(error=outcome.fatal.result())
             else:
-                result = await func(request=request.payload)
-        if isinstance(result, BaseModel):
-            result = result.model_dump(mode="json")
-        await send(writer, QueryResult(result=result))
-        terminal_sent = True
+                value = invocation.result()
+                if isinstance(value, BaseModel):
+                    value = value.model_dump(mode="json")
+                result = QueryResult(result=value)
     except BaseException as exc:
-        with contextlib.suppress(Exception):
-            await send(
-                writer,
-                QueryResult(error=WorkerError(code=phase, exception=type(exc).__name__, message=str(exc)[:65536])),
-            )
-            terminal_sent = True
-    finally:
+        result = QueryResult(error=_miner_error(outcome.phase, exc))
+
+    try:
+        # Encoding can execute miner code through serialization. Normalize that failure too.
         try:
-            if terminal_sent:
-                # A late reply write can fail the host's shared reader before
-                # it consumes our result. Keep receiving until the host closes.
-                if receiver is None:
-                    receiver = asyncio.create_task(ConnectionInvoker(reader, writer).receive())
-                await receiver
-        finally:
-            try:
-                if receiver is not None:
-                    receiver.cancel()
-                    await asyncio.gather(receiver, return_exceptions=True)
-            finally:
-                writer.close()
+            frame = encode(result)
+        except BaseException as exc:
+            frame = encode(QueryResult(error=_miner_error(outcome.phase, exc)))
+        if outcome.fatal.done():
+            frame = encode(QueryResult(error=outcome.fatal.result()))
+        # No await between the final failure check, write and terminal commitment.
+        writer.write(frame)
+        outcome.committed = True
+        await writer.drain()
+        # Late replies must not destroy an already committed terminal result.
+        if receiver is None:
+            receiver = asyncio.create_task(ConnectionInvoker(reader, writer).receive())
+        await receiver
+    finally:
+        # The supervisor terminates this process after settling accepted tools.
+        # Never join arbitrary miner tasks, which can suppress cancellation.
+        if invocation is not None:
+            if invocation.done() and not invocation.cancelled():
+                invocation.exception()
+            else:
+                invocation.cancel()
+        if receiver is not None:
+            receiver.cancel()
+        writer.close()
 
 
 def child_main(fds: list[int], code: types.CodeType, path: str) -> None:
@@ -362,7 +401,14 @@ def child_main(fds: list[int], code: types.CodeType, path: str) -> None:
         preload_failure = initialize_module(code, path)
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(run_query(socket.socket(fileno=channel_fd), preload_failure))
+        outcome = _WorkerOutcome(loop.create_future())
+        query = loop.create_task(run_query(socket.socket(fileno=channel_fd), preload_failure, outcome))
+        while not query.done():
+            try:
+                loop.run_until_complete(query)
+            except (SystemExit, KeyboardInterrupt) as exc:
+                outcome.fail(exc)
+        query.result()
     finally:
         # No asyncio.run shutdown: miner tasks may suppress cancellation forever.
         os._exit(0)

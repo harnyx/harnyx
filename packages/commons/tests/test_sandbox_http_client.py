@@ -761,3 +761,20 @@ async def test_oom_gate_records_first_trusted_evidence_once(evidence, caplog) ->
         assert transitions[0].oom_kill_count == (2 if evidence == "cgroup_v2" else None)
         assert transitions[0].sandbox_base_url == "http://sandbox.local"
         assert CONTROL_CREDENTIAL not in caplog.text
+
+
+@pytest.mark.anyio("asyncio")
+@pytest.mark.parametrize("path", ["/admission", "/entry/query"])
+async def test_cleanup_uncertainty_retires_client_without_inventing_oom(path):
+    async def handler(request):
+        if request.url.path == path:
+            return httpx.Response(503, json={"detail": {"code": "SandboxCleanupUnconfirmed"}})
+        return httpx.Response(200, json=_admission().model_dump())
+
+    async with httpx.AsyncClient(base_url="http://sandbox.local", transport=httpx.MockTransport(handler)) as http:
+        client = HttpSandboxClient("http://sandbox.local", control_token=CONTROL_CREDENTIAL, client=http)
+        with pytest.raises(SandboxInvokeError) as failed:
+            await client.invoke("query", payload={}, context=_context(), token=uuid4().hex, session_id=uuid4())
+        assert failed.value.remote_state_uncertain
+        assert client.cleanup_retirement_required
+        assert not client.draining

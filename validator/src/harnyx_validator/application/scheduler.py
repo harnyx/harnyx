@@ -24,7 +24,7 @@ from harnyx_commons.sandbox.client import SandboxClient
 from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager, SandboxStartError
 from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_commons.tools.session_lifetime import tool_session_ttl_for_execution_limit
-from harnyx_validator.application.assigned_work import AssignedArtifactWork
+from harnyx_validator.application.assigned_work import AssignedArtifactWork, QueueStopReason
 from harnyx_validator.application.dto.evaluation import (
     DIAGNOSTIC_ID_MAX_LENGTH,
     DIAGNOSTIC_LOG_TAIL_MAX_LENGTH,
@@ -123,6 +123,7 @@ class EvaluationScheduler:
         self._blocking_executor = blocking_executor
         self._config = config
         self._activity = activity
+        self._assigned_work: AssignedArtifactWork | None = None
         self._runner = EvaluationRunner(
             subtensor_client=subtensor_client,
             session_manager=session_manager,
@@ -193,6 +194,8 @@ class EvaluationScheduler:
                 failure=exc,
             )
         finally:
+            if self._assigned_work is not None:
+                self._assigned_work.close_intake()
             if deployment is not None:
                 await self._stop_deployment_best_effort(
                     deployment,
@@ -214,6 +217,7 @@ class EvaluationScheduler:
         close_requested: asyncio.Event,
         result_queue: asyncio.Queue[PlatformOwnedTaskResult | PlatformOwnedTaskExecution],
     ) -> None:
+        self._assigned_work = assigned_work
         assignments = tuple(initial_assignments)
         if not assignments:
             raise ValueError("assigned artifact queue requires at least one assignment")
@@ -249,7 +253,7 @@ class EvaluationScheduler:
                 )
                 orchestrator = self._make_orchestrator(deployment.client)
                 assigned_work.mark_dispatch_ready()
-                oom_drained = await self._runner.evaluate_assigned_task_queue(
+                stop_reason = await self._runner.evaluate_assigned_task_queue(
                     batch_id=batch_id,
                     artifact=artifact,
                     initial_assignments=pending_initial,
@@ -260,7 +264,7 @@ class EvaluationScheduler:
                     sandbox_client=deployment.client,
                     sandbox_identifier=deployment.identifier,
                 )
-                if not oom_drained:
+                if stop_reason is not QueueStopReason.OOM_DRAINED:
                     break
                 logger.info(
                     "sandbox OOM drain completed",
@@ -270,7 +274,7 @@ class EvaluationScheduler:
                         "container": deployment.identifier,
                     },
                 )
-                removed = await _run_blocking_call(self._blocking_executor, self._sandboxes.stop, deployment)
+                removed = await self._remove_deployment(deployment)
                 logger.info(
                     "sandbox OOM retirement completed",
                     extra={
@@ -281,7 +285,8 @@ class EvaluationScheduler:
                     },
                 )
                 if not removed:
-                    raise RuntimeError("OOM sandbox physical removal remains unconfirmed; replacement blocked")
+                    deployment = None  # labeled containers now belong to mandatory startup cleanup
+                    return
                 replaced_container = deployment.identifier
                 deployment = None
                 pending_initial = ()
@@ -316,6 +321,8 @@ class EvaluationScheduler:
                 )
             )
         finally:
+            if self._assigned_work is not None:
+                self._assigned_work.close_intake()
             if deployment is not None:
                 await self._stop_deployment_best_effort(
                     deployment,
@@ -345,21 +352,22 @@ class EvaluationScheduler:
                 blocking_executor=blocking_executor,
             )
             last_options = options
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise asyncio.CancelledError
             try:
-                return await _run_blocking_call(blocking_executor, self._sandboxes.start, options)
+                deployment = await _run_blocking_call(blocking_executor, self._sandboxes.start, options)
+                if current is not None and current.cancelling():
+                    await self._remove_deployment(deployment)
+                    raise asyncio.CancelledError
+                return deployment
             except Exception as exc:
                 last_error_message = str(exc)
                 if isinstance(exc, SandboxStartError):
-                    try:
-                        removed = await _run_blocking_call(
-                            blocking_executor, self._sandboxes.stop, exc.unremoved_deployment
-                        )
-                    except Exception:
-                        logger.exception("sandbox startup cleanup unconfirmed; replacement blocked")
-                        break
-                    if not removed:
-                        logger.error("sandbox startup removal unconfirmed; replacement blocked")
-                        break
+                    if not await self._remove_deployment(exc.unremoved_deployment):
+                        raise asyncio.CancelledError from exc  # service is stopping; startup sweep owns recovery
+                if current is not None and current.cancelling():
+                    raise asyncio.CancelledError from exc
                 if attempt_number < LOCAL_RETRY_ATTEMPTS:
                     self._log_artifact_retry(
                         batch_id=batch_id,
@@ -485,6 +493,27 @@ class EvaluationScheduler:
         self._record_terminated_attempt_best_effort(result)
         return result
 
+    async def _remove_deployment(self, deployment: SandboxDeployment) -> bool:
+        """Retain physical ownership until removal, or explicit service shutdown transfer."""
+        while True:
+            try:
+                if await _run_blocking_call(self._blocking_executor, self._sandboxes.stop, deployment):
+                    return True
+            except Exception:
+                logger.exception(
+                    "sandbox removal unconfirmed; capacity remains owned", extra={"container": deployment.identifier}
+                )
+            if self._assigned_work is not None and self._assigned_work.shutdown_requested:
+                logger.error(
+                    "sandbox removal transferred to mandatory startup sweep", extra={"container": deployment.identifier}
+                )
+                return False
+            try:
+                await asyncio.sleep(0.1)
+            except asyncio.CancelledError:
+                # Cancellation cannot make a running container cease to exist.
+                continue
+
     async def _stop_deployment_best_effort(
         self,
         deployment: SandboxDeployment,
@@ -492,13 +521,7 @@ class EvaluationScheduler:
         batch_id: UUID,
         artifact_id: UUID,
     ) -> None:
-        try:
-            await _run_blocking_call(self._blocking_executor, self._sandboxes.stop, deployment)
-        except Exception:
-            logger.exception(
-                "assigned artifact sandbox teardown failed after result construction",
-                extra={"batch_id": str(batch_id), "artifact_id": str(artifact_id)},
-            )
+        await self._remove_deployment(deployment)
 
     def _mark_artifact_activity_started_best_effort(self, *, batch_id: UUID, artifact_id: UUID) -> None:
         if self._activity is None:
@@ -753,7 +776,15 @@ async def _run_blocking_call(
     *args: object,
 ) -> _T:
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(executor, partial(func, *args))
+    future = loop.run_in_executor(executor, partial(func, *args))
+    # A cancelled asyncio waiter does not stop a Docker subprocess in its thread.
+    # Reconcile its result before the caller can release physical ownership.
+    while True:
+        try:
+            return await asyncio.shield(future)
+        except asyncio.CancelledError:
+            if future.cancelled():
+                raise
 
 
 __all__ = ["EvaluationScheduler", "SchedulerConfig"]

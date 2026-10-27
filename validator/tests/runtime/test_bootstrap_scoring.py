@@ -549,8 +549,9 @@ async def test_build_runtime_cleans_stale_sandbox_containers_on_startup(
         def __init__(self) -> None:
             self.cleanup_calls: list[dict[str, object]] = []
 
-        def cleanup_stale_sandbox_containers(self, *, labels: dict[str, str], name_prefix: str) -> None:
+        def cleanup_stale_sandbox_containers(self, *, labels: dict[str, str], name_prefix: str) -> bool:
             self.cleanup_calls.append({"labels": dict(labels), "name_prefix": name_prefix})
+            return True
 
     manager = FakeSandboxManager()
     validator_hotkey = Keypair.create_from_uri("//Alice")
@@ -1018,3 +1019,13 @@ async def test_env_similarity_chain_invokes_routed_candidates_in_order(monkeypat
                 provider="chutes", model=model, messages=(), temperature=None, max_output_tokens=None,
             ))
     assert calls == [(model, "openrouter") for model in fallbacks]
+
+def test_bootstrap_blocks_execution_when_stale_container_removal_is_unconfirmed():
+    from unittest.mock import Mock
+
+    from harnyx_validator.runtime.bootstrap import _cleanup_stale_sandbox_containers
+
+    manager = Mock()
+    manager.cleanup_stale_sandbox_containers.return_value = False
+    with pytest.raises(RuntimeError, match="startup blocked"):
+        _cleanup_stale_sandbox_containers(manager)
