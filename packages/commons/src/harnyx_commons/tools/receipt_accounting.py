@@ -354,7 +354,7 @@ def _receipt_session_cost_provider(receipt: ToolCall) -> str | None:
 def _receipt_request_cost_provider(receipt: ToolCall) -> str | None:
     provider = _receipt_request_provider(receipt)
     if receipt.tool == "decision_query":
-        return provider if provider in {"openrouter", "ai_gateway", "cloudflare", "jev"} else None
+        return provider if provider in {"openrouter", "ai_gateway", "cloudflare", "jev", "reax"} else None
     if provider is not None and provider.strip():
         return provider.strip()
     if receipt.tool == "llm_chat":

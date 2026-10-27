@@ -68,9 +68,40 @@ class JevErrorBillingDTO(_PublishedRateErrorBillingDTO):
     llm_usage: None = None
 
 
+class ReaxErrorBillingDTO(BaseModel):
+    """REAX receipt charges and tier-based reference amounts are independent."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    actual_cost_provider: Literal["reax"] = "reax"
+    actual_cost_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    reference_cost_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    reference_cost_unavailable: bool = False
+    cost_evidence: JsonObject | None = None
+    usage: DecisionUsage | None = None
+
+    @classmethod
+    def from_billing(cls, billing: ProviderBillingMetadata) -> Self:
+        return cls.model_validate({
+            "actual_cost_provider": billing.actual_cost_provider,
+            "actual_cost_usd": billing.actual_cost_usd,
+            "reference_cost_usd": billing.reference_cost_usd,
+            "reference_cost_unavailable": billing.reference_cost_unavailable,
+            "cost_evidence": billing.provider_usage, "usage": billing.usage,
+        })
+
+    def to_billing(self) -> ProviderBillingMetadata:
+        return ProviderBillingMetadata(
+            actual_cost_provider="reax", source="response_headers",
+            actual_cost_usd=self.actual_cost_usd, reference_cost_usd=self.reference_cost_usd,
+            reference_cost_unavailable=self.reference_cost_unavailable,
+            provider_usage=self.cost_evidence, usage=self.usage,
+        )
+
+
 __all__ = [
     "CloudflareErrorBillingDTO",
     "JevErrorBillingDTO",
+    "ReaxErrorBillingDTO",
     "LlmUsageDTO",
     "ToolBudgetDTO",
     "ToolExecuteRequestDTO",

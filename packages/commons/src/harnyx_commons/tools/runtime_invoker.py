@@ -31,6 +31,7 @@ from harnyx_commons.llm.pricing import (
     MINER_TOOL_DECISION_PRICING,
     MINER_TOOL_EMBEDDING_PRICING,
     MINER_TOOL_LLM_PRICING,
+    REAX_DECISION_PRICING,
     SEARCH_PRICING_PER_REFERENCEABLE_RESULT,
     EmbeddingPricing,
     price_search,
@@ -551,6 +552,18 @@ class RuntimeToolInvoker(ToolInvoker):
                 },
             }
 
+        if "decision_query" in visible_tool_names:
+            cast(JsonObject, pricing["decision_query"]).update({
+                "provider_tier_models": {"reax": {
+                    tier: {model: {"input_per_million": card.input_per_million, "output_per_million": 0.0}
+                           for model, card in cards.items()}
+                    for tier, cards in REAX_DECISION_PRICING.items()
+                }},
+                "provider_rate_usage": {"reax": "conservative_budget_estimate"},
+                "provider_settlement_order": {"reax": ["provider_returned", "positive_eur_published_usd_usage_rate"]},
+                "routing": {"reax": "api_key_default"},
+            })
+
         tool_names: list[JsonValue] = [str(name) for name in self._advertised_tool_names]
         allowed_provider_models: dict[str, JsonValue] = {
             provider: [str(model) for model in models]
@@ -867,7 +880,10 @@ class RuntimeToolInvoker(ToolInvoker):
         try:
             _require_actual_cost(cost, tool_name="decision_query")
         except ValueError as exc:
-            raise ToolProviderError("decision provider response missing settled cost") from exc
+            raise ToolProviderError(
+                "decision provider response missing settled cost",
+                provider=request.provider, billing=result.billing if request.provider == "reax" else None,
+            ) from exc
         return ToolInvocationOutput(
             public_payload=cast(JsonObject, result.response.model_dump(mode="json", exclude_none=True)),
             execution=ToolExecutionFacts(elapsed_ms=(time.perf_counter() - started) * 1000.0),

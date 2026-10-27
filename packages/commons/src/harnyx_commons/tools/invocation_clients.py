@@ -51,6 +51,7 @@ from harnyx_commons.llm.providers.openrouter_pricing import (
     OpenRouterPricingSnapshot,
     shared_openrouter_pricing_catalog,
 )
+from harnyx_commons.llm.providers.reax import ReaxDecisionProvider
 from harnyx_commons.platform_tool_proxy import platform_tool_proxy_effective_provider_timeout_seconds
 from harnyx_commons.tools.decision_models import (
     BooleanAnswer,
@@ -1140,6 +1141,8 @@ def build_miner_paid_decision_provider(
     name = parse_decision_provider(provider)
     key = _validated_api_key(api_key, provider=name)
     timeout_seconds = _effective_client_timeout(llm_settings.llm_timeout_seconds, timeout)
+    if name == "reax":
+        return ReaxDecisionProvider(api_key=key, timeout_seconds=timeout_seconds)
     if name == "jev":
         return JevDecisionProvider(api_key=key, timeout_seconds=timeout_seconds)
     if name == "cloudflare":
@@ -1167,6 +1170,7 @@ class CachedDecisionProviderRegistry:
                     "openrouter": self._settings.openrouter_api_key,
                     "ai_gateway": self._settings.ai_gateway_api_key,
                     "jev": self._settings.typesafe_api_key,
+                    "reax": self._settings.reax_api_key,
                 }[name]
             if not key.get_secret_value().strip():
                 raise ProviderCredentialUnavailableError(name)

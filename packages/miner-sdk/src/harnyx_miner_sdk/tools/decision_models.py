@@ -14,7 +14,7 @@ from harnyx_miner_sdk.tools.extraction_models import ExtractionAnswer, Extractio
 from harnyx_miner_sdk.tools.openrouter_models import validate_paid_openrouter_model
 from harnyx_miner_sdk.tools.types import ToolInvocationTimeout
 
-DecisionProviderName = Literal["openrouter", "ai_gateway", "cloudflare", "jev"]
+DecisionProviderName = Literal["openrouter", "ai_gateway", "cloudflare", "jev", "reax"]
 DecisionContext = str | dict[str, JsonValue] | list[JsonValue]
 Probability = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 MINER_SELECTED_DECISION_PROVIDER_MODELS: Mapping[DecisionProviderName, tuple[str, ...]] = {
@@ -28,6 +28,7 @@ MINER_SELECTED_DECISION_PROVIDER_MODELS: Mapping[DecisionProviderName, tuple[str
     ),
     "ai_gateway": (),
     "jev": ("jev-1.13.0",),
+    "reax": ("s1-fast-2", "s1-pro-3"),
     "cloudflare": (
         "@cf/cloudflare/clef", "@cf/cloudflare/clef-flash", "@cf/cloudflare/clef-omni", "@cf/cloudflare/clairic",
     ),
@@ -43,6 +44,8 @@ def parse_decision_provider(provider: str) -> DecisionProviderName:
         return "cloudflare"
     if provider == "jev":
         return "jev"
+    if provider == "reax":
+        return "reax"
     raise ValueError(f"unsupported decision provider {provider!r}")
 
 
@@ -157,11 +160,18 @@ class DecisionQueryRequest(_DecisionModel):
         extraction = self.provider == "cloudflare" and self.model == "@cf/cloudflare/clairic"
         if extraction and self.state == "":
             raise ValueError("Cloudflare extraction requires non-empty state")
+        if self.provider == "reax":
+            max_questions = 1 if self.model == "s1-fast-2" else 3
+            if len(self.questions) > max_questions:
+                raise ValueError(f"REAX model supports at most {max_questions} questions")
         for key, question in self.questions.items():
             if isinstance(question, ExtractionQuestion) != extraction:
                 raise ValueError("Clairic requires extraction questions; other models require decision questions")
             if extraction and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.\-]{0,63}", key) is None:
                 raise ValueError("invalid Clairic question ID")
+            if self.provider == "reax" and isinstance(question, (ChoiceQuestion, ScoreQuestion)):
+                if len(question.criteria) < 2 or (self.model == "s1-fast-2" and len(question.criteria) > 16):
+                    raise ValueError("REAX question criteria exceed model option limits")
             if self.provider == "jev":
                 if isinstance(question, ChoiceQuestion) and len(question.criteria) > 255:
                     raise ValueError("JEV choice questions support up to 255 options")

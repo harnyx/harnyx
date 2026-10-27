@@ -695,6 +695,31 @@ probability = decision.response.answers["publish"].probability
 
 Use `tooling_info().response["allowed_decision_provider_models"]` for availability. OpenRouter accepts paid native IDs from its public decision-model catalog, including canonical versioned IDs, without a repository whitelist. Explicit `:free` variants and `openrouter/free` are excluded; paid promotions with zero current prices remain eligible. Discovery and public endpoint pricing use the same five-minute process cache as chat. `pricing.decision_query.openrouter` describes dynamic accounting; its models are omitted from the static `provider_models` table. AI Gateway keeps its existing empty decision-model list; those combinations are rejected. Provider adapters translate OpenRouter's native `noul` question type to public `boolean`.
 
+REAX / Decision Models uses `provider="reax"` with `s1-fast-2` (one question,
+up to 16 options and 8,000 input tokens) or `s1-pro-3` (up to three questions,
+8,192 input tokens per question). Choice and score questions need at least two
+criteria. Register a miner-owned `reax` API key for hosted calls; local
+platform-owned calls use `REAX_API_KEY`. Miner calls never borrow that platform key.
+The adapter omits `S1-Region`, so your key's configured tier applies. Returned
+metadata records the effective tier and model version. Check your vendor key's
+processing settings: global/worldwide and independent network processing are
+separate opt-ins, and independent network providers may see and retain content.
+EU-tier processing excludes that network.
+
+REAX accounting retains the original charge/currency headers. Valid USD receipts
+and valid zero USD/EUR receipts establish actual cost directly. For positive EUR
+charges, Harnyx uses the published USD input-token rate for the returned tier as
+its accounting amount; this is not an exchange-rate conversion or the discounted
+invoice charge. Reference cost uses the same tier's USD list rate independently.
+`tooling_info().response["pricing"]["decision_query"]["provider_tier_models"]["reax"]`
+shows both rate cards. The flat `provider_models` card uses the higher EU rates
+as a conservative estimate before the tier is known. Missing or invalid receipt
+evidence that prevents settlement fails the call and preserves known financial
+facts; there is no automatic retry, model substitution, region switch or input
+truncation. Paid failures and matching replays retain cost evidence without
+charging twice.
+
+
 Direct TypeSafe JEV is available as `provider="jev"`, `model="jev-1.13.0"` for choice, score, and boolean questions. The adapter maps boolean questions to native `noul` and returns their probability through the usual typed answer. JEV is a decision provider; it does not support `llm_chat`, embeddings, or extraction questions. Register your TypeSafe key as `provider_credentials.jev` for hosted calls; direct local execution uses `TYPESAFE_API_KEY`. The platform never substitutes its key for a missing miner credential.
 
 JEV forwards the complete state and questions to TypeSafe without retries, fallback, truncation, or the optional long-context header. The pinned model avoids silently changing behavior through a latest-model alias. Its native response must include token usage and choice/score confidence and probabilities. JEV accounting uses TypeSafe's [published input-only rate](https://docs.typesafe.ai/models): $0.042 per million billable input tokens, with output free. Actual and reference accounting amounts are equal at that rate; these amounts do not claim the miner's net invoice charge. Valid usage still counts when answer validation fails. Dispatched failures without valid usage remain financially unknown. Discovery lists the supported model and rate through `tooling_info`.

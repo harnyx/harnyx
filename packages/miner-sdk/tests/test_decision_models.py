@@ -48,6 +48,26 @@ def test_jev_selection_preserves_questions_and_rejects_unsupported_native_models
         DecisionQueryRequest.model_validate(payload)
 
 
+@pytest.mark.parametrize("failure", ["alias", "bundle", "fast_options", "single_option", "extraction"])
+def test_reax_selection_enforces_native_model_contract_before_paid_dispatch(failure) -> None:
+    payload = {**_request(), "provider": "reax", "model": "s1-pro-3"}
+    if failure == "alias":
+        payload["model"] = "s1-pro"
+    elif failure == "bundle":
+        payload["questions"]["extra"] = {"type": "boolean", "instructions": "?"}
+    elif failure == "fast_options":
+        payload["model"] = "s1-fast-2"
+        payload["questions"] = {"c": {
+            "type": "choice", "instructions": "Pick", "criteria": dict.fromkeys(map(str, range(17))),
+        }}
+    elif failure == "single_option":
+        payload["questions"]["c"]["criteria"] = {"only": None}
+    else:
+        payload["questions"]["c"] = {"type": "extraction", "instructions": "Extract"}
+    with pytest.raises(ValidationError):
+        DecisionQueryRequest.model_validate(payload)
+
+
 def test_structured_context_rounded_and_absent_distributions_are_preserved() -> None:
     request = DecisionQueryRequest.model_validate(_request())
     response = DecisionQueryResponse.model_validate(_response())

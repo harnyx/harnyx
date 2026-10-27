@@ -226,6 +226,7 @@ class LlmSettings(BaseSettings):
     openai_compatible_endpoints_json: str | None = Field(default=None, alias="LLM_OPENAI_COMPATIBLE_ENDPOINTS_JSON")
     openrouter_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="OPENROUTER_API_KEY")
     typesafe_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="TYPESAFE_API_KEY")
+    reax_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="REAX_API_KEY")
     saygm_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="SAYGM_API_KEY")
     ai_gateway_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="AI_GATEWAY_API_KEY")
     cloudflare_account_id: str = Field(default="", alias="CLOUDFLARE_ACCOUNT_ID")

@@ -486,8 +486,18 @@ __all__ = [
     "price_static_llm_model",
 ]
 
+# REAX list tariffs in USD per million input tokens (2026-10-27).
+# EUR accounts use these as accounting amounts, not currency conversion.
+REAX_DECISION_PRICING: Mapping[str, Mapping[str, ModelPricing]] = {
+    "eu": {"s1-fast-2": ModelPricing(0.021, 0.0, 0.0), "s1-pro-3": ModelPricing(0.084, 0.0, 0.0)},
+    "global": {"s1-fast-2": ModelPricing(0.019, 0.0, 0.0), "s1-pro-3": ModelPricing(0.080, 0.0, 0.0)},
+}
+
+
 # Published OpenRouter decision rates, USD per million tokens (2026-10-06).
 MINER_TOOL_DECISION_PRICING: Mapping[DecisionProviderName, Mapping[str, ModelPricing]] = {
+    # Before the key's tier is known these are conservative budget estimates only.
+    "reax": REAX_DECISION_PRICING["eu"],
     # TypeSafe published input-only rate; accounting amount, not net invoice settlement.
     "jev": {"jev-1.13.0": ModelPricing(0.042, 0.0, 0.0)},
     "openrouter": {
@@ -513,3 +523,11 @@ def price_decision(provider: DecisionProviderName, model: str, usage: DecisionUs
     if card is None or usage.input_tokens is None or usage.output_tokens is None:
         return None
     return (usage.input_tokens * card.input_per_million + usage.output_tokens * card.output_per_million) / 1_000_000
+
+
+
+def price_reax_decision(model: str, tier: str, usage: DecisionUsage) -> float | None:
+    card = REAX_DECISION_PRICING.get(tier, {}).get(model)
+    if card is None or usage.input_tokens is None:
+        return None
+    return usage.input_tokens * card.input_per_million / 1_000_000

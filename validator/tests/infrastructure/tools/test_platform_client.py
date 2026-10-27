@@ -1788,6 +1788,38 @@ async def test_decision_proxy_error_preserves_charge() -> None:
 
 
 @pytest.mark.anyio("asyncio")
+@pytest.mark.parametrize("actual,reference", [(0.000019, 0.000084), (None, 0.000084), (0.000019, None)])
+async def test_reax_failed_billing_keeps_independent_costs_and_native_evidence(actual, reference) -> None:
+    """A hosted error must not lose EUR evidence or equate invoice and reference amounts."""
+    from harnyx_commons.tools.http_models import ReaxErrorBillingDTO
+
+    evidence = {"settlement_source": "published_usd_usage_rate", "currency": "EUR", "charge_nanos": 1000}
+    wire = ReaxErrorBillingDTO(
+        actual_cost_usd=actual, reference_cost_usd=reference, reference_cost_unavailable=reference is None,
+        cost_evidence=evidence, usage={"input_tokens": 1000, "output_tokens": 0},
+    ).model_dump(mode="json", exclude_none=True)
+    client = AsyncPlatformToolProxyPlatformClient(
+        base_url="https://mock.local", hotkey=_keypair(), transport=httpx.MockTransport(
+            lambda _: httpx.Response(502, json={"error_code": "provider_failed", "message": "failed", "billing": wire})
+        ),
+    )
+    try:
+        with pytest.raises(PlatformToolProxyProviderError) as caught:
+            await client.execute_platform_tool_proxy_tool(
+                token=uuid4().hex, uid=7, artifact_id=uuid4(), task_id=uuid4(), validator_session_id=uuid4(),
+                attempt_number=1, receipt_id=str(uuid4()), tool="decision_query", args=(), kwargs={},
+                transport_timeout_seconds=11.0,
+            )
+        billing = caught.value.billing
+        assert billing.actual_cost_provider == "reax"
+        assert billing.actual_cost_usd == actual and billing.reference_cost_usd == reference
+        assert billing.reference_cost_unavailable == (reference is None)
+        assert billing.provider_usage == evidence and billing.usage.input_tokens == 1000
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.anyio("asyncio")
 @pytest.mark.parametrize("cost", [-1, "0.02", True])
 @pytest.mark.parametrize("error_code", ["provider_failed", "invalid_request"])
 async def test_decision_proxy_rejects_malformed_billing(cost, error_code) -> None:

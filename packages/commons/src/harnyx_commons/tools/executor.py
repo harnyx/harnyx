@@ -555,7 +555,10 @@ class ToolExecutor:
             and billing is not None
             and billing.actual_cost_provider in {"cloudflare", "jev"}
         )
-        billed_inference_failure = openrouter_failure or published_rate_failure
+        reax_failure = billing is not None and billing.actual_cost_provider == "reax"
+        billed_inference_failure = openrouter_failure or published_rate_failure or reax_failure
+        if reax_failure and billing is not None and billing.reference_cost_unavailable:
+            error_extra["reference_cost_unavailable"] = True
         if published_rate_failure and billing is not None:
             provider_failure = recording.dispatched and (billing.llm_usage is not None or billing.usage is not None)
             error_extra["provider_failure_accounted"] = provider_failure
@@ -578,7 +581,7 @@ class ToolExecutor:
                 except ValueError:
                     selected_provider = None
             if isinstance(selected_provider, str) and (
-                accounted_failure or selected_provider in {"openrouter", "ai_gateway", "cloudflare", "jev"}
+                accounted_failure or selected_provider in {"openrouter", "ai_gateway", "cloudflare", "jev", "reax"}
             ):
                 failure_provider = selected_provider
         failure_cost = (

@@ -13,7 +13,7 @@ from harnyx_commons.llm.schema import LlmUsage
 from harnyx_commons.tools.decision_models import DecisionUsage
 
 # Providers whose accepted inference costs can be completed by hosted receipts.
-RECOVERABLE_INFERENCE_PROVIDERS = ("openrouter", "cloudflare", "jev")
+RECOVERABLE_INFERENCE_PROVIDERS = ("openrouter", "cloudflare", "jev", "reax")
 
 ProviderBillingSource = Literal[
     "response_body",

@@ -15,7 +15,7 @@ _CONFIG_PATH = "/v1/miner-config"
 _SUPPORTED_PROVIDERS = frozenset(
     {
         "chutes", "openrouter", "ai_gateway", "saygm", "desearch", "parallel",
-        "firecrawl", "exa", "tavily", "expand", "deepseek", "cloudflare", "jev",
+        "firecrawl", "exa", "tavily", "expand", "deepseek", "cloudflare", "jev", "reax",
     }
 )
 _MIN_TASK_RETRY_COUNT = 0

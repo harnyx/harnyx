@@ -13,7 +13,7 @@ from harnyx_commons.errors import ProviderCredentialUnavailableError, ToolInvoca
 from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
 from harnyx_commons.infrastructure.state.session_registry import InMemorySessionRegistry
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
-from harnyx_commons.tools.decision_models import DecisionQueryRequest, DecisionQueryResponse
+from harnyx_commons.tools.decision_models import DecisionQueryRequest, DecisionQueryResponse, DecisionUsage
 from harnyx_commons.tools.dto import ToolInvocationRequest
 from harnyx_commons.tools.executor import ToolExecutor
 from harnyx_commons.tools.invocation_clients import _decision_result
@@ -60,6 +60,15 @@ class _Provider:
         if self.fail == "cancel":
             raise asyncio.CancelledError()
         if self.fail is True:
+            if request.provider == "reax":
+                raise ToolProviderError(
+                    "invalid native answer", provider="reax",
+                    billing=ProviderBillingMetadata(
+                        actual_cost_provider="reax", actual_cost_usd=0.02, reference_cost_usd=0.02,
+                        source="response_headers", usage=DecisionUsage(input_tokens=100, output_tokens=10),
+                        provider_usage={"settlement_source": "published_usd_usage_rate"},
+                    ),
+                )
             return _decision_result(
                 request,
                 {
@@ -76,7 +85,7 @@ class _Provider:
                 billing=None
                 if self.fail is None
                 else ProviderBillingMetadata(
-                    actual_cost_provider="openrouter",
+                    actual_cost_provider=request.provider,
                     actual_cost_usd=0.02,
                     source="response_body",
                 ),
@@ -90,7 +99,7 @@ class _Provider:
                 }
             ),
             0.02,
-            "openrouter",
+            request.provider,
             {"settlement_source": "provider_returned", "inference": "attempted"},
             0.02,
         )
@@ -122,8 +131,42 @@ async def test_decision_dispatch_discovery_and_unavailable_gateway() -> None:
     assert provider.calls == 1
 
 
+async def test_reax_discovery_distinguishes_key_tier_and_budget_estimate() -> None:
+    invoker = RuntimeToolInvoker(InMemoryReceiptLog(), decision_provider=_Provider())
+    info = await invoker.invoke("tooling_info", args=(), kwargs={})
+    rates = info["pricing"]["decision_query"]
+    assert rates["routing"]["reax"] == "api_key_default"
+    assert rates["provider_rate_usage"]["reax"] == "conservative_budget_estimate"
+    cards = rates["provider_tier_models"]["reax"]
+    assert cards["global"]["s1-fast-2"]["input_per_million"] == 0.019
+    assert cards["eu"]["s1-fast-2"]["input_per_million"] == 0.021
+    assert rates["provider_models"]["reax"] == cards["eu"]
+
+
+async def test_reax_unsettled_result_retains_reference_and_original_receipt() -> None:
+    """The invoker's final settlement gate must not erase adapter billing evidence."""
+    from dataclasses import replace
+
+    class UnsettledProvider(_Provider):
+        async def query(self, request):
+            result = await super().query(request)
+            return replace(result, actual_cost_usd=None, actual_cost_evidence={"currency": "EUR"})
+
+    invoker = RuntimeToolInvoker(InMemoryReceiptLog(), decision_provider=UnsettledProvider())
+    with pytest.raises(ToolProviderError, match="missing settled cost") as caught:
+        await invoker.invoke(
+            "decision_query", args=(), kwargs={**_payload(), "provider": "reax", "model": "s1-pro-3"},
+        )
+    assert caught.value.billing.actual_cost_usd is None
+    assert caught.value.billing.reference_cost_usd == 0.02
+    assert caught.value.billing.provider_usage == {"currency": "EUR"}
+
+
+@pytest.mark.parametrize("provider_name", ["openrouter", "reax"])
 @pytest.mark.parametrize("fail", [False, True, None, "timeout", "cancel"])
-async def test_decision_success_and_billed_failure_charge_without_chat_tokens(fail: bool | str | None) -> None:
+async def test_decision_success_and_billed_failure_charge_without_chat_tokens(
+    fail: bool | str | None, provider_name: str,
+) -> None:
     now = datetime.now(UTC)
     session = Session(
         session_id=uuid4(), uid=1, task_id=uuid4(), issued_at=now, expires_at=now + timedelta(minutes=5), budget_usd=1.0
@@ -143,7 +186,10 @@ async def test_decision_success_and_billed_failure_charge_without_chat_tokens(fa
         token_registry=tokens,
         clock=lambda: now,
     )
-    request = ToolInvocationRequest(session.session_id, "token", "decision_query", (), _payload())
+    payload = _payload()
+    if provider_name == "reax":
+        payload.update(provider="reax", model="s1-pro-3")
+    request = ToolInvocationRequest(session.session_id, "token", "decision_query", (), payload)
     if fail is not False:
         with pytest.raises(
             asyncio.CancelledError
