@@ -55,3 +55,17 @@ async def test_public_decision_catalog_binds_native_and_canonical_ids_without_pa
         pinned = await catalog.snapshot(snapshot.canonical_model, output_modality="decisions")
         assert pinned.model == snapshot.model
     snapshot.preflight()
+
+
+async def test_public_rerank_catalog_binds_paid_text_models_without_inference() -> None:
+    catalog = OpenRouterPricingCatalog()
+    models = await catalog.rerank_models()
+    assert models and "cohere/rerank-v3.5" in models
+    assert all(":free" not in model and model != "openrouter/free" for model in models)
+    snapshot = await catalog.snapshot("cohere/rerank-v3.5", output_modality="rerank")
+    assert snapshot.model in models
+    if snapshot.canonical_model is not None:
+        assert snapshot.canonical_model in models
+        pinned = await catalog.snapshot(snapshot.canonical_model, output_modality="rerank")
+        assert pinned.model == snapshot.model
+    snapshot.preflight()

@@ -70,7 +70,7 @@ async def test_discovery_uses_fresh_cache_and_recovers_after_expired_refresh_fai
     first = await invoker.invoke("tooling_info", args=(), kwargs={})
     available = False
     assert await invoker.invoke("tooling_info", args=(), kwargs={}) == first
-    assert calls == 2
+    assert calls == 3
     now = 301.0
     expired = await invoker.invoke("tooling_info", args=(), kwargs={})
     assert expired["pricing"]["llm_chat"]["openrouter"]["discovery_available"] is False
@@ -94,6 +94,7 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
     catalog = OpenRouterPricingCatalog()
     catalog.models = AsyncMock(return_value=("inception/mercury-3",))
     catalog.decision_models = AsyncMock(return_value=("new/decision",))
+    catalog.rerank_models = AsyncMock(return_value=("cohere/rerank-v3.5",))
     invoker = build_miner_sandbox_tool_invoker(InMemoryReceiptLog(), openrouter_pricing_catalog=catalog)
 
     payload = await invoker.invoke("tooling_info", args=(), kwargs={})
@@ -101,6 +102,8 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
     assert "search_repo" not in payload["tool_names"]
     assert "get_repo_file" not in payload["tool_names"]
     assert "search_ai" not in payload["tool_names"]
+    assert payload["allowed_rerank_provider_models"] == {"openrouter": ["cohere/rerank-v3.5"]}
+    assert payload["pricing"]["rerank"]["openrouter"]["reference"] == "maximum_provider_discount_reversal"
     assert payload["pricing"]["search_web"]["kind"] == "per_referenceable_result"
     assert payload["pricing"]["fetch_page"]["kind"] == "per_referenceable_result"
     assert payload["pricing"]["search_web"]["settlement_order"] == [

@@ -8,7 +8,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Annotated, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, SecretStr, ValidationError
+import httpx
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, SecretStr, TypeAdapter, ValidationError
 
 from harnyx_commons.clients import DEEPSEEK, DESEARCH, EXA, EXPAND, FIRECRAWL, PARALLEL, TAVILY
 from harnyx_commons.config.bedrock import BedrockSettings
@@ -25,7 +26,7 @@ from harnyx_commons.config.llm import (
 from harnyx_commons.config.vertex import VertexSettings
 from harnyx_commons.errors import ProviderCredentialUnavailableError, ToolInvocationCancelledError, ToolProviderError
 from harnyx_commons.json_types import JsonObject
-from harnyx_commons.llm.cost_settlement import normalized_provider_cost
+from harnyx_commons.llm.cost_settlement import normalized_provider_cost, settled_openrouter_reported_cost
 from harnyx_commons.llm.pricing import MINER_TOOL_EMBEDDING_PRICING, price_decision, price_embedding
 from harnyx_commons.llm.provider_factory import (
     CachedLlmProviderRegistry,
@@ -42,6 +43,7 @@ from harnyx_commons.llm.providers.jev import JevDecisionProvider
 from harnyx_commons.llm.providers.openrouter import (
     OpenRouterDecisionClient,
     OpenRouterEmbeddingClient,
+    OpenRouterRerankClient,
     _MinerBillingResponse,
     _MinerCostDetails,
     _openrouter_reference_cost,
@@ -89,9 +91,18 @@ from harnyx_commons.tools.ports import (
     EmbeddingProviderPort,
     EmbeddingProviderResult,
     FetchPageProviderPort,
+    RerankProviderPort,
+    RerankProviderResult,
     WebSearchProviderPort,
 )
 from harnyx_commons.tools.provider_billing import OpenRouterAccounting, ProviderBillingMetadata, SearchProviderResult
+from harnyx_commons.tools.rerank_models import (
+    RerankRequest,
+    RerankResponse,
+    RerankResult,
+    RerankUsage,
+    validate_rerank_results,
+)
 from harnyx_commons.tools.search_models import (
     FetchPageRequest,
     FetchPageResponse,
@@ -112,6 +123,7 @@ class ToolInvocationClients:
     embedding_provider: EmbeddingProviderPort | None
     embedding_provider_registry: CachedEmbeddingProviderRegistry
     decision_provider_registry: CachedDecisionProviderRegistry | None = None
+    rerank_provider_registry: CachedRerankProviderRegistry | None = None
 
 
 def build_tool_invocation_clients(
@@ -140,6 +152,7 @@ def build_tool_invocation_clients(
         embedding_provider=build_optional_tool_embedding_provider(llm_settings),
         embedding_provider_registry=CachedEmbeddingProviderRegistry(llm_settings=llm_settings),
         decision_provider_registry=CachedDecisionProviderRegistry(llm_settings=llm_settings),
+        rerank_provider_registry=CachedRerankProviderRegistry(llm_settings=llm_settings),
     )
 
 
@@ -1187,3 +1200,171 @@ class CachedDecisionProviderRegistry:
                 errors.append(exc)
         if errors:
             raise ExceptionGroup("cached decision providers cleanup failed", errors)
+
+
+class _RerankDocument(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+    text: str
+
+
+class _NativeRerankResult(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+    index: int = Field(ge=0)
+    relevance_score: float = Field(allow_inf_nan=False)
+    document: _RerankDocument
+
+
+class _NativeRerankUsage(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+    search_units: int | None = Field(default=None, ge=0)
+    total_tokens: int | None = Field(default=None, ge=0)
+
+
+class _NativeRerankResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+    model: str
+    id: str | None = None
+    provider: str | None = None
+    results: list[_NativeRerankResult] = Field(min_length=1)
+    usage: _NativeRerankUsage | None = None
+
+
+def _rerank_billing(
+    raw: JsonObject, *, request: RerankRequest, snapshot: OpenRouterPricingSnapshot
+) -> ProviderBillingMetadata:
+    settled = settled_openrouter_reported_cost(raw_response=raw, model=request.model)
+    actual = None if settled is None else settled.cost_usd
+    reference = None
+    evidence: JsonObject = {
+        "requested_model": request.model,
+        "native_model": raw.get("model"),
+        "upstream_provider": raw.get("provider"),
+        "provider_request_id": raw.get("id"),
+        "original_usage": raw.get("usage"),
+        "settlement_source": "unavailable" if settled is None else "provider_returned",
+        "snapshot_model": snapshot.model, "snapshot_time": snapshot.fetched_at,
+        "snapshot_source": "openrouter_public_endpoints",
+    }
+    try:
+        if settled is None:
+            raise ValueError("original OpenRouter charge is missing or malformed")
+        native = _MinerBillingResponse.model_validate(raw)
+        identities = {snapshot.model, *(e.model_id for e in snapshot.endpoints
+                                       if native.provider and e.provider_name.casefold() == native.provider.casefold())}
+        if snapshot.canonical_model is not None:
+            identities.add(snapshot.canonical_model)
+        if native.model is not None and "/" not in native.model:
+            # A native suffix is valid only for a provider bound in this snapshot.
+            matches = {identity for identity in identities if identity.split("/", 1)[-1] == native.model}
+            provider_matches = any(native.provider and e.provider_name.casefold() == native.provider.casefold()
+                                   for e in snapshot.endpoints)
+            if not provider_matches or len(matches) != 1:
+                raise ValueError("rerank native model identity is unavailable or ambiguous")
+            native = native.model_copy(update={"model": next(iter(matches))})
+        reference, reference_evidence = _openrouter_reference_cost(native, snapshot)
+        evidence.update(reference_evidence)
+    except (ValueError, ArithmeticError) as exc:
+        evidence["reference_unavailable_reason"] = str(exc)
+    return OpenRouterAccounting("attempted", actual, reference).to_billing(evidence)
+
+
+class OpenRouterRerankProvider(RerankProviderPort):
+    def __init__(self, *, api_key: SecretStr, timeout_seconds: float,
+                 pricing_catalog: OpenRouterPricingCatalog | None = None) -> None:
+        self._api_key = api_key
+        self._timeout_seconds = timeout_seconds
+        self._pricing_catalog = pricing_catalog or shared_openrouter_pricing_catalog()
+        self._clients: dict[str, OpenRouterRerankClient] = {}
+
+    async def rerank(self, request: RerankRequest) -> RerankProviderResult:
+        dispatched = False
+        billing = None
+        try:
+            routing = request.provider_extra
+            only = routing.provider.only if routing is not None and routing.provider is not None else None
+            timeout = _effective_client_timeout(self._timeout_seconds, request.timeout)
+            snapshot = await self._pricing_catalog.snapshot(
+                request.model, timeout=timeout, provider_only=only, output_modality="rerank",
+            )
+            client = self._clients.get(request.model)
+            if client is None:
+                client = OpenRouterRerankClient(model=request.model, api_key=self._api_key, timeout_seconds=timeout)
+                self._clients[request.model] = client
+            dispatched = True
+            native = await client.rerank(
+                query=request.query, documents=request.documents, top_n=request.top_n,
+                extra=None if routing is None else routing.to_request_extra(), timeout_seconds=timeout,
+            )
+            raw = TypeAdapter(JsonObject).validate_python(native.json())
+            billing = _rerank_billing(raw, request=request, snapshot=snapshot)
+            native.raise_for_status()
+            if billing.reference_cost_unavailable:
+                raise ToolProviderError("OpenRouter regular cost unavailable", provider="openrouter", billing=billing)
+            parsed = _NativeRerankResponse.model_validate(raw)
+            response = RerankResponse(
+                provider="openrouter", model=request.model,
+                results=[RerankResult(index=r.index, relevance_score=r.relevance_score, document=r.document.text)
+                         for r in parsed.results],
+                usage=None if parsed.usage is None else RerankUsage(
+                    search_units=parsed.usage.search_units, total_tokens=parsed.usage.total_tokens,
+                ),
+            )
+            validate_rerank_results(request, response)
+            return RerankProviderResult(response, billing)
+        except BaseException as exc:
+            if isinstance(exc, ToolProviderError) and exc.billing is not None:
+                raise
+            billing = billing or OpenRouterAccounting(
+                "attempted" if dispatched else "not_dispatched",
+                None if dispatched else 0.0, None if dispatched else 0.0,
+            ).to_billing()
+            if isinstance(exc, asyncio.CancelledError):
+                raise ToolInvocationCancelledError("OpenRouter rerank cancelled", billing=billing) from exc
+            if not isinstance(exc, Exception):
+                raise
+            raise ToolProviderError(
+                "OpenRouter rerank failed", provider="openrouter", billing=billing,
+                http_status=exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None,
+            ) from exc
+
+    async def aclose(self) -> None:
+        errors: list[Exception] = []
+        for client in self._clients.values():
+            try:
+                await client.aclose()
+            except Exception as exc:
+                errors.append(exc)
+        if errors:
+            raise ExceptionGroup("cached OpenRouter rerank clients cleanup failed", errors)
+
+
+def build_miner_paid_rerank_provider(
+    *, provider: str, api_key: SecretStr | str, llm_settings: LlmSettings, timeout: float | None = None,
+) -> RerankProviderPort:
+    if provider != "openrouter":
+        raise ValueError("rerank requires OpenRouter")
+    return OpenRouterRerankProvider(
+        api_key=_validated_api_key(api_key, provider=provider),
+        timeout_seconds=_effective_client_timeout(llm_settings.llm_timeout_seconds, timeout),
+    )
+
+
+class CachedRerankProviderRegistry:
+    def __init__(self, *, llm_settings: LlmSettings) -> None:
+        self._settings = llm_settings
+        self._provider: RerankProviderPort | None = None
+
+    def resolve(self, provider: str) -> RerankProviderPort:
+        if provider != "openrouter":
+            raise ValueError("rerank requires OpenRouter")
+        if not self._settings.openrouter_api_key_value:
+            raise ProviderCredentialUnavailableError(provider)
+        if self._provider is None:
+            self._provider = build_miner_paid_rerank_provider(
+                provider=provider, api_key=self._settings.openrouter_api_key, llm_settings=self._settings,
+            )
+        return self._provider
+
+    async def aclose(self) -> None:
+        if self._provider is not None:
+            await self._provider.aclose()

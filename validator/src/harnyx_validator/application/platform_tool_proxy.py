@@ -14,6 +14,8 @@ from harnyx_commons.platform_tool_proxy import PLATFORM_TOOL_PROXY_EXECUTE_TRANS
 from harnyx_commons.tools.decision_models import DecisionQueryRequest
 from harnyx_commons.tools.dto import tool_payload_from_args_kwargs
 from harnyx_commons.tools.executor import ToolInvocationContext, ToolInvocationOutput, ToolInvoker
+from harnyx_commons.tools.provider_billing import RECOVERABLE_INFERENCE_TOOLS
+from harnyx_commons.tools.rerank_models import RerankRequest
 from harnyx_commons.tools.types import ToolName, is_embedding_tool, is_search_tool
 from harnyx_validator.application.assigned_work import PhaseRecorder
 from harnyx_validator.application.ports.platform import (
@@ -158,6 +160,8 @@ class PlatformToolProxyProxyToolInvoker(ToolInvoker):
             return await self._local.invoke(tool_name, args=args, kwargs=kwargs, context=context)
         if tool_name == "decision_query":
             DecisionQueryRequest.model_validate(tool_payload_from_args_kwargs(args, kwargs))
+        if tool_name == "rerank":
+            RerankRequest.model_validate(tool_payload_from_args_kwargs(args, kwargs))
         if context is None:
             raise PlatformToolProxyControlError("platform tool proxy execution requires tool invocation context")
         scope = self._scopes.require_session(context.session_id)
@@ -226,7 +230,7 @@ class PlatformToolProxyProxyToolInvoker(ToolInvoker):
 
 
 def _is_platform_tool_proxy_tool(tool_name: ToolName) -> bool:
-    return is_search_tool(tool_name) or is_embedding_tool(tool_name) or tool_name in {"llm_chat", "decision_query"}
+    return is_search_tool(tool_name) or is_embedding_tool(tool_name) or tool_name in RECOVERABLE_INFERENCE_TOOLS
 
 
 def _grant_expired(expires_at: datetime) -> bool:

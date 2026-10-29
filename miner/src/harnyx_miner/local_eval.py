@@ -41,7 +41,7 @@ from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_commons.sandbox.runtime import build_sandbox_options, create_sandbox_manager
 from harnyx_commons.sandbox.state import DEFAULT_STATE_DIR
 from harnyx_commons.tools.executor import ToolExecutor
-from harnyx_commons.tools.invocation_clients import build_tool_invocation_clients
+from harnyx_commons.tools.invocation_clients import CachedRerankProviderRegistry, build_tool_invocation_clients
 from harnyx_miner.agent_source import (
     agent_sha256,
     load_agent_bytes,
@@ -348,6 +348,7 @@ class LocalEvaluationRuntime:
     _tool_host_lock: asyncio.Lock
     _run_id: str
     _progress_reporter: _CliProgressReporter | None
+    _rerank_provider_registry: CachedRerankProviderRegistry | None = None
 
     def session_ttl_for(self, task: MinerTask) -> timedelta:
         return self._runner._config.session_ttl_for(task)
@@ -391,6 +392,7 @@ class LocalEvaluationRuntime:
             tool_embedding_provider=invocation_clients.embedding_provider,
             embedding_provider_registry=invocation_clients.embedding_provider_registry,
             decision_provider_registry=invocation_clients.decision_provider_registry,
+            rerank_provider_registry=invocation_clients.rerank_provider_registry,
             scoring_llm_provider=scoring_llm_provider,
             scoring_service=scoring_service,
             scoring_config=scoring_config,
@@ -425,6 +427,7 @@ class LocalEvaluationRuntime:
             tool_embedding_provider=invocation_clients.embedding_provider,
             embedding_provider_registry=invocation_clients.embedding_provider_registry,
             decision_provider_registry=invocation_clients.decision_provider_registry,
+            rerank_provider_registry=invocation_clients.rerank_provider_registry,
             scoring_llm_provider=None,
             scoring_service=scoring_service,
             scoring_config=scoring_config,
@@ -445,6 +448,7 @@ class LocalEvaluationRuntime:
         tool_embedding_provider: Any,
         embedding_provider_registry: Any,
         decision_provider_registry: Any = None,
+        rerank_provider_registry: CachedRerankProviderRegistry | None = None,
         scoring_llm_provider: Any | None,
         scoring_service: EvaluationScoringService,
         scoring_config: EvaluationScoringConfig,
@@ -469,6 +473,10 @@ class LocalEvaluationRuntime:
                 requested_provider
             ),
             tool_embedding_provider=tool_embedding_provider,
+            rerank_provider_resolver=(
+                None if rerank_provider_registry is None
+                else lambda requested_provider, _context: rerank_provider_registry.resolve(requested_provider)
+            ),
             decision_provider_resolver=(
                 None
                 if decision_provider_registry is None
@@ -508,6 +516,7 @@ class LocalEvaluationRuntime:
             _tool_embedding_provider=tool_embedding_provider,
             _embedding_provider_registry=embedding_provider_registry,
             _decision_provider_registry=decision_provider_registry,
+            _rerank_provider_registry=rerank_provider_registry,
             _scoring_llm_provider=scoring_llm_provider,
             _sandbox_manager=create_sandbox_manager(
                 logger_name="harnyx_miner.local_eval.sandbox",
@@ -731,6 +740,7 @@ class LocalEvaluationRuntime:
             self._tool_embedding_provider,
             self._embedding_provider_registry,
             self._decision_provider_registry,
+            self._rerank_provider_registry,
             errors=errors,
             owner="local eval",
         )

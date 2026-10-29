@@ -270,12 +270,12 @@ class _OpenRouterCostDetailsPayload(BaseModel):
 _STRICT_BOOL_ADAPTER = TypeAdapter(bool)
 
 
-def _settled_openrouter_response_cost(
+def settled_openrouter_reported_cost(
     *,
-    response: LlmResponse,
+    raw_response: object,
     model: str,
 ) -> SettledLlmCost | None:
-    billing = _openrouter_usage_billing(response)
+    billing = _openrouter_raw_usage_billing(raw_response)
     if billing.is_byok is True and billing.cost_usd is not None and billing.upstream_inference_cost_usd is not None:
         return SettledLlmCost(
             cost_usd=billing.cost_usd + billing.upstream_inference_cost_usd,
@@ -303,6 +303,18 @@ def _settled_openrouter_response_cost(
             provider=OPENROUTER_PROVIDER,
             evidence=evidence,
         )
+    return None
+
+
+def _settled_openrouter_response_cost(
+    *,
+    response: LlmResponse,
+    model: str,
+) -> SettledLlmCost | None:
+    settled = settled_openrouter_reported_cost(raw_response=(response.metadata or {}).get("raw_response"), model=model)
+    if settled is not None:
+        return settled
+    billing = _openrouter_usage_billing(response)
     return settled_static_llm_cost(
         provider=OPENROUTER_PROVIDER,
         model=model,
@@ -316,7 +328,10 @@ def _settled_openrouter_response_cost(
 
 
 def _openrouter_usage_billing(response: LlmResponse) -> _OpenRouterUsageBilling:
-    raw_response = (response.metadata or {}).get("raw_response")
+    return _openrouter_raw_usage_billing((response.metadata or {}).get("raw_response"))
+
+
+def _openrouter_raw_usage_billing(raw_response: object) -> _OpenRouterUsageBilling:
     if raw_response is None:
         return _missing_openrouter_usage_billing()
     try:
@@ -514,6 +529,7 @@ __all__ = [
     "normalized_provider_cost",
     "settled_cost_from_metadata",
     "settled_response_cost",
+    "settled_openrouter_reported_cost",
     "settled_static_llm_cost",
     "with_settled_llm_cost",
 ]

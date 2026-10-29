@@ -50,9 +50,15 @@ class _EndpointsResponse(BaseModel):
     data: _EndpointModel
 
 
+class _ModelArchitecture(BaseModel):
+    input_modalities: tuple[str, ...] = ()
+    output_modalities: tuple[str, ...] = ()
+
+
 class _Model(BaseModel):
     id: str
     canonical_slug: str | None = None
+    architecture: _ModelArchitecture | None = None
 
 
 class _ModelsResponse(BaseModel):
@@ -150,13 +156,22 @@ class OpenRouterPricingCatalog:
             dict.fromkeys(route for model in models for route in (model.id, model.canonical_slug) if route is not None)
         )
 
+    async def rerank_models(self, *, timeout: float = 30) -> tuple[str, ...]:
+        models = cast(tuple[_Model, ...], await self._get("?output_modalities=rerank", timeout=timeout))
+        return tuple(dict.fromkeys(
+            route for model in models
+            if model.architecture is not None and "text" in model.architecture.input_modalities
+            and "rerank" in model.architecture.output_modalities
+            for route in (model.id, model.canonical_slug) if route is not None
+        ))
+
     async def snapshot(
         self,
         model: str,
         *,
         timeout: float = 30,
         provider_only: tuple[str, ...] | None = None,
-        output_modality: Literal["decisions"] | None = None,
+        output_modality: Literal["decisions", "rerank"] | None = None,
     ) -> OpenRouterPricingSnapshot:
         validate_paid_openrouter_model(model)
         # Catalog ids are authoritative. Documented routing modifiers retain the same model price basis.
@@ -173,6 +188,11 @@ class OpenRouterPricingCatalog:
         if catalog_model not in routes:
             raise ValueError("OpenRouter model has no public regular-price basis")
         entry = routes[catalog_model]
+        if output_modality == "rerank" and (
+            entry.architecture is None or "text" not in entry.architecture.input_modalities
+            or "rerank" not in entry.architecture.output_modalities
+        ):
+            raise ValueError("OpenRouter model does not support text reranking")
         catalog_model = entry.id
         result = cast(
             OpenRouterPricingSnapshot,

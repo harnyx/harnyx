@@ -957,7 +957,7 @@ Body: [MinerTaskWorkExecutionsRequest](#model-minertaskworkexecutionsrequest)
 |  |  | `outcome` | req | [ToolCallOutcome](#model-toolcalloutcome) |
 |  |  | `receipt_id` | req | `string` |
 |  |  | `session_id` | req | `string` (format: uuid) |
-|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
+|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, rerank, decision_query, llm_chat, test_tool, tooling_info]) |
 |  |  | `uid` | req | `integer` |
 |  | `miner_hotkey_ss58` |  | req | `string` |
 |  | `response` |  | req | [Response](#model-response) |
@@ -983,6 +983,7 @@ Body: [MinerTaskWorkExecutionsRequest](#model-minertaskworkexecutionsrequest)
 |  |  | `llm_cost` | opt | `number` (default: 0.0) |
 |  |  | `reference_cost_by_provider` | opt | `object` |
 |  |  | `reference_total_cost_usd` | opt | `number` (default: 0.0) |
+|  |  | `rerank_reference_cost_by_provider` | opt | `object` |
 |  |  | `search_tool` | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
 |  |  | `search_tool_cost` | opt | `number` (default: 0.0) |
 |  | `trace` |  | opt | [EvaluationTrace](#model-evaluationtrace) (nullable) |
@@ -1186,6 +1187,7 @@ Body: [MinerTaskWorkScoreableExecutionsResponse](#model-minertaskworkscoreableex
 |  |  | `llm_cost` | opt | `number` (default: 0.0) |
 |  |  | `reference_cost_by_provider` | opt | `object` |
 |  |  | `reference_total_cost_usd` | opt | `number` (default: 0.0) |
+|  |  | `rerank_reference_cost_by_provider` | opt | `object` |
 |  |  | `search_tool` | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
 |  |  | `search_tool_cost` | opt | `number` (default: 0.0) |
 |  | `trace` |  | opt | [EvaluationTrace](#model-evaluationtrace) (nullable) |
@@ -2609,7 +2611,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `result_id` | req | `string` |
 |  |  | `title` | opt | `string` (nullable) |
 |  |  | `url` | opt | `string` (default: ) |
-|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
+|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, rerank, decision_query, llm_chat, test_tool, tooling_info]) |
 | `signature_hex` |  |  | req | `string` |
 | `signed_callback_path` |  |  | req | `string` |
 
@@ -3007,7 +3009,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `result_id` |  | req | `string` |
 |  | `title` |  | opt | `string` (nullable) |
 |  | `url` |  | opt | `string` (default: ) |
-| `tool` |  |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
+| `tool` |  |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, rerank, decision_query, llm_chat, test_tool, tooling_info]) |
 
 <details>
 <summary>JSON schema</summary>
@@ -3043,6 +3045,7 @@ Body: [StatusResponse](#model-statusresponse)
         "search_ai",
         "fetch_page",
         "embed_text",
+        "rerank",
         "decision_query",
         "llm_chat",
         "test_tool",
@@ -3681,6 +3684,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `llm_cost` |  | opt | `number` (default: 0.0) |
 |  | `reference_cost_by_provider` |  | opt | `object` |
 |  | `reference_total_cost_usd` |  | opt | `number` (default: 0.0) |
+|  | `rerank_reference_cost_by_provider` |  | opt | `object` |
 |  | `search_tool` |  | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
 |  |  | `actual_cost` | opt | `number` (nullable) |
 |  |  | `call_count` | opt | `integer` (default: 0) |
@@ -5595,7 +5599,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `outcome` |  | req | [ToolCallOutcome](#model-toolcalloutcome) |
 |  | `receipt_id` |  | req | `string` |
 |  | `session_id` |  | req | `string` (format: uuid) |
-|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
+|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, rerank, decision_query, llm_chat, test_tool, tooling_info]) |
 |  | `uid` |  | req | `integer` |
 | `finished_at` |  |  | req | `string` (format: date-time) |
 | `max_attempts` |  |  | req | `integer` |
@@ -6261,7 +6265,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `outcome` |  | req | [ToolCallOutcome](#model-toolcalloutcome) |
 |  | `receipt_id` |  | req | `string` |
 |  | `session_id` |  | req | `string` (format: uuid) |
-|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
+|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, rerank, decision_query, llm_chat, test_tool, tooling_info]) |
 |  | `uid` |  | req | `integer` |
 | `run` |  |  | req | [MinerTaskRunSection](#model-minertaskrunsection) |
 |  | `artifact_id` |  | req | `string` (format: uuid) |
@@ -6309,6 +6313,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `llm_cost` | opt | `number` (default: 0.0) |
 |  |  | `reference_cost_by_provider` | opt | `object` |
 |  |  | `reference_total_cost_usd` | opt | `number` (default: 0.0) |
+|  |  | `rerank_reference_cost_by_provider` | opt | `object` |
 |  |  | `search_tool` | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
 |  |  | `search_tool_cost` | opt | `number` (default: 0.0) |
 |  | `trace` |  | opt | [EvaluationTrace](#model-evaluationtrace) (nullable) |
@@ -6634,7 +6639,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `outcome` |  | req | [ToolCallOutcome](#model-toolcalloutcome) |
 |  | `receipt_id` |  | req | `string` |
 |  | `session_id` |  | req | `string` (format: uuid) |
-|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
+|  | `tool` |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, rerank, decision_query, llm_chat, test_tool, tooling_info]) |
 |  | `uid` |  | req | `integer` |
 | `miner_hotkey_ss58` |  |  | req | `string` |
 | `response` |  |  | req | [Response](#model-response) |
@@ -6676,6 +6681,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `llm_cost` |  | opt | `number` (default: 0.0) |
 |  | `reference_cost_by_provider` |  | opt | `object` |
 |  | `reference_total_cost_usd` |  | opt | `number` (default: 0.0) |
+|  | `rerank_reference_cost_by_provider` |  | opt | `object` |
 |  | `search_tool` |  | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
 |  |  | `actual_cost` | opt | `number` (nullable) |
 |  |  | `call_count` | opt | `integer` (default: 0) |
@@ -6907,7 +6913,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `outcome` | req | [ToolCallOutcome](#model-toolcalloutcome) |
 |  |  | `receipt_id` | req | `string` |
 |  |  | `session_id` | req | `string` (format: uuid) |
-|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
+|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, rerank, decision_query, llm_chat, test_tool, tooling_info]) |
 |  |  | `uid` | req | `integer` |
 |  | `miner_hotkey_ss58` |  | req | `string` |
 |  | `response` |  | req | [Response](#model-response) |
@@ -6933,6 +6939,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `llm_cost` | opt | `number` (default: 0.0) |
 |  |  | `reference_cost_by_provider` | opt | `object` |
 |  |  | `reference_total_cost_usd` | opt | `number` (default: 0.0) |
+|  |  | `rerank_reference_cost_by_provider` | opt | `object` |
 |  |  | `search_tool` | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
 |  |  | `search_tool_cost` | opt | `number` (default: 0.0) |
 |  | `trace` |  | opt | [EvaluationTrace](#model-evaluationtrace) (nullable) |
@@ -7040,7 +7047,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `outcome` | req | [ToolCallOutcome](#model-toolcalloutcome) |
 |  |  | `receipt_id` | req | `string` |
 |  |  | `session_id` | req | `string` (format: uuid) |
-|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
+|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, rerank, decision_query, llm_chat, test_tool, tooling_info]) |
 |  |  | `uid` | req | `integer` |
 |  | `run` |  | req | [MinerTaskRunSection](#model-minertaskrunsection) |
 |  |  | `artifact_id` | req | `string` (format: uuid) |
@@ -7097,7 +7104,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `outcome` | req | [ToolCallOutcome](#model-toolcalloutcome) |
 |  |  | `receipt_id` | req | `string` |
 |  |  | `session_id` | req | `string` (format: uuid) |
-|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
+|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, rerank, decision_query, llm_chat, test_tool, tooling_info]) |
 |  |  | `uid` | req | `integer` |
 |  | `finished_at` |  | req | `string` (format: date-time) |
 |  | `max_attempts` |  | req | `integer` |
@@ -7424,6 +7431,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `llm_cost` |  | opt | `number` (default: 0.0) |
 |  | `reference_cost_by_provider` |  | opt | `object` |
 |  | `reference_total_cost_usd` |  | opt | `number` (default: 0.0) |
+|  | `rerank_reference_cost_by_provider` |  | opt | `object` |
 |  | `search_tool` |  | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
 |  |  | `actual_cost` | opt | `number` (nullable) |
 |  |  | `call_count` | opt | `integer` (default: 0) |
@@ -7645,6 +7653,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `llm_cost` | opt | `number` (default: 0.0) |
 |  |  | `reference_cost_by_provider` | opt | `object` |
 |  |  | `reference_total_cost_usd` | opt | `number` (default: 0.0) |
+|  |  | `rerank_reference_cost_by_provider` | opt | `object` |
 |  |  | `search_tool` | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
 |  |  | `search_tool_cost` | opt | `number` (default: 0.0) |
 |  | `trace` |  | opt | [EvaluationTrace](#model-evaluationtrace) (nullable) |
@@ -8564,7 +8573,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `issued_at` | req | `string` (format: date-time) |
 |  |  | `receipt_id` | req | `string` |
 |  |  | `results` | req | array[[SearchToolResult](#model-searchtoolresult)] |
-|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
+|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, rerank, decision_query, llm_chat, test_tool, tooling_info]) |
 |  | `signature_hex` |  | req | `string` |
 |  | `signed_callback_path` |  | req | `string` |
 | `query` |  |  | req | [Query](#model-query) |
@@ -8580,7 +8589,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `issued_at` | req | `string` (format: date-time) |
 |  |  | `receipt_id` | req | `string` |
 |  |  | `results` | req | array[[SearchToolResult](#model-searchtoolresult)] |
-|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
+|  |  | `tool` | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, rerank, decision_query, llm_chat, test_tool, tooling_info]) |
 |  | `signature_hex` |  | req | `string` |
 |  | `signed_callback_path` |  | req | `string` |
 
@@ -9934,7 +9943,7 @@ Body: [StatusResponse](#model-statusresponse)
 | `outcome` |  |  | req | [ToolCallOutcome](#model-toolcalloutcome) |
 | `receipt_id` |  |  | req | `string` |
 | `session_id` |  |  | req | `string` (format: uuid) |
-| `tool` |  |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, decision_query, llm_chat, test_tool, tooling_info]) |
+| `tool` |  |  | req | `string` (enum: [search_web, search_ai, fetch_page, embed_text, rerank, decision_query, llm_chat, test_tool, tooling_info]) |
 | `uid` |  |  | req | `integer` |
 
 <details>
@@ -9970,6 +9979,7 @@ Body: [StatusResponse](#model-statusresponse)
         "search_ai",
         "fetch_page",
         "embed_text",
+        "rerank",
         "decision_query",
         "llm_chat",
         "test_tool",
@@ -10348,6 +10358,7 @@ Body: [StatusResponse](#model-statusresponse)
 | `llm_cost` |  |  | opt | `number` (default: 0.0) |
 | `reference_cost_by_provider` |  |  | opt | `object` |
 | `reference_total_cost_usd` |  |  | opt | `number` (default: 0.0) |
+| `rerank_reference_cost_by_provider` |  |  | opt | `object` |
 | `search_tool` |  |  | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
 |  | `actual_cost` |  | opt | `number` (nullable) |
 |  | `call_count` |  | opt | `integer` (default: 0) |
@@ -10413,6 +10424,13 @@ Body: [StatusResponse](#model-statusresponse)
       "default": 0.0,
       "title": "Reference Total Cost Usd",
       "type": "number"
+    },
+    "rerank_reference_cost_by_provider": {
+      "additionalProperties": {
+        "type": "number"
+      },
+      "title": "Rerank Reference Cost By Provider",
+      "type": "object"
     },
     "search_tool": {
       "$ref": "#/components/schemas/SearchToolUsageSummary"

@@ -7,7 +7,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from harnyx_commons.tools.api import decision_query, embed_text, fetch_page, llm_chat, search_web, tooling_info
+from harnyx_commons.tools.api import decision_query, embed_text, fetch_page, llm_chat, rerank, search_web, tooling_info
 from harnyx_commons.tools.api import (
     test_tool as invoke_test_tool,
 )
@@ -65,6 +65,11 @@ class _ResponseInvoker:
                 "model": "cloudflare/clef-flash",
                 "answers": {"b": {"type": "boolean", "probability": 0.8}},
             },
+            "rerank": {
+                "provider": "openrouter", "model": "cohere/rerank-v3.5",
+                "results": [{"index": 0, "relevance_score": 0.9, "document": "Paris"}],
+                "usage": {"search_units": 1},
+            },
             "llm_chat": {"id": "response-1", "choices": [], "usage": {}},
         }
         return {
@@ -100,6 +105,7 @@ async def test_all_tool_helpers_return_monetary_budget_without_time_budget() -> 
         responses = (
             await invoke_test_tool("ping"),
             await tooling_info(),
+            await rerank("capital?", ["Paris"], provider="openrouter", model="cohere/rerank-v3.5"),
             await search_web("query", provider="parallel"),
             await fetch_page("https://example.com", provider="parallel"),
             await embed_text(

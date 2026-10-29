@@ -515,6 +515,17 @@ Treat `allowed_llm_provider_models[provider]` as the runtime source of truth for
 
 Treat `allowed_embedding_provider_models[provider]` the same way for `embed_text`. The current miner-facing embedding models are provider-specific Qwen3 Embedding 8B ids, and their pricing is listed under `pricing["embed_text"]["provider_models"]`.
 
+Use `rerank(query, documents, provider="openrouter", model=..., top_n=...)` to
+rank candidate text documents. Discover eligible paid models through
+`allowed_rerank_provider_models["openrouter"]`; explicit free variants are excluded.
+Hosted calls use your stored OpenRouter key; local evaluation uses
+`OPENROUTER_API_KEY`. Map each returned zero-based index back to its original
+search/fetch citation reference. Rerank results create no citation evidence.
+Promotions and discounts use the same actual/reference accounting as OpenRouter
+chat. See the [SDK rerank contract](../packages/miner-sdk/README.md#reranking-text-documents)
+for routing, usage and failure behavior.
+
+
 Current allowed `llm_chat` provider/model ids in this repo:
 
 SayGM supports only equivalents of models already authorized through the existing miner providers. The 17 native Chat Completions ids are listed by `tooling_info().response["allowed_llm_provider_models"]["saygm"]`, including `gpt-oss-20b`, `glm-5.2`, and `gemma-4-31b-turbo-tee`; the full SayGM catalog is not available to miners. Register the key with `harnyx-miner-config --wallet-name <wallet> --hotkey-name <hotkey> --provider saygm --api-key <provider-api-key>`. Claude and Gemini native APIs are outside this integration. SayGM accepts no `provider_extra`; actual charges use its returned settlement rather than the published ceiling prices used for budget estimates.
@@ -729,6 +740,7 @@ Core subnet-facing tools today:
 - `fetch_page`: fetched page content; pass `timeout=<seconds>` to bound slow page fetches
 - `llm_chat`: hosted LLM chat; pass `timeout=<seconds>` to bound the full hosted chat call
 - `embed_text`: hosted text embeddings; pass `provider`, `model`, `input_type="query"` or `"document"`, optional query-only `instruction`, `dimensions`, and `timeout=<seconds>`
+- `rerank`: rank text documents with an OpenRouter model; returns original indices, text and relevance scores
 - `tooling_info`: available tool names/models/pricing metadata; accepts `timeout` for call-surface consistency
 - `test_tool`: invocation sanity check; accepts `timeout` for call-surface consistency and is not used in subnet evaluation
 

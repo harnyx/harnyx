@@ -768,6 +768,7 @@ async def test_local_eval_scoring_override_dispatches_only_supported_operator_ro
             embedding_provider=None,
             embedding_provider_registry=None,
             decision_provider_registry=None,
+            rerank_provider_registry=None,
         ),
     )
     # Sandbox construction is outside the scoring caller boundary under test.
@@ -828,6 +829,7 @@ def test_local_eval_runtime_starts_with_unused_tool_provider_and_binds_to_loopba
             embedding_provider=_FakeAsyncResource(),
             embedding_provider_registry=_FakeRegistry(),
             decision_provider_registry=_FakeRegistry(),
+            rerank_provider_registry=_FakeRegistry(),
         ),
     )
     monkeypatch.setattr(

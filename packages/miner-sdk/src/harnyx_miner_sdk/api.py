@@ -47,6 +47,7 @@ from harnyx_miner_sdk.tools.llm_provider_extra import (
     OpenRouterExtra,
     ProviderExtra,
 )
+from harnyx_miner_sdk.tools.rerank_models import RerankRequest, RerankResponse, validate_rerank_results
 from harnyx_miner_sdk.tools.search_models import (
     FetchPageRequest,
     FetchPageResponse,
@@ -288,6 +289,35 @@ async def embed_text(
     return _build_tool_call_response(ToolCallResponse, dto, response)
 
 
+async def rerank(
+    query: str,
+    documents: Sequence[str],
+    *,
+    provider: Literal["openrouter"],
+    model: str,
+    top_n: int | None = None,
+    provider_extra: Mapping[str, Any] | OpenRouterExtra | None = None,
+    timeout: ToolInvocationTimeout | None = None,
+) -> ToolCallResponse[RerankResponse]:
+    """Rank candidate text documents without creating new citation sources."""
+    request = RerankRequest.model_validate({
+        "provider": provider, "model": model, "query": query, "documents": list(documents),
+        "top_n": top_n, "timeout": timeout,
+        "provider_extra": (
+            provider_extra.to_request_extra() if isinstance(provider_extra, OpenRouterExtra) else provider_extra
+        ),
+    })
+    raw = await _current_tool_invoker().invoke(
+        "rerank", args=(), kwargs=request.model_dump(mode="json", exclude_none=True)
+    )
+    dto = _parse_execute_response(raw)
+    response = RerankResponse.model_validate(
+        _require_response_mapping(dto.response, label="rerank response payload must be a mapping")
+    )
+    validate_rerank_results(request, response)
+    return _build_tool_call_response(ToolCallResponse, dto, response)
+
+
 async def decision_query(
     *,
     provider: DecisionProviderName,
@@ -467,6 +497,8 @@ def _llm_chat_message_input(message: Mapping[str, Any] | LlmChatMessage | LlmMes
 __all__ = [
     "Timeout",
     "embed_text",
+    "rerank",
+    "RerankResponse",
     "decision_query",
     "fetch_page",
     "llm_chat",

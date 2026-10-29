@@ -43,7 +43,12 @@ from harnyx_commons.tools.http_models import (
     LlmUsageDTO,
     ReaxErrorBillingDTO,
 )
-from harnyx_commons.tools.provider_billing import OpenRouterAccounting, ProviderBillingMetadata, failure_billing
+from harnyx_commons.tools.provider_billing import (
+    RECOVERABLE_INFERENCE_TOOLS,
+    OpenRouterAccounting,
+    ProviderBillingMetadata,
+    failure_billing,
+)
 from harnyx_commons.tools.types import ToolName
 from harnyx_miner_sdk.endpoint_protocol import EndpointCallbackAcknowledgement, EndpointDelegation
 from harnyx_validator.application.dto.evaluation import (
@@ -667,7 +672,7 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
         if response.status_code != httpx.codes.OK:
             error_code = _platform_error_code(response)
             billing = None
-            if tool in {"decision_query", "search_web", "fetch_page", "llm_chat"}:
+            if tool in {*RECOVERABLE_INFERENCE_TOOLS, "search_web", "fetch_page"}:
                 try:
                     error_payload = response.json()
                 except ValueError:
@@ -684,7 +689,7 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
                         if tool == "decision_query"
                         and error_payload["billing"].get("actual_cost_provider") != "openrouter"
                         else _OpenRouterProxyBilling.model_validate(error_payload["billing"])
-                        if tool in {"llm_chat", "decision_query"}
+                        if tool in RECOVERABLE_INFERENCE_TOOLS
                         else _DeepSeekProxyBilling.model_validate(error_payload["billing"])
                     )
                     billing = (

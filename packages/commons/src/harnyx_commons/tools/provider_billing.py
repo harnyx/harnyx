@@ -13,6 +13,7 @@ from harnyx_commons.llm.schema import LlmUsage
 from harnyx_commons.tools.decision_models import DecisionUsage
 
 # Providers whose accepted inference costs can be completed by hosted receipts.
+RECOVERABLE_INFERENCE_TOOLS = ("llm_chat", "decision_query", "rerank")
 RECOVERABLE_INFERENCE_PROVIDERS = ("openrouter", "cloudflare", "jev", "reax")
 
 ProviderBillingSource = Literal[
@@ -180,7 +181,9 @@ def billing_evidence_payload(billing: ProviderBillingMetadata | None) -> JsonObj
 
 def failure_billing(tool: str, billing: ProviderBillingMetadata | None) -> ProviderBillingMetadata | None:
     """Keep supported failure evidence without treating uncertain search costs as free."""
-    if tool == "llm_chat" and billing is not None and billing.actual_cost_provider in {"openrouter", "cloudflare"}:
+    if tool in RECOVERABLE_INFERENCE_TOOLS and billing is not None and billing.actual_cost_provider == "openrouter":
+        return billing
+    if tool == "llm_chat" and billing is not None and billing.actual_cost_provider == "cloudflare":
         return billing
     if tool == "decision_query":
         return billing
@@ -213,6 +216,7 @@ __all__ = [
     "OpenRouterAccounting",
     "ProviderBillingMetadata",
     "RECOVERABLE_INFERENCE_PROVIDERS",
+    "RECOVERABLE_INFERENCE_TOOLS",
     "ProviderBillingSource",
     "SearchProviderResult",
     "billing_evidence_payload",

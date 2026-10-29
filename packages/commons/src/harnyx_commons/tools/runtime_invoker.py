@@ -75,6 +75,8 @@ from harnyx_commons.tools.ports import (
     DecisionProviderResult,
     EmbeddingProviderPort,
     FetchPageProviderPort,
+    RerankProviderPort,
+    RerankProviderResult,
     WebSearchProviderPort,
 )
 from harnyx_commons.tools.provider_billing import (
@@ -83,6 +85,7 @@ from harnyx_commons.tools.provider_billing import (
     billing_evidence_payload,
     failure_billing,
 )
+from harnyx_commons.tools.rerank_models import RerankRequest
 from harnyx_commons.tools.search_models import (
     AiSearchProviderName,
     FetchPageRequest,
@@ -151,6 +154,11 @@ DecisionProviderResolver = Callable[
 ]
 
 
+RerankProviderResolver = Callable[
+    [str, ToolInvocationContext | None], RerankProviderPort | Awaitable[RerankProviderPort]
+]
+
+
 @dataclass(frozen=True, slots=True)
 class _ActualCost:
     cost_usd: float | None
@@ -201,6 +209,9 @@ def build_miner_sandbox_tool_invoker(
     decision_provider: DecisionProviderPort | None = None,
     decision_provider_resolver: DecisionProviderResolver | None = None,
     platform_decision_provider_resolver: DecisionProviderResolver | None = None,
+    rerank_provider: RerankProviderPort | None = None,
+    rerank_provider_resolver: RerankProviderResolver | None = None,
+    platform_rerank_provider_resolver: RerankProviderResolver | None = None,
     allowed_models: tuple[ToolModelName, ...] = ALLOWED_TOOL_MODELS,
     openrouter_pricing_catalog: OpenRouterPricingCatalog | None = None,
 ) -> RuntimeToolInvoker:
@@ -228,6 +239,9 @@ def build_miner_sandbox_tool_invoker(
         decision_provider=decision_provider,
         decision_provider_resolver=decision_provider_resolver,
         platform_decision_provider_resolver=platform_decision_provider_resolver,
+        rerank_provider=rerank_provider,
+        rerank_provider_resolver=rerank_provider_resolver,
+        platform_rerank_provider_resolver=platform_rerank_provider_resolver,
         advertised_tool_names=MINER_SANDBOX_TOOL_NAMES,
         allowed_models=allowed_models,
         openrouter_pricing_catalog=openrouter_pricing_catalog,
@@ -248,7 +262,7 @@ def effective_tool_timeout_seconds(
         return _effective_timeout_from_payload(payload, default=DEFAULT_TOOL_LLM_TIMEOUT_SECONDS)
     if tool_name in {"search_web", "search_ai", "fetch_page"}:
         return _effective_timeout_from_payload(payload, default=DEFAULT_SEARCH_TOOL_TIMEOUT_SECONDS)
-    if tool_name in {"embed_text", "decision_query"}:
+    if tool_name in {"embed_text", "decision_query", "rerank"}:
         return _effective_timeout_from_payload(payload, default=DEFAULT_EMBEDDING_TOOL_TIMEOUT_SECONDS)
     raise LookupError(f"tool {tool_name!r} does not have a provider timeout")
 
@@ -362,6 +376,9 @@ class RuntimeToolInvoker(ToolInvoker):
         decision_provider: DecisionProviderPort | None = None,
         decision_provider_resolver: DecisionProviderResolver | None = None,
         platform_decision_provider_resolver: DecisionProviderResolver | None = None,
+        rerank_provider: RerankProviderPort | None = None,
+        rerank_provider_resolver: RerankProviderResolver | None = None,
+        platform_rerank_provider_resolver: RerankProviderResolver | None = None,
         advertised_tool_names: tuple[ToolName, ...] | None = None,
         allowed_models: tuple[ToolModelName, ...] = ALLOWED_TOOL_MODELS,
         openrouter_pricing_catalog: OpenRouterPricingCatalog | None = None,
@@ -388,6 +405,9 @@ class RuntimeToolInvoker(ToolInvoker):
         self._embedding_provider_name = embedding_provider_name
         self._embedding_provider_resolver = embedding_provider_resolver
         self._platform_embedding_provider_resolver = platform_embedding_provider_resolver
+        self._rerank_provider = rerank_provider
+        self._rerank_provider_resolver = rerank_provider_resolver
+        self._platform_rerank_provider_resolver = platform_rerank_provider_resolver
         self._decision_provider = decision_provider
         self._decision_provider_resolver = decision_provider_resolver
         self._platform_decision_provider_resolver = platform_decision_provider_resolver
@@ -412,6 +432,9 @@ class RuntimeToolInvoker(ToolInvoker):
             if is_search_tool(tool_name):
                 args, kwargs = _with_default_tool_timeout(tool_name, args=args, kwargs=kwargs)
                 return await self._dispatch_search(tool_name, args, kwargs, context=context)
+            if tool_name == "rerank":
+                args, kwargs = _with_default_tool_timeout(tool_name, args=args, kwargs=kwargs)
+                return await self._dispatch_rerank(args, kwargs, context=context)
             if tool_name == "decision_query":
                 args, kwargs = _with_default_tool_timeout(tool_name, args=args, kwargs=kwargs)
                 return await self._dispatch_decision(args, kwargs, context=context)
@@ -575,13 +598,15 @@ class RuntimeToolInvoker(ToolInvoker):
             try:
                 # Bound lock contention and the full refresh, not each HTTP operation.
                 async with asyncio.timeout(timeout):
+                    if tool == "rerank":
+                        return await self._openrouter_pricing_catalog.rerank_models(timeout=timeout), True
                     if tool == "decision_query":
                         return await self._openrouter_pricing_catalog.decision_models(timeout=timeout), True
                     return await self._openrouter_pricing_catalog.models(timeout=timeout), True
             except (httpx.HTTPError, ValueError, TimeoutError):
                 return (), False
 
-        discovery_tools = tuple(tool for tool in ("llm_chat", "decision_query") if tool in visible_tool_names)
+        discovery_tools = tuple(tool for tool in ("llm_chat", "decision_query", "rerank") if tool in visible_tool_names)
         # Both catalogs share the original discovery deadline instead of adding
         # a second cold-cache wait to the tooling_info call.
         discovery = dict(
@@ -616,7 +641,19 @@ class RuntimeToolInvoker(ToolInvoker):
                 "settlement_order": ["provider_returned"],
                 "discovery_available": discovery_available,
             }
+        allowed_rerank_models: dict[str, JsonValue] = {"openrouter": []}
+        if "rerank" in visible_tool_names:
+            models, discovery_available = discovery["rerank"]
+            allowed_rerank_models["openrouter"] = list(models)
+            pricing["rerank"] = {"openrouter": {
+                "kind": "dynamic_provider_pricing",
+                "reference": "maximum_provider_discount_reversal",
+                "actual": "original_provider_charge",
+                "settlement_order": ["provider_returned"],
+                "discovery_available": discovery_available,
+            }}
         return {
+            "allowed_rerank_provider_models": allowed_rerank_models,
             "tool_names": tool_names,
             "allowed_llm_provider_models": allowed_provider_models,
             "allowed_embedding_provider_models": {
@@ -893,6 +930,65 @@ class RuntimeToolInvoker(ToolInvoker):
             reference_cost_usd=cost.reference_cost_usd,
         )
 
+    async def _dispatch_rerank(
+        self, args: Sequence[JsonValue], kwargs: Mapping[str, JsonValue], *,
+        context: ToolInvocationContext | None,
+    ) -> ToolInvocationOutput:
+        request = RerankRequest.model_validate(tool_payload_from_args_kwargs(args, kwargs))
+        resolver = (
+            self._platform_rerank_provider_resolver
+            if _uses_platform_credentials(context) else self._rerank_provider_resolver
+        )
+        dispatched = False
+        try:
+            if resolver is not None:
+                provider = await _resolve_maybe_awaitable(resolver(request.provider, context))
+            elif not _uses_platform_credentials(context) and self._rerank_provider is not None:
+                provider = self._rerank_provider
+            elif _uses_platform_credentials(context):
+                raise _credential_unavailable(request.provider)
+            else:
+                raise LookupError("rerank provider is not configured")
+            started = time.perf_counter()
+
+            async def rerank() -> RerankProviderResult:
+                nonlocal dispatched
+                dispatched = True
+                if context is not None and context.on_provider_dispatch is not None:
+                    context.on_provider_dispatch()
+                return await provider.rerank(request)
+
+            result = await _invoke_with_optional_timeout("rerank", request.timeout, rerank)
+        except ProviderCredentialUnavailableError as exc:
+            raise _credential_unavailable(exc.provider) from exc
+        except BaseException as exc:
+            if (
+                isinstance(exc, (ToolProviderError, ToolInvocationTimeoutError, ToolInvocationCancelledError))
+                and exc.billing is not None
+            ):
+                raise
+            billing = OpenRouterAccounting(
+                "attempted" if dispatched else "not_dispatched",
+                None if dispatched else 0.0, None if dispatched else 0.0,
+            ).to_billing()
+            if isinstance(exc, (ToolProviderError, ToolInvocationTimeoutError, ToolInvocationCancelledError)):
+                exc.billing = billing
+                raise
+            if isinstance(exc, asyncio.CancelledError):
+                raise ToolInvocationCancelledError("OpenRouter rerank cancelled", billing=billing) from exc
+            if not isinstance(exc, Exception):
+                raise
+            raise ToolProviderError(str(exc), provider="openrouter", billing=billing) from exc
+        billing = result.billing
+        if billing.actual_cost_usd is None or billing.reference_cost_usd is None:
+            raise ToolProviderError("rerank response missing settled cost", provider="openrouter", billing=billing)
+        return ToolInvocationOutput(
+            public_payload=cast(JsonObject, result.response.model_dump(mode="json", exclude_none=True)),
+            execution=ToolExecutionFacts(elapsed_ms=(time.perf_counter() - started) * 1000.0),
+            actual_cost_usd=billing.actual_cost_usd, actual_cost_provider=billing.actual_cost_provider,
+            actual_cost_evidence=billing.provider_usage, reference_cost_usd=billing.reference_cost_usd,
+        )
+
     def _parse_invocation(
         self,
         args: Sequence[JsonValue],
@@ -1157,7 +1253,7 @@ async def _cancel_provider_task(task: asyncio.Task[TInvocationResult]) -> Provid
         return exc.billing
     except (asyncio.CancelledError, Exception):
         return None
-    return result.billing if isinstance(result, DecisionProviderResult) else None
+    return result.billing if isinstance(result, DecisionProviderResult | RerankProviderResult) else None
 
 
 def _public_embedding_pricing_payload(rates: EmbeddingPricing) -> JsonObject:

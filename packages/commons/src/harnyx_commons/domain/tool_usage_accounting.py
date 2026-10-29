@@ -104,6 +104,9 @@ def merge_tool_usage_summaries(left: ToolUsageSummary, right: ToolUsageSummary) 
             left.reference_cost_by_provider,
             right.reference_cost_by_provider,
         ),
+        rerank_reference_cost_by_provider=_merge_cost_by_provider(
+            left.rerank_reference_cost_by_provider, right.rerank_reference_cost_by_provider,
+        ),
         decision_reference_cost_by_provider=_merge_cost_by_provider(
             left.decision_reference_cost_by_provider,
             right.decision_reference_cost_by_provider,

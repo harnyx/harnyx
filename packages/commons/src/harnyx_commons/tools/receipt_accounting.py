@@ -8,13 +8,17 @@ from dataclasses import asdict, dataclass, replace
 from harnyx_commons.domain.session import LlmUsageTotals, SessionUsage
 from harnyx_commons.domain.tool_call import ToolCall
 from harnyx_commons.domain.tool_usage import LlmModelUsageCost, LlmUsageSummary, ToolUsageSummary
-from harnyx_commons.tools.provider_billing import RECOVERABLE_INFERENCE_PROVIDERS, OpenRouterAccounting
-from harnyx_commons.tools.types import is_search_tool
+from harnyx_commons.tools.provider_billing import (
+    RECOVERABLE_INFERENCE_PROVIDERS,
+    RECOVERABLE_INFERENCE_TOOLS,
+    OpenRouterAccounting,
+)
+from harnyx_commons.tools.types import ToolName, is_search_tool
 
 
 def openrouter_accounting(receipt: ToolCall) -> OpenRouterAccounting | None:
     """Decode explicit miner accounting; generic/internal receipts retain their policy."""
-    if receipt.tool not in {"llm_chat", "decision_query"} or _receipt_llm_provider(receipt) != "openrouter":
+    if receipt.tool not in RECOVERABLE_INFERENCE_TOOLS or _receipt_llm_provider(receipt) != "openrouter":
         return None
     raw = (receipt.details.extra or {}).get("actual_cost_evidence")
     if not isinstance(raw, dict):
@@ -56,16 +60,22 @@ def _recover_provider_usage(
 ) -> ToolUsageSummary:
     """Replace Platform-owned inference costs, preserving embedding and other-provider policies."""
     decisions = tuple(r for r in receipts if r.tool == "decision_query" and _receipt_llm_provider(r) == provider)
+    reranks = tuple(r for r in receipts if r.tool == "rerank" and _receipt_llm_provider(r) == provider)
+    prior_rerank_reference = submitted.rerank_reference_cost_by_provider.get(provider, 0.0)
+    rerank_reference = sum(r.details.cost_usd or 0.0 for r in reranks)
     prior_decision_reference = submitted.decision_reference_cost_by_provider.get(provider, 0.0)
     decision_reference = sum(r.details.cost_usd or 0.0 for r in decisions)
     chat = tuple(r for r in receipts if r.tool == "llm_chat" and _receipt_llm_provider(r) == provider)
-    if not chat and not decisions:
+    if not chat and not decisions and not reranks:
         return submitted
-    canonical = usage_from_receipts((*chat, *decisions))
+    canonical = usage_from_receipts((*chat, *decisions, *reranks))
     normalized, canonical_reference = summarize_llm_usage(canonical, chat)
     previous = submitted.llm.providers.get(provider, {})
     previous_reference = sum(model.reference_cost for model in previous.values())
-    reference_delta = canonical_reference - previous_reference + decision_reference - prior_decision_reference
+    reference_delta = (
+        canonical_reference - previous_reference + decision_reference - prior_decision_reference
+        + rerank_reference - prior_rerank_reference
+    )
     providers = {provider: dict(models) for provider, models in submitted.llm.providers.items()}
     providers[provider] = normalized.providers.get(provider, {})
     entries = [entry for models in providers.values() for entry in models.values()]
@@ -95,11 +105,12 @@ def _recover_provider_usage(
         submitted.reference_cost_by_provider.get(provider, previous_reference)
         - previous_reference
         - prior_decision_reference
+        - prior_rerank_reference
     )
     if nonchat_known < -1e-12:
         raise ValueError("Inference provider reference is smaller than its chat contribution")
     actual_providers[provider] = max(nonchat_known, 0.0) + sum(
-        r.details.actual_cost_usd or 0.0 for r in (*chat, *decisions)
+        r.details.actual_cost_usd or 0.0 for r in (*chat, *decisions, *reranks)
     )
     actual_total = submitted.actual_total_cost_usd
     if actual_total is not None:
@@ -120,15 +131,30 @@ def _recover_provider_usage(
             **submitted.decision_reference_cost_by_provider,
             provider: decision_reference,
         },
+        rerank_reference_cost_by_provider={
+            **submitted.rerank_reference_cost_by_provider,
+            **(
+                {provider: rerank_reference}
+                if reranks or provider in submitted.rerank_reference_cost_by_provider else {}
+            ),
+        },
         actual_total_cost_usd=actual_total,
         actual_cost_by_provider=actual_providers,
     )
 
 
 def decision_reference_costs(receipts: Sequence[ToolCall]) -> dict[str, float]:
+    return _reference_costs(receipts, tool="decision_query")
+
+
+def rerank_reference_costs(receipts: Sequence[ToolCall]) -> dict[str, float]:
+    return _reference_costs(receipts, tool="rerank")
+
+
+def _reference_costs(receipts: Sequence[ToolCall], *, tool: ToolName) -> dict[str, float]:
     costs: dict[str, float] = {}
     for receipt in receipts:
-        if receipt.tool != "decision_query" or receipt.details.cost_usd is None:
+        if receipt.tool != tool or receipt.details.cost_usd is None:
             continue
         provider = _receipt_request_provider(receipt)
         if provider is not None:
@@ -325,7 +351,10 @@ def _accumulate_receipt_actual_cost(
     if actual is not None:
         return None if current is None else current + actual
     if cost_usd is None:
-        if receipt.tool == "decision_query" or (receipt.details.extra or {}).get("reference_cost_unavailable"):
+        if (
+            receipt.tool in {"decision_query", "rerank"}
+            or (receipt.details.extra or {}).get("reference_cost_unavailable")
+        ):
             return None
         if (receipt.details.extra or {}).get("account_provider_failures") and (receipt.details.extra or {}).get(
             "provider_dispatched", True
@@ -353,7 +382,7 @@ def _receipt_session_cost_provider(receipt: ToolCall) -> str | None:
 
 def _receipt_request_cost_provider(receipt: ToolCall) -> str | None:
     provider = _receipt_request_provider(receipt)
-    if receipt.tool == "decision_query":
+    if receipt.tool in {"decision_query", "rerank"}:
         return provider if provider in {"openrouter", "ai_gateway", "cloudflare", "jev", "reax"} else None
     if provider is not None and provider.strip():
         return provider.strip()

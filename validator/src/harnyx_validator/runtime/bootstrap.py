@@ -60,6 +60,7 @@ from harnyx_commons.tools.runtime_invoker import (
     EmbeddingProviderResolver,
     FetchPageProviderResolver,
     LlmProviderResolver,
+    RerankProviderResolver,
     RuntimeToolInvoker,
     WebSearchProviderResolver,
     build_miner_sandbox_tool_invoker,
@@ -830,6 +831,7 @@ def _build_local_provider_tooling(
     llm_provider_resolver: LlmProviderResolver | None = None,
     embedding_provider_resolver: EmbeddingProviderResolver | None = None,
     decision_provider_resolver: DecisionProviderResolver | None = None,
+    rerank_provider_resolver: RerankProviderResolver | None = None,
 ) -> tuple[ToolInvoker, ToolExecutor]:
     local_invoker = build_miner_sandbox_tool_invoker(
         state.receipt_log,
@@ -844,6 +846,7 @@ def _build_local_provider_tooling(
         embedding_provider_name=resolved.llm.tool_embedding_provider if tool_embedding_provider is not None else None,
         embedding_provider_resolver=embedding_provider_resolver,
         decision_provider_resolver=decision_provider_resolver,
+        rerank_provider_resolver=rerank_provider_resolver,
         allowed_models=ALLOWED_TOOL_MODELS,
     )
     return local_invoker, _ProviderTrackingToolExecutor(
@@ -1038,6 +1041,13 @@ def _provider_key_from_request(
         return search_provider_name, request.tool
     if request.tool == "embed_text":
         return _explicit_embedding_provider_model(payload)
+    if request.tool == "rerank":
+        try:
+            from harnyx_commons.tools.rerank_models import RerankRequest
+            rerank = RerankRequest.model_validate(payload)
+            return rerank.provider, rerank.model
+        except ValueError:
+            return None
     if request.tool == "decision_query":
         return _explicit_decision_provider_model(payload)
     if request.tool != "llm_chat":

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import cast
 from uuid import uuid4
@@ -356,3 +357,50 @@ def test_recovered_chat_costs_preserve_other_providers_nonchat_charges_and_unkno
     assert recovered.llm.call_count == 3 and recovered.llm.total_tokens == 45
     assert recovered.llm.reasoning_tokens == 8
     assert submitted.actual_cost_by_provider[provider] == 0.015
+
+
+def test_rerank_recovery_is_idempotent_and_preserves_embeddings_and_chat_tokens() -> None:
+    from harnyx_commons.domain.session import LlmUsageTotals
+    from harnyx_commons.domain.tool_call import ToolCall, ToolCallDetails, ToolCallOutcome
+    from harnyx_commons.domain.tool_usage import LlmModelUsageCost, LlmUsageSummary, ToolUsageSummary
+    from harnyx_commons.tools.receipt_accounting import recover_inference_usage
+    from harnyx_commons.tools.types import ToolName
+
+    old_chat = LlmModelUsageCost(usage=LlmUsageTotals(call_count=1, total_tokens=5), cost=.01, actual_cost=.005)
+    submitted = ToolUsageSummary(
+        llm=LlmUsageSummary(providers={"openrouter": {"cohere/rerank-v3.5": old_chat}}, cost=.01),
+        llm_cost=.01, reference_total_cost_usd=.022, reference_cost_by_provider={"openrouter": .022},
+        decision_reference_cost_by_provider={"openrouter": .005},
+        rerank_reference_cost_by_provider={"openrouter": .004},
+        actual_total_cost_usd=.015, actual_cost_by_provider={"openrouter": .015},
+    )
+
+    def receipt(tool: ToolName, actual: float, reference: float) -> ToolCall:
+        return ToolCall(
+            receipt_id=str(uuid4()), session_id=uuid4(), uid=1, tool=tool,
+            issued_at=datetime.now(UTC), outcome=ToolCallOutcome.OK,
+            details=ToolCallDetails(
+                request_hash=uuid4().hex,
+                request_payload={"provider": "openrouter", "model": "cohere/rerank-v3.5"},
+                response_payload={"usage": {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15}},
+                actual_cost_provider="openrouter", actual_cost_usd=actual, reference_cost_usd=reference,
+            ),
+        )
+
+    receipts = (
+        receipt("llm_chat", .01, .02), receipt("decision_query", .005, .005),
+        receipt("rerank", .002, .004), receipt("rerank", .003, .006), receipt("embed_text", .003, .003),
+    )
+    recovered = recover_inference_usage(submitted, receipts)
+    replayed = recover_inference_usage(recovered, receipts)
+    assert replayed.actual_total_cost_usd == pytest.approx(recovered.actual_total_cost_usd)
+    assert replayed.actual_cost_by_provider == pytest.approx(recovered.actual_cost_by_provider)
+    assert replace(
+        replayed, actual_total_cost_usd=recovered.actual_total_cost_usd,
+        actual_cost_by_provider=recovered.actual_cost_by_provider,
+    ) == recovered
+    assert recovered.reference_total_cost_usd == pytest.approx(.038)
+    assert recovered.actual_total_cost_usd == pytest.approx(.023)
+    assert recovered.rerank_reference_cost_by_provider == pytest.approx({"openrouter": .01})
+    assert recovered.llm.call_count == 1 and recovered.llm.total_tokens == 15
+    assert submitted.reference_total_cost_usd == .022

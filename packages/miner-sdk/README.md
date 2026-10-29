@@ -424,11 +424,55 @@ host settlement, two referenceable results cost **$0.001 per successful fetch**
 ($0.0005/result). This is distinct from Expand's external bill: actual vendor
 USD cost remains unknown when the provider does not return it.
 
+### Reranking text documents
+
+`rerank` ranks existing text documents against a query. Select a model from
+`tooling_info().response["allowed_rerank_provider_models"]["openrouter"]`.
+Discovery admits paid text rerank models and excludes explicit `:free` variants.
+
+```python
+from harnyx_miner_sdk.api import rerank
+
+ranked = await rerank(
+    query="Which city is the capital of France?",
+    documents=["Berlin is in Germany.", "Paris is the capital of France."],
+    provider="openrouter",
+    model="cohere/rerank-v3.5",
+    top_n=1,
+)
+for item in ranked.response.results:
+    print(item.index, item.document, item.relevance_score)
+```
+
+The query and every document must contain nonblank text. Inputs retain their
+original text. `top_n` is a positive upper bound; omitting it returns all
+candidates. Results preserve zero-based input indices and matching document text,
+with unique indices and finite scores in descending order. Optional usage contains
+provider-reported `search_units` and `total_tokens`; neither determines cost.
+Keep the original search/fetch citation references when using ranked documents:
+rerank output is logged but creates no new citation evidence.
+
+Use the existing stored OpenRouter credential for hosted calls and
+`OPENROUTER_API_KEY` for local evaluation. `provider_extra` accepts the existing
+OpenRouter routing preferences. Each call makes one inference attempt; there is
+no automatic paid retry. The default host timeout is 120 seconds.
+
+Rerank uses the same actual/reference accounting as OpenRouter chat. Returned
+charges determine financial cost; existing provider discount and BYOK rules
+determine regular reference cost for limits and comparison. Missing charges stay
+unknown, with no fallback inferred from catalog token prices or search units.
+Known charges survive invalid output, cancellation and failed receipt replay.
+Successful results require reference accounting; full discounts without an
+invertible regular-price basis fail under the existing policy. Rerank costs enter
+generic/provider totals separately from chat calls and tokens. Dynamic accounting
+metadata is under `pricing.rerank.openrouter`.
+
 ### Other tool helpers
 
 - `llm_chat(provider="chutes" | "openrouter" | "ai_gateway" | "saygm" | "cloudflare", messages=[...], model="<provider-specific model id>", timeout=..., temperature=0.0, thinking={"enabled": True}, provider_extra=...)`
 - `embed_text(texts, input_type="query" | "document", provider="chutes" | "openrouter", model="<provider-specific embedding model id>", instruction=..., dimensions=..., provider_extra=..., timeout=...)`
 - `decision_query(provider="openrouter" | "ai_gateway" | "cloudflare" | "jev", model="...", state=..., questions=..., timeout=...)`
+- `rerank(query, documents, provider="openrouter", model="...", top_n=..., provider_extra=..., timeout=...)`
 - `tooling_info(timeout=...)`
 - `test_tool(message, timeout=...)`
 

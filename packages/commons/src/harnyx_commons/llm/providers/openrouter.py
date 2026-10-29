@@ -653,3 +653,47 @@ class OpenRouterDecisionClient:
         if self._owns_client:
             assert self.client is not None
             await self.client.aclose()
+
+
+@dataclass(slots=True)
+class OpenRouterRerankClient:
+    """Single-attempt native transport; the adapter settles billing before validating output."""
+
+    model: str
+    api_key: SecretStr = field(repr=False)
+    timeout_seconds: float = 120.0
+    client: httpx.AsyncClient | None = None
+    _owns_client: bool = field(default=False, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        validate_paid_openrouter_model(self.model)
+        key = self.api_key.get_secret_value().strip()
+        if not key:
+            raise ValueError("OpenRouter API key must be provided for reranking")
+        if self.client is None:
+            self.client = httpx.AsyncClient(
+                base_url=OPENROUTER_BASE_URL.rstrip("/") + "/",
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=self.timeout_seconds,
+            )
+            self._owns_client = True
+
+    async def rerank(
+        self, *, query: str, documents: Sequence[str], top_n: int | None,
+        extra: Mapping[str, Any] | None = None, timeout_seconds: float | None = None,
+    ) -> httpx.Response:
+        payload: dict[str, Any] = {"model": self.model, "query": query, "documents": list(documents)}
+        if top_n is not None:
+            payload["top_n"] = top_n
+        if extra is not None:
+            payload.update(extra)
+        assert self.client is not None
+        return await self.client.post(
+            "rerank", json=payload,
+            timeout=self.timeout_seconds if timeout_seconds is None else timeout_seconds,
+        )
+
+    async def aclose(self) -> None:
+        if self._owns_client:
+            assert self.client is not None
+            await self.client.aclose()

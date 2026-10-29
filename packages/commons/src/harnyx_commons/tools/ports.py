@@ -10,6 +10,7 @@ from harnyx_commons.tools.decision_models import DecisionQueryRequest, DecisionQ
 from harnyx_commons.tools.embedding_models import EmbedTextRequest, EmbedTextResponse
 from harnyx_commons.tools.extraction_models import ExtractPagesRequest, ExtractPagesResponse
 from harnyx_commons.tools.provider_billing import ProviderBillingMetadata, SearchProviderResult
+from harnyx_commons.tools.rerank_models import RerankRequest, RerankResponse
 from harnyx_commons.tools.search_models import (
     FetchPageRequest,
     FetchPageResponse,
@@ -81,6 +82,18 @@ class EmbeddingProviderPort(Protocol):
     async def aclose(self) -> None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class RerankProviderResult:
+    response: RerankResponse
+    billing: ProviderBillingMetadata
+
+
+class RerankProviderPort(Protocol):
+    async def rerank(self, request: RerankRequest) -> RerankProviderResult: ...
+
+    async def aclose(self) -> None: ...
+
+
 class DeSearchPort(Protocol):
     """Internal DeSearch seam for X-specific helpers."""
 
@@ -95,6 +108,8 @@ class DeSearchPort(Protocol):
 __all__ = [
     "AiSearchProviderPort",
     "DeSearchPort",
+    "RerankProviderPort",
+    "RerankProviderResult",
     "EmbeddingProviderPort",
     "EmbeddingProviderResult",
     "PageExtractionProviderPort",

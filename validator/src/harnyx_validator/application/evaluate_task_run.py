@@ -22,7 +22,11 @@ from harnyx_commons.domain.tool_usage import (
 from harnyx_commons.llm.pricing import price_search
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_commons.miner_task_scoring import EvaluationScoringResult, EvaluationScoringService
-from harnyx_commons.tools.receipt_accounting import decision_reference_costs, summarize_llm_usage
+from harnyx_commons.tools.receipt_accounting import (
+    decision_reference_costs,
+    rerank_reference_costs,
+    summarize_llm_usage,
+)
 from harnyx_commons.tools.types import SearchToolName, is_search_tool
 from harnyx_miner_sdk.sandbox_protocol import SandboxAdmission
 from harnyx_validator.application.assigned_work import PhaseRecorder
@@ -153,6 +157,7 @@ class UsageSummarizer:
             reference_total_cost_usd=budget.reference_total_cost_usd,
             reference_cost_by_provider=dict(budget.reference_cost_by_provider),
             decision_reference_cost_by_provider=decision_reference_costs(receipts),
+            rerank_reference_cost_by_provider=rerank_reference_costs(receipts),
             actual_total_cost_usd=budget.actual_total_cost_usd,
             actual_cost_by_provider=dict(budget.actual_cost_by_provider),
         )

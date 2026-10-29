@@ -44,15 +44,18 @@ from harnyx_commons.tools.dto import (
     tool_payload_for_invocation,
 )
 from harnyx_commons.tools.provider_billing import (
+    RECOVERABLE_INFERENCE_TOOLS,
     OpenRouterAccounting,
     billing_evidence_payload,
     billing_usage_payload,
 )
+from harnyx_commons.tools.rerank_models import RerankResponse
 from harnyx_commons.tools.token_semaphore import ToolConcurrencyLimiter
 from harnyx_commons.tools.types import (
     DECISION_TOOLS,
     EMBEDDING_TOOLS,
     LLM_TOOLS,
+    RERANK_TOOLS,
     SEARCH_TOOLS,
     SearchToolName,
     ToolName,
@@ -89,7 +92,7 @@ _TOOLS_WITHOUT_USAGE: set[ToolName] = {
 }
 
 _PROVIDER_BACKED_TOOL_NAMES: frozenset[ToolName] = frozenset(
-    {*LLM_TOOLS, *SEARCH_TOOLS, *EMBEDDING_TOOLS, *DECISION_TOOLS}
+    {*LLM_TOOLS, *SEARCH_TOOLS, *EMBEDDING_TOOLS, *DECISION_TOOLS, *RERANK_TOOLS}
 )
 
 _SEARCH_RESULT_FIELDS: dict[SearchToolName, tuple[str, str, str]] = {
@@ -124,7 +127,7 @@ class ToolInvocationOutput:
 
     def require_reference(self, tool: str, provider: str | None = None) -> None:
         if (
-            tool in {"llm_chat", "decision_query"}
+            tool in RECOVERABLE_INFERENCE_TOOLS
             and (provider == "openrouter" or self.actual_cost_provider == "openrouter")
             and self.reference_cost_usd is None
         ):
@@ -307,6 +310,9 @@ class ToolExecutor:
         if name in DECISION_TOOLS:
             DecisionQueryResponse.model_validate(response_payload)
             return 0, None
+        if name in RERANK_TOOLS:
+            RerankResponse.model_validate(response_payload)
+            return 0, None
         if name in EMBEDDING_TOOLS:
             if not isinstance(response_payload, Mapping):
                 raise ValueError("embedding tool response must be a mapping")
@@ -405,11 +411,11 @@ class ToolExecutor:
         invocation_context: ToolInvocationContext,
         recording: _CallRecording,
     ) -> _ExecutionResult:
-        if request.tool != "decision_query" and not self._account_provider_failures:
+        if request.tool not in {"decision_query", "rerank"} and not self._account_provider_failures:
             recording.dispatched = True
         invocation_output = await self._invoke_tool_output_async(request, context=invocation_context)
         recording.output = invocation_output
-        if request.tool in {"llm_chat", "decision_query"}:
+        if request.tool in RECOVERABLE_INFERENCE_TOOLS:
             invocation_output.require_reference(request.tool, str(tool_payload_for_invocation(request).get("provider")))
         if invocation_output.provider_error is not None:
             raise invocation_output.provider_error
@@ -525,8 +531,8 @@ class ToolExecutor:
             provider_credential_source=session.provider_credential_source,
         )
         accounted_failure = self._account_provider_failures
-        decision_provider_failure = request.tool == "decision_query" and recording.dispatched
-        provider_failure = decision_provider_failure or (accounted_failure and recording.dispatched)
+        non_chat_inference = request.tool in DECISION_TOOLS or request.tool in RERANK_TOOLS
+        provider_failure = (non_chat_inference or accounted_failure) and recording.dispatched
         failure_tokens = 0
         failure_usage: ToolCallUsage | None = None
         failure_payload: JsonObject | None = None
@@ -546,12 +552,12 @@ class ToolExecutor:
             else None
         )
         openrouter_failure = (
-            request.tool in {"llm_chat", "decision_query"}
+            request.tool in RECOVERABLE_INFERENCE_TOOLS
             and billing is not None
             and billing.actual_cost_provider == "openrouter"
         )
         published_rate_failure = (
-            request.tool in {"llm_chat", "decision_query"}
+            request.tool in RECOVERABLE_INFERENCE_TOOLS
             and billing is not None
             and billing.actual_cost_provider in {"cloudflare", "jev"}
         )
@@ -562,7 +568,7 @@ class ToolExecutor:
         if published_rate_failure and billing is not None:
             provider_failure = recording.dispatched and (billing.llm_usage is not None or billing.usage is not None)
             error_extra["provider_failure_accounted"] = provider_failure
-        if not (request.tool == "decision_query" or accounted_failure or billed_inference_failure):
+        if not (non_chat_inference or accounted_failure or billed_inference_failure):
             billing = None
         if openrouter_failure and billing is not None:
             accounting = OpenRouterAccounting.from_billing(billing)
@@ -572,7 +578,7 @@ class ToolExecutor:
             if accounting.reference_cost_unavailable:
                 error_extra["reference_cost_unavailable"] = True
         failure_provider = None if billing is None else billing.actual_cost_provider
-        if (request.tool == "decision_query" or accounted_failure) and failure_provider is None:
+        if (non_chat_inference or accounted_failure) and failure_provider is None:
             if isinstance(exc, ToolProviderError) and exc.provider is not None:
                 selected_provider = exc.provider
             else:
@@ -581,7 +587,9 @@ class ToolExecutor:
                 except ValueError:
                     selected_provider = None
             if isinstance(selected_provider, str) and (
-                accounted_failure or selected_provider in {"openrouter", "ai_gateway", "cloudflare", "jev", "reax"}
+                selected_provider == "openrouter"
+                if request.tool in RERANK_TOOLS
+                else accounted_failure or selected_provider in {"openrouter", "ai_gateway", "cloudflare", "jev", "reax"}
             ):
                 failure_provider = selected_provider
         failure_cost = (
@@ -593,7 +601,7 @@ class ToolExecutor:
                 strict=False,
             )
         )
-        if (request.tool == "decision_query" or accounted_failure) and not recording.dispatched and billing is None:
+        if (non_chat_inference or accounted_failure) and not recording.dispatched and billing is None:
             failure_cost = 0.0
         if failure_cost is None and provider_failure:
             failure_cost = _known_failure_cost(recording)
