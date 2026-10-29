@@ -19,19 +19,13 @@ _DEFAULT_CONTAINER_HOST = "host.docker.internal"
 _STARTUP_TIMEOUT_SECONDS = 10.0
 
 
-def _find_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
-
-
 @dataclass(slots=True)
 class LocalToolHostHandle:
     server: Server
     serve_task: asyncio.Task[None]
     port: int
     host_container_url: str
+    listener: socket.socket
 
     async def aclose(self) -> None:
         self.server.should_exit = True
@@ -41,6 +35,8 @@ class LocalToolHostHandle:
             raise RuntimeError("local tool host did not stop cleanly") from err
         except asyncio.CancelledError:  # pragma: no cover - defensive
             raise RuntimeError("local tool host was cancelled during shutdown") from None
+        finally:
+            self.listener.close()
 
 
 async def start_local_tool_host(
@@ -50,7 +46,6 @@ async def start_local_tool_host(
     host: str = _DEFAULT_HOST,
     container_host: str = _DEFAULT_CONTAINER_HOST,
 ) -> LocalToolHostHandle:
-    port = _find_free_port()
     deps = ToolRouteDeps(
         tool_executor=tool_executor,
         tool_concurrency_limiter=tool_concurrency_limiter,
@@ -65,13 +60,23 @@ async def start_local_tool_host(
     config = Config(
         app,
         host=host,
-        port=port,
+        port=0,
         log_level="warning",
         log_config=None,
         timeout_graceful_shutdown=1,
     )
+    # Hold the actual listening address until Uvicorn takes ownership. Choosing
+    # and releasing a port before startup lets concurrent hosts select it again.
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        listener.bind((host, 0))
+        listener.setblocking(False)
+    except BaseException:
+        listener.close()
+        raise
+    port = int(listener.getsockname()[1])
     server = Server(config)
-    serve_task = asyncio.create_task(server.serve(), name="harnyx-local-tool-host")
+    serve_task = asyncio.create_task(server.serve(sockets=[listener]), name="harnyx-local-tool-host")
 
     deadline = asyncio.get_running_loop().time() + _STARTUP_TIMEOUT_SECONDS
     try:
@@ -91,8 +96,14 @@ async def start_local_tool_host(
     except asyncio.CancelledError:
         server.should_exit = True
         serve_task.cancel()
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(serve_task, timeout=1.0)
+        try:
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await asyncio.wait_for(serve_task, timeout=1.0)
+        finally:
+            listener.close()
+        raise
+    except BaseException:
+        listener.close()
         raise
 
     return LocalToolHostHandle(
@@ -100,6 +111,7 @@ async def start_local_tool_host(
         serve_task=serve_task,
         port=port,
         host_container_url=f"http://{container_host}:{port}",
+        listener=listener,
     )
 
 
