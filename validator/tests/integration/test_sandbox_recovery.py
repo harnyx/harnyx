@@ -17,7 +17,7 @@ from harnyx_commons.sandbox.docker import DockerSandboxManager
 from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_validator.application.dto.evaluation import MinerTaskWorkAssignment, ScriptArtifactSpec
 from harnyx_validator.application.scheduler import EvaluationScheduler, SchedulerConfig
-from validator.tests.application.test_evaluation_runner import _AssignedWork, _successful_outcome
+from validator.tests.application.test_evaluation_runner import _AssignedWork, _successful_execution, _successful_outcome
 from validator.tests.application.test_scheduler import (
     DummyEvaluationRecordStore,
     DummyProgressRecorder,
@@ -93,10 +93,10 @@ async def test_real_resource_monitor_cancellation_race_completes_teardown(sandbo
             return confirmed
 
     class Orchestrator:
-        async def evaluate(self, request):
+        async def execute(self, request, **_kwargs):
             await polling.wait()
             close.set()
-            return _successful_outcome(request)
+            return _successful_execution(request)
 
     task = _task("monitor shutdown")
     artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
@@ -144,7 +144,7 @@ async def test_real_resource_monitor_cancellation_race_completes_teardown(sandbo
             queue_task.result()
             assert len(monitors) == 1 and monitors[0].done()
             assert stopped == [True]
-            assert results.get_nowait().result.score > 0
+            assert results.get_nowait().response is not None
             assert results.empty()
             inspection = await asyncio.to_thread(
                 subprocess.run, ["docker", "inspect", deployment.identifier], capture_output=True

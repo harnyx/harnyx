@@ -169,6 +169,10 @@ sequenceDiagram
 
 #### 4) Validator persists execution evidence, then submits final results
 
+Each qualifying and main round closes all expected executions before Platform sends queries to blackbox reference miners. Execution assignments contain query and execution settings without reference answers. Reference judges may receive answers after execution closes. Scoreable executions remain empty until all round references resolve; they then include the selected full task and the original saved response. Authenticated full-batch reads also wait for this boundary, including dataset fallback.
+
+Execution defaults to 24 hours. Evaluation has an approximate six-hour window based on persisted execution and reference timing, with allowance for reference processing. Pending reference selection does not expire saved responses. These contracts require compatible Platform and validator versions.
+
 ```mermaid
 sequenceDiagram
   participant V as Validator
@@ -180,6 +184,7 @@ sequenceDiagram
   P->>DB: Persist accepted execution evidence on the existing run row
   P-->>V: 200 { executions:[{ outcome:"accepted"|"rejected", canonical:true|false, reason_code:null|... }] }
 
+  Note over P,DB: All round executions close, then blackbox generation and reference selection finish
   V->>P: POST /v2/miner-task-work/scoreable-executions<br/>{ limit:remaining_scoring_slots, active_scoring:[...] }
   P-->>V: 200 { executions:[persisted execution evidence still needing scoring] }
 

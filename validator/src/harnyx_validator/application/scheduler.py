@@ -19,6 +19,7 @@ from harnyx_commons.application.session_manager import SessionManager
 from harnyx_commons.domain.miner_task import (
     MinerTask,
     MinerTaskErrorCode,
+    MinerTaskExecutionInput,
 )
 from harnyx_commons.sandbox.client import SandboxClient
 from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager, SandboxStartError
@@ -84,12 +85,12 @@ class SchedulerConfig:
         if self.execution_time_limit_seconds is not None:
             tool_session_ttl_for_execution_limit(self.execution_time_limit_seconds)
 
-    def execution_limit_for(self, task: MinerTask) -> float:
+    def execution_limit_for(self, task: MinerTaskExecutionInput) -> float:
         if self.execution_time_limit_seconds is not None:
             return self.execution_time_limit_seconds
         return task.effective_timeout_seconds()
 
-    def session_ttl_for(self, task: MinerTask) -> timedelta:
+    def session_ttl_for(self, task: MinerTaskExecutionInput) -> timedelta:
         return tool_session_ttl_for_execution_limit(self.execution_limit_for(task))
 
 
@@ -99,7 +100,7 @@ class EvaluationScheduler:
     def __init__(
         self,
         *,
-        tasks: Sequence[MinerTask],
+        tasks: Sequence[MinerTaskExecutionInput],
         subtensor_client: SubtensorClientPort,
         sandbox_manager: SandboxManager,
         session_manager: SessionManager,
@@ -339,7 +340,7 @@ class EvaluationScheduler:
         *,
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
-        tasks: Sequence[MinerTask],
+        tasks: Sequence[MinerTaskExecutionInput],
         blocking_executor: Executor,
     ) -> SandboxDeployment:
         last_error_message = ""
@@ -398,7 +399,7 @@ class EvaluationScheduler:
         *,
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
-        tasks: Sequence[MinerTask],
+        tasks: Sequence[MinerTaskExecutionInput],
         blocking_executor: Executor,
     ) -> SandboxOptions:
         try:
@@ -456,7 +457,7 @@ class EvaluationScheduler:
         *,
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         attempt_number: int,
         max_attempts: int,
         started_at: datetime,
@@ -565,7 +566,7 @@ class EvaluationScheduler:
         self,
         *,
         artifact: ScriptArtifactSpec,
-        tasks: Sequence[MinerTask],
+        tasks: Sequence[MinerTaskExecutionInput],
         error_code: MinerTaskErrorCode,
         error_message: str,
         exception_type: str | None,

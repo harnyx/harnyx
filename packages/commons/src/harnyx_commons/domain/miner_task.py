@@ -524,17 +524,22 @@ def effective_task_timeout_seconds(timeout_seconds: int, *, fast: bool) -> float
     return timeout_seconds * (0.7 if fast else 1.0)
 
 
-class MinerTask(BaseModel):
+class MinerTaskExecutionInput(BaseModel):
+    """Query and execution limits, without an evaluation reference."""
+
     model_config = COMMONS_STRICT_CONFIG
 
     task_id: UUID
     query: Query
-    reference_answer: ReferenceAnswer
     budget_usd: float = Field(default=DEFAULT_MINER_TASK_BUDGET_USD, ge=0.0)
     timeout_seconds: int = Field(default=300, gt=0)
 
     def effective_timeout_seconds(self) -> float:
         return effective_task_timeout_seconds(self.timeout_seconds, fast=self.query.fast)
+
+
+class MinerTask(MinerTaskExecutionInput):
+    reference_answer: ReferenceAnswer
 
 
 __all__ = [
@@ -551,6 +556,7 @@ __all__ = [
     "FastScoreExpectedComponent",
     "MINER_ATTRIBUTED_PAIR_ERROR_CODES",
     "MinerTask",
+    "MinerTaskExecutionInput",
     "MinerTaskErrorCode",
     "Query",
     "ReferenceAnswer",

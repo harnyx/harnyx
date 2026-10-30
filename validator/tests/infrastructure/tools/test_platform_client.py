@@ -213,7 +213,6 @@ async def test_request_miner_task_work_posts_active_attempts_and_parses_assignme
                             "task": {
                                 "task_id": str(task_id),
                                 "query": {"text": "smoke"},
-                                "reference_answer": {"text": "ok"},
                                 "budget_usd": 0.05,
                             },
                             "attempt_number": 2,

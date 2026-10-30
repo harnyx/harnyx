@@ -1267,10 +1267,9 @@ Body: [MinerTaskWorkTasksResponse](#model-minertaskworktasksresponse)
 |  | `attempt_number` |  | req | `integer` |
 |  | `batch_id` |  | req | `string` (format: uuid) |
 |  | `max_attempts` |  | req | `integer` |
-|  | `task` |  | req | [MinerTask](#model-minertask) |
+|  | `task` |  | req | [MinerTaskExecutionInput](#model-minertaskexecutioninput) |
 |  |  | `budget_usd` | opt | `number` (default: 0.5) |
 |  |  | `query` | req | [Query](#model-query) |
-|  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `task_id` | req | `string` (format: uuid) |
 |  |  | `timeout_seconds` | opt | `integer` (default: 300) |
 
@@ -6196,6 +6195,59 @@ Body: [StatusResponse](#model-statusresponse)
 
 </details>
 
+<a id="model-minertaskexecutioninput"></a>
+### Model: MinerTaskExecutionInput
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `budget_usd` |  |  | opt | `number` (default: 0.5) |
+| `query` |  |  | req | [Query](#model-query) |
+|  | `fast` |  | opt | `boolean` (default: False) |
+|  | `output_schema` |  | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
+|  | `text` |  | req | `string` |
+| `task_id` |  |  | req | `string` (format: uuid) |
+| `timeout_seconds` |  |  | opt | `integer` (default: 300) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "description": "Query and execution limits, without an evaluation reference.",
+  "properties": {
+    "budget_usd": {
+      "default": 0.5,
+      "minimum": 0.0,
+      "title": "Budget Usd",
+      "type": "number"
+    },
+    "query": {
+      "$ref": "#/components/schemas/Query"
+    },
+    "task_id": {
+      "format": "uuid",
+      "title": "Task Id",
+      "type": "string"
+    },
+    "timeout_seconds": {
+      "default": 300,
+      "exclusiveMinimum": 0.0,
+      "title": "Timeout Seconds",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "task_id",
+    "query"
+  ],
+  "title": "MinerTaskExecutionInput",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-minertaskresultoutcome"></a>
 ### Model: MinerTaskResultOutcome
 
@@ -6550,15 +6602,11 @@ Body: [StatusResponse](#model-statusresponse)
 | `attempt_number` |  |  | req | `integer` |
 | `batch_id` |  |  | req | `string` (format: uuid) |
 | `max_attempts` |  |  | req | `integer` |
-| `task` |  |  | req | [MinerTask](#model-minertask) |
+| `task` |  |  | req | [MinerTaskExecutionInput](#model-minertaskexecutioninput) |
 |  | `budget_usd` |  | opt | `number` (default: 0.5) |
 |  | `query` |  | req | [Query](#model-query) |
 |  |  | `fast` | opt | `boolean` (default: False) |
 |  |  | `output_schema` | opt | [JsonObject-Input](#model-jsonobject-input) (nullable) |
-|  |  | `text` | req | `string` |
-|  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
-|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation) (nullable)] (nullable) |
-|  |  | `note` | opt | `string` (nullable) |
 |  |  | `text` | req | `string` |
 |  | `task_id` |  | req | `string` (format: uuid) |
 |  | `timeout_seconds` |  | opt | `integer` (default: 300) |
@@ -6594,7 +6642,7 @@ Body: [StatusResponse](#model-statusresponse)
       "type": "integer"
     },
     "task": {
-      "$ref": "#/components/schemas/MinerTask"
+      "$ref": "#/components/schemas/MinerTaskExecutionInput"
     }
   },
   "required": [
@@ -7777,10 +7825,9 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `attempt_number` |  | req | `integer` |
 |  | `batch_id` |  | req | `string` (format: uuid) |
 |  | `max_attempts` |  | req | `integer` |
-|  | `task` |  | req | [MinerTask](#model-minertask) |
+|  | `task` |  | req | [MinerTaskExecutionInput](#model-minertaskexecutioninput) |
 |  |  | `budget_usd` | opt | `number` (default: 0.5) |
 |  |  | `query` | req | [Query](#model-query) |
-|  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `task_id` | req | `string` (format: uuid) |
 |  |  | `timeout_seconds` | opt | `integer` (default: 300) |
 

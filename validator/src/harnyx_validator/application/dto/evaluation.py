@@ -9,7 +9,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from harnyx_commons.domain.miner_task import EvaluationTrace, MinerTask, Query, Response
+from harnyx_commons.domain.miner_task import EvaluationTrace, MinerTask, MinerTaskExecutionInput, Query, Response
 from harnyx_commons.domain.session import LlmUsageTotals, Session, SessionUsage
 from harnyx_commons.domain.tool_call import ToolCall
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
@@ -101,7 +101,7 @@ class MinerTaskBatchSpec(BaseModel):
     batch_id: UUID
     cutoff_at: str = Field(min_length=1)
     created_at: str = Field(min_length=1)
-    tasks: tuple[MinerTask, ...] = Field(min_length=1)
+    tasks: tuple[MinerTaskExecutionInput, ...] = Field(min_length=1)
     artifacts: tuple[ScriptArtifactSpec, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -123,7 +123,7 @@ class MinerTaskWorkAssignment(BaseModel):
 
     batch_id: UUID
     artifact: ScriptArtifactSpec
-    task: MinerTask
+    task: MinerTaskExecutionInput
     attempt_number: int = Field(ge=1)
     max_attempts: int = Field(ge=1)
     assignment_token: str = Field(min_length=1)
@@ -156,18 +156,24 @@ class EntrypointInvocationResult(BaseModel):
     tool_receipts: tuple[ToolCall, ...] = ()
 
 
-class MinerTaskRunRequest(BaseModel):
+class MinerTaskExecutionRequest(BaseModel):
     model_config = VALIDATOR_STRICT_CONFIG
 
-    """Input payload for orchestrating a full miner task run."""
+    """Input payload for executing a miner query without a reference."""
 
     batch_id: UUID
     session_id: UUID
     token: str = Field(min_length=1)
     uid: int = Field(ge=0)
     artifact_id: UUID
-    task: MinerTask
+    task: MinerTaskExecutionInput
     execution_time_limit_seconds: float = Field(strict=True, gt=0, allow_inf_nan=False)
+
+
+class MinerTaskRunRequest(MinerTaskExecutionRequest):
+    """Input for local combined execution and evaluation."""
+
+    task: MinerTask
 
 
 class TaskRunOutcome(BaseModel):
@@ -187,7 +193,7 @@ class TaskExecutionOutcome(BaseModel):
 
     batch_id: UUID
     artifact_id: UUID
-    task: MinerTask
+    task: MinerTaskExecutionInput
     session: Session
     uid: int = Field(ge=0)
     response: Response
@@ -413,6 +419,7 @@ __all__ = [
     "MinerTaskBatchSpec",
     "MinerTaskWorkAssignment",
     "MinerTaskRunRequest",
+    "MinerTaskExecutionRequest",
     "MinerTaskRunSubmission",
     "PlatformOwnedTaskExecution",
     "PlatformOwnedTaskResult",

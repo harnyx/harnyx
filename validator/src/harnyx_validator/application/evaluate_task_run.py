@@ -36,6 +36,7 @@ from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptRetryDecision,
     MinerTaskAttemptStatus,
     MinerTaskAttemptTerminalEffect,
+    MinerTaskExecutionRequest,
     MinerTaskRunRequest,
     MinerTaskRunSubmission,
     PlatformOwnedTaskExecution,
@@ -259,7 +260,7 @@ class TaskRunOrchestrator:
         result = await self.score_execution(
             PlatformOwnedTaskExecution(
                 batch_id=execution.batch_id,
-                task=execution.task,
+                task=request.task,
                 artifact_id=execution.artifact_id,
                 task_id=execution.task.task_id,
                 attempt_number=1,
@@ -290,7 +291,7 @@ class TaskRunOrchestrator:
 
     async def execute(
         self,
-        request: MinerTaskRunRequest,
+        request: MinerTaskExecutionRequest,
         *,
         phase_recorder: PhaseRecorder | None = None,
         admission: SandboxAdmission | None = None,

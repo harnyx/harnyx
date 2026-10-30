@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.application.session_manager import SessionManager
-from harnyx_commons.domain.miner_task import MinerTask
+from harnyx_commons.domain.miner_task import MinerTaskExecutionInput
 from harnyx_commons.sandbox.client import SandboxClient
 from harnyx_commons.sandbox.docker import DockerSandboxManager
 from harnyx_commons.sandbox.options import SandboxOptions
@@ -58,7 +58,7 @@ SANDBOX_LABELS = {
 @dataclass(frozen=True, slots=True)
 class RunContext:
     batch_id: UUID
-    tasks: tuple[MinerTask, ...]
+    tasks: tuple[MinerTaskExecutionInput, ...]
     config: EvaluationBatchConfig
     base_options: SandboxOptions
     base_env: dict[str, str]

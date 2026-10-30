@@ -1714,7 +1714,7 @@ async def test_same_batch_artifact_accepts_new_work_after_monitor_shutdown(tmp_p
     from validator.tests.application.test_evaluation_runner import (
         _AdmittingSandbox,
         _assigned_task_test_context,
-        _successful_outcome,
+        _successful_execution,
     )
 
     runner, batch_id, artifact, first_task, _, _, _, _ = _assigned_task_test_context(tmp_path)
@@ -1743,10 +1743,10 @@ async def test_same_batch_artifact_accepts_new_work_after_monitor_shutdown(tmp_p
                 return SandboxResourceStatus(counter_status="ready", oom_kill_count=0, draining=False)
 
         class Orchestrator:
-            async def evaluate(self, request):
+            async def execute(self, request, **_kwargs):
                 await polled.wait()
                 close.set()
-                return _successful_outcome(request)
+                return _successful_execution(request)
 
         initial = await assigned_work.take_for_startup()
         assigned_work.mark_dispatch_ready()
@@ -1796,7 +1796,7 @@ async def test_same_batch_artifact_accepts_new_work_after_monitor_shutdown(tmp_p
         replacement.task.result()
         worker._collect_closed_artifact_groups()
         assert not worker._active_artifacts
-        assert [result.task_id for result in worker._results_pending_submission] == [
+        assert [result.task_id for result in worker._pending_executions] == [
             first.task.task_id,
             second.task.task_id,
         ]

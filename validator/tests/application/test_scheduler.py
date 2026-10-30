@@ -12,15 +12,11 @@ import pytest
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.application.session_manager import SessionManager
 from harnyx_commons.domain.miner_task import (
-    EvaluationDetails,
     MinerTask,
     MinerTaskErrorCode,
     Query,
     ReferenceAnswer,
-    Response,
-    ScoreBreakdown,
 )
-from harnyx_commons.domain.tool_usage import ToolUsageSummary
 from harnyx_commons.infrastructure.state.session_registry import InMemorySessionRegistry
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.sandbox.client import SandboxClient
@@ -34,11 +30,10 @@ from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptTerminalEffect,
     MinerTaskRunSubmission,
     MinerTaskWorkAssignment,
+    PlatformOwnedTaskExecution,
     PlatformOwnedTaskResult,
     SandboxFailureDiagnostics,
     ScriptArtifactSpec,
-    TaskRunOutcome,
-    TokenUsageSummary,
     ValidatorBatchFailureDetail,
 )
 from harnyx_validator.application.ports.progress import RunProgressPage, RunProgressSummary
@@ -51,7 +46,6 @@ from harnyx_validator.application.scheduler import (
 from harnyx_validator.application.services.evaluation_runner import (
     ArtifactExecutionFailedError,
 )
-from harnyx_validator.domain.evaluation import MinerTaskRun
 from validator.tests.fixtures.subtensor import FakeSubtensorClient
 
 pytestmark = pytest.mark.anyio("asyncio")
@@ -419,26 +413,10 @@ async def test_scheduler_runs_multiple_platform_assignments_in_one_artifact_sand
 
     def orchestrator_factory(_client: object):
         class StubOrchestrator:
-            async def evaluate(self, request):
-                return TaskRunOutcome(
-                    run=MinerTaskRun(
-                        session_id=request.session_id,
-                        uid=request.uid,
-                        artifact_id=request.artifact_id,
-                        task_id=request.task.task_id,
-                        response=Response(text=f"answer {request.task.query.text}"),
-                        details=EvaluationDetails(
-                            score_breakdown=ScoreBreakdown(
-                                comparison_score=1.0,
-                                total_score=1.0,
-                                scoring_version="v1",
-                            ),
-                            total_tool_usage=ToolUsageSummary.zero(),
-                        ),
-                        completed_at=now,
-                    ),
-                    usage=TokenUsageSummary.empty(),
-                )
+            async def execute(self, request, **_kwargs):
+                from .test_evaluation_runner import _successful_execution
+
+                return _successful_execution(request)
 
         return StubOrchestrator()
 
@@ -488,9 +466,7 @@ async def test_scheduler_runs_multiple_platform_assignments_in_one_artifact_sand
     results = (result_queue.get_nowait(), result_queue.get_nowait())
     assert {result.task_id for result in results} == {task.task_id for task in tasks}
     assert {result.attempt_number for result in results} == {1, 2}
-    assert all(
-        result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.TASK_RESULT for result in results
-    )
+    assert all(isinstance(result, PlatformOwnedTaskExecution) for result in results)
 
 
 async def test_scheduler_returns_pair_results_for_assigned_artifact_script_validation_failure(
@@ -826,26 +802,10 @@ async def test_scheduler_assigned_results_survive_teardown_and_activity_failures
 
     def orchestrator_factory(_client: object):
         class StubOrchestrator:
-            async def evaluate(self, request):
-                return TaskRunOutcome(
-                    run=MinerTaskRun(
-                        session_id=request.session_id,
-                        uid=request.uid,
-                        artifact_id=request.artifact_id,
-                        task_id=request.task.task_id,
-                        response=Response(text="answer"),
-                        details=EvaluationDetails(
-                            score_breakdown=ScoreBreakdown(
-                                comparison_score=1.0,
-                                total_score=1.0,
-                                scoring_version="v1",
-                            ),
-                            total_tool_usage=ToolUsageSummary.zero(),
-                        ),
-                        completed_at=now,
-                    ),
-                    usage=TokenUsageSummary.empty(),
-                )
+            async def execute(self, request, **_kwargs):
+                from .test_evaluation_runner import _successful_execution
+
+                return _successful_execution(request)
 
         return StubOrchestrator()
 
@@ -887,8 +847,8 @@ async def test_scheduler_assigned_results_survive_teardown_and_activity_failures
     )
 
     result = result_queue.get_nowait()
-    assert result.result is not None
-    assert result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.TASK_RESULT
+    assert isinstance(result, PlatformOwnedTaskExecution)
+    assert result.response is not None
 
 
 async def test_evaluation_runner_issues_session_with_task_budget(

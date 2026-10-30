@@ -689,7 +689,7 @@ async def test_evaluate_assigned_task_queue_success_queues_execution_before_scor
     assert isinstance(queued, PlatformOwnedTaskExecution)
     assert queued.batch_id == batch_id
     assert queued.artifact == artifact
-    assert queued.task == task
+    assert queued.task is None
     assert queued.attempt_number == 1
     assert queued.max_attempts == 2
     assert queued.response == Response(text="execution response")
@@ -736,9 +736,9 @@ async def test_resource_monitor_exits_when_resource_request_consumes_cancellatio
             return SandboxResourceStatus(counter_status=counter_status, oom_kill_count=0, draining=False)
 
     class Orchestrator:
-        async def evaluate(self, request):
+        async def execute(self, request, **_kwargs):
             await finish.wait()
-            return _successful_outcome(request)
+            return _successful_execution(request)
 
     queue_task = asyncio.create_task(
         runner.evaluate_assigned_task_queue(
@@ -765,7 +765,7 @@ async def test_resource_monitor_exits_when_resource_request_consumes_cancellatio
         assert polls == 1
         assert monitors[0].done()
         result = results.get_nowait()
-        assert result.task_id == task.task_id and result.result.score > 0
+        assert result.task_id == task.task_id and isinstance(result, PlatformOwnedTaskExecution)
         assert results.empty()
         assert not sessions._sessions
     finally:
@@ -814,10 +814,10 @@ async def test_resource_monitor_keeps_active_execution_until_close_drain_finishe
             return SandboxResourceStatus(counter_status=counter_status, oom_kill_count=int(oom), draining=oom)
 
     class Orchestrator:
-        async def evaluate(self, request):
+        async def execute(self, request, **_kwargs):
             started.set()
             await finish.wait()
-            return _successful_outcome(request)
+            return _successful_execution(request)
 
     queue_task = asyncio.create_task(
         runner.evaluate_assigned_task_queue(
@@ -844,7 +844,7 @@ async def test_resource_monitor_keeps_active_execution_until_close_drain_finishe
             QueueStopReason.OOM_DRAINED if counter_status == "ready" else QueueStopReason.COMPLETED
         )
         assert all(monitor.done() for monitor in monitors)
-        assert results.get_nowait().result.score > 0
+        assert isinstance(results.get_nowait(), PlatformOwnedTaskExecution)
         assert results.empty()
     finally:
         finish.set()
@@ -871,7 +871,7 @@ async def test_evaluate_assigned_task_queue_final_invocation_exception_becomes_a
     async def evaluate_issued_assigned_task(**_kwargs):
         raise RuntimeError("miner invocation raised before task result")
 
-    monkeypatch.setattr(runner, "_evaluate_issued_assigned_task", evaluate_issued_assigned_task)
+    monkeypatch.setattr(runner, "_execute_issued_assigned_task", evaluate_issued_assigned_task)
 
     assigned_work = _AssignedWork()
     result_queue: asyncio.Queue[PlatformOwnedTaskResult] = asyncio.Queue()
@@ -999,7 +999,7 @@ async def test_evaluate_assigned_task_queue_final_delivery_failure_closes_group_
             )
         )
 
-    monkeypatch.setattr(runner, "_evaluate_task_attempt", evaluate_task_attempt)
+    monkeypatch.setattr(runner, "_execute_task_attempt", evaluate_task_attempt)
     execution = asyncio.create_task(
         runner.evaluate_assigned_task_queue(
             sandbox_client=_AdmittingSandbox(),
@@ -1120,9 +1120,7 @@ async def test_evaluate_assigned_task_queue_invocation_timeout_records_phase_own
     )
 
     class _TimeoutOrchestrator:
-        async def evaluate(
-            self, request: MinerTaskRunRequest, *, phase_recorder=None, admission=None
-        ) -> TaskRunOutcome:
+        async def execute(self, request: MinerTaskRunRequest, *, phase_recorder=None, admission=None) -> TaskRunOutcome:
             _ = request
             if phase_recorder is not None:
                 phase_recorder.mark("entrypoint_invocation")
@@ -1174,9 +1172,7 @@ async def test_evaluate_assigned_task_queue_platform_tool_proxy_timeout_records_
     )
 
     class _TimeoutOrchestrator:
-        async def evaluate(
-            self, request: MinerTaskRunRequest, *, phase_recorder=None, admission=None
-        ) -> TaskRunOutcome:
+        async def execute(self, request: MinerTaskRunRequest, *, phase_recorder=None, admission=None) -> TaskRunOutcome:
             session = session_registry.get(request.session_id)
             assert session is not None
             if phase_recorder is not None:
@@ -1229,9 +1225,7 @@ async def test_evaluate_assigned_task_queue_final_platform_tool_proxy_timeout_re
     )
 
     class _TimeoutOrchestrator:
-        async def evaluate(
-            self, request: MinerTaskRunRequest, *, phase_recorder=None, admission=None
-        ) -> TaskRunOutcome:
+        async def execute(self, request: MinerTaskRunRequest, *, phase_recorder=None, admission=None) -> TaskRunOutcome:
             session = session_registry.get(request.session_id)
             assert session is not None
             if phase_recorder is not None:
@@ -1320,15 +1314,19 @@ async def test_evaluate_assigned_task_queue_drains_active_result_before_queue_st
 
     async def evaluate_issued_assigned_task(**kwargs):
         if kwargs["task"].task_id == completed_task.task_id:
-            return _platform_owned_task_result(
-                completed_assignment,
-                terminal_effect=MinerTaskAttemptTerminalEffect.TASK_RESULT,
+            return evaluation_runner_module._AssignedAttemptRunOutcome(
+                result_to_queue=_platform_owned_task_result(
+                    completed_assignment,
+                    terminal_effect=MinerTaskAttemptTerminalEffect.TASK_RESULT,
+                )
             )
         if kwargs["task"].task_id == blocking_task.task_id:
             await release_blocking.wait()
-            return _platform_owned_task_result(
-                blocking_assignment,
-                terminal_effect=MinerTaskAttemptTerminalEffect.TASK_RESULT,
+            return evaluation_runner_module._AssignedAttemptRunOutcome(
+                result_to_queue=_platform_owned_task_result(
+                    blocking_assignment,
+                    terminal_effect=MinerTaskAttemptTerminalEffect.TASK_RESULT,
+                )
             )
         raise AssertionError("unexpected assignment execution")
 
@@ -1348,7 +1346,7 @@ async def test_evaluate_assigned_task_queue_drains_active_result_before_queue_st
                 release_blocking.set()
 
     monkeypatch.setattr(evaluation_runner_module.asyncio, "wait", wait_after_ready_tick)
-    monkeypatch.setattr(runner, "_evaluate_issued_assigned_task", evaluate_issued_assigned_task)
+    monkeypatch.setattr(runner, "_execute_issued_assigned_task", evaluate_issued_assigned_task)
 
     result_queue: asyncio.Queue[PlatformOwnedTaskResult] = asyncio.Queue()
     assigned_work = _QueueStartFailureAssignedWork(
@@ -1444,10 +1442,10 @@ async def test_evaluate_assigned_task_queue_cancels_active_children_on_queue_can
     result_queue: asyncio.Queue[PlatformOwnedTaskResult] = asyncio.Queue()
 
     class _BlockingOrchestrator:
-        async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
+        async def execute(self, request: MinerTaskRunRequest, **_kwargs) -> TaskExecutionOutcome:
             evaluate_entered.set()
             await release_evaluation.wait()
-            return _successful_outcome(request, score=1.0)
+            return _successful_execution(request)
 
     execution = asyncio.create_task(
         runner.evaluate_assigned_task_queue(
@@ -1498,7 +1496,7 @@ async def test_evaluate_assigned_task_queue_mark_started_failure_cleans_issued_s
             raise RuntimeError("assigned work start mark failed")
 
     class _UnexpectedOrchestrator:
-        async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
+        async def execute(self, request: MinerTaskRunRequest, **_kwargs) -> TaskExecutionOutcome:
             raise AssertionError("execution should not spawn when mark_started fails")
 
     assigned_work = _RejectingAssignedWork(result_queue=result_queue)
@@ -1574,9 +1572,9 @@ async def test_evaluate_assigned_task_queue_initial_start_failure_cleans_prior_c
                 release_first.set()
 
     class _BlockingOrchestrator:
-        async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
+        async def execute(self, request: MinerTaskRunRequest, **_kwargs) -> TaskExecutionOutcome:
             await release_first.wait()
-            return _successful_outcome(request, score=1.0)
+            return _successful_execution(request)
 
     assigned_work = _RejectSecondAssignedWork(result_queue=result_queue)
 
@@ -1594,9 +1592,7 @@ async def test_evaluate_assigned_task_queue_initial_start_failure_cleans_prior_c
     first_session_id = assigned_work.started[0][1]
     second_session_id = assigned_work.rejected[0][1]
     results_by_task_id = {result.task_id: result for result in results}
-    assert results_by_task_id[first_task.task_id].terminal_attempt.terminal_effect is (
-        MinerTaskAttemptTerminalEffect.TASK_RESULT
-    )
+    assert isinstance(results_by_task_id[first_task.task_id], PlatformOwnedTaskExecution)
     second_result = results_by_task_id[second_task.task_id]
     assert second_result.terminal_attempt.validator_session_id == second_session_id
     assert second_result.terminal_attempt.retry_decision is MinerTaskAttemptRetryDecision.WILL_RETRY
@@ -2675,6 +2671,10 @@ class _PlatformToolProxyReceiptOrchestrator:
         self._error_code = error_code
         self._caught_by_miner = caught_by_miner
         self.calls = 0
+
+    async def execute(self, request, **_kwargs):
+        await self.evaluate(request)
+        return _successful_execution(request)
 
     async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
         self.calls += 1
@@ -5805,7 +5805,7 @@ async def test_oom_drain_preserves_success_and_returns_unstarted_claims(tmp_path
                 yield admission
 
     class Orchestrator:
-        async def evaluate(self, request):
+        async def execute(self, request, **_kwargs):
             if request.task.task_id == tasks[0].task_id:
                 await healthy_started.wait()
                 await waiting.wait()
@@ -5818,7 +5818,7 @@ async def test_oom_drain_preserves_success_and_returns_unstarted_claims(tmp_path
             healthy_started.set()
             await all_admitted.wait()
             await asyncio.sleep(0.15)  # Complete after the resource watcher closes admission.
-            return _successful_outcome(request)
+            return _successful_execution(request)
 
     drained = await asyncio.wait_for(
         runner.evaluate_assigned_task_queue(
@@ -5839,9 +5839,11 @@ async def test_oom_drain_preserves_success_and_returns_unstarted_claims(tmp_path
     results = [queue.get_nowait(), queue.get_nowait()]
     by_task = {result.task_id: result for result in results}
     assert by_task[tasks[0].task_id].result.score == 0
-    assert by_task[tasks[1].task_id].result.score > 0
+    assert isinstance(by_task[tasks[1].task_id], PlatformOwnedTaskExecution)
     assert all(
-        result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.TASK_RESULT for result in results
+        isinstance(result, PlatformOwnedTaskExecution)
+        or result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.TASK_RESULT
+        for result in results
     )
     assert queue.empty()
     returned = group.claim_nowait_for_dispatch()
@@ -5860,7 +5862,7 @@ async def test_oom_drain_preserves_success_and_returns_unstarted_claims(tmp_path
     assert started
     assert all(attempt["compiler_generation"] is not None for attempt in started)
     settled = [record for record in caplog.records if record.message == "sandbox OOM attempt settled"]
-    assert any(record.result_preserved for record in settled)
+    assert any(record.execution_preserved for record in settled)
     # The same OPEN group executes original queued work after confirmed replacement.
     lease_remaining = returned.remaining_dispatch_seconds()
     returned.release_to_queue_if_live()
@@ -5887,7 +5889,7 @@ async def test_oom_drain_preserves_success_and_returns_unstarted_claims(tmp_path
         is QueueStopReason.COMPLETED
     )
     replacement_result = queue.get_nowait()
-    assert replacement_result.task_id == tasks[2].task_id and replacement_result.result.score > 0
+    assert replacement_result.task_id == tasks[2].task_id and isinstance(replacement_result, PlatformOwnedTaskExecution)
     assert queue.empty()
 
 
@@ -6403,7 +6405,7 @@ async def test_cleanup_retirement_resolves_started_sibling_with_original_session
             return retired
 
     class Orchestrator:
-        async def evaluate(self, request):
+        async def execute(self, request, **_kwargs):
             nonlocal retired
             session_ids[request.task.task_id] = request.session_id
             if request.task.task_id == tasks[1].task_id:

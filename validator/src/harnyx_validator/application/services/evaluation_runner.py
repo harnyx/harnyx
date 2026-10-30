@@ -27,6 +27,7 @@ from harnyx_commons.domain.miner_task import (
     EvaluationTrace,
     MinerTask,
     MinerTaskErrorCode,
+    MinerTaskExecutionInput,
     is_delivery_disqualifying_validator_pair_error,
 )
 from harnyx_commons.domain.session import SessionStatus
@@ -62,6 +63,7 @@ from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptRetryDecision,
     MinerTaskAttemptStatus,
     MinerTaskAttemptTerminalEffect,
+    MinerTaskExecutionRequest,
     MinerTaskRunRequest,
     MinerTaskRunSubmission,
     MinerTaskWorkAssignment,
@@ -89,7 +91,7 @@ if TYPE_CHECKING:
     from harnyx_validator.application.scheduler import SchedulerConfig
 
 Clock = Callable[[], datetime]
-SubmissionFactory = Callable[[MinerTask, SessionIssued], Awaitable[MinerTaskRunSubmission]]
+SubmissionFactory = Callable[[MinerTaskExecutionInput, SessionIssued], Awaitable[MinerTaskRunSubmission]]
 SessionStartedCallback = Callable[[UUID], None]
 TaskSessionLimiter = AbstractAsyncContextManager[None]
 
@@ -195,7 +197,7 @@ class ValidatorBatchFailedError(RuntimeError):
         message: str,
         failure_detail: ValidatorBatchFailureDetail,
         completed_submissions: tuple[MinerTaskRunSubmission, ...] | None = None,
-        remaining_tasks: tuple[MinerTask, ...] | None = None,
+        remaining_tasks: tuple[MinerTaskExecutionInput, ...] | None = None,
     ) -> None:
         super().__init__(message)
         self.error_code = error_code
@@ -212,7 +214,7 @@ class ArtifactExecutionFailedError(RuntimeError):
         message: str,
         failure_detail: ValidatorBatchFailureDetail,
         completed_submissions: tuple[MinerTaskRunSubmission, ...],
-        remaining_tasks: tuple[MinerTask, ...],
+        remaining_tasks: tuple[MinerTaskExecutionInput, ...],
         artifact_breaker_tripped: bool = False,
     ) -> None:
         super().__init__(message)
@@ -229,7 +231,7 @@ class UnexpectedArtifactExecutionError(RuntimeError):
         *,
         cause: Exception,
         completed_submissions: tuple[MinerTaskRunSubmission, ...],
-        remaining_tasks: tuple[MinerTask, ...],
+        remaining_tasks: tuple[MinerTaskExecutionInput, ...],
     ) -> None:
         super().__init__(str(cause))
         self.cause = cause
@@ -1025,21 +1027,6 @@ class EvaluationRunner:
         try:
             async with lifecycle.start() as attempt:
                 try:
-                    if "_evaluate_issued_assigned_task" in self.__dict__:
-                        result = await self._evaluate_issued_assigned_task(
-                            batch_id=lifecycle.batch_id,
-                            artifact=lifecycle.artifact,
-                            task=attempt.assignment.task,
-                            issued=attempt.issued,
-                            attempt_number=attempt.assignment.attempt_number,
-                            max_attempts=attempt.assignment.max_attempts,
-                            started_at=attempt.attempt_started_at,
-                            session_started_at=attempt.session_started_at,
-                            orchestrator=orchestrator,
-                            phase_recorder=attempt.phase_recorder,
-                            cleanup_on_exit=False,
-                        )
-                        return _AssignedAttemptRunOutcome(result_to_queue=result)
                     return await self._execute_issued_assigned_task(
                         batch_id=lifecycle.batch_id,
                         artifact=lifecycle.artifact,
@@ -1067,7 +1054,7 @@ class EvaluationRunner:
         *,
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         issued: SessionIssued,
         attempt_number: int,
         max_attempts: int,
@@ -1302,7 +1289,7 @@ class EvaluationRunner:
         *,
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         issued: SessionIssued | None,
         attempt_number: int,
         max_attempts: int,
@@ -1344,7 +1331,7 @@ class EvaluationRunner:
         *,
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         issued: SessionIssued | None,
         attempt_number: int,
         max_attempts: int,
@@ -1535,7 +1522,7 @@ class EvaluationRunner:
         *,
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
-        tasks: Sequence[MinerTask],
+        tasks: Sequence[MinerTaskExecutionInput],
         create_submission: SubmissionFactory,
     ) -> list[MinerTaskRunSubmission]:
         submissions: list[MinerTaskRunSubmission] = []
@@ -1897,24 +1884,14 @@ class EvaluationRunner:
         *,
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         issued: SessionIssued,
         orchestrator: TaskRunOrchestrator,
         final_attempt: bool,
         phase_recorder: PhaseRecorder | None = None,
         admission: SandboxAdmission | None = None,
     ) -> TaskExecutionOutcome | TaskAttemptDecision:
-        if not hasattr(orchestrator, "execute"):
-            return await self._evaluate_task_attempt(
-                batch_id=batch_id,
-                artifact=artifact,
-                task=task,
-                issued=issued,
-                orchestrator=orchestrator,
-                final_attempt=final_attempt,
-                phase_recorder=phase_recorder,
-            )
-        request = MinerTaskRunRequest(
+        request = MinerTaskExecutionRequest(
             batch_id=batch_id,
             session_id=issued.session.session_id,
             token=issued.token,
@@ -2035,11 +2012,11 @@ class EvaluationRunner:
         *,
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
-        tasks: Sequence[MinerTask],
+        tasks: Sequence[MinerTaskExecutionInput],
         error_code: MinerTaskErrorCode,
         error_message: str,
     ) -> list[MinerTaskRunSubmission]:
-        async def create_submission(task: MinerTask, issued: SessionIssued) -> MinerTaskRunSubmission:
+        async def create_submission(task: MinerTaskExecutionInput, issued: SessionIssued) -> MinerTaskRunSubmission:
             return self._record_failure(
                 batch_id=batch_id,
                 session_id=issued.session.session_id,
@@ -2097,7 +2074,7 @@ class EvaluationRunner:
         *,
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         issued: SessionIssued,
         attempt_number: int,
         max_attempts: int,
@@ -2108,7 +2085,7 @@ class EvaluationRunner:
         return PlatformOwnedTaskExecution(
             batch_id=batch_id,
             artifact=artifact,
-            task=task,
+            task=None,
             artifact_id=artifact.artifact_id,
             task_id=task.task_id,
             attempt_number=attempt_number,
@@ -2133,7 +2110,7 @@ class EvaluationRunner:
         session_id: UUID,
         uid: int,
         artifact_id: UUID,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         error_code: MinerTaskErrorCode,
         error_message: str,
     ) -> MinerTaskRunSubmission:
@@ -2154,7 +2131,7 @@ class EvaluationRunner:
         session_id: UUID,
         uid: int,
         artifact_id: UUID,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         error_code: MinerTaskErrorCode,
         error_message: str,
         total_tool_usage: ToolUsageSummary | None = None,
@@ -2186,7 +2163,7 @@ class EvaluationRunner:
         session_id: UUID,
         uid: int,
         artifact_id: UUID,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         error_code: MinerTaskErrorCode,
         error_message: str,
         rejected_response: str | None = None,
@@ -2220,7 +2197,7 @@ class EvaluationRunner:
         *,
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         session_id: UUID,
         error_message: str,
     ) -> MinerTaskRunSubmission:
@@ -2239,7 +2216,7 @@ class EvaluationRunner:
         *,
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         session_id: UUID,
         error_message: str,
     ) -> MinerTaskRunSubmission:
@@ -2263,7 +2240,7 @@ class EvaluationRunner:
         envelope: SessionEnvelope,
         uid: int,
         artifact_id: UUID,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         error_code: MinerTaskErrorCode,
         error_message: str,
         total_tool_usage: ToolUsageSummary | None = None,
@@ -2298,7 +2275,7 @@ class EvaluationRunner:
         envelope: SessionEnvelope,
         uid: int,
         artifact_id: UUID,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         error_code: MinerTaskErrorCode,
         error_message: str,
         rejected_response: str | None = None,
@@ -2346,7 +2323,7 @@ class EvaluationRunner:
         *,
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         session_id: UUID,
         error_code: MinerTaskErrorCode,
         error_message: str,
@@ -2371,7 +2348,7 @@ class EvaluationRunner:
         *,
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         session_id: UUID,
         error_code: MinerTaskErrorCode,
         error_message: str,
@@ -2409,7 +2386,7 @@ class EvaluationRunner:
         *,
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         issued: SessionIssued,
         timeout_exc: SandboxInvocationError,
     ) -> TaskAttemptDecision:
@@ -2428,7 +2405,7 @@ class EvaluationRunner:
         *,
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         issued: SessionIssued,
         timeout_exc: SandboxInvocationError,
     ) -> TaskAttemptDecision:
@@ -2477,7 +2454,7 @@ class EvaluationRunner:
         *,
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         session_id: UUID,
         exc: SandboxInvocationError,
         final_attempt: bool,
@@ -2532,7 +2509,7 @@ class EvaluationRunner:
         *,
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         session_id: UUID,
     ) -> TaskAttemptDecision | None:
         envelope = self._sessions.inspect(session_id)
@@ -2556,7 +2533,7 @@ class EvaluationRunner:
         *,
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         session_id: UUID,
         exc: Exception,
         final_attempt: bool,
@@ -2675,7 +2652,7 @@ class EvaluationRunner:
         self,
         *,
         artifact: ScriptArtifactSpec,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         session_id: UUID,
     ) -> TaskAttemptDecision | None:
         failure = self._latest_platform_tool_proxy_control_failure(session_id)
@@ -2726,7 +2703,7 @@ class EvaluationRunner:
         *,
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         issued: SessionIssued,
         attempt_number: int,
         max_attempts: int,
@@ -2902,7 +2879,7 @@ class EvaluationRunner:
         *,
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         result: PlatformOwnedTaskResult,
         local_submission: MinerTaskRunSubmission | None,
     ) -> None:
@@ -2946,7 +2923,7 @@ class EvaluationRunner:
         *,
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         result: PlatformOwnedTaskResult,
         local_write_target: str,
         exc: Exception,
@@ -2975,7 +2952,7 @@ class EvaluationRunner:
         *,
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         issued: SessionIssued,
         attempt_number: int,
         max_attempts: int,
@@ -3008,7 +2985,7 @@ class EvaluationRunner:
         *,
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         issued: SessionIssued,
         attempt_number: int,
         max_attempts: int,
@@ -3054,7 +3031,7 @@ class EvaluationRunner:
         *,
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         attempt_number: int,
         exc: Exception,
     ) -> None:
@@ -3090,7 +3067,7 @@ class EvaluationRunner:
         batch_id: UUID,
         uid: int,
         artifact_id: UUID | None = None,
-        task: MinerTask,
+        task: MinerTaskExecutionInput,
         attempt_number: int = 1,
         assignment_token: str | None = None,
         phase_recorder: PhaseRecorder | None = None,
@@ -3370,7 +3347,7 @@ def _validator_batch_failed_from_existing_submission(
     *,
     submission: MinerTaskRunSubmission,
     artifact: ScriptArtifactSpec,
-    task: MinerTask,
+    task: MinerTaskExecutionInput,
     occurred_at: datetime,
 ) -> ValidatorBatchFailedError:
     error_code = _submission_error_code(submission)
