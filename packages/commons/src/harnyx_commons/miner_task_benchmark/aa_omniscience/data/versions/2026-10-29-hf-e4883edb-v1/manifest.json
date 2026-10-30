@@ -1,0 +1,52 @@
+{
+  "suite_slug": "aa-omniscience-public-v1",
+  "suite_name": "AA-Omniscience Public v1",
+  "dataset_version": "2026-10-29-hf-e4883edb-v1",
+  "source_url": "https://huggingface.co/datasets/ArtificialAnalysis/AA-Omniscience-Public/resolve/e4883edbb9f5ccf2b2a8fdc6fb65e01a58e99849/AA-Omniscience_dataset_public.csv",
+  "source_page_url": "https://huggingface.co/datasets/ArtificialAnalysis/AA-Omniscience-Public",
+  "source_revision": "e4883edbb9f5ccf2b2a8fdc6fb65e01a58e99849",
+  "license": "Apache-2.0",
+  "sha256": "1e04603dafa3bd0d16d8151f07a5eb74c43d90c3a85d2fca120da2359174d02f",
+  "row_count": 600,
+  "file_name": "AA-Omniscience_dataset_public.csv",
+  "fetched_at": "2026-10-29T07:11:15.862531+00:00",
+  "columns": [
+    "domain",
+    "topic",
+    "subtopic",
+    "question_id",
+    "question",
+    "answer"
+  ],
+  "domain_row_counts": {
+    "Finance": 100,
+    "Health": 100,
+    "Humanities and Social Sciences": 100,
+    "Law": 100,
+    "Science Engineering and Mathematics": 100,
+    "Software Engineering": 100
+  },
+  "files": {
+    "AA-Omniscience_dataset_public.csv": {
+      "source_url": "https://huggingface.co/datasets/ArtificialAnalysis/AA-Omniscience-Public/resolve/e4883edbb9f5ccf2b2a8fdc6fb65e01a58e99849/AA-Omniscience_dataset_public.csv",
+      "sha256": "1e04603dafa3bd0d16d8151f07a5eb74c43d90c3a85d2fca120da2359174d02f"
+    },
+    "README.upstream.md": {
+      "source_url": "https://huggingface.co/datasets/ArtificialAnalysis/AA-Omniscience-Public/resolve/e4883edbb9f5ccf2b2a8fdc6fb65e01a58e99849/README.md",
+      "sha256": "e75f912ebd1c5ea40b47692a98bc684e13da32af226694024f4a94eab7327481"
+    },
+    "Omniscience_Index_Question_Breakdown.png": {
+      "source_url": "https://huggingface.co/datasets/ArtificialAnalysis/AA-Omniscience-Public/resolve/e4883edbb9f5ccf2b2a8fdc6fb65e01a58e99849/Omniscience_Index_Question_Breakdown.png",
+      "sha256": "5ae3965caa0e98ec4eb80d377caec547a90830402ed264fcc81482c22cf9435c"
+    },
+    "LICENSE.apache-2.0": {
+      "source_url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    "grader_prompt.txt": {
+      "source_file": "README.upstream.md",
+      "source_anchor": "OMNISCIENCE_GRADER_TEMPLATE",
+      "sha256": "d598fe204eb74f568c61a965bc277731379ace0582523db30acc1b89dc8a2e03"
+    }
+  }
+}
