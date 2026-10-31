@@ -169,7 +169,7 @@ sequenceDiagram
 
 #### 4) Validator persists execution evidence, then submits final results
 
-Each qualifying and main round closes all expected executions before Platform sends queries to blackbox reference miners. Execution assignments contain query and execution settings without reference answers. Reference judges may receive answers after execution closes. Scoreable executions remain empty until all round references resolve; they then include the selected full task and the original saved response. Authenticated full-batch reads also wait for this boundary, including dataset fallback.
+Platform may release finally eligible artifacts for execution while duplicate judging continues. Reference generation waits until duplicate eligibility and complete expected work are settled, then each task must close execution across all artifacts and validators before its black-box query is dispatched. Execution assignments contain query and execution settings only. Scoreable executions include the selected full task and original saved response once that task's reference resolves, independently of other tasks. Authenticated full-batch answer reads retain their round-wide gate, including dataset fallback.
 
 Execution defaults to 24 hours. Evaluation has an approximate six-hour window based on persisted execution and reference timing, with allowance for reference processing. Pending reference selection does not expire saved responses. These contracts require compatible Platform and validator versions.
 
@@ -184,7 +184,7 @@ sequenceDiagram
   P->>DB: Persist accepted execution evidence on the existing run row
   P-->>V: 200 { executions:[{ outcome:"accepted"|"rejected", canonical:true|false, reason_code:null|... }] }
 
-  Note over P,DB: All round executions close, then blackbox generation and reference selection finish
+  Note over P,DB: Expected work is complete. This task closes across validators and its reference resolves
   V->>P: POST /v2/miner-task-work/scoreable-executions<br/>{ limit:remaining_scoring_slots, active_scoring:[...] }
   P-->>V: 200 { executions:[persisted execution evidence still needing scoring] }
 
