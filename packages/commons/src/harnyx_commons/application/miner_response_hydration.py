@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
-from typing import Self
+from typing import Protocol, Self
 from uuid import UUID
 
 from jsonschema import ValidationError as JsonSchemaValidationError
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.domain.miner_task import AnswerCitation, CitationExcerpt, Query, Response
@@ -25,6 +26,25 @@ MAX_EVIDENCE_SEGMENTS_PER_RESPONSE = 400
 MIN_CITATION_SLICE_CHARS = 100
 MAX_TOTAL_CITATION_EVIDENCE_CHARS = 120_000
 _CITATION_MARKER = re.compile(r"\[\[([0-9]+)\]\]")
+
+
+logger = logging.getLogger(__name__)
+
+
+class MinerResponseObserver(Protocol):
+    def basic(self, *, invalid: bool) -> None: ...
+    def schema(self, *, invalid: bool) -> None: ...
+    def answer(self, values: Sequence[JsonValue]) -> None: ...
+    def citations(self, values: Sequence[JsonValue], citations: Sequence[AnswerCitation | None]) -> None: ...
+
+
+def _observe(observer: MinerResponseObserver | None, action: Callable[[MinerResponseObserver], None]) -> None:
+    if observer is None:
+        return
+    try:
+        action(observer)
+    except Exception as exc:
+        logger.warning("response observation failed", extra={"error_kind": type(exc).__name__})
 
 
 class MinerResponsePayloadError(ValueError):
@@ -135,10 +155,15 @@ def hydrate_miner_response_payload(
     query: Query,
     session_id: UUID,
     receipt_log: ReceiptLogPort,
+    observer: MinerResponseObserver | None = None,
 ) -> Response:
-    raw_response = _RawMinerResponsePayload.model_validate(payload, strict=True)
     try:
-        _validate_answer_for_query(raw_response, query)
+        raw_response = _RawMinerResponsePayload.model_validate(payload, strict=True)
+    except ValidationError:
+        _observe(observer, lambda target: target.basic(invalid=True))
+        raise
+    try:
+        _validate_answer_for_query(raw_response, query, observer=observer)
     except MinerResponseSchemaError:
         raise
     except ValueError as exc:
@@ -151,6 +176,12 @@ def hydrate_miner_response_payload(
     if hydrated_citations.source_text_chars > MAX_TOTAL_CITATION_EVIDENCE_CHARS:
         raise MinerResponsePayloadError("response citations exceed 120000 materialized source-text characters")
     citations = hydrated_citations.citations or None
+    _observe(
+        observer,
+        lambda target: target.citations(
+            (raw_response.text, raw_response.output, raw_response.note), hydrated_citations.citations
+        ),
+    )
     validate_citation_references(
         (raw_response.text, raw_response.output, raw_response.note), hydrated_citations.citations
     )
@@ -160,6 +191,12 @@ def hydrate_miner_response_payload(
 
 
 def validate_citation_references(values: Sequence[JsonValue], citations: Sequence[AnswerCitation | None]) -> None:
+    for error in citation_reference_errors(values, citations):
+        raise MinerResponsePayloadError(error)
+
+
+def citation_reference_errors(values: Sequence[JsonValue], citations: Sequence[AnswerCitation | None]) -> Iterator[str]:
+    """Inspect every occurrence; validation still raises at the first yielded error."""
     pending = list(values)
     max_position_digits = len(str(len(citations)))
     while pending:
@@ -173,30 +210,43 @@ def validate_citation_references(values: Sequence[JsonValue], citations: Sequenc
                 digits = marker.group(1).lstrip("0") or "0"
                 # Bound conversion even when a response contains thousands of digits.
                 if len(digits) > max_position_digits:
-                    raise MinerResponsePayloadError("inline citation position is out of range")
+                    yield "inline citation position is out of range"
+                    continue
                 position = int(digits)
                 if not 1 <= position <= len(citations):
-                    raise MinerResponsePayloadError("inline citation position is out of range")
+                    yield "inline citation position is out of range"
+                    continue
                 if citations[position - 1] is None:
-                    raise MinerResponsePayloadError(f"inline citation [[{position}]] points to an unresolved citation")
+                    yield f"inline citation [[{position}]] points to an unresolved citation"
 
 
-def _validate_answer_for_query(response: _RawMinerResponsePayload, query: Query) -> None:
+def _validate_answer_for_query(
+    response: _RawMinerResponsePayload, query: Query, *, observer: MinerResponseObserver | None = None
+) -> None:
+    try:
+        if query.output_schema is None:
+            if "text" not in response.model_fields_set:
+                raise ValueError("legacy query response must use text")
+            assert response.text is not None
+            if not response.text.strip():
+                raise ValueError("response text must not be blank")
+        elif "output" not in response.model_fields_set:
+            raise ValueError("structured query response must use output")
+    except ValueError:
+        _observe(observer, lambda target: target.basic(invalid=True))
+        raise
+    _observe(observer, lambda target: target.basic(invalid=False))
+    _observe(observer, lambda target: target.answer((response.text, response.output, response.note)))
     if query.output_schema is None:
-        if "text" not in response.model_fields_set:
-            raise ValueError("legacy query response must use text")
-        assert response.text is not None
-        if not response.text.strip():
-            raise ValueError("response text must not be blank")
         return
-    if "output" not in response.model_fields_set:
-        raise ValueError("structured query response must use output")
     try:
         validate_output_against_schema(response.output, query.output_schema)
     except ValueError as exc:
         if isinstance(exc.__cause__, JsonSchemaValidationError):
+            _observe(observer, lambda target: target.schema(invalid=True))
             raise MinerResponseSchemaError(response.output, str(exc)) from exc
         raise
+    _observe(observer, lambda target: target.schema(invalid=False))
 
 
 def _hydrate_citations(

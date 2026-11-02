@@ -816,3 +816,60 @@ def test_only_schema_mismatch_is_recoverable_and_keeps_validation_feedback() -> 
         with pytest.raises(MinerResponsePayloadError) as ordinary:
             hydrate_miner_response_payload(payload, query=query, session_id=uuid4(), receipt_log=InMemoryReceiptLog())
         assert not isinstance(ordinary.value, MinerResponseSchemaError)
+
+
+@pytest.mark.parametrize("broken", [False, True])
+@pytest.mark.parametrize(
+    "payload,query,events,error",
+    [
+        ({"text": "answer", "extra": True}, Query(text="q"), [("basic", True)], ValidationError),
+        ({"text": "answer"}, Query(text="q", output_schema={}), [("basic", True)], MinerResponsePayloadError),
+        (
+            {"output": 1, "note": "[[2]]"},
+            Query(text="q", output_schema={"type": "string"}),
+            [("basic", False), ("answer", None), ("schema", True)],
+            MinerResponseSchemaError,
+        ),
+        (
+            {"text": "answer [[2]]"},
+            Query(text="q"),
+            [("basic", False), ("answer", None), ("citations", None)],
+            MinerResponsePayloadError,
+        ),
+        ({"text": "answer"}, Query(text="q"), [("basic", False), ("answer", None), ("citations", None)], None),
+    ],
+)
+def test_observations_preserve_validation_order_and_cannot_change_acceptance(broken, payload, query, events, error):
+    """Instrumentation errors cannot turn rejected output into success or valid output into failure."""
+    recorded = []
+
+    class Observer:
+        def basic(self, *, invalid):
+            self.record("basic", invalid)
+
+        def schema(self, *, invalid):
+            self.record("schema", invalid)
+
+        def answer(self, values):
+            self.record("answer", None)
+
+        def citations(self, values, citations):
+            self.record("citations", None)
+
+        def record(self, name, value):
+            recorded.append((name, value))
+            if broken:
+                raise RuntimeError("measurement only")
+
+    kwargs = dict(query=query, session_id=uuid4(), receipt_log=InMemoryReceiptLog())
+    if error is None:
+        assert _hydrate_miner_response_payload(
+            payload, observer=Observer(), **kwargs
+        ) == _hydrate_miner_response_payload(payload, **kwargs)
+    else:
+        with pytest.raises(error) as observed:
+            _hydrate_miner_response_payload(payload, observer=Observer(), **kwargs)
+        with pytest.raises(error) as original:
+            _hydrate_miner_response_payload(payload, **kwargs)
+        assert str(observed.value) == str(original.value)
+    assert recorded == events
