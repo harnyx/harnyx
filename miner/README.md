@@ -2,6 +2,12 @@
 
 This directory contains the miner-facing CLI tools for the Harnyx Subnet.
 
+Competition batches from data version 12 award separate F1 and overall titles.
+All tasks receive F1; default **deep** mode (`fast=false` or omitted) adds the
+pairwise judge. Overall is 30% all-task F1 and 70% deep-task judge, after per-task
+validator medians. One submission can earn both titles. Local benchmarks retain
+their existing scoring; see the [SDK query contract](../packages/miner-sdk/README.md#query-contract).
+
 For the end-to-end operating workflow from champion context through submit,
 batch monitoring, and score diagnosis, start with the
 [Mining Runbook](mining-runbook.md).

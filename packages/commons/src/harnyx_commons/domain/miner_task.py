@@ -31,6 +31,8 @@ from harnyx_miner_sdk.structured_output import compact_json, validate_output_siz
 _JUDGE_USAGE_ADAPTER = TypeAdapter(JudgeUsageSummary)
 _TOOL_USAGE_ADAPTER = TypeAdapter(ToolUsageSummary)
 DEFAULT_MINER_TASK_BUDGET_USD = 0.5
+MinerTaskScoringContract = Literal["native-v1", "f1-deep-v1"]
+F1_DEEP_SCORING_VERSION = "f1-deep-v1"
 _POSITIONAL_CITATIONS_DESCRIPTION = (
     "Hydrated submitted citation positions in order. Miners submit only non-null CitationRef entries. "
     "An AnswerCitation means that the submitted position resolved to authoritative public evidence; null means "
@@ -244,9 +246,8 @@ class Response(BaseModel):
         # A return annotation makes Pydantic publish distinct input/output schemas even
         # though json_schema_mode_override intentionally keeps this contract canonical.
         payload = cast(dict[str, object], handler(self))
-        output_is_selected = (
-            (info.include is None or "output" in info.include)
-            and (info.exclude is None or "output" not in info.exclude)
+        output_is_selected = (info.include is None or "output" in info.include) and (
+            info.exclude is None or "output" not in info.exclude
         )
         if "output" in self.model_fields_set and output_is_selected:
             payload["output"] = self.output
@@ -357,6 +358,8 @@ class ScoreBreakdown(BaseModel):
         default=None,
         exclude_if=lambda value: value is None,
     )
+    f1_score: float | None = Field(default=None, ge=0.0, le=1.0, exclude_if=lambda value: value is None)
+    f1_score_evidence: FastScoreEvidence | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="before")
     @classmethod
@@ -374,10 +377,13 @@ class ScoreBreakdown(BaseModel):
     def _validate_total_matches_comparison(self) -> ScoreBreakdown:
         if self.total_score != self.comparison_score:
             raise ValueError("score breakdown total_score must equal comparison_score")
-        if (
-            self.fast_score_evidence is not None
-            and self.total_score != self.fast_score_evidence.computed_f1
-        ):
+        if (self.f1_score is None) != (self.f1_score_evidence is None):
+            raise ValueError("F1 score and evidence must be supplied together")
+        if self.f1_score_evidence is not None and self.f1_score != self.f1_score_evidence.computed_f1:
+            raise ValueError("F1 score must match its component evidence")
+        if self.scoring_version == F1_DEEP_SCORING_VERSION and self.f1_score is None:
+            raise ValueError("f1-deep-v1 scoring requires F1 score and evidence")
+        if self.fast_score_evidence is not None and self.total_score != self.fast_score_evidence.computed_f1:
             raise ValueError("score breakdown total_score must match fast score evidence F1")
         return self
 
@@ -543,6 +549,8 @@ class MinerTask(MinerTaskExecutionInput):
 
 
 __all__ = [
+    "F1_DEEP_SCORING_VERSION",
+    "MinerTaskScoringContract",
     "AnswerCitation",
     "CitationExcerpt",
     "DEFAULT_MINER_TASK_BUDGET_USD",

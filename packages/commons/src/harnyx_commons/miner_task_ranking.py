@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import math
 import statistics
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Collection, Iterable, Sequence
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from uuid import UUID
 
@@ -32,6 +32,7 @@ class ArtifactRankingRow:
     score: float
     total_cost_usd: float
     elapsed_ms: float | None = None
+    f1_score: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +41,14 @@ class ArtifactAggregateBundle:
     totals: dict[UUID, float]
     costs: dict[UUID, float]
     median_elapsed_ms: dict[UUID, float] = field(default_factory=dict)
+    score_maximum: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CompetitionAggregates:
+    f1: ArtifactAggregateBundle
+    overall: ArtifactAggregateBundle
+    deep_scores: dict[UUID, float]
 
 
 class RankingDecisionRule(StrEnum):
@@ -440,7 +449,11 @@ class RankingCascade:
                 ),
             )
 
-        maximum_score = float(len(aggregates.vectors[incumbent_artifact_id]))
+        maximum_score = (
+            aggregates.score_maximum
+            if aggregates.score_maximum is not None
+            else float(len(aggregates.vectors[incumbent_artifact_id]))
+        )
         if maximum_score <= 0.0:
             return RankingRuleEvaluation(
                 rule=RankingDecisionRule.SCORE_MARGIN,
@@ -510,6 +523,69 @@ def select_qualifying_participants(
         incumbent_artifact_id=initial,
         comparisons=comparisons,
         participant_artifact_ids=incumbent + tuple(artifact_id for artifact_id in eligible if artifact_id in selected),
+    )
+
+
+def aggregate_competition_components(
+    rows: Sequence[ArtifactRankingRow],
+    *,
+    task_ids: Sequence[UUID],
+    deep_task_ids: Collection[UUID],
+    artifact_ids: Sequence[UUID],
+    validator_ids: Sequence[UUID],
+) -> CompetitionAggregates:
+    """Median each task component first, then apply fixed batch-level weights."""
+
+    tasks, deep_tasks = set(task_ids), set(deep_task_ids)
+    if not tasks or not deep_tasks or not deep_tasks.issubset(tasks):
+        raise ValueError("competition scoring requires tasks with deep coverage")
+    if (
+        len(tasks) != len(task_ids)
+        or len(set(artifact_ids)) != len(artifact_ids)
+        or len(set(validator_ids)) != len(validator_ids)
+    ):
+        raise ValueError("competition scoring membership must be unique")
+    expected = {
+        (validator, artifact, task) for validator in validator_ids for artifact in artifact_ids for task in tasks
+    }
+    actual = {(row.validator_id, row.artifact_id, row.task_id) for row in rows}
+    if not expected or actual != expected or len(actual) != len(rows):
+        raise ValueError("competition scoring requires the complete frozen validator/artifact/task grid")
+    if any(row.f1_score is None or not math.isfinite(row.f1_score) or not 0 <= row.f1_score <= 1 for row in rows):
+        raise ValueError("competition scoring requires finite F1 evidence for every task")
+    f1_rows = tuple(replace(row, score=row.f1_score) for row in rows if row.f1_score is not None)
+    f1_native = aggregate_ranking_rows(f1_rows)
+    deep_native = aggregate_ranking_rows(tuple(row for row in rows if row.task_id in deep_tasks))
+    ordered_tasks = sorted(tasks, key=lambda task: task.hex)
+    ordered_deep = sorted(deep_tasks, key=lambda task: task.hex)
+    f1_vectors: dict[UUID, ScoreVector] = {}
+    overall_vectors: dict[UUID, ScoreVector] = {}
+    deep_scores: dict[UUID, float] = {}
+    for artifact_id in artifact_ids:
+        f1_vector = [value / len(tasks) for value in f1_native.vectors[artifact_id]]
+        judge_by_task = dict(zip(ordered_deep, deep_native.vectors[artifact_id], strict=True))
+        f1_vectors[artifact_id] = f1_vector
+        overall_vectors[artifact_id] = [
+            0.3 * f1_value + 0.7 * judge_by_task.get(task_id, 0.0) / len(deep_tasks)
+            for task_id, f1_value in zip(ordered_tasks, f1_vector, strict=True)
+        ]
+        deep_scores[artifact_id] = deep_native.totals[artifact_id] / len(deep_tasks)
+    return CompetitionAggregates(
+        f1=ArtifactAggregateBundle(
+            vectors=f1_vectors,
+            totals={artifact: _normalize_score(math.fsum(vector)) for artifact, vector in f1_vectors.items()},
+            costs=f1_native.costs,
+            median_elapsed_ms=f1_native.median_elapsed_ms,
+            score_maximum=1.0,
+        ),
+        overall=ArtifactAggregateBundle(
+            vectors=overall_vectors,
+            totals={artifact: _normalize_score(math.fsum(vector)) for artifact, vector in overall_vectors.items()},
+            costs=f1_native.costs,
+            median_elapsed_ms=f1_native.median_elapsed_ms,
+            score_maximum=1.0,
+        ),
+        deep_scores=deep_scores,
     )
 
 
@@ -751,6 +827,8 @@ def _is_meaningfully_faster(
 
 
 __all__ = [
+    "CompetitionAggregates",
+    "aggregate_competition_components",
     "MAIN_PARTICIPANT_LIMIT",
     "QualifyingComparison",
     "QualifyingSelection",

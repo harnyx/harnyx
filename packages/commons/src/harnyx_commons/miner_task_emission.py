@@ -14,6 +14,8 @@ OWNER_UID = 0
 DEFAULT_MINER_PARTICIPATION_EMISSION = 0.004
 DEFAULT_SUCCESSFUL_MINER_PARTICIPATION_EMISSION = 0.008
 TOTAL_EMISSION_FRACTION = 1.0
+CHAMPION_BUDGET_FRACTION = 0.8
+CHAMPION_SHARE_POLICY_REVISION = "f1-gap-v1"
 _TOTAL_WEIGHT_EPSILON = 1e-12
 _ParticipantKey = TypeVar("_ParticipantKey")
 NoveltyDistributionWeight = Literal[1, 3, 5]
@@ -26,6 +28,32 @@ _ParticipantTierWeight = Literal[1, 2]
 
 class ParticipantEmissionTotalWeightError(ValueError):
     """Raised when participant emission would exceed total weight."""
+
+
+@dataclass(frozen=True, slots=True)
+class ChampionShares:
+    """Pre-decay portions of the combined champion budget."""
+
+    f1: float
+    overall: float
+    revision: str = CHAMPION_SHARE_POLICY_REVISION
+
+
+def champion_shares(f1_champion_score: float, overall_champion_f1_score: float) -> ChampionShares:
+    """Keep the independently changeable champion split in one policy function."""
+
+    if any(not isfinite(score) or not 0.0 <= score <= 1.0 for score in (f1_champion_score, overall_champion_f1_score)):
+        raise ValueError("champion F1 scores must be finite and between zero and one")
+    f1 = 0.4 + 0.5 * max(0.0, f1_champion_score - overall_champion_f1_score)
+    return ChampionShares(f1=f1, overall=1.0 - f1)
+
+
+def champion_retention_factor(consecutive_decision_count: int) -> float:
+    """Decay one title independently, with a floor after its second retention."""
+
+    if consecutive_decision_count < 1:
+        raise ValueError("consecutive champion decision count must be positive")
+    return (1.0, 0.5, 0.25)[min(consecutive_decision_count, 3) - 1]
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,9 +227,7 @@ def compose_tiered_participant_emission_allocations(
     ordered_allocations = tuple(
         (
             participant.participant_key,
-            miner_participation_emission
-            * tier_weight
-            * _participant_fixed_reward_ratio(participant.classification),
+            miner_participation_emission * tier_weight * _participant_fixed_reward_ratio(participant.classification),
         )
         for participant, tier_weight in _tiered_participant_weights(participant_scores)
     )
@@ -333,11 +359,7 @@ def _compose_proportional_emission_allocations(
     *,
     emission_fraction: float,
 ) -> dict[_ParticipantKey, float]:
-    if (
-        not isfinite(emission_fraction)
-        or emission_fraction < 0.0
-        or _exceeds_total_emission(emission_fraction)
-    ):
+    if not isfinite(emission_fraction) or emission_fraction < 0.0 or _exceeds_total_emission(emission_fraction):
         raise ValueError("emission fraction must be between 0.0 and 1.0")
     for participant_key, weight in distribution_weights.items():
         if not participant_key:
@@ -418,9 +440,7 @@ def admit_prioritized_emission(
 ) -> PrioritizedEmissionAdmission[_ParticipantKey]:
     """Reserve capacity in champion, main and general policy order before UID projection."""
 
-    if not isfinite(reserved_fraction) or reserved_fraction < 0.0 or _exceeds_total_emission(
-        reserved_fraction
-    ):
+    if not isfinite(reserved_fraction) or reserved_fraction < 0.0 or _exceeds_total_emission(reserved_fraction):
         raise ValueError("reserved emission fraction must be between 0.0 and 1.0")
     accepted_main, dropped_main, used = _admit_prioritized_component(
         main_additions,
@@ -615,6 +635,9 @@ def _admit_prioritized_component(
 
 
 __all__ = [
+    "CHAMPION_BUDGET_FRACTION",
+    "CHAMPION_SHARE_POLICY_REVISION",
+    "ChampionShares",
     "DEFAULT_MINER_PARTICIPATION_EMISSION",
     "DEFAULT_SUCCESSFUL_MINER_PARTICIPATION_EMISSION",
     "NoveltyDistributionWeight",
@@ -632,6 +655,8 @@ __all__ = [
     "admit_prioritized_emission",
     "champion_emission_fraction",
     "champion_max_emission_fraction",
+    "champion_retention_factor",
+    "champion_shares",
     "compose_artifact_participant_distribution_weights",
     "compose_champion_weights",
     "compose_base_participant_emission_allocations",

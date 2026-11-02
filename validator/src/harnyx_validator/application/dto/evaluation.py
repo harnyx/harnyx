@@ -9,7 +9,14 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from harnyx_commons.domain.miner_task import EvaluationTrace, MinerTask, MinerTaskExecutionInput, Query, Response
+from harnyx_commons.domain.miner_task import (
+    EvaluationTrace,
+    MinerTask,
+    MinerTaskExecutionInput,
+    MinerTaskScoringContract,
+    Query,
+    Response,
+)
 from harnyx_commons.domain.session import LlmUsageTotals, Session, SessionUsage
 from harnyx_commons.domain.tool_call import ToolCall
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
@@ -385,6 +392,7 @@ class PlatformOwnedTaskExecution(BaseModel):
     """Completed execution evidence for one platform-assigned miner-task attempt."""
 
     batch_id: UUID
+    scoring_contract: MinerTaskScoringContract = "native-v1"
     artifact: ScriptArtifactSpec | None = None
     task: MinerTask | None = None
     artifact_id: UUID

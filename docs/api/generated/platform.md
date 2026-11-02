@@ -1164,6 +1164,7 @@ Body: [MinerTaskWorkScoreableExecutionsResponse](#model-minertaskworkscoreableex
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `output` | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  |  | `text` | opt | `string` (nullable) |
+|  | `scoring_contract` |  | opt | `string` (enum: [native-v1, f1-deep-v1]; default: native-v1) |
 |  | `session` |  | req | [SessionModel](#model-sessionmodel) |
 |  |  | `expires_at` | req | `string` |
 |  |  | `issued_at` | req | `string` |
@@ -3631,6 +3632,12 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `message` |  | req | `string` |
 | `score_breakdown` |  |  | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
 |  | `comparison_score` |  | req | `number` |
+|  | `f1_score` |  | opt | `number` (nullable) |
+|  | `f1_score_evidence` |  | opt | [FastScoreEvidence](#model-fastscoreevidence) (nullable) |
+|  |  | `excessive_components` | req | array[[FastScoreExcessiveComponent](#model-fastscoreexcessivecomponent)] |
+|  |  | `expected_components` | req | array[[FastScoreExpectedComponent](#model-fastscoreexpectedcomponent)] |
+|  |  | `precision` | req | `number` |
+|  |  | `recall` | req | `number` |
 |  | `fast_score_evidence` |  | opt | [FastScoreEvidence](#model-fastscoreevidence) (nullable) |
 |  |  | `excessive_components` | req | array[[FastScoreExcessiveComponent](#model-fastscoreexcessivecomponent)] |
 |  |  | `expected_components` | req | array[[FastScoreExpectedComponent](#model-fastscoreexpectedcomponent)] |
@@ -6343,6 +6350,8 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `message` | req | `string` |
 |  | `score_breakdown` |  | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
 |  |  | `comparison_score` | req | `number` |
+|  |  | `f1_score` | opt | `number` (nullable) |
+|  |  | `f1_score_evidence` | opt | [FastScoreEvidence](#model-fastscoreevidence) (nullable) |
 |  |  | `fast_score_evidence` | opt | [FastScoreEvidence](#model-fastscoreevidence) (nullable) |
 |  |  | `reasoning` | opt | [ScorerReasoning](#model-scorerreasoning) (nullable) |
 |  |  | `scoring_version` | req | `string` |
@@ -7437,6 +7446,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `note` |  | opt | `string` (nullable) |
 |  | `output` |  | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  | `text` |  | opt | `string` (nullable) |
+| `scoring_contract` |  |  | opt | `string` (enum: [native-v1, f1-deep-v1]; default: native-v1) |
 | `session` |  |  | req | [SessionModel](#model-sessionmodel) |
 |  | `expires_at` |  | req | `string` |
 |  | `issued_at` |  | req | `string` |
@@ -7549,6 +7559,15 @@ Body: [StatusResponse](#model-statusresponse)
           "type": "null"
         }
       ]
+    },
+    "scoring_contract": {
+      "default": "native-v1",
+      "enum": [
+        "native-v1",
+        "f1-deep-v1"
+      ],
+      "title": "Scoring Contract",
+      "type": "string"
     },
     "session": {
       "$ref": "#/components/schemas/SessionModel"
@@ -7678,6 +7697,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `note` | opt | `string` (nullable) |
 |  |  | `output` | opt | [JsonValue-Input](#model-jsonvalue-input) (nullable) |
 |  |  | `text` | opt | `string` (nullable) |
+|  | `scoring_contract` |  | opt | `string` (enum: [native-v1, f1-deep-v1]; default: native-v1) |
 |  | `session` |  | req | [SessionModel](#model-sessionmodel) |
 |  |  | `expires_at` | req | `string` |
 |  |  | `issued_at` | req | `string` |
@@ -7981,7 +8001,7 @@ Body: [StatusResponse](#model-statusresponse)
   "properties": {
     "fast": {
       "default": false,
-      "description": "Whether the query uses correctness-only fast-mode scoring.",
+      "description": "False or omitted selects deep mode (default); true selects correctness-only fast mode.",
       "title": "Fast",
       "type": "boolean"
     },
@@ -9370,6 +9390,15 @@ Body: [StatusResponse](#model-statusresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `comparison_score` |  |  | req | `number` |
+| `f1_score` |  |  | opt | `number` (nullable) |
+| `f1_score_evidence` |  |  | opt | [FastScoreEvidence](#model-fastscoreevidence) (nullable) |
+|  | `excessive_components` |  | req | array[[FastScoreExcessiveComponent](#model-fastscoreexcessivecomponent)] |
+|  |  | `component_id` | req | `string` |
+|  | `expected_components` |  | req | array[[FastScoreExpectedComponent](#model-fastscoreexpectedcomponent)] |
+|  |  | `component_id` | req | `string` |
+|  |  | `is_correct` | req | `boolean` |
+|  | `precision` |  | req | `number` |
+|  | `recall` |  | req | `number` |
 | `fast_score_evidence` |  |  | opt | [FastScoreEvidence](#model-fastscoreevidence) (nullable) |
 |  | `excessive_components` |  | req | array[[FastScoreExcessiveComponent](#model-fastscoreexcessivecomponent)] |
 |  |  | `component_id` | req | `string` |
@@ -9396,6 +9425,29 @@ Body: [StatusResponse](#model-statusresponse)
       "minimum": 0.0,
       "title": "Comparison Score",
       "type": "number"
+    },
+    "f1_score": {
+      "anyOf": [
+        {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "F1 Score"
+    },
+    "f1_score_evidence": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/FastScoreEvidence"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "fast_score_evidence": {
       "anyOf": [

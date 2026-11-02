@@ -40,7 +40,7 @@ class Query(BaseModel):
     text: str = Field(min_length=1)
     fast: bool = Field(
         default=False,
-        description="Whether the query uses correctness-only fast-mode scoring.",
+        description="False or omitted selects deep mode (default); true selects correctness-only fast mode.",
         exclude_if=lambda value: value is False,
     )
     output_schema: JsonObject | None = Field(default=None, exclude_if=lambda value: value is None)

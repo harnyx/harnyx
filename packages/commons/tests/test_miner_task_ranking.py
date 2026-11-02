@@ -15,12 +15,57 @@ from harnyx_commons.miner_task_ranking import (
     RankingCascadeTrace,
     RankingDecisionRule,
     RankingRuleStatus,
+    aggregate_competition_components,
     aggregate_ranking_rows,
     main_participant_priority,
     ordered_challengers,
     run_ranking_cost_usd,
     select_qualifying_participants,
 )
+
+
+@pytest.mark.parametrize(("task_count", "deep_count"), ((3, 1), (3, 2), (10, 7), (10, 1)))
+def test_competition_weights_component_means_independently_of_realized_task_mix(
+    task_count: int, deep_count: int
+) -> None:
+    validator, artifact = uuid4(), uuid4()
+    tasks = tuple(uuid4() for _ in range(task_count))
+    rows = tuple(
+        ArtifactRankingRow(
+            validator, artifact, task, 0.6 if index < deep_count else 0.8, 1.0, elapsed_ms=1000.0, f1_score=0.8
+        )
+        for index, task in enumerate(tasks)
+    )
+    result = aggregate_competition_components(
+        rows, task_ids=tasks, deep_task_ids=tasks[:deep_count], artifact_ids=(artifact,), validator_ids=(validator,)
+    )
+    assert result.f1.totals[artifact] == pytest.approx(0.8)
+    assert result.deep_scores[artifact] == pytest.approx(0.6)
+    assert result.overall.totals[artifact] == pytest.approx(0.66)
+    assert result.overall.costs[artifact] == task_count
+    assert result.overall.median_elapsed_ms[artifact] == 1000.0 * task_count
+
+
+def test_competition_takes_validator_medians_before_combining_components() -> None:
+    task, artifact = uuid4(), uuid4()
+    validators = tuple(uuid4() for _ in range(3))
+    rows = tuple(
+        ArtifactRankingRow(validator, artifact, task, deep, 0.0, f1_score=f1)
+        for validator, f1, deep in zip(validators, (0.0, 0.0, 1.0), (0.0, 1.0, 0.0), strict=True)
+    )
+    result = aggregate_competition_components(
+        rows, task_ids=(task,), deep_task_ids=(task,), artifact_ids=(artifact,), validator_ids=validators
+    )
+    assert result.overall.totals[artifact] == 0.0
+
+
+def test_competition_rejects_absent_components_and_incomplete_frozen_grid() -> None:
+    task, artifact, validator = uuid4(), uuid4(), uuid4()
+    inputs = {"task_ids": (task,), "deep_task_ids": (task,), "artifact_ids": (artifact,), "validator_ids": (validator,)}
+    with pytest.raises(ValueError, match="complete frozen"):
+        aggregate_competition_components((), **inputs)
+    with pytest.raises(ValueError, match="F1 evidence"):
+        aggregate_competition_components((ArtifactRankingRow(validator, artifact, task, 0.5, 0.0),), **inputs)
 
 
 def test_qualifying_compares_every_challenger_to_original_incumbent() -> None:

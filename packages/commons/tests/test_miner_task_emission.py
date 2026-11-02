@@ -10,6 +10,8 @@ from harnyx_commons.miner_task_emission import (
     ParticipantEmissionScore,
     apply_miner_emission_cap,
     champion_max_emission_fraction,
+    champion_retention_factor,
+    champion_shares,
     compose_artifact_participant_distribution_weights,
     compose_emission_weights,
     compose_equal_participant_emission_allocations,
@@ -24,6 +26,32 @@ from harnyx_commons.miner_task_emission import (
     owner_fallback_weights,
     select_participant_emission_scores,
 )
+
+
+@pytest.mark.parametrize(
+    ("f1", "overall_f1", "expected"),
+    ((0.9, 0.7, (0.5, 0.5)), (0.8, 0.8, (0.4, 0.6)), (0.7, 0.8, (0.4, 0.6)), (1.0, 0.0, (0.9, 0.1))),
+)
+def test_champion_share_rewards_accuracy_gap_without_zeroing_equal_accuracy(
+    f1: float, overall_f1: float, expected: tuple[float, float]
+) -> None:
+    shares = champion_shares(f1, overall_f1)
+    assert (shares.f1, shares.overall) == pytest.approx(expected)
+    assert shares.f1 + shares.overall == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("invalid", (-0.1, 1.1, float("nan"), float("inf"), float("-inf")))
+def test_champion_share_rejects_invalid_scores_before_allocating_money(invalid: float) -> None:
+    with pytest.raises(ValueError, match="champion F1 scores"):
+        champion_shares(invalid, 0.5)
+    with pytest.raises(ValueError, match="champion F1 scores"):
+        champion_shares(0.5, invalid)
+
+
+def test_independent_champion_retention_has_a_stable_floor() -> None:
+    assert [champion_retention_factor(count) for count in (1, 2, 3, 4, 100)] == [1.0, 0.5, 0.25, 0.25, 0.25]
+    with pytest.raises(ValueError, match="must be positive"):
+        champion_retention_factor(0)
 
 
 def test_apply_miner_emission_cap_defaults_can_burn_all_miner_emission() -> None:

@@ -9,17 +9,140 @@ from harnyx_commons.miner_task_champion import (
     ChampionArtifactInput,
     ChampionRunInput,
     ChampionSelection,
+    ChampionSelections,
     CurrentChampionInput,
+    QualifyingSelections,
     SubmittedArtifactInput,
     artifact_batch_scores,
     filter_successful_validator_runs,
     select_batch_artifacts,
     select_champion,
+    select_competition,
     select_qualifying,
     selection_from_stored_champion_weights,
     validate_champion_run_inputs,
 )
-from harnyx_commons.miner_task_ranking import ArtifactAggregateBundle, QualifyingSelection, RankingCascade
+from harnyx_commons.miner_task_ranking import (
+    ArtifactAggregateBundle,
+    ArtifactRankingRow,
+    QualifyingSelection,
+    RankingCascade,
+)
+
+
+def test_f1_specialist_reaches_main_and_wins_f1_despite_failing_overall_gate() -> None:
+    overall, f1, specialist = uuid4(), uuid4(), uuid4()
+    validator, fast_task, deep_task = uuid4(), uuid4(), uuid4()
+    f1_scores = {overall: 0.7, f1: 0.9, specialist: 1.0}
+    judge_scores = {overall: 1.0, f1: 0.5, specialist: 0.5}
+    artifacts = tuple(ChampionArtifactInput(artifact, uid, f"owner-{uid}") for uid, artifact in enumerate(f1_scores, 1))
+    rows = tuple(
+        ArtifactRankingRow(
+            validator,
+            artifact,
+            task,
+            judge_scores[artifact] if task == deep_task else score,
+            1.0,
+            elapsed_ms=1000.0,
+            f1_score=score,
+        )
+        for artifact, score in f1_scores.items()
+        for task in (fast_task, deep_task)
+    )
+    inputs = {
+        "task_ids": (fast_task, deep_task),
+        "deep_task_ids": (deep_task,),
+        "artifacts": artifacts,
+        "rows": rows,
+        "validator_ids": (validator,),
+        "overall_incumbent": overall,
+        "f1_incumbent": f1,
+        "cascade": RankingCascade(),
+    }
+    qualifying = select_competition(**inputs, qualifying=True)
+    assert isinstance(qualifying, QualifyingSelections)
+    assert specialist not in qualifying.overall.participant_artifact_ids
+    assert specialist in qualifying.f1.participant_artifact_ids
+    assert qualifying.participant_artifact_ids == (overall, f1, specialist)
+    final = select_competition(**inputs, qualifying=False)
+    assert isinstance(final, ChampionSelections)
+    assert final.overall.champion_artifact_id == overall
+    assert final.overall.score == pytest.approx(0.91)
+    assert final.f1.champion_artifact_id == specialist
+
+
+def test_valid_zero_f1_clears_its_incumbent_while_overall_can_win_on_deep_judgment() -> None:
+    validator, task, artifact = uuid4(), uuid4(), uuid4()
+    final = select_competition(
+        task_ids=(task,),
+        deep_task_ids=(task,),
+        artifacts=(ChampionArtifactInput(artifact, 7, "owner"),),
+        rows=(ArtifactRankingRow(validator, artifact, task, 1.0, 1.0, f1_score=0.0),),
+        validator_ids=(validator,),
+        overall_incumbent=artifact,
+        f1_incumbent=artifact,
+        cascade=RankingCascade(),
+        qualifying=False,
+    )
+    assert isinstance(final, ChampionSelections)
+    assert final.overall.champion_artifact_id == artifact and final.overall.score == pytest.approx(0.7)
+    assert final.f1.champion_artifact_id is None and final.f1.score == 0.0
+    assert final.f1.artifact_scores == {artifact: 0.0}
+
+
+@pytest.mark.parametrize(("opposite_rankings", "expected_count"), ((True, 60), (False, 30)))
+def test_title_admission_deduplicates_two_caps_without_filling_union(
+    opposite_rankings: bool, expected_count: int
+) -> None:
+    validator, task = uuid4(), uuid4()
+    artifacts = tuple(ChampionArtifactInput(uuid4(), uid, f"owner-{uid}") for uid in range(1, 63))
+    rows = tuple(
+        ArtifactRankingRow(
+            validator,
+            artifact.artifact_id,
+            task,
+            0.0 if opposite_rankings and index < 31 else 1.0,
+            1.0,
+            f1_score=1.0 if index < 31 or not opposite_rankings else 0.5,
+        )
+        for index, artifact in enumerate(artifacts)
+    )
+    qualifying = select_competition(
+        task_ids=(task,),
+        deep_task_ids=(task,),
+        artifacts=artifacts,
+        rows=rows,
+        validator_ids=(validator,),
+        overall_incumbent=None,
+        f1_incumbent=None,
+        cascade=RankingCascade(),
+        qualifying=True,
+    )
+    assert isinstance(qualifying, QualifyingSelections)
+    assert len(qualifying.overall.participant_artifact_ids) == len(qualifying.f1.participant_artifact_ids) == 30
+    assert len(qualifying.participant_artifact_ids) == expected_count
+
+
+@pytest.mark.parametrize("shared_artifact", (False, True))
+def test_source_retains_both_same_owner_incumbents_and_its_newer_submission_once(shared_artifact: bool) -> None:
+    now = datetime.now(UTC)
+    overall_id, f1_id, challenger_id = uuid4(), uuid4(), uuid4()
+    if shared_artifact:
+        f1_id = overall_id
+    overall = SubmittedArtifactInput(7, overall_id, now - timedelta(days=2), "same-owner")
+    f1 = SubmittedArtifactInput(7, f1_id, now - timedelta(days=2), "same-owner")
+    challenger = SubmittedArtifactInput(7, challenger_id, now, "same-owner")
+    selected = select_batch_artifacts(
+        latest_by_hotkey={"same-owner": challenger},
+        previous_completed_cutoff=now - timedelta(days=1),
+        current_champion=CurrentChampionInput(7, overall_id, "same-owner"),
+        incumbent=overall,
+        f1_champion=CurrentChampionInput(7, f1_id, "same-owner"),
+        f1_incumbent=f1,
+    )
+    assert tuple(artifact.artifact_id for artifact in selected) == tuple(
+        dict.fromkeys((overall_id, f1_id, challenger_id))
+    )
 
 
 @pytest.mark.parametrize("score", [0.0, 0.01])

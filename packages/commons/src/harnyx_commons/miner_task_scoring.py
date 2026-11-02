@@ -16,9 +16,11 @@ from pydantic import AliasChoices, BaseModel, Field
 
 from harnyx_commons.domain.judge_usage import JudgeUsageSummary
 from harnyx_commons.domain.miner_task import (
+    F1_DEEP_SCORING_VERSION,
     AnswerCitation,
     EvaluationTrace,
     MinerTask,
+    MinerTaskScoringContract,
     Query,
     ReferenceAnswer,
     Response,
@@ -41,6 +43,7 @@ from harnyx_commons.miner_task_fast_scoring import (
     FAST_SCORING_VERSION,
     FastJudgeAssessment,
     build_fast_judge_messages,
+    build_fast_score_evidence,
     calculate_fast_f1,
 )
 
@@ -311,13 +314,17 @@ class EvaluationScoringService:
         *,
         task: MinerTask,
         response: Response,
+        scoring_contract: MinerTaskScoringContract = "native-v1",
     ) -> EvaluationScoringResult | ScoreBreakdown:
         if task.query.fast:
             return await self._score_fast(
                 query=task.query,
                 miner_response=response,
                 reference_response=task.reference_answer,
+                include_f1_evidence=scoring_contract == F1_DEEP_SCORING_VERSION,
             )
+        if scoring_contract == F1_DEEP_SCORING_VERSION:
+            return await self._score_deep_with_f1(task=task, response=response)
         pairwise_score = await self._score_pairwise(
             query=task.query,
             miner_response=response,
@@ -333,6 +340,89 @@ class EvaluationScoringService:
             ),
             judge_usage=pairwise_score.judge_usage,
             evaluation_trace=pairwise_score.evaluation_trace,
+        )
+
+    async def _score_deep_with_f1(self, *, task: MinerTask, response: Response) -> EvaluationScoringResult:
+        f1_task = asyncio.create_task(
+            self._score_fast(
+                query=task.query,
+                miner_response=response,
+                reference_response=task.reference_answer,
+                include_f1_evidence=True,
+            )
+        )
+        pair_tasks = (
+            asyncio.create_task(
+                self._judge_pair(query=task.query, first_answer=response, second_answer=task.reference_answer)
+            ),
+            asyncio.create_task(
+                self._judge_pair(query=task.query, first_answer=task.reference_answer, second_answer=response)
+            ),
+        )
+        component_tasks = (f1_task, *pair_tasks)
+        try:
+            await asyncio.wait(component_tasks, return_when=asyncio.FIRST_EXCEPTION)
+            for component in component_tasks:
+                if component.done() and not component.cancelled() and (failure := component.exception()) is not None:
+                    raise failure
+            f1 = f1_task.result()
+            deep = _pairwise_score_from_results(*(component.result() for component in pair_tasks))
+        except BaseException as exc:
+            for component in component_tasks:
+                if not component.done():
+                    component.cancel()
+            await asyncio.gather(*component_tasks, return_exceptions=True)
+            if isinstance(exc, Exception):
+                failures = tuple(
+                    failure
+                    for component in component_tasks
+                    if not component.cancelled() and isinstance(failure := component.exception(), Exception)
+                )
+                selected_failure = next(
+                    (failure for failure in failures if _pairwise_failure_category(failure) != "retry_exhausted"),
+                    exc,
+                )
+                usages: list[JudgeUsageSummary | None] = []
+                traces: list[EvaluationTrace | None] = []
+                for component in component_tasks:
+                    if component.cancelled():
+                        traces.append(EvaluationTrace(scoring_judge_retry_reasons=("interrupted",)))
+                    elif isinstance(failure := component.exception(), Exception):
+                        usages.append(_judge_usage_from_exception(failure))
+                        traces.append(_evaluation_trace_from_exception(failure))
+                    else:
+                        result = component.result()
+                        usages.append(result.judge_usage)
+                        traces.append(result.evaluation_trace)
+                attach_scoring_judge_usage(
+                    selected_failure,
+                    merge_judge_usage(usages),
+                    evaluation_trace=_merge_scoring_evaluation_traces(
+                        traces,
+                        status="exhausted"
+                        if _pairwise_failure_category(selected_failure) == "retry_exhausted"
+                        else "failed",
+                    ),
+                )
+                if selected_failure is not exc:
+                    raise selected_failure from exc
+            raise
+        evidence = f1.score_breakdown.f1_score_evidence
+        if evidence is None:
+            raise ValueError("F1 scorer did not return component evidence")
+        return EvaluationScoringResult(
+            score_breakdown=ScoreBreakdown(
+                comparison_score=deep.comparison_score,
+                total_score=deep.comparison_score,
+                scoring_version=F1_DEEP_SCORING_VERSION,
+                reasoning=deep.reasoning,
+                f1_score=evidence.computed_f1,
+                f1_score_evidence=evidence,
+            ),
+            judge_usage=merge_judge_usage((f1.judge_usage, deep.judge_usage)),
+            evaluation_trace=_merge_scoring_evaluation_traces(
+                (f1.evaluation_trace, deep.evaluation_trace), status="ok"
+            ),
         )
 
     async def score_reference(self, *, task: MinerTask, response: Response) -> ScoreBreakdown:
@@ -368,6 +458,7 @@ class EvaluationScoringService:
         query: Query,
         miner_response: Response,
         reference_response: ReferenceAnswer,
+        include_f1_evidence: bool = False,
     ) -> EvaluationScoringResult:
         messages = build_fast_judge_messages(
             query=query,
@@ -386,8 +477,10 @@ class EvaluationScoringService:
             score_breakdown=ScoreBreakdown(
                 comparison_score=score,
                 total_score=score,
-                scoring_version=FAST_SCORING_VERSION,
+                scoring_version=F1_DEEP_SCORING_VERSION if include_f1_evidence else FAST_SCORING_VERSION,
                 reasoning=reasoning,
+                f1_score=score if include_f1_evidence else None,
+                f1_score_evidence=build_fast_score_evidence(judged.output) if include_f1_evidence else None,
             ),
             judge_usage=judged.judge_usage,
             evaluation_trace=judged.evaluation_trace,
@@ -427,23 +520,7 @@ class EvaluationScoringService:
         except BaseException:
             await _cancel_unfinished_pairwise_tasks(pair_tasks)
             raise
-        miner_wins = 0
-        if miner_first.preferred_position == "first":
-            miner_wins += 1
-        if reference_first.preferred_position == "second":
-            miner_wins += 1
-        judge_usage = merge_judge_usage((miner_first.judge_usage, reference_first.judge_usage))
-        return _PairwiseScore(
-            comparison_score=miner_wins / 2.0,
-            first_order_preference=miner_first.preferred_position,
-            second_order_preference=reference_first.preferred_position,
-            reasoning=_build_pairwise_reasoning_trace(miner_first, reference_first),
-            judge_usage=judge_usage,
-            evaluation_trace=_merge_scoring_evaluation_traces(
-                (miner_first.evaluation_trace, reference_first.evaluation_trace),
-                status="ok",
-            ),
-        )
+        return _pairwise_score_from_results(miner_first, reference_first)
 
     async def _judge_pair(
         self,
@@ -603,6 +680,29 @@ class EvaluationScoringService:
             use_case=use_case,
             internal_metadata=internal_metadata,
         )
+
+
+def _pairwise_score_from_results(
+    miner_first: _PairwiseJudgeResult,
+    reference_first: _PairwiseJudgeResult,
+) -> _PairwiseScore:
+    miner_wins = 0
+    if miner_first.preferred_position == "first":
+        miner_wins += 1
+    if reference_first.preferred_position == "second":
+        miner_wins += 1
+    judge_usage = merge_judge_usage((miner_first.judge_usage, reference_first.judge_usage))
+    return _PairwiseScore(
+        comparison_score=miner_wins / 2.0,
+        first_order_preference=miner_first.preferred_position,
+        second_order_preference=reference_first.preferred_position,
+        reasoning=_build_pairwise_reasoning_trace(miner_first, reference_first),
+        judge_usage=judge_usage,
+        evaluation_trace=_merge_scoring_evaluation_traces(
+            (miner_first.evaluation_trace, reference_first.evaluation_trace),
+            status="ok",
+        ),
+    )
 
 
 def _selected_pairwise_failure(pair_tasks: Sequence[asyncio.Task[_PairwiseJudgeResult]]) -> Exception | None:

@@ -380,6 +380,7 @@ async def score_platform_execution(
         scoring_result = await scoring_service.score(
             task=execution.task,
             response=execution.response,
+            scoring_contract=execution.scoring_contract,
         )
     except Exception as exc:
         scoring_ms = _monotonic_elapsed_ms(

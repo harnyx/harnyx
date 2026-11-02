@@ -19,6 +19,7 @@ from harnyx_commons.config.vertex import VertexSettings
 from harnyx_commons.domain.miner_task import (
     DEFAULT_MINER_TASK_BUDGET_USD,
     MinerTask,
+    MinerTaskScoringContract,
     Query,
     ReferenceAnswer,
     Response,
@@ -191,8 +192,9 @@ class _InvocationOnlyScoringService(EvaluationScoringService):
         *,
         task: MinerTask,
         response: Response,
+        scoring_contract: MinerTaskScoringContract = "native-v1",
     ) -> ScoreBreakdown:
-        del task, response
+        del task, response, scoring_contract
         return ScoreBreakdown(
             comparison_score=0.0,
             total_score=0.0,

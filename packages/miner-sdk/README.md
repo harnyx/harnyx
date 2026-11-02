@@ -112,7 +112,7 @@ full `time_budget.limit_seconds`; it does not contain remaining time.
 ```
 
 `fast` identifies the query's scoring mode and defaults to `false` when omitted.
-Serializers omit the default so ordinary queries remain compatible with strict
+The default mode is named **deep**. Serializers omit the default so deep queries remain compatible with strict
 consumers that predate fast mode; they include `"fast": true` explicitly.
 `fast: true` means the response is scored for correctness only. The judge
 identifies correct expected answer components and excessive answer components,
@@ -120,7 +120,12 @@ then deterministic code computes a precision/recall F1 score from `0` to `1`.
 Citations remain accepted but are omitted from this judgment, are not required,
 and provide no scoring benefit. Fast scoring works with both plain-text and
 structured answers. Each source-generation slot independently selects
-`fast: true` with probability `0.3`; a finite batch may contain any mix of modes.
+`fast: true` with probability `0.3`; generated competition draws are retried if
+they contain no deep task. From source-batch version 12, every response receives
+F1; deep also receives the pairwise judge score. F1 championship uses all-task
+mean F1. Overall uses fixed weights: 30% all-task mean F1 and 70% deep-task mean
+judge score, after per-task validator medians. Reference comparisons and local
+benchmarks retain their native scoring contracts.
 
 Your return value must validate as:
 

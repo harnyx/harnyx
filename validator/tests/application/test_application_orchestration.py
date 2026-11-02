@@ -19,6 +19,7 @@ from harnyx_commons.domain.miner_task import (
     FastScoreExpectedComponent,
     MinerTask,
     MinerTaskErrorCode,
+    MinerTaskScoringContract,
     Query,
     ReferenceAnswer,
     Response,
@@ -127,6 +128,7 @@ class StubScoringService:
         *,
         task: MinerTask,
         response: Response,
+        scoring_contract: MinerTaskScoringContract = "native-v1",
     ) -> ScoreBreakdown:
         assert task.query.text == "Harnyx Subnet demo"
         assert response.text == "A direct answer"
@@ -143,6 +145,7 @@ class TracingScoringService:
         *,
         task: MinerTask,
         response: Response,
+        scoring_contract: MinerTaskScoringContract = "native-v1",
     ) -> EvaluationScoringResult:
         assert task.query.text == "Harnyx Subnet demo"
         assert response.text == "A direct answer"
@@ -190,6 +193,7 @@ class FastEvidenceScoringService:
         *,
         task: MinerTask,
         response: Response,
+        scoring_contract: MinerTaskScoringContract = "native-v1",
     ) -> EvaluationScoringResult:
         assert task.query.fast is True
         assert response.text == "A direct answer"
@@ -227,6 +231,7 @@ class TrackingScoringService:
         *,
         task: MinerTask,
         response: Response,
+        scoring_contract: MinerTaskScoringContract = "native-v1",
     ) -> ScoreBreakdown:
         _ = task, response
         self.calls += 1
@@ -239,6 +244,7 @@ class FailingScoringService:
         *,
         task: MinerTask,
         response: Response,
+        scoring_contract: MinerTaskScoringContract = "native-v1",
     ) -> ScoreBreakdown:
         _ = task, response
         raise RuntimeError("scoring failed")
@@ -250,6 +256,7 @@ class RetryExhaustedScoringService:
         *,
         task: MinerTask,
         response: Response,
+        scoring_contract: MinerTaskScoringContract = "native-v1",
     ) -> ScoreBreakdown:
         _ = task, response
         raise LlmRetryExhaustedError("scoring retries exhausted")
@@ -261,6 +268,7 @@ class RetryExhaustedWithJudgeUsageScoringService:
         *,
         task: MinerTask,
         response: Response,
+        scoring_contract: MinerTaskScoringContract = "native-v1",
     ) -> ScoreBreakdown:
         _ = task, response
         exc = LlmRetryExhaustedError("scoring retries exhausted")

@@ -174,6 +174,15 @@ Body: [ScoreBreakdown](#model-scorebreakdown)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `comparison_score` |  |  | req | `number` |
+| `f1_score` |  |  | opt | `number` (nullable) |
+| `f1_score_evidence` |  |  | opt | [FastScoreEvidence](#model-fastscoreevidence) (nullable) |
+|  | `excessive_components` |  | req | array[[FastScoreExcessiveComponent](#model-fastscoreexcessivecomponent)] |
+|  |  | `component_id` | req | `string` |
+|  | `expected_components` |  | req | array[[FastScoreExpectedComponent](#model-fastscoreexpectedcomponent)] |
+|  |  | `component_id` | req | `string` |
+|  |  | `is_correct` | req | `boolean` |
+|  | `precision` |  | req | `number` |
+|  | `recall` |  | req | `number` |
 | `fast_score_evidence` |  |  | opt | [FastScoreEvidence](#model-fastscoreevidence) (nullable) |
 |  | `excessive_components` |  | req | array[[FastScoreExcessiveComponent](#model-fastscoreexcessivecomponent)] |
 |  |  | `component_id` | req | `string` |
@@ -1019,7 +1028,7 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
   "properties": {
     "fast": {
       "default": false,
-      "description": "Whether the query uses correctness-only fast-mode scoring.",
+      "description": "False or omitted selects deep mode (default); true selects correctness-only fast mode.",
       "title": "Fast",
       "type": "boolean"
     },
@@ -1943,7 +1952,7 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
   "properties": {
     "fast": {
       "default": false,
-      "description": "Whether the query uses correctness-only fast-mode scoring.",
+      "description": "False or omitted selects deep mode (default); true selects correctness-only fast mode.",
       "title": "Fast",
       "type": "boolean"
     },
@@ -2134,6 +2143,15 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `comparison_score` |  |  | req | `number` |
+| `f1_score` |  |  | opt | `number` (nullable) |
+| `f1_score_evidence` |  |  | opt | [FastScoreEvidence](#model-fastscoreevidence) (nullable) |
+|  | `excessive_components` |  | req | array[[FastScoreExcessiveComponent](#model-fastscoreexcessivecomponent)] |
+|  |  | `component_id` | req | `string` |
+|  | `expected_components` |  | req | array[[FastScoreExpectedComponent](#model-fastscoreexpectedcomponent)] |
+|  |  | `component_id` | req | `string` |
+|  |  | `is_correct` | req | `boolean` |
+|  | `precision` |  | req | `number` |
+|  | `recall` |  | req | `number` |
 | `fast_score_evidence` |  |  | opt | [FastScoreEvidence](#model-fastscoreevidence) (nullable) |
 |  | `excessive_components` |  | req | array[[FastScoreExcessiveComponent](#model-fastscoreexcessivecomponent)] |
 |  |  | `component_id` | req | `string` |
@@ -2160,6 +2178,29 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
       "minimum": 0.0,
       "title": "Comparison Score",
       "type": "number"
+    },
+    "f1_score": {
+      "anyOf": [
+        {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "F1 Score"
+    },
+    "f1_score_evidence": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/FastScoreEvidence"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "fast_score_evidence": {
       "anyOf": [

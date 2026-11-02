@@ -15,7 +15,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from harnyx_commons.bittensor import build_canonical_request
-from harnyx_commons.domain.miner_task import EvaluationTrace, MinerTask, Response
+from harnyx_commons.domain.miner_task import EvaluationTrace, MinerTask, MinerTaskScoringContract, Response
 from harnyx_commons.domain.session import LlmUsageTotals, Session, SessionStatus
 from harnyx_commons.domain.tool_call import ToolExecutionFacts
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
@@ -78,6 +78,7 @@ _PLATFORM_WORK_RESULT_TIMEOUT_SECONDS = 300.0
 _PLATFORM_TOOL_PROXY_GRANT_RETRY_DELAYS_SECONDS = (0.25, 1.0)
 _LLM_USAGE_TOTALS_ADAPTER = TypeAdapter(dict[str, dict[str, LlmUsageTotals]])
 _TOOL_USAGE_ADAPTER = TypeAdapter(ToolUsageSummary)
+_SCORING_CONTRACT_ADAPTER = TypeAdapter(MinerTaskScoringContract)
 
 
 class PlatformClientError(RuntimeError):
@@ -695,7 +696,8 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
                     billing = (
                         parsed_billing.to_billing()
                         if isinstance(
-                            parsed_billing, CloudflareErrorBillingDTO | JevErrorBillingDTO | ReaxErrorBillingDTO,
+                            parsed_billing,
+                            CloudflareErrorBillingDTO | JevErrorBillingDTO | ReaxErrorBillingDTO,
                         )
                         else OpenRouterAccounting.from_fields(
                             actual_cost_usd=parsed_billing.actual_cost_usd,
@@ -901,6 +903,7 @@ def _platform_scoreable_execution(value: object) -> PlatformOwnedTaskExecution:
     expires_at = _parse_datetime(session_item["expires_at"])
     return PlatformOwnedTaskExecution(
         batch_id=UUID(str(item["batch_id"])),
+        scoring_contract=_SCORING_CONTRACT_ADAPTER.validate_python(item.get("scoring_contract", "native-v1")),
         artifact=ScriptArtifactSpec.model_validate(artifact_item),
         task=task_model,
         artifact_id=artifact_id,

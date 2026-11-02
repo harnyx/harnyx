@@ -326,6 +326,72 @@ def _raw_structured_response(payload: object) -> LlmResponse:
     )
 
 
+@pytest.mark.parametrize("fast", (False, True))
+async def test_competition_scoring_retains_universal_f1_without_changing_native_score(fast: bool) -> None:
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="Name the value.", fast=fast),
+        reference_answer=ReferenceAnswer(text="Reference value."),
+    )
+    outcomes = [
+        _fast_response(
+            expected_components=[{"component_id": "value", "is_correct": True}],
+            excessive_components=[{"component_id": "extra"}],
+            prompt_tokens=10,
+            completion_tokens=2,
+            total_tokens=12,
+        )
+    ]
+    if not fast:
+        outcomes.extend(
+            _pairwise_response(
+                preferred_position="first",
+                reasoning_text=None,
+                reasoning_tokens=None,
+                prompt_tokens=10,
+                completion_tokens=2,
+                total_tokens=12,
+            )
+            for _ in range(2)
+        )
+    provider = FastSequenceLlmProvider(outcomes)
+    service = EvaluationScoringService(provider, EvaluationScoringConfig(provider="chutes", model="judge"))
+    result = await service.score(
+        task=task, response=Response(text="Miner value and extra."), scoring_contract="f1-deep-v1"
+    )
+    assert isinstance(result, miner_task_scoring.EvaluationScoringResult)
+    assert result.score_breakdown.f1_score == pytest.approx(0.666667)
+    assert result.score_breakdown.f1_score_evidence is not None
+    assert result.total_score == pytest.approx(0.666667 if fast else 0.5)
+    assert result.scoring_version == "f1-deep-v1"
+    assert result.judge_usage.call_count == (1 if fast else 3)
+    assert result.judge_usage.total_tokens == (12 if fast else 36)
+    assert result.score_breakdown.fast_score_evidence is None
+
+
+async def test_deep_competition_cannot_succeed_with_only_f1_and_retains_its_judge_usage() -> None:
+    task = MinerTask(
+        task_id=uuid4(), query=Query(text="Name the value."), reference_answer=ReferenceAnswer(text="Value.")
+    )
+    provider = FastSequenceLlmProvider(
+        [
+            _fast_response(
+                expected_components=[{"component_id": "value", "is_correct": True}],
+                excessive_components=[],
+                prompt_tokens=10,
+                completion_tokens=2,
+                total_tokens=12,
+            ),
+            RuntimeError("deep judge failed"),
+            _pairwise_response(preferred_position="first", reasoning_text=None, reasoning_tokens=None),
+        ]
+    )
+    service = EvaluationScoringService(provider, EvaluationScoringConfig(provider="chutes", model="judge"))
+    with pytest.raises(RuntimeError, match="deep judge failed") as caught:
+        await service.score(task=task, response=Response(text="Miner value."), scoring_contract="f1-deep-v1")
+    assert caught.value.judge_usage.total_tokens >= 12
+
+
 async def test_scoring_service_returns_pairwise_score_directly() -> None:
     task = MinerTask(
         task_id=uuid4(),
@@ -1719,12 +1785,48 @@ async def test_fast_scoring_reuses_fallback_usage_trace_and_terminal_failure() -
 
 
 async def test_rating_quality_uses_two_orders_even_for_fast_queries() -> None:
-    provider = StubLlmProvider([('first', 'first reason', 1), ('second', 'second reason', 2)])
-    service = EvaluationScoringService(provider, EvaluationScoringConfig(provider='openai', model='stub'))
-    result = await service.compare_quality(query=Query(text='Question', fast=True),
-                                           first=Response(text='A'), second=Response(text='B'))
+    provider = StubLlmProvider([("first", "first reason", 1), ("second", "second reason", 2)])
+    service = EvaluationScoringService(provider, EvaluationScoringConfig(provider="openai", model="stub"))
+    result = await service.compare_quality(
+        query=Query(text="Question", fast=True), first=Response(text="A"), second=Response(text="B")
+    )
     assert result.quality_result == 1
-    assert result.first_order_preference == 'first'
-    assert result.second_order_preference == 'second'
+    assert result.first_order_preference == "first"
+    assert result.second_order_preference == "second"
     assert len(provider.requests) == 2
     assert result.reasoning is not None
+
+
+async def test_deep_f1_failure_preserves_completed_pair_usage_and_cancels_remaining_judge() -> None:
+    completed_pair, cancelled_pair = asyncio.Event(), asyncio.Event()
+
+    class PartialProvider(FastSequenceLlmProvider):
+        async def invoke(self, request: AbstractLlmRequest) -> LlmResponse:
+            index = len(self.requests)
+            self.requests.append(request)
+            if index == 0:
+                await completed_pair.wait()
+                raise RuntimeError("F1 failed after one pair")
+            if index == 1:
+                completed_pair.set()
+                return _pairwise_response(
+                    preferred_position="first",
+                    reasoning_text=None,
+                    reasoning_tokens=None,
+                    prompt_tokens=10,
+                    completion_tokens=2,
+                    total_tokens=12,
+                )
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled_pair.set()
+            raise AssertionError("unfinished judge must be cancelled")
+
+    service = EvaluationScoringService(PartialProvider([]), EvaluationScoringConfig(provider="chutes", model="judge"))
+    task = MinerTask(task_id=uuid4(), query=Query(text="Value?"), reference_answer=ReferenceAnswer(text="Value."))
+    with pytest.raises(RuntimeError, match="F1 failed after one pair") as caught:
+        await service.score(task=task, response=Response(text="Value."), scoring_contract="f1-deep-v1")
+    assert cancelled_pair.is_set()
+    assert caught.value.judge_usage.call_count == 1
+    assert caught.value.judge_usage.total_tokens == 12
