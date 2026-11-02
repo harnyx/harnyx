@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -114,6 +115,79 @@ def test_unrecognized_markers_and_unused_nulls_do_not_fail(text: str) -> None:
     assert response.citations == (None,)
 
 
+@pytest.mark.parametrize("structured", [False, True])
+def test_cleanup_removes_only_invalid_answer_refs_and_preserves_positions(structured: bool) -> None:
+    """Cleanup must preserve valid spelling, evidence, keys, input data, and positional nulls."""
+    session_id = uuid4()
+    original_text = "claim [[0]][[1]][[2]][[3]][[4]][[0001]][[" + "9" * 5_000 + "]] [1] [[x]]"
+    cleaned_text = "claim [[1]][[3]][[0001]] [1] [[x]]"
+    output: JsonValue = {"[[999]]": [None, True, 3, {"claim": original_text}]}
+    payload: dict[str, JsonValue] = {
+        "note": original_text,
+        "citations": [
+            {"receipt_id": "receipt-1", "result_id": "result-1"},
+            {"receipt_id": "missing", "result_id": "missing"},
+            {"receipt_id": "receipt-1", "result_id": "result-1"},
+        ],
+    }
+    payload["output" if structured else "text"] = output if structured else original_text
+    original = deepcopy(payload)
+    response = hydrate_miner_response_payload(
+        payload,
+        query=Query(text="q", output_schema={}) if structured else _LEGACY_QUERY,
+        session_id=session_id,
+        receipt_log=_receipt_log_with_result(session_id=session_id, note="Source [[999]]"),
+        remove_invalid_citation_refs=True,
+    )
+    assert payload == original
+    assert response.note == cleaned_text
+    if structured:
+        assert response.output == {"[[999]]": [None, True, 3, {"claim": cleaned_text}]}
+    else:
+        assert response.text == cleaned_text
+    assert response.citations is not None
+    assert len(response.citations) == 3
+    assert response.citations[1] is None
+    assert response.citations[0] == response.citations[2]
+    assert response.citations[0].excerpts[0].text == "Source [[999]]"
+
+
+@pytest.mark.parametrize("citations", [None, [], [{"receipt_id": "missing", "result_id": "missing"}]])
+def test_cleanup_removes_all_repeated_refs_without_resolved_citations(citations: JsonValue) -> None:
+    """A missing evidence array or unresolved slot must not leave dangling numeric markers."""
+    response = hydrate_miner_response_payload(
+        {"text": "answer[[1]][[1]]", "citations": citations},
+        session_id=uuid4(),
+        receipt_log=InMemoryReceiptLog(),
+        remove_invalid_citation_refs=True,
+    )
+    assert response.text == "answer"
+    assert response.citations == ((None,) if citations else None)
+
+
+@pytest.mark.parametrize(
+    "payload,schema",
+    [
+        ({"text": "[[9]]"}, None),
+        ({"text": "answer", "note": "[[9]]"}, None),
+        ({"output": "[[9]]"}, {"type": "string", "minLength": 1}),
+        ({"output": "answer[[9]]"}, {"enum": ["answer[[9]]"]}),
+        ({"text": "claim [[[[9]]1]]"}, None),
+    ],
+)
+def test_cleanup_rejects_invalid_result_without_requesting_schema_recovery(payload, schema) -> None:
+    """Deletion must not admit blank/schema-invalid answers, rescan deletions, or request LLM repair."""
+    with pytest.raises(MinerResponsePayloadError) as failure:
+        hydrate_miner_response_payload(
+            payload,
+            query=Query(text="q", output_schema=schema),
+            session_id=uuid4(),
+            receipt_log=InMemoryReceiptLog(),
+            remove_invalid_citation_refs=True,
+        )
+    assert not isinstance(failure.value, MinerResponseSchemaError)
+
+
 def test_citation_preserves_structured_evidence_and_decodes_history() -> None:
     """Stored history and new output must represent identical exact evidence."""
     text = " α\n[slice 1:2]\n "
@@ -176,12 +250,14 @@ def hydrate_miner_response_payload(
     session_id: UUID,
     receipt_log: InMemoryReceiptLog,
     query: Query = _LEGACY_QUERY,
+    remove_invalid_citation_refs: bool = False,
 ) -> Response:
     return _hydrate_miner_response_payload(
         payload,
         query=query,
         session_id=session_id,
         receipt_log=receipt_log,
+        remove_invalid_citation_refs=remove_invalid_citation_refs,
     )
 
 
@@ -430,7 +506,8 @@ def test_hydrate_miner_response_payload_rejects_short_slice_from_long_source() -
         )
 
 
-def test_hydrate_miner_response_payload_rejects_out_of_bounds_slice() -> None:
+@pytest.mark.parametrize("cleanup", [False, True])
+def test_hydrate_miner_response_payload_rejects_out_of_bounds_slice(cleanup: bool) -> None:
     session_id = uuid4()
 
     with pytest.raises(MinerResponsePayloadError):
@@ -447,10 +524,12 @@ def test_hydrate_miner_response_payload_rejects_out_of_bounds_slice() -> None:
             },
             session_id=session_id,
             receipt_log=_receipt_log_with_result(session_id=session_id, note=_source_text()),
+            remove_invalid_citation_refs=cleanup,
         )
 
 
-def test_hydrate_miner_response_payload_rejects_citation_when_source_text_is_absent() -> None:
+@pytest.mark.parametrize("cleanup", [False, True])
+def test_hydrate_miner_response_payload_rejects_citation_when_source_text_is_absent(cleanup: bool) -> None:
     session_id = uuid4()
 
     with pytest.raises(MinerResponsePayloadError):
@@ -461,6 +540,7 @@ def test_hydrate_miner_response_payload_rejects_citation_when_source_text_is_abs
             },
             session_id=session_id,
             receipt_log=_receipt_log_with_result(session_id=session_id, note="   "),
+            remove_invalid_citation_refs=cleanup,
         )
 
 

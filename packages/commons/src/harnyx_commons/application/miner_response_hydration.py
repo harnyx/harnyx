@@ -156,6 +156,7 @@ def hydrate_miner_response_payload(
     session_id: UUID,
     receipt_log: ReceiptLogPort,
     observer: MinerResponseObserver | None = None,
+    remove_invalid_citation_refs: bool = False,
 ) -> Response:
     try:
         raw_response = _RawMinerResponsePayload.model_validate(payload, strict=True)
@@ -182,6 +183,8 @@ def hydrate_miner_response_payload(
             (raw_response.text, raw_response.output, raw_response.note), hydrated_citations.citations
         ),
     )
+    if remove_invalid_citation_refs:
+        raw_response = _clean_answer_citation_refs(raw_response, query, hydrated_citations.citations)
     validate_citation_references(
         (raw_response.text, raw_response.output, raw_response.note), hydrated_citations.citations
     )
@@ -198,7 +201,6 @@ def validate_citation_references(values: Sequence[JsonValue], citations: Sequenc
 def citation_reference_errors(values: Sequence[JsonValue], citations: Sequence[AnswerCitation | None]) -> Iterator[str]:
     """Inspect every occurrence; validation still raises at the first yielded error."""
     pending = list(values)
-    max_position_digits = len(str(len(citations)))
     while pending:
         value = pending.pop()
         if isinstance(value, dict):
@@ -207,17 +209,59 @@ def citation_reference_errors(values: Sequence[JsonValue], citations: Sequence[A
             pending.extend(value)
         elif isinstance(value, str):
             for marker in _CITATION_MARKER.finditer(value):
-                digits = marker.group(1).lstrip("0") or "0"
-                # Bound conversion even when a response contains thousands of digits.
-                if len(digits) > max_position_digits:
-                    yield "inline citation position is out of range"
-                    continue
-                position = int(digits)
-                if not 1 <= position <= len(citations):
-                    yield "inline citation position is out of range"
-                    continue
-                if citations[position - 1] is None:
-                    yield f"inline citation [[{position}]] points to an unresolved citation"
+                error = _citation_reference_error(marker.group(1), citations)
+                if error is not None:
+                    yield error
+
+
+def _citation_reference_error(digits: str, citations: Sequence[AnswerCitation | None]) -> str | None:
+    digits = digits.lstrip("0") or "0"
+    # Bound conversion even when a response contains thousands of digits.
+    if len(digits) > len(str(len(citations))):
+        return "inline citation position is out of range"
+    position = int(digits)
+    if not 1 <= position <= len(citations):
+        return "inline citation position is out of range"
+    if citations[position - 1] is None:
+        return f"inline citation [[{position}]] points to an unresolved citation"
+    return None
+
+
+def _clean_answer_citation_refs(
+    response: _RawMinerResponsePayload, query: Query, citations: Sequence[AnswerCitation | None]
+) -> _RawMinerResponsePayload:
+    removed = 0
+
+    def replace_marker(marker: re.Match[str]) -> str:
+        nonlocal removed
+        if _citation_reference_error(marker.group(1), citations) is None:
+            return marker.group(0)
+        removed += 1
+        return ""
+
+    def clean(value: JsonValue) -> JsonValue:
+        if isinstance(value, str):
+            return _CITATION_MARKER.sub(replace_marker, value)
+        if isinstance(value, list):
+            return [clean(item) for item in value]
+        if isinstance(value, dict):
+            return {key: clean(item) for key, item in value.items()}
+        return value
+
+    payload = response.model_dump(mode="json", exclude_unset=True)
+    for field in ("text", "output", "note"):
+        if field in payload:
+            payload[field] = clean(payload[field])
+    if not removed:
+        return response
+    logger.info("removed invalid citation refs", extra={"data": {"removed_count": removed}})
+    try:
+        cleaned = _RawMinerResponsePayload.model_validate(payload, strict=True)
+        _validate_answer_for_query(cleaned, query)
+    except ValueError as exc:
+        # Cleanup must not turn a new schema failure into an LLM recovery request.
+        raise MinerResponsePayloadError("citation cleanup produced an invalid answer") from exc
+    return cleaned
 
 
 def _validate_answer_for_query(
