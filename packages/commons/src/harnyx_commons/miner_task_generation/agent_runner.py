@@ -330,7 +330,7 @@ async def retry_request(call: Callable[[], Awaitable[T]], capture: CallCapture, 
 
 
 class GenerationAgentRunner:
-    """Identical Luna challenges and the existing Gemini Pro assessments."""
+    """Identical Terra challenges and the existing Gemini Pro assessments."""
 
     def __init__(
         self, *, judge: LlmProviderPort, solve: Callable[[str, str, CandidateSession, float], Awaitable[AgentResult]]

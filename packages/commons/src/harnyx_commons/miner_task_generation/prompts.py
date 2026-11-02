@@ -1,4 +1,4 @@
-"""Luna solver work orders and the adapted BRI-1594 sole HIGH author."""
+"""Terra solver work orders and the adapted BRI-1594 sole HIGH author."""
 
 from __future__ import annotations
 
