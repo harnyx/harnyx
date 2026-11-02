@@ -321,3 +321,154 @@ async def test_pricing_uses_each_attempt_start_date_even_if_receipt_crosses_midn
     observed.finish()
     assert observed.session.tool_usage.actual_total_cost_usd == pytest.approx(expected)
     assert observed.session.attempted_calls == 2 and observed.session.missing_usage_calls == 0
+
+
+class AssessmentSequence:
+    """The provider port receives real feedback work orders; no live model calls."""
+
+    def __init__(self, outputs):
+        self.outputs = iter(outputs)
+        self.requests = []
+
+    async def invoke(self, request):
+        self.requests.append(request)
+        output = next(self.outputs)
+        if isinstance(output, Exception):
+            raise output
+        return LlmResponse(
+            id=f"assessment-{len(self.requests)}",
+            choices=(
+                LlmChoice(
+                    index=0,
+                    message=LlmChoiceMessage(role="assistant", content=(LlmMessageContentPart.input_text(output),)),
+                ),
+            ),
+            usage=LlmUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15, web_search_calls=0),
+        )
+
+
+VALID_ASSESSMENT = json.dumps(
+    {"expected_components": [{"component_id": "item", "is_correct": True}], "excessive_components": []}
+)
+
+
+async def assess_sequence(judge, session, *, seconds=5):
+    return await GenerationAgentRunner(solve=AsyncMock(), judge=judge).assess_reference(
+        draft(),
+        TerminalReference(reference_answer=ReferenceAnswer(text="item [[1]]")),
+        session,
+        monotonic() + seconds,
+    )
+
+
+async def test_assessment_repairs_five_strict_parse_failures_and_preserves_context_usage_and_limit(caplog):
+    """Feedback must correct only the judge, preserving original input and every billed response."""
+    failures = ["not JSON", "{}", f"```json\n{VALID_ASSESSMENT}\n```", "[]", '{"expected_components": 1}']
+    judge = AssessmentSequence([*failures, VALID_ASSESSMENT])
+    session = capture().session
+    caplog.set_level(logging.WARNING, logger="harnyx_commons.llm.calls")
+    grade = await assess_sequence(judge, session)
+    assert grade.expected_components[0].is_correct
+    assert len(judge.requests) == session.attempted_calls == session.tool_usage.llm.call_count == 6
+    assert session.tool_usage.llm.total_tokens == 90 and session.missing_usage_calls == 0
+    assert len(session.stage_summaries) == 1
+    for number, request in enumerate(judge.requests[1:], 1):
+        assert request.messages[:2] == judge.requests[0].messages
+        assert len(request.messages) == 4
+        assert request.messages[-2].content[0].text == failures[number - 1]
+        assert "Validation/parsing error:" in request.messages[-1].content[0].text
+        assert request.output_schema == judge.requests[0].output_schema
+        assert request.retry_policy.attempts == 1
+    feedback = [r.data for r in caplog.records if r.msg == "task_generation.output_model_feedback"]
+    assert [v["retry"] for v in feedback] == [1, 2, 3, 4, 5]
+    assert all(v["feedback_sent"] and not v["exhausted"] for v in feedback)
+
+
+async def test_assessment_parse_exhaustion_retains_original_error_and_all_usage(caplog):
+    from pydantic import ValidationError
+
+    judge = AssessmentSequence(["{}"] * 6)
+    session = capture().session
+    caplog.set_level(logging.WARNING, logger="harnyx_commons.llm.calls")
+    with pytest.raises(ValidationError):
+        await assess_sequence(judge, session)
+    assert len(judge.requests) == session.attempted_calls == session.tool_usage.llm.call_count == 6
+    assert session.stage_summaries[0].outcome == "failed"
+    feedback = [r.data for r in caplog.records if r.msg == "task_generation.output_model_feedback"]
+    assert len(feedback) == 6 and feedback[-1]["exhausted"] and not feedback[-1]["feedback_sent"]
+
+
+async def test_assessment_recovery_does_not_refresh_transient_retry_allowance(monkeypatch):
+    monkeypatch.setattr("harnyx_commons.miner_task_generation.agent_runner.backoff_ms", lambda *args: 0)
+    judge = AssessmentSequence([httpx.ConnectError("first"), "{}", httpx.ConnectError("second"), VALID_ASSESSMENT])
+    session = capture().session
+    with pytest.raises(httpx.ConnectError, match="second"):
+        await assess_sequence(judge, session)
+    assert len(judge.requests) == session.attempted_calls == 3
+    assert len(judge.requests[-1].messages) == 4
+    assert session.tool_usage.llm.call_count == 1 and session.missing_usage_calls == 2
+
+
+async def test_assessment_transient_fault_does_not_refresh_parse_recovery_allowance(monkeypatch):
+    from pydantic import ValidationError
+
+    monkeypatch.setattr("harnyx_commons.miner_task_generation.agent_runner.backoff_ms", lambda *args: 0)
+    judge = AssessmentSequence([*["{}"] * 3, httpx.ConnectError("transient"), *["{}"] * 3])
+    session = capture().session
+    with pytest.raises(ValidationError):
+        await assess_sequence(judge, session)
+    assert len(judge.requests) == 7 and session.tool_usage.llm.call_count == 6
+
+
+async def test_assessment_recovery_waits_share_original_deadline(monkeypatch):
+    monkeypatch.setattr("harnyx_commons.miner_task_generation.agent_runner.backoff_ms", lambda *args: 60_000)
+    judge = AssessmentSequence(["{}", httpx.ConnectError("temporary"), VALID_ASSESSMENT])
+    session = capture().session
+    with pytest.raises(TimeoutError):
+        await assess_sequence(judge, session, seconds=0.03)
+    assert len(judge.requests) == 2
+    assert session.tool_usage.llm.call_count == 1 and session.missing_usage_calls == 1
+
+
+async def test_assessment_cancellation_during_recovery_preserves_completed_receipt():
+    import asyncio
+
+    waiting = asyncio.Event()
+    judge = AssessmentSequence(["{}"])
+    original = judge.invoke
+
+    async def invoke(request):
+        if judge.requests:
+            waiting.set()
+            await asyncio.Event().wait()
+        return await original(request)
+
+    judge.invoke = invoke
+    session = capture().session
+    task = asyncio.create_task(assess_sequence(judge, session))
+    await waiting.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert session.attempted_calls == 2 and session.tool_usage.llm.call_count == 1
+    assert session.missing_usage_calls == 1
+
+
+async def test_pipeline_recovers_both_assessments_and_reference_without_replaying_solvers():
+    """Each output owner gets its own correction streak while completed research stays frozen."""
+    from public.packages.commons.tests.miner_task_generation.test_candidate_pipeline import FakeAuthor, run
+
+    from harnyx_commons.miner_task_generation.contracts import AgentResult
+
+    miss = json.dumps(
+        {"expected_components": [{"component_id": "item", "is_correct": False}], "excessive_components": []}
+    )
+    judge = AssessmentSequence(["{}", miss, "{}", miss, *["{}"] * 5, VALID_ASSESSMENT])
+    solve = AsyncMock(return_value=AgentResult(answer="solver result"))
+    author = FakeAuthor()
+    result = await run(author, GenerationAgentRunner(solve=solve, judge=judge))
+    assert result.finalized is not None and len(result.cycles) == 1
+    assert solve.await_count == 2 and len(author.feedback) == len(author.decisions) == 1
+    assert set(result.cycles[0].f1_scores.values()) == {0.0}
+    assert len(judge.requests) == 10
+    assert len([r for r in judge.requests if r.use_case.endswith("reference_consistency")]) == 6

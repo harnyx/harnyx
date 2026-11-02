@@ -21,6 +21,7 @@ from agents.exceptions import ModelBehaviorError
 from google.auth import exceptions as google_auth_errors
 from google.genai import errors as google_errors
 from openai import APIConnectionError, APIStatusError
+from pydantic import ValidationError
 
 from harnyx_commons.domain.miner_task import Query, ReferenceAnswer, Response
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
@@ -30,12 +31,25 @@ from harnyx_commons.domain.tool_usage_accounting import (
     tool_usage_from_llm_usage,
 )
 from harnyx_commons.llm.cost_settlement import settled_generation_llm_cost
-from harnyx_commons.llm.provider import LlmProviderConfigurationError, LlmProviderError, LlmProviderPort
+from harnyx_commons.llm.provider import (
+    LlmProviderConfigurationError,
+    LlmProviderError,
+    LlmProviderPort,
+    build_postprocess_feedback_request,
+)
 from harnyx_commons.llm.retry_utils import RetryPolicy, backoff_ms
-from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest, LlmUsage
+from harnyx_commons.llm.schema import (
+    AbstractLlmRequest,
+    LlmMessage,
+    LlmMessageContentPart,
+    LlmRequest,
+    LlmResponse,
+    LlmUsage,
+)
 from harnyx_commons.miner_task_fast_scoring import FastJudgeAssessment, build_fast_judge_messages
 
 from .contracts import (
+    MAX_OUTPUT_CORRECTION_RETRIES,
     AgentResult,
     BatchTerminalGenerationError,
     CandidateSession,
@@ -52,6 +66,14 @@ RETRY_POLICY = RetryPolicy(attempts=2, initial_ms=500, max_ms=30_000, jitter=0.2
 T = TypeVar("T")
 _REQUEST_DATE: ContextVar[date | None] = ContextVar("generation_request_date", default=None)
 _ATTEMPT_EVENTS: ContextVar[list[dict[str, Any]] | None] = ContextVar("generation_attempt_events", default=None)
+
+
+class _OutputParseError(Exception):
+    """Only the owning output parser may request model feedback."""
+
+    def __init__(self, error: ValidationError, response: LlmResponse) -> None:
+        super().__init__(str(error))
+        self.error, self.response = error, response
 
 
 class OpenAIStreamError(RuntimeError):
@@ -280,9 +302,17 @@ def retry_after(exc: Exception) -> float:
             return 0
 
 
-async def retry_request(call: Callable[[], Awaitable[T]], capture: CallCapture, deadline: float, *, solver: bool) -> T:
+async def retry_request(
+    call: Callable[[], Awaitable[T]],
+    capture: CallCapture,
+    deadline: float,
+    *,
+    solver: bool,
+    recover: Callable[[_OutputParseError], bool] | None = None,
+) -> T:
     async with asyncio.timeout(max(0, deadline - monotonic())):
         attempt = 0
+        corrections = 0
         while True:
             if monotonic() >= deadline:
                 raise TimeoutError("Generation deadline reached before provider request")
@@ -294,6 +324,26 @@ async def retry_request(call: Callable[[], Awaitable[T]], capture: CallCapture, 
             try:
                 with capture.attempt():
                     return await call()
+            except _OutputParseError as exc:
+                exhausted = corrections >= MAX_OUTPUT_CORRECTION_RETRIES
+                repaired = not exhausted and recover is not None and recover(exc)
+                if repaired:
+                    corrections += 1
+                logger.warning(
+                    "task_generation.output_model_feedback",
+                    extra={
+                        "data": capture.identity()
+                        | {
+                            "error": str(exc.error),
+                            "retry": corrections,
+                            "max_retries": MAX_OUTPUT_CORRECTION_RETRIES,
+                            "exhausted": exhausted,
+                            "feedback_sent": repaired,
+                        }
+                    },
+                )
+                if not repaired:
+                    raise exc.error from None
             except Exception as exc:
                 transient = transient_error(exc)
                 failure = {
@@ -381,7 +431,7 @@ class GenerationAgentRunner:
             ),
             miner_response=response,
         )
-        request = LlmRequest(
+        request: AbstractLlmRequest = LlmRequest(
             provider="vertex",
             model=JUDGE_MODEL,
             temperature=None,
@@ -418,9 +468,22 @@ class GenerationAgentRunner:
             capture.account(response.usage)
             if response.raw_text is None:
                 raise ValueError("Judge returned no text")
-            return FastJudgeAssessment.model_validate_json(response.raw_text)
+            try:
+                return FastJudgeAssessment.model_validate_json(response.raw_text)
+            except ValidationError as exc:
+                raise _OutputParseError(exc, response) from exc
+
+        def recover(failure: _OutputParseError) -> bool:
+            nonlocal request
+            corrected = build_postprocess_feedback_request(
+                request=request, response=failure.response, failure_reason=str(failure.error)
+            )
+            if corrected is None:
+                return False
+            request = corrected
+            return True
 
         try:
-            return await retry_request(call, capture, deadline, solver=False)
+            return await retry_request(call, capture, deadline, solver=False, recover=recover)
         finally:
             capture.finish()

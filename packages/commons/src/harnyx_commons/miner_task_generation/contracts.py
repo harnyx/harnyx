@@ -219,7 +219,7 @@ class GenerationCheckpoint(BaseModel):
         return value
 
 
-MAX_REFERENCE_CORRECTION_RETRIES = 5
+MAX_OUTPUT_CORRECTION_RETRIES = 5
 
 
 class ReferenceValidationError(ValueError):

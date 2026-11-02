@@ -530,17 +530,12 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         if recovery.kind != "retry_with_feedback":
             return None
 
-        failed_message = _failed_response_message(response)
-        if failed_message is None:
-            return None
-
-        feedback_role = _feedback_role(request=request, response=response)
-        retry_request = self._build_postprocess_feedback_request(
-            request=request,
-            failed_message=failed_message,
-            feedback_role=feedback_role,
-            failure_reason=recovery.failure_reason,
+        retry_request = build_postprocess_feedback_request(
+            request=request, response=response, failure_reason=recovery.failure_reason
         )
+        if retry_request is None:
+            return None
+        feedback_role = _feedback_role(request=request, response=response)
         recovery_event = {
             "kind": recovery.kind,
             "response_id": response.id,
@@ -557,38 +552,6 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             },
         )
         return retry_request, recovery_event
-
-    def _build_postprocess_feedback_request(
-        self,
-        *,
-        request: AbstractLlmRequest,
-        failed_message: LlmMessage,
-        feedback_role: Literal["user", "tool"],
-        failure_reason: str,
-    ) -> AbstractLlmRequest:
-        updated_internal_metadata = dict(request.internal_metadata or {})
-        updated_internal_metadata["postprocess_feedback_retry"] = True
-        updated_internal_metadata["postprocess_feedback_depth"] = (
-            int(updated_internal_metadata.get("postprocess_feedback_depth", 0)) + 1
-        )
-        base_messages = _base_messages_for_feedback_retry(request)
-        feedback_message = LlmMessage(
-            role=feedback_role,
-            content=(
-                LlmMessageContentPart.input_text(
-                    "Your previous response failed the original output contract.\n\n"
-                    f"Validation/parsing error:\n{failure_reason}\n\n"
-                    "Correct your previous response so it follows the original instructions, "
-                    "output contract, and formatting constraints. "
-                    "Do not add extra wrapper text or commentary unless the original instructions required it."
-                ),
-            ),
-        )
-        return replace(
-            request,
-            messages=(*base_messages, failed_message, feedback_message),
-            internal_metadata=updated_internal_metadata,
-        )
 
     async def _handle_failure(
         self,
@@ -850,6 +813,39 @@ def _provider_response_payload(
     return response.payload
 
 
+def build_postprocess_feedback_request(
+    *, request: AbstractLlmRequest, response: LlmResponse, failure_reason: str
+) -> AbstractLlmRequest | None:
+    """Reuse the original work order and latest failed output for producer correction."""
+    failed_message = _failed_response_message(response)
+    if failed_message is None:
+        return None
+    feedback_role = _feedback_role(request=request, response=response)
+    updated_internal_metadata = dict(request.internal_metadata or {})
+    updated_internal_metadata["postprocess_feedback_retry"] = True
+    updated_internal_metadata["postprocess_feedback_depth"] = (
+        int(updated_internal_metadata.get("postprocess_feedback_depth", 0)) + 1
+    )
+    base_messages = _base_messages_for_feedback_retry(request)
+    feedback_message = LlmMessage(
+        role=feedback_role,
+        content=(
+            LlmMessageContentPart.input_text(
+                "Your previous response failed the original output contract.\n\n"
+                f"Validation/parsing error:\n{failure_reason}\n\n"
+                "Correct your previous response so it follows the original instructions, "
+                "output contract, and formatting constraints. "
+                "Do not add extra wrapper text or commentary unless the original instructions required it."
+            ),
+        ),
+    )
+    return replace(
+        request,
+        messages=(*base_messages, failed_message, feedback_message),
+        internal_metadata=updated_internal_metadata,
+    )
+
+
 def _failed_response_message(response: LlmResponse) -> LlmMessage | None:
     if not response.choices:
         return None
@@ -932,4 +928,5 @@ __all__ = [
     "LlmUsage",
     "PostprocessResult",
     "parse_provider_name",
+    "build_postprocess_feedback_request",
 ]
