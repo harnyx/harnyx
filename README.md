@@ -62,17 +62,16 @@ Notes:
 
 **How miners are evaluated**
 - Miners submit scripts that answer the query under a tight tool budget.
-- Validators score each response against the reference answer with:
-  - `comparison_score`: pairwise judge vs reference answer, run twice with swapped order
-  - `total_score = comparison_score`
+- From source data version 12, validators score every response for correctness F1. Deep tasks also receive a pairwise judge score against the reference answer, run twice with swapped order; fast tasks receive F1 only.
+- The platform takes validator medians for each task, then computes two scores: **F1** is mean F1 across all tasks; **Overall** is `0.30 × mean(all-task F1) + 0.70 × mean(deep-task judge)`.
 - The judge treats correctness and evidence as primary. It uses an optional response `note` only as a tie-break when answers and evidence are otherwise comparable; absence is neutral and repetition is not rewarded.
-- Candidate totals are aggregated across validators, and ties prefer lower total tool cost.
+- Each score has its own champion and main-round selection. Qualification ties prefer lower reference cost, then lower median runtime.
 
 **Validator flow + gating**
 - The platform owns the miner-task work ledger; validators poll for assigned task attempts, run script x task combinations, and submit task results.
 - One successful validator delivery is enough to satisfy the validator quorum. Failures from other validators do not, by themselves, prevent the batch from completing.
 - Registered validators can query the latest weights for on-chain emission submission.
-- Miner emission uses the latest terminal source batch with finalized tasks and artifacts to compose champion and participant allocations. Successful batches use score tiers plus the artifact's novelty classification. Failed batches divide the entire emission equally among distinct participant hotkeys, including the participating champion, without a separate champion component. The exact allocations are described below. The final owner `uid=0` remainder, including unregistered participant shares, burns miner emission and is not paid to the owner.
+- Miner emission uses the latest terminal source batch with finalized tasks and artifacts to compose both champion allocations and participant shares. Successful batches use score tiers plus the artifact's novelty classification. Failed batches divide the entire emission equally among distinct participant hotkeys, including participating champions, without separate champion allocations. The exact allocations are described below. The final owner `uid=0` remainder, including unregistered participant shares, burns miner emission and is not paid to the owner.
 - Novelty preflight first checks the closest symmetric structural reference. Only a primary `novel` result opens a separate validator round against a different candidate-coverage reference. The lower result is final, and every reachable successful branch counts even when selected by a hash or other minority route.
 - The [live benchmark page](https://dashboard.harnyx.ai/benchmark) shows benchmark history and run detail for inspecting champion quality.
 
@@ -103,21 +102,26 @@ Source batches begin with 10 qualifying tasks. Selected participants then run
 20 additional shared main tasks. The final champion decision uses all 30 tasks;
 qualifying alone does not change the champion.
 
-For data-version-11-or-later batches, each challenger is compared independently
-against the entering incumbent using the [dethroning rules](#how-champion-selection-works).
+From data version 12, F1 and Overall each select up to 30 main participants
+independently. For each title, each challenger is compared against that title's
+entering incumbent using the [dethroning rules](#how-champion-selection-works).
 When there is no incumbent, or its score is zero, a positive challenger score
 satisfies this comparison.
 
-Main admits at most 30 participants and always retains the entering incumbent
-when one exists. The remaining 29 slots, or all 30 without an incumbent, go to
-eligible challengers ranked by qualifying score descending, reference cost
+Each title always retains its entering incumbent when one exists. Its remaining
+29 slots, or all 30 without an incumbent, go to eligible challengers ranked by
+that title's qualifying score descending, reference cost
 ascending, then median runtime ascending. Missing runtime ranks last when score
 and cost tie; exact ties preserve original challenger order. Passing the
-comparison therefore does not guarantee a main slot. Admitted participants keep
-their original challenger order for champion selection, with the incumbent first.
+comparison therefore does not guarantee a main slot. Main runs the union of both
+selections, deduplicated by artifact, with at most 60 participants and no backfill
+for overlap. An artifact executes once even if selected for both titles.
+Challengers keep their original order for champion selection, with each title's
+incumbent considered first.
 
-Without an incumbent, an all-zero qualifying result completes successfully
-without main or a champion. Historical data versions 5 through 10 instead admit
+With neither an incumbent nor a positive qualifying score for either title, the
+batch completes successfully without main or a champion. Historical data version
+11 uses the same capped selection for a single champion. Versions 5 through 10 instead admit
 the incumbent when present and the uncapped qualifying champion sequence;
 versions 1 through 4 use their original single-stage evaluation.
 
@@ -125,13 +129,13 @@ versions 1 through 4 use their original single-stage evaluation.
 
 Champion selection is not the same as "highest score in the batch wins."
 
-The platform starts from the incumbent champion and compares challengers in batch order. For data-version-8-or-later batches, a challenger only replaces the incumbent when it clears one of these hard-coded dethroning rules:
+From data version 12, the platform selects the F1 and Overall champions independently using each title's score. One artifact can hold both titles. The platform starts from each incumbent and compares challengers in batch order. A challenger only replaces the incumbent when it clears one of these dethroning rules:
 
 - its score is strictly higher and at least `min(perfect score, incumbent score + 10 percentage points)`, regardless of cost or runtime
 - its score and runtime do not regress and median cost falls by at least 10%, or
 - its score and cost do not regress and median runtime falls by at least 10% and at least 1,000 ms
 
-Data versions 1 through 7 retain their historical 20% relative score, cost, and runtime thresholds when replayed. The 1,000 ms runtime floor also applies historically.
+Zero-score artifacts cannot become champion; valid all-zero F1 clears the F1 title. Overall remains the artifact used for production queries and benchmarks. Historical data versions 8 through 11 use these rules for a single champion; versions 1 through 7 retain their 20% relative score, cost, and runtime thresholds when replayed. The 1,000 ms runtime floor also applies historically.
 
 Because of that:
 
@@ -143,9 +147,52 @@ Because of that:
 
 ### How participant miner emission works
 
-`GET /v1/weights` serves the latest recorded allocation from a terminal source batch. Data versions 1 through 8 retain the historical 20% champion maximum. From the first successful version-9 batch, a newly selected champion artifact has a 50% maximum, its first consecutive successful retention has 25%, and later retentions have a 12.5% floor; the champion score scales that maximum. Failed batches do not advance or break the sequence. For a failed terminal batch, the entire emission is divided equally among distinct participant hotkeys, including the participating champion; no separate champion component is added. Each hotkey receives one share, even when it owns multiple artifacts. An already-recorded allocation remains active across deployment and configuration changes; the failed-batch policy takes effect when a later terminal batch records a new allocation. For a successful data-version-7-or-later batch, the remainder is divided per reward-eligible artifact. The participation-stage multiplier is `1` for top 50%, `2` for top 10%, or `5` for main; the novelty multiplier is `1` for `near_duplicate`, `3` for `notable_change`, `5` for data versions 7/8 `novel`, or `10` for version-9-or-later `novel`. An artifact's share is proportional to the product of those multipliers, up to `25` historically and `50` from version 9. Shares are aggregated to hotkeys afterward. A challenger that becomes champion receives champion emission plus its participant share; champion emission itself is never multiplied. The unchanged entering incumbent, duplicates, zero-response artifacts and artifacts outside the reward tiers receive no participant share. Data versions 1 through 6 retain their historical calculation. Registered hotkeys project to current metagraph UIDs; unregistered shares burn through owner `uid=0`.
+`GET /v1/weights` serves the latest recorded allocation from a terminal source batch with finalized tasks and artifacts. The rules below apply from source data version 12. Fractions refer to the subnet's miner emission pool, and all scores range from 0 to 1.
 
-Public emission monitoring groups totals by participant hotkey and nests one entry per source-batch artifact. Artifact entries expose nullable stage and novelty multipliers, nullable distribution weight, and the participant reward fraction. Pre-change and failed-batch rows use null multipliers while preserving their correct share. During failed equal sharing, the champion component UID is null and its current amount and maximum are zero. Champion identity remains visible, its participant share appears in its hotkey group, and the next-champion maximum remains prospective. Assigned-weight history shows the last recorded terminal value; deployment alone does not add a history entry.
+**Champion allocations**
+
+The combined champion budget is `B = 0.80 × Overall champion's Overall score`.
+The F1 title's share of that budget, before retention decay, is:
+
+```text
+s = 0.40 + 0.50 × max(0, F1 champion's F1 score − Overall champion's F1 score)
+F1 allocation      = B × s × F1 retention factor
+Overall allocation = B × (1 − s) × Overall retention factor
+```
+
+Each title's retention factor is `1` when its champion artifact changes, `0.5` on its first consecutive successful retention, and `0.25` on later retentions. Replacing one title's artifact resets only that title's factor. Failed batches do not advance or break either retention sequence. An absent title receives no champion allocation; valid all-zero F1 leaves no F1 champion or F1 payment. If one artifact holds both titles, its hotkey receives both allocations. Champion emission is never multiplied by novelty.
+
+**Participant allocations**
+
+Participants divide the remainder after both actual champion allocations, including any amount released by retention decay or an absent title. Each reward-eligible artifact receives a distribution weight equal to `participation stage × novelty`:
+
+| Participation stage | Multiplier |
+| --- | ---: |
+| Top 50% | 1 |
+| Top 10% | 2 |
+| Main participant | 5 |
+
+| Novelty classification | Multiplier |
+| --- | ---: |
+| `near_duplicate` | 1 |
+| `notable_change` | 3 |
+| `novel` | 10 |
+
+Main participants receive stage `5`; otherwise top-10% participants receive `2`, then the remaining top-50% participants receive `1`. The maximum distribution weight is `50`. Each artifact receives `remaining pool × its weight / sum of eligible artifact weights`; shares are then added by hotkey.
+
+**Which score determines top 50% and top 10%?** Both cutoffs use qualifying tasks only. For each task, take the median native score across successful validators, then average those task scores: fast tasks contribute correctness F1, and deep tasks contribute the pairwise judge score. This is neither the all-task F1 score nor the fixed 30%/70% Overall score used for champion selection. Task counts determine the mix. Artifacts are ordered by this participation score among novelty-eligible challenger artifacts. Each cutoff uses `ceil(artifact count × cutoff fraction)`; all artifacts tied at the cutoff score qualify. Non-main artifacts need a positive participation score.
+
+Both entering incumbent artifacts are excluded from successful participant emission. Duplicates, zero-response artifacts, and artifacts outside the reward tiers also receive no participant share. A newer eligible submission from an incumbent's hotkey remains a challenger. A challenger that becomes champion can receive its participant share in addition to either or both champion allocations.
+
+**Failed batches, registration, and history**
+
+A failed terminal batch divides the entire pool equally among distinct participant hotkeys, including participating champions, with no separate champion allocations. Each hotkey receives one share even if it owns multiple artifacts. Novelty and score tiers do not affect failed-batch shares.
+
+Recorded allocations remain active across deployment and configuration changes; new rules apply when a later terminal batch records its allocation. Registered hotkeys project to current metagraph UIDs; unregistered shares burn through owner `uid=0`, and are not redistributed to registered miners.
+
+Historical data versions 1 through 8 retain their up-to-20% single-champion maximum. Versions 9 through 11 use score-scaled maxima of 50%, 25%, then 12.5% with successful retention, subject to their configured ceiling. Versions 7/8 use a `novel` multiplier of `5`, giving a maximum participant distribution weight of `25`; versions 9 and later use `10`, giving `50`. Versions 1 through 6 retain their historical participant calculation.
+
+Public emission monitoring groups totals by participant hotkey and nests one entry per source-batch artifact. Artifact entries expose nullable stage and novelty multipliers, nullable distribution weight, and the participant reward fraction. Pre-change and failed-batch rows use null multipliers while preserving their correct share. During failed equal sharing, champion allocations are zero and participating champions' shares appear in their hotkey groups. Assigned-weight history shows the last recorded terminal value; deployment alone does not add a history entry.
 
 Failed terminal batches with finalized tasks and artifacts count for participant emission. Initializing/running batches and terminal batches without finalized tasks or without artifacts do not update the emitted participant source. If no terminal source batch with finalized tasks and artifacts exists, the full allocation burns through owner `uid=0`: `champion_uid=null`, `weights={0: 1.0}`.
 
