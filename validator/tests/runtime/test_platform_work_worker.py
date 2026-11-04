@@ -2129,6 +2129,91 @@ def _platform_execution(
     )
 
 
+async def test_completed_chunk_rotates_while_another_artifact_is_slow():
+    """A finished chunk can rotate without losing a slow sibling or a closing container's slot."""
+    batch_id = uuid4()
+    artifacts = tuple(_artifact(uid=index + 1) for index in range(11))
+    chunks = tuple(
+        tuple(
+            _assignment(batch_id=batch_id, artifact=artifact, task=_task(f"{artifact.uid}-{index}"))
+            for index in range(3)
+        )
+        for artifact in artifacts
+    )
+    started = {artifact.artifact_id: asyncio.Event() for artifact in artifacts}
+    hold_other_chunks = asyncio.Event()
+    fast_results_ready = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    finish_cleanup = asyncio.Event()
+    submissions = []
+
+    class Platform:
+        async def request_miner_task_work(self, **kwargs):
+            active_ids = {attempt.artifact_id for attempt in kwargs["active_attempts"]}
+            return () if artifacts[-1].artifact_id in active_ids else chunks[-1]
+
+        def submit_miner_task_work_executions(self, executions):
+            submissions.extend(executions)
+            return tuple(_ack(execution) for execution in executions)
+
+    async def execute(artifact_id, assigned_work, close_requested, result_queue):
+        assigned_work.mark_dispatch_ready()
+        executions = []
+        for _ in range(3):
+            claimed = assigned_work.claim_nowait_for_dispatch()
+            assignment = claimed.assignment
+            execution = _platform_execution(batch_id=batch_id, artifact=assignment.artifact, task=assignment.task)
+            claimed.mark_started(execution.validator_session_id)
+            executions.append(execution)
+        started[artifact_id].set()
+        if artifact_id != artifacts[1].artifact_id:
+            await hold_other_chunks.wait()
+        for execution in executions:
+            await result_queue.put(execution)
+        if artifact_id == artifacts[1].artifact_id:
+            fast_results_ready.set()
+            await close_requested.wait()
+            cleanup_started.set()
+            await finish_cleanup.wait()
+        else:
+            await close_requested.wait()
+
+    worker = PlatformWorkWorker(
+        platform=Platform(),
+        execute_artifact_assignments=execute,
+        target_concurrency=30,
+        max_active_artifacts=10,
+    )
+    try:
+        worker._enqueue_assignments(tuple(a for chunk in chunks[:10] for a in chunk))
+        await asyncio.wait_for(asyncio.gather(*(started[a.artifact_id].wait() for a in artifacts[:10])), 1)
+        await asyncio.wait_for(fast_results_ready.wait(), 1)
+        await worker.run_once()
+        await asyncio.wait_for(cleanup_started.wait(), 1)
+        await _wait_for_work_request_done(worker)
+        await worker.run_once()
+        assert len(submissions) == 3
+        assert worker._active_artifact_capacity_count() == 10
+        assert not started[artifacts[-1].artifact_id].is_set()
+        assert len(worker._active_attempts()) == 27
+        retiring = worker._active_artifacts[(batch_id, artifacts[1].artifact_id)]
+        finish_cleanup.set()
+        await asyncio.wait_for(retiring.task, 1)
+        await _run_once_and_consume_platform_work(worker)
+        await asyncio.wait_for(started[artifacts[-1].artifact_id].wait(), 1)
+        assert worker._active_artifact_capacity_count() == 10
+        assert len(worker._active_attempts()) == 30
+        assert not hold_other_chunks.is_set()
+        assert len(submissions) == 3
+        assert {attempt.artifact_id for attempt in worker._active_attempts()} == {
+            artifact.artifact_id for artifact in artifacts if artifact != artifacts[1]
+        }
+    finally:
+        finish_cleanup.set()
+        await worker._cancel_work_request_task()
+        await worker._cancel_artifact_group_tasks()
+
+
 def _ack(
     result: PlatformOwnedTaskResult | PlatformOwnedTaskExecution,
     *,

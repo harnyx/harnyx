@@ -504,7 +504,7 @@ def _build_platform_work_worker(
     if platform_client is None:
         return None
     agent_resolver = create_platform_agent_resolver(platform_client)
-    config = EvaluationBatchConfig()
+    config = EvaluationBatchConfig(artifact_parallelism=10)
     planner = BatchExecutionPlanner(
         subtensor_client=subtensor_client,
         sandbox_manager=sandbox_manager,
@@ -565,7 +565,7 @@ def _build_platform_work_worker(
         execute_artifact_assignments=execute_artifact_assignments,
         score_execution_by_model=score_execution_by_model,
         scoring_slot_config=_scoring_slot_config(resolved),
-        target_concurrency=20,
+        target_concurrency=30,
         max_active_artifacts=config.artifact_parallelism,
     )
 

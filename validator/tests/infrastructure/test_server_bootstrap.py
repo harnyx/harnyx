@@ -301,8 +301,8 @@ def test_platform_work_worker_uses_task_capacity_and_artifact_cap() -> None:
     )
 
     assert worker is not None
-    assert worker._target_concurrency == 20
-    assert worker._max_active_artifacts == 4
+    assert worker._target_concurrency == 30
+    assert worker._max_active_artifacts == 10
     assert worker._scoring_slot_config is bootstrap_mod._SCORING_SLOT_CONFIG
     assert worker._scoring_slot_config.total_slot_limit == 20
     assert tuple(entry.slot_limit for entry in worker._scoring_slot_config.entries) == (10, 10)
