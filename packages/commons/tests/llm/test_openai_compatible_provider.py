@@ -1186,13 +1186,20 @@ async def test_stream_sink_preserves_final_response_and_emits_before_eof() -> No
             yield (b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],'
                    b'"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5,"cost":0.00123}}\n\n')
 
-    async def output(chunk):
-        chunks.append(chunk)
-        first.set()
+    class OutputReceiver:
+        def __init__(self):
+            # A live stream owns async state that must not be copied for logging.
+            self.finished = asyncio.get_running_loop().create_future()
+
+        async def output(self, chunk):
+            chunks.append(chunk)
+            first.set()
+
+    receiver = OutputReceiver()
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, stream=Body()))) as client:
         provider = OpenAiCompatibleLlmProvider(endpoint=_endpoint(auth={"type": "none"}), client=client)
-        task = asyncio.create_task(provider.invoke(replace(_request(), on_output=output)))
+        task = asyncio.create_task(provider.invoke(replace(_request(), on_output=receiver.output)))
         await asyncio.wait_for(first.wait(), 1)
         assert not task.done()
         assert chunks[0].text.value == "ok"

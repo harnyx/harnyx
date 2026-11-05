@@ -1,5 +1,16 @@
+import asyncio
+from dataclasses import replace
+
+import pytest
+
 from harnyx_commons.llm.provider import _request_snapshot
-from harnyx_commons.llm.schema import GroundedLlmRequest, LlmMessage, LlmMessageContentPart, LlmTool
+from harnyx_commons.llm.schema import (
+    GroundedLlmRequest,
+    LlmMessage,
+    LlmMessageContentPart,
+    LlmRequest,
+    LlmTool,
+)
 
 
 def test_request_snapshot_redacts_nested_api_key_fields() -> None:
@@ -48,3 +59,36 @@ def test_request_snapshot_redacts_nested_api_key_fields() -> None:
     assert auth_config["apiKeyString"] == "[REDACTED]"
     assert legacy_auth_config["api_key_string"] == "[REDACTED]"
     assert legacy_auth_config["apiKeyString"] == "[REDACTED]"
+
+
+@pytest.mark.anyio("asyncio")
+@pytest.mark.parametrize("callback_field", ("on_output", "on_provider_dispatch", "postprocessor"))
+async def test_request_snapshot_does_not_copy_runtime_callbacks(callback_field: str) -> None:
+    """Observability must not copy live callback state and abort an LLM call."""
+
+    class CallbackOwner:
+        def __init__(self) -> None:
+            self.pending = asyncio.get_running_loop().create_future()
+
+        def callback(self, *_args: object) -> None:
+            pass
+
+    owner = CallbackOwner()
+    callback = owner.callback
+    request = replace(
+        LlmRequest(
+            provider="openrouter",
+            model="openai/gpt-oss-20b",
+            messages=(),
+            temperature=None,
+            max_output_tokens=None,
+        ),
+        **{callback_field: callback},
+    )
+
+    snapshot = _request_snapshot(request)
+
+    assert callback_field not in snapshot
+    assert snapshot["model"] == request.model
+    assert getattr(request, callback_field) is callback
+    assert not owner.pending.done()

@@ -723,7 +723,14 @@ class BaseLlmProvider(ABC, LlmProviderPort):
 
 def _request_snapshot(request: AbstractLlmRequest) -> dict[str, object]:
     if is_dataclass(request):
-        snapshot = cast(dict[str, object], asdict(request))
+        # Bound callbacks can own live tasks and futures; exclude them before
+        # asdict recursively copies request data for observability.
+        snapshot_request = replace(
+            request, postprocessor=None, on_provider_dispatch=None, on_output=None
+        )
+        snapshot = cast(dict[str, object], asdict(snapshot_request))
+        for callback_field in ("postprocessor", "on_provider_dispatch", "on_output"):
+            del snapshot[callback_field]
         redacted = _redact_tool_auth_secrets(snapshot)
         if not isinstance(redacted, dict):
             raise TypeError("llm request snapshot redaction must return dict")
