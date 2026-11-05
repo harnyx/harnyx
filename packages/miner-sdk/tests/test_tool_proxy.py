@@ -66,7 +66,8 @@ class _ResponseInvoker:
                 "answers": {"b": {"type": "boolean", "probability": 0.8}},
             },
             "rerank": {
-                "provider": "openrouter", "model": "cohere/rerank-v3.5",
+                "provider": "openrouter",
+                "model": "cohere/rerank-v3.5",
                 "results": [{"index": 0, "relevance_score": 0.9, "document": "Paris"}],
                 "usage": {"search_units": 1},
             },
@@ -206,10 +207,13 @@ async def test_expand_fetch_sdk_preserves_ordered_content_and_independent_citati
         async def invoke(self, name, *, args=(), kwargs=None):
             captured.append((name, kwargs))
             result = await super().invoke(name, args=args, kwargs=kwargs)
-            result["response"] = {"data": [{"url": "https://example.com", "content": content}
-                                             for content in [markdown, json_text]]}
-            result["results"] = [{"index": i, "result_id": f"format-{i}", "url": "https://example.com", "note": content}
-                                 for i, content in enumerate([markdown, json_text])]
+            result["response"] = {
+                "data": [{"url": "https://example.com", "content": content} for content in [markdown, json_text]]
+            }
+            result["results"] = [
+                {"index": i, "result_id": f"format-{i}", "url": "https://example.com", "note": content}
+                for i, content in enumerate([markdown, json_text])
+            ]
             result["result_policy"] = "referenceable"
             return result
 
@@ -220,3 +224,98 @@ async def test_expand_fetch_sdk_preserves_ordered_content_and_independent_citati
     assert fetched.response.data[1].content == fetched.results[1].note == json_text
     assert json.loads(fetched.response.data[1].content)["json"] == []
     assert fetched.results[0].result_id != fetched.results[1].result_id
+
+
+async def test_llm_chat_stream_delivers_before_completion_and_keeps_settled_result() -> None:
+    import asyncio
+    import json
+
+    import httpx
+
+    from harnyx_miner_sdk.tools.proxy import ToolProxy
+
+    finish = asyncio.Event()
+    closed = asyncio.Event()
+    calls = []
+    final = await _ResponseInvoker().invoke("llm_chat")
+
+    class Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield (b'data: {"type":"output","chunk":{"choice_index":0,'
+                   b'"text":{"operation":"append","value":"hello"}}}\n\n')
+            await finish.wait()
+            yield ("data: " + json.dumps({"type": "completed", "result": final}) + "\n\n").encode()
+
+        async def aclose(self):
+            closed.set()
+
+    async def handler(request):
+        calls.append(json.loads(request.content))
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=Body())
+
+    async with httpx.AsyncClient(base_url="http://host", transport=httpx.MockTransport(handler)) as client:
+        proxy = ToolProxy("http://host", "token", session_id="session", client=client)
+        with bind_tool_invoker(proxy):
+            stream = await llm_chat(
+                provider="chutes", model="demo", messages=[{"role": "user", "content": "hi"}], stream=True
+            )
+        async with stream:
+            assert (await anext(stream)).text.value == "hello"
+            assert not finish.is_set()
+            with pytest.raises(RuntimeError, match="successful stream exhaustion"):
+                _ = stream.result
+            finish.set()
+            assert [chunk async for chunk in stream] == []
+        assert stream.result.receipt_id == "receipt-llm_chat"
+        await stream.aclose()
+    assert closed.is_set()
+    assert len(calls) == 1
+    assert calls[0]["kwargs"]["stream"] is True
+
+
+@pytest.mark.parametrize("terminal", ["eof", "error", "malformed", "close"])
+async def test_llm_chat_stream_never_exposes_result_on_unsuccessful_close(terminal) -> None:
+    import httpx
+
+    from harnyx_miner_sdk.tools.proxy import ToolInvocationError, ToolProxy
+
+    payloads = {
+        "eof": b"",
+        "error": b'data: {"type":"error","detail":"provider failed"}\n\n',
+        "malformed": b"data: nope\n\n",
+        "close": b"",
+    }
+    response = httpx.Response(200, headers={"content-type": "text/event-stream"}, content=payloads[terminal])
+    async with httpx.AsyncClient(base_url="http://host", transport=httpx.MockTransport(lambda _: response)) as client:
+        proxy = ToolProxy("http://host", "token", session_id="session", client=client)
+        with bind_tool_invoker(proxy):
+            stream = await llm_chat(
+                provider="chutes", model="demo", messages=[{"role": "user", "content": "hi"}], stream=True
+            )
+        if terminal == "close":
+            await stream.aclose()
+        else:
+            with pytest.raises(ToolInvocationError):
+                await anext(stream)
+        with pytest.raises(RuntimeError):
+            _ = stream.result
+        await stream.aclose()
+        assert response.is_closed
+
+
+@pytest.mark.parametrize("stream", [None, False])
+async def test_llm_chat_nonstream_omits_wire_switch(stream) -> None:
+    captured = []
+
+    class Invoker(_ResponseInvoker):
+        async def invoke(self, name, *, args=(), kwargs=None):
+            captured.append(kwargs)
+            return await super().invoke(name, args=args, kwargs=kwargs)
+
+    with bind_tool_invoker(Invoker()):
+        options = {} if stream is None else {"stream": stream}
+        result = await llm_chat(
+            provider="chutes", model="demo", messages=[{"role": "user", "content": "hi"}], **options
+        )
+    assert result.receipt_id == "receipt-llm_chat"
+    assert "stream" not in captured[0]

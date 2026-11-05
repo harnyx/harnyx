@@ -63,6 +63,7 @@ from harnyx_commons.tools.types import (
     is_search_tool,
 )
 from harnyx_commons.tools.usage_tracker import ToolCallUsage, UsageTracker
+from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatOutputSink
 
 
 class ToolInvoker(Protocol):
@@ -157,6 +158,7 @@ class ToolInvocationContext:
     # Native invokers acknowledge paid I/O after validation and credential resolution.
     # Remote invokers acknowledge execution transport once local admission succeeds.
     on_provider_dispatch: Callable[[], None] | None = None
+    on_output: LlmChatOutputSink | None = None
 
 
 ToolCallObserver = Callable[[Session, ToolCall], Awaitable[None]]
@@ -211,7 +213,14 @@ class ToolExecutor:
         self._tool_call_recorder = tool_call_recorder
         self._account_provider_failures = account_provider_failures
 
-    async def execute(self, request: ToolInvocationRequest) -> ToolInvocationResult:
+    def validate_request(self, request: ToolInvocationRequest) -> None:
+        """Validate admission before a streaming response sends its headers."""
+        session = self._load_session(request.session_id)
+        self._validate_token(session.session_id, request.token)
+
+    async def execute(
+        self, request: ToolInvocationRequest, *, on_output: LlmChatOutputSink | None = None
+    ) -> ToolInvocationResult:
         """Execute a tool call on behalf of the supplied session."""
         session = self._load_session(request.session_id)
         log_context = _build_tool_log_context(request, session)
@@ -245,6 +254,7 @@ class ToolExecutor:
                 request,
                 debug_call_id=debug_call_id,
                 request_payload=request_payload,
+                on_output=on_output,
             )
         except Exception as exc:
             self._log_failure(log_context, exc)
@@ -328,6 +338,7 @@ class ToolExecutor:
         *,
         debug_call_id: str,
         request_payload: JsonValue | None,
+        on_output: LlmChatOutputSink | None = None,
     ) -> _ExecutionResult:
         started_at = self._clock()
         self._validate_token(session.session_id, request.token)
@@ -358,6 +369,7 @@ class ToolExecutor:
             miner_hotkey_ss58=session.miner_hotkey_ss58,
             provider_credential_source=session.provider_credential_source,
             on_provider_dispatch=recording.mark_dispatched,
+            on_output=on_output,
         )
         try:
             if self._tool_call_recorder is not None:

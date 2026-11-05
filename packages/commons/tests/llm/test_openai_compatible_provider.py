@@ -1170,3 +1170,59 @@ def _streaming_reasoning_details_text_response() -> httpx.Response:
         )
     )
     return httpx.Response(200, content=payload.encode("utf-8"))
+
+
+async def test_stream_sink_preserves_final_response_and_emits_before_eof() -> None:
+    import asyncio
+
+    gate = asyncio.Event()
+    chunks = []
+    first = asyncio.Event()
+
+    class Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":"ok"}}]}\n\n'
+            await gate.wait()
+            yield (b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],'
+                   b'"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5,"cost":0.00123}}\n\n')
+
+    async def output(chunk):
+        chunks.append(chunk)
+        first.set()
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, stream=Body()))) as client:
+        provider = OpenAiCompatibleLlmProvider(endpoint=_endpoint(auth={"type": "none"}), client=client)
+        task = asyncio.create_task(provider.invoke(replace(_request(), on_output=output)))
+        await asyncio.wait_for(first.wait(), 1)
+        assert not task.done()
+        assert chunks[0].text.value == "ok"
+        gate.set()
+        result = await task
+    assert result.raw_text == "ok"
+    assert result.usage.total_tokens == 5
+    assert chunks[-1].finish_reason == "stop"
+
+
+def test_stream_tool_updates_preserve_snapshots_and_fragmented_arguments() -> None:
+    from harnyx_commons.llm.providers.openai_stream import OpenAiStreamState, _OpenAiStreamEvent
+
+    state = OpenAiStreamState()
+    chunks = []
+    fragments = [
+        {"delta": {"tool_calls": [{"index": 0, "id": "call", "type": "function",
+                                   "function": {"name": "lookup", "arguments": '{"q":'}}]}},
+        {"delta": {"tool_calls": [{"index": 0, "function": {"arguments": '"a"}'}}]}},
+        {"message": {"tool_calls": [{"id": "call", "type": "function",
+                                     "function": {"name": "lookup", "arguments": {"q": "b"}}}]},
+         "finish_reason": "tool_calls"},
+    ]
+    without_sink = OpenAiStreamState()
+    for payload in fragments:
+        event = _OpenAiStreamEvent.model_validate({"choices": [{"index": 0, **payload}]})
+        state.merge_event(event, reasoning_keys=(), chunks=chunks)
+        without_sink.merge_event(event, reasoning_keys=())
+    assert state == without_sink
+    updates = [chunk.tool_calls[0].arguments for chunk in chunks]
+    assert [update.operation for update in updates] == ["append", "append", "replace"]
+    assert json.loads(updates[-1].value) == {"q": "b"}
+    assert state.choice(0).tool_call_values()[0].arguments == updates[-1].value

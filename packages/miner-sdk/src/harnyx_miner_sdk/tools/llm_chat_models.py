@@ -236,6 +236,9 @@ class LlmChatThinking(_StrictModel):
         return LlmThinkingConfig(enabled=self.enabled, budget=self.budget, effort=self.effort)
 
 
+DEFAULT_LLM_CHAT_TIMEOUT_SECONDS = 120.0
+
+
 class LlmChatTimeout(_StrictModel):
     """Wire representation of the optional LLM phase deadlines."""
 
@@ -247,6 +250,7 @@ class LlmChatTimeout(_StrictModel):
 class LlmChatRequest(_StrictModel):
     """Canonical SDK-owned JSON request boundary for ``llm_chat``."""
 
+    stream: StrictBool = False
     provider: LlmChatProviderName
     model: str = Field(min_length=1)
     messages: tuple[LlmChatMessage, ...] = Field(min_length=1)

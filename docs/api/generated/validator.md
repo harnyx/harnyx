@@ -435,6 +435,11 @@ Body: [ToolExecuteResponseDTO](#model-toolexecuteresponsedto)
 |  | `prompt_tokens` |  | opt | `integer` (nullable) |
 |  | `total_tokens` |  | opt | `integer` (nullable) |
 
+Content-Type: `text/event-stream`
+Body: oneOf: [ToolStreamLlmChatOutputFrame](#model-toolstreamllmchatoutputframe) OR [ToolStreamLlmChatCompletedFrame_ToolExecuteResponseDTO_](#model-toolstreamllmchatcompletedframe_toolexecuteresponsedto_) OR [ToolStreamLlmChatPublicErrorFrame](#model-toolstreamllmchatpublicerrorframe)
+
+(no documented fields)
+
 `422` Validation Error
 Content-Type: `application/json`
 Body: [HTTPValidationError](#model-httpvalidationerror)
@@ -2804,6 +2809,690 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
     "result_id"
   ],
   "title": "ToolResultDTO",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-toolstreamjsonvalue"></a>
+### Model: ToolStreamJsonValue
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{}
+```
+
+</details>
+
+<a id="model-toolstreamllmchatchunk"></a>
+### Model: ToolStreamLlmChatChunk
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `choice_index` |  |  | req | `integer` |
+| `finish_reason` |  |  | opt | `string` (nullable) |
+| `reasoning` |  |  | opt | [ToolStreamTextUpdate](#model-toolstreamtextupdate) (nullable) |
+|  | `operation` |  | req | `string` (enum: [append, replace]) |
+|  | `value` |  | req | `string` |
+| `reasoning_details` |  |  | opt | array[`object`] (nullable) |
+| `text` |  |  | opt | [ToolStreamTextUpdate](#model-toolstreamtextupdate) (nullable) |
+|  | `operation` |  | req | `string` (enum: [append, replace]) |
+|  | `value` |  | req | `string` |
+| `tool_calls` |  |  | opt | array[[ToolStreamToolUpdate](#model-toolstreamtoolupdate)] (nullable) |
+|  | `arguments` |  | opt | [ToolStreamTextUpdate](#model-toolstreamtextupdate) (nullable) |
+|  |  | `operation` | req | `string` (enum: [append, replace]) |
+|  |  | `value` | req | `string` |
+|  | `id` |  | opt | [ToolStreamTextUpdate](#model-toolstreamtextupdate) (nullable) |
+|  |  | `operation` | req | `string` (enum: [append, replace]) |
+|  |  | `value` | req | `string` |
+|  | `index` |  | req | `integer` |
+|  | `name` |  | opt | [ToolStreamTextUpdate](#model-toolstreamtextupdate) (nullable) |
+|  |  | `operation` | req | `string` (enum: [append, replace]) |
+|  |  | `value` | req | `string` |
+|  | `type` |  | opt | `string` (nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "description": "Provisional changes to one choice, in delivery order.\n\nMissing fields are unchanged. Reasoning details append in order. Tool arguments\nmay contain incomplete JSON. A finish reason does not signify settled success.",
+  "properties": {
+    "choice_index": {
+      "title": "Choice Index",
+      "type": "integer"
+    },
+    "finish_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Finish Reason"
+    },
+    "reasoning": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/ToolStreamTextUpdate"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "reasoning_details": {
+      "anyOf": [
+        {
+          "items": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ToolStreamJsonValue"
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reasoning Details"
+    },
+    "text": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/ToolStreamTextUpdate"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "tool_calls": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/components/schemas/ToolStreamToolUpdate"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tool Calls"
+    }
+  },
+  "required": [
+    "choice_index"
+  ],
+  "title": "LlmChatChunk",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-toolstreamllmchatcompletedframe_toolexecuteresponsedto_"></a>
+### Model: ToolStreamLlmChatCompletedFrame_ToolExecuteResponseDTO_
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `result` |  |  | req | [ToolStreamToolExecuteResponseDTO](#model-toolstreamtoolexecuteresponsedto) |
+|  | `budget` |  | req | [ToolStreamToolBudgetDTO](#model-toolstreamtoolbudgetdto) |
+|  |  | `session_budget_usd` | req | `number` |
+|  |  | `session_hard_limit_usd` | req | `number` |
+|  |  | `session_remaining_budget_usd` | req | `number` |
+|  |  | `session_used_budget_usd` | req | `number` |
+|  | `cost_usd` |  | opt | `number` (nullable) |
+|  | `receipt_id` |  | req | `string` |
+|  | `response` |  | req | [ToolStreamJsonValue](#model-toolstreamjsonvalue) |
+|  | `result_policy` |  | req | `string` |
+|  | `results` |  | req | array[[ToolStreamToolResultDTO](#model-toolstreamtoolresultdto)] |
+|  |  | `index` | req | `integer` |
+|  |  | `note` | opt | `string` (nullable) |
+|  |  | `raw` | opt | [ToolStreamJsonValue](#model-toolstreamjsonvalue) (nullable) |
+|  |  | `result_id` | req | `string` |
+|  |  | `title` | opt | `string` (nullable) |
+|  |  | `url` | opt | `string` (nullable) |
+|  | `usage` |  | opt | [ToolStreamToolUsageDTO](#model-toolstreamtoolusagedto) (nullable) |
+|  |  | `completion_tokens` | opt | `integer` (nullable) |
+|  |  | `prompt_tokens` | opt | `integer` (nullable) |
+|  |  | `total_tokens` | opt | `integer` (nullable) |
+| `type` |  |  | opt | `string` (default: completed) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "result": {
+      "$ref": "#/components/schemas/ToolStreamToolExecuteResponseDTO"
+    },
+    "type": {
+      "const": "completed",
+      "default": "completed",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "result"
+  ],
+  "title": "LlmChatCompletedFrame[ToolExecuteResponseDTO]",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-toolstreamllmchatoutputframe"></a>
+### Model: ToolStreamLlmChatOutputFrame
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `chunk` |  |  | req | [ToolStreamLlmChatChunk](#model-toolstreamllmchatchunk) |
+|  | `choice_index` |  | req | `integer` |
+|  | `finish_reason` |  | opt | `string` (nullable) |
+|  | `reasoning` |  | opt | [ToolStreamTextUpdate](#model-toolstreamtextupdate) (nullable) |
+|  |  | `operation` | req | `string` (enum: [append, replace]) |
+|  |  | `value` | req | `string` |
+|  | `reasoning_details` |  | opt | array[`object`] (nullable) |
+|  | `text` |  | opt | [ToolStreamTextUpdate](#model-toolstreamtextupdate) (nullable) |
+|  |  | `operation` | req | `string` (enum: [append, replace]) |
+|  |  | `value` | req | `string` |
+|  | `tool_calls` |  | opt | array[[ToolStreamToolUpdate](#model-toolstreamtoolupdate)] (nullable) |
+|  |  | `arguments` | opt | [ToolStreamTextUpdate](#model-toolstreamtextupdate) (nullable) |
+|  |  | `id` | opt | [ToolStreamTextUpdate](#model-toolstreamtextupdate) (nullable) |
+|  |  | `index` | req | `integer` |
+|  |  | `name` | opt | [ToolStreamTextUpdate](#model-toolstreamtextupdate) (nullable) |
+|  |  | `type` | opt | `string` (nullable) |
+| `type` |  |  | opt | `string` (default: output) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "chunk": {
+      "$ref": "#/components/schemas/ToolStreamLlmChatChunk"
+    },
+    "type": {
+      "const": "output",
+      "default": "output",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "chunk"
+  ],
+  "title": "LlmChatOutputFrame",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-toolstreamllmchatpublicerrorframe"></a>
+### Model: ToolStreamLlmChatPublicErrorFrame
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | req | `string` |
+| `type` |  |  | opt | `string` (default: error) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "detail": {
+      "title": "Detail",
+      "type": "string"
+    },
+    "type": {
+      "const": "error",
+      "default": "error",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "detail"
+  ],
+  "title": "LlmChatPublicErrorFrame",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-toolstreamtextupdate"></a>
+### Model: ToolStreamTextUpdate
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `operation` |  |  | req | `string` (enum: [append, replace]) |
+| `value` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "description": "Append to or replace the current field; an empty replacement clears it.",
+  "properties": {
+    "operation": {
+      "enum": [
+        "append",
+        "replace"
+      ],
+      "title": "Operation",
+      "type": "string"
+    },
+    "value": {
+      "title": "Value",
+      "type": "string"
+    }
+  },
+  "required": [
+    "operation",
+    "value"
+  ],
+  "title": "TextUpdate",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-toolstreamtoolbudgetdto"></a>
+### Model: ToolStreamToolBudgetDTO
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `session_budget_usd` |  |  | req | `number` |
+| `session_hard_limit_usd` |  |  | req | `number` |
+| `session_remaining_budget_usd` |  |  | req | `number` |
+| `session_used_budget_usd` |  |  | req | `number` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "session_budget_usd": {
+      "minimum": 0.0,
+      "title": "Session Budget Usd",
+      "type": "number"
+    },
+    "session_hard_limit_usd": {
+      "minimum": 0.0,
+      "title": "Session Hard Limit Usd",
+      "type": "number"
+    },
+    "session_remaining_budget_usd": {
+      "minimum": 0.0,
+      "title": "Session Remaining Budget Usd",
+      "type": "number"
+    },
+    "session_used_budget_usd": {
+      "minimum": 0.0,
+      "title": "Session Used Budget Usd",
+      "type": "number"
+    }
+  },
+  "required": [
+    "session_budget_usd",
+    "session_hard_limit_usd",
+    "session_used_budget_usd",
+    "session_remaining_budget_usd"
+  ],
+  "title": "ToolBudgetDTO",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-toolstreamtoolexecuteresponsedto"></a>
+### Model: ToolStreamToolExecuteResponseDTO
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `budget` |  |  | req | [ToolStreamToolBudgetDTO](#model-toolstreamtoolbudgetdto) |
+|  | `session_budget_usd` |  | req | `number` |
+|  | `session_hard_limit_usd` |  | req | `number` |
+|  | `session_remaining_budget_usd` |  | req | `number` |
+|  | `session_used_budget_usd` |  | req | `number` |
+| `cost_usd` |  |  | opt | `number` (nullable) |
+| `receipt_id` |  |  | req | `string` |
+| `response` |  |  | req | [ToolStreamJsonValue](#model-toolstreamjsonvalue) |
+| `result_policy` |  |  | req | `string` |
+| `results` |  |  | req | array[[ToolStreamToolResultDTO](#model-toolstreamtoolresultdto)] |
+|  | `index` |  | req | `integer` |
+|  | `note` |  | opt | `string` (nullable) |
+|  | `raw` |  | opt | [ToolStreamJsonValue](#model-toolstreamjsonvalue) (nullable) |
+|  | `result_id` |  | req | `string` |
+|  | `title` |  | opt | `string` (nullable) |
+|  | `url` |  | opt | `string` (nullable) |
+| `usage` |  |  | opt | [ToolStreamToolUsageDTO](#model-toolstreamtoolusagedto) (nullable) |
+|  | `completion_tokens` |  | opt | `integer` (nullable) |
+|  | `prompt_tokens` |  | opt | `integer` (nullable) |
+|  | `total_tokens` |  | opt | `integer` (nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "budget": {
+      "$ref": "#/components/schemas/ToolStreamToolBudgetDTO"
+    },
+    "cost_usd": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cost Usd"
+    },
+    "receipt_id": {
+      "title": "Receipt Id",
+      "type": "string"
+    },
+    "response": {
+      "$ref": "#/components/schemas/ToolStreamJsonValue"
+    },
+    "result_policy": {
+      "title": "Result Policy",
+      "type": "string"
+    },
+    "results": {
+      "items": {
+        "$ref": "#/components/schemas/ToolStreamToolResultDTO"
+      },
+      "title": "Results",
+      "type": "array"
+    },
+    "usage": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/ToolStreamToolUsageDTO"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "receipt_id",
+    "response",
+    "results",
+    "result_policy",
+    "budget"
+  ],
+  "title": "ToolExecuteResponseDTO",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-toolstreamtoolresultdto"></a>
+### Model: ToolStreamToolResultDTO
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `index` |  |  | req | `integer` |
+| `note` |  |  | opt | `string` (nullable) |
+| `raw` |  |  | opt | [ToolStreamJsonValue](#model-toolstreamjsonvalue) (nullable) |
+| `result_id` |  |  | req | `string` |
+| `title` |  |  | opt | `string` (nullable) |
+| `url` |  |  | opt | `string` (nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "index": {
+      "title": "Index",
+      "type": "integer"
+    },
+    "note": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Note"
+    },
+    "raw": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/ToolStreamJsonValue"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "result_id": {
+      "title": "Result Id",
+      "type": "string"
+    },
+    "title": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Title"
+    },
+    "url": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Url"
+    }
+  },
+  "required": [
+    "index",
+    "result_id"
+  ],
+  "title": "ToolResultDTO",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-toolstreamtoolupdate"></a>
+### Model: ToolStreamToolUpdate
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `arguments` |  |  | opt | [ToolStreamTextUpdate](#model-toolstreamtextupdate) (nullable) |
+|  | `operation` |  | req | `string` (enum: [append, replace]) |
+|  | `value` |  | req | `string` |
+| `id` |  |  | opt | [ToolStreamTextUpdate](#model-toolstreamtextupdate) (nullable) |
+|  | `operation` |  | req | `string` (enum: [append, replace]) |
+|  | `value` |  | req | `string` |
+| `index` |  |  | req | `integer` |
+| `name` |  |  | opt | [ToolStreamTextUpdate](#model-toolstreamtextupdate) (nullable) |
+|  | `operation` |  | req | `string` (enum: [append, replace]) |
+|  | `value` |  | req | `string` |
+| `type` |  |  | opt | `string` (nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "arguments": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/ToolStreamTextUpdate"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "id": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/ToolStreamTextUpdate"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "index": {
+      "title": "Index",
+      "type": "integer"
+    },
+    "name": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/ToolStreamTextUpdate"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "type": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Type"
+    }
+  },
+  "required": [
+    "index"
+  ],
+  "title": "ToolUpdate",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-toolstreamtoolusagedto"></a>
+### Model: ToolStreamToolUsageDTO
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `completion_tokens` |  |  | opt | `integer` (nullable) |
+| `prompt_tokens` |  |  | opt | `integer` (nullable) |
+| `total_tokens` |  |  | opt | `integer` (nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "completion_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Completion Tokens"
+    },
+    "prompt_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Prompt Tokens"
+    },
+    "total_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Total Tokens"
+    }
+  },
+  "title": "ToolUsageDTO",
   "type": "object"
 }
 ```

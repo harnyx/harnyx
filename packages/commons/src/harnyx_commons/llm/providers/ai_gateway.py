@@ -38,6 +38,7 @@ from harnyx_commons.llm.schema import (
 from harnyx_commons.llm.timeout import record_output_progress, streaming_transport_timeout
 from harnyx_commons.llm.tool_models import MINER_SELECTED_LLM_PROVIDER_MODELS
 from harnyx_miner_sdk.llm import Timeout
+from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatChunk, LlmChatOutputSink
 
 AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
 AI_GATEWAY_SUPPORTED_MODELS = MINER_SELECTED_LLM_PROVIDER_MODELS[AI_GATEWAY_PROVIDER]
@@ -67,6 +68,7 @@ class AiGatewayLlmProvider(BaseLlmProvider):
             call_coro=lambda current_request: self._request_chat(
                 _AiGatewayChatRequest.from_request(current_request),
                 timeout=current_request.timeout,
+                on_output=current_request.on_output,
             ),
             verifier=self._verify_response,
             classify_exception=self._classify_exception,
@@ -92,13 +94,14 @@ class AiGatewayLlmProvider(BaseLlmProvider):
         payload: _AiGatewayChatRequest,
         *,
         timeout: float | Timeout | None,
+        on_output: LlmChatOutputSink | None = None,
     ) -> LlmResponse:
         request_kwargs: dict[str, Any] = {
             "json": payload.model_dump(mode="json", by_alias=True, exclude_none=True),
         }
         if timeout is not None:
             request_kwargs["timeout"] = streaming_transport_timeout(timeout)
-        body, ttft_ms = await self._stream_chat_completions(**request_kwargs)
+        body, ttft_ms = await self._stream_chat_completions(on_output=on_output, **request_kwargs)
         response = body.to_llm_response()
         metadata = dict(response.metadata or {})
         metadata.setdefault("raw_response", body.raw_payload())
@@ -114,6 +117,7 @@ class AiGatewayLlmProvider(BaseLlmProvider):
 
     async def _stream_chat_completions(
         self,
+        on_output: LlmChatOutputSink | None = None,
         **request_kwargs: Any,
     ) -> tuple[_AiGatewayChatResponse, float | None]:
         started_at = time.perf_counter()
@@ -138,14 +142,19 @@ class AiGatewayLlmProvider(BaseLlmProvider):
                         error_type="server_error",
                         code=502,
                     ) from exc
+                chunks: list[LlmChatChunk] | None = [] if on_output is not None else None
                 if state.merge_event(
                     event,
+                    chunks=chunks,
                     reasoning_keys=("reasoning", "reasoning_content", "reasoning_details"),
                     normalize_reasoning_fragment=normalize_openai_reasoning_fragments,
                 ):
                     record_output_progress()
                     if ttft_ms is None:
                         ttft_ms = round((time.perf_counter() - started_at) * 1000, 2)
+                if on_output is not None:
+                    for chunk in chunks or ():
+                        await on_output(chunk)
         return _AiGatewayChatResponse.from_stream_state(state, provider_metadata=provider_metadata), ttft_ms
 
     @staticmethod

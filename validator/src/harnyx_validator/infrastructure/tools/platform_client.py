@@ -51,6 +51,13 @@ from harnyx_commons.tools.provider_billing import (
 )
 from harnyx_commons.tools.types import ToolName
 from harnyx_miner_sdk.endpoint_protocol import EndpointCallbackAcknowledgement, EndpointDelegation
+from harnyx_miner_sdk.tools.llm_chat_stream_models import (
+    LlmChatCompletedFrame,
+    LlmChatErrorFrame,
+    LlmChatOutputFrame,
+    LlmChatOutputSink,
+)
+from harnyx_miner_sdk.tools.proxy import ToolInvocationError, ToolResponseStream
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskWorkAssignment,
     PlatformOwnedTaskExecution,
@@ -620,6 +627,7 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
         args: tuple[JsonValue, ...],
         kwargs: dict[str, JsonValue],
         transport_timeout_seconds: float,
+        on_output: LlmChatOutputSink | None = None,
     ) -> PlatformToolProxyToolResult:
         path = "/v1/platform-tool-proxy/tools/execute"
         body = _json_body(
@@ -649,12 +657,49 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
             "Accept": "application/json",
         }
         try:
-            response = await self._client.post(
-                path,
-                content=body,
-                headers=headers,
-                timeout=transport_timeout_seconds,
-            )
+            if on_output is not None:
+                headers["Accept"] = "text/event-stream"
+                async with self._client.stream(
+                    "POST",
+                    path,
+                    content=body,
+                    headers=headers,
+                    timeout=transport_timeout_seconds,
+                ) as upstream:
+                    if upstream.status_code != 200:
+                        await upstream.aread()
+                        response = upstream
+                    else:
+                        if upstream.headers.get("content-type", "").split(";", 1)[0] != "text/event-stream":
+                            raise PlatformToolProxyInterruptedError("platform does not support llm_chat streaming")
+                        async for frame in ToolResponseStream(upstream):
+                            if isinstance(frame, LlmChatOutputFrame):
+                                await on_output(frame.chunk)
+                            elif isinstance(frame, LlmChatCompletedFrame):
+                                response = httpx.Response(200, json=frame.result, request=upstream.request)
+                                break
+                            elif isinstance(frame, LlmChatErrorFrame):
+                                response = httpx.Response(
+                                    400,
+                                    json=frame.error
+                                    or {
+                                        "error_code": "platform_error",
+                                        "message": frame.detail,
+                                    },
+                                    request=upstream.request,
+                                )
+                                break
+                        else:
+                            raise PlatformToolProxyInterruptedError("platform stream ended before a terminal result")
+            else:
+                response = await self._client.post(
+                    path,
+                    content=body,
+                    headers=headers,
+                    timeout=transport_timeout_seconds,
+                )
+        except ToolInvocationError as exc:
+            raise PlatformToolProxyInterruptedError("invalid or interrupted platform stream") from exc
         except httpx.ReadTimeout as exc:
             raise PlatformToolProxyToolTimeoutError(
                 status_code=0,

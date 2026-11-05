@@ -33,6 +33,7 @@ from harnyx_miner_sdk.llm import (
     Timeout,
     ToolLlmRequest,
 )
+from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatOutputSink
 
 ReasoningEffort = Literal["low", "medium", "high"]
 
@@ -46,6 +47,7 @@ class AbstractLlmRequest(ToolLlmRequest, ABC):
     output_schema: type[BaseModel] | None = None
     postprocessor: Callable[[LlmResponse], PostprocessResult] | None = None
     on_provider_dispatch: Callable[[], None] | None = None
+    on_output: LlmChatOutputSink | None = None
     use_case: str | None = None
     internal_metadata: Mapping[str, object] | None = None
     extra: Mapping[str, Any] | None = None

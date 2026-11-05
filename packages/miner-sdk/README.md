@@ -515,6 +515,71 @@ limits are preserved. Other hosted tools still accept only numeric timeouts.
 The detailed form requires SDK 0.1.18 and an updated tool host. Older SDK numeric
 requests work with the updated host; an older host rejects the detailed object.
 
+### Streaming LLM output
+
+Pass `stream=True` to get a closeable async iterator. Omitting `stream` or passing
+`False` returns the existing `LlmChatResult` after the call completes.
+
+```python
+from harnyx_miner_sdk.api import Timeout, llm_chat
+
+stream = await llm_chat(
+    provider="chutes",
+    model="openai/gpt-oss-20b",
+    messages=[{"role": "user", "content": "Explain this result."}],
+    stream=True,
+    timeout=Timeout(120, prefill=60, inactivity=30),
+)
+text = ""
+async with stream:
+    async for chunk in stream:
+        if chunk.choice_index == 0 and chunk.text is not None:
+            update = chunk.text
+            text = text + update.value if update.operation == "append" else update.value
+
+result = stream.result
+print(text, result.receipt_id)
+```
+
+Each `LlmChatChunk` contains provisional changes for `choice_index`. A missing
+field leaves the accumulated value unchanged. `text` and `reasoning` updates
+specify `operation="append"` or `"replace"`; an empty replacement clears the
+field. `reasoning_details` append in order. `tool_calls` identify calls by
+`index` and carry the same append/replace updates for `id`, `name` and
+`arguments`; arguments can be incomplete JSON until the call finishes.
+`type` and `finish_reason`, when present, set their current values.
+
+The iterator yields output chunks only. After successful exhaustion,
+`stream.result` exposes the existing validated `LlmChatResult`, including the
+settled receipt and budget, without another request. A finish reason alone does
+not establish success. Accessing `result` before successful exhaustion raises
+`RuntimeError`; errors or premature transport closure raise `ToolInvocationError`
+while consuming the iterator and do not expose a successful result.
+
+Use `async with stream` or `await stream.aclose()` when stopping early, including
+a `break` from iteration. Closing is idempotent. Each stream supports one reader
+at a time. Calls are not automatically retried or reconnected.
+
+Closing propagates cancellation through the sandbox and tool hosts and closes
+the provider HTTP stream. It does not acknowledge that the provider stopped
+generation or billing. Savings depend on the provider and, for gateways, the
+selected upstream route. Already incurred charges remain payable; missing final
+usage after cancellation remains unknown rather than zero. For example,
+[OpenRouter documents cancellation support by upstream provider](https://openrouter.ai/docs/api_reference/streaming#stream-cancellation),
+including routes that continue generation and billing after disconnect.
+[SayGM explicitly continues reading upstream and charges its reported usage](https://docs.saygm.com/platform/billing/#streaming-disconnects),
+including output generated after the client disconnects. Do not rely on early
+closure to reduce charges on that route.
+
+Streaming reuses `Timeout(total, prefill=..., inactivity=...)`; there is no
+separate TTFT option. Prefill measures provider-attempt start to the host's first
+text, reasoning or tool-call output, not delivery to the miner. Omitted timeout
+and phase values retain the behavior described above. Output delivery is bounded
+and lossless: slow consumption applies backpressure, while total and inactivity
+clocks continue. Delivery stalls can therefore cause timeout even while the
+provider is generating. The query's overall execution deadline also remains in
+force. Streaming requires an updated SDK, sandbox and tool host.
+
 Every successful hosted-tool helper response includes `budget`, which reports
 the evaluation session's monetary budget and settled spend after that call.
 

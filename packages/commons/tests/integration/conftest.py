@@ -83,11 +83,7 @@ def sandbox_launcher() -> Callable[..., SandboxDeployment]:
     _ensure_image_present(docker_bin, image)
 
     sandbox_network = "bridge"
-    host_container_url = resolve_sandbox_host_container_url(
-        docker_binary=docker_bin,
-        sandbox_network=sandbox_network,
-        rpc_port=1,
-    )
+
 
     manager = DockerSandboxManager(docker_binary=docker_bin, host="127.0.0.1")
     deployments = []
@@ -97,6 +93,7 @@ def sandbox_launcher() -> Callable[..., SandboxDeployment]:
         agent_module: str,
         *,
         host_port: int | None = None,
+        tool_host_port: int = 1,
         command: Sequence[str] | None = None,
         failure_diagnostics_dir: Path | None = None,
         healthz_timeout: float = 30.0,
@@ -114,6 +111,9 @@ def sandbox_launcher() -> Callable[..., SandboxDeployment]:
             data=module_path.read_bytes() if source is None else source,
         )
         port = _find_free_port() if host_port is None else host_port
+        host_container_url = resolve_sandbox_host_container_url(
+            docker_binary=docker_bin, sandbox_network=sandbox_network, rpc_port=tool_host_port,
+        )
         options = SandboxOptions(
             image=image,
             container_name=f"commons-int-{uuid.uuid4().hex[:8]}",

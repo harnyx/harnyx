@@ -480,3 +480,16 @@ def test_flash_1017_rejects_forced_tools_only_when_thinking_is_active(provider, 
 def test_flash_tool_guard_preserves_other_models():
     payload = _request_payload() | {"thinking": {"enabled": True}}
     assert LlmChatRequest.model_validate(payload).to_tool_request().tool_choice is not None
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_stream_uses_existing_timeout_contract(stream) -> None:
+    request = LlmChatRequest.model_validate({
+        "provider": "chutes", "model": "demo", "messages": [{"role": "user", "content": "hi"}],
+        "stream": stream, "timeout": {"total": 120, "prefill": 30, "inactivity": 10},
+    })
+    assert request.timeout.prefill == 30
+    with pytest.raises(ValueError):
+        LlmChatRequest.model_validate({**request.model_dump(), "ttft": 30})
+    with pytest.raises(ValueError):
+        LlmChatRequest.model_validate({**request.model_dump(), "stream": "true"})

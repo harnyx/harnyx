@@ -2,7 +2,9 @@
 
 from harnyx_miner_sdk.api import (
     EmbedTextResponse,
+    LlmChatChunk,
     LlmChatResult,
+    LlmChatStream,
     RerankResponse,
     TestToolResponse,
     ToolCallResponse,
@@ -42,6 +44,8 @@ __all__ = [
     "tooling_info",
     "EmbedTextResponse",
     "LlmChatResult",
+    "LlmChatStream",
+    "LlmChatChunk",
     "ToolCallResponse",
     "TestToolResponse",
 ]

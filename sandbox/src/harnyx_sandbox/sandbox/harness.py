@@ -32,6 +32,7 @@ from harnyx_miner_sdk.sandbox_protocol import (
     SandboxAdmission,
     SandboxResourceStatus,
 )
+from harnyx_miner_sdk.streaming import LlmChatFrameStream
 from harnyx_miner_sdk.tools.http_models import ToolBudgetDTO
 from harnyx_miner_sdk.tools.time_budget import ExecutionTimeBudgetDTO
 from harnyx_sandbox.sandbox.compiler import (
@@ -41,13 +42,17 @@ from harnyx_sandbox.sandbox.compiler import (
     signal_process_handle,
 )
 from harnyx_sandbox.sandbox.memory import EvaluationMemoryState
+from harnyx_sandbox.sandbox.tool_stream import SupervisorToolStream
 from harnyx_sandbox.sandbox.worker_protocol import (
     MAX_FRAME_BYTES,
     MAX_PENDING_WORKER_TOOL_CALLS,
     Invocation,
     QueryResult,
+    StreamReply,
     ToolCall,
     ToolReply,
+    ToolStreamClose,
+    ToolStreamRead,
     WorkerError,
     WorkerMessageViolationError,
     WorkerResultProtocolError,
@@ -806,6 +811,7 @@ class SandboxHarness:
             writer = None
             outputs: list[asyncio.Task[None]] = []
             calls: set[asyncio.Task[None]] = set()
+            streams: dict[int, SupervisorToolStream] = {}
             proxy = None
             active = True
             result_received = False
@@ -844,9 +850,17 @@ class SandboxHarness:
                             with contextlib.suppress(ConnectionError, WorkerResultProtocolError):
                                 await send(writer, reply)
 
+                async def reply_stream(reply: StreamReply) -> None:
+                    if active:
+                        async with write_lock:
+                            await send(writer, reply)
+
+                def cancel_streams() -> None:
+                    for stream in streams.values():
+                        if stream.task is not None and not stream.task.done() and not stream.task.cancelling():
+                            stream.task.cancel()
+
                 while True:
-                    if len(calls) >= MAX_PENDING_WORKER_TOOL_CALLS:
-                        await asyncio.wait(calls, return_when=asyncio.FIRST_COMPLETED)
                     try:
                         frame = await read_frame(reader)
                         try:
@@ -861,17 +875,28 @@ class SandboxHarness:
                             }:
                                 raise WorkerMessageViolationError("worker cannot report infrastructure failures")
                             active = False
+                            cancel_streams()
                             await asyncio.gather(*calls, return_exceptions=True)
                             result = self._unwrap_result(message)
                             result_received = True
                             if execution_deadline is not None:
                                 execution_deadline.reschedule(None)
                             return result
+                        if isinstance(message, ToolStreamRead | ToolStreamClose):
+                            stream = streams.get(message.call_id)
+                            if stream is None:
+                                raise WorkerMessageViolationError("control for unknown stream")
+                            if isinstance(message, ToolStreamRead):
+                                stream.read()
+                            else:
+                                stream.close()
+                            continue
                         if message.call_id <= last_call_id:
                             raise WorkerMessageViolationError("worker tool call IDs must increase")
                         last_call_id = message.call_id
                     except WorkerMessageViolationError as exc:
                         active = False
+                        cancel_streams()
                         await asyncio.gather(*calls, return_exceptions=True)
                         return self._unwrap_result(
                             QueryResult(
@@ -882,7 +907,30 @@ class SandboxHarness:
                                 )
                             )
                         )
-                    call_task = asyncio.create_task(execute(message))
+                    # Controls are serviced at capacity; excess ordinary calls retain FIFO waiting.
+                    if len(calls) >= MAX_PENDING_WORKER_TOOL_CALLS:
+                        await asyncio.wait(calls, return_when=asyncio.FIRST_COMPLETED)
+                    if message.method == "llm_chat" and message.kwargs.get("stream") is True:
+                        async def open_stream(call: ToolCall = message) -> LlmChatFrameStream:
+                            if proxy is None:
+                                raise RuntimeError("no tool invoker bound in this context")
+                            return await proxy.invoke_llm_chat_stream(kwargs=call.kwargs)
+
+                        stream = SupervisorToolStream(message, open_stream, reply_stream)
+                        streams[message.call_id] = stream
+                        call_task = asyncio.create_task(stream.run())
+                        stream.task = call_task
+
+                        def stream_done(task: asyncio.Task[None], call_id: int = message.call_id) -> None:
+                            streams.pop(call_id, None)
+                            if not task.cancelled() and task.exception() is not None:
+                                # The shared connection could not carry a terminal reply.
+                                # Closing it wakes the worker rather than leaving a pending read.
+                                writer.close()
+
+                        call_task.add_done_callback(stream_done)
+                    else:
+                        call_task = asyncio.create_task(execute(message))
                     calls.add(call_task)
                     call_task.add_done_callback(calls.discard)
             finally:

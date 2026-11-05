@@ -25,6 +25,7 @@ from harnyx_commons.llm.schema import (
     LlmResponse,
     LlmUsage,
 )
+from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatChunk, TextUpdate
 
 _CHUTES_CONTENT_PARTS_ADAPTER = TypeAdapter(list[object])
 _CHUTES_TOOL_CALLS_ADAPTER = TypeAdapter(list[object])
@@ -499,7 +500,7 @@ class _ChutesReasoningStreamState(BaseModel):
             self.choices[index] = state
         return state
 
-    def merge_event(self, event: _OpenAiStreamEvent) -> bool:
+    def merge_event(self, event: _OpenAiStreamEvent, *, chunks: list[LlmChatChunk] | None = None) -> bool:
         reasoning_delta_observed = False
         for fallback_index, choice_payload in enumerate(event.choices):
             index = choice_payload.index if choice_payload.index is not None else fallback_index
@@ -507,6 +508,7 @@ class _ChutesReasoningStreamState(BaseModel):
             if message_payload is None:
                 continue
             extra = message_payload.model_extra or {}
+            previous = _ChutesReasoningObject.from_stream_state(self.choice(index)) if chunks is not None else None
             reasoning_value = extra.get("reasoning")
             self.choice(index).merge(reasoning_value)
             appended_reasoning = set(_chutes_stream_reasoning_fragments(reasoning_value))
@@ -518,6 +520,17 @@ class _ChutesReasoningStreamState(BaseModel):
                 appended_reasoning.add(reasoning_fragment)
                 self.choice(index).merge(reasoning_fragment)
                 reasoning_delta_observed = True
+            if chunks is not None:
+                current = _ChutesReasoningObject.from_stream_state(self.choice(index))
+                before = previous.reasoning_text or "" if previous is not None else ""
+                after = current.reasoning_text or "" if current is not None else ""
+                if after != before:
+                    update = (
+                        TextUpdate(operation="append", value=after[len(before) :])
+                        if after.startswith(before)
+                        else TextUpdate(operation="replace", value=after)
+                    )
+                    chunks.append(LlmChatChunk(choice_index=index, reasoning=update))
         self.usage_progress.observe(event.usage, reasoning_delta_observed=reasoning_delta_observed)
         return reasoning_delta_observed
 

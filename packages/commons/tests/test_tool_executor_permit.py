@@ -168,3 +168,138 @@ def test_provider_tool_parallel_call_cap_matches_single_token_cap() -> None:
 
 def test_provider_tool_parallel_call_cap_respects_custom_limit() -> None:
     assert max_parallel_provider_tool_calls(ToolConcurrencyLimits(max_parallel_calls=7)) == 7
+
+
+async def test_stream_deadline_includes_blocked_terminal_send() -> None:
+    from harnyx_commons.tools.llm_chat_stream import LlmChatExecutionStream
+    from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatErrorFrame
+
+    committed = asyncio.Event()
+    terminal_started = asyncio.Event()
+
+    async def execute(_sink):
+        committed.set()
+        return {"receipt_id": "committed"}
+
+    stream = LlmChatExecutionStream(execute, total=0.05, error_frame=lambda exc: LlmChatErrorFrame(detail=str(exc)))
+
+    async def stalled_transport():
+        async for frame in stream.body():
+            assert '"type":"completed"' in frame
+            terminal_started.set()
+            await asyncio.Event().wait()
+
+    with pytest.raises(TimeoutError, match="total timeout"):
+        await stream.deliver(stalled_transport)
+    assert committed.is_set()
+    assert terminal_started.is_set()
+
+
+async def test_stream_disconnect_holds_permit_until_repeated_cancel_safe_finalization() -> None:
+    from harnyx_commons.tools.llm_chat_stream import open_tool_stream
+    from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatChunk, LlmChatErrorFrame, TextUpdate
+
+    invocation = _invocation(TEST_TOKEN, "llm_chat")
+    limiter = ToolConcurrencyLimiter(ToolConcurrencyLimits(max_parallel_calls=1))
+    settling = asyncio.Event()
+    release_settlement = asyncio.Event()
+    delivered = asyncio.Event()
+    settlements = []
+
+    class Executor:
+        def validate_request(self, request):
+            pass
+
+        async def execute(self, request, *, on_output):
+            try:
+                await on_output(LlmChatChunk(choice_index=0, text=TextUpdate(operation="append", value="first")))
+                await asyncio.Event().wait()
+            finally:
+                settling.set()
+                await release_settlement.wait()
+                settlements.append("settled")
+
+    stream = open_tool_stream(
+        Executor(), limiter, invocation, error_frame=lambda exc: LlmChatErrorFrame(detail=str(exc))
+    )
+
+    async def transport():
+        async for _ in stream.body():
+            delivered.set()
+
+    owner = asyncio.create_task(stream.deliver(transport))
+    await asyncio.wait_for(delivered.wait(), 1)
+    assert limiter.in_flight(invocation) == 1
+    owner.cancel()
+    await asyncio.wait_for(settling.wait(), 1)
+    owner.cancel()
+    await asyncio.sleep(0)
+    assert limiter.in_flight(invocation) == 1
+    release_settlement.set()
+    with pytest.raises(asyncio.CancelledError):
+        await owner
+    assert settlements == ["settled"]
+    assert limiter.in_flight(invocation) == 0
+
+
+async def test_stream_bounded_backpressure_times_out_without_consumer_reads() -> None:
+    from harnyx_commons.tools.llm_chat_stream import LlmChatExecutionStream
+    from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatChunk, LlmChatErrorFrame, TextUpdate
+
+    produced = []
+    cleaned = asyncio.Event()
+
+    async def execute(sink):
+        try:
+            for index in range(10_000):
+                await sink(LlmChatChunk(choice_index=0, text=TextUpdate(operation="append", value=str(index))))
+                produced.append(index)
+            return {}
+        finally:
+            cleaned.set()
+
+    stream = LlmChatExecutionStream(execute, total=0.05, error_frame=lambda exc: LlmChatErrorFrame(detail=str(exc)))
+    with pytest.raises(TimeoutError):
+        await stream.deliver(asyncio.Event().wait)
+    assert 0 < len(produced) < 10_000
+    assert cleaned.is_set()
+
+
+@pytest.mark.parametrize("cleanup_result", ["return", "raise"])
+async def test_stream_cleanup_never_publishes_into_full_abandoned_queue(cleanup_result) -> None:
+    """Cancellation settlement can return or fail; neither may wait on a disconnected consumer."""
+    from harnyx_commons.tools.llm_chat_stream import LlmChatExecutionStream
+    from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatChunk, LlmChatErrorFrame, TextUpdate
+
+    full, settling, release, settled = (asyncio.Event() for _ in range(4))
+
+    async def execute(sink):
+        try:
+            for _ in range(8):
+                await sink(LlmChatChunk(choice_index=0, text=TextUpdate(operation="append", value="output")))
+            full.set()
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            settling.set()
+            await release.wait()
+            settled.set()
+            if cleanup_result == "raise":
+                raise RuntimeError("settlement failed") from None
+            return {}
+
+    stream = LlmChatExecutionStream(execute, total=2, error_frame=lambda exc: LlmChatErrorFrame(detail=str(exc)))
+    owner = asyncio.create_task(stream.deliver(asyncio.Event().wait))
+    await asyncio.wait_for(full.wait(), 1)
+    owner.cancel()
+    await asyncio.wait_for(settling.wait(), 1)
+    owner.cancel()
+    await asyncio.sleep(0)
+    assert not owner.done()
+    release.set()
+    done, _ = await asyncio.wait({owner}, timeout=1)
+    # Stop a broken producer explicitly so this regression cannot hang pytest cleanup.
+    if not done:
+        stream._producer.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await owner
+    assert done and settled.is_set()

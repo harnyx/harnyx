@@ -9,6 +9,8 @@ from typing import Any, cast
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
+from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatChunk, TextUpdate, ToolUpdate
+
 
 class _OpenAiTextFragment(BaseModel):
     model_config = ConfigDict(extra="ignore", strict=True)
@@ -154,8 +156,11 @@ class OpenAiToolCallState(BaseModel):
         payload: _OpenAiToolCallDelta,
         *,
         complete_snapshot: bool = False,
+        updates: list[ToolUpdate] | None = None,
+        index: int = 0,
     ) -> bool:
         previous_output = (self.id or "", self.name or "", self.arguments_text)
+        previous_type = self.type
         if payload.id is not None:
             if complete_snapshot:
                 if self.id is not None and payload.id != self.id:
@@ -169,7 +174,7 @@ class OpenAiToolCallState(BaseModel):
             self.type = payload.type
         function = payload.function
         if function is None:
-            return previous_output != (self.id or "", self.name or "", self.arguments_text)
+            function = _OpenAiFunctionDelta()
         if function.name is not None:
             if complete_snapshot:
                 if self.name is not None and function.name != self.name:
@@ -185,6 +190,28 @@ class OpenAiToolCallState(BaseModel):
                     self.arguments_text += arguments
             case dict() as arguments:
                 self.arguments_text = json.dumps(arguments, allow_nan=False)
+        if updates is not None:
+
+            def changed(before: str, after: str, *, snapshot: bool = False) -> TextUpdate | None:
+                if before == after:
+                    return None
+                if not snapshot and after.startswith(before):
+                    return TextUpdate(operation="append", value=after[len(before) :])
+                return TextUpdate(operation="replace", value=after)
+
+            update = ToolUpdate(
+                index=index,
+                id=changed(previous_output[0], self.id or "", snapshot=complete_snapshot),
+                name=changed(previous_output[1], self.name or "", snapshot=complete_snapshot),
+                arguments=changed(
+                    previous_output[2],
+                    self.arguments_text,
+                    snapshot=complete_snapshot or isinstance(function.arguments, dict),
+                ),
+                type=self.type if self.type != previous_type else None,
+            )
+            if update.id or update.name or update.arguments or update.type:
+                updates.append(update)
         return previous_output != (self.id or "", self.name or "", self.arguments_text)
 
     def to_tool_call(self, *, index: int) -> OpenAiToolCall:
@@ -245,11 +272,22 @@ class OpenAiChoiceState(BaseModel):
         reasoning_keys: tuple[str, ...],
         normalize_content_fragment: FragmentNormalizer,
         normalize_reasoning_fragment: FragmentNormalizer,
+        chunks: list[LlmChatChunk] | None = None,
+        index: int = 0,
     ) -> bool:
+        text_start, reasoning_start, details_start = (
+            len(self.content_parts),
+            len(self.reasoning_parts),
+            len(self.reasoning_details),
+        )
+        old_finish = self.finish_reason
+        tool_updates: list[ToolUpdate] | None = [] if chunks is not None else None
         message_payload = payload.message_delta(reasoning_keys=reasoning_keys)
         if message_payload is None:
             if payload.finish_reason:
                 self.finish_reason = payload.finish_reason
+                if chunks is not None and old_finish != self.finish_reason:
+                    chunks.append(LlmChatChunk(choice_index=index, finish_reason=self.finish_reason))
             return False
 
         saw_output = False
@@ -275,10 +313,27 @@ class OpenAiChoiceState(BaseModel):
         if self._merge_tool_calls(
             message_payload.tool_calls,
             complete_snapshot=payload.delta is None,
+            updates=tool_updates,
         ):
             saw_output = True
         if payload.finish_reason:
             self.finish_reason = payload.finish_reason
+        if chunks is not None:
+            text = "".join(self.content_parts[text_start:])
+            reasoning = "".join(self.reasoning_parts[reasoning_start:])
+            details = self.reasoning_details[details_start:]
+            finish = self.finish_reason if self.finish_reason != old_finish else None
+            if text or reasoning or details or tool_updates or finish:
+                chunks.append(
+                    LlmChatChunk(
+                        choice_index=index,
+                        text=TextUpdate(operation="append", value=text) if text else None,
+                        reasoning=TextUpdate(operation="append", value=reasoning) if reasoning else None,
+                        reasoning_details=details or None,
+                        tool_calls=tool_updates or None,
+                        finish_reason=finish,
+                    )
+                )
         return saw_output
 
     def tool_call_values(self) -> tuple[OpenAiToolCall, ...] | None:
@@ -302,6 +357,7 @@ class OpenAiChoiceState(BaseModel):
         payloads: list[_OpenAiToolCallDelta] | None,
         *,
         complete_snapshot: bool,
+        updates: list[ToolUpdate] | None = None,
     ) -> bool:
         if not payloads:
             return False
@@ -314,7 +370,7 @@ class OpenAiChoiceState(BaseModel):
             if state is None:
                 state = OpenAiToolCallState()
                 self.tool_calls[index] = state
-            if state.merge_delta(payload, complete_snapshot=complete_snapshot):
+            if state.merge_delta(payload, complete_snapshot=complete_snapshot, updates=updates, index=index):
                 saw_output = True
         return saw_output
 
@@ -340,6 +396,7 @@ class OpenAiStreamState(BaseModel):
         reasoning_keys: tuple[str, ...],
         normalize_content_fragment: FragmentNormalizer | None = None,
         normalize_reasoning_fragment: FragmentNormalizer | None = None,
+        chunks: list[LlmChatChunk] | None = None,
     ) -> bool:
         if event.id is not None:
             self.response_id = event.id
@@ -356,6 +413,8 @@ class OpenAiStreamState(BaseModel):
                 reasoning_keys=reasoning_keys,
                 normalize_content_fragment=content_fragment,
                 normalize_reasoning_fragment=reasoning_fragment,
+                chunks=chunks,
+                index=index,
             ):
                 saw_output = True
         return saw_output

@@ -184,7 +184,11 @@ async def _assert_stream_deadline(
     expected_phase: str,
     *,
     use_case: str = "miner_task_similarity_judge",
+    block_output: bool = False,
 ) -> None:
+    async def blocked_sink(_chunk):
+        await asyncio.Event().wait()
+
     stream = _Stream(scenario)
     client = httpx.AsyncClient(
         base_url="https://example.com",
@@ -214,12 +218,15 @@ async def _assert_stream_deadline(
         timeout=Timeout(0.15, prefill=0.05, inactivity=0.05),
         retry_policy=RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0),
         use_case=use_case,
+        on_output=blocked_sink if block_output else None,
     )
     try:
         with pytest.raises(LlmRetryExhaustedError) as exc:
             await provider.invoke(request)
         assert isinstance(exc.value.__cause__, LlmAttemptTimeoutError)
         assert exc.value.__cause__.phase == expected_phase
+        if block_output:
+            assert exc.value.__cause__.first_output_seconds is not None
         assert stream.closed
     finally:
         await provider.aclose()
@@ -283,3 +290,8 @@ def test_empty_tool_call_metadata_does_not_establish_output(tool_call: dict[str,
 
     event = _OpenAiStreamEvent.model_validate({"choices": [{"delta": {"tool_calls": [tool_call]}}]})
     assert not OpenAiStreamState().merge_event(event, reasoning_keys=())
+
+
+@pytest.mark.parametrize("provider_name", ["chutes", "custom", "openrouter", "ai_gateway"])
+async def test_delivery_backpressure_keeps_inactivity_deadline_after_first_reasoning(provider_name: str) -> None:
+    await _assert_stream_deadline(provider_name, "total", "inactivity", block_output=True)

@@ -21,13 +21,21 @@ def _credential() -> CloudflareCredential:
     })
 
 
-async def test_cloudflare_chat_native_contract() -> None:
+async def test_cloudflare_models_streaming_live() -> None:
     provider = CloudflareLlmProvider(credential=_credential())
+    chunks = []
+
+    async def capture_output(chunk):
+        chunks.append(chunk)
+
     try:
         response = await provider.invoke(LlmRequest(
+                on_output=capture_output,
             provider="cloudflare", model="@cf/openai/gpt-oss-20b", temperature=None, max_output_tokens=None,
             messages=(LlmMessage(role="user", content=(LlmMessageContentPart.input_text("Reply with only OK."),)),),
         ))
+        assert chunks
+        assert response.usage.total_tokens > 0
         assert response.raw_text.strip()
         assert response.metadata["actual_cost_provider"] == "cloudflare"
         assert response.metadata["actual_cost_usd"] >= 0

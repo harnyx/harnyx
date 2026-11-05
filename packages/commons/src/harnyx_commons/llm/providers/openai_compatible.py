@@ -54,6 +54,7 @@ from harnyx_commons.llm.schema import (
 )
 from harnyx_commons.llm.timeout import record_output_progress, streaming_transport_timeout
 from harnyx_miner_sdk.llm import Timeout
+from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatChunk, LlmChatOutputSink
 
 _provider_dispatch: ContextVar[Callable[[], None] | None] = ContextVar("openai_compatible_dispatch", default=None)
 
@@ -89,6 +90,7 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
                 call_coro=lambda current_request: self._request_chat(
                     self._build_request(current_request),
                     timeout=current_request.timeout,
+                    on_output=current_request.on_output,
                 ),
                 verifier=self._verify_response,
                 classify_exception=self._classify_exception,
@@ -123,6 +125,7 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
         payload: _OpenAiCompatibleChatRequest,
         *,
         timeout: float | Timeout | None,
+        on_output: LlmChatOutputSink | None = None,
     ) -> LlmResponse:
         request_kwargs: dict[str, Any] = {
             "json": payload.model_dump(mode="json", exclude_none=True),
@@ -132,13 +135,14 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
             request_kwargs["timeout"] = streaming_transport_timeout(timeout)
         if (dispatch := _provider_dispatch.get()) is not None:
             dispatch()
-        body, ttft_ms = await self._stream_chat_completions(**request_kwargs)
+        body, ttft_ms = await self._stream_chat_completions(on_output=on_output, **request_kwargs)
         try:
             usage = self._parse_stream_usage(body.usage.model_dump(mode="json") if body.usage is not None else None)
         except ValidationError as exc:
             raise OpenAiStreamError(
                 message="OpenAI-compatible chat completions returned incomplete or invalid usage",
-                error_type="server_error", code=502,
+                error_type="server_error",
+                code=502,
             ) from exc
         body = body.model_copy(update={"usage": usage})
         response = body.to_llm_response()
@@ -162,6 +166,7 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
 
     async def _stream_chat_completions(
         self,
+        on_output: LlmChatOutputSink | None = None,
         **request_kwargs: Any,
     ) -> tuple[_OpenAiCompatibleChatResponse, float | None]:
         started_at = time.perf_counter()
@@ -208,8 +213,10 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
                         error_type="server_error",
                         code=502,
                     ) from exc
+                chunks: list[LlmChatChunk] | None = [] if on_output is not None else None
                 saw_output = state.merge_event(
                     event,
+                    chunks=chunks,
                     reasoning_keys=("reasoning", "reasoning_content", "reasoning_details"),
                     normalize_reasoning_fragment=normalize_openai_reasoning_fragments,
                 )
@@ -223,6 +230,9 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
                     self._record_stream_output()
                     if ttft_ms is None:
                         ttft_ms = round((time.perf_counter() - started_at) * 1000, 2)
+                if on_output is not None:
+                    for chunk in chunks or ():
+                        await on_output(chunk)
         return _OpenAiCompatibleChatResponse.from_stream_state(
             state,
             response_metadata=response_metadata,

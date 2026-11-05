@@ -355,3 +355,194 @@ def test_counter_resolution_uses_own_v2_membership(monkeypatch, tmp_path, mount_
 
     monkeypatch.setattr(Path, "read_text", read)
     assert EvaluationMemoryState().counter == counter
+
+
+@pytest.mark.parametrize("control", ["stream_read", "stream_close"])
+@pytest.mark.parametrize("extra", [{"reservation_id": "other-query"}, {"call_id": -1}])
+async def test_stream_control_cannot_select_other_query_or_invalid_call(control, extra):
+    from harnyx_sandbox.sandbox.worker_protocol import decode_worker_message
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        decode_worker_message(json.dumps({"kind": control, "call_id": 1, **extra}).encode())
+
+
+@pytest.mark.parametrize("late_control", ["read", "close"])
+async def test_idle_stream_deadline_crossing_control_closes_without_tombstones(late_control):
+    """An idle deadline can cross a worker request; neither side may await an obsolete reply."""
+    from harnyx_sandbox.sandbox.tool_stream import SupervisorToolStream, WorkerToolStream
+    from harnyx_sandbox.sandbox.worker_protocol import ToolCall, ToolStreamRead
+
+    from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatErrorFrame
+
+    terminal_ready, release_control, released = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    upstream = Mock(aclose=AsyncMock())
+    delivered = []
+
+    async def reply(message):
+        if message.kind == "frame":
+            terminal_ready.set()
+        delivered.append(message.kind)
+        worker.receive(message)
+
+    async def control(message):
+        await release_control.wait()
+        if isinstance(message, ToolStreamRead):
+            host.read()
+        else:
+            host.close()
+
+    worker = WorkerToolStream(1, control, released.set)
+    host = SupervisorToolStream(ToolCall(call_id=1, method="llm_chat", args=[], kwargs={
+        "stream": True, "provider": "chutes", "model": "test", "messages": [{"role": "user", "content": "hi"}],
+        "timeout": .01,
+    }), AsyncMock(return_value=upstream), reply)
+    host.task = asyncio.create_task(host.run())
+    try:
+        async with asyncio.timeout(1):
+            await worker.opened
+            operation = asyncio.create_task(anext(worker) if late_control == "read" else worker.aclose())
+            await terminal_ready.wait()
+            release_control.set()
+            result = await operation
+            if late_control == "read":
+                assert isinstance(result, LlmChatErrorFrame)
+            await worker.aclose()
+            await host.task
+        assert released.is_set()
+        upstream.aclose.assert_awaited_once()
+        assert delivered[-1] == "closed"
+    finally:
+        host.task.cancel()
+        await asyncio.gather(host.task, return_exceptions=True)
+
+
+async def test_supervisor_stream_rejects_multiple_outstanding_reads():
+    from harnyx_sandbox.sandbox.tool_stream import SupervisorToolStream
+    from harnyx_sandbox.sandbox.worker_protocol import ToolCall, WorkerMessageViolationError
+
+    host = SupervisorToolStream(ToolCall(call_id=1, method="llm_chat", args=[], kwargs={}), AsyncMock(), AsyncMock())
+    host.read()
+    with pytest.raises(WorkerMessageViolationError, match="duplicate"):
+        host.read()
+
+
+@pytest.mark.parametrize("upstream_failure", [False, True])
+async def test_blocked_terminal_delivery_does_not_extend_stream_total_timeout(upstream_failure):
+    from harnyx_sandbox.sandbox.tool_stream import SupervisorToolStream
+    from harnyx_sandbox.sandbox.worker_protocol import ToolCall
+
+    from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatCompletedFrame
+
+    closed = asyncio.Event()
+
+    class Frames:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if upstream_failure:
+                raise RuntimeError("upstream failed")
+            return LlmChatCompletedFrame(result={})
+
+        async def aclose(self):
+            closed.set()
+
+    async def reply(message):
+        if message.kind == "open":
+            host.read()
+        else:
+            await asyncio.Future()
+
+    host = SupervisorToolStream(ToolCall(call_id=1, method="llm_chat", args=[], kwargs={
+        "stream": True, "provider": "chutes", "model": "test", "messages": [{"role": "user", "content": "hi"}],
+        "timeout": .01,
+    }), AsyncMock(return_value=Frames()), reply)
+    async with asyncio.timeout(1):
+        with pytest.raises(TimeoutError):
+            await host.run()
+    assert closed.is_set()
+
+
+async def test_stream_lost_close_ack_cannot_publish_successful_result():
+    from harnyx_sandbox.sandbox.tool_stream import WorkerToolStream
+    from harnyx_sandbox.sandbox.worker_protocol import StreamReply
+
+    from harnyx_miner_sdk.streaming import LlmChatStream
+    from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatCompletedFrame
+    from harnyx_miner_sdk.tools.proxy import ToolInvocationError
+
+    worker = WorkerToolStream(1, AsyncMock(), Mock())
+    worker.receive(StreamReply(call_id=1, kind="open"))
+    stream = LlmChatStream(worker, lambda value: value)
+    read = asyncio.create_task(anext(stream))
+    await asyncio.sleep(0)
+    worker.receive(StreamReply(call_id=1, kind="frame", frame=LlmChatCompletedFrame(result={})))
+    worker.disconnect(ToolInvocationError("connection lost before close acknowledgment"))
+    with pytest.raises(ToolInvocationError, match="connection lost"):
+        await read
+    with pytest.raises(RuntimeError, match="successful stream exhaustion"):
+        _ = stream.result
+
+
+@pytest.mark.parametrize("ending", ["reply", "error", "disconnect"])
+async def test_cancelled_worker_call_releases_capacity_only_after_host_completion(ending):
+    """Abandoned calls retain capacity, then free it on replies or connection loss."""
+    from harnyx_sandbox.sandbox.compiler import ConnectionInvoker
+    from harnyx_sandbox.sandbox.worker_protocol import ToolReply, encode
+
+    reader = asyncio.StreamReader()
+    written = asyncio.Event()
+    writer = Mock(write=lambda _: written.set(), drain=AsyncMock())
+    invoker = ConnectionInvoker(reader, writer)
+    invoker.slots = asyncio.Semaphore(1)
+    receiver = asyncio.create_task(invoker.receive())
+    call = asyncio.create_task(invoker.invoke("tooling_info"))
+    try:
+        await written.wait()
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        assert invoker.slots.locked()
+        if ending == "disconnect":
+            reader.feed_eof()
+        else:
+            reader.feed_data(encode(ToolReply(call_id=0, result="ok", error="failed" if ending == "error" else None)))
+        await asyncio.wait_for(invoker.slots.acquire(), 1)
+        assert not invoker.calls
+    finally:
+        reader.feed_eof()
+        await receiver
+
+
+@pytest.mark.parametrize("failure", ["serialization", "cancel_before_send"])
+@pytest.mark.parametrize("stream", [False, True])
+async def test_unsent_worker_call_does_not_leak_capacity(failure, stream):
+    """Local send failures must leave capacity available without a host reply."""
+    from harnyx_sandbox.sandbox.compiler import ConnectionInvoker
+
+    writer = Mock(drain=AsyncMock())
+    invoker = ConnectionInvoker(asyncio.StreamReader(), writer)
+    invoker.slots = asyncio.Semaphore(1)
+
+    async def invoke():
+        kwargs = {"temperature": float("nan")} if failure == "serialization" else {}
+        if stream:
+            return await invoker.invoke_llm_chat_stream(kwargs=kwargs)
+        return await invoker.invoke("tooling_info", kwargs=kwargs)
+
+    if failure == "serialization":
+        with pytest.raises(ValueError):
+            await asyncio.wait_for(invoke(), 1)
+    else:
+        await invoker.write_lock.acquire()
+        call = asyncio.create_task(invoke())
+        await asyncio.sleep(0)
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        invoker.write_lock.release()
+    await asyncio.wait_for(invoker.slots.acquire(), 1)
+    assert not invoker.calls
+    assert not invoker.streams
+    writer.write.assert_not_called()

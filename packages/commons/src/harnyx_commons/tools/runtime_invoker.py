@@ -1196,6 +1196,7 @@ class RuntimeToolInvoker(ToolInvoker):
             thinking=normalized.thinking,
             extra=invocation.provider_extra_payload(),
             on_provider_dispatch=None if context is None else context.on_provider_dispatch,
+            on_output=context.on_output if context is not None and invocation.stream else None,
             use_case="tool_runtime_invoker",
             retry_policy=RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0.0),
             include_payloads_in_observability=not _uses_platform_credentials(context),

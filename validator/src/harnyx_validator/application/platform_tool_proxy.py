@@ -216,6 +216,7 @@ class PlatformToolProxyProxyToolInvoker(ToolInvoker):
             args=tuple(args),
             kwargs=dict(kwargs),
             transport_timeout_seconds=PLATFORM_TOOL_PROXY_EXECUTE_TRANSPORT_TIMEOUT_SECONDS,
+            **({"on_output": context.on_output} if context.on_output is not None else {}),
         )
         if scope.phase_recorder is not None and previous_phase is not None:
             scope.phase_recorder.mark(previous_phase)

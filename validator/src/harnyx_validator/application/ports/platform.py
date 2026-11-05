@@ -20,6 +20,7 @@ from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.rating_competition import RatingJudgment, RatingWorkPage
 from harnyx_commons.tools.types import ToolName
 from harnyx_miner_sdk.endpoint_protocol import EndpointCallbackAcknowledgement, EndpointDelegation
+from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatOutputSink
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskWorkAssignment,
     PlatformOwnedTaskExecution,
@@ -127,6 +128,7 @@ class PlatformToolProxyPlatformPort(Protocol):
         args: tuple[JsonValue, ...],
         kwargs: dict[str, JsonValue],
         transport_timeout_seconds: float,
+        on_output: LlmChatOutputSink | None = None,
     ) -> PlatformToolProxyToolResult:
         """Execute a provider-backed tool through the platform tool proxy."""
         ...

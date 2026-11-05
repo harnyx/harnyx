@@ -37,6 +37,7 @@ from harnyx_commons.llm.schema import (
 )
 from harnyx_commons.llm.timeout import record_output_progress, streaming_transport_timeout
 from harnyx_miner_sdk.llm import Timeout
+from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatChunk, LlmChatOutputSink
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,7 @@ class ChutesLlmProvider(BaseLlmProvider):
                 self._build_request(current_request),
                 headers,
                 timeout=current_request.timeout,
+                on_output=current_request.on_output,
             ),
             verifier=self._verify_response,
             classify_exception=self._classify_exception,
@@ -99,6 +101,7 @@ class ChutesLlmProvider(BaseLlmProvider):
         headers: Mapping[str, str],
         *,
         timeout: float | Timeout | None,
+        on_output: LlmChatOutputSink | None = None,
     ) -> LlmResponse:
         request_kwargs: dict[str, Any] = {
             "json": payload.model_dump(mode="json", exclude_none=True),
@@ -106,7 +109,7 @@ class ChutesLlmProvider(BaseLlmProvider):
         }
         if timeout is not None:
             request_kwargs["timeout"] = streaming_transport_timeout(timeout)
-        body, ttft_ms = await self._stream_chat_completions(**request_kwargs)
+        body, ttft_ms = await self._stream_chat_completions(on_output=on_output, **request_kwargs)
         llm_response = body.to_llm_response()
         metadata = dict(llm_response.metadata or {})
         metadata.setdefault("raw_response", body.model_dump(mode="python", exclude_none=True))
@@ -147,7 +150,9 @@ class ChutesLlmProvider(BaseLlmProvider):
             ),
         )
 
-    async def _stream_chat_completions(self, **request_kwargs: Any) -> tuple[_ChutesChatResponse, float | None]:
+    async def _stream_chat_completions(
+        self, *, on_output: LlmChatOutputSink | None = None, **request_kwargs: Any
+    ) -> tuple[_ChutesChatResponse, float | None]:
         started_at = time.perf_counter()
         state = OpenAiStreamState()
         reasoning_state = _ChutesReasoningStreamState()
@@ -162,8 +167,9 @@ class ChutesLlmProvider(BaseLlmProvider):
                 invalid_data_message="streamed chat completions returned non-JSON SSE data",
                 invalid_event_message="streamed chat completions SSE event must be a JSON object",
             ):
-                reasoning_output = reasoning_state.merge_event(event)
-                saw_output = state.merge_event(event, reasoning_keys=()) or reasoning_output
+                chunks: list[LlmChatChunk] | None = [] if on_output is not None else None
+                reasoning_output = reasoning_state.merge_event(event, chunks=chunks)
+                saw_output = state.merge_event(event, reasoning_keys=(), chunks=chunks) or reasoning_output
                 try:
                     usage = reasoning_state.normalized_usage_payload(event.usage)
                 except ValidationError:
@@ -179,6 +185,9 @@ class ChutesLlmProvider(BaseLlmProvider):
                     record_output_progress()
                     if ttft_ms is None:
                         ttft_ms = round((time.perf_counter() - started_at) * 1000, 2)
+                if on_output is not None:
+                    for chunk in chunks or ():
+                        await on_output(chunk)
         return _ChutesChatResponse.from_stream_state(state, reasoning_state=reasoning_state), ttft_ms
 
     def _log_stream_ttft(self, *, model: str, response_id: str, ttft_ms: float | None) -> None:

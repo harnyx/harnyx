@@ -22,6 +22,7 @@ from harnyx_commons.llm.providers.thinking import resolve_request_thinking
 from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
 from harnyx_miner_sdk.llm import Timeout
+from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatOutputSink
 
 SAYGM_BASE_URL = "https://api.saygm.com/v1"
 _stream_output_started: ContextVar[bool] = ContextVar("saygm_stream_output_started", default=False)
@@ -99,10 +100,14 @@ class SayGmLlmProvider(OpenAiCompatibleLlmProvider):
             _stream_output_started.reset(token)
 
     async def _request_chat(
-        self, payload: _OpenAiCompatibleChatRequest, *, timeout: float | Timeout | None
+        self,
+        payload: _OpenAiCompatibleChatRequest,
+        *,
+        timeout: float | Timeout | None,
+        on_output: LlmChatOutputSink | None = None,
     ) -> LlmResponse:
         _stream_output_started.set(False)
-        response = await super()._request_chat(payload, timeout=timeout)
+        response = await super()._request_chat(payload, timeout=timeout, on_output=on_output)
         # A completed response is no longer an interrupted stream when a later backoff expires.
         _stream_output_started.set(False)
         return response

@@ -15,6 +15,7 @@ from harnyx_miner_sdk.llm import (
     LlmThinkingConfig,
     Timeout,
 )
+from harnyx_miner_sdk.streaming import LlmChatStream
 from harnyx_miner_sdk.tools.decision_models import (
     DecisionContext,
     DecisionProviderName,
@@ -42,6 +43,7 @@ from harnyx_miner_sdk.tools.llm_chat_models import (
     LlmChatThinking,
     LlmChatToolChoice,
 )
+from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatChunk
 from harnyx_miner_sdk.tools.llm_provider_extra import (
     AiGatewayExtra,
     OpenRouterExtra,
@@ -300,13 +302,19 @@ async def rerank(
     timeout: ToolInvocationTimeout | None = None,
 ) -> ToolCallResponse[RerankResponse]:
     """Rank candidate text documents without creating new citation sources."""
-    request = RerankRequest.model_validate({
-        "provider": provider, "model": model, "query": query, "documents": list(documents),
-        "top_n": top_n, "timeout": timeout,
-        "provider_extra": (
-            provider_extra.to_request_extra() if isinstance(provider_extra, OpenRouterExtra) else provider_extra
-        ),
-    })
+    request = RerankRequest.model_validate(
+        {
+            "provider": provider,
+            "model": model,
+            "query": query,
+            "documents": list(documents),
+            "top_n": top_n,
+            "timeout": timeout,
+            "provider_extra": (
+                provider_extra.to_request_extra() if isinstance(provider_extra, OpenRouterExtra) else provider_extra
+            ),
+        }
+    )
     raw = await _current_tool_invoker().invoke(
         "rerank", args=(), kwargs=request.model_dump(mode="json", exclude_none=True)
     )
@@ -361,6 +369,7 @@ async def llm_chat(
     thinking: Mapping[str, Any] | LlmChatThinking | LlmThinkingConfig | None = None,
     provider_extra: Mapping[str, Any] | OpenRouterExtra | None = None,
     timeout: float | Timeout | None = None,
+    stream: Literal[False] = False,
 ) -> LlmChatResult: ...
 
 
@@ -379,6 +388,7 @@ async def llm_chat(
     thinking: Mapping[str, Any] | LlmChatThinking | LlmThinkingConfig | None = None,
     provider_extra: Mapping[str, Any] | AiGatewayExtra | None = None,
     timeout: float | Timeout | None = None,
+    stream: Literal[False] = False,
 ) -> LlmChatResult: ...
 
 
@@ -397,7 +407,122 @@ async def llm_chat(
     thinking: Mapping[str, Any] | LlmChatThinking | LlmThinkingConfig | None = None,
     provider_extra: None = None,
     timeout: float | Timeout | None = None,
+    stream: Literal[False] = False,
 ) -> LlmChatResult: ...
+
+
+@overload
+async def llm_chat(
+    *,
+    provider: Literal["openrouter"],
+    messages: Sequence[Mapping[str, Any] | LlmChatMessage | LlmMessage],
+    model: str,
+    temperature: float | None = None,
+    max_output_tokens: int | None = None,
+    max_tokens: int | None = None,
+    tools: Sequence[Mapping[str, Any] | LlmChatFunctionTool] | None = None,
+    tool_choice: LlmChatToolChoice | Mapping[str, Any] | None = None,
+    parallel_tool_calls: bool | None = None,
+    thinking: Mapping[str, Any] | LlmChatThinking | LlmThinkingConfig | None = None,
+    provider_extra: Mapping[str, Any] | OpenRouterExtra | None = None,
+    timeout: float | Timeout | None = None,
+    stream: Literal[True],
+) -> LlmChatStream: ...
+
+
+@overload
+async def llm_chat(
+    *,
+    provider: Literal["ai_gateway"],
+    messages: Sequence[Mapping[str, Any] | LlmChatMessage | LlmMessage],
+    model: str,
+    temperature: float | None = None,
+    max_output_tokens: int | None = None,
+    max_tokens: int | None = None,
+    tools: Sequence[Mapping[str, Any] | LlmChatFunctionTool] | None = None,
+    tool_choice: LlmChatToolChoice | Mapping[str, Any] | None = None,
+    parallel_tool_calls: bool | None = None,
+    thinking: Mapping[str, Any] | LlmChatThinking | LlmThinkingConfig | None = None,
+    provider_extra: Mapping[str, Any] | AiGatewayExtra | None = None,
+    timeout: float | Timeout | None = None,
+    stream: Literal[True],
+) -> LlmChatStream: ...
+
+
+@overload
+async def llm_chat(
+    *,
+    provider: Literal["chutes", "saygm", "cloudflare"],
+    messages: Sequence[Mapping[str, Any] | LlmChatMessage | LlmMessage],
+    model: str,
+    temperature: float | None = None,
+    max_output_tokens: int | None = None,
+    max_tokens: int | None = None,
+    tools: Sequence[Mapping[str, Any] | LlmChatFunctionTool] | None = None,
+    tool_choice: LlmChatToolChoice | Mapping[str, Any] | None = None,
+    parallel_tool_calls: bool | None = None,
+    thinking: Mapping[str, Any] | LlmChatThinking | LlmThinkingConfig | None = None,
+    provider_extra: None = None,
+    timeout: float | Timeout | None = None,
+    stream: Literal[True],
+) -> LlmChatStream: ...
+
+
+@overload
+async def llm_chat(
+    *,
+    provider: Literal["openrouter"],
+    messages: Sequence[Mapping[str, Any] | LlmChatMessage | LlmMessage],
+    model: str,
+    temperature: float | None = None,
+    max_output_tokens: int | None = None,
+    max_tokens: int | None = None,
+    tools: Sequence[Mapping[str, Any] | LlmChatFunctionTool] | None = None,
+    tool_choice: LlmChatToolChoice | Mapping[str, Any] | None = None,
+    parallel_tool_calls: bool | None = None,
+    thinking: Mapping[str, Any] | LlmChatThinking | LlmThinkingConfig | None = None,
+    provider_extra: Mapping[str, Any] | OpenRouterExtra | None = None,
+    timeout: float | Timeout | None = None,
+    stream: bool,
+) -> LlmChatResult | LlmChatStream: ...
+
+
+@overload
+async def llm_chat(
+    *,
+    provider: Literal["ai_gateway"],
+    messages: Sequence[Mapping[str, Any] | LlmChatMessage | LlmMessage],
+    model: str,
+    temperature: float | None = None,
+    max_output_tokens: int | None = None,
+    max_tokens: int | None = None,
+    tools: Sequence[Mapping[str, Any] | LlmChatFunctionTool] | None = None,
+    tool_choice: LlmChatToolChoice | Mapping[str, Any] | None = None,
+    parallel_tool_calls: bool | None = None,
+    thinking: Mapping[str, Any] | LlmChatThinking | LlmThinkingConfig | None = None,
+    provider_extra: Mapping[str, Any] | AiGatewayExtra | None = None,
+    timeout: float | Timeout | None = None,
+    stream: bool,
+) -> LlmChatResult | LlmChatStream: ...
+
+
+@overload
+async def llm_chat(
+    *,
+    provider: Literal["chutes", "saygm", "cloudflare"],
+    messages: Sequence[Mapping[str, Any] | LlmChatMessage | LlmMessage],
+    model: str,
+    temperature: float | None = None,
+    max_output_tokens: int | None = None,
+    max_tokens: int | None = None,
+    tools: Sequence[Mapping[str, Any] | LlmChatFunctionTool] | None = None,
+    tool_choice: LlmChatToolChoice | Mapping[str, Any] | None = None,
+    parallel_tool_calls: bool | None = None,
+    thinking: Mapping[str, Any] | LlmChatThinking | LlmThinkingConfig | None = None,
+    provider_extra: None = None,
+    timeout: float | Timeout | None = None,
+    stream: bool,
+) -> LlmChatResult | LlmChatStream: ...
 
 
 async def llm_chat(
@@ -414,11 +539,13 @@ async def llm_chat(
     thinking: Mapping[str, Any] | LlmChatThinking | LlmThinkingConfig | None = None,
     provider_extra: Mapping[str, Any] | ProviderExtra | None = None,
     timeout: float | Timeout | None = None,
+    stream: bool = False,
     **params: Any,
-) -> LlmChatResult:
+) -> LlmChatResult | LlmChatStream:
     """Invoke the validator-hosted LLM chat tool and return its response payload."""
 
     payload_raw: dict[str, object] = {
+        "stream": stream,
         "provider": provider,
         "model": model,
         "messages": [_llm_chat_message_input(message) for message in messages],
@@ -451,11 +578,19 @@ async def llm_chat(
     provider_extra_payload = request.provider_extra_payload()
     if provider_extra_payload is not None:
         payload["provider_extra"] = provider_extra_payload
+    if request.stream:
+        frames = await _current_tool_invoker().invoke_llm_chat_stream(kwargs=payload)
+        return LlmChatStream(frames, _decode_llm_chat_result)
+    payload.pop("stream")
     raw_response = await _current_tool_invoker().invoke(
         "llm_chat",
         args=(),
         kwargs=payload,
     )
+    return _decode_llm_chat_result(raw_response)
+
+
+def _decode_llm_chat_result(raw_response: object) -> LlmChatResult:
     dto = _parse_execute_response(raw_response)
     response_payload = _require_response_mapping(dto.response, label="llm_chat response missing 'response' payload")
     llm = LlmResponse.from_payload(response_payload)
@@ -508,5 +643,7 @@ __all__ = [
     "ToolCallResponse",
     "EmbedTextResponse",
     "LlmChatResult",
+    "LlmChatStream",
+    "LlmChatChunk",
     "TestToolResponse",
 ]

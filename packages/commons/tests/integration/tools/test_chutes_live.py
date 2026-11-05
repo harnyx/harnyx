@@ -17,16 +17,22 @@ class _StructuredReply(BaseModel):
     number: int
 
 
-async def test_chutes_liveness_live() -> None:
+async def test_chutes_streaming_live() -> None:
     settings = LlmSettings()
     provider = build_miner_paid_llm_provider(
         provider="chutes",
         api_key=settings.chutes_api_key,
         llm_settings=settings,
     )
+    chunks = []
+
+    async def capture_output(chunk):
+        chunks.append(chunk)
+
     try:
         response = await provider.invoke(
             LlmRequest(
+                on_output=capture_output,
                 provider="chutes",
                 model="google/gemma-4-31B-turbo-TEE",
                 messages=(
@@ -44,6 +50,8 @@ async def test_chutes_liveness_live() -> None:
     finally:
         await provider.aclose()
 
+    assert chunks
+    assert response.usage.total_tokens > 0
     assert response.raw_text.strip()
 
 

@@ -3,7 +3,10 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from harnyx_miner_sdk.streaming import LlmChatFrameStream
 
 
 class ToolInvoker(Protocol):
@@ -16,6 +19,8 @@ class ToolInvoker(Protocol):
         args: Sequence[Any] | None = None,
         kwargs: Mapping[str, Any] | None = None,
     ) -> Any: ...
+
+    async def invoke_llm_chat_stream(self, *, kwargs: Mapping[str, Any]) -> LlmChatFrameStream: ...
 
 
 _ACTIVE_INVOKER: ContextVar[ToolInvoker | None] = ContextVar("tool_invoker", default=None)

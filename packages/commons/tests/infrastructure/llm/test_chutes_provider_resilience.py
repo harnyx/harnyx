@@ -1016,3 +1016,22 @@ def test_build_payload_accepts_structured_output_mode() -> None:
             "schema": _JudgeDecision.model_json_schema(),
         },
     }
+
+
+def test_stream_reasoning_switches_from_fallback_to_preferred_thoughts() -> None:
+    from harnyx_commons.llm.providers.chutes_codec import _ChutesReasoningObject, _ChutesReasoningStreamState
+    from harnyx_commons.llm.providers.openai_stream import _OpenAiStreamEvent
+
+    state = _ChutesReasoningStreamState()
+    chunks = []
+    for reasoning in ("fallback", {"thought_text_parts": ["preferred"]}, {"thought_text_parts": ["next"]}):
+        state.merge_event(_OpenAiStreamEvent.model_validate({
+            "choices": [{"index": 0, "delta": {"reasoning": reasoning}}],
+        }), chunks=chunks)
+    assert [chunk.reasoning.operation for chunk in chunks] == ["append", "replace", "append"]
+    reconstructed = ""
+    for chunk in chunks:
+        update = chunk.reasoning
+        reconstructed = reconstructed + update.value if update.operation == "append" else update.value
+    assert reconstructed == _ChutesReasoningObject.from_stream_state(state.choice(0)).reasoning_text
+    assert reconstructed == "preferred\n\nnext"

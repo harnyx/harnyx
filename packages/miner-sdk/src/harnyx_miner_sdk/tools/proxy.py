@@ -12,6 +12,7 @@ import httpx
 
 from harnyx_miner_sdk.json_types import JsonValue
 from harnyx_miner_sdk.sandbox_headers import PLATFORM_TOKEN_HEADER, SESSION_ID_HEADER
+from harnyx_miner_sdk.tools.llm_chat_stream_models import LLM_CHAT_FRAME_ADAPTER, LlmChatFrame
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,30 @@ class ToolProxy:
             raise ToolInvocationError(f"tool invocation failed: {exc}") from exc
         return cast(JsonValue, response.json())
 
+    async def invoke_llm_chat_stream(self, *, kwargs: Mapping[str, JsonValue]) -> ToolResponseStream:
+        request = self._client.build_request(
+            "POST",
+            self._endpoint,
+            json={"tool": "llm_chat", "args": [], "kwargs": dict(kwargs)},
+            headers={DEFAULT_TOKEN_HEADER: self._token, SESSION_ID_HEADER: self._session_id},
+            timeout=self._timeout,
+        )
+        response: httpx.Response | None = None
+        try:
+            response = await self._client.send(request, stream=True)
+            if response.is_error:
+                await response.aread()
+                response.raise_for_status()
+            if response.headers.get("content-type", "").split(";", 1)[0] != "text/event-stream":
+                raise ToolInvocationError("host does not support llm_chat streaming")
+            return ToolResponseStream(response)
+        except BaseException as exc:
+            if response is not None:
+                await response.aclose()
+            if isinstance(exc, httpx.HTTPError):
+                raise ToolInvocationError(f"tool invocation failed: {exc}") from exc
+            raise
+
     def close(self) -> None:
         raise RuntimeError("ToolProxy is async-only; use 'await tool_proxy.aclose()'")
 
@@ -117,6 +142,34 @@ class ToolProxy:
 
     async def __aexit__(self, *exc_info: object) -> None:
         await self.aclose()
+
+
+class ToolResponseStream:
+    """Own the HTTP response even before the first iterator read."""
+
+    def __init__(self, response: httpx.Response) -> None:
+        self._response = response
+        self._lines = response.aiter_lines()
+
+    def __aiter__(self) -> ToolResponseStream:
+        return self
+
+    async def __anext__(self) -> LlmChatFrame:
+        data: list[str] = []
+        try:
+            async for line in self._lines:
+                if not line and data:
+                    return LLM_CHAT_FRAME_ADAPTER.validate_json("\n".join(data))
+                if line.startswith("data:"):
+                    data.append(line[5:].lstrip())
+            # A terminal frame must be delimited, not a truncated final line.
+            raise StopAsyncIteration
+        except (httpx.HTTPError, ValueError) as exc:
+            await self.aclose()
+            raise ToolInvocationError("invalid or interrupted llm_chat stream") from exc
+
+    async def aclose(self) -> None:
+        await self._response.aclose()
 
 
 def _summarize_error_response(response: httpx.Response) -> str:

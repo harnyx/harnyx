@@ -1442,3 +1442,366 @@ async def test_retirement_closes_inflight_compiler_command_gate(harness, command
     compiler.send_lock.release()
     with pytest.raises(harness_module.SandboxCleanupUnconfirmedError):
         await command
+
+
+STREAMING_SOURCE = '''
+import asyncio
+from harnyx_miner_sdk.api import llm_chat
+from harnyx_miner_sdk.decorators import entrypoint
+from harnyx_miner_sdk._internal.tool_invoker import _current_tool_invoker
+from harnyx_miner_sdk.tools.proxy import ToolInvocationError
+
+@entrypoint("streaming")
+async def streaming(request: dict[str, object]) -> dict[str, object]:
+    async def open_stream():
+        return await llm_chat(provider="chutes", model="test",
+            messages=[{"role":"user", "content":"hello"}],
+            timeout=request.get("timeout", 3.0), stream=True)
+    mode = request.get("mode", "complete")
+    if mode == "cancel_open":
+        opening = asyncio.create_task(open_stream())
+        await asyncio.sleep(.05)
+        opening.cancel()
+        try:
+            await opening
+        except asyncio.CancelledError:
+            pass
+        return {"cancelled": True}
+    streams = [await open_stream() for _ in range(request.get("count", 1))]
+    if mode == "abandon":
+        return {"abandoned": len(streams)}
+    if mode == "idle_timeout":
+        await asyncio.sleep(.15)
+        failures = 0
+        for stream in streams:
+            try:
+                await anext(stream)
+            except ToolInvocationError:
+                failures += 1
+            await stream.aclose()
+        invoker = _current_tool_invoker()
+        return {"failures": failures, "retained": len(invoker.streams)}
+    if mode == "close_read":
+        pending = asyncio.create_task(anext(streams[0]))
+        await asyncio.sleep(.02)
+        await streams[0].aclose()
+        result = await asyncio.gather(pending, return_exceptions=True)
+        return {"closed": isinstance(result[0], Exception)}
+    if mode == "parallel":
+        # An unread stream must not block another stream or an ordinary tool reply.
+        chunk = await anext(streams[-1])
+        ordinary = await _current_tool_invoker().invoke("test_tool")
+        await asyncio.gather(*(stream.aclose() for stream in streams))
+        return {"text": chunk.text.value, "ordinary": ordinary}
+    chunks = await asyncio.gather(*(anext(stream) for stream in streams))
+    if len(streams) < 20:
+        await _current_tool_invoker().invoke("observed")
+    for stream in streams:
+        async with stream:
+            async for chunk in stream:
+                pass
+        await stream.aclose()
+    return {"texts": [chunk.text.value for chunk in chunks],
+            "receipts": [stream.result.receipt_id for stream in streams]}
+'''
+
+
+def stream_result():
+    return {
+        "receipt_id": "settled-stream",
+        "response": {"id": "response-1", "choices": [], "usage": {}},
+        "results": [], "result_policy": "log_only",
+        "budget": {"session_budget_usd": 1.0, "session_hard_limit_usd": 1.0,
+                   "session_used_budget_usd": 0.0, "session_remaining_budget_usd": 1.0},
+    }
+
+
+@pytest.mark.parametrize("mode,count", [("complete", 1), ("complete", 20), ("parallel", 2),
+                                        ("abandon", 2), ("idle_timeout", 20), ("close_read", 1),
+                                        ("cancel_open", 1)])
+async def test_real_worker_stream_lifecycle_and_capacity(tmp_path, mode, count):
+    """Real miner SDK consumption must cross IPC, including full capacity and abandoned streams."""
+    from harnyx_miner_sdk.tools.llm_chat_stream_models import (
+        LlmChatChunk,
+        LlmChatCompletedFrame,
+        LlmChatOutputFrame,
+        TextUpdate,
+    )
+
+    path = tmp_path / "streaming.py"
+    path.write_text(STREAMING_SOURCE)
+    observed = asyncio.Event()
+    opened, closed = [], []
+    opening_cancelled = asyncio.Event()
+
+    class Frames:
+        def __init__(self):
+            self.first = True
+            opened.append(self)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if mode == "close_read":
+                await asyncio.Future()
+            if self.first:
+                self.first = False
+                return LlmChatOutputFrame(chunk=LlmChatChunk(
+                    choice_index=0, text=TextUpdate(operation="append", value="early")))
+            await observed.wait()
+            return LlmChatCompletedFrame(result=stream_result())
+
+        async def aclose(self):
+            closed.append(self)
+
+    class Proxy:
+        async def invoke_llm_chat_stream(self, *, kwargs):
+            if mode == "cancel_open":
+                try:
+                    await asyncio.Future()
+                finally:
+                    opening_cancelled.set()
+            return Frames()
+
+        async def invoke(self, method, *, args=None, kwargs=None):
+            if method == "observed":
+                observed.set()
+            return "ordinary-result"
+
+        async def aclose(self):
+            pass
+
+    # At full stream capacity, the miner cannot open the observation tool before consuming
+    # terminals. Release from the test once every upstream was read once instead.
+    async def release_full_window():
+        while len(opened) < 20 or any(item.first for item in opened):
+            await asyncio.sleep(.001)
+        observed.set()
+
+    runtime = SandboxHarness(artifact_path=str(path), tool_factory=lambda *_: Proxy())
+    release = asyncio.create_task(release_full_window()) if mode == "complete" and count == 20 else None
+    try:
+        async with asyncio.timeout(8):
+            result = await runtime.invoke("streaming", body({
+                "mode": mode, "count": count, "timeout": .05 if mode == "idle_timeout" else 3.0,
+            }))
+        if mode == "complete":
+            assert result == {"texts": ["early"] * count, "receipts": ["settled-stream"] * count}
+        elif mode == "parallel":
+            assert result == {"text": "early", "ordinary": "ordinary-result"}
+        elif mode == "idle_timeout":
+            assert result == {"failures": count, "retained": 0}
+        elif mode == "cancel_open":
+            assert result == {"cancelled": True}
+            assert opening_cancelled.is_set()
+        elif mode == "close_read":
+            assert result == {"closed": True}
+        assert len(opened) == len(closed)
+        assert len({id(item) for item in closed}) == len(closed)
+    finally:
+        if release is not None:
+            release.cancel()
+            await asyncio.gather(release, return_exceptions=True)
+        await runtime.close()
+
+
+@pytest.mark.parametrize("control", ["unknown_read", "unknown_close", "duplicate_read"])
+async def test_invalid_stream_controls_fail_only_the_owning_query(tmp_path, control):
+    path = tmp_path / "controls.py"
+    path.write_text('''
+import asyncio
+from harnyx_miner_sdk.api import llm_chat
+from harnyx_miner_sdk.decorators import entrypoint
+from harnyx_miner_sdk._internal.tool_invoker import _current_tool_invoker
+from harnyx_sandbox.sandbox.worker_protocol import ToolStreamRead, ToolStreamClose, send
+@entrypoint("probe")
+async def probe(request: dict[str, object]) -> dict[str, object]:
+    if not request:
+        return {"healthy": True}
+    invoker = _current_tool_invoker()
+    if request["control"] == "duplicate_read":
+        stream = await llm_chat(provider="chutes", model="test", stream=True,
+            messages=[{"role":"user", "content":"hello"}], timeout=2.0)
+        await send(invoker.writer, ToolStreamRead(call_id=0))
+        await send(invoker.writer, ToolStreamRead(call_id=0))
+    else:
+        cls = ToolStreamRead if request["control"] == "unknown_read" else ToolStreamClose
+        await send(invoker.writer, cls(call_id=123))
+    await asyncio.Future()
+''')
+    closed = asyncio.Event()
+
+    class Frames:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.Future()
+
+        async def aclose(self):
+            closed.set()
+
+    class Proxy:
+        async def invoke_llm_chat_stream(self, *, kwargs):
+            return Frames()
+
+        async def aclose(self):
+            pass
+
+    runtime = SandboxHarness(artifact_path=str(path), tool_factory=lambda *_: Proxy())
+    try:
+        async with asyncio.timeout(5):
+            failed, healthy = await asyncio.gather(
+                runtime.invoke("probe", body({"control": control})),
+                runtime.invoke("probe", body()), return_exceptions=True,
+            )
+        assert isinstance(failed, HTTPException)
+        assert failed.detail["exception"] == "WorkerMessageViolationError"
+        assert healthy == {"healthy": True}
+        if control == "duplicate_read":
+            assert closed.is_set()
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.parametrize("count", [18, 19])
+async def test_cancelled_ordinary_call_keeps_stream_controls_serviceable(tmp_path, count):
+    """A replacement call must not block stream closure behind abandoned host work."""
+    from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatChunk, LlmChatOutputFrame, TextUpdate
+
+    path = tmp_path / "agent.py"
+    path.write_text('''
+import asyncio
+from harnyx_miner_sdk.api import llm_chat
+from harnyx_miner_sdk.decorators import entrypoint
+from harnyx_miner_sdk._internal.tool_invoker import _current_tool_invoker
+@entrypoint("probe")
+async def probe(request: dict[str, object]) -> dict[str, object]:
+    invoker = _current_tool_invoker()
+    streams = [await llm_chat(provider="chutes", model="test", stream=True,
+        timeout=4.0, messages=[{"role":"user","content":"hello"}]) for _ in range(request["count"])]
+    old = asyncio.create_task(invoker.invoke("blocked"))
+    await asyncio.sleep(0)
+    old.cancel()
+    await asyncio.gather(old, return_exceptions=True)
+    replacement = asyncio.create_task(invoker.invoke("replacement"))
+    await asyncio.sleep(0)
+    chunk = await anext(streams[0])
+    await asyncio.gather(*(stream.aclose() for stream in streams))
+    await replacement
+    return {"text": chunk.text.value}
+''')
+    started, release, streams_closed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    closed = reads = 0
+
+    class Frames:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            nonlocal reads
+            reads += 1
+            return LlmChatOutputFrame(chunk=LlmChatChunk(
+                choice_index=0, text=TextUpdate(operation="append", value="early"),
+            ))
+
+        async def aclose(self):
+            nonlocal closed
+            closed += 1
+            if closed == count:
+                streams_closed.set()
+
+    class Proxy:
+        async def invoke_llm_chat_stream(self, *, kwargs):
+            return Frames()
+
+        async def invoke(self, method, *, args=None, kwargs=None):
+            if method == "blocked":
+                started.set()
+                await release.wait()
+            return "ok"
+
+        async def aclose(self):
+            pass
+
+    runtime = SandboxHarness(artifact_path=str(path), tool_factory=lambda *_: Proxy())
+    query = asyncio.create_task(runtime.invoke("probe", body({"count": count})))
+    try:
+        async with asyncio.timeout(3):
+            await started.wait()
+            await streams_closed.wait()
+            assert reads == 1
+            assert not release.is_set()
+            release.set()
+            assert await query == {"text": "early"}
+    finally:
+        release.set()
+        await asyncio.gather(query, return_exceptions=True)
+        await runtime.close()
+
+
+async def test_unsent_stream_failure_preserves_query_and_other_calls(tmp_path):
+    """Local serialization failures cannot kill sibling streams or exhaust admission."""
+    from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatChunk, LlmChatOutputFrame, TextUpdate
+
+    path = tmp_path / "agent.py"
+    path.write_text('''
+from harnyx_miner_sdk.api import llm_chat
+from harnyx_miner_sdk.decorators import entrypoint
+from harnyx_miner_sdk._internal.tool_invoker import _current_tool_invoker
+@entrypoint("probe")
+async def probe(request: dict[str, object]) -> dict[str, object]:
+    kwargs = {"provider": "chutes", "model": "test", "stream": True,
+              "messages": [{"role": "user", "content": "hi"}]}
+    healthy = await llm_chat(**kwargs)
+    caught = 0
+    # More failures than the 20-call admission limit expose leaked slots.
+    for _ in range(21):
+        try:
+            await llm_chat(**kwargs, temperature=float("nan"))
+        except ValueError:
+            caught += 1
+    chunk = await anext(healthy)
+    await healthy.aclose()
+    ordinary = await _current_tool_invoker().invoke("tooling_info")
+    return {"caught": caught, "text": chunk.text.value, "ordinary": ordinary}
+''')
+    opened = closed = 0
+    ordinary_calls = []
+
+    class Frames:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            return LlmChatOutputFrame(chunk=LlmChatChunk(
+                choice_index=0, text=TextUpdate(operation="append", value="healthy"),
+            ))
+
+        async def aclose(self):
+            nonlocal closed
+            closed += 1
+
+    class Proxy:
+        async def invoke_llm_chat_stream(self, *, kwargs):
+            nonlocal opened
+            opened += 1
+            return Frames()
+
+        async def invoke(self, method, *, args=None, kwargs=None):
+            ordinary_calls.append(method)
+            return "ok"
+
+        async def aclose(self):
+            pass
+
+    runtime = SandboxHarness(artifact_path=str(path), tool_factory=lambda *_: Proxy())
+    try:
+        async with asyncio.timeout(5):
+            result = await runtime.invoke("probe", body())
+        assert result == {"caught": 21, "text": "healthy", "ordinary": "ok"}
+        assert opened == closed == 1
+        assert ordinary_calls == ["tooling_info"]
+    finally:
+        await runtime.close()

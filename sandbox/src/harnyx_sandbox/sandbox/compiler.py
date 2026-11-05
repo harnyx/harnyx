@@ -30,12 +30,16 @@ from harnyx_miner_sdk._internal.tool_invoker import bind_tool_invoker
 from harnyx_miner_sdk.context import ContextSnapshot
 from harnyx_miner_sdk.decorators import get_entrypoint
 from harnyx_miner_sdk.tools.proxy import ToolInvocationError
+from harnyx_sandbox.sandbox.tool_stream import WorkerToolStream
 from harnyx_sandbox.sandbox.worker_protocol import (
+    HOST_REPLY,
     MAX_PENDING_WORKER_TOOL_CALLS,
     Invocation,
     QueryResult,
+    StreamReply,
     ToolCall,
-    ToolReply,
+    ToolStreamClose,
+    ToolStreamRead,
     WorkerError,
     encode,
     load_json,
@@ -244,6 +248,7 @@ class ConnectionInvoker:
         self.reader = reader
         self.writer = writer
         self.calls: dict[int, asyncio.Future[Any]] = {}
+        self.streams: dict[int, WorkerToolStream] = {}
         self.next_call = 0
         self.write_lock = asyncio.Lock()
         self.slots = asyncio.Semaphore(MAX_PENDING_WORKER_TOOL_CALLS)
@@ -251,25 +256,81 @@ class ConnectionInvoker:
     async def invoke(
         self, method: str, *, args: Sequence[Any] | None = None, kwargs: Mapping[str, Any] | None = None
     ) -> Any:
-        async with self.slots:
-            call_id = self.next_call
-            self.next_call += 1
-            future = asyncio.get_running_loop().create_future()
-            self.calls[call_id] = future
-            try:
-                async with self.write_lock:
-                    await send(
-                        self.writer,
-                        ToolCall(call_id=call_id, method=method, args=list(args or ()), kwargs=dict(kwargs or {})),
-                    )
-                return await future
-            finally:
-                self.calls.pop(call_id, None)
+        await self.slots.acquire()
+        call_id = self.next_call
+        self.next_call += 1
+        future = asyncio.get_running_loop().create_future()
+        self.calls[call_id] = future
+
+        def release(completed: asyncio.Future[Any]) -> None:
+            self.calls.pop(call_id, None)
+            self.slots.release()
+            if not completed.cancelled():
+                completed.exception()  # The miner may have stopped awaiting this call.
+
+        future.add_done_callback(release)
+        sent = False
+        try:
+            frame = encode(ToolCall(call_id=call_id, method=method, args=list(args or ()), kwargs=dict(kwargs or {})))
+            async with self.write_lock:
+                self.writer.write(frame)
+                sent = True
+                await self.writer.drain()
+            # Cancelling a miner await does not stop the accepted host operation.
+            # Keep its slot until the host replies so replacement calls cannot
+            # block the shared receive loop ahead of stream read/close controls.
+            return await asyncio.shield(future)
+        except BaseException:
+            if not sent:
+                future.cancel()
+            raise
+
+    async def invoke_llm_chat_stream(self, *, kwargs: Mapping[str, Any]) -> WorkerToolStream:
+        await self.slots.acquire()
+        call_id = self.next_call
+        self.next_call += 1
+
+        def release() -> None:
+            self.streams.pop(call_id, None)
+            self.slots.release()
+
+        stream = WorkerToolStream(call_id, self._send_stream_control, release)
+        self.streams[call_id] = stream
+        sent = False
+        try:
+            frame = encode(ToolCall(call_id=call_id, method="llm_chat", args=[], kwargs=dict(kwargs)))
+            async with self.write_lock:
+                self.writer.write(frame)
+                sent = True
+                await self.writer.drain()
+            await asyncio.shield(stream.opened)
+            return stream
+        except BaseException:
+            if not sent:
+                release()
+                raise
+            await stream.aclose()
+            # A cancelled opening can receive an error while closure is being joined.
+            if stream.opened.done() and not stream.opened.cancelled():
+                stream.opened.exception()
+            raise
+
+    async def _send_stream_control(self, control: ToolStreamRead | ToolStreamClose) -> None:
+        async with self.write_lock:
+            stream = self.streams[control.call_id]
+            if isinstance(control, ToolStreamRead) and stream.closing:
+                return
+            await send(self.writer, control)
 
     async def receive(self) -> None:
         try:
             while True:
-                reply = ToolReply.model_validate(load_json(await read_frame(self.reader)))
+                reply = HOST_REPLY.validate_python(load_json(await read_frame(self.reader)))
+                if isinstance(reply, StreamReply):
+                    stream = self.streams.get(reply.call_id)
+                    if stream is not None:
+                        stream.receive(reply)
+                    continue
                 future = self.calls.get(reply.call_id)
                 if future is not None and not future.done():
                     if reply.error is not None:
@@ -280,6 +341,8 @@ class ConnectionInvoker:
             for future in self.calls.values():
                 if not future.done():
                     future.set_exception(exc)
+            for stream in tuple(self.streams.values()):
+                stream.disconnect(exc)
 
 
 def initialize_module(code: types.CodeType, path: str) -> WorkerError | None:

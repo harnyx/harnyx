@@ -10,6 +10,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
+from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatFrame
+
 MAX_PENDING_WORKER_TOOL_CALLS = 20
 
 MAX_FRAME_BYTES = 64 * 1024 * 1024
@@ -63,8 +65,25 @@ class ToolReply(Message):
     error: str | None = None
 
 
-WorkerMessage = Annotated[ToolCall | QueryResult, Field(discriminator="kind")]
+class ToolStreamRead(Message):
+    kind: Literal["stream_read"] = "stream_read"
+    call_id: int = Field(ge=0)
+
+
+class ToolStreamClose(Message):
+    kind: Literal["stream_close"] = "stream_close"
+    call_id: int = Field(ge=0)
+
+
+class StreamReply(Message):
+    call_id: int
+    kind: Literal["open", "frame", "closed"]
+    frame: LlmChatFrame | None = None
+
+
+WorkerMessage = Annotated[ToolCall | ToolStreamRead | ToolStreamClose | QueryResult, Field(discriminator="kind")]
 WORKER_MESSAGE = TypeAdapter(WorkerMessage)
+HOST_REPLY = TypeAdapter(ToolReply | StreamReply)
 
 
 def load_json(payload: bytes) -> object:

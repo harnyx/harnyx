@@ -12,9 +12,10 @@ from urllib.parse import quote
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, Security, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import APIKeyHeader
 from pydantic import ValidationError
+from starlette.types import Receive, Scope, Send
 
 from harnyx_commons.bittensor import VerificationError
 from harnyx_commons.domain.miner_task import ScoreBreakdown
@@ -35,6 +36,7 @@ from harnyx_commons.tools.dto import ToolInvocationRequest
 from harnyx_commons.tools.executor import ToolExecutor, execute_tool_with_concurrency_permit
 from harnyx_commons.tools.http_models import ToolExecuteResponseDTO
 from harnyx_commons.tools.http_serialization import serialize_tool_execute_response
+from harnyx_commons.tools.llm_chat_stream import LlmChatExecutionStream, open_tool_stream, requests_llm_chat_stream
 from harnyx_commons.tools.token_semaphore import ToolConcurrencyLimiter
 from harnyx_miner_sdk.endpoint_protocol import (
     ENDPOINT_CALLBACK_CONTEXT_HEADER,
@@ -42,6 +44,7 @@ from harnyx_miner_sdk.endpoint_protocol import (
     EndpointCallbackAcknowledgement,
 )
 from harnyx_miner_sdk.tools.http_models import ToolExecuteRequestDTO
+from harnyx_miner_sdk.tools.llm_chat_stream_models import LLM_CHAT_PUBLIC_FRAME_ADAPTER, LlmChatErrorFrame
 from harnyx_validator.application.endpoint_execution import ValidatorEndpointExecution
 from harnyx_validator.application.platform_tool_proxy import PlatformToolProxyScopeRegistry
 from harnyx_validator.application.ports.platform import PlatformToolProxyPlatformPort
@@ -132,7 +135,7 @@ def add_tool_routes(app: FastAPI, dependency_provider: Callable[[], ToolRouteDep
         deps: ToolRouteDeps = Depends(get_dependencies),  # noqa: B008
         token_header: str | None = Security(tool_token_header),
         session_id: UUID = Header(alias=SESSION_ID_HEADER),  # noqa: B008
-    ) -> ToolExecuteResponseDTO:
+    ) -> ToolExecuteResponseDTO | StreamingResponse:
         if not token_header:
             raise HTTPException(status_code=401, detail="missing x-platform-token header")
         invocation = ToolInvocationRequest(
@@ -143,6 +146,14 @@ def add_tool_routes(app: FastAPI, dependency_provider: Callable[[], ToolRouteDep
             kwargs=payload.kwargs,
         )
         try:
+            if requests_llm_chat_stream(payload.tool, payload.args, payload.kwargs):
+                stream = open_tool_stream(
+                    deps.tool_executor,
+                    deps.tool_concurrency_limiter,
+                    invocation,
+                    error_frame=lambda exc: LlmChatErrorFrame(detail=_public_error_message(exc)),
+                )
+                return ToolStreamingResponse(stream)
             result = await execute_tool_with_concurrency_permit(
                 deps.tool_executor,
                 deps.tool_concurrency_limiter,
@@ -161,6 +172,24 @@ def add_tool_routes(app: FastAPI, dependency_provider: Callable[[], ToolRouteDep
             _log_tool_error(session_id, invocation, exc)
             raise HTTPException(status_code=400, detail=_public_error_message(exc)) from exc
         return serialize_tool_execute_response(result)
+
+
+    default_openapi = app.openapi
+
+    def tool_openapi() -> dict[str, Any]:
+        if app.openapi_schema is None:
+            schema = default_openapi()
+            events = LLM_CHAT_PUBLIC_FRAME_ADAPTER.json_schema(ref_template="#/components/schemas/ToolStream{model}")
+            schema.setdefault("components", {}).setdefault("schemas", {}).update({
+                f"ToolStream{name}": value for name, value in events.pop("$defs", {}).items()
+            })
+            schema["paths"]["/v1/tools/execute"]["post"]["responses"]["200"]["content"]["text/event-stream"] = {
+                "schema": events,
+            }
+            app.openapi_schema = schema
+        return app.openapi_schema
+
+    app.openapi = tool_openapi  # type: ignore[invalid-assignment] -- FastAPI OpenAPI hook.
 
 
 def add_system_routes(app: FastAPI, status_provider: StatusProvider) -> None:
@@ -574,3 +603,22 @@ async def _endpoint_body(request: Request, limit: int) -> bytes:
             raise HTTPException(status_code=413, detail="endpoint request body exceeds size limit")
         body.extend(chunk)
     return bytes(body)
+
+
+class ToolStreamingResponse(StreamingResponse):
+    """Keep the invocation deadline active while ASGI sends terminal bytes."""
+
+    def __init__(self, stream: LlmChatExecutionStream) -> None:
+        super().__init__(
+            stream.body(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Accel-Buffering": "no",
+            },
+        )
+        self._stream = stream
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        response = super().__call__
+        await self._stream.deliver(lambda: response(scope, receive, send))
