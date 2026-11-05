@@ -432,7 +432,7 @@ USD cost remains unknown when the provider does not return it.
 ### Reranking text documents
 
 `rerank` ranks existing text documents against a query. Select a model from
-`tooling_info().response["allowed_rerank_provider_models"]["openrouter"]`.
+`(await tooling_info()).response["allowed_rerank_provider_models"]["openrouter"]`.
 Discovery admits paid text rerank models and excludes explicit `:free` variants.
 
 ```python
@@ -476,7 +476,7 @@ metadata is under `pricing.rerank.openrouter`.
 
 - `llm_chat(provider="chutes" | "openrouter" | "ai_gateway" | "saygm" | "cloudflare", messages=[...], model="<provider-specific model id>", timeout=..., temperature=0.0, thinking={"enabled": True}, provider_extra=...)`
 - `embed_text(texts, input_type="query" | "document", provider="chutes" | "openrouter", model="<provider-specific embedding model id>", instruction=..., dimensions=..., provider_extra=..., timeout=...)`
-- `decision_query(provider="openrouter" | "ai_gateway" | "cloudflare" | "jev", model="...", state=..., questions=..., timeout=...)`
+- `decision_query(provider="openrouter" | "ai_gateway" | "cloudflare" | "jev" | "reax", model="...", state=..., questions=..., timeout=...)`
 - `rerank(query, documents, provider="openrouter", model="...", top_n=..., provider_extra=..., timeout=...)`
 - `tooling_info(timeout=...)`
 - `test_tool(message, timeout=...)`
@@ -498,7 +498,7 @@ from harnyx_miner_sdk.api import Timeout, llm_chat
 
 response = await llm_chat(
     provider="chutes",
-    model="openai/gpt-oss-20b",
+    model="deepseek-ai/DeepSeek-V3.2-TEE",
     messages=[{"role": "user", "content": "Explain this result."}],
     timeout=Timeout(120, prefill=60, inactivity=30),
 )
@@ -525,7 +525,7 @@ from harnyx_miner_sdk.api import Timeout, llm_chat
 
 stream = await llm_chat(
     provider="chutes",
-    model="openai/gpt-oss-20b",
+    model="deepseek-ai/DeepSeek-V3.2-TEE",
     messages=[{"role": "user", "content": "Explain this result."}],
     stream=True,
     timeout=Timeout(120, prefill=60, inactivity=30),
@@ -594,9 +594,9 @@ enforce the miner entrypoint deadline.
 
 Firecrawl is an ordinary-web provider: it supports `search_web` and `fetch_page`.
 
-`llm_chat` model ids are provider-specific. Use `tooling_info().response["allowed_llm_provider_models"][provider]` for discovery and pass the selected provider's model id exactly. OpenRouter discovery uses its cached public catalog rather than a repository whitelist. Explicit `:free` variants and `openrouter/free` are excluded. Paid promotions are allowed when their regular reference cost can be established. Other providers retain their existing model lists.
+`llm_chat` model ids are provider-specific. Use `(await tooling_info()).response["allowed_llm_provider_models"][provider]` for discovery and pass the selected provider's model id exactly. OpenRouter discovery uses its cached public catalog rather than a repository whitelist. Explicit `:free` variants and `openrouter/free` are excluded. Paid promotions are allowed when their regular reference cost can be established. Other providers retain their existing model lists.
 
-SayGM uses native Chat Completions ids such as `gpt-oss-20b`, `glm-5.2`, and `gemma-4-31b-turbo-tee`. Miner access is limited to equivalents of models already authorized through the existing miner providers, not the full SayGM catalog. GPT frontier models, Kimi K3, GLM 5.1/full 5.3, and other newly available models are rejected. Claude and Gemini native API models are outside this provider's current scope. Register a `saygm` credential with the platform before hosted calls. SayGM does not accept `provider_extra`, embeddings, or `decision_query`. Its settled `usage.cost_nano_usd` (or `usage.cost` when the integer field is absent) owns actual-cost accounting; published retail ceiling rates are budget estimates only. Missing, invalid, or inconsistent settlement never falls back to those estimates. `tooling_info().response["pricing"]["llm_chat"]["provider_settlement_order"]` lists each provider’s actual-charge sources, while `provider_rate_usage` distinguishes budget-only estimates from rates also usable for settlement fallback. OpenRouter is omitted from the static `provider_models` rate table; `pricing.llm_chat.openrouter` describes its dynamic accounting. Regular reference cost governs miner limits and comparison, and actual provider charge governs financial tracking. The legacy `settlement_order` list remains available for existing clients; `provider_settlement_order[provider]` owns the actual policy, including SayGM's returned-settlement-only rule.
+SayGM uses native Chat Completions ids such as `gpt-oss-20b`, `glm-5.2`, and `gemma-4-31b-turbo-tee`. Miner access is limited to equivalents of models already authorized through the existing miner providers, not the full SayGM catalog. GPT frontier models, Kimi K3, GLM 5.1/full 5.3, and other newly available models are rejected. Claude and Gemini native API models are outside this provider's current scope. Register a `saygm` credential with the platform before hosted calls. SayGM does not accept `provider_extra`, embeddings, or `decision_query`. Its settled `usage.cost_nano_usd` (or `usage.cost` when the integer field is absent) owns actual-cost accounting; published retail ceiling rates are budget estimates only. Missing, invalid, or inconsistent settlement never falls back to those estimates. `(await tooling_info()).response["pricing"]["llm_chat"]["provider_settlement_order"]` lists each provider’s actual-charge sources, while `provider_rate_usage` distinguishes budget-only estimates from rates also usable for settlement fallback. OpenRouter is omitted from the static `provider_models` rate table; `pricing.llm_chat.openrouter` describes its dynamic accounting. Regular reference cost governs miner limits and comparison, and actual provider charge governs financial tracking. The legacy `settlement_order` list remains available for existing clients; `provider_settlement_order[provider]` owns the actual policy, including SayGM's returned-settlement-only rule.
 
 ### Function tool calls
 
@@ -664,7 +664,7 @@ Tool-result messages must immediately resolve every call in the preceding assist
 
 The canonical miner request field is `max_output_tokens`. The SDK accepts `max_tokens` as a compatibility alias and normalizes it to `max_output_tokens`; setting both is rejected. The former miner-facing `include` and `response_format` fields are rejected. Internal validator structured-output postprocessing is separate and is not exposed through `llm_chat`.
 
-`embed_text` model ids are provider-specific too. Use `tooling_info().response["allowed_embedding_provider_models"][provider]` as the runtime source of truth. The current miner-facing embedding model ids are `Qwen/Qwen3-Embedding-8B-TEE` on `chutes` and `qwen/qwen3-embedding-8b` on `openrouter`, with pricing exposed under `tooling_info().response["pricing"]["embed_text"]["provider_models"]`.
+`embed_text` model ids are provider-specific too. Use `(await tooling_info()).response["allowed_embedding_provider_models"][provider]` as the runtime source of truth. The current miner-facing embedding model ids are `Qwen/Qwen3-Embedding-8B-TEE` on `chutes` and `qwen/qwen3-embedding-8b` on `openrouter`, with pricing exposed under `(await tooling_info()).response["pricing"]["embed_text"]["provider_models"]`.
 
 Use `input_type="query"` for query or instruction-style embeddings and `input_type="document"` for document embeddings. Query embeddings use Qwen's retrieval instruction by default and accept an optional `instruction` override. Document embeddings are sent as raw text and reject `instruction`.
 
@@ -807,7 +807,7 @@ decision = await decision_query(
 probability = decision.response.answers["publish"].probability
 ```
 
-Use `tooling_info().response["allowed_decision_provider_models"]` for availability. OpenRouter accepts paid native IDs from its public decision-model catalog, including canonical versioned IDs, without a repository whitelist. Explicit `:free` variants and `openrouter/free` are excluded; paid promotions with zero current prices remain eligible. Discovery and public endpoint pricing use the same five-minute process cache as chat. `pricing.decision_query.openrouter` describes dynamic accounting; its models are omitted from the static `provider_models` table. AI Gateway keeps its existing empty decision-model list; those combinations are rejected. Provider adapters translate OpenRouter's native `noul` question type to public `boolean`.
+Use `(await tooling_info()).response["allowed_decision_provider_models"]` for availability. OpenRouter accepts paid native IDs from its public decision-model catalog, including canonical versioned IDs, without a repository whitelist. Explicit `:free` variants and `openrouter/free` are excluded; paid promotions with zero current prices remain eligible. Discovery and public endpoint pricing use the same five-minute process cache as chat. `pricing.decision_query.openrouter` describes dynamic accounting; its models are omitted from the static `provider_models` table. AI Gateway keeps its existing empty decision-model list; those combinations are rejected. Provider adapters translate OpenRouter's native `noul` question type to public `boolean`.
 
 REAX / Decision Models uses `provider="reax"` with `s1-fast-2` (one question,
 up to 16 options and 8,000 input tokens) or `s1-pro-3` (up to three questions,
@@ -825,7 +825,7 @@ and valid zero USD/EUR receipts establish actual cost directly. For positive EUR
 charges, Harnyx uses the published USD input-token rate for the returned tier as
 its accounting amount; this is not an exchange-rate conversion or the discounted
 invoice charge. Reference cost uses the same tier's USD list rate independently.
-`tooling_info().response["pricing"]["decision_query"]["provider_tier_models"]["reax"]`
+`(await tooling_info()).response["pricing"]["decision_query"]["provider_tier_models"]["reax"]`
 shows both rate cards. The flat `provider_models` card uses the higher EU rates
 as a conservative estimate before the tier is known. Missing or invalid receipt
 evidence that prevents settlement fails the call and preserves known financial
@@ -878,9 +878,9 @@ The SDK still accepts the legacy top-level `provider.only` input and normalizes 
 
 Do not pass `provider_extra={"provider": "cerebras"}`. The SDK/runtime rejects the raw string form.
 
-AI Gateway model ids currently allowed by the tool contract are `thinkingmachines/inkling`, `zai/glm-5.2-fast`, `zai/glm-5.3-flash`, `openai/gpt-oss-20b`, `zai/glm-4.7`, `google/gemma-4-31b-it`, `openai/gpt-oss-120b`, `minimax/minimax-m2.7`, `zai/glm-4.7-flash`, `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-flash-0731`, `deepseek/deepseek-v4.1-flash`, `deepseek/deepseek-v4.1-flash-1017`, `deepseek/deepseek-v4-pro`, `meta/muse-glimmer-30b`, `meta/muse-spark-open`, `alibaba/qwen3.8-27b`, `tencent/hy4-preview`, `xiaomi/mimo-v2.6-flash`, `xiaomi/mimo-v2.6-pro`, and `xiaomi/mimo-v2.6-pro-ultraspeed`. Use `tooling_info().response["pricing"]["llm_chat"]["provider_models"]["ai_gateway"]` for representative static rates; actual AI Gateway returned cost wins when present.
+AI Gateway model ids currently allowed by the tool contract are `thinkingmachines/inkling`, `zai/glm-5.2-fast`, `zai/glm-5.3-flash`, `openai/gpt-oss-20b`, `zai/glm-4.7`, `google/gemma-4-31b-it`, `openai/gpt-oss-120b`, `minimax/minimax-m2.7`, `zai/glm-4.7-flash`, `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-flash-0731`, `deepseek/deepseek-v4.1-flash`, `deepseek/deepseek-v4.1-flash-1017`, `deepseek/deepseek-v4-pro`, `meta/muse-glimmer-30b`, `meta/muse-spark-open`, `alibaba/qwen3.8-27b`, `tencent/hy4-preview`, `xiaomi/mimo-v2.6-flash`, `xiaomi/mimo-v2.6-pro`, and `xiaomi/mimo-v2.6-pro-ultraspeed`. Use `(await tooling_info()).response["pricing"]["llm_chat"]["provider_models"]["ai_gateway"]` for representative static rates; actual AI Gateway returned cost wins when present.
 
-OpenRouter also allows `xiaomi/mimo-v2.6-flash`, `xiaomi/mimo-v2.6-pro`, and `xiaomi/mimo-v2.6-pro-ultraspeed`. The UltraSpeed route serves Pro; the open-weight `MiMo-V2.6-Distill-Qwen-9B` checkpoint has no verified route through a miner-supported provider. Use `tooling_info().response["allowed_llm_provider_models"][provider]` for the current complete list of allowed model ids.
+OpenRouter also allows `xiaomi/mimo-v2.6-flash`, `xiaomi/mimo-v2.6-pro`, and `xiaomi/mimo-v2.6-pro-ultraspeed`. The UltraSpeed route serves Pro; the open-weight `MiMo-V2.6-Distill-Qwen-9B` checkpoint has no verified route through a miner-supported provider. Use `(await tooling_info()).response["allowed_llm_provider_models"][provider]` for the current complete list of allowed model ids.
 
 OpenRouter and AI Gateway fallback settlement uses reported cached-input tokens at the configured cached-input rate. The provider-model pricing entry in `tooling_info()` includes `cached_input_per_million` when configured. For `meta/muse-spark-open`, reference input, output, and cached-input rates are $1.25, $4.25, and $0.15 per million tokens. Valid provider-returned cost takes precedence.
 
