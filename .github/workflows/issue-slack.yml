@@ -1,0 +1,69 @@
+name: GitHub Issue Slack Notifications
+
+on:
+  issues:
+  issue_comment:
+
+permissions: {}
+
+jobs:
+  notify:
+    if: github.repository == 'harnyx/harnyx' && !github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require Slack webhook
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_GITHUB_ALERT_WEBHOOK_URL }}
+        run: |
+          if [[ -z "$SLACK_WEBHOOK_URL" ]]; then
+            echo "::error::Configure SLACK_GITHUB_ALERT_WEBHOOK_URL for #github-alert. No Slack notification was sent."
+            exit 1
+          fi
+
+      # Read issue content as data; never execute or template contributor text.
+      - name: Build issue notification
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
+          issue = event["issue"]
+          comment = event.get("comment")
+          subject = "comment" if comment else "issue"
+          action = event["action"].replace("_", " ")
+          repository = event["repository"]["full_name"]
+          summary = f"{repository} #{issue['number']}: {subject} {action}"
+          content = comment or issue
+          details = [issue["title"], f"By {event['sender']['login']}"]
+          for field, attribute in (("label", "name"), ("assignee", "login"), ("milestone", "title")):
+              if event.get(field):
+                  details.append(f"{field.capitalize()}: {event[field][attribute]}")
+
+          blocks = [
+              {"type": "section", "text": {"type": "plain_text", "text": summary}},
+              {"type": "section", "text": {"type": "plain_text", "text": "\n".join(details)[:3000]}},
+          ]
+          body = content["body"] or ""
+          if body:
+              excerpt = body[:2000] + ("\n[truncated]" if len(body) > 2000 else "")
+              blocks.append({"type": "section", "text": {"type": "plain_text", "text": excerpt}})
+          blocks.append({
+              "type": "section",
+              "text": {"type": "mrkdwn", "text": f"<{content['html_url']}|View on GitHub>"},
+          })
+          payload = {"text": summary, "blocks": blocks, "unfurl_links": False, "unfurl_media": False}
+          output = Path(os.environ["RUNNER_TEMP"]) / "github-issue-slack.json"
+          output.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+          PY
+
+      - name: Notify github-alert
+        uses: slackapi/slack-github-action@v4.0.0
+        with:
+          webhook: ${{ secrets.SLACK_GITHUB_ALERT_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload-file-path: ${{ runner.temp }}/github-issue-slack.json
+          payload-templated: false
+          errors: true
