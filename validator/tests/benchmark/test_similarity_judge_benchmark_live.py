@@ -42,9 +42,8 @@ _CASES_PATH = Path(__file__).parent / "data" / "similarity_judge_benchmark_cases
 _HASH_ROUTER_CASES_PATH = Path(__file__).parent / "data" / "similarity_judge_hash_router_cases.jsonl"
 _OUTPUT_ROOT = Path(".localdev/similarity-judge-benchmark")
 _GEMMA_MODEL = "google/gemma-4-31B-turbo-TEE"
-_GEMMA_ENDPOINT_ID = "gemma4-cloud-run-turbo"
-_GEMMA_ROUTE_TARGET = f"custom-openai-compatible:{_GEMMA_ENDPOINT_ID}"
-_GEMMA_SERVICE_URL = "https://gemma-4-31b-turbo-obbrpx3ppa-uc.a.run.app"
+_GEMMA_ENDPOINT_ID = "openrouter"
+_GEMMA_ROUTE_TARGET = "openrouter"
 _GLM_MODEL = "zai-org/GLM-5.2-TEE"
 _KIMI_MODEL = "moonshotai/Kimi-K3-TEE"
 _DEEPSEEK_MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731-TEE"
@@ -70,19 +69,6 @@ class BenchmarkTarget:
         return {"duplication_detection": {self.model: self.route_target}}
 
 
-def _gemma_cloud_run_endpoint_config() -> dict[str, object]:
-    return {
-        "id": _GEMMA_ENDPOINT_ID,
-        "base_url": f"{_GEMMA_SERVICE_URL}/v1",
-        "auth": {
-            "type": "google_id_token",
-            "audience": _GEMMA_SERVICE_URL,
-            "credential_source": "service_account_json_b64_env",
-            "credential_env": "GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64",
-        },
-    }
-
-
 def _chutes_reasoning_targets(
     *,
     test_id_prefix: str,
@@ -106,12 +92,11 @@ def _chutes_reasoning_targets(
 
 _BENCHMARK_TARGETS = (
     BenchmarkTarget(
-        test_id="gemma4-cloud-run",
+        test_id="gemma4-openrouter",
         model=_GEMMA_MODEL,
         route_target=_GEMMA_ROUTE_TARGET,
         endpoint_id=_GEMMA_ENDPOINT_ID,
-        normalized_base_url=f"{_GEMMA_SERVICE_URL}/v1",
-        endpoint_config=_gemma_cloud_run_endpoint_config(),
+        normalized_base_url=OPENROUTER_BASE_URL,
     ),
     *_chutes_reasoning_targets(
         test_id_prefix="glm-5.2-chutes",

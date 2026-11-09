@@ -776,7 +776,7 @@ async def test_local_eval_scoring_override_dispatches_only_supported_operator_ro
         local_eval.LocalEvaluationRuntime, "_from_components", lambda **kwargs: SimpleNamespace(**kwargs)
     )
 
-    if provider != "saygm":
+    if provider == "ai_gateway":
         with pytest.raises(ValueError, match=f"provider '{provider}'"):
             local_eval.LocalEvaluationRuntime.create(run_progress_root=tmp_path / "progress")
         assert resolved_providers == []
@@ -787,8 +787,8 @@ async def test_local_eval_scoring_override_dispatches_only_supported_operator_ro
     result = await runtime.scoring_service.score(task=_task(uuid4(), "Question"), response=Response(text="Answer"))
 
     assert result.score_breakdown.total_score == pytest.approx(0.5)
-    assert resolved_providers == ["saygm", "saygm"]
-    assert [(request.provider, request.model) for request in requests] == [("saygm", model), ("saygm", model)]
+    assert resolved_providers == [provider, provider]
+    assert [(request.provider, request.model) for request in requests] == [(provider, model), (provider, model)]
 
 
 @pytest.mark.parametrize("invocation_only", [False, True])

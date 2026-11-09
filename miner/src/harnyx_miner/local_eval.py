@@ -372,7 +372,7 @@ class LocalEvaluationRuntime:
             surface="scoring",
             default_provider=settings.llm.scoring_llm_provider,
             llm_settings=settings.llm,
-            allowed_providers={"bedrock", "chutes", "vertex", "saygm"},
+            allowed_providers={"bedrock", "chutes", "openrouter", "vertex", "saygm"},
             allow_custom_openai_compatible=True,
             provider_registry=invocation_clients.llm_provider_registry,
         )

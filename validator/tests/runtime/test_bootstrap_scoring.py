@@ -216,8 +216,8 @@ def test_build_llm_clients_resolves_route_for_each_scoring_slot_entry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scoring_routes = {
-        "google/gemma-4-31B-turbo-TEE": "custom-openai-compatible:gemma4-cloud-run-turbo",
-        "Qwen/Qwen3.6-27B-TEE": "custom-openai-compatible:qwen36-cloud-run",
+        "google/gemma-4-31B-turbo-TEE": "openrouter",
+        "Qwen/Qwen3.6-27B-TEE": "openrouter",
     }
     settings = Settings.model_construct(
         llm=LlmSettings.model_construct(
@@ -227,20 +227,6 @@ def test_build_llm_clients_resolves_route_for_each_scoring_slot_entry(
             parallel_max_concurrent=7,
             scoring_llm_provider="vertex",
             llm_model_provider_overrides_json=json.dumps({"scoring": scoring_routes}),
-            openai_compatible_endpoints_json=json.dumps(
-                [
-                    {
-                        "id": "gemma4-cloud-run-turbo",
-                        "base_url": "https://gemma-4-31b-turbo-obbrpx3ppa-uc.a.run.app/v1",
-                        "auth": {"type": "none"},
-                    },
-                    {
-                        "id": "qwen36-cloud-run",
-                        "base_url": "https://qwen3-6-27b-obbrpx3ppa-uc.a.run.app/v1",
-                        "auth": {"type": "none"},
-                    },
-                ]
-            ),
         ),
         vertex=VertexSettings.model_construct(
             gcp_project_id="project",
@@ -780,20 +766,27 @@ def test_default_similarity_chain_rejects_incompatible_builtin_provider(provider
         bootstrap._resolve_similarity_judge_routes(settings)
 
 
-def test_default_similarity_chain_routes_only_deepseek_through_openrouter() -> None:
+def test_default_similarity_chain_routes_gemma_and_deepseek_through_openrouter() -> None:
     deepseek_model = "deepseek-ai/DeepSeek-V4-Flash-0731-TEE"
     settings = Settings.model_construct(
         llm=LlmSettings.model_construct(
             similarity_llm_provider="chutes",
             similarity_llm_model_override=None,
-            llm_model_provider_overrides_json=json.dumps({"duplication_detection": {deepseek_model: "openrouter"}}),
+            llm_model_provider_overrides_json=json.dumps(
+                {
+                    "duplication_detection": {
+                        "google/gemma-4-31B-turbo-TEE": "openrouter",
+                        deepseek_model: "openrouter",
+                    }
+                }
+            ),
         ),
     )
 
     routes = bootstrap._resolve_similarity_judge_routes(settings)
 
     assert tuple((route.model, route.provider) for route in routes) == (
-        ("google/gemma-4-31B-turbo-TEE", "chutes"),
+        ("google/gemma-4-31B-turbo-TEE", "openrouter"),
         (deepseek_model, "openrouter"),
         ("zai-org/GLM-5.2-TEE", "chutes"),
         ("moonshotai/Kimi-K3-TEE", "chutes"),
@@ -816,7 +809,7 @@ def test_default_similarity_chain_routes_only_deepseek_through_openrouter() -> N
     }
 
 
-def test_default_similarity_chain_rejects_openrouter_for_non_deepseek_model() -> None:
+def test_default_similarity_chain_rejects_openrouter_for_unsupported_builtin_model() -> None:
     glm_model = "zai-org/GLM-5.2-TEE"
     settings = Settings.model_construct(
         llm=LlmSettings.model_construct(

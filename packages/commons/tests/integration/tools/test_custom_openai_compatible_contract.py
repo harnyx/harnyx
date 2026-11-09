@@ -37,10 +37,10 @@ async def test_custom_openai_compatible_provider_contract_against_local_server(
     server, base_url = _start_openai_compatible_server(seen_payloads)
     settings = LlmSettings(
         LLM_OPENAI_COMPATIBLE_ENDPOINTS_JSON=(
-            f'[{{"id":"gemma4-cloud-run-turbo","base_url":"{base_url}/v1","auth":{{"type":"none"}}}}]'
+            f'[{{"id":"gemma-test","base_url":"{base_url}/v1","auth":{{"type":"none"}}}}]'
         ),
         LLM_MODEL_PROVIDER_OVERRIDES_JSON=(
-            '{"scoring":{"google/gemma-4-31B-turbo-TEE":"custom-openai-compatible:gemma4-cloud-run-turbo"}}'
+            '{"scoring":{"google/gemma-4-31B-turbo-TEE":"custom-openai-compatible:gemma-test"}}'
         ),
     )
     registry = build_cached_llm_provider_registry(
@@ -84,10 +84,10 @@ async def test_custom_openai_compatible_provider_contract_against_local_server(
 
     assert response.raw_text == "ok"
     assert response.metadata is not None
-    assert response.metadata["effective_provider"] == "custom-openai-compatible:gemma4-cloud-run-turbo"
+    assert response.metadata["effective_provider"] == "custom-openai-compatible:gemma-test"
     assert response.metadata["effective_model"] == "google/gemma-4-31B-turbo-TEE"
     assert seen_payloads
-    assert seen_payloads[0]["model"] == "nvidia/Gemma-4-31B-IT-NVFP4"
+    assert seen_payloads[0]["model"] == "google/gemma-4-31B-turbo-TEE"
     assert seen_payloads[0]["stream"] is True
     assert seen_payloads[0]["stream_options"] == {"include_usage": True, "continuous_usage_stats": True}
 
@@ -97,10 +97,10 @@ async def test_qwen36_custom_openai_compatible_provider_contract_against_local_s
     server, base_url = _start_openai_compatible_server(seen_payloads)
     settings = LlmSettings(
         LLM_OPENAI_COMPATIBLE_ENDPOINTS_JSON=(
-            f'[{{"id":"qwen36-cloud-run","base_url":"{base_url}/v1","auth":{{"type":"none"}}}}]'
+            f'[{{"id":"qwen-test","base_url":"{base_url}/v1","auth":{{"type":"none"}}}}]'
         ),
         LLM_MODEL_PROVIDER_OVERRIDES_JSON=(
-            '{"scoring":{"Qwen/Qwen3.6-27B-TEE":"custom-openai-compatible:qwen36-cloud-run"}}'
+            '{"scoring":{"Qwen/Qwen3.6-27B-TEE":"custom-openai-compatible:qwen-test"}}'
         ),
     )
     registry = build_cached_llm_provider_registry(
@@ -143,10 +143,10 @@ async def test_qwen36_custom_openai_compatible_provider_contract_against_local_s
 
     assert response.raw_text == "ok"
     assert response.metadata is not None
-    assert response.metadata["effective_provider"] == "custom-openai-compatible:qwen36-cloud-run"
+    assert response.metadata["effective_provider"] == "custom-openai-compatible:qwen-test"
     assert response.metadata["effective_model"] == "Qwen/Qwen3.6-27B-TEE"
     assert seen_payloads
-    assert seen_payloads[0]["model"] == "Qwen/Qwen3.6-27B-FP8"
+    assert seen_payloads[0]["model"] == "Qwen/Qwen3.6-27B-TEE"
     assert seen_payloads[0]["stream"] is True
     assert seen_payloads[0]["stream_options"] == {"include_usage": True, "continuous_usage_stats": True}
 

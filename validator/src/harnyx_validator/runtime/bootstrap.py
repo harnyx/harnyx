@@ -164,7 +164,10 @@ _SCORING_SLOT_CONFIG = ScoringSlotConfig(
 )
 _DUPLICATION_DETECTION_CHUTES_CHAIN_MODELS = frozenset(_DUPLICATION_DETECTION_MODEL_CHAIN)
 _DUPLICATION_DETECTION_DEEPSEEK_MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731-TEE"
-_DUPLICATION_DETECTION_OPENROUTER_MODELS = frozenset({_DUPLICATION_DETECTION_DEEPSEEK_MODEL})
+_DUPLICATION_DETECTION_OPENROUTER_MODELS = frozenset({
+    _DUPLICATION_DETECTION_LLM_MODEL,
+    _DUPLICATION_DETECTION_DEEPSEEK_MODEL,
+})
 _DUPLICATION_DETECTION_DEEPSEEK_OPENROUTER_IGNORED_PROVIDERS = (
     "Baidu",
     "Cloudflare",
@@ -697,7 +700,7 @@ def _resolve_scoring_judge_route(settings: Settings, *, model: str) -> ResolvedL
         default_provider=settings.llm.scoring_llm_provider,
         model=model,
         overrides=settings.llm.llm_model_provider_overrides,
-        allowed_providers={"bedrock", "chutes", "vertex", "saygm"},
+        allowed_providers={"bedrock", "chutes", "openrouter", "vertex", "saygm"},
         allow_custom_openai_compatible=True,
     )
 

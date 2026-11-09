@@ -395,8 +395,8 @@ async def test_openai_compatible_explicit_thinking_overrides_reasoning_effort() 
 
 
 @pytest.mark.parametrize("enabled", (True,))
-async def test_openai_compatible_gemma_thinking_survives_custom_route_model_alias(enabled: bool) -> None:
-    route_target = "custom-openai-compatible:gemma4-cloud-run-turbo"
+async def test_openai_compatible_gemma_thinking_survives_custom_route(enabled: bool) -> None:
+    route_target = "custom-openai-compatible:gemma-test"
     seen_payload: dict[str, object] = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -406,7 +406,7 @@ async def test_openai_compatible_gemma_thinking_survives_custom_route_model_alia
     provider = LlmProviderAdapter(
         provider_name=route_target,
         delegate=OpenAiCompatibleLlmProvider(
-            endpoint=_endpoint(endpoint_id="gemma4-cloud-run-turbo", auth={"type": "none"}),
+            endpoint=_endpoint(endpoint_id="gemma-test", auth={"type": "none"}),
             client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         ),
     )
@@ -421,13 +421,13 @@ async def test_openai_compatible_gemma_thinking_survives_custom_route_model_alia
     finally:
         await provider.aclose()
 
-    assert seen_payload["model"] == "nvidia/Gemma-4-31B-IT-NVFP4"
+    assert seen_payload["model"] == "google/gemma-4-31B-turbo-TEE"
     assert seen_payload["chat_template_kwargs"] == {"enable_thinking": enabled}
 
 
 @pytest.mark.parametrize("enabled", (True,))
-async def test_openai_compatible_qwen36_thinking_survives_custom_route_model_alias(enabled: bool) -> None:
-    route_target = "custom-openai-compatible:qwen36-cloud-run"
+async def test_openai_compatible_qwen36_thinking_survives_custom_route(enabled: bool) -> None:
+    route_target = "custom-openai-compatible:qwen-test"
     seen_payload: dict[str, object] = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -437,7 +437,7 @@ async def test_openai_compatible_qwen36_thinking_survives_custom_route_model_ali
     provider = LlmProviderAdapter(
         provider_name=route_target,
         delegate=OpenAiCompatibleLlmProvider(
-            endpoint=_endpoint(endpoint_id="qwen36-cloud-run", auth={"type": "none"}),
+            endpoint=_endpoint(endpoint_id="qwen-test", auth={"type": "none"}),
             client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         ),
     )
@@ -453,12 +453,12 @@ async def test_openai_compatible_qwen36_thinking_survives_custom_route_model_ali
     finally:
         await provider.aclose()
 
-    assert seen_payload["model"] == "Qwen/Qwen3.6-27B-FP8"
+    assert seen_payload["model"] == "Qwen/Qwen3.6-27B-TEE"
     assert seen_payload["chat_template_kwargs"] == {"enable_thinking": enabled}
 
 
-async def test_openai_compatible_qwen36_reasoning_effort_survives_custom_route_model_alias() -> None:
-    route_target = "custom-openai-compatible:qwen36-cloud-run"
+async def test_openai_compatible_qwen36_reasoning_effort_survives_custom_route() -> None:
+    route_target = "custom-openai-compatible:qwen-test"
     seen_payload: dict[str, object] = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -468,7 +468,7 @@ async def test_openai_compatible_qwen36_reasoning_effort_survives_custom_route_m
     provider = LlmProviderAdapter(
         provider_name=route_target,
         delegate=OpenAiCompatibleLlmProvider(
-            endpoint=_endpoint(endpoint_id="qwen36-cloud-run", auth={"type": "none"}),
+            endpoint=_endpoint(endpoint_id="qwen-test", auth={"type": "none"}),
             client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         ),
     )
@@ -484,7 +484,7 @@ async def test_openai_compatible_qwen36_reasoning_effort_survives_custom_route_m
     finally:
         await provider.aclose()
 
-    assert seen_payload["model"] == "Qwen/Qwen3.6-27B-FP8"
+    assert seen_payload["model"] == "Qwen/Qwen3.6-27B-TEE"
     assert seen_payload["chat_template_kwargs"] == {"enable_thinking": True}
     assert "reasoning_effort" not in seen_payload
 

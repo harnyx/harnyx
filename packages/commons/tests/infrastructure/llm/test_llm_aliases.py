@@ -23,11 +23,7 @@ VERTEX_ALIASED_TOOL_MODELS = {
     "zai-org/GLM-5-TEE": "zai-org/glm-5-maas",
 }
 GEMMA_CHUTES_MODEL = "google/gemma-4-31B-turbo-TEE"
-GEMMA_CLOUD_RUN_ROUTE_TARGET = "custom-openai-compatible:gemma4-cloud-run-turbo"
-GEMMA_CLOUD_RUN_NATIVE_MODEL = "nvidia/Gemma-4-31B-IT-NVFP4"
 QWEN36_CHUTES_MODEL = "Qwen/Qwen3.6-27B-TEE"
-QWEN36_CLOUD_RUN_ROUTE_TARGET = "custom-openai-compatible:qwen36-cloud-run"
-QWEN36_CLOUD_RUN_NATIVE_MODEL = "Qwen/Qwen3.6-27B-FP8"
 
 
 class StubProvider:
@@ -253,26 +249,6 @@ def test_canonical_model_for_provider_model_reverses_vertex_tool_alias() -> None
     )
 
 
-def test_canonical_model_for_provider_model_reverses_custom_openai_compatible_tool_alias() -> None:
-    assert (
-        canonical_model_for_provider_model(
-            provider_name=GEMMA_CLOUD_RUN_ROUTE_TARGET,
-            model=GEMMA_CLOUD_RUN_NATIVE_MODEL,
-        )
-        == GEMMA_CHUTES_MODEL
-    )
-
-
-def test_canonical_model_for_provider_model_reverses_qwen36_custom_openai_compatible_tool_alias() -> None:
-    assert (
-        canonical_model_for_provider_model(
-            provider_name=QWEN36_CLOUD_RUN_ROUTE_TARGET,
-            model=QWEN36_CLOUD_RUN_NATIVE_MODEL,
-        )
-        == QWEN36_CHUTES_MODEL
-    )
-
-
 def test_canonical_model_for_provider_model_returns_unknown_model_unchanged() -> None:
     assert (
         canonical_model_for_provider_model(
@@ -300,42 +276,6 @@ async def test_adapter_leaves_open_model_ids_unchanged_for_chutes(model: str) ->
     await provider.invoke(request)
 
     assert delegate.requests[0].model == model
-
-
-async def test_adapter_maps_gemma_chutes_id_to_turbo_cloud_run_native_model() -> None:
-    delegate = StubProvider()
-    provider = LlmProviderAdapter(provider_name=GEMMA_CLOUD_RUN_ROUTE_TARGET, delegate=delegate)
-
-    request = LlmRequest(
-        provider=GEMMA_CLOUD_RUN_ROUTE_TARGET,
-        model=GEMMA_CHUTES_MODEL,
-        messages=(),
-        temperature=None,
-        max_output_tokens=None,
-        output_mode="text",
-    )
-
-    await provider.invoke(request)
-
-    assert delegate.requests[0].model == GEMMA_CLOUD_RUN_NATIVE_MODEL
-
-
-async def test_adapter_maps_qwen36_chutes_id_to_cloud_run_native_model() -> None:
-    delegate = StubProvider()
-    provider = LlmProviderAdapter(provider_name=QWEN36_CLOUD_RUN_ROUTE_TARGET, delegate=delegate)
-
-    request = LlmRequest(
-        provider=QWEN36_CLOUD_RUN_ROUTE_TARGET,
-        model=QWEN36_CHUTES_MODEL,
-        messages=(),
-        temperature=None,
-        max_output_tokens=None,
-        output_mode="text",
-    )
-
-    await provider.invoke(request)
-
-    assert delegate.requests[0].model == QWEN36_CLOUD_RUN_NATIVE_MODEL
 
 
 async def test_adapter_leaves_gemma_chutes_id_unchanged_for_chutes() -> None:

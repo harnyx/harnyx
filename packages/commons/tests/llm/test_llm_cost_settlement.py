@@ -229,8 +229,8 @@ def test_ai_gateway_malformed_provider_metadata_cost_falls_back_to_static_pricin
 def test_static_pricing_evidence_preserves_reported_reasoning_tokens() -> None:
     cost = settled_response_cost(
         _response(usage=LlmUsage(prompt_tokens=1_000, completion_tokens=2_000, reasoning_tokens=7, total_tokens=3_007)),
-        provider="custom-openai-compatible:gemma4-cloud-run-turbo",
-        model="nvidia/Gemma-4-31B-IT-NVFP4",
+        provider="custom-openai-compatible:gemma-test",
+        model="google/gemma-4-31B-turbo-TEE",
     )
 
     assert cost is not None
@@ -242,8 +242,8 @@ def test_static_pricing_evidence_keeps_unavailable_reasoning_tokens() -> None:
         _response(
             usage=LlmUsage(prompt_tokens=1_000, completion_tokens=2_000, reasoning_tokens=None, total_tokens=3_000)
         ),
-        provider="custom-openai-compatible:gemma4-cloud-run-turbo",
-        model="nvidia/Gemma-4-31B-IT-NVFP4",
+        provider="custom-openai-compatible:gemma-test",
+        model="google/gemma-4-31B-turbo-TEE",
     )
 
     assert cost is not None
@@ -336,11 +336,11 @@ def test_openrouter_malformed_is_byok_without_static_pricing_returns_none() -> N
     assert cost is None
 
 
-def test_custom_openai_compatible_alias_uses_static_pricing() -> None:
+def test_custom_openai_compatible_canonical_model_uses_static_pricing() -> None:
     cost = settled_response_cost(
         _response(),
-        provider="custom-openai-compatible:gemma4-cloud-run-turbo",
-        model="nvidia/Gemma-4-31B-IT-NVFP4",
+        provider="custom-openai-compatible:gemma-test",
+        model="google/gemma-4-31B-turbo-TEE",
     )
 
     assert cost is not None
