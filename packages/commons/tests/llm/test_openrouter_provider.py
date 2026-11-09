@@ -1399,3 +1399,52 @@ async def test_continuous_usage_does_not_finalize_partial_streamed_tool_argument
         assert response.metadata["reference_cost_usd"] == pytest.approx(0.008)
     finally:
         await provider.aclose()
+
+
+@pytest.mark.anyio("asyncio")
+async def test_internal_luna_uses_openrouter_responses_and_billing_receipts(monkeypatch):
+    """Internal Luna calls must use the router key and Responses endpoint."""
+    from openai import AsyncOpenAI
+
+    from harnyx_commons.llm.providers import openrouter_responses
+
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        assert request.url == "https://openrouter.ai/api/v1/responses"
+        assert request.headers["Authorization"] == "Bearer router-test-key"
+        body = json.loads(request.content)
+        assert body["model"] == "openai/gpt-6-luna"
+        return httpx.Response(
+            200,
+            json={
+                "id": "router-luna",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "id": "msg",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": "Routed", "annotations": []}],
+                    }
+                ],
+                "usage": {"input_tokens": 3, "output_tokens": 1, "total_tokens": 4, "cost": 0.0001},
+            },
+        )
+
+    monkeypatch.setattr(
+        openrouter_responses,
+        "AsyncOpenAI",
+        lambda **kwargs: AsyncOpenAI(**kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler))),
+    )
+    provider = OpenRouterLlmProvider(openrouter_api_key=SecretStr("router-test-key"))
+    try:
+        request = _request(model="openai/gpt-6-luna")
+        result = await provider.invoke(request)
+        assert result.raw_text == "Routed"
+        assert result.metadata["actual_cost_usd"] == 0.0001
+        assert len(requests) == 1
+    finally:
+        await provider.aclose()

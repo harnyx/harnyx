@@ -38,9 +38,14 @@ def test_public_v1_source_identity_and_answer_alignment() -> None:
 def _response(text: str, finish_reason: str = "stop") -> LlmResponse:
     return LlmResponse(
         id="test-judge",
-        choices=(LlmChoice(index=0, message=LlmChoiceMessage(
-            role="assistant", content=(LlmMessageContentPart(type="output_text", text=text),)
-        )),),
+        choices=(
+            LlmChoice(
+                index=0,
+                message=LlmChoiceMessage(
+                    role="assistant", content=(LlmMessageContentPart(type="output_text", text=text),)
+                ),
+            ),
+        ),
         usage=LlmUsage(),
         finish_reason=finish_reason,
     )
@@ -69,15 +74,22 @@ async def test_four_classes_keep_partial_and_abstention_separate_from_correct(gr
     assert request.messages[0].content[0].text == load_aa_omniscience_grader_prompt().format(
         question="Question {literal}", target="Target", predicted_answer="Prediction"
     )
-    assert request.extra == {"reasoning": {"enabled": True}, "provider": {"require_parameters": True}}
+    assert request.provider == "openrouter" and request.model == "openai/gpt-6-luna"
+    assert request.reasoning_effort == "high" and request.extra is None
     assert request.max_output_tokens is None
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("response", [
-    _response("CORRECT"), _response("A: CORRECT"), _response(""),
-    _response("A", "length"), replace(_response("A"), choices=()),
-])
+@pytest.mark.parametrize(
+    "response",
+    [
+        _response("CORRECT"),
+        _response("A: CORRECT"),
+        _response(""),
+        _response("A", "length"),
+        replace(_response("A"), choices=()),
+    ],
+)
 async def test_malformed_or_incomplete_judgment_never_becomes_a_score(response: LlmResponse) -> None:
     provider = _Provider(response)
     with pytest.raises(ValueError, match="AA judge"):

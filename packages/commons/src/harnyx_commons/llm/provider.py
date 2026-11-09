@@ -101,16 +101,15 @@ class RetryContext:
 
     @property
     def actual_cost_usd_total(self) -> float | None:
-        if (
-            self.billable_response_count == 0
-            or not self._actual_cost_complete
-            or len(self._actual_cost_usd_values) != self.billable_response_count
-        ):
+        if self.billable_response_count == 0 or not self._actual_cost_complete:
             return None
         return round(sum(self._actual_cost_usd_values), 12)
 
     def record_billable_response(self, response: LlmResponse) -> None:
-        self.billable_response_count += 1
+        native_count = (response.metadata or {}).get("native_response_count", 1)
+        if isinstance(native_count, bool) or not isinstance(native_count, int) or native_count < 1:
+            raise ValueError("native_response_count must be a positive integer")
+        self.billable_response_count += native_count
         cost = _actual_cost_usd_for_retry_total(response)
         if cost is None:
             self._actual_cost_complete = False
@@ -447,7 +446,10 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         return response
 
     async def _record_attempt_response(
-        self, request: AbstractLlmRequest, response: LlmResponse, ctx: RetryContext,
+        self,
+        request: AbstractLlmRequest,
+        response: LlmResponse,
+        ctx: RetryContext,
     ) -> LlmResponse:
         response = await self._annotate_response_cost(request, response)
         ctx.total_usage += response.usage or LlmUsage()
@@ -725,9 +727,7 @@ def _request_snapshot(request: AbstractLlmRequest) -> dict[str, object]:
     if is_dataclass(request):
         # Bound callbacks can own live tasks and futures; exclude them before
         # asdict recursively copies request data for observability.
-        snapshot_request = replace(
-            request, postprocessor=None, on_provider_dispatch=None, on_output=None
-        )
+        snapshot_request = replace(request, postprocessor=None, on_provider_dispatch=None, on_output=None)
         snapshot = cast(dict[str, object], asdict(snapshot_request))
         for callback_field in ("postprocessor", "on_provider_dispatch", "on_output"):
             del snapshot[callback_field]

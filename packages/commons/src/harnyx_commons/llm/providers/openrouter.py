@@ -29,6 +29,7 @@ from harnyx_commons.llm.providers.openrouter_pricing import (
     OpenRouterPricingSnapshot,
     shared_openrouter_pricing_catalog,
 )
+from harnyx_commons.llm.providers.openrouter_responses import OpenRouterResponsesLlmProvider
 from harnyx_commons.llm.providers.thinking import resolve_request_thinking
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse, LlmThinkingConfig
 from harnyx_commons.llm.timeout import LlmAttemptTimeoutError
@@ -50,7 +51,7 @@ OPENROUTER_INTERNAL_TO_NATIVE_MODEL: Mapping[str, str] = {
 }
 OPENROUTER_INTERNAL_SUPPORTED_MODELS = tuple(OPENROUTER_INTERNAL_TO_NATIVE_MODEL)
 OPENROUTER_SUPPORTED_MODELS = tuple(
-    dict.fromkeys((*OPENROUTER_NATIVE_SUPPORTED_MODELS, *OPENROUTER_INTERNAL_SUPPORTED_MODELS))
+    dict.fromkeys((*OPENROUTER_NATIVE_SUPPORTED_MODELS, *OPENROUTER_INTERNAL_SUPPORTED_MODELS, "openai/gpt-6-luna"))
 )
 
 
@@ -314,6 +315,7 @@ class OpenRouterLlmProvider(LlmProviderPort):
         self._supported_models = frozenset(
             (*OPENROUTER_SUPPORTED_MODELS, *(model.strip() for model in additional_supported_models if model.strip()))
         )
+        self._responses_provider: OpenRouterResponsesLlmProvider | None = None
         self._openrouter_provider: OpenAiCompatibleLlmProvider | None = None
         self._openrouter_client: httpx.AsyncClient | None = None
 
@@ -323,8 +325,13 @@ class OpenRouterLlmProvider(LlmProviderPort):
             return await self._invoke_miner(request)
         if model not in self._supported_models:
             raise ValueError(f"OpenRouter provider does not support model {request.model!r}")
-        openrouter_provider = self._ensure_openrouter_provider(model=model)
-        response = await openrouter_provider.invoke(self._openrouter_request(request, model=model))
+        if model == "openai/gpt-6-luna":
+            if self._responses_provider is None:
+                self._responses_provider = OpenRouterResponsesLlmProvider(api_key=self._openrouter_api_key)
+            response = await self._responses_provider.invoke(request)
+        else:
+            openrouter_provider = self._ensure_openrouter_provider(model=model)
+            response = await openrouter_provider.invoke(self._openrouter_request(request, model=model))
         metadata = dict(response.metadata or {})
         metadata["effective_provider"] = OPENROUTER_PROVIDER
         metadata["effective_model"] = model
@@ -407,6 +414,11 @@ class OpenRouterLlmProvider(LlmProviderPort):
 
     async def aclose(self) -> None:
         errors: list[Exception] = []
+        if self._responses_provider is not None:
+            try:
+                await self._responses_provider.aclose()
+            except Exception as exc:
+                errors.append(exc)
         if self._openrouter_provider is not None:
             try:
                 await self._openrouter_provider.aclose()

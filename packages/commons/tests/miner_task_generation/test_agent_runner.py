@@ -53,6 +53,7 @@ async def test_report_grader_receives_frozen_key_and_full_report_with_separate_u
                     ),
                 ),
                 usage=LlmUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15, web_search_calls=0),
+                metadata={"raw_response": {"usage": {"cost": 0.001, "is_byok": False}}},
             )
 
     report = "The archive identifies item [[1]]. Here is the full supporting research."
@@ -66,7 +67,7 @@ async def test_report_grader_receives_frozen_key_and_full_report_with_separate_u
     payload = json.loads(request.messages[1].content[0].text.removeprefix("Payload:\n"))
     assert payload["reference_answer"] == "item"
     assert payload["miner_answer"] == rendered.text and payload["miner_note"] == rendered.note
-    assert request.model == JUDGE_MODEL and request.provider == "vertex" and request.max_output_tokens is None
+    assert request.model == JUDGE_MODEL and request.provider == "openrouter" and request.max_output_tokens is None
     assert session.attempted_calls == 1
     assert session.stage_summaries[0].stage == "reference_consistency"
     assert session.stage_summaries[0].available_cost_usd > 0
@@ -201,7 +202,6 @@ def test_missing_attempt_usage_keeps_total_unavailable_and_retains_known_compone
 @pytest.mark.parametrize(
     ("provider", "model", "expected"),
     [
-        ("openai", "gpt-6-luna", 0.01035),
         ("vertex", "gemini-3.8-flash", 0.017375),
         ("vertex", "gemini-3.1-pro-preview", 0.0244),
     ],
@@ -218,17 +218,17 @@ def test_generation_capture_settles_shared_generation_rates(provider, model, exp
     assert observed.session.stage_summaries[0].available_cost_usd == pytest.approx(expected)
 
 
-def test_missing_openai_search_receipt_keeps_known_tokens_without_claiming_free_search():
+def test_missing_openrouter_billing_receipt_does_not_estimate_actual_cost():
     from harnyx_commons.llm.schema import LlmUsage
 
     observed = capture()
-    observed.provider, observed.model = "openai", "gpt-6-luna"
+    observed.provider, observed.model = "openrouter", "openai/gpt-6-luna"
     observed.attempted = 1
     observed.account(LlmUsage(prompt_tokens=1_000, completion_tokens=500))
     observed.finish()
     assert observed.session.tool_usage.actual_total_cost_usd is None
     assert observed.session.tool_usage.search_tool.actual_cost is None
-    assert observed.session.stage_summaries[0].available_cost_usd == pytest.approx(0.00035)
+    assert observed.session.stage_summaries[0].available_cost_usd == 0
 
 
 @pytest.mark.parametrize("status", [401, 403, 404])
@@ -250,7 +250,7 @@ async def test_shared_provider_fault_is_batch_terminal_without_retry(status, wra
         raise error
 
     observed = capture()
-    observed.provider = "openai"
+    observed.provider = "openrouter"
     with pytest.raises(BatchTerminalGenerationError) as caught:
         await retry_request(call, observed, monotonic() + 2, solver=False)
     assert caught.value.__cause__ is error
@@ -266,9 +266,14 @@ async def test_batch_terminal_fault_retains_known_costs_and_missing_receipt_unce
     from harnyx_commons.miner_task_generation.contracts import BatchTerminalGenerationError
 
     observed = capture()
-    observed.provider, observed.model = "openai", "gpt-6-luna"
+    observed.provider, observed.model = "openrouter", "openai/gpt-6-luna"
     observed.attempted = 1
-    observed.account(LlmUsage(prompt_tokens=100, completion_tokens=20, web_search_calls=1))
+    observed.account(
+        LlmUsage(prompt_tokens=100, completion_tokens=20, web_search_calls=1),
+        response=LlmResponse(
+            id="paid-first-attempt", choices=(), usage=LlmUsage(), metadata={"raw_response": {"usage": {"cost": 0.001}}}
+        ),
+    )
     response = httpx.Response(401, request=httpx.Request("POST", "https://api.example.test/responses"))
 
     async def call():
@@ -302,7 +307,7 @@ async def test_pricing_uses_each_attempt_start_date_even_if_receipt_crosses_midn
     monkeypatch.setattr(agent_runner, "datetime", Clock)
     monkeypatch.setattr(agent_runner, "backoff_ms", lambda *args: 0)
     observed = capture()
-    observed.model = JUDGE_MODEL
+    observed.provider, observed.model = "vertex", "gemini-3.1-pro-preview"
     observed.session.effective_date = date(2026, 11, 1)
     usage = LlmUsage(prompt_tokens=1000, completion_tokens=100, total_tokens=1100, web_search_calls=0)
 
@@ -315,7 +320,9 @@ async def test_pricing_uses_each_attempt_start_date_even_if_receipt_crosses_midn
 
     assert await retry_request(call, observed, monotonic() + 2, solver=True) == "complete"
     expected = sum(
-        settled_generation_llm_cost(usage=usage, model=JUDGE_MODEL, provider="vertex", pricing_date=value).cost_usd
+        settled_generation_llm_cost(
+            usage=usage, model="gemini-3.1-pro-preview", provider="vertex", pricing_date=value
+        ).cost_usd
         for value in dates
     )
     observed.finish()
@@ -472,3 +479,22 @@ async def test_pipeline_recovers_both_assessments_and_reference_without_replayin
     assert set(result.cycles[0].f1_scores.values()) == {0.0}
     assert len(judge.requests) == 10
     assert len([r for r in judge.requests if r.use_case.endswith("reference_consistency")]) == 6
+
+
+def test_generation_capture_uses_complete_openrouter_receipt_without_static_pricing():
+    from harnyx_commons.llm.schema import LlmResponse, LlmUsage
+
+    observed = capture()
+    observed.provider, observed.model = "openrouter", JUDGE_MODEL
+    observed.attempted = 1
+    usage = LlmUsage(prompt_tokens=1_000, completion_tokens=500, web_search_calls=2)
+    response = LlmResponse(
+        id="router-receipt",
+        choices=(),
+        usage=usage,
+        metadata={"raw_response": {"usage": {"cost": 0.0123, "is_byok": False}}},
+    )
+    observed.account(usage, response=response)
+    observed.finish()
+    assert observed.session.tool_usage.actual_total_cost_usd == pytest.approx(0.0123)
+    assert observed.session.stage_summaries[0].available_cost_usd == pytest.approx(0.0123)

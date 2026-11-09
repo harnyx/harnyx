@@ -30,20 +30,18 @@ class OmniscienceScoringService:
     def __init__(self, provider: LlmProviderPort) -> None:
         self._provider = provider
 
-    async def score(
-        self, *, question: str, reference_answer: str, generated_answer: str
-    ) -> OmniscienceDecision:
+    async def score(self, *, question: str, reference_answer: str, generated_answer: str) -> OmniscienceDecision:
         prompt = load_aa_omniscience_grader_prompt().format(
             question=question, target=reference_answer, predicted_answer=generated_answer
         )
         response = await self._provider.invoke(
             LlmRequest(
                 provider="openrouter",
-                model="google/gemini-2.5-flash",
+                model="openai/gpt-6-luna",
                 messages=(LlmMessage(role="user", content=(LlmMessageContentPart.input_text(prompt),)),),
                 temperature=None,
                 max_output_tokens=None,
-                extra={"reasoning": {"enabled": True}, "provider": {"require_parameters": True}},
+                reasoning_effort="high",
                 timeout=300.0,
                 allow_postprocess_recovery=False,
                 use_case="aa_omniscience_original_prompt_judge",

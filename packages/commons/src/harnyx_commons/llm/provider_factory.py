@@ -178,12 +178,16 @@ def _openrouter_fallback_models(settings: LlmSettings) -> tuple[str, ...]:
         "duplication_detection": settings.similarity_llm_fallback_models,
     }
     overrides = settings.llm_model_provider_overrides
-    return tuple(sorted({
-        model
-        for surface, models in fallbacks.items()
-        for model in models or ()
-        if overrides.get(surface, {}).get(model) == OPENROUTER_PROVIDER
-    }))
+    return tuple(
+        sorted(
+            {
+                model
+                for surface, models in fallbacks.items()
+                for model in models or ()
+                if overrides.get(surface, {}).get(model) == OPENROUTER_PROVIDER
+            }
+        )
+    )
 
 
 def _build_provider(
@@ -195,7 +199,8 @@ def _build_provider(
 ) -> LlmProviderPort:
     if route_target == "cloudflare":
         credential = configured_cloudflare_credential(
-            account_id=llm_settings.cloudflare_account_id, api_token=llm_settings.cloudflare_api_token,
+            account_id=llm_settings.cloudflare_account_id,
+            api_token=llm_settings.cloudflare_api_token,
         )
         return LlmProviderAdapter(provider_name="cloudflare", delegate=CloudflareLlmProvider(credential=credential))
     if route_target == OPENROUTER_PROVIDER:

@@ -30,7 +30,11 @@ from harnyx_commons.domain.tool_usage_accounting import (
     merge_complete_actual_cost_usage,
     tool_usage_from_llm_usage,
 )
-from harnyx_commons.llm.cost_settlement import settled_generation_llm_cost
+from harnyx_commons.llm.cost_settlement import (
+    settled_cost_from_metadata,
+    settled_generation_llm_cost,
+    settled_response_cost,
+)
 from harnyx_commons.llm.provider import (
     LlmProviderConfigurationError,
     LlmProviderError,
@@ -61,7 +65,7 @@ from .contracts import (
 
 logger = logging.getLogger("harnyx_commons.llm.calls")
 AUTHOR_MODEL = "gpt-6.1-sol"
-JUDGE_MODEL = "gemini-3.1-pro-preview"
+JUDGE_MODEL = "openai/gpt-6-luna"
 RETRY_POLICY = RetryPolicy(attempts=2, initial_ms=500, max_ms=30_000, jitter=0.2)
 T = TypeVar("T")
 _REQUEST_DATE: ContextVar[date | None] = ContextVar("generation_request_date", default=None)
@@ -155,7 +159,14 @@ class CallCapture:
                 extra={"data": self.identity() | {"attempt_status": status, "event_count": len(events)}},
             )
 
-    def account(self, usage: LlmUsage | None, *, model: str | None = None, provider: str | None = None) -> None:
+    def account(
+        self,
+        usage: LlmUsage | None,
+        *,
+        model: str | None = None,
+        provider: str | None = None,
+        response: LlmResponse | None = None,
+    ) -> None:
         if usage is None:
             return
         self.usage_records += 1
@@ -164,14 +175,23 @@ class CallCapture:
         summary = tool_usage_from_llm_usage(usage, model=model, provider=provider, pricing_date=pricing_date)
         search_cost = (
             summary.search_tool.reference_cost
-            if provider in {"vertex", "openai"} and usage.web_search_calls is not None
+            if provider in {"vertex", "openrouter"} and usage.web_search_calls is not None
             else None
-            if provider in {"vertex", "openai", "codex-lb"} or usage.web_search_calls
+            if provider in {"vertex", "openrouter", "codex-lb"} or usage.web_search_calls
             else 0.0
         )
         summary = replace(summary, search_tool=replace(summary.search_tool, actual_cost=search_cost))
+        if provider == "openrouter" and response is not None:
+            settled = settled_cost_from_metadata(response.metadata or {}) or settled_response_cost(
+                response, provider=provider, model=model
+            )
+            # The OpenRouter receipt is the complete provider charge, including hosted tools.
+            search_cost = 0.0 if settled is not None else None
+        else:
+            settled = settled_generation_llm_cost(
+                usage=usage, model=model, provider=provider, pricing_date=pricing_date
+            )
         self.available_cost_usd += search_cost or 0
-        settled = settled_generation_llm_cost(usage=usage, model=model, provider=provider, pricing_date=pricing_date)
         if settled is not None:
             self.available_cost_usd += settled.cost_usd
             total_cost = settled.cost_usd + (search_cost or 0)
@@ -188,7 +208,7 @@ class CallCapture:
                 actual_total_cost_usd=total_cost,
                 actual_cost_by_provider={provider: total_cost},
             )
-            if provider in {"vertex", "openai"} and usage.web_search_calls is None:
+            if provider == "vertex" and usage.web_search_calls is None:
                 # Missing receipts cannot establish free native search.
                 summary = replace(summary, actual_total_cost_usd=None, actual_cost_by_provider={})
         self.tool_usage = merge_complete_actual_cost_usage(self.tool_usage, summary)
@@ -380,7 +400,7 @@ async def retry_request(
 
 
 class GenerationAgentRunner:
-    """Identical Terra challenges and the existing Gemini Pro assessments."""
+    """Identical Terra challenges and Luna component assessments."""
 
     def __init__(
         self, *, judge: LlmProviderPort, solve: Callable[[str, str, CandidateSession, float], Awaitable[AgentResult]]
@@ -432,7 +452,7 @@ class GenerationAgentRunner:
             miner_response=response,
         )
         request: AbstractLlmRequest = LlmRequest(
-            provider="vertex",
+            provider="openrouter",
             model=JUDGE_MODEL,
             temperature=None,
             max_output_tokens=None,
@@ -456,16 +476,16 @@ class GenerationAgentRunner:
                 LlmMessage(role="user", content=(LlmMessageContentPart.input_text(messages.user_prompt),)),
             ),
         )
-        capture = CallCapture(session, role, JUDGE_MODEL, "vertex")
+        capture = CallCapture(session, role, JUDGE_MODEL, "openrouter")
 
         async def call() -> FastJudgeAssessment:
             try:
                 response = await self._judge.invoke(request)
             except LlmProviderError as exc:
                 if exc.response is not None:
-                    capture.account(exc.response.usage)
+                    capture.account(exc.response.usage, response=exc.response)
                 raise
-            capture.account(response.usage)
+            capture.account(response.usage, response=response)
             if response.raw_text is None:
                 raise ValueError("Judge returned no text")
             try:

@@ -140,7 +140,12 @@ _OPENAI_COMPATIBLE_ENDPOINTS_ADAPTER = TypeAdapter(list[OpenAiCompatibleEndpoint
 
 SearchProviderName = Literal["desearch", "parallel", "firecrawl", "exa", "tavily", "deepseek"]
 SEARCH_PROVIDER_NAMES: tuple[SearchProviderName, ...] = (
-    "desearch", "parallel", "firecrawl", "exa", "tavily", "deepseek",
+    "desearch",
+    "parallel",
+    "firecrawl",
+    "exa",
+    "tavily",
+    "deepseek",
 )
 AiSearchProviderName = Literal["desearch", "parallel"]
 FETCH_PROVIDER_NAMES: tuple[FetchProviderName, ...] = (*SEARCH_PROVIDER_NAMES, "expand")

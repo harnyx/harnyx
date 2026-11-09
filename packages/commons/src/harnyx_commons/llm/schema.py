@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from harnyx_commons.llm.provider_types import OPENROUTER_PROVIDER, parse_custom_openai_compatible_target
 from harnyx_commons.llm.retry_utils import RetryPolicy
@@ -36,6 +36,14 @@ from harnyx_miner_sdk.llm import (
 from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatOutputSink
 
 ReasoningEffort = Literal["low", "medium", "high"]
+
+
+class SearchQueryArguments(BaseModel):
+    """A single search query, with no coercion or additional arguments."""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    query: str
 
 
 @dataclass(frozen=True)
@@ -133,6 +141,7 @@ __all__ = [
     "LlmResponse",
     "PostprocessRecovery",
     "PostprocessResult",
+    "SearchQueryArguments",
     "extract_vertex_gemini_model_id",
     "supports_grounded_requests",
     "supports_tool_result_messages",
@@ -142,6 +151,8 @@ __all__ = [
 
 def supports_grounded_requests(*, provider: str, model: str) -> bool:
     normalized_provider = provider.strip().lower()
+    if normalized_provider == "openrouter":
+        return model.strip() == "openai/gpt-6-luna"
     if normalized_provider != "vertex":
         return False
     if _is_vertex_claude_model(model):

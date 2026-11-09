@@ -16,13 +16,14 @@ AI_GATEWAY_PROVIDER = "ai_gateway"
 SAYGM_PROVIDER = "saygm"
 CLOUDFLARE_PROVIDER = "cloudflare"
 
-LlmProviderName = Literal["bedrock", "chutes", "vertex"]
+LlmProviderName = Literal["bedrock", "chutes", "vertex", "openrouter"]
 LlmRouteTarget = str
 
 ALLOWED_LLM_PROVIDERS: tuple[LlmProviderName, ...] = (
     BEDROCK_PROVIDER,
     CHUTES_PROVIDER,
     VERTEX_PROVIDER,
+    "openrouter",
 )
 
 
