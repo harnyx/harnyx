@@ -826,8 +826,8 @@ async def test_saygm_retry_exhaustion_advances_scoring_fallback_and_retains_sett
                 provider="chutes",
                 model="gpt-oss-20b",
                 fallback_models=("glm-5.2",),
-                timeout_seconds=0.5,
-                prefill_timeout_seconds=0.02,
+                timeout_seconds=5.0,
+                prefill_timeout_seconds=0.02 if failure == "prefill" else 5.0,
                 retry_policy=RetryPolicy(attempts=3, initial_ms=0, max_ms=0, jitter=0),
             ),
         )
