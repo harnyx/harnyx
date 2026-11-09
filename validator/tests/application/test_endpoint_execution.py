@@ -524,7 +524,6 @@ async def test_replacement_retries_admission_after_chain_failure_with_original_r
         validator_eligibility=eligible,
         miner_hotkey=miner,
         endpoint_url=authority.endpoint_url,
-        block_at_registration=90,
         state=state,
     )
     async with (

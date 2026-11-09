@@ -52,7 +52,6 @@ async def test_cached_eligibility_admits_new_assignments_but_expired_lookup_fail
         validator_eligibility=reader,
         miner_hotkey=miner,
         endpoint_url="https://miner.example",
-        block_at_registration=90,
         state=state,
     )
     async with (
@@ -120,7 +119,6 @@ async def test_injected_answerer_reuses_structured_answer_for_continuation_and_l
             platform_base_url="https://platform.example",
             miner_hotkey=miner,
             endpoint_url="https://miner.example",
-            block_at_registration=90,
             state=state,
             answerer=answerer,
             client=outbound,
@@ -178,7 +176,6 @@ async def test_injected_answer_failure_or_cancellation_cannot_send_success(endin
             platform_base_url="https://platform.example",
             miner_hotkey=miner,
             endpoint_url="https://miner.example",
-            block_at_registration=90,
             state=state,
             answerer=answerer,
             client=outbound,
@@ -269,7 +266,6 @@ async def test_miner_accepts_http_callback_assignment() -> None:
             validator_eligibility=AsyncMock(return_value=True),
             miner_hotkey=miner,
             endpoint_url=assignment.endpoint_url,
-            block_at_registration=90,
             state=state,
             answerer=AsyncMock(return_value=Response(text="answer")),
             client=outbound,
@@ -344,7 +340,6 @@ async def test_one_task_owns_search_and_delivery_through_duplicate_polls_and_ack
             platform_base_url="https://platform.example",
             miner_hotkey=miner,
             endpoint_url="https://miner.example",
-            block_at_registration=90,
             state=state,
             provider="parallel",
             provider_key="secret-key",
@@ -389,7 +384,6 @@ async def test_structured_assignment_is_rejected_before_search_or_retention(outp
             platform_base_url="https://platform.example",
             miner_hotkey=miner,
             endpoint_url="https://miner.example",
-            block_at_registration=90,
             state=state,
             provider="parallel",
             provider_key="secret-key",
@@ -438,7 +432,6 @@ async def test_failed_search_is_logged_retained_and_never_restarted(failure, cap
             platform_base_url="https://platform.example",
             miner_hotkey=miner,
             endpoint_url="https://miner.example",
-            block_at_registration=90,
             state=state,
             provider="parallel",
             provider_key="secret-key",
@@ -484,7 +477,6 @@ async def test_shutdown_joins_execution_or_delivery_and_retains_assignment(stage
             platform_base_url="https://platform.example",
             miner_hotkey=miner,
             endpoint_url="https://miner.example",
-            block_at_registration=90,
             state=state,
             provider="parallel",
             provider_key="secret-key",
@@ -541,7 +533,6 @@ async def test_clear_and_reaccept_cannot_be_changed_by_obsolete_task(stage):
             platform_base_url="https://platform.example",
             miner_hotkey=miner,
             endpoint_url="https://miner.example",
-            block_at_registration=90,
             state=state,
             provider="parallel",
             provider_key="secret-key",
@@ -600,7 +591,6 @@ async def test_expired_delivery_retains_callback_without_poll_restarting_it(monk
             platform_base_url="https://platform.example",
             miner_hotkey=miner,
             endpoint_url="https://miner.example",
-            block_at_registration=90,
             state=state,
             provider="parallel",
             provider_key="secret-key",
@@ -672,7 +662,6 @@ async def test_callback_deadline_closes_stalled_attempt_and_retains_result(monke
             platform_base_url="https://platform.example",
             miner_hotkey=miner,
             endpoint_url="https://miner.example",
-            block_at_registration=90,
             state=state,
             provider="parallel",
             provider_key="secret-key",
@@ -722,7 +711,6 @@ async def test_failed_assignment_does_not_interrupt_independent_execution(caplog
             platform_base_url="https://platform.example",
             miner_hotkey=miner,
             endpoint_url="https://miner.example",
-            block_at_registration=90,
             state=state,
             provider="parallel",
             provider_key="secret-key",
@@ -751,7 +739,6 @@ async def test_oversized_assignment_is_rejected_before_signature_validation(decl
     state = EndpointTestServerState()
     app = create_endpoint_test_app(
         endpoint_url="https://miner.example",
-        block_at_registration=90,
         validator_eligibility=AsyncMock(return_value=True),
         platform_base_url="https://platform.example",
         miner_hotkey=bt.Keypair.create_from_uri("//Bob"),
@@ -787,7 +774,6 @@ async def test_assignment_and_status_are_signed_and_unknown_after_memory_clear()
     state = EndpointTestServerState()
     app = create_endpoint_test_app(
         endpoint_url="https://miner.example",
-        block_at_registration=90,
         validator_eligibility=AsyncMock(return_value=True),
         platform_base_url="https://platform.example",
         miner_hotkey=miner_hotkey,
@@ -850,7 +836,6 @@ async def test_tampered_assignment_is_rejected_without_retaining_secrets() -> No
     state = EndpointTestServerState()
     app = create_endpoint_test_app(
         endpoint_url="https://miner.example",
-        block_at_registration=90,
         validator_eligibility=AsyncMock(return_value=True),
         platform_base_url="https://platform.example",
         miner_hotkey=miner_hotkey,
@@ -919,7 +904,6 @@ async def test_executable_endpoint_searches_and_retries_callback_without_retaini
     platform_client = httpx.AsyncClient(transport=httpx.MockTransport(platform))
     app = create_endpoint_test_app(
         endpoint_url="https://miner.example",
-        block_at_registration=90,
         validator_eligibility=AsyncMock(return_value=True),
         platform_base_url="https://platform.example",
         miner_hotkey=miner_hotkey,
@@ -976,7 +960,8 @@ def _challenge(miner: bt.Keypair, url: str) -> dict[str, object]:
 
 
 @pytest.mark.parametrize("prefix", ["", "/base", "/caf%C3%A9", "/base%2F", "/%7Bassignment_id%7D", "/%7Btenant:int%7D"])
-async def test_ownership_proof_signs_exact_body_and_registered_path(prefix: str) -> None:
+@pytest.mark.parametrize("registration_block", [90, 91])
+async def test_ownership_proof_signs_exact_body_and_registered_path(prefix: str, registration_block: int) -> None:
     miner = bt.Keypair.create_from_uri("//Bob")
     url = "https://miner.example" + prefix
     app = create_endpoint_test_app(
@@ -984,10 +969,11 @@ async def test_ownership_proof_signs_exact_body_and_registered_path(prefix: str)
         platform_base_url="https://platform.example",
         miner_hotkey=miner,
         endpoint_url=url,
-        block_at_registration=90,
     )
     # Whitespace/order must survive signing; parsing then reserializing is not a proof.
-    body = json.dumps(_challenge(miner, url), indent=2).encode() + b"\n"
+    challenge = _challenge(miner, url)
+    challenge["block_at_registration"] = registration_block
+    body = json.dumps(challenge, indent=2).encode() + b"\n"
     path = prefix + "/verify"
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=url) as client:
@@ -1006,7 +992,7 @@ async def test_ownership_proof_signs_exact_body_and_registered_path(prefix: str)
         ("purpose", "another-protocol"),
         ("hotkey", bt.Keypair.create_from_uri("//Alice").ss58_address),
         ("url", "https://attacker.example"),
-        ("block_at_registration", 91),
+        ("block_at_registration", -1),
         ("block_at_registration", "90"),
         ("block_at_registration", True),
         ("nonce", "not-a-challenge"),
@@ -1024,7 +1010,6 @@ async def test_ownership_proof_rejects_invalid_challenge_without_signature(field
         platform_base_url="https://platform.example",
         miner_hotkey=miner,
         endpoint_url=url,
-        block_at_registration=90,
     )
     challenge = _challenge(miner, url)
     challenge[field] = value
@@ -1044,7 +1029,6 @@ async def test_ownership_proof_rejects_requests_outside_registered_base(path: st
         platform_base_url="https://platform.example",
         miner_hotkey=miner,
         endpoint_url=url,
-        block_at_registration=90,
     )
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as client:
@@ -1059,7 +1043,6 @@ async def test_ownership_proof_rejects_malformed_or_incomplete_json(body: bytes)
         platform_base_url="https://platform.example",
         miner_hotkey=bt.Keypair.create_from_uri("//Bob"),
         endpoint_url="https://miner.example",
-        block_at_registration=90,
     )
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as client:
@@ -1075,7 +1058,6 @@ async def test_ownership_proof_rejects_oversized_body_without_buffering_remainde
         platform_base_url="https://platform.example",
         miner_hotkey=bt.Keypair.create_from_uri("//Bob"),
         endpoint_url="https://miner.example",
-        block_at_registration=90,
     )
     chunks_read = 0
 
@@ -1240,7 +1222,6 @@ async def test_direct_request_returns_exact_optional_context_and_signed_answer(c
             validator_eligibility=eligibility,
             miner_hotkey=miner,
             endpoint_url=assignment.endpoint_url,
-            block_at_registration=90,
             answerer=AsyncMock(return_value=Response(text="answer")),
             client=outbound,
         )
@@ -1269,7 +1250,6 @@ async def test_replacement_requires_matching_nonce_and_eligibility_and_memory_lo
         validator_eligibility=eligibility,
         miner_hotkey=miner,
         endpoint_url=assignment.endpoint_url,
-        block_at_registration=90,
         state=state,
     )
     async with (
@@ -1322,7 +1302,6 @@ async def test_failed_eligibility_never_admits_assignment_or_unknown_status(elig
         validator_eligibility=eligibility,
         miner_hotkey=miner,
         endpoint_url=assignment.endpoint_url,
-        block_at_registration=90,
         state=state,
     )
     async with (
@@ -1356,7 +1335,6 @@ async def test_chain_lookup_does_not_block_admitted_work_or_bypass_retained_stat
         validator_eligibility=eligibility,
         miner_hotkey=miner,
         endpoint_url=assignment.endpoint_url,
-        block_at_registration=90,
         state=state,
     )
     async with (
@@ -1398,7 +1376,6 @@ async def test_signed_request_tampering_cannot_reach_eligibility_or_execute():
         validator_eligibility=eligibility,
         miner_hotkey=miner,
         endpoint_url=assignment.endpoint_url,
-        block_at_registration=90,
         state=state,
     )
     path = "/v1/endpoint-assignments"
@@ -1457,7 +1434,6 @@ async def test_malformed_replacement_callback_is_rejected_without_interrupting_o
             validator_eligibility=AsyncMock(return_value=True),
             miner_hotkey=miner,
             endpoint_url=assignment.endpoint_url,
-            block_at_registration=90,
             state=state,
             answerer=answer,
             client=outbound,

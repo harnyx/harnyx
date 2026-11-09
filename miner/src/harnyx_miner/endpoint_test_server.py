@@ -129,7 +129,6 @@ def create_endpoint_test_app(
     platform_base_url: str | None = None,
     miner_hotkey: bt.Keypair,
     endpoint_url: str,
-    block_at_registration: int,
     state: EndpointTestServerState | None = None,
     provider: str | None = None,
     provider_key: str | None = None,
@@ -142,8 +141,6 @@ def create_endpoint_test_app(
     """Build a registerable endpoint; provider inputs enable its search/callback loop."""
 
     canonical_url = _canonical_endpoint_url(endpoint_url)
-    if block_at_registration < 0:
-        raise ValueError("registration block must be nonnegative")
     # Strip literal trailing URL slashes before decoding; %2F is part of the registered base.
     base_path = httpx.URL(canonical_url).path if httpx.URL(canonical_url).raw_path != b"/" else ""
 
@@ -232,7 +229,6 @@ def create_endpoint_test_app(
         if (
             challenge.hotkey != miner_hotkey.ss58_address
             or challenge.url != canonical_url
-            or challenge.block_at_registration != block_at_registration
             or challenge.expires_at <= datetime.now(UTC)
         ):
             raise HTTPException(
@@ -531,12 +527,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run the signed Harnyx miner endpoint protocol test server")
     parser.add_argument("--miner-hotkey-uri", required=True)
     parser.add_argument("--endpoint-url", required=True, help="public HTTPS base URL submitted for registration")
-    parser.add_argument(
-        "--registration-block",
-        required=True,
-        type=int,
-        help="the hotkey's current BlockAtRegistration",
-    )
     parser.add_argument("--provider")
     parser.add_argument(
         "--provider-key-env",
@@ -555,7 +545,6 @@ def main() -> None:
         platform_base_url=PlatformApiSettings().platform_base_url,
         miner_hotkey=bt.Keypair.create_from_uri(args.miner_hotkey_uri),
         endpoint_url=args.endpoint_url,
-        block_at_registration=args.registration_block,
         provider=args.provider,
         provider_key=provider_key,
     )

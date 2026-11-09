@@ -111,7 +111,6 @@ async def test_client_and_endpoint_exchange_signed_assignment_and_status() -> No
         platform_base_url="https://platform.example",
         miner_hotkey=miner,
         endpoint_url="https://miner.example",
-        block_at_registration=90,
     )
     client = SignedMinerEndpointClient(
         validator_hotkey=platform,

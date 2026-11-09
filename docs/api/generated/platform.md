@@ -1306,7 +1306,7 @@ Body: [RegisterMinerRequest](#model-registerminerrequest)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `block_at_registration` |  |  | req | `integer` |
+| `block_at_registration` |  |  | opt | `integer` (nullable) |
 | `nonce` |  |  | req | `string` |
 | `timestamp` |  |  | req | `string` (format: date-time) |
 | `url` |  |  | req | `string` |
@@ -8837,7 +8837,7 @@ Body: [StatusResponse](#model-statusresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `block_at_registration` |  |  | req | `integer` |
+| `block_at_registration` |  |  | opt | `integer` (nullable) |
 | `nonce` |  |  | req | `string` |
 | `timestamp` |  |  | req | `string` (format: date-time) |
 | `url` |  |  | req | `string` |
@@ -8850,9 +8850,18 @@ Body: [StatusResponse](#model-statusresponse)
   "additionalProperties": false,
   "properties": {
     "block_at_registration": {
-      "minimum": 0.0,
-      "title": "Block At Registration",
-      "type": "integer"
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "deprecated": true,
+      "description": "Ignored compatibility field. Platform derives the registration block from finalized membership.",
+      "title": "Block At Registration"
     },
     "nonce": {
       "pattern": "^[0-9a-f]{64}$",
@@ -8873,7 +8882,6 @@ Body: [StatusResponse](#model-statusresponse)
   },
   "required": [
     "url",
-    "block_at_registration",
     "timestamp",
     "nonce"
   ],

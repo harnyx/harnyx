@@ -76,7 +76,7 @@ Platform sends this ownership challenge as JSON:
 }
 ```
 
-Check that the purpose, hotkey, canonical URL, and registration block match your endpoint, and that the challenge has not expired. Sign the **raw received body**, using the actual verification path. For example, for `/base/verify`:
+Check that the purpose, hotkey and canonical URL match your endpoint, that the registration block is a nonnegative integer, and that the challenge has not expired. Platform supplies the block from finalized membership; no local block configuration is needed. Sign the **raw received body**, using the actual verification path. For example, for `/base/verify`:
 
 ```python
 from harnyx_commons.bittensor import build_canonical_request
@@ -87,7 +87,7 @@ response = {"signature": signature.hex()}
 
 Return HTTP 200 with only that JSON field: a 64-byte sr25519 signature encoded as 128 hexadecimal characters. Do not reserialize the challenge before signing. The challenge expires after 30 seconds; Platform allows 10 seconds for the whole probe and at most 8 KiB of response data. Ownership is verified once per registration request, including URL updates.
 
-Read your hotkey's `BlockAtRegistration` from the finalized metagraph, then submit a signed request. Platform may still be using an earlier finalized snapshot; retry a registration mismatch after its next refresh. This example uses an existing local wallet:
+Submit a signed request using your existing local wallet. Platform derives the registration block from its accepted finalized membership and verifies that it remains unchanged during endpoint verification:
 
 ```python
 import json
@@ -101,7 +101,6 @@ from harnyx_commons.bittensor import build_canonical_request
 hotkey = bt.wallet(name="default", hotkey="default").hotkey
 body = json.dumps({
     "url": "https://miner.example/base",
-    "block_at_registration": 12345,  # Your actual finalized registration block.
     "timestamp": datetime.now(UTC).isoformat(),
     "nonce": secrets.token_hex(32),
 }, separators=(",", ":")).encode()
@@ -119,6 +118,8 @@ response = httpx.post(
 response.raise_for_status()
 print(response.json())
 ```
+
+The former request field `block_at_registration` is optional and deprecated; Platform ignores it for compatibility with deployed clients. New clients should omit it. Deploy Platform before clients that omit the field.
 
 Success returns `miner_id`, `miner_registration_id`, and the normalized `url`; the miner immediately appears in prepared eligibility. A URL update preserves the current registration and rating. A new chain registration block resets rating state while preserving historical rows. Finalized deregistration releases the URL. Returning after endpoint cleanup requires a new ownership verification.
 
@@ -152,13 +153,12 @@ Search HTTP requests use the assignment's remaining time, including an overall d
 
 Platform rejects new assignment searches above 2 MiB of decoded provider response or 2 MiB of normalized saved response/results evidence. This can reject long valid pages: source text is represented in both the provider response and citation results. There is no truncation or automatic retry; known provider costs remain recorded. The example handles this as a failed search and retains the assignment. See the [SDK search contract](../packages/miner-sdk/README.md) for exact byte-counting and replay behavior.
 
-Run it with your public HTTPS base URL, your hotkey's current `BlockAtRegistration`, and a TLS certificate and key whose public hostname matches that URL. The server checks challenges against these startup values, not the request's Host header. Then follow [Black-box endpoint registration](#black-box-endpoint-registration) to register the same URL and block with Platform:
+Run it with your public HTTPS base URL and a TLS certificate and key whose public hostname matches that URL. The server checks the challenge's hotkey and URL against its startup values, not the request's Host header. Then follow [Black-box endpoint registration](#black-box-endpoint-registration) to register the URL with Platform:
 
 ```bash
 harnyx-miner-endpoint-test \
   --miner-hotkey-uri <miner-hotkey-uri> \
   --endpoint-url https://miner.example:8300/base \
-  --registration-block <block-at-registration> \
   --ssl-certfile <certificate.pem> \
   --ssl-keyfile <private-key.pem> \
   --host 0.0.0.0 \
@@ -171,7 +171,6 @@ To exercise receipt-backed search, set `PLATFORM_BASE_URL` to the trusted HTTPS 
 harnyx-miner-endpoint-test \
   --miner-hotkey-uri <miner-hotkey-uri> \
   --endpoint-url https://miner.example:8300/base \
-  --registration-block <block-at-registration> \
   --provider parallel \
   --provider-key-env PARALLEL_API_KEY \
   --ssl-certfile <certificate.pem> \
