@@ -13,10 +13,14 @@ def benchmark_run_id_for_source_batch(
     source_batch_id: UUID,
     dataset_version: str,
     scoring_version: str,
+    champion_artifact_id: UUID | None = None,
 ) -> UUID:
+    identity = f"{suite_slug}:{source_batch_id}:{dataset_version}:{scoring_version}"
+    if champion_artifact_id is not None:
+        identity += f":{champion_artifact_id}"
     return uuid5(
         _BENCHMARK_RUN_NAMESPACE,
-        f"{suite_slug}:{source_batch_id}:{dataset_version}:{scoring_version}",
+        identity,
     )
 
 
