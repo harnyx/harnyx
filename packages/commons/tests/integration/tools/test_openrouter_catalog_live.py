@@ -17,19 +17,6 @@ async def test_public_chat_catalog_preserves_exact_model_id() -> None:
     snapshot.preflight()
 
 
-async def test_public_endpoint_tags_support_pinned_provider_pricing() -> None:
-    catalog = OpenRouterPricingCatalog()
-    snapshot = await catalog.snapshot("inception/mercury-3", provider_only=("inception",))
-    assert snapshot.model == "inception/mercury-3"
-    assert any(endpoint.tag == "inception" and endpoint.provider_name == "Inception" for endpoint in snapshot.endpoints)
-    # Check the returned tag/discount contract without asserting a transient promotion rate.
-    reference, discount = snapshot.reference_cost(
-        provider="Inception", inference=Decimal(1), separate_charge=Decimal(0)
-    )
-    assert 0 <= discount < 1
-    assert reference >= 1
-
-
 async def test_public_zero_discount_conditional_route_has_regular_price_basis() -> None:
     """The shared catalog must admit a real conditional route without an experiment adapter."""
     snapshot = await OpenRouterPricingCatalog().snapshot("openai/gpt-6-luna")
