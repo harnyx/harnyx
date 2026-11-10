@@ -6,10 +6,26 @@ from harnyx_commons.llm.schema import (
     GroundedLlmRequest,
     LlmMessage,
     LlmMessageContentPart,
+    LlmRequest,
     LlmTool,
+    OpenRouterWebSearchEngine,
     supports_grounded_additional_tools,
     supports_grounded_requests,
 )
+
+
+@pytest.mark.parametrize("provider,grounded", [("vertex", True), ("openrouter", False)])
+def test_search_engine_cannot_be_silently_ignored_by_an_inapplicable_request(provider, grounded):
+    request_type = GroundedLlmRequest if grounded else LlmRequest
+    with pytest.raises(ValueError, match="web_search_engine requires an OpenRouter grounded request"):
+        request_type(
+            provider=provider,
+            model="gemini-2.5-flash" if provider == "vertex" else "openai/gpt-6-luna",
+            messages=_messages(),
+            temperature=None,
+            max_output_tokens=None,
+            web_search_engine=OpenRouterWebSearchEngine.EXA,
+        )
 
 
 def _tools() -> tuple[LlmTool, ...]:
@@ -161,10 +177,7 @@ def test_supports_grounded_additional_tools_matches_grounded_request_support_for
 def test_grounded_vertex_malformed_gemini_publisher_path_rejected() -> None:
     with pytest.raises(
         ValueError,
-        match=(
-            "grounded mode not supported for provider/model "
-            "'vertex:foo/publishers/google/models/gemini-2.5-flash'"
-        ),
+        match=("grounded mode not supported for provider/model 'vertex:foo/publishers/google/models/gemini-2.5-flash'"),
     ):
         GroundedLlmRequest(
             provider="vertex",

@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -38,6 +39,14 @@ from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatOutputSink
 ReasoningEffort = Literal["low", "medium", "high"]
 
 
+class OpenRouterWebSearchEngine(StrEnum):
+    """OpenRouter search choices; auto follows the provider/workspace default."""
+
+    AUTO = "auto"
+    NATIVE = "native"
+    EXA = "exa"
+
+
 class SearchQueryArguments(BaseModel):
     """A single search query, with no coercion or additional arguments."""
 
@@ -51,6 +60,7 @@ class AbstractLlmRequest(ToolLlmRequest, ABC):
     """Base class for all explicit-provider LLM requests (non-instantiable)."""
 
     grounded: bool = False
+    web_search_engine: OpenRouterWebSearchEngine | None = None
     output_mode: str = "text"
     output_schema: type[BaseModel] | None = None
     postprocessor: Callable[[LlmResponse], PostprocessResult] | None = None
@@ -67,6 +77,10 @@ class AbstractLlmRequest(ToolLlmRequest, ABC):
     include_payloads_in_observability: bool = True
 
     def __post_init__(self) -> None:
+        if self.web_search_engine is not None:
+            if not self.grounded or self.provider.strip().lower() != "openrouter":
+                raise ValueError("web_search_engine requires an OpenRouter grounded request")
+            object.__setattr__(self, "web_search_engine", OpenRouterWebSearchEngine(self.web_search_engine))
         if self.internal_metadata is not None and "use_case" in self.internal_metadata:
             raise ValueError("LLM request use_case must be provided via the typed use_case field")
         if self.use_case is None:
@@ -118,6 +132,7 @@ class LlmRequest(AbstractLlmRequest):
 
 
 __all__ = [
+    "OpenRouterWebSearchEngine",
     "ReasoningEffort",
     "LlmMessage",
     "LlmTool",

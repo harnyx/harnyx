@@ -22,7 +22,12 @@ from openai.types.responses.response_output_text import AnnotationURLCitation
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
 from harnyx_commons.llm.cost_settlement import settled_openrouter_reported_cost
-from harnyx_commons.llm.provider import BaseLlmProvider, LlmProviderConfigurationError, record_observed_llm_response
+from harnyx_commons.llm.provider import (
+    BaseLlmProvider,
+    LlmProviderConfigurationError,
+    LlmProviderError,
+    record_observed_llm_response,
+)
 from harnyx_commons.llm.schema import (
     AbstractLlmRequest,
     LlmChoice,
@@ -83,6 +88,13 @@ class _OpenRouterUsage(_OpenRouterModel):
     server_tool_use_details: _ServerToolUsage | None = None
 
 
+class _OpenRouterResponseError(_OpenRouterModel):
+    code: Literal[
+        "invalid_prompt", "rate_limit_exceeded", "image_content_policy_violation", "permission_denied", "server_error"
+    ]
+    message: str
+
+
 class OpenRouterResponse(_OpenRouterModel):
     """OpenRouter's Responses wire contract, including its server-tool variant."""
 
@@ -99,6 +111,8 @@ class OpenRouterResponse(_OpenRouterModel):
         ]
     ]
     usage: _OpenRouterUsage | None = None
+    error: _OpenRouterResponseError | None = None
+    error_type: str | None = None
 
 
 async def create_openrouter_response(client: AsyncOpenAI, **kwargs: Any) -> OpenRouterResponse:
@@ -156,6 +170,8 @@ class OpenRouterResponsesLlmProvider(BaseLlmProvider):
             self._client = AsyncOpenAI(api_key=key, base_url="https://openrouter.ai/api/v1", max_retries=0)
         history = _input(request)
         tools: list[dict[str, Any]] = [{"type": "openrouter:web_search"}] if request.grounded else []
+        if request.web_search_engine is not None:
+            tools[0]["parameters"] = {"engine": request.web_search_engine}
         retrieval: dict[str, Any] | None = None
         for tool in request.tools or ():
             if tool.type == "provider_native":
@@ -182,7 +198,7 @@ class OpenRouterResponsesLlmProvider(BaseLlmProvider):
             "store": False,
             "service_tier": "default",
             "reasoning": {"effort": request.reasoning_effort or "none", "summary": "auto"},
-            "include": ["reasoning.encrypted_content", "web_search_call.action.sources"],
+            "include": ["reasoning.encrypted_content"],
         }
         if request.max_output_tokens is not None:
             kwargs["max_output_tokens"] = request.max_output_tokens
@@ -240,6 +256,10 @@ class OpenRouterResponsesLlmProvider(BaseLlmProvider):
                 }
             result = replace(result, usage=total_usage, metadata=metadata)
             record_observed_llm_response(result)
+            if raw.status == "failed" and raw.error is not None:
+                raise LlmProviderError(
+                    f"OpenRouter response failed: {raw.error_type or raw.error.code}: {raw.error.message}"
+                )
             if result.finish_reason not in {"stop", "tool_calls"} or retrieval is None or not result.tool_calls:
                 return result
             history.extend(item.model_dump(mode="json", exclude_none=True) for item in raw.output)
@@ -304,7 +324,7 @@ def normalize_response(raw: OpenRouterResponse) -> LlmResponse:
                 elif isinstance(part, ResponseOutputText):
                     text.append(part.text)
                     sources.extend(
-                        {"url": a.url, "title": a.title}
+                        {"url": a.url, "title": a.title or a.url}
                         for a in part.annotations
                         if isinstance(a, AnnotationURLCitation)
                     )
