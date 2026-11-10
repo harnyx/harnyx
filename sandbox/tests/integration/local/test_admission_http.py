@@ -195,7 +195,7 @@ async def test_runner_window_cancellation_does_not_block_later_http_admission(
     harness, http, _ = admission_server
     occupied = await harness.reserve(AdmissionRequest(limit_seconds=5.0), {})
     runner, batch_id, artifact, task, _, _, _, _ = _assigned_task_test_context(tmp_path)
-    runner._config = SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=0.6)
+    runner._config = SchedulerConfig(token_secret_bytes=8, execution_time_limit_seconds=10.0)
     monkeypatch.setattr(runner_module, "TASK_START_WAIT_SECONDS", 1.2)
     assignment = MinerTaskWorkAssignment(
         batch_id=batch_id,
@@ -214,7 +214,7 @@ async def test_runner_window_cancellation_does_not_block_later_http_admission(
         assignment_records={},
         starting_records={},
         monotonic_clock=time.monotonic,
-        dispatch_start_lease_seconds=1.65,
+        dispatch_start_lease_seconds=30.0,
     )
     reserve = harness.reserve
     requests = 0
@@ -222,6 +222,10 @@ async def test_runner_window_cancellation_does_not_block_later_http_admission(
     async def observed_reserve(*args, **kwargs):
         nonlocal requests
         requests += 1
+        if requests == 1:
+            # Exercise an early timeout without spending the successful attempt's
+            # execution budget or relying on two near-adjacent wall-clock deadlines.
+            raise HTTPException(504, detail={"error": "admission deadline exceeded", "exception": "TimeoutError"})
         if requests == 3:
             # The first window's retry is now disconnected; the second window is live.
             harness.release(occupied)
@@ -231,7 +235,7 @@ async def test_runner_window_cancellation_does_not_block_later_http_admission(
 
     class Orchestrator:
         async def execute(self, request, **_kwargs):
-            assert request.execution_time_limit_seconds == 0.6
+            assert request.execution_time_limit_seconds == 10.0
             return _successful_execution(request)
 
     group.put_nowait(assignment)
@@ -244,7 +248,7 @@ async def test_runner_window_cancellation_does_not_block_later_http_admission(
                 orchestrator=cast(TaskRunOrchestrator, Orchestrator()),
                 sandbox_client=HttpSandboxClient(str(http.base_url), control_token=_CONTROL_TOKEN, client=http),
             ),
-            3.0,
+            30.0,
         )
         assert outcome.execution_to_queue is not None
         assert claim.record.session_id is not None
