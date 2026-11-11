@@ -30,8 +30,10 @@ from harnyx_commons.protocol_headers import (
 from harnyx_commons.sandbox.client import (
     InvalidSandboxResponseError,
     SandboxClient,
+    SandboxInvocationResult,
     SandboxInvokeError,
     SandboxResponseProcessingError,
+    parse_execution_completion,
 )
 from harnyx_commons.sandbox.diagnostic_files import (
     ensure_private_diagnostic_dir,
@@ -79,7 +81,7 @@ class _UnreadySandboxClient(SandboxClient):
         session_id: UUID,
         include_failure_details: bool = True,
         admission: SandboxAdmission | None = None,
-    ) -> Mapping[str, JsonValue]:
+    ) -> SandboxInvocationResult | Mapping[str, JsonValue]:
         del entrypoint, payload, context, token, session_id, include_failure_details, admission
         raise RuntimeError("unready sandbox cannot accept invocations")
 
@@ -360,7 +362,7 @@ class HttpSandboxClient(SandboxClient):
         session_id: UUID,
         include_failure_details: bool = True,
         admission: SandboxAdmission | None = None,
-    ) -> Mapping[str, JsonValue]:
+    ) -> SandboxInvocationResult | Mapping[str, JsonValue]:
         limit = ExecutionTimeBudgetDTO.model_validate(context.get("time_budget")).limit_seconds
         if admission is not None:
             return await self._invoke_admitted(
@@ -410,7 +412,7 @@ class HttpSandboxClient(SandboxClient):
         session_id: UUID,
         include_failure_details: bool = True,
         admission: SandboxAdmission,
-    ) -> Mapping[str, JsonValue]:
+    ) -> SandboxInvocationResult | Mapping[str, JsonValue]:
         # Docker callers and their sandbox share the host's monotonic clock.
         deadline = min(
             time.monotonic() + ExecutionTimeBudgetDTO.model_validate(context.get("time_budget")).limit_seconds,
@@ -445,6 +447,7 @@ class HttpSandboxClient(SandboxClient):
                     "execution lost its result in an OOM-affected sandbox",
                     status_code=503,
                     detail_code=SANDBOX_OOM_AFFECTED,
+                    completed_at=exc.completed_at if isinstance(exc, SandboxInvokeError) else None,
                     detail_exception=None,
                     detail_error=None,
                 ) from exc
@@ -460,7 +463,7 @@ class HttpSandboxClient(SandboxClient):
         session_id: UUID,
         include_failure_details: bool = True,
         admission: SandboxAdmission,
-    ) -> Mapping[str, JsonValue]:
+    ) -> SandboxInvocationResult | Mapping[str, JsonValue]:
         context_payload = dict(context)
         time_budget = ExecutionTimeBudgetDTO.model_validate(context_payload.get("time_budget"))
         headers: dict[str, str] = {
@@ -470,6 +473,7 @@ class HttpSandboxClient(SandboxClient):
             HOST_CONTAINER_URL_HEADER: self._host_container_url or "",
             "Connection": "close",
         }
+        completed_at = None
         try:
             response = await self._post_entrypoint_with_connect_retry(
                 entrypoint=entrypoint,
@@ -480,6 +484,9 @@ class HttpSandboxClient(SandboxClient):
                 limit_seconds=time_budget.limit_seconds,
                 admission=admission,
             )
+            completed_at = parse_execution_completion(response.headers)
+            if entrypoint == "query" and completed_at is None:
+                raise SandboxResponseProcessingError("sandbox omitted trusted query completion")
             response.raise_for_status()
         except httpx.TimeoutException as exc:
             logger.error(
@@ -556,6 +563,7 @@ class HttpSandboxClient(SandboxClient):
                     else f"sandbox entrypoint request failed with status {status}"
                 ),
                 status_code=status,
+                completed_at=completed_at,
                 remote_state_uncertain=(status == 503 and detail.code == "SandboxCleanupUnconfirmed"),
                 detail_code=detail.code,
                 detail_exception=detail.exception,
@@ -563,7 +571,12 @@ class HttpSandboxClient(SandboxClient):
             ) from (exc if include_failure_details else None)
         try:
             body = response.json()
-            return _parse_sandbox_invoke_result(body)
+            result = _parse_sandbox_invoke_result(body)
+            if entrypoint == "query":
+                if completed_at is None:
+                    raise SandboxResponseProcessingError("sandbox omitted trusted query completion")
+                return SandboxInvocationResult(result, completed_at)
+            return _require_json_object(result, label="sandbox response result must be a JSON object")
         except (TypeError, ValueError) as exc:
             logger.error(
                 "sandbox entrypoint returned an invalid response: entrypoint=%s session_id=%s",
@@ -652,10 +665,10 @@ class _SandboxResponseDetail:
     error: str | None
 
 
-def _parse_sandbox_invoke_result(value: object) -> dict[str, JsonValue]:
+def _parse_sandbox_invoke_result(value: object) -> JsonValue:
     body = _require_object_mapping(value, label="sandbox response must be a JSON object")
     result = body.get("result", body)
-    return _require_json_object(result, label="sandbox response result must be a JSON object")
+    return _to_json_value(result, label="sandbox response result")
 
 
 def _parse_sandbox_response_detail(value: object) -> _SandboxResponseDetail:

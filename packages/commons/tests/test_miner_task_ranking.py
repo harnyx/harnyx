@@ -773,3 +773,49 @@ def test_ordered_challengers_excludes_only_the_incumbent() -> None:
 def test_compose_champion_weights_returns_winner_take_all() -> None:
     assert compose_champion_weights(5) == {5: 1.0}
     assert compose_champion_weights(None) == {}
+
+
+@pytest.mark.parametrize("missing", ("one_validator", "whole_task", "asymmetric"))
+@pytest.mark.parametrize("improvement", ("runtime", "cost"))
+def test_efficiency_uses_only_matched_remaining_measurements(missing: str, improvement: str) -> None:
+    incumbent, challenger = uuid4(), uuid4()
+    validators, tasks = (uuid4(), uuid4()), (uuid4(), uuid4())
+    rows = []
+    for vi, validator in enumerate(validators):
+        for ti, task in enumerate(tasks):
+            for artifact, duration in (
+                (incumbent, 10_000.0), (challenger, 5_000.0 if improvement == "runtime" else 10_000.0),
+            ):
+                absent = ti == 1 and (
+                    missing == "whole_task"
+                    or (missing == "one_validator" and vi == 0 and artifact == incumbent)
+                    or (missing == "asymmetric" and ((vi == 0) == (artifact == incumbent)))
+                )
+                rows.append(ArtifactRankingRow(validator, artifact, task, 0.5,
+                                               0.5 if improvement == "cost" and artifact == challenger else 1.0,
+                                               elapsed_ms=None if absent else duration))
+    result = RankingCascade().evaluate_challenger(
+        incumbent_artifact_id=incumbent, challenger_artifact_id=challenger,
+        aggregates=aggregate_ranking_rows(rows),
+    )
+    assert result.selected_rule is (
+        RankingDecisionRule.RUNTIME_REDUCTION if improvement == "runtime" else RankingDecisionRule.COST_REDUCTION
+    )
+    assert result.runtime_non_regressing is True
+
+
+def test_missing_timing_cannot_make_unmatched_fast_work_win() -> None:
+    incumbent, challenger, validator = uuid4(), uuid4(), uuid4()
+    first, second = uuid4(), uuid4()
+    rows = [
+        ArtifactRankingRow(validator, incumbent, first, 0.5, 1.0, elapsed_ms=1000),
+        ArtifactRankingRow(validator, challenger, first, 0.5, 1.0, elapsed_ms=2000),
+        ArtifactRankingRow(validator, incumbent, second, 0.5, 1.0, elapsed_ms=100_000),
+        ArtifactRankingRow(validator, challenger, second, 0.5, 1.0, elapsed_ms=None),
+    ]
+    result = RankingCascade().evaluate_challenger(
+        incumbent_artifact_id=incumbent, challenger_artifact_id=challenger,
+        aggregates=aggregate_ranking_rows(rows),
+    )
+    assert result.selected_rule is None
+    assert result.runtime_non_regressing is False

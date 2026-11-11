@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
+from datetime import datetime
 from uuid import UUID
 
 from jsonschema import ValidationError as JsonSchemaValidationError
@@ -18,7 +20,13 @@ from harnyx_commons.application.ports.session_registry import SessionRegistryPor
 from harnyx_commons.application.ports.token_registry import TokenRegistryPort
 from harnyx_commons.domain.session import Session, SessionStatus
 from harnyx_commons.errors import SessionBudgetExhaustedError
-from harnyx_commons.sandbox.client import SandboxClient, SandboxInvokeError
+from harnyx_commons.json_types import JsonValue
+from harnyx_commons.sandbox.client import (
+    SandboxClient,
+    SandboxInvocationResult,
+    SandboxInvokeError,
+    SandboxResponseProcessingError,
+)
 from harnyx_commons.tools.dto import session_budget_snapshot
 from harnyx_commons.tools.http_serialization import serialize_tool_budget
 from harnyx_miner_sdk.sandbox_protocol import SandboxAdmission
@@ -38,20 +46,25 @@ class SandboxInvocationError(RuntimeError):
         detail_code: str | None,
         detail_exception: str | None,
         detail_error: str | None,
+        completed_at: datetime | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.detail_code = detail_code
         self.detail_exception = detail_exception
         self.detail_error = detail_error
+        self.completed_at = completed_at
 
 
 class MinerResponseValidationError(RuntimeError):
     """Raised when miner output violates the response contract."""
 
-    def __init__(self, message: str, *, rejected_response: str | None = None) -> None:
+    def __init__(
+        self, message: str, *, rejected_response: str | None = None, completed_at: datetime | None = None
+    ) -> None:
         super().__init__(message)
         self.rejected_response = rejected_response
+        self.completed_at = completed_at
 
 
 _GENERIC_REJECTION = "miner returned invalid response payload"
@@ -185,11 +198,15 @@ class EntrypointInvoker:
         session = self._load_session(request.session_id)
         self._validate_session(session, request)
         payload = await self._invoke_query(request=request, session=session, admission=admission)
-        self._raise_if_session_exhausted(session.session_id)
+        if not isinstance(payload, SandboxInvocationResult):
+            raise SandboxResponseProcessingError("sandbox omitted trusted query completion")
+        if payload.completed_at < session.issued_at:
+            raise SandboxResponseProcessingError("query completed before its session was issued")
+        self._raise_if_session_exhausted(session.session_id, completed_at=payload.completed_at)
         receipts = tuple(self._receipts.for_session(session.session_id))
         try:
             hydrated_response = hydrate_miner_response_payload(
-                payload,
+                payload.payload,
                 query=request.query,
                 session_id=session.session_id,
                 receipt_log=self._receipts,
@@ -197,11 +214,13 @@ class EntrypointInvoker:
         except (MinerResponsePayloadError, ValidationError) as exc:
             raise MinerResponseValidationError(
                 _public_rejection_reason(exc),
-                rejected_response=json.dumps(payload, ensure_ascii=True),
+                rejected_response=json.dumps(payload.payload, ensure_ascii=True),
+                completed_at=payload.completed_at,
             ) from exc
         return EntrypointInvocationResult(
             response=hydrated_response,
             tool_receipts=receipts,
+            execution_completed_at=payload.completed_at,
         )
 
     async def _invoke_query(
@@ -210,7 +229,7 @@ class EntrypointInvoker:
         request: EntrypointInvocationRequest,
         session: Session,
         admission: SandboxAdmission | None = None,
-    ) -> object:
+    ) -> SandboxInvocationResult | Mapping[str, JsonValue]:
         token = request.token
         cost_budget = serialize_tool_budget(session_budget_snapshot(session))
         try:
@@ -228,7 +247,11 @@ class EntrypointInvoker:
                 admission=admission,
             )
         except SandboxInvokeError as exc:
-            self._raise_if_session_exhausted(session.session_id, cause=exc)
+            if exc.completed_at is not None and exc.completed_at < session.issued_at:
+                raise SandboxResponseProcessingError("query completed before its session was issued") from exc
+            if exc.remote_state_uncertain and exc.completed_at is None:
+                raise SandboxResponseProcessingError("sandbox execution completion could not be recovered") from exc
+            self._raise_if_session_exhausted(session.session_id, cause=exc, completed_at=exc.completed_at)
             identifier = f"session={session.session_id} uid={request.uid} entrypoint={QUERY_ENTRYPOINT}"
             message = f"sandbox invocation failed ({identifier}): {exc}"
             raise SandboxInvocationError(
@@ -237,6 +260,7 @@ class EntrypointInvoker:
                 detail_code=exc.detail_code,
                 detail_exception=exc.detail_exception,
                 detail_error=exc.detail_error,
+                completed_at=exc.completed_at,
             ) from exc
         except Exception as exc:
             self._raise_if_session_exhausted(session.session_id, cause=exc)
@@ -269,14 +293,17 @@ class EntrypointInvoker:
         session_id: UUID,
         *,
         cause: Exception | None = None,
+        completed_at: datetime | None = None,
     ) -> None:
+        if completed_at is None:
+            return
         session = self._load_post_invoke_session(session_id)
         if session.status is not SessionStatus.EXHAUSTED:
             return
         message = f"session {session_id} exhausted during entrypoint invocation"
         if cause is None:
-            raise SessionBudgetExhaustedError(message)
-        raise SessionBudgetExhaustedError(message) from cause
+            raise SessionBudgetExhaustedError(message, completed_at=completed_at)
+        raise SessionBudgetExhaustedError(message, completed_at=completed_at) from cause
 
     def _load_post_invoke_session(self, session_id: UUID) -> Session:
         session = self._sessions.get(session_id)

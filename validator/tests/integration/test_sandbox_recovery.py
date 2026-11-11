@@ -253,7 +253,7 @@ async def test_scheduler_removes_unresponsive_real_deployment(sandbox_launcher):
         token=uuid4().hex,
         session_id=uuid4(),
     )
-    assert recovered["text"] == "recovered"
+    assert recovered.payload["text"] == "recovered"
 
 
 def _context(seconds):

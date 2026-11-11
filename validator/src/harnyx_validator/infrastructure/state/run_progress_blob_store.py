@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import mmap
+import os
 import shutil
-from collections.abc import Sequence
+import tempfile
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -12,11 +15,13 @@ from pathlib import Path
 from typing import Final
 from uuid import UUID
 
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptAuditRecord,
     MinerTaskRunSubmission,
+    PlatformOwnedTaskExecution,
+    PlatformOwnedTaskResult,
 )
 
 _FRAME_HEADER_SIZE: Final[int] = 8
@@ -141,6 +146,14 @@ class RunSubmissionBlobStore:
             raise RuntimeError("blob store read did not hydrate every requested submission")
         return tuple(item for item in ordered if item is not None)
 
+    def discover(self, batch_id: UUID) -> Iterator[RunSubmissionBlobRef]:
+        for ref in _discover_frames(self._batch_dir(batch_id), batch_id, "runs-"):
+            yield RunSubmissionBlobRef(
+                batch_id=ref.batch_id, sequence=ref.sequence, segment_name=ref.segment_name,
+                payload_offset=ref.payload_offset, payload_length=ref.payload_length,
+                frame_offset=ref.frame_offset, frame_length=ref.frame_length, sha256=ref.sha256,
+            )
+
     def delete_batch(self, batch_id: UUID) -> bool:
         writer_existed = self._writers_by_batch.pop(batch_id, None) is not None
         batch_dir = self._batch_dir(batch_id)
@@ -175,7 +188,10 @@ class RunSubmissionBlobStore:
         writer = self._writers_by_batch.get(batch_id)
         if writer is not None and writer.next_offset + frame_length <= self.segment_size_bytes:
             return writer
-        segment_index = 1 if writer is None else _segment_index(writer.name, prefix="runs-") + 1
+        segment_index = (
+            _next_segment_index(self._batch_dir(batch_id), "runs-") if writer is None
+            else _segment_index(writer.name, prefix="runs-") + 1
+        )
         name = f"runs-{segment_index:06d}.blob"
         path = self._batch_dir(batch_id) / name
         next_offset = path.stat().st_size if path.exists() else 0
@@ -257,6 +273,14 @@ class AttemptAuditBlobStore:
             raise RuntimeError("blob store read did not hydrate every requested attempt")
         return tuple(item for item in ordered if item is not None)
 
+    def discover(self, batch_id: UUID) -> Iterator[AttemptAuditBlobRef]:
+        for ref in _discover_frames(self._batch_dir(batch_id), batch_id, "attempts-"):
+            yield AttemptAuditBlobRef(
+                batch_id=ref.batch_id, sequence=ref.sequence, segment_name=ref.segment_name,
+                payload_offset=ref.payload_offset, payload_length=ref.payload_length,
+                frame_offset=ref.frame_offset, frame_length=ref.frame_length, sha256=ref.sha256,
+            )
+
     def delete_batch(self, batch_id: UUID) -> bool:
         writer_existed = self._writers_by_batch.pop(batch_id, None) is not None
         batch_dir = self._batch_dir(batch_id)
@@ -273,7 +297,10 @@ class AttemptAuditBlobStore:
         writer = self._writers_by_batch.get(batch_id)
         if writer is not None and writer.next_offset + frame_length <= self.segment_size_bytes:
             return writer
-        segment_index = 1 if writer is None else _segment_index(writer.name, prefix="attempts-") + 1
+        segment_index = (
+            _next_segment_index(self._batch_dir(batch_id), "attempts-") if writer is None
+            else _segment_index(writer.name, prefix="attempts-") + 1
+        )
         name = f"attempts-{segment_index:06d}.blob"
         path = self._batch_dir(batch_id) / name
         next_offset = path.stat().st_size if path.exists() else 0
@@ -361,3 +388,122 @@ __all__ = [
     "RunSubmissionBlobRef",
     "RunSubmissionBlobStore",
 ]
+
+
+logger = logging.getLogger(__name__)
+_PENDING_ADAPTER = TypeAdapter(PlatformOwnedTaskExecution | PlatformOwnedTaskResult)
+
+
+def _next_segment_index(directory: Path, prefix: str) -> int:
+    return 1 + max((_segment_index(p.name, prefix=prefix) for p in directory.glob(f"{prefix}*.blob")), default=0)
+
+
+def _discover_frames(directory: Path, batch_id: UUID, prefix: str) -> Iterator[_BlobRefFactory]:
+    segments = sorted(directory.glob(f"{prefix}*.blob"))
+    sequence = 0
+    for segment in segments:
+        with segment.open("r+b") as handle:
+            size = os.fstat(handle.fileno()).st_size
+            while handle.tell() < size:
+                offset = handle.tell()
+                header = handle.read(_FRAME_HEADER_SIZE)
+                length = int.from_bytes(header, "big")
+                if len(header) != _FRAME_HEADER_SIZE or length > size - handle.tell():
+                    if segment != segments[-1]:
+                        raise RuntimeError(f"corrupt run-progress frame: {segment.name} at {offset}")
+                    logger.warning("quarantining torn final run-progress frame", extra={"batch_id": str(batch_id),
+                                                                                     "segment": segment.name})
+                    handle.seek(offset)
+                    quarantine = segment.with_suffix(f".torn-{offset}")
+                    with quarantine.open("wb") as lost:
+                        lost.write(handle.read())
+                        lost.flush()
+                        os.fsync(lost.fileno())
+                    handle.truncate(offset)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                    break
+                payload = handle.read(length)
+                sequence += 1
+                yield _BlobRefFactory(batch_id=batch_id, sequence=sequence, segment_name=segment.name,
+                                      payload_offset=offset + _FRAME_HEADER_SIZE, payload_length=length,
+                                      frame_offset=offset, frame_length=length + _FRAME_HEADER_SIZE,
+                                      sha256=sha256(payload).hexdigest())
+
+
+class PendingTaskSubmissionStore:
+    """Durable unacknowledged transport envelopes; Platform owns accepted truth."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    def _path(self, item: PlatformOwnedTaskExecution | PlatformOwnedTaskResult) -> Path:
+        if isinstance(item, PlatformOwnedTaskExecution):
+            session_id = item.validator_session_id
+            kind = "execution"
+        else:
+            session_id = item.terminal_attempt.validator_session_id
+            kind = "result"
+        name = f"{kind}-{item.batch_id}-{item.artifact_id}-{item.task_id}-{item.attempt_number}-{session_id}.json"
+        return self.root / name
+
+    def persist(self, item: PlatformOwnedTaskExecution | PlatformOwnedTaskResult) -> None:
+        path = self._path(item)
+        if path.exists():
+            if _PENDING_ADAPTER.validate_json(path.read_bytes()) != item:
+                raise RuntimeError("conflicting pending submission for the same execution identity")
+            return
+        temporary: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=self.root, prefix=".pending-", delete=False) as handle:
+                temporary = handle.name
+                handle.write(_PENDING_ADAPTER.dump_json(item))
+                handle.flush()
+                os.fsync(handle.fileno())
+            try:
+                os.link(temporary, path)
+            except FileExistsError as exc:
+                if _PENDING_ADAPTER.validate_json(path.read_bytes()) != item:
+                    raise RuntimeError("conflicting pending submission for the same execution identity") from exc
+            self._sync_directory()
+        finally:
+            if temporary is not None:
+                Path(temporary).unlink(missing_ok=True)
+
+    def items(self) -> Iterator[PlatformOwnedTaskExecution | PlatformOwnedTaskResult]:
+        # A crash can leave a complete, synced envelope just before atomic installation.
+        for temporary in self.root.glob(".pending-*"):
+            try:
+                item = _PENDING_ADAPTER.validate_json(temporary.read_bytes())
+            except ValidationError:
+                # Staging files may be interrupted before the envelope is committed.
+                quarantine = self.root / f".incomplete-{temporary.name.removeprefix('.pending-')}"
+                temporary.rename(quarantine)
+                self._sync_directory()
+                logger.warning(
+                    "quarantined incomplete pending submission",
+                    extra={"quarantine_file": quarantine.name},
+                )
+                continue
+            self.persist(item)
+            temporary.unlink()
+            self._sync_directory()
+        for kind in ("execution-", "result-"):
+            for path in self.root.iterdir():
+                if path.name.startswith(kind) and path.suffix == ".json":
+                    item = _PENDING_ADAPTER.validate_json(path.read_bytes())
+                    if self._path(item) != path:
+                        raise RuntimeError("pending submission identity does not match its filename")
+                    yield item
+
+    def acknowledge(self, item: PlatformOwnedTaskExecution | PlatformOwnedTaskResult) -> None:
+        self._path(item).unlink(missing_ok=True)
+        self._sync_directory()
+
+    def _sync_directory(self) -> None:
+        descriptor = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)

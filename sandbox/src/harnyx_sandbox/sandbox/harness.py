@@ -16,14 +16,15 @@ import sys
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from harnyx_miner_sdk.context import ContextSnapshot
-from harnyx_miner_sdk.sandbox_headers import read_session_id_header
+from harnyx_miner_sdk.sandbox_headers import EXECUTION_COMPLETED_HEADER, read_session_id_header
 from harnyx_miner_sdk.sandbox_protocol import (
     EVALUATION_RESOURCE_POLICY_ENV,
     SANDBOX_OOM_AFFECTED,
@@ -246,6 +247,28 @@ class _Child:
     exited: asyncio.Future[int]
     requested: bool = False
     pidfd: int = -1
+
+
+@dataclass(slots=True)
+class ExecutionCompletion:
+    """Write-once terminal observation owned by the trusted supervisor."""
+
+    completed_at: datetime | None = None
+
+    def seal(self) -> None:
+        if self.completed_at is None:
+            self.completed_at = datetime.now(UTC)
+
+    def headers(self) -> dict[str, str]:
+        return {} if self.completed_at is None else {EXECUTION_COMPLETED_HEADER: self.completed_at.isoformat()}
+
+
+async def _settle_completed_query_calls(calls: set[asyncio.Task[None]]) -> None:
+    """Allow outstanding billing to settle under the cleanup bound, after timing is sealed."""
+    pending = asyncio.gather(*calls, return_exceptions=True)
+    done, _ = await asyncio.wait((pending,), timeout=4 * WORKER_KILL_GRACE_SECONDS)
+    if not done:
+        pending.cancel()
 
 
 class SandboxCleanupUnconfirmedError(RuntimeError):
@@ -725,7 +748,11 @@ class SandboxHarness:
             await self._compiler.close()
         await asyncio.gather(*self._invocations, return_exceptions=True)
 
-    async def invoke(self, entrypoint_name: str, body: EntrypointRequest, *, headers: ToolHeaders | None = None) -> Any:
+    async def invoke(
+        self, entrypoint_name: str, body: EntrypointRequest, *,
+        headers: ToolHeaders | None = None, completion: ExecutionCompletion | None = None,
+    ) -> Any:
+        completion = completion or ExecutionCompletion()
         context_data = body.context.model_dump(mode="json", exclude_none=True)
         if entrypoint_name == "query":
             try:
@@ -757,6 +784,7 @@ class SandboxHarness:
         try:
             failure = compiler.ready.result()
             if failure is not None:
+                completion.seal()
                 return self._unwrap_result(QueryResult(error=failure))
             remaining = (admission.deadline_monotonic_ns - time.monotonic_ns()) / 1e9
             async with asyncio.timeout(max(0, remaining)) as execution_deadline:
@@ -766,7 +794,8 @@ class SandboxHarness:
                     Invocation(entrypoint=entrypoint_name, payload=body.payload, context=context_data),
                     body.tool_config,
                     headers or {},
-                    execution_deadline=execution_deadline if self._memory is not None else None,
+                    execution_deadline=execution_deadline,
+                    completion=completion,
                 )
         except TimeoutError as exc:
             self._check_resources(started=True)
@@ -799,7 +828,9 @@ class SandboxHarness:
         headers: ToolHeaders,
         *,
         execution_deadline: asyncio.Timeout | None = None,
+        completion: ExecutionCompletion | None = None,
     ) -> Any:
+        completion = completion or ExecutionCompletion()
         with contextlib.ExitStack() as resources:
             parent, child = socket.socketpair()
             resources.callback(parent.close)
@@ -874,9 +905,13 @@ class SandboxHarness:
                                 "UnhandledException",
                             }:
                                 raise WorkerMessageViolationError("worker cannot report infrastructure failures")
+                            completion.seal()
+                            result_received = True
+                            if execution_deadline is not None:
+                                execution_deadline.reschedule(None)
                             active = False
                             cancel_streams()
-                            await asyncio.gather(*calls, return_exceptions=True)
+                            await _settle_completed_query_calls(calls)
                             result = self._unwrap_result(message)
                             result_received = True
                             if execution_deadline is not None:
@@ -895,9 +930,11 @@ class SandboxHarness:
                             raise WorkerMessageViolationError("worker tool call IDs must increase")
                         last_call_id = message.call_id
                     except WorkerMessageViolationError as exc:
+                        completion.seal()
+                        if execution_deadline is not None:
+                            execution_deadline.reschedule(None)
                         active = False
                         cancel_streams()
-                        await asyncio.gather(*calls, return_exceptions=True)
                         return self._unwrap_result(
                             QueryResult(
                                 error=WorkerError(
@@ -934,6 +971,7 @@ class SandboxHarness:
                     calls.add(call_task)
                     call_task.add_done_callback(calls.discard)
             finally:
+                completion.seal()
                 active = False
                 if writer is not None:
                     writer.close()
@@ -1020,13 +1058,19 @@ class SandboxHarness:
             entrypoint_name: str,
             body: EntrypointRequest,
             request: Request,
+            response: Response,
         ) -> dict[str, Any]:
             headers = request.headers
+            completion = ExecutionCompletion()
+            request.state.execution_completion = completion
             try:
-                result = await self.invoke(entrypoint_name, body, headers=headers)
+                result = await self.invoke(entrypoint_name, body, headers=headers, completion=completion)
             except KeyError as exc:
-                raise HTTPException(status_code=404, detail=str(exc)) from exc
-            except (HTTPException, SandboxCleanupUnconfirmedError):
+                raise HTTPException(status_code=404, detail=str(exc), headers=completion.headers()) from exc
+            except HTTPException as exc:
+                exc.headers = {**(exc.headers or {}), **completion.headers()}
+                raise
+            except SandboxCleanupUnconfirmedError:
                 raise
             except Exception as exc:
                 session_id = read_session_id_header(headers)
@@ -1039,11 +1083,13 @@ class SandboxHarness:
                 )
                 raise HTTPException(
                     status_code=500,
+                    headers=completion.headers(),
                     detail={
                         "error": str(exc),
                         "exception": exc.__class__.__name__,
                     },
                 ) from exc
+            response.headers.update(completion.headers())
             return {"ok": True, "result": result}
 
         return router

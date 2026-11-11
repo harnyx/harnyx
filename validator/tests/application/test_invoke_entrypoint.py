@@ -20,7 +20,7 @@ from harnyx_commons.domain.tool_call import (
 )
 from harnyx_commons.errors import SessionBudgetExhaustedError
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
-from harnyx_commons.sandbox.client import SandboxInvokeError
+from harnyx_commons.sandbox.client import SandboxInvocationResult, SandboxInvokeError
 from harnyx_miner_sdk.sandbox_protocol import SandboxAdmission
 from harnyx_validator.application.dto.evaluation import EntrypointInvocationRequest, MinerTaskRunRequest
 from harnyx_validator.application.evaluate_task_run import TaskRunOrchestrator
@@ -166,7 +166,7 @@ class RecordingSandbox(SandboxClient):
             self.on_invoke(session_id)
         if self.raise_error is not None:
             raise self.raise_error
-        return self.response
+        return SandboxInvocationResult(self.response, datetime(2025, 10, 17, 12, 0, 1, tzinfo=UTC))
 
 
 def _make_session_request(token: str) -> SessionTokenRequest:
@@ -229,7 +229,7 @@ async def test_orchestrator_passes_original_admission_through_invoker() -> None:
         reservation_id="reserved", generation="worker", deadline_monotonic_ns=99999999999999999
     )
     orchestrator = TaskRunOrchestrator(invoker, receipts, object(), sessions, clock=lambda: datetime.now(UTC))
-    await orchestrator.execute(
+    execution = await orchestrator.execute(
         MinerTaskRunRequest(
             batch_id=uuid4(),
             session_id=session_id,
@@ -244,6 +244,7 @@ async def test_orchestrator_passes_original_admission_through_invoker() -> None:
         admission=admission,
     )
     assert sandbox.admissions == [admission]
+    assert execution.execution_completed_at == datetime(2025, 10, 17, 12, 0, 1, tzinfo=UTC)
 
 
 async def test_invoke_entrypoint_calls_query_with_query_payload() -> None:
@@ -682,7 +683,8 @@ async def test_invoke_entrypoint_raises_when_session_exhausts_after_successful_r
         )
 
 
-async def test_invoke_entrypoint_raises_exhausted_when_sandbox_errors_after_exhaustion() -> None:
+@pytest.mark.parametrize("known_completion", (True, False))
+async def test_budget_failure_requires_trusted_execution_completion(known_completion: bool) -> None:
     token = uuid4().hex
     invoker, sandbox, session_id, session_registry, _, _, _ = _build_invoker(token)
 
@@ -692,9 +694,14 @@ async def test_invoke_entrypoint_raises_exhausted_when_sandbox_errors_after_exha
         session_registry.update(session.mark_exhausted())
 
     sandbox.on_invoke = exhaust_session
-    sandbox.raise_error = RuntimeError("tool budget exceeded")
+    sandbox.raise_error = (
+        SandboxInvokeError("tool budget exceeded", status_code=500, detail_code=None,
+                           detail_exception=None, detail_error=None,
+                           completed_at=datetime(2025, 10, 17, 12, 0, 1, tzinfo=UTC))
+        if known_completion else RuntimeError("connection lost after session exhausted")
+    )
 
-    with pytest.raises(SessionBudgetExhaustedError):
+    with pytest.raises(SessionBudgetExhaustedError if known_completion else SandboxInvocationError):
         await invoker.invoke(
             EntrypointInvocationRequest(
                 session_id=session_id,
@@ -731,3 +738,20 @@ async def test_invoke_entrypoint_preserves_structured_sandbox_error_metadata() -
     assert exc_info.value.detail_code == "UnhandledException"
     assert exc_info.value.detail_exception == "KeyError"
     assert exc_info.value.detail_error == "missing key"
+
+
+async def test_error_completion_cannot_precede_session_issue():
+    from harnyx_commons.sandbox.client import SandboxResponseProcessingError
+
+    token = uuid4().hex
+    invoker, sandbox, session_id, *_ = _build_invoker(token)
+    sandbox.raise_error = SandboxInvokeError(
+        "invalid supervisor clock", status_code=500, detail_code=None,
+        detail_exception=None, detail_error=None,
+        completed_at=datetime(2020, 1, 1, tzinfo=UTC),
+    )
+    with pytest.raises(SandboxResponseProcessingError, match="before its session"):
+        await invoker.invoke(EntrypointInvocationRequest(
+            session_id=session_id, token=token, uid=42, execution_time_limit_seconds=300,
+            query=Query(text="clock validation"),
+        ))

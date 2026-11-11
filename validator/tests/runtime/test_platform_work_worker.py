@@ -2263,3 +2263,116 @@ async def test_closing_group_without_assignments_retains_capacity_until_owned_ta
     finally:
         release.set()
         await group.task
+
+
+@pytest.mark.parametrize("lost_acknowledgement", (False, True))
+@pytest.mark.parametrize("save_state", ("installed", "temporary"))
+@pytest.mark.parametrize(
+    "incomplete_staging", (None, b"", b'{"batch_id":'), ids=("clean", "empty", "truncated"),
+)
+async def test_restart_replays_saved_result_before_polling_or_execution(
+    tmp_path, lost_acknowledgement, save_state, incomplete_staging,
+):
+    from harnyx_validator.infrastructure.state.run_progress import FileBackedRunProgress
+
+    result = _platform_result(successful=True)
+    original = FileBackedRunProgress(tmp_path)
+    if save_state == "installed":
+        original.persist_pending(result)
+    else:
+        (original.pending_store.root / ".pending-crash").write_text(result.model_dump_json())
+    if incomplete_staging is not None:
+        (original.pending_store.root / ".pending-incomplete").write_bytes(incomplete_staging)
+    accepted = set()
+    events = []
+    fail_once = lost_acknowledgement
+
+    class Platform:
+        def submit_miner_task_work_results(self, results):
+            nonlocal fail_once
+            assert tuple(results) == (result,)
+            events.append("submit")
+            accepted.add(result.terminal_attempt.validator_session_id)
+            if fail_once:
+                fail_once = False
+                raise ConnectionError("response lost after acceptance")
+            return (_ack(result, reason_code="already_accepted"),)
+
+        async def request_miner_task_work(self, **kwargs):
+            assert accepted
+            assert list(FileBackedRunProgress(tmp_path).pending_submissions()) == []
+            events.append("poll")
+            return ()
+
+    worker = PlatformWorkWorker(
+        platform=Platform(), execute_artifact_assignments=_unexpected_execute_artifact_assignments,
+        target_concurrency=1, max_active_artifacts=1,
+        submission_store=FileBackedRunProgress(tmp_path),
+    )
+    try:
+        await worker.run_once()
+        if lost_acknowledgement:
+            assert events == ["submit"]
+            assert list(FileBackedRunProgress(tmp_path).pending_submissions()) == [result]
+            await worker.run_once()
+        if worker._work_request_task is not None:
+            await worker._work_request_task
+        assert events[-1] == "poll"
+        assert len(accepted) == 1
+        assert list(FileBackedRunProgress(tmp_path).pending_submissions()) == []
+        if incomplete_staging is not None:
+            assert (original.pending_store.root / ".incomplete-incomplete").read_bytes() == incomplete_staging
+            assert not (original.pending_store.root / ".pending-incomplete").exists()
+    finally:
+        await worker._cancel_work_request_task()
+        await worker._cancel_scoreable_execution_request_task()
+
+
+@pytest.mark.parametrize("corrupt_payload", (b"", b'{"batch_id":'), ids=("empty", "truncated"))
+async def test_corrupt_pending_record_never_unlocks_fresh_work(tmp_path, corrupt_payload):
+    from harnyx_validator.infrastructure.state.run_progress import FileBackedRunProgress
+
+    store = FileBackedRunProgress(tmp_path)
+    store.persist_pending(_platform_result(successful=True))
+    committed = next(store.pending_store.root.glob("result-*.json"))
+    committed.write_bytes(corrupt_payload)
+
+    class Platform:
+        async def request_miner_task_work(self, **kwargs):
+            pytest.fail("corrupt recovery must not start fresh work")
+
+    worker = PlatformWorkWorker(
+        platform=Platform(), execute_artifact_assignments=_unexpected_execute_artifact_assignments,
+        submission_store=store, target_concurrency=1, max_active_artifacts=1,
+    )
+    for _ in range(2):
+        with pytest.raises((ValueError, RuntimeError), match="JSON|recovery"):
+            await worker.run_once()
+    assert worker._work_request_task is None
+    assert committed.read_bytes() == corrupt_payload
+    assert not list(store.pending_store.root.glob(".incomplete-*"))
+
+
+async def test_platform_outage_keeps_recovery_to_one_bounded_window():
+    yielded = 0
+    result = _platform_result(successful=True)
+
+    class Store:
+        def pending_submissions(self):
+            nonlocal yielded
+            for _ in range(250):
+                yielded += 1
+                yield result
+
+    class Platform:
+        def submit_miner_task_work_results(self, results):
+            raise ConnectionError("Platform unavailable")
+
+    worker = PlatformWorkWorker(
+        platform=Platform(), execute_artifact_assignments=_unexpected_execute_artifact_assignments,
+        submission_store=Store(), target_concurrency=1, max_active_artifacts=1,
+    )
+    for _ in range(4):
+        await worker.run_once()
+    assert yielded == 100
+    assert worker._work_request_task is None

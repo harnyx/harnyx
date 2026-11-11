@@ -423,6 +423,8 @@ class MinerTaskErrorCode(StrEnum):
 
 DELIVERY_DISQUALIFYING_VALIDATOR_PAIR_ERROR_CODES: frozenset[MinerTaskErrorCode] = frozenset(
     (
+        MinerTaskErrorCode.VALIDATOR_FAILED,
+        MinerTaskErrorCode.UNEXPECTED_VALIDATOR_FAILURE,
         MinerTaskErrorCode.SCORING_LLM_RETRY_EXHAUSTED,
         MinerTaskErrorCode.ARTIFACT_FETCH_FAILED,
         MinerTaskErrorCode.ARTIFACT_HASH_MISMATCH,

@@ -830,6 +830,62 @@ async def test_miner_promotion_separates_inference_discount_from_actual_and_rout
     await provider.aclose()
 
 
+@pytest.mark.parametrize("prompt_tokens,model,conditional", [
+    (1000, "openai/gpt-oss-20b", False),
+    (None, "openai/gpt-oss-20b", False),
+    (1000, "inception/mercury-3", False),
+    (1000, "openai/gpt-oss-20b", True),
+])
+async def test_successful_unbilled_supported_chat_estimates_only_with_complete_usage(prompt_tokens, model, conditional):
+    """An unbilled success must remain usable, with an estimate distinct from an actual bill."""
+    from harnyx_commons.errors import ToolProviderError
+    from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
+    from harnyx_commons.tools.provider_billing import OpenRouterAccounting
+    from harnyx_commons.tools.runtime_invoker import RuntimeToolInvoker
+
+    catalog = _miner_pricing_catalog(conditional=conditional, discount=0 if conditional else 0.5)
+    original = await catalog.snapshot("inception/mercury-3")
+    snapshot = replace(original, model=model)
+
+    class Catalog:
+        async def snapshot(self, *args, **kwargs):
+            return snapshot
+
+    class Delegate:
+        async def invoke(self, request):
+            request.on_provider_dispatch()
+            return LlmResponse(
+                id="unbilled", choices=(),
+                usage=LlmUsage(prompt_tokens=prompt_tokens, completion_tokens=500, total_tokens=None),
+                metadata={"raw_response": {"model": model, "provider": "Inception", "usage": {}}},
+            )
+
+        async def aclose(self):
+            pass
+
+    provider = OpenRouterLlmProvider(
+        openrouter_api_key=SecretStr("test"), pricing_catalog=Catalog(),
+        openrouter_chat_provider_factory=lambda _: (Delegate(), _FakeClient()),
+    )
+    invoker = RuntimeToolInvoker(InMemoryReceiptLog(), llm_provider=provider, llm_provider_name="openrouter")
+    kwargs = {"provider": "openrouter", "model": model, "messages": [{"role": "user", "content": "hi"}]}
+    try:
+        if prompt_tokens is None or model == "inception/mercury-3" or conditional:
+            with pytest.raises(ToolProviderError):
+                await invoker.invoke("llm_chat", args=(), kwargs=kwargs)
+        else:
+            output = await invoker.invoke("llm_chat", args=(), kwargs=kwargs)
+            assert output.actual_cost_usd is None
+            assert output.reference_cost_usd == pytest.approx(0.0001)
+            fact = OpenRouterAccounting.from_fields(
+                actual_cost_usd=output.actual_cost_usd, reference_cost_usd=output.reference_cost_usd,
+                evidence=output.actual_cost_evidence,
+            )
+            assert fact.to_evidence()["reference_cost_source"] == "usage_pricing"
+    finally:
+        await provider.aclose()
+
+
 @pytest.mark.parametrize(
     "discount,byok,charge,prompt_tokens,expected_actual,expected_reference",
     [

@@ -18,7 +18,7 @@ from harnyx_sandbox.sandbox.harness import (
     WorkerOutputReader,
     _EntrypointContext,
 )
-from harnyx_sandbox.sandbox.worker_protocol import WORKER_MESSAGE, WorkerResultProtocolError, load_json, read_frame
+from harnyx_sandbox.sandbox.worker_protocol import WorkerResultProtocolError, decode_worker_message, read_frame
 
 from harnyx_miner_sdk.sandbox_protocol import AdmissionRequest
 
@@ -165,12 +165,15 @@ async def test_frame_rejects_oversize_before_body():
         b'{"kind":"result","result":NaN}',
         b'{"kind":"result","result":1e999}',
         b'{"kind":"result","result":[-1e999]}',
+        br'{"kind":"result","result":{"text":"\ud800"}}',
+        br'{"kind":"result","result":{"\udfff":"value"}}',
+        br'{"kind":"result","error":{"code":"UnhandledException","exception":"ValueError","message":"\ud800"}}',
         b'{"kind":"tool","call_id":0,"method":"x","args":[],"kwargs":{},"token":"secret"}',
     ],
 )
 def test_hostile_frames_cannot_select_identity(payload):
-    with pytest.raises(ValueError if b"session_id" in payload or b"token" in payload else WorkerResultProtocolError):
-        WORKER_MESSAGE.validate_python(load_json(payload))
+    with pytest.raises((ValueError, WorkerResultProtocolError)):
+        decode_worker_message(payload)
 
 
 @pytest.mark.anyio("asyncio")

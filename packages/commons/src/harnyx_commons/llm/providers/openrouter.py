@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, Valid
 from harnyx_commons.config.llm import OpenAiCompatibleEndpointConfig
 from harnyx_commons.errors import ToolInvocationCancelledError, ToolInvocationTimeoutError, ToolProviderError
 from harnyx_commons.json_types import JsonObject, JsonValue
-from harnyx_commons.llm.cost_settlement import normalized_provider_cost, settled_response_cost
+from harnyx_commons.llm.cost_settlement import normalized_provider_cost, settled_response_cost, settled_static_llm_cost
 from harnyx_commons.llm.provider import (
     LlmProviderConfigurationError,
     LlmProviderError,
@@ -34,7 +34,7 @@ from harnyx_commons.llm.providers.thinking import resolve_request_thinking
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse, LlmThinkingConfig
 from harnyx_commons.llm.timeout import LlmAttemptTimeoutError
 from harnyx_commons.llm.tool_models import MINER_SELECTED_LLM_PROVIDER_MODELS, validate_paid_openrouter_model
-from harnyx_commons.tools.provider_billing import OpenRouterAccounting, ProviderBillingMetadata
+from harnyx_commons.tools.provider_billing import OpenRouterAccounting, ProviderBillingMetadata, ReferenceCostSource
 from harnyx_miner_sdk.tools.llm_provider_extra import OpenRouterProviderSelection
 
 OPENROUTER_ENDPOINT_ID = "openrouter"
@@ -83,9 +83,11 @@ def _miner_openrouter_billing(
     *,
     snapshot: OpenRouterPricingSnapshot | None,
     requested_model: str,
+    allow_usage_estimate: bool = False,
 ) -> ProviderBillingMetadata:
     actual: float | None = None
     reference: float | None = None
+    reference_source: ReferenceCostSource | None = None
     evidence: JsonObject = {"settlement_source": "unavailable", "requested_model": requested_model}
     if response is not None and response.usage is not None:
         evidence["token_usage"] = asdict(response.usage)
@@ -102,15 +104,20 @@ def _miner_openrouter_billing(
         if settled is not None and settled.evidence.get("settlement_source") == "provider_returned":
             actual = settled.cost_usd
             evidence.update(settled.evidence)
-        if actual is None:
-            raise ValueError("original OpenRouter billing unavailable; static estimates are not actual charges")
         aggregate = (response.metadata or {}).get("actual_cost_usd_total")
         if (response.metadata or {}).get("billable_response_count", 1) != 1:
             actual = normalized_provider_cost(aggregate, field_name="actual_cost_usd_total")
             raise ValueError("multiple billable responses cannot use one serving-provider discount")
         raw = _MinerBillingResponse.model_validate((response.metadata or {}).get("raw_response"))
         evidence["original_usage"] = raw.usage.model_dump(mode="json")
-        reference, reference_evidence = _openrouter_reference_cost(raw, snapshot)
+        if actual is None:
+            if not allow_usage_estimate:
+                raise ValueError("original OpenRouter billing unavailable; static estimates are not actual charges")
+            reference, reference_evidence = _openrouter_usage_reference(response, raw, snapshot)
+            reference_source = "usage_pricing"
+        else:
+            reference, reference_evidence = _openrouter_reference_cost(raw, snapshot)
+            reference_source = "reported_charge"
         evidence.update(reference_evidence)
     except (ValueError, ArithmeticError) as exc:
         evidence["reference_unavailable_reason"] = str(exc)
@@ -119,13 +126,31 @@ def _miner_openrouter_billing(
         actual_cost_usd=actual,
         reference_cost_usd=reference,
         llm_usage=None if response is None else response.usage,
+        reference_cost_source=reference_source,
     ).to_billing(evidence)
 
 
 def _openrouter_reference_cost(
     raw: _MinerBillingResponse, snapshot: OpenRouterPricingSnapshot
 ) -> tuple[float, JsonObject]:
-    evidence: JsonObject = {}
+    resolved_model, serving_provider = _openrouter_route(raw, snapshot)
+    if raw.usage.cost is None:
+        raise ValueError("original OpenRouter charge is missing")
+    inference, separate = raw.usage.cost, Decimal(0)
+    if raw.usage.is_byok is True:
+        inference = _MinerCostDetails.model_validate(raw.usage.cost_details).upstream_inference_cost
+        separate = raw.usage.cost
+    reference, discount = snapshot.reference_cost(
+        provider=serving_provider, inference=inference, separate_charge=separate
+    )
+    return reference, {
+        "resolved_model": resolved_model,
+        "upstream_provider": serving_provider,
+        "maximum_discount": float(discount),
+    }
+
+
+def _openrouter_route(raw: _MinerBillingResponse, snapshot: OpenRouterPricingSnapshot) -> tuple[str, str]:
     resolved_model, serving_provider = raw.model, raw.provider
     if resolved_model is None or serving_provider is None:
         routing = _OpenRouterRouterMetadata.model_validate(raw.openrouter_metadata)
@@ -144,21 +169,30 @@ def _openrouter_reference_cost(
         e.model_id.split(":", 1)[0] == resolved for e in snapshot.endpoints
     ):
         raise ValueError("resolved OpenRouter model does not match the pricing snapshot")
-    if raw.usage.cost is None:
-        raise ValueError("original OpenRouter charge is missing")
-    inference, separate = raw.usage.cost, Decimal(0)
-    if raw.usage.is_byok is True:
-        inference = _MinerCostDetails.model_validate(raw.usage.cost_details).upstream_inference_cost
-        separate = raw.usage.cost
-    reference, discount = snapshot.reference_cost(
-        provider=serving_provider, inference=inference, separate_charge=separate
-    )
-    evidence.update(
-        resolved_model=resolved_model,
-        upstream_provider=serving_provider,
-        maximum_discount=float(discount),
-    )
-    return reference, evidence
+    return resolved_model, serving_provider
+
+
+def _openrouter_usage_reference(
+    response: LlmResponse, raw: _MinerBillingResponse, snapshot: OpenRouterPricingSnapshot
+) -> tuple[float, JsonObject]:
+    model, provider = _openrouter_route(raw, snapshot)
+    usage = response.usage
+    if usage is None or usage.prompt_tokens is None or usage.completion_tokens is None:
+        raise ValueError("OpenRouter usage-priced reference requires complete token counts")
+    # Validate serving-provider membership and the same bound catalog protections.
+    snapshot.reference_cost(provider=provider, inference=Decimal(0), separate_charge=Decimal(0))
+    if any(
+        endpoint.pricing.overrides or endpoint.pricing.request or endpoint.pricing.web_search
+        for endpoint in snapshot.endpoints if endpoint.provider_name.casefold() == provider.casefold()
+    ):
+        raise ValueError("OpenRouter usage-priced reference does not support conditional prices or fees")
+    estimate = settled_static_llm_cost(provider=OPENROUTER_PROVIDER, model=model, usage=usage)
+    if estimate is None:
+        raise ValueError("OpenRouter usage-priced reference has no supported token rates")
+    return estimate.cost_usd, {
+        **estimate.evidence, "settlement_source": "usage_pricing", "resolved_model": model,
+        "upstream_provider": provider,
+    }
 
 
 class _OpenRouterEmbeddingDatum(BaseModel):
@@ -367,7 +401,9 @@ class OpenRouterLlmProvider(LlmProviderPort):
             response = await provider.invoke(
                 replace(self._openrouter_request(request, model=model), on_provider_dispatch=dispatch)
             )
-            billing = _miner_openrouter_billing(response, snapshot=snapshot, requested_model=model)
+            billing = _miner_openrouter_billing(
+                response, snapshot=snapshot, requested_model=model, allow_usage_estimate=True
+            )
             if billing.reference_cost_unavailable:
                 raise ToolProviderError(
                     "OpenRouter regular cost unavailable", provider=OPENROUTER_PROVIDER, billing=billing

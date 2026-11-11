@@ -17,6 +17,46 @@ from harnyx_commons.domain.tool_usage_accounting import (
     tool_usage_from_llm_usage,
 )
 from harnyx_commons.llm.schema import LlmUsage
+from harnyx_commons.tools.provider_billing import OpenRouterAccounting
+
+
+@pytest.mark.parametrize("source,reference", [("usage_pricing", 0.003), ("timeout_zero", 0.0)])
+def test_unobserved_billing_preserves_reference_provenance(source, reference):
+    """A comparison estimate or timeout policy must never become an observed bill."""
+    evidence = {
+        "inference": "attempted",
+        "reference_cost_source": source,
+        "token_usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    }
+    accounting = OpenRouterAccounting.from_fields(
+        actual_cost_usd=None, reference_cost_usd=reference, evidence=evidence,
+    )
+    restored = OpenRouterAccounting.from_billing(accounting.to_billing())
+    assert restored.actual_cost_usd is None
+    assert restored.reference_cost_usd == reference
+    assert restored.to_evidence()["reference_cost_source"] == source
+    assert restored.llm_usage == LlmUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from harnyx_commons.domain.tool_call import ToolCall, ToolCallDetails, ToolCallOutcome
+    from harnyx_commons.tools.receipt_accounting import recover_inference_usage
+
+    receipt = ToolCall(
+        receipt_id="unbilled", session_id=uuid4(), uid=1, tool="llm_chat", issued_at=datetime.now(UTC),
+        outcome=ToolCallOutcome.TIMEOUT if source == "timeout_zero" else ToolCallOutcome.OK,
+        details=ToolCallDetails(
+            request_hash="unbilled", request_payload={"provider": "openrouter", "model": "openai/gpt-oss-20b"},
+            reference_cost_usd=reference, actual_cost_usd=None, actual_cost_provider="openrouter",
+            extra={"actual_cost_evidence": restored.to_evidence()},
+        ),
+    )
+    summary = recover_inference_usage(ToolUsageSummary(actual_total_cost_usd=0.0), (receipt,))
+    assert summary.reference_total_cost_usd == pytest.approx(reference)
+    assert summary.actual_total_cost_usd is None
+    assert summary.llm.prompt_tokens == 10
+    assert summary.llm.completion_tokens == 5
+    assert recover_inference_usage(summary, (receipt,)) == summary
 
 
 def test_tool_usage_from_llm_usage_splits_gemini_grounding_from_tokens() -> None:

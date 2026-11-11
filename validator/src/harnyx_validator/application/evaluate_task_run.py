@@ -123,8 +123,11 @@ def _evaluation_trace_with_timing(
     return trace.model_copy(update=timing)
 
 
-def _attach_evaluation_trace_to_exception(exc: Exception, trace: EvaluationTrace) -> None:
+def _attach_evaluation_trace_to_exception(
+    exc: Exception, trace: EvaluationTrace, *, execution_completed_at: datetime
+) -> None:
     exc.__dict__["evaluation_trace"] = trace
+    exc.__dict__["execution_completed_at"] = execution_completed_at
 
 
 class UsageSummarizer:
@@ -284,6 +287,7 @@ class TaskRunOrchestrator:
             raise RuntimeError("successful task evaluation did not produce a run submission")
         self._receipts.clear_session(request.session_id)
         return TaskRunOutcome(
+            execution_completed_at=execution.execution_completed_at,
             run=result.result.run,
             tool_receipts=result.result.execution_log,
             usage=result.result.usage,
@@ -314,7 +318,7 @@ class TaskRunOrchestrator:
             started_at=invocation_started_at,
             completed_at=time.monotonic(),
         )
-        invocation_completed_at = self._clock()
+        invocation_completed_at = invocation.execution_completed_at
         session = self._require_session(request.session_id)
         usage, total_tool_usage = self._usage.summarize(session, invocation.tool_receipts)
         orchestration_ms = _monotonic_elapsed_ms(
@@ -395,7 +399,7 @@ async def score_platform_execution(
             scoring_ms=scoring_ms,
             orchestration_ms=orchestration_ms,
         )
-        _attach_evaluation_trace_to_exception(exc, trace)
+        _attach_evaluation_trace_to_exception(exc, trace, execution_completed_at=execution.execution_completed_at)
         error_code = _scoring_error_code(exc)
         _log_scoring_finished(
             batch_id=execution.batch_id,

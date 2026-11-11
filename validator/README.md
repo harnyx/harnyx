@@ -150,7 +150,7 @@ Watchtower polls Docker Hub every 5 minutes and will pull/restart the validator 
 
 The stack now uses a normal short shutdown budget (`60s`), not a long correctness-critical drain window.
 
-Miner-task restart safety no longer depends on the validator staying alive until every in-flight batch fully finishes. Platform owns expected work, attempt numbering, accepted results, delivery projection, and finalization. After restart, the validator starts with empty active-task memory and polls Platform for new assignments; unfinished work is resolved by Platform deadline and retry handling.
+Miner-task restart safety no longer depends on the validator staying alive until every in-flight batch fully finishes. Platform owns expected work, attempt numbering, accepted results, delivery projection, and finalization. After restart, the validator replays saved, unacknowledged execution/results from `VALIDATOR_STATE_DIR` before polling new assignments. Platform resumes scoring from accepted execution evidence. Only unrecoverable unfinished work may execute again within existing limits; exhausted validator interruption fails that delivery. Keep the state volume across restarts. The sandbox and validator must both support the private completion-timestamp contract; before rolling back to code without durable pending replay, let pending submissions finish and preserve the state directory.
 
 ## Troubleshooting
 

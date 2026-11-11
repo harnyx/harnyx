@@ -92,7 +92,11 @@ app = FastAPI(title="Harnyx Sandbox", version="0.1.0", lifespan=lifespan)
 
 @app.exception_handler(SandboxCleanupUnconfirmedError)
 async def cleanup_unconfirmed(_request: Request, _exc: SandboxCleanupUnconfirmedError) -> JSONResponse:
-    return JSONResponse(status_code=503, content={"detail": {"code": "SandboxCleanupUnconfirmed"}})
+    completion = getattr(_request.state, "execution_completion", None)
+    return JSONResponse(
+        status_code=503, content={"detail": {"code": "SandboxCleanupUnconfirmed"}},
+        headers={} if completion is None else completion.headers(),
+    )
 
 
 app.include_router(

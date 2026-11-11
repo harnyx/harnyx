@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -40,6 +41,7 @@ from harnyx_commons.errors import SessionBudgetExhaustedError
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_commons.sandbox.client import SandboxClient, SandboxInvokeError
+from harnyx_commons.sandbox.docker import HttpSandboxClient
 from harnyx_commons.tools.types import ToolName
 from harnyx_miner_sdk.sandbox_protocol import SandboxAdmission
 from harnyx_validator.application.assigned_work import QueueStopReason
@@ -62,7 +64,7 @@ from harnyx_validator.application.dto.evaluation import (
 )
 from harnyx_validator.application.evaluate_task_run import TaskRunOrchestrator, UsageSummarizer
 from harnyx_validator.application.invoke_entrypoint import (
-    MinerResponseValidationError,
+    EntrypointInvoker,
     SandboxInvocationError,
 )
 from harnyx_validator.application.platform_tool_proxy import PlatformToolProxyScopeRegistry
@@ -397,6 +399,7 @@ def _successful_outcome(
     score: float = 0.75,
 ) -> TaskRunOutcome:
     return TaskRunOutcome(
+        execution_completed_at=datetime(2025, 10, 17, 12, 2, tzinfo=UTC),
         run=MinerTaskRun(
             session_id=request.session_id,
             uid=request.uid,
@@ -1032,10 +1035,10 @@ async def test_evaluate_assigned_task_queue_final_delivery_failure_closes_group_
     await asyncio.wait_for(execution, timeout=1.0)
 
 
-async def test_evaluation_runner_assigned_task_final_validator_failure_becomes_attempt_failure(
+async def test_evaluation_runner_exhausted_validator_failure_fails_delivery(
     tmp_path: Path,
 ) -> None:
-    """Prevent a task-owned validator failure from becoming delivery-wide failure."""
+    """Exhausted validator failures must not become scored miner results without timing."""
 
     runner, batch_id, artifact, task, session_registry, receipt_log, _, _ = _assigned_task_test_context(tmp_path)
 
@@ -1056,8 +1059,8 @@ async def test_evaluation_runner_assigned_task_final_validator_failure_becomes_a
     assert result.terminal_attempt.status is MinerTaskAttemptStatus.FAILED
     assert result.terminal_attempt.error_code == str(MinerTaskErrorCode.UNEXPECTED_VALIDATOR_FAILURE)
     assert result.terminal_attempt.retry_decision is MinerTaskAttemptRetryDecision.WILL_NOT_RETRY
-    assert result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.ATTEMPT_FAILURE
-    assert result.terminal_attempt.delivery_failure_detail is None
+    assert result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.DELIVERY_FAILURE
+    assert result.terminal_attempt.delivery_failure_detail is not None
 
 
 async def test_evaluation_runner_assigned_proxy_grant_failure_closes_delivery_with_exact_code(
@@ -2312,6 +2315,7 @@ class _RetryThenSuccessOrchestrator:
         tool_receipts = tuple(self._receipt_log.for_session(request.session_id))
         self._receipt_log.clear_session(request.session_id)
         return TaskRunOutcome(
+            execution_completed_at=datetime(2025, 10, 17, 12, 2, tzinfo=UTC),
             run=MinerTaskRun(
                 session_id=request.session_id,
                 uid=request.uid,
@@ -2736,6 +2740,7 @@ class _PlatformToolProxyTimeoutThenSuccessOrchestrator:
         self._receipt_log.clear_session(request.session_id)
         outcome = _successful_outcome(request)
         return TaskRunOutcome(
+            execution_completed_at=outcome.execution_completed_at,
             run=outcome.run,
             tool_receipts=receipts,
             usage=outcome.usage,
@@ -2927,11 +2932,6 @@ class _EntrypointUnavailableOrchestrator:
             detail_exception="KeyError",
             detail_error="'query'",
         )
-
-
-class _MinerResponseValidationOrchestrator:
-    async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
-        raise MinerResponseValidationError("response text must not be blank", rejected_response='{"text": " "}')
 
 
 class _ScoringRetryExhaustedOrchestrator:
@@ -4044,11 +4044,13 @@ async def test_evaluation_runner_records_current_attempt_receipts_for_terminal_t
     )
 
 
-async def test_evaluation_runner_records_zero_score_for_invalid_miner_response(tmp_path: Path) -> None:
+@pytest.mark.parametrize("payload", [[], None, "invalid", 42, False, {"text": " "}])
+async def test_invalid_miner_json_remains_a_measured_task_result(tmp_path: Path, payload: object) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
-    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    tokens = InMemoryTokenRegistry()
+    session_manager = SessionManager(session_registry, tokens)
     evaluation_store = _RecordingEvaluationStore()
     receipt_log = FakeReceiptLog()
     runner = EvaluationRunner(
@@ -4073,21 +4075,40 @@ async def test_evaluation_runner_records_zero_score_for_invalid_miner_response(t
     )
 
     batch_id = uuid4()
-    result = await runner.evaluate_artifact(
-        batch_id=batch_id,
-        artifact=artifact,
-        tasks=(task,),
-        orchestrator=cast(TaskRunOrchestrator, _MinerResponseValidationOrchestrator()),
-    )
-    assert len(result.submissions) == 1
-    submission = result.submissions[0]
+    completed_at = datetime(2025, 10, 17, 12, 0, 2, tzinfo=UTC)
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/admission":
+            return httpx.Response(200, json={
+                "reservation_id": "reserved", "generation": "worker", "deadline_monotonic_ns": 99999999999999999,
+            })
+        return httpx.Response(200, json={"ok": True, "result": payload}, headers={
+            "x-harnyx-execution-completed-at": completed_at.isoformat(),
+        })
+
+    async with httpx.AsyncClient(base_url="http://sandbox.local", transport=httpx.MockTransport(respond)) as http:
+        orchestrator = TaskRunOrchestrator(
+            entrypoint_invoker=EntrypointInvoker(
+                session_registry, HttpSandboxClient("http://sandbox.local", control_token=uuid4().hex, client=http),
+                tokens, receipt_log,
+            ),
+            receipt_log=receipt_log, scoring_service=Mock(), session_registry=session_registry,
+            clock=lambda: datetime(2025, 10, 17, 12, 1, tzinfo=UTC),
+        )
+        result = await runner.evaluate_assigned_task(
+            batch_id=batch_id, artifact=artifact, task=task, attempt_number=1, max_attempts=1,
+            assignment_token=_ASSIGNMENT_TOKEN, orchestrator=orchestrator,
+        )
+    assert result.terminal_attempt.terminal_effect is MinerTaskAttemptTerminalEffect.TASK_RESULT
+    assert result.result is not None
+    submission = result.result
     assert submission.score == 0.0
-    assert submission.run.details.error == EvaluationError(
-        code="miner_response_invalid",
-        message="response text must not be blank",
-    )
+    assert submission.run.details.error is not None
+    assert submission.run.details.error.code == MinerTaskErrorCode.MINER_RESPONSE_INVALID
+    assert submission.run.details.elapsed_ms == 2000.0
+    assert submission.run.completed_at == completed_at
     assert submission.run.response is None
-    assert submission.run.rejected_response == '{"text": " "}'
+    assert submission.run.rejected_response == json.dumps(payload, ensure_ascii=True)
     assert evaluation_store.records == [submission]
 
 
@@ -5717,27 +5738,45 @@ def test_unpriced_failed_decision_receipt_keeps_actual_total_unknown() -> None:
     assert usage.actual_cost_by_provider == {}
 
 
-async def test_oom_affected_attempt_is_final_zero_even_with_attempts_remaining(tmp_path: Path) -> None:
-    """An OOM-affected execution must not retry or fail the delivery."""
+@pytest.mark.parametrize("known_completion", (True, False))
+@pytest.mark.parametrize("attempt_number", (1, 3))
+async def test_oom_affected_attempt_requires_measured_completion(
+    tmp_path: Path, known_completion: bool, attempt_number: int,
+) -> None:
+    """OOM attribution survives, but delayed reconciliation cannot fabricate query duration."""
     from harnyx_miner_sdk.sandbox_protocol import SANDBOX_OOM_AFFECTED
 
     runner, batch_id, artifact, task, _, _, _, _ = _assigned_task_test_context(tmp_path)
 
     class OomOrchestrator:
         async def evaluate(self, request):
-            raise _sandbox_invocation_error("lost worker", status_code=503, detail_code=SANDBOX_OOM_AFFECTED)
+            issued_at = runner._sessions.inspect(request.session_id).session.issued_at
+            runner._clock = lambda: issued_at + timedelta(seconds=60)
+            raise SandboxInvocationError(
+                "lost worker", status_code=503, detail_code=SANDBOX_OOM_AFFECTED,
+                detail_exception=None, detail_error=None,
+                completed_at=issued_at + timedelta(seconds=1) if known_completion else None,
+            )
 
     result = await runner.evaluate_assigned_task(
         batch_id=batch_id,
         artifact=artifact,
         task=task,
-        attempt_number=1,
+        attempt_number=attempt_number,
         max_attempts=3,
         assignment_token=_ASSIGNMENT_TOKEN,
         orchestrator=cast(TaskRunOrchestrator, OomOrchestrator()),
     )
+    if not known_completion:
+        assert result.result is None
+        assert result.terminal_attempt.terminal_effect is (
+            None if attempt_number < 3 else MinerTaskAttemptTerminalEffect.ATTEMPT_FAILURE
+        )
+        assert result.terminal_attempt.error_code == str(MinerTaskErrorCode.SANDBOX_OOM_AFFECTED)
+        return
     assert result.result is not None
     assert result.result.score == 0
+    assert result.result.run.details.elapsed_ms == 1000.0
     attempt = result.terminal_attempt
     assert attempt.error_code == str(MinerTaskErrorCode.SANDBOX_OOM_AFFECTED)
     assert attempt.retry_decision is MinerTaskAttemptRetryDecision.WILL_NOT_RETRY
@@ -5811,7 +5850,11 @@ async def test_oom_drain_preserves_success_and_returns_unstarted_claims(tmp_path
                 await waiting.wait()
                 oom.set()
                 all_admitted.set()
-                raise _sandbox_invocation_error("lost worker", status_code=503, detail_code=SANDBOX_OOM_AFFECTED)
+                raise SandboxInvocationError(
+                    "lost worker", status_code=503, detail_code=SANDBOX_OOM_AFFECTED,
+                    detail_exception=None, detail_error=None,
+                    completed_at=runner._sessions.inspect(request.session_id).session.issued_at + timedelta(seconds=1),
+                )
             if replacing:
                 assert request.task.task_id == tasks[2].task_id
                 close.set()
@@ -6441,3 +6484,59 @@ async def test_cleanup_retirement_resolves_started_sibling_with_original_session
     assert all(result.terminal_attempt.terminal_effect is None for result in settled)
     assert all(result.terminal_attempt.error_code != str(MinerTaskErrorCode.SANDBOX_OOM_AFFECTED) for result in settled)
     assert not sessions._sessions
+
+
+def test_measured_zero_runtime_survives_later_failure_finalization(tmp_path):
+    runner, batch_id, artifact, task, *_ = _assigned_task_test_context(tmp_path)
+    issued = runner._issue_session(batch_id=batch_id, uid=artifact.uid,
+                                   artifact_id=artifact.artifact_id, task=task)
+    envelope = runner._sessions.inspect(issued.session.session_id)
+    runner._clock = lambda: issued.session.issued_at + timedelta(seconds=30)
+    result = runner._build_terminal_failure(
+        batch_id=batch_id, envelope=envelope, uid=artifact.uid,
+        artifact_id=artifact.artifact_id, task=task,
+        error_code=MinerTaskErrorCode.SESSION_BUDGET_EXHAUSTED,
+        error_message="budget exhausted after settlement", elapsed_ms=0.0,
+    )
+    assert result.run.details.elapsed_ms == 0.0
+
+
+async def test_scoring_failure_preserves_original_query_duration(tmp_path):
+    from harnyx_validator.application.dto.evaluation import EntrypointInvocationResult
+
+    runner, batch_id, artifact, task, sessions, receipts, *_ = _assigned_task_test_context(tmp_path)
+    issued = runner._issue_session(batch_id=batch_id, uid=artifact.uid,
+                                   artifact_id=artifact.artifact_id, task=task)
+    query_end = issued.session.issued_at + timedelta(seconds=1)
+
+    class Invoker:
+        async def invoke(self, request, **kwargs):
+            return EntrypointInvocationResult(response=Response(text="answer"), execution_completed_at=query_end)
+
+    class Scoring:
+        async def score(self, **kwargs):
+            runner._clock = lambda: issued.session.issued_at + timedelta(seconds=60)
+            raise LlmRetryExhaustedError("judge attempts exhausted after query completion")
+
+    orchestrator = TaskRunOrchestrator(Invoker(), receipts, Scoring(), sessions, clock=lambda: runner._clock())
+    decision = await runner._evaluate_task_attempt(
+        batch_id=batch_id, artifact=artifact, task=task, issued=issued,
+        orchestrator=orchestrator, final_attempt=True,
+    )
+    assert decision.submission is not None
+    assert decision.submission.run.details.error.code is MinerTaskErrorCode.SCORING_LLM_RETRY_EXHAUSTED
+    assert decision.submission.run.details.elapsed_ms == 1000.0
+    assert decision.submission.run.completed_at == query_end
+
+
+def test_failure_without_completion_does_not_use_finalization_clock(tmp_path):
+    runner, batch_id, artifact, task, *_ = _assigned_task_test_context(tmp_path)
+    issued = runner._issue_session(batch_id=batch_id, uid=artifact.uid,
+                                   artifact_id=artifact.artifact_id, task=task)
+    runner._clock = lambda: issued.session.issued_at + timedelta(seconds=60)
+    result = runner._build_terminal_failure(
+        batch_id=batch_id, envelope=runner._sessions.inspect(issued.session.session_id),
+        uid=artifact.uid, artifact_id=artifact.artifact_id, task=task,
+        error_code=MinerTaskErrorCode.MINER_RESPONSE_INVALID, error_message="missing completion",
+    )
+    assert result.run.details.elapsed_ms is None

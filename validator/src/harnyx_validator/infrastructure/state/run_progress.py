@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
 from typing import TypeAlias
@@ -12,8 +12,11 @@ from uuid import UUID
 
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptAuditRecord,
+    MinerTaskAttemptTerminalEffect,
     MinerTaskBatchSpec,
     MinerTaskRunSubmission,
+    PlatformOwnedTaskExecution,
+    PlatformOwnedTaskResult,
 )
 from harnyx_validator.application.ports.progress import (
     ProviderFailureEvidence,
@@ -24,6 +27,7 @@ from harnyx_validator.application.ports.progress import (
 from harnyx_validator.infrastructure.state.run_progress_blob_store import (
     AttemptAuditBlobRef,
     AttemptAuditBlobStore,
+    PendingTaskSubmissionStore,
     RunSubmissionBlobRef,
     RunSubmissionBlobStore,
 )
@@ -71,10 +75,13 @@ class FileBackedRunProgress:
     failed_provider_keys_by_session: dict[UUID, set[tuple[str, str]]] = field(default_factory=dict)
     blob_store: RunSubmissionBlobStore = field(init=False)
     attempt_blob_store: AttemptAuditBlobStore = field(init=False)
+    pending_store: PendingTaskSubmissionStore = field(init=False)
+    _restored_batches: set[UUID] = field(default_factory=set, init=False)
     _lock: RLock = field(default_factory=RLock, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.storage_root = self.storage_root.expanduser()
+        self.pending_store = PendingTaskSubmissionStore(self.storage_root / "pending-submissions")
         self.blob_store = RunSubmissionBlobStore(
             self.storage_root,
             segment_size_bytes=self.segment_size_bytes,
@@ -84,7 +91,84 @@ class FileBackedRunProgress:
             segment_size_bytes=self.segment_size_bytes,
         )
 
+    def persist_pending(self, item: PlatformOwnedTaskExecution | PlatformOwnedTaskResult) -> None:
+        with self._lock:
+            self.pending_store.persist(item)
+
+    def pending_submissions(self) -> Iterator[PlatformOwnedTaskExecution | PlatformOwnedTaskResult]:
+        return self.pending_store.items()
+
+    def acknowledge_pending(self, item: PlatformOwnedTaskExecution | PlatformOwnedTaskResult) -> None:
+        with self._lock:
+            self.pending_store.acknowledge(item)
+
+    def recover_retained(self, cutoff: datetime) -> None:
+        for directory in self.storage_root.iterdir():
+            if not directory.is_dir():
+                continue
+            try:
+                batch_id = UUID(directory.name)
+            except ValueError:
+                continue
+            latest = max((p.stat().st_mtime for p in directory.iterdir()), default=directory.stat().st_mtime)
+            if datetime.fromtimestamp(latest, UTC) >= cutoff:
+                self._restore_batch(batch_id)
+
+    def _restore_batch(self, batch_id: UUID) -> None:
+        with self._lock:
+            if batch_id in self._restored_batches:
+                return
+            refs = self.submission_refs_by_batch.setdefault(batch_id, {})
+            for ref in self.blob_store.discover(batch_id):
+                submission = self.blob_store.read(ref)
+                if submission.batch_id != batch_id:
+                    raise RuntimeError("run-progress submission belongs to a different batch")
+                pair = _submission_pair(submission)
+                previous = refs.get(pair)
+                if previous is not None and self.blob_store.read(previous) != submission:
+                    raise RuntimeError("conflicting recovered run-progress submissions")
+                refs[pair] = ref
+                self._record_submission(batch_id=batch_id, refs=refs, result=submission)
+            audits = self.attempt_refs_by_session_by_batch.setdefault(batch_id, {})
+            for ref in self.attempt_blob_store.discover(batch_id):
+                attempt = self.attempt_blob_store.read(ref)
+                if attempt.batch_id != batch_id:
+                    raise RuntimeError("run-progress attempt belongs to a different batch")
+                previous = audits.get(attempt.validator_session_id)
+                if previous is not None:
+                    if self.attempt_blob_store.read(previous) != attempt:
+                        raise RuntimeError("conflicting recovered run-progress attempts")
+                    continue
+                audits[attempt.validator_session_id] = ref
+                sequence = self.next_sequence_by_batch.get(batch_id, 1)
+                self.detail_by_sequence_by_batch.setdefault(batch_id, {})[sequence] = (
+                    "terminated_attempt", attempt.validator_session_id,
+                )
+                self.next_sequence_by_batch[batch_id] = sequence + 1
+                self._record_latest_attempt_number(attempt)
+                submission_ref = refs.get((attempt.artifact_id, attempt.task_id))
+                submission = None if submission_ref is None else self.blob_store.read(submission_ref)
+                if attempt.terminal_effect is not MinerTaskAttemptTerminalEffect.TASK_RESULT:
+                    submission = None
+                if submission is not None and submission.session.session_id != attempt.validator_session_id:
+                    submission = None
+                if submission is not None and not (
+                    submission.run.session_id == submission.session.session_id == attempt.validator_session_id
+                    and submission.run.task_id == submission.session.task_id == attempt.task_id
+                    and submission.run.uid == submission.session.uid == attempt.uid
+                    and submission.run.artifact_id == attempt.artifact_id
+                ):
+                    raise RuntimeError("recovered submission identity conflicts with its attempt")
+                if attempt.terminal_effect is MinerTaskAttemptTerminalEffect.TASK_RESULT and submission is None:
+                    continue
+                self.persist_pending(PlatformOwnedTaskResult(
+                    batch_id=batch_id, artifact_id=attempt.artifact_id, task_id=attempt.task_id,
+                    attempt_number=attempt.attempt_number, result=submission, terminal_attempt=attempt,
+                ))
+            self._restored_batches.add(batch_id)
+
     def register(self, batch: MinerTaskBatchSpec) -> None:
+        self._restore_batch(batch.batch_id)
         with self._lock:
             existing = self.batches_by_id.get(batch.batch_id)
             if existing is not None:

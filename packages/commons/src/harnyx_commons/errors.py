@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from asyncio import CancelledError
+from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -28,6 +29,10 @@ class BudgetExceededError(RuntimeError):
 
 class SessionBudgetExhaustedError(RuntimeError):
     """Raised when execution exhausts the session hard limit."""
+
+    def __init__(self, message: str, *, completed_at: datetime | None = None) -> None:
+        super().__init__(message)
+        self.completed_at = completed_at
 
 
 class ConcurrencyLimitError(RuntimeError):

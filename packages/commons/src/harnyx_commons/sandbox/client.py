@@ -4,11 +4,33 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Protocol
 from uuid import UUID
 
 from harnyx_commons.json_types import JsonValue
+from harnyx_miner_sdk.sandbox_headers import EXECUTION_COMPLETED_HEADER
 from harnyx_miner_sdk.sandbox_protocol import SandboxAdmission, SandboxResourceStatus
+
+
+@dataclass(frozen=True, slots=True)
+class SandboxInvocationResult:
+    payload: JsonValue
+    completed_at: datetime
+
+
+def parse_execution_completion(headers: Mapping[str, str]) -> datetime | None:
+    raw = headers.get(EXECUTION_COMPLETED_HEADER)
+    if raw is None:
+        return None
+    try:
+        completed_at = datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise InvalidSandboxResponseError("invalid execution completion timestamp") from exc
+    if completed_at.tzinfo is None or completed_at > datetime.now(UTC):
+        raise InvalidSandboxResponseError("untrustworthy execution completion timestamp")
+    return completed_at
 
 
 class InvalidSandboxResponseError(ValueError):
@@ -31,6 +53,7 @@ class SandboxInvokeError(RuntimeError):
         detail_exception: str | None,
         detail_error: str | None,
         remote_state_uncertain: bool = False,
+        completed_at: datetime | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
@@ -38,6 +61,7 @@ class SandboxInvokeError(RuntimeError):
         self.detail_exception = detail_exception
         self.detail_error = detail_error
         self.remote_state_uncertain = remote_state_uncertain
+        self.completed_at = completed_at
 
 
 class SandboxClient(Protocol):
@@ -78,8 +102,8 @@ class SandboxClient(Protocol):
         session_id: UUID,
         include_failure_details: bool = True,
         admission: SandboxAdmission | None = None,
-    ) -> Mapping[str, JsonValue]:
-        """Invoke the sandbox entrypoint and return its response payload."""
+    ) -> SandboxInvocationResult | Mapping[str, JsonValue]:
+        """Return query payload with trusted completion, or a non-query payload."""
 
     def close(self) -> None:
         """Release any client-side resources."""

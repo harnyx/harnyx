@@ -12,6 +12,7 @@ import harnyx_commons.sandbox.docker as docker_module
 from harnyx_commons.protocol_headers import SESSION_ID_HEADER
 from harnyx_commons.sandbox.client import (
     InvalidSandboxResponseError,
+    SandboxInvocationResult,
     SandboxInvokeError,
     SandboxResponseProcessingError,
 )
@@ -19,6 +20,13 @@ from harnyx_commons.sandbox.docker import HttpSandboxClient
 from harnyx_miner_sdk.sandbox_protocol import SandboxAdmission
 
 CONTROL_CREDENTIAL = uuid4().hex
+
+
+def _completed_response(*args, **kwargs) -> httpx.Response:
+    """Model responses from a supervisor that supports completion metadata."""
+    response = httpx.Response(*args, **kwargs)
+    response.headers["x-harnyx-execution-completed-at"] = "2025-01-01T00:00:00+00:00"
+    return response
 
 
 def _admission() -> SandboxAdmission:
@@ -41,11 +49,11 @@ async def test_direct_invocation_reserves_once_and_counts_admission_wait_in_budg
         requests.append(request)
         if request.url.path == "/admission":
             assert json.loads(request.content)["include_wait_in_budget"] is True
-            return httpx.Response(200, json=_admission().model_dump())
+            return _completed_response(200, json=_admission().model_dump())
         if request.url.path == "/entry/query":
             assert json.loads(request.content)["admission"] == _admission().model_dump()
-            return httpx.Response(200, json={"ok": True, "result": {"answer": "ok"}})
-        return httpx.Response(200, json={"ok": True})
+            return _completed_response(200, json={"ok": True, "result": {"answer": "ok"}})
+        return _completed_response(200, json={"ok": True})
 
     async with httpx.AsyncClient(base_url="http://sandbox.local", transport=httpx.MockTransport(handler)) as http:
         result = await HttpSandboxClient("http://sandbox.local", control_token=CONTROL_CREDENTIAL, client=http).invoke(
@@ -55,7 +63,8 @@ async def test_direct_invocation_reserves_once_and_counts_admission_wait_in_budg
             token=uuid4().hex,
             session_id=uuid4(),
         )
-    assert result == {"answer": "ok"}
+    assert isinstance(result, SandboxInvocationResult)
+    assert result.payload == {"answer": "ok"}
     assert [request.url.path for request in requests] == ["/admission", "/entry/query", "/admission/release"]
 
 
@@ -69,7 +78,7 @@ async def test_stalled_request_marks_container_uncertain_before_or_after_activat
         requests.append(request.url.path)
         if request.url.path == stalled_path:
             await asyncio.Event().wait()
-        return httpx.Response(200, json=_admission().model_dump())
+        return _completed_response(200, json=_admission().model_dump())
 
     async with httpx.AsyncClient(base_url="http://sandbox.local", transport=httpx.MockTransport(handler)) as http:
         with pytest.raises(SandboxInvokeError) as error:
@@ -87,16 +96,17 @@ async def test_reservation_release_does_not_replace_a_received_result_with_timeo
 
     async def handler(request):
         if request.url.path == "/admission":
-            return httpx.Response(200, json=_admission().model_dump())
+            return _completed_response(200, json=_admission().model_dump())
         if request.url.path == "/admission/release":
             await asyncio.sleep(0.1)
-        return httpx.Response(200, json={"result": {"answer": "ok"}})
+        return _completed_response(200, json={"result": {"answer": "ok"}})
 
     async with httpx.AsyncClient(base_url="http://sandbox.local", transport=httpx.MockTransport(handler)) as http:
         result = await HttpSandboxClient("http://sandbox.local", control_token=CONTROL_CREDENTIAL, client=http).invoke(
             "query", payload={}, context=_context(0.05), token=uuid4().hex, session_id=uuid4()
         )
-    assert result == {"answer": "ok"}
+    assert isinstance(result, SandboxInvocationResult)
+    assert result.payload == {"answer": "ok"}
 
 
 @pytest.mark.anyio("asyncio")
@@ -105,7 +115,7 @@ async def test_admission_timeout_is_a_settled_sandbox_failure_without_activation
 
     async def handler(request):
         requests.append(request.url.path)
-        return httpx.Response(504, json={"detail": {"exception": "TimeoutError", "error": "admission expired"}})
+        return _completed_response(504, json={"detail": {"exception": "TimeoutError", "error": "admission expired"}})
 
     async with httpx.AsyncClient(base_url="http://sandbox.local", transport=httpx.MockTransport(handler)) as http:
         with pytest.raises(SandboxInvokeError) as error:
@@ -130,7 +140,7 @@ async def test_http_sandbox_client_retries_connect_error_with_same_session_and_c
         requests.append(request)
         if len(requests) == 1:
             raise httpx.ConnectError("connect failed", request=request)
-        return httpx.Response(status_code=200, json={"result": {"answer": "ok"}})
+        return _completed_response(status_code=200, json={"result": {"answer": "ok"}})
 
     async with httpx.AsyncClient(
         base_url="http://sandbox.local",
@@ -147,7 +157,8 @@ async def test_http_sandbox_client_retries_connect_error_with_same_session_and_c
             admission=_admission(),
         )
 
-    assert result == {"answer": "ok"}
+    assert isinstance(result, SandboxInvocationResult)
+    assert result.payload == {"answer": "ok"}
     assert len(requests) == 2
     assert {request.url.path for request in requests} == {"/entry/query"}
     assert {request.headers[SESSION_ID_HEADER] for request in requests} == {str(session_id)}
@@ -175,7 +186,7 @@ async def test_http_sandbox_client_rejects_invalid_execution_time_limit_before_n
     async def handler(_request: httpx.Request) -> httpx.Response:
         nonlocal request_count
         request_count += 1
-        return httpx.Response(200, json={"result": {}})
+        return _completed_response(200, json={"result": {}})
 
     async with httpx.AsyncClient(
         base_url="http://sandbox.local",
@@ -203,7 +214,7 @@ async def test_http_sandbox_client_rejects_missing_time_budget_before_network() 
     async def handler(_request: httpx.Request) -> httpx.Response:
         nonlocal request_count
         request_count += 1
-        return httpx.Response(200, json={"result": {}})
+        return _completed_response(200, json={"result": {}})
 
     async with httpx.AsyncClient(
         base_url="http://sandbox.local",
@@ -308,7 +319,7 @@ async def test_http_sandbox_client_does_not_retry_sandbox_http_status_error() ->
 
     async def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        return httpx.Response(
+        return _completed_response(
             status_code=500,
             json={"detail": {"code": "UnhandledException", "exception": "ValueError", "error": "boom"}},
         )
@@ -337,15 +348,17 @@ async def test_http_sandbox_client_does_not_retry_sandbox_http_status_error() ->
 
 @pytest.mark.anyio("asyncio")
 @pytest.mark.parametrize(
-    "response",
+    "entrypoint,response",
     [
-        httpx.Response(status_code=200, content=b"{not-json", headers={"content-type": "application/json"}),
-        httpx.Response(status_code=200, json={"result": []}),
+        ("query", _completed_response(
+            status_code=200, content=b"{not-json", headers={"content-type": "application/json"},
+        )),
+        ("probe", _completed_response(status_code=200, json={"result": []})),
     ],
     ids=["malformed-json", "non-object-result"],
 )
 async def test_http_sandbox_client_reports_malformed_success_as_invalid_response(
-    response: httpx.Response,
+    entrypoint: str, response: httpx.Response,
 ) -> None:
     async with httpx.AsyncClient(
         base_url="http://sandbox.local",
@@ -355,7 +368,7 @@ async def test_http_sandbox_client_reports_malformed_success_as_invalid_response
             await HttpSandboxClient(
                 "http://sandbox.local", control_token=CONTROL_CREDENTIAL, client=http_client
             ).invoke(
-                "query",
+                entrypoint,
                 payload={"question": "hello"},
                 context=_context(),
                 token="session-token",  # noqa: S106 - fixed test-only sandbox token
@@ -368,7 +381,7 @@ async def test_http_sandbox_client_reports_malformed_success_as_invalid_response
 async def test_http_sandbox_client_distinguishes_unexpected_post_response_processing_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    response = httpx.Response(status_code=200, json={"result": {"answer": "ok"}})
+    response = _completed_response(status_code=200, json={"result": {"answer": "ok"}})
 
     def fail_after_response(_value: object) -> dict[str, object]:
         raise RuntimeError("unexpected local parser failure")
@@ -395,7 +408,7 @@ async def test_http_sandbox_client_distinguishes_unexpected_post_response_proces
 async def test_http_sandbox_client_preserves_failed_response_settlement_on_processing_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    response = httpx.Response(
+    response = _completed_response(
         status_code=500,
         json={"detail": {"code": "UnhandledException", "exception": "ValueError", "error": "boom"}},
     )
@@ -426,7 +439,7 @@ async def test_http_sandbox_client_metadata_only_failure_omits_raw_detail_and_ca
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
+        return _completed_response(
             status_code=500,
             json={
                 "detail": {
@@ -491,14 +504,15 @@ async def test_automatic_admission_retries_only_connection_establishment():
         if len(paths) == 1:
             raise httpx.ConnectError("connection not established", request=request)
         if request.url.path == "/admission":
-            return httpx.Response(200, json=_admission().model_dump())
-        return httpx.Response(200, json={"result": {"answer": "ok"}})
+            return _completed_response(200, json=_admission().model_dump())
+        return _completed_response(200, json={"result": {"answer": "ok"}})
 
     async with httpx.AsyncClient(base_url="http://sandbox.local", transport=httpx.MockTransport(handler)) as http:
         result = await HttpSandboxClient("http://sandbox.local", control_token=CONTROL_CREDENTIAL, client=http).invoke(
             "query", payload={}, context=_context(), token=uuid4().hex, session_id=uuid4()
         )
-    assert result == {"answer": "ok"}
+    assert isinstance(result, SandboxInvocationResult)
+    assert result.payload == {"answer": "ok"}
     assert paths == ["/admission", "/admission", "/entry/query", "/admission/release"]
 
 
@@ -506,7 +520,7 @@ async def test_automatic_admission_retries_only_connection_establishment():
 @pytest.mark.parametrize("during_admission", [False, True])
 async def test_unconfirmed_cleanup_requires_host_retirement(during_admission):
     async def handler(request):
-        return httpx.Response(503, json={"detail": {"code": "SandboxCleanupUnconfirmed"}})
+        return _completed_response(503, json={"detail": {"code": "SandboxCleanupUnconfirmed"}})
 
     async with httpx.AsyncClient(base_url="http://sandbox.local", transport=httpx.MockTransport(handler)) as http:
         with pytest.raises(SandboxInvokeError) as error:
@@ -564,10 +578,10 @@ async def test_evaluation_failure_requires_positive_trusted_counter(positive):
     async def handler(request):
         if request.url.path == "/resources":
             assert request.headers["x-sandbox-control-token"] == CONTROL_CREDENTIAL
-            return httpx.Response(
+            return _completed_response(
                 200, json={"counter_status": "ready", "oom_kill_count": int(positive), "draining": positive}
             )
-        return httpx.Response(500, json={"detail": {"exception": "WorkerResultProtocolError"}})
+        return _completed_response(500, json={"detail": {"exception": "WorkerResultProtocolError"}})
 
     async with httpx.AsyncClient(base_url="http://sandbox.local", transport=httpx.MockTransport(handler)) as http:
         client = HttpSandboxClient("http://sandbox.local", control_token=CONTROL_CREDENTIAL, client=http)
@@ -617,7 +631,7 @@ async def test_external_positive_evidence_is_retained_when_supervisor_responds(c
     """A responding supervisor must not hide a positive daemon OOM observation."""
 
     async def handler(request):
-        return httpx.Response(200, json={"counter_status": counter_status, "oom_kill_count": 0, "draining": False})
+        return _completed_response(200, json={"counter_status": counter_status, "oom_kill_count": 0, "draining": False})
 
     async with httpx.AsyncClient(base_url="http://sandbox.local", transport=httpx.MockTransport(handler)) as http:
         client = HttpSandboxClient("http://sandbox.local", control_token=CONTROL_CREDENTIAL, client=http)
@@ -632,8 +646,8 @@ async def test_admission_failure_resolves_oom_before_caller_can_fail_unstarted_w
 
     async def handler(request):
         if request.url.path == "/resources":
-            return httpx.Response(200, json={"counter_status": "ready", "oom_kill_count": 1, "draining": True})
-        return httpx.Response(500, json={"detail": {"code": "PreloadInfrastructureFailed"}})
+            return _completed_response(200, json={"counter_status": "ready", "oom_kill_count": 1, "draining": True})
+        return _completed_response(500, json={"detail": {"code": "PreloadInfrastructureFailed"}})
 
     async with httpx.AsyncClient(base_url="http://sandbox.local", transport=httpx.MockTransport(handler)) as http:
         client = HttpSandboxClient("http://sandbox.local", control_token=CONTROL_CREDENTIAL, client=http)
@@ -731,7 +745,7 @@ async def test_oom_gate_records_first_trusted_evidence_once(evidence, caplog) ->
 
     async def handler(request):
         assert request.url.path == "/resources"
-        return httpx.Response(
+        return _completed_response(
             200,
             json={
                 "counter_status": "ready" if evidence == "cgroup_v2" else "unavailable",
@@ -768,8 +782,8 @@ async def test_oom_gate_records_first_trusted_evidence_once(evidence, caplog) ->
 async def test_cleanup_uncertainty_retires_client_without_inventing_oom(path):
     async def handler(request):
         if request.url.path == path:
-            return httpx.Response(503, json={"detail": {"code": "SandboxCleanupUnconfirmed"}})
-        return httpx.Response(200, json=_admission().model_dump())
+            return _completed_response(503, json={"detail": {"code": "SandboxCleanupUnconfirmed"}})
+        return _completed_response(200, json=_admission().model_dump())
 
     async with httpx.AsyncClient(base_url="http://sandbox.local", transport=httpx.MockTransport(handler)) as http:
         client = HttpSandboxClient("http://sandbox.local", control_token=CONTROL_CREDENTIAL, client=http)

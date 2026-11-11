@@ -109,7 +109,8 @@ def load_json(payload: bytes) -> object:
 
 def decode_worker_message(payload: bytes) -> WorkerMessage:
     try:
-        return WORKER_MESSAGE.validate_python(load_json(payload))
+        load_json(payload)  # Reject duplicate keys and nonfinite numbers before schema parsing.
+        return WORKER_MESSAGE.validate_json(payload)
     except RecursionError as exc:
         raise WorkerMessageViolationError("worker JSON exceeds supported nesting depth") from exc
 

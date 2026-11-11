@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 
-from harnyx_commons.sandbox.client import SandboxInvokeError
+from harnyx_commons.sandbox.client import SandboxInvocationResult, SandboxInvokeError
 
 
 async def _invoke(sandbox, payload: dict[str, object], *, entrypoint: str = "probe"):
@@ -31,7 +32,10 @@ async def _invoke(sandbox, payload: dict[str, object], *, entrypoint: str = "pro
 async def test_miner_sdk_response_round_trips_through_real_sandbox(sandbox) -> None:
     response = await _invoke(sandbox, {"text": "safe response"}, entrypoint="query")
 
-    assert response == {"text": "safe response", "citations": None}
+    assert isinstance(response, SandboxInvocationResult)
+    assert response.completed_at.tzinfo is not None
+    assert response.completed_at <= datetime.now(UTC)
+    assert response.payload == {"text": "safe response", "citations": None}
 
 
 @pytest.mark.security
@@ -104,7 +108,8 @@ async def test_worker_cannot_forge_session_result_or_infrastructure_identity(san
     assert isinstance(malicious, SandboxInvokeError)
     assert malicious.status_code == 500
     assert malicious.detail_code == "UnhandledException"
-    assert healthy == {"text": "own response", "citations": None}
+    assert isinstance(healthy, SandboxInvocationResult)
+    assert healthy.payload == {"text": "own response", "citations": None}
 
 
 @pytest.mark.security
@@ -118,8 +123,8 @@ async def test_worker_signals_cannot_suspend_compiler_or_block_siblings(sandbox)
         assert attack["self_signal"] is True
         assert len(attack["blocked"]) == 9
         assert all(attack["blocked"].values())
-        assert sibling["text"] == "sibling"
-        assert (await _invoke(sandbox, {"text": "later"}, entrypoint="query"))["text"] == "later"
+        assert sibling.payload["text"] == "sibling"
+        assert (await _invoke(sandbox, {"text": "later"}, entrypoint="query")).payload["text"] == "later"
 
 
 @pytest.mark.security
@@ -130,5 +135,5 @@ async def test_worker_cannot_control_peer_resources(sandbox):
         _invoke(sandbox, {"text": "sibling"}, entrypoint="query"),
     )
     assert result == {"limits": True, "affinity": True, "scheduler": True, "priority": True}
-    assert sibling["text"] == "sibling"
-    assert (await _invoke(sandbox, {"text": "later"}, entrypoint="query"))["text"] == "later"
+    assert sibling.payload["text"] == "sibling"
+    assert (await _invoke(sandbox, {"text": "later"}, entrypoint="query")).payload["text"] == "later"

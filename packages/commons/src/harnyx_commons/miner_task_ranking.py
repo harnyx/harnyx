@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import statistics
 from collections.abc import Collection, Iterable, Sequence
@@ -10,6 +11,8 @@ from enum import StrEnum
 from uuid import UUID
 
 from harnyx_commons.domain.miner_task import EvaluationDetails
+
+logger = logging.getLogger(__name__)
 
 ScoreVector = list[float]
 _SCORE_PRECISION = 12
@@ -42,6 +45,8 @@ class ArtifactAggregateBundle:
     costs: dict[UUID, float]
     median_elapsed_ms: dict[UUID, float] = field(default_factory=dict)
     score_maximum: float | None = None
+    measured_elapsed_ms: dict[UUID, dict[UUID, dict[UUID, float]]] = field(default_factory=dict)
+    missing_elapsed_ms: dict[UUID, list[tuple[UUID, UUID]]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -353,8 +358,9 @@ class RankingCascade:
 
         challenger_cost = aggregates.costs.get(challenger_artifact_id)
         incumbent_cost = aggregates.costs.get(incumbent_artifact_id)
-        challenger_runtime = aggregates.median_elapsed_ms.get(challenger_artifact_id)
-        incumbent_runtime = aggregates.median_elapsed_ms.get(incumbent_artifact_id)
+        incumbent_runtime, challenger_runtime = _comparison_runtimes(
+            aggregates, incumbent_artifact_id, challenger_artifact_id
+        )
         cost_non_regressing = _lower_metric_non_regressing(
             challenger_metric=challenger_cost,
             incumbent_metric=incumbent_cost,
@@ -576,6 +582,8 @@ def aggregate_competition_components(
             totals={artifact: _normalize_score(math.fsum(vector)) for artifact, vector in f1_vectors.items()},
             costs=f1_native.costs,
             median_elapsed_ms=f1_native.median_elapsed_ms,
+            measured_elapsed_ms=f1_native.measured_elapsed_ms,
+            missing_elapsed_ms=f1_native.missing_elapsed_ms,
             score_maximum=1.0,
         ),
         overall=ArtifactAggregateBundle(
@@ -583,10 +591,48 @@ def aggregate_competition_components(
             totals={artifact: _normalize_score(math.fsum(vector)) for artifact, vector in overall_vectors.items()},
             costs=f1_native.costs,
             median_elapsed_ms=f1_native.median_elapsed_ms,
+            measured_elapsed_ms=f1_native.measured_elapsed_ms,
+            missing_elapsed_ms=f1_native.missing_elapsed_ms,
             score_maximum=1.0,
         ),
         deep_scores=deep_scores,
     )
+
+
+def _comparison_runtimes(
+    aggregates: ArtifactAggregateBundle, incumbent: UUID, challenger: UUID
+) -> tuple[float | None, float | None]:
+    incumbent_total = aggregates.median_elapsed_ms.get(incumbent)
+    challenger_total = aggregates.median_elapsed_ms.get(challenger)
+    if incumbent_total is not None and challenger_total is not None:
+        return incumbent_total, challenger_total
+    incumbent_tasks = aggregates.measured_elapsed_ms.get(incumbent, {})
+    challenger_tasks = aggregates.measured_elapsed_ms.get(challenger, {})
+    incumbent_medians: list[float] = []
+    challenger_medians: list[float] = []
+    observations = 0
+    for task_id in incumbent_tasks.keys() & challenger_tasks.keys():
+        incumbent_values = incumbent_tasks[task_id]
+        challenger_values = challenger_tasks[task_id]
+        validators = incumbent_values.keys() & challenger_values.keys()
+        if not validators:
+            continue
+        incumbent_medians.append(statistics.median(incumbent_values[v] for v in validators))
+        challenger_medians.append(statistics.median(challenger_values[v] for v in validators))
+        observations += len(validators)
+    logger.info(
+        "comparing remaining matched runtime measurements",
+        extra={"incumbent_artifact_id": str(incumbent), "challenger_artifact_id": str(challenger),
+               "measured_tasks": len(incumbent_medians), "matched_observations": observations,
+               "omitted_observations": [
+                   {"artifact_id": str(artifact), "task_id": str(task), "validator_id": str(validator)}
+                   for artifact in (incumbent, challenger)
+                   for task, validator in sorted(aggregates.missing_elapsed_ms.get(artifact, ()))
+               ]},
+    )
+    if not incumbent_medians:
+        return incumbent_total, challenger_total
+    return math.fsum(incumbent_medians), math.fsum(challenger_medians)
 
 
 def aggregate_ranking_rows(
@@ -603,6 +649,8 @@ def aggregate_ranking_rows(
     costs_by_validator: dict[UUID, dict[UUID, float]] = {}
     elapsed_by_validator: dict[UUID, dict[UUID, float]] = {}
     elapsed_missing: set[tuple[UUID, UUID]] = set()
+    measured_elapsed_ms: dict[UUID, dict[UUID, dict[UUID, float]]] = {}
+    missing_elapsed_ms: dict[UUID, list[tuple[UUID, UUID]]] = {}
     pair_counts_by_validator: dict[UUID, int] = {}
     seen_pairs_by_validator: dict[UUID, set[tuple[UUID, UUID]]] = {}
 
@@ -626,10 +674,14 @@ def aggregate_ranking_rows(
         validator_costs[row.artifact_id] = validator_costs.get(row.artifact_id, 0.0) + float(row.total_cost_usd)
 
         validator_elapsed = elapsed_by_validator.setdefault(row.validator_id, {})
-        if row.elapsed_ms is None:
+        if row.elapsed_ms is None or not math.isfinite(row.elapsed_ms) or row.elapsed_ms < 0:
             elapsed_missing.add((row.validator_id, row.artifact_id))
+            missing_elapsed_ms.setdefault(row.artifact_id, []).append((row.task_id, row.validator_id))
         else:
             validator_elapsed[row.artifact_id] = validator_elapsed.get(row.artifact_id, 0.0) + float(row.elapsed_ms)
+            measured_elapsed_ms.setdefault(row.artifact_id, {}).setdefault(row.task_id, {})[
+                row.validator_id
+            ] = float(row.elapsed_ms)
 
     validator_ids = sorted(vectors_by_validator, key=lambda validator_id: validator_id.hex)
     expected_artifact_ids = {
@@ -670,6 +722,8 @@ def aggregate_ranking_rows(
         totals=totals_by_artifact,
         costs=costs_by_artifact,
         median_elapsed_ms=median_elapsed_ms_by_artifact,
+        measured_elapsed_ms=measured_elapsed_ms,
+        missing_elapsed_ms=missing_elapsed_ms,
     )
 
 

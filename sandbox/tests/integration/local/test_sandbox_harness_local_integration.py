@@ -666,9 +666,9 @@ async def test_slow_worker_decode_keeps_siblings_and_deadlines_responsive(harnes
     assert (await harness.invoke("probe", body()))["counter"] == 1
 
 
-@pytest.mark.parametrize("stop", ["timeout", "cancellation"])
+@pytest.mark.parametrize("stop", ["completion", "cancellation"])
 async def test_pending_tool_cleanup_precedes_invocation_exit(tmp_path, monkeypatch, stop):
-    """A deadline or caller cancellation must join tools before releasing the worker."""
+    """Completed work and caller cancellation join tools before releasing the worker."""
     source = """
 import asyncio
 from harnyx_miner_sdk.decorators import entrypoint
@@ -687,6 +687,7 @@ async def probe(request: dict[str, object]) -> str:
     cancelled = asyncio.Event()
     closed = asyncio.Event()
     terminal_received = asyncio.Event()
+    finish_close = asyncio.Event()
     loop = asyncio.get_running_loop()
     real_decode = harness_module.decode_worker_message
 
@@ -712,6 +713,8 @@ async def probe(request: dict[str, object]) -> str:
         async def aclose(self):
             if self.used:
                 assert cancelled.is_set()
+                if stop == "cancellation":
+                    await finish_close.wait()
                 closed.set()
 
     runtime = SandboxHarness(artifact_path=str(path), tool_factory=lambda config, headers: Proxy())
@@ -724,17 +727,17 @@ async def probe(request: dict[str, object]) -> str:
             assert await runtime.invoke("probe", body({"healthy": True})) == "healthy"
             if stop == "cancellation":
                 invocation.cancel()
+                loop.call_soon(finish_close.set)
                 with pytest.raises(asyncio.CancelledError):
                     await invocation
             else:
-                with pytest.raises(HTTPException) as error:
-                    await invocation
-                assert error.value.status_code == 504
+                assert await invocation == "result before tool completion"
         assert started.is_set() and cancelled.is_set() and closed.is_set()
         assert not compiler.children and not runtime._reservations
         assert await runtime.invoke("probe", body({"healthy": True})) == "healthy"
         assert runtime._compiler is compiler and compiler.failure is None
     finally:
+        finish_close.set()
         await runtime.close()
         await asyncio.gather(invocation, return_exceptions=True)
 

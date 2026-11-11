@@ -1,9 +1,10 @@
-"""HTTP header names used for host↔sandbox requests."""
+"""HTTP header names used for host↔sandbox requests and responses."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 
+EXECUTION_COMPLETED_HEADER = "x-harnyx-execution-completed-at"
 SESSION_ID_HEADER = "x-session-id"
 HOST_CONTAINER_URL_HEADER = "x-host-container-url"
 PLATFORM_TOKEN_HEADER = "x-platform-token"  # noqa: S105
@@ -30,6 +31,7 @@ def read_platform_token_header(headers: Mapping[str, str]) -> str:
 
 
 __all__ = [
+    "EXECUTION_COMPLETED_HEADER",
     "HOST_CONTAINER_URL_HEADER",
     "PLATFORM_TOKEN_HEADER",
     "SESSION_ID_HEADER",

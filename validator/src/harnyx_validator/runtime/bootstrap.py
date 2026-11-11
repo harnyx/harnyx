@@ -570,6 +570,7 @@ def _build_platform_work_worker(
         scoring_slot_config=_scoring_slot_config(resolved),
         target_concurrency=45,
         max_active_artifacts=config.artifact_parallelism,
+        submission_store=state.progress_tracker,
     )
 
 
@@ -610,9 +611,9 @@ def _build_state(
     progress_tracker = FileBackedRunProgress(
         storage_root=progress_storage_root or settings.validator_state_dir / "run-progress",
     )
-    progress_tracker.prune_stale_batch_dirs_older_than(
-        datetime.now(UTC) - timedelta(seconds=settings.run_progress_retention_seconds)
-    )
+    retention_cutoff = datetime.now(UTC) - timedelta(seconds=settings.run_progress_retention_seconds)
+    progress_tracker.recover_retained(retention_cutoff)
+    progress_tracker.prune_stale_batch_dirs_older_than(retention_cutoff)
     batch_activity = BatchActivityTracker()
     tool_concurrency_limiter = ToolConcurrencyLimiter(DEFAULT_TOOL_CONCURRENCY_LIMITS)
     usage_tracker = UsageTracker()

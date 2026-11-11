@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Literal, Protocol, TypedDict
 from uuid import UUID
 
@@ -10,6 +11,8 @@ from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptAuditRecord,
     MinerTaskBatchSpec,
     MinerTaskRunSubmission,
+    PlatformOwnedTaskExecution,
+    PlatformOwnedTaskResult,
 )
 
 
@@ -42,6 +45,14 @@ class RunProgressPage(TypedDict):
     next_after_sequence: int
     has_more: bool
     items: tuple[SequencedProgressDetail, ...]
+
+
+class PendingSubmissionRecorder(Protocol):
+    def persist_pending(self, item: PlatformOwnedTaskExecution | PlatformOwnedTaskResult) -> None: ...
+
+    def pending_submissions(self) -> Iterator[PlatformOwnedTaskExecution | PlatformOwnedTaskResult]: ...
+
+    def acknowledge_pending(self, item: PlatformOwnedTaskExecution | PlatformOwnedTaskResult) -> None: ...
 
 
 class ProgressRecorder(Protocol):

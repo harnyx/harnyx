@@ -2038,3 +2038,51 @@ async def test_published_rate_failures_keep_equal_costs_and_native_usage(
                 assert billing.usage.input_tokens == 100
     finally:
         await client.aclose()
+
+
+@pytest.mark.anyio("asyncio")
+@pytest.mark.parametrize("source,successful", [
+    ("usage_pricing", True), ("usage_pricing", False), ("timeout_zero", False),
+])
+async def test_private_proxy_decoder_preserves_unobserved_actual_and_reference_source(source, successful):
+    """Compatible validators must decode estimates and timeout policy without inventing provider billing."""
+    reference = 0.0 if source == "timeout_zero" else 0.003
+    usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+    evidence = {"inference": "unresolved" if source == "timeout_zero" else "attempted",
+                "reference_cost_source": source, "token_usage": usage}
+
+    async def handler(request):
+        if successful:
+            return httpx.Response(200, json={
+                "response": {"usage": usage}, "actual_cost_usd": None, "actual_cost_provider": "openrouter",
+                "reference_cost_usd": reference, "actual_cost_evidence": evidence,
+            })
+        return httpx.Response(504 if source == "timeout_zero" else 502, json={
+            "error_code": "tool_timeout" if source == "timeout_zero" else "provider_failed", "message": "failed",
+            "billing": {"actual_cost_usd": None, "actual_cost_provider": "openrouter",
+                        "reference_cost_usd": reference, "reference_cost_unavailable": False,
+                        "cost_evidence": evidence},
+        })
+
+    client = AsyncPlatformToolProxyPlatformClient(
+        base_url="https://mock.local", hotkey=_keypair(), transport=httpx.MockTransport(handler),
+    )
+    try:
+        request = dict(token=uuid4().hex, uid=7, artifact_id=uuid4(), task_id=uuid4(), validator_session_id=uuid4(),
+                       attempt_number=1, receipt_id=str(uuid4()), tool="llm_chat", args=(),
+                       kwargs={"provider": "openrouter", "model": "openai/gpt-oss-20b"}, transport_timeout_seconds=11.0)
+        if successful:
+            result = await client.execute_platform_tool_proxy_tool(**request)
+            assert result.actual_cost_usd is None
+            assert result.reference_cost_usd == reference
+            assert result.actual_cost_evidence["reference_cost_source"] == source
+        else:
+            with pytest.raises(PlatformToolProxyToolTimeoutError if source == "timeout_zero"
+                               else PlatformToolProxyProviderError) as caught:
+                await client.execute_platform_tool_proxy_tool(**request)
+            assert caught.value.billing.actual_cost_usd is None
+            assert caught.value.billing.reference_cost_usd == reference
+            assert caught.value.billing.provider_usage["reference_cost_source"] == source
+            assert caught.value.billing.llm_usage.total_tokens == 15
+    finally:
+        await client.aclose()

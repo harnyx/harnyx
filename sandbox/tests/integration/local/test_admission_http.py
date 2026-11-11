@@ -11,9 +11,14 @@ from typing import cast
 import httpx
 import pytest
 import uvicorn
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
 from harnyx_sandbox import app as sandbox_app
-from harnyx_sandbox.sandbox.harness import EntrypointRequest, SandboxHarness, _EntrypointContext
+from harnyx_sandbox.sandbox.harness import (
+    EntrypointRequest,
+    SandboxCleanupUnconfirmedError,
+    SandboxHarness,
+    _EntrypointContext,
+)
 
 from harnyx_commons.sandbox.docker import HttpSandboxClient
 from harnyx_miner_sdk.sandbox_protocol import AdmissionRequest, SandboxAdmission
@@ -35,6 +40,12 @@ async def admission_server(tmp_path, monkeypatch):
     source.write_text(
         "import asyncio\n"
         "from harnyx_miner_sdk.decorators import entrypoint\n"
+        "from harnyx_miner_sdk.query import Query, Response\n"
+        "@entrypoint('query')\n"
+        "async def query(request: Query) -> Response:\n"
+        "    if request.text == 'invalid-error':\n"
+        "        raise ValueError(chr(0xD800))\n"
+        "    return Response(text=chr(0xD800) if request.text == 'invalid-result' else request.text)\n"
         "@entrypoint('probe')\n"
         "async def probe(request: dict[str, object]) -> dict[str, object]:\n"
         "    await asyncio.sleep(0.05)\n"
@@ -50,6 +61,10 @@ async def admission_server(tmp_path, monkeypatch):
     sending = asyncio.Event()
     response_gate = asyncio.Event()
 
+    entry_app = FastAPI()
+    entry_app.add_exception_handler(SandboxCleanupUnconfirmedError, sandbox_app.cleanup_unconfirmed)
+    entry_app.include_router(harness.create_router(), prefix="/entry")
+
     async def app(scope, receive, send):
         async def send_response(message):
             if (b"x-test-pause-response", b"true") in scope.get("headers", []) and message[
@@ -59,7 +74,8 @@ async def admission_server(tmp_path, monkeypatch):
                 await response_gate.wait()
             await send(message)
 
-        await sandbox_app.app(scope, receive, send_response)
+        target = entry_app if scope.get("path", "").startswith("/entry/") else sandbox_app.app
+        await target(scope, receive, send_response)
 
     class ReadyServer(uvicorn.Server):
         async def startup(self, sockets=None):
@@ -258,3 +274,66 @@ async def test_runner_window_cancellation_does_not_block_later_http_admission(
         assert not harness._slots.locked()
     finally:
         harness.release(occupied)
+
+
+@pytest.mark.parametrize("outcome", ("success", "missing", "cleanup"))
+async def test_http_completion_precedes_cleanup_on_success_and_failure(admission_server, monkeypatch, outcome):
+    from datetime import UTC, datetime
+
+    from harnyx_commons.sandbox.client import EXECUTION_COMPLETED_HEADER
+
+    harness, client, _ = admission_server
+    cleaning = asyncio.Event()
+    release = asyncio.Event()
+    original_wait = harness._wait_cleanup
+
+    async def delayed_cleanup(task, admission):
+        cleaning.set()
+        await release.wait()
+        await original_wait(task, admission)
+        if outcome == "cleanup":
+            raise SandboxCleanupUnconfirmedError("cleanup observation failed")
+
+    monkeypatch.setattr(harness, "_wait_cleanup", delayed_cleanup)
+    request = asyncio.create_task(client.post("/entry/missing" if outcome == "missing" else "/entry/probe", json={
+        "payload": {}, "context": {"time_budget": {"limit_seconds": 2.0}},
+    }))
+    try:
+        await asyncio.wait_for(cleaning.wait(), 5)
+        cleanup_observed = datetime.now(UTC)
+        assert not request.done()
+        release.set()
+        response = await request
+        assert response.status_code == {"success": 200, "missing": 404, "cleanup": 503}[outcome]
+        completed = datetime.fromisoformat(response.headers[EXECUTION_COMPLETED_HEADER])
+        assert completed <= cleanup_observed
+        assert completed < datetime.now(UTC)
+    finally:
+        release.set()
+        if not request.done():
+            request.cancel()
+            await asyncio.gather(request, return_exceptions=True)
+
+
+@pytest.mark.parametrize("text", ("invalid-result", "invalid-error", "valid Unicode 🙂"))
+async def test_worker_json_keeps_completion_through_http_encoding(admission_server, text):
+    from harnyx_commons.sandbox.client import parse_execution_completion
+
+    _, client, _ = admission_server
+    response = await client.post("/entry/query", json={
+        "payload": {"text": text},
+        "context": {
+            "time_budget": {"limit_seconds": 2.0},
+            "cost_budget": {
+                "session_budget_usd": 1.0, "session_hard_limit_usd": 1.0,
+                "session_used_budget_usd": 0.0, "session_remaining_budget_usd": 1.0,
+            },
+        },
+    })
+    assert parse_execution_completion(response.headers) is not None
+    if text.startswith("invalid"):
+        assert response.status_code == 500
+        assert response.json()["detail"]["exception"] in {"WorkerMessageViolationError", "ValidationError"}
+    else:
+        assert response.status_code == 200
+        assert response.json()["result"]["text"] == text

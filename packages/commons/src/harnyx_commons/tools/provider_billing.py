@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from math import isfinite
 from typing import Generic, Literal, TypeVar, cast
 
@@ -26,6 +26,8 @@ ProviderBillingSource = Literal[
 
 TSearchResponse = TypeVar("TSearchResponse", covariant=True)
 _LLM_USAGE = TypeAdapter(LlmUsage)
+ReferenceCostSource = Literal["reported_charge", "usage_pricing", "timeout_zero"]
+_REFERENCE_COST_SOURCE = TypeAdapter(ReferenceCostSource)
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +39,7 @@ class OpenRouterAccounting:
     reference_cost_usd: float | None
     llm_usage: LlmUsage | None = None
     decision_usage: DecisionUsage | None = None
+    reference_cost_source: ReferenceCostSource | None = None
 
     def __post_init__(self) -> None:
         if self.inference not in ("not_dispatched", "attempted", "unresolved"):
@@ -53,9 +56,29 @@ class OpenRouterAccounting:
             or self.decision_usage is not None
         ):
             raise ValueError("undispatched OpenRouter call requires zero costs and no usage")
-        if self.reference_cost_usd is not None and self.actual_cost_usd is None:
+        if (
+            self.reference_cost_source is None and self.reference_cost_usd is not None
+            and self.inference != "not_dispatched"
+        ):
+            object.__setattr__(self, "reference_cost_source", "reported_charge")
+        if self.reference_cost_source is not None:
+            _REFERENCE_COST_SOURCE.validate_python(self.reference_cost_source)
+            if self.reference_cost_usd is None:
+                raise ValueError("OpenRouter reference source requires a reference amount")
+        if self.reference_cost_source == "timeout_zero" and self.reference_cost_usd != 0:
+            raise ValueError("OpenRouter timeout-zero reference must be zero")
+        if self.reference_cost_source == "usage_pricing" and (
+            self.inference != "attempted"
+            or self.llm_usage is None
+            or self.llm_usage.prompt_tokens is None
+            or self.llm_usage.completion_tokens is None
+        ):
+            raise ValueError("OpenRouter usage-priced reference requires observed complete token usage")
+        if (self.reference_cost_usd is not None and self.actual_cost_usd is None
+                and self.reference_cost_source not in ("usage_pricing", "timeout_zero")):
             raise ValueError("known OpenRouter reference requires an observed actual charge")
-        if self.inference == "unresolved" and self.reference_cost_usd is not None:
+        if (self.inference == "unresolved" and self.reference_cost_usd is not None
+                and self.reference_cost_source != "timeout_zero"):
             raise ValueError("unresolved OpenRouter inference cannot have known reference cost")
 
     @property
@@ -99,6 +122,10 @@ class OpenRouterAccounting:
             reference_cost_usd=reference_cost_usd,
             llm_usage=llm_usage if llm_usage is not None else recorded_usage,
             decision_usage=decision_usage if decision_usage is not None else recorded_decision_usage,
+            reference_cost_source=(
+                None if (evidence or {}).get("reference_cost_source") is None
+                else _REFERENCE_COST_SOURCE.validate_python((evidence or {})["reference_cost_source"])
+            ),
         )
 
     @classmethod
@@ -119,6 +146,9 @@ class OpenRouterAccounting:
     def to_evidence(self, raw: JsonObject | None = None) -> JsonObject:
         evidence = dict(raw or {})
         evidence["inference"] = self.inference
+        evidence.pop("reference_cost_source", None)
+        if self.reference_cost_source is not None:
+            evidence["reference_cost_source"] = self.reference_cost_source
         evidence.pop("decision_usage", None)
         if self.decision_usage is not None:
             evidence["decision_usage"] = self.decision_usage.model_dump(mode="json", exclude_none=True)
@@ -160,6 +190,26 @@ class ProviderBillingMetadata:
     provider_usage: JsonObject | None = None
     reference_cost_usd: float | None = None
     reference_cost_unavailable: bool = False
+
+
+def normalize_llm_timeout(
+    billing: ProviderBillingMetadata | None, *, provider: str
+) -> ProviderBillingMetadata:
+    """Resolve unbilled chat timeouts for comparison without inventing a financial bill."""
+    if billing is not None and billing.actual_cost_usd is not None:
+        return billing
+    if provider == "openrouter":
+        fact = (OpenRouterAccounting("unresolved", None, None) if billing is None
+                else OpenRouterAccounting.from_billing(billing))
+        return replace(fact, reference_cost_usd=0.0, reference_cost_source="timeout_zero").to_billing(
+            None if billing is None else billing.provider_usage,
+            source="missing_provider_metadata" if billing is None else billing.source,
+        )
+    billing = billing or ProviderBillingMetadata(provider, "missing_provider_metadata")
+    return replace(
+        billing, reference_cost_usd=0.0, reference_cost_unavailable=False,
+        provider_usage={**(billing.provider_usage or {}), "reference_cost_source": "timeout_zero"},
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,4 +272,5 @@ __all__ = [
     "billing_evidence_payload",
     "billing_usage_payload",
     "failure_billing",
+    "normalize_llm_timeout",
 ]

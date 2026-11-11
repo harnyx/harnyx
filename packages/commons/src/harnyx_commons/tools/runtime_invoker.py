@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass
 from typing import TypeVar, cast
 
 import httpx
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.domain.session import ProviderCredentialSource
@@ -25,7 +25,11 @@ from harnyx_commons.errors import (
     ToolProviderFailureCode,
 )
 from harnyx_commons.json_types import JsonObject, JsonValue
-from harnyx_commons.llm.cost_settlement import llm_cost_settlement_order, settled_cost_from_metadata
+from harnyx_commons.llm.cost_settlement import (
+    llm_cost_settlement_order,
+    normalized_provider_cost,
+    settled_cost_from_metadata,
+)
 from harnyx_commons.llm.pricing import (
     DEEPSEEK_SEARCH_USD_PER_SUCCESSFUL_REQUEST,
     MINER_TOOL_DECISION_PRICING,
@@ -84,6 +88,7 @@ from harnyx_commons.tools.provider_billing import (
     ProviderBillingMetadata,
     billing_evidence_payload,
     failure_billing,
+    normalize_llm_timeout,
 )
 from harnyx_commons.tools.rerank_models import RerankRequest
 from harnyx_commons.tools.search_models import (
@@ -112,6 +117,7 @@ DEFAULT_TOOL_LLM_TIMEOUT_SECONDS = PLATFORM_TOOL_PROXY_LLM_CHAT_DEFAULT_TIMEOUT_
 DEFAULT_SEARCH_TOOL_TIMEOUT_SECONDS = PLATFORM_TOOL_PROXY_SEARCH_TOOL_DEFAULT_TIMEOUT_SECONDS
 DEFAULT_EMBEDDING_TOOL_TIMEOUT_SECONDS = PLATFORM_TOOL_PROXY_EMBEDDING_TOOL_DEFAULT_TIMEOUT_SECONDS
 TInvocationResult = TypeVar("TInvocationResult")
+_BILLING_EVIDENCE = TypeAdapter(JsonObject)
 _AUTHENTICATION_STATUSES_BY_PROVIDER: Mapping[str, frozenset[int]] = {
     "ai_gateway": frozenset({401}),
     "saygm": frozenset({401}),
@@ -775,17 +781,21 @@ class RuntimeToolInvoker(ToolInvoker):
                     typed.billing = exc.billing
                     raise typed from exc
             raise
-        except ToolInvocationTimeoutError:
+        except ToolInvocationTimeoutError as exc:
+            exc.billing = normalize_llm_timeout(exc.billing, provider=invocation.provider)
             raise
         except LlmProviderConfigurationError as exc:
             raise _credential_unavailable(invocation.provider) from exc
         except (LlmProviderError, LlmRetryExhaustedError) as exc:
             if isinstance(exc.__cause__, LlmAttemptTimeoutError):
-                raise ToolInvocationTimeoutError(str(exc.__cause__)) from exc
+                raise ToolInvocationTimeoutError(
+                    str(exc.__cause__), billing=normalize_llm_timeout(None, provider=invocation.provider)
+                ) from exc
             raise _typed_provider_error(exc, provider=invocation.provider) from exc
         try:
             actual_cost = _require_settled_llm_cost(llm_response)
-            _require_actual_cost(actual_cost, tool_name="llm_chat")
+            if actual_cost.cost_usd is not None:
+                _require_actual_cost(actual_cost, tool_name="llm_chat")
         except ValueError as exc:
             raise ToolProviderError("tool provider failed") from exc
         return ToolInvocationOutput(
@@ -1457,6 +1467,25 @@ def _require_embedding_cost(actual_cost: _ActualCost, *, request: EmbedTextReque
 
 
 def _require_settled_llm_cost(response: LlmResponse) -> _ActualCost:
+    metadata = response.metadata or {}
+    evidence = metadata.get("actual_cost_evidence")
+    if metadata.get("actual_cost_provider") == "openrouter" and isinstance(evidence, dict) and "inference" in evidence:
+        recorded_evidence = _BILLING_EVIDENCE.validate_python(evidence)
+        fact = OpenRouterAccounting.from_fields(
+            actual_cost_usd=normalized_provider_cost(metadata.get("actual_cost_usd"), field_name="actual_cost_usd"),
+            reference_cost_usd=normalized_provider_cost(
+                metadata.get("reference_cost_usd"), field_name="reference_cost_usd"
+            ),
+            evidence=recorded_evidence,
+            llm_usage=response.usage,
+        )
+        if fact.reference_cost_usd is None:
+            raise ValueError("llm_chat provider-backed success missing reference cost")
+        if fact.actual_cost_usd is None and fact.reference_cost_source != "usage_pricing":
+            raise ValueError("llm_chat unbilled success requires a usage-priced estimate")
+        return _ActualCost(
+            fact.actual_cost_usd, "openrouter", fact.to_evidence(recorded_evidence), fact.reference_cost_usd
+        )
     settled = settled_cost_from_metadata(response.metadata or {})
     if settled is None:
         raise ValueError("llm_chat provider-backed success missing settled cost")

@@ -27,6 +27,33 @@ from harnyx_commons.tools.runtime_invoker import DEFAULT_TOOL_LLM_TIMEOUT_SECOND
 pytestmark = pytest.mark.anyio("asyncio")
 
 
+@pytest.mark.parametrize("billed", [False, True])
+async def test_llm_timeout_preserves_reported_charge_or_explicit_zero_comparison(billed: bool) -> None:
+    """Unbilled timeouts remain comparable without pretending their financial bill was observed."""
+    from harnyx_commons.errors import ToolInvocationTimeoutError
+    from harnyx_commons.tools.provider_billing import OpenRouterAccounting
+
+    usage = LlmUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    billing = OpenRouterAccounting("attempted", 0.004 if billed else None, 0.008 if billed else None,
+                                   llm_usage=usage).to_billing()
+
+    class TimeoutProvider:
+        async def invoke(self, request):
+            raise ToolInvocationTimeoutError("provider deadline", billing=billing)
+
+    invoker = RuntimeToolInvoker(InMemoryReceiptLog(), llm_provider=TimeoutProvider(), llm_provider_name="openrouter")
+    with pytest.raises(ToolInvocationTimeoutError) as caught:
+        await invoker.invoke("llm_chat", args=(), kwargs={
+            "provider": "openrouter", "model": "openai/gpt-oss-20b",
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+    fact = OpenRouterAccounting.from_billing(caught.value.billing)
+    assert fact.actual_cost_usd == (0.004 if billed else None)
+    assert fact.reference_cost_usd == (0.008 if billed else 0.0)
+    assert fact.llm_usage == usage
+    assert fact.to_evidence()["reference_cost_source"] == ("reported_charge" if billed else "timeout_zero")
+
+
 class _CapturingLlmProvider:
     def __init__(self) -> None:
         self.requests: list[LlmRequest] = []

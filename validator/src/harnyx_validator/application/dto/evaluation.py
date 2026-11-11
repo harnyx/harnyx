@@ -160,6 +160,7 @@ class EntrypointInvocationResult(BaseModel):
     """Response returned by the sandbox query entrypoint."""
 
     response: Response
+    execution_completed_at: datetime
     tool_receipts: tuple[ToolCall, ...] = ()
 
 
@@ -188,6 +189,7 @@ class TaskRunOutcome(BaseModel):
 
     """Aggregate outcome of running a miner task query."""
 
+    execution_completed_at: datetime
     run: MinerTaskRun
     tool_receipts: tuple[ToolCall, ...] = ()
     usage: TokenUsageSummary = Field(default_factory=TokenUsageSummary.empty)

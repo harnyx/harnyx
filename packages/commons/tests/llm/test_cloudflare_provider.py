@@ -485,4 +485,9 @@ async def test_native_owned_deadlines_keep_timeout_classification_and_known_bill
             assert billing.reference_cost_usd == billing.actual_cost_usd
             assert billing.llm_usage.prompt_tokens == 100
         else:
-            assert caught.value.billing is None
+            billing = caught.value.billing
+            assert billing is not None
+            assert billing.reference_cost_usd == 0
+            assert billing.actual_cost_usd is None
+            assert not billing.reference_cost_unavailable
+            assert billing.provider_usage["reference_cost_source"] == "timeout_zero"

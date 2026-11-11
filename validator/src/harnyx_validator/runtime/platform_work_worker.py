@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from collections import defaultdict
-from collections.abc import Callable, Coroutine, Mapping, Sequence
+from collections.abc import Callable, Coroutine, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -25,6 +25,7 @@ from harnyx_validator.application.dto.evaluation import (
     PlatformOwnedTaskResult,
 )
 from harnyx_validator.application.ports.platform import PlatformPort, PlatformTaskAttemptIdentity
+from harnyx_validator.application.ports.progress import PendingSubmissionRecorder
 from harnyx_validator.infrastructure.observability.sentry import capture_exception
 
 logger = logging.getLogger("harnyx_validator.platform_work_worker")
@@ -348,6 +349,16 @@ class _AssignedArtifactGroup:
         _drain_assignment_queue(self.assignment_queue)
 
 
+class _DurableResultQueue(asyncio.Queue[PlatformOwnedTaskExecution | PlatformOwnedTaskResult]):
+    def __init__(self, persist: Callable[[PlatformOwnedTaskExecution | PlatformOwnedTaskResult], None]) -> None:
+        super().__init__()
+        self._persist = persist
+
+    def put_nowait(self, item: PlatformOwnedTaskExecution | PlatformOwnedTaskResult) -> None:
+        self._persist(item)
+        super().put_nowait(item)
+
+
 class PlatformWorkWorker:
     worker_name = "validator-platform-work-worker"
 
@@ -363,6 +374,7 @@ class PlatformWorkWorker:
         poll_interval_seconds: float = 1.0,
         dispatch_start_lease_seconds: float = _PLATFORM_WORK_DISPATCH_START_LEASE_SECONDS,
         monotonic_clock: Callable[[], float] = time.monotonic,
+        submission_store: PendingSubmissionRecorder | None = None,
     ) -> None:
         if target_concurrency < 1:
             raise ValueError("target_concurrency must be positive")
@@ -381,6 +393,11 @@ class PlatformWorkWorker:
             if executor_models != configured_models:
                 raise ValueError("score_execution_by_model must match scoring_slot_config entries")
         self._platform = platform
+        self._submission_store = submission_store
+        self._recovery: Iterator[PlatformOwnedTaskExecution | PlatformOwnedTaskResult] | None = None
+        self._recovery_done = submission_store is None
+        self._recovery_error: Exception | None = None
+        self._durability_failed = False
         self._execute_artifact_assignments = execute_artifact_assignments
         self._score_execution_by_model = scoring_executors
         self._scoring_slot_config = scoring_slot_config
@@ -433,12 +450,52 @@ class PlatformWorkWorker:
             except Exception as exc:
                 logger.exception("platform work worker iteration failed")
                 capture_exception(exc)
+                if self._recovery_error is not None:
+                    raise
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=self._poll_interval_seconds)
             except TimeoutError:
                 continue
 
+    def _persist_pending(self, item: PlatformOwnedTaskExecution | PlatformOwnedTaskResult) -> None:
+        if self._submission_store is None:
+            return
+        try:
+            self._submission_store.persist_pending(item)
+        except OSError:
+            self._durability_failed = True
+            logger.exception("pending submission could not be saved; stopping new work")
+
+    def _load_recovery_batch(self) -> None:
+        if self._recovery_error is not None:
+            raise RuntimeError("pending submission recovery requires repair") from self._recovery_error
+        if self._pending_executions or self._results_pending_submission:
+            return
+        if self._recovery_done:
+            return
+        if self._recovery is None:
+            assert self._submission_store is not None
+            self._recovery = self._submission_store.pending_submissions()
+        for _ in range(100):
+            try:
+                item = next(self._recovery)
+            except StopIteration:
+                self._recovery_done = True
+                return
+            except Exception as exc:
+                self._recovery_error = exc
+                raise
+            if isinstance(item, PlatformOwnedTaskExecution):
+                self._pending_executions.append(item)
+            else:
+                self._results_pending_submission.append(item)
+
+    def _acknowledge_pending(self, item: PlatformOwnedTaskExecution | PlatformOwnedTaskResult) -> None:
+        if self._submission_store is not None:
+            self._submission_store.acknowledge_pending(item)
+
     async def run_once(self) -> None:
+        self._load_recovery_batch()
         self._collect_artifact_group_results()
         self._collect_scoring_results()
         self._fail_expired_dispatchable_assignments()
@@ -450,6 +507,13 @@ class PlatformWorkWorker:
         if self._results_pending_submission:
             if not await self._submit_results_pending_submission():
                 return
+        if not self._recovery_done:
+            return
+        if self._durability_failed:
+            # Successfully acknowledged live output can resume work; pending output must stay recoverable.
+            if self._pending_executions or self._results_pending_submission:
+                return
+            self._durability_failed = False
         self._consume_completed_scoreable_execution_request()
         if self._scoreable_execution_request_task is None:
             self._start_scoreable_execution_request()
@@ -573,7 +637,9 @@ class PlatformWorkWorker:
     ) -> _AssignedArtifactGroup:
         assignment_queue: asyncio.Queue[MinerTaskWorkAssignment] = asyncio.Queue()
         close_requested = asyncio.Event()
-        result_queue: asyncio.Queue[PlatformOwnedTaskResult | PlatformOwnedTaskExecution] = asyncio.Queue()
+        result_queue: asyncio.Queue[PlatformOwnedTaskResult | PlatformOwnedTaskExecution] = _DurableResultQueue(
+            self._persist_pending
+        )
 
         group = _AssignedArtifactGroup(
             artifact_id=artifact_id,
@@ -754,6 +820,13 @@ class PlatformWorkWorker:
                 )
 
         acknowledged = {(ack.batch_id, ack.artifact_id, ack.task_id, ack.attempt_number) for ack in acknowledgements}
+        try:
+            for item in self._pending_executions:
+                if (item.batch_id, item.artifact_id, item.task_id, item.attempt_number) in acknowledged:
+                    self._acknowledge_pending(item)
+        except OSError:
+            logger.exception("could not acknowledge durable pending submission; will replay")
+            return False
         self._pending_executions = [
             execution
             for execution in self._pending_executions
@@ -796,6 +869,7 @@ class PlatformWorkWorker:
             except Exception as exc:
                 logger.warning("platform scoreable execution scoring failed; will retry", exc_info=exc)
                 continue
+            self._persist_pending(result)
             self._results_pending_submission.append(result)
             self._scoring_models_for_results_pending_submission[_result_identity(result)] = record.model
 
@@ -824,6 +898,13 @@ class PlatformWorkWorker:
                 )
 
         acknowledged = {(ack.batch_id, ack.artifact_id, ack.task_id, ack.attempt_number) for ack in acknowledgements}
+        try:
+            for item in self._results_pending_submission:
+                if (item.batch_id, item.artifact_id, item.task_id, item.attempt_number) in acknowledged:
+                    self._acknowledge_pending(item)
+        except OSError:
+            logger.exception("could not acknowledge durable pending submission; will replay")
+            return False
         for result in self._results_pending_submission:
             if (result.batch_id, result.artifact_id, result.task_id, result.attempt_number) in acknowledged:
                 self._scoring_models_for_results_pending_submission.pop(_result_identity(result), None)

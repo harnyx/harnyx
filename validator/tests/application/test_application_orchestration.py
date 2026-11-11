@@ -31,6 +31,7 @@ from harnyx_commons.domain.tool_usage import ToolUsageSummary
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_commons.miner_task_scoring import EvaluationScoringResult
+from harnyx_commons.sandbox.client import SandboxInvocationResult
 from harnyx_commons.tools.dto import ToolInvocationRequest
 from harnyx_commons.tools.executor import ToolExecutor, ToolInvocationContext, ToolInvocationOutput
 from harnyx_commons.tools.usage_tracker import UsageTracker
@@ -83,14 +84,14 @@ class StubSandboxClient:
         token: str,
         session_id: UUID,
         admission: SandboxAdmission | None = None,
-    ) -> dict[str, object]:
+    ) -> SandboxInvocationResult:
         del admission
         self.requests.append((entrypoint, payload, context, token, session_id))
         if self.on_invoke is not None:
             self.on_invoke(session_id)
         if self.response is None:
             raise RuntimeError("sandbox response not configured")
-        return self.response
+        return SandboxInvocationResult(self.response, datetime(2025, 10, 17, 12, 5, tzinfo=UTC))
 
 
 class EchoToolInvoker:
@@ -519,7 +520,7 @@ async def test_application_use_cases_cooperate_for_single_task_run() -> None:
     assert outcome.run.details.score_breakdown is not None
     assert outcome.run.details.score_breakdown.total_score == pytest.approx(1.0)
     assert outcome.run.details.elapsed_ms == pytest.approx(300000.0)
-    assert outcome.run.completed_at == datetime(2025, 10, 17, 12, 10, tzinfo=UTC)
+    assert outcome.run.completed_at == datetime(2025, 10, 17, 12, 5, tzinfo=UTC)
     assert outcome.run.details.total_tool_usage.search_tool_cost == pytest.approx(0.01)
     assert sandbox.requests == [
         (

@@ -116,6 +116,17 @@ def test_platform_tool_proxy_control_failures_disqualify_validator_delivery() ->
     assert is_delivery_disqualifying_validator_pair_error(MinerTaskErrorCode.PLATFORM_TOOL_PROXY_GRANT_FAILED)
 
 
+def test_interrupted_validator_delivery_cannot_contribute_incomplete_scoring_results() -> None:
+    for code in (MinerTaskErrorCode.VALIDATOR_FAILED, MinerTaskErrorCode.UNEXPECTED_VALIDATOR_FAILURE):
+        exclusion = delivery_exclusion_from_completed_pair_results(
+            (_submission(code=code),), observed_at=datetime.now(UTC),
+        )
+        assert exclusion is not None
+        assert exclusion.error.code == code
+    assert not is_delivery_disqualifying_validator_pair_error(MinerTaskErrorCode.SANDBOX_OOM_AFFECTED)
+    assert not is_delivery_disqualifying_validator_pair_error(MinerTaskErrorCode.SESSION_BUDGET_EXHAUSTED)
+
+
 def test_sandbox_failure_shape_classifiers_expose_validator_attribution_policy() -> None:
     assert is_timeout_sandbox_invocation(status_code=504, detail_exception="TimeoutError")
     assert is_script_validation_sandbox_invocation(detail_code="MissingEntrypoint")

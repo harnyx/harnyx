@@ -458,6 +458,7 @@ class EvaluationRunner:
         self._receipts = receipt_log
         self._config = config
         self._clock = clock
+        self._execution_ends_by_session: dict[UUID, datetime] = {}
         self._progress = progress
         self._usage = usage_summarizer or UsageSummarizer()
         self._platform_tool_proxy_scopes = platform_tool_proxy_scopes
@@ -1774,6 +1775,8 @@ class EvaluationRunner:
             else:
                 outcome = await orchestrator.evaluate(request, phase_recorder=phase_recorder)
         except SessionBudgetExhaustedError as exc:
+            if exc.completed_at is not None:
+                self._execution_ends_by_session[issued.session.session_id] = exc.completed_at
             control_failure_decision = self._platform_tool_proxy_control_failure_decision(
                 artifact=artifact,
                 task=task,
@@ -1791,6 +1794,8 @@ class EvaluationRunner:
                 )
             )
         except SandboxInvocationError as exc:
+            if exc.completed_at is not None:
+                self._execution_ends_by_session[issued.session.session_id] = exc.completed_at
             timeout_decision = self._platform_tool_proxy_timeout_decision(
                 batch_id=batch_id,
                 artifact=artifact,
@@ -1841,6 +1846,9 @@ class EvaluationRunner:
                 )
             )
         except Exception as exc:
+            completed_at = getattr(exc, "execution_completed_at", None)
+            if isinstance(completed_at, datetime):
+                self._execution_ends_by_session[issued.session.session_id] = completed_at
             control_failure_decision = self._platform_tool_proxy_control_failure_decision(
                 artifact=artifact,
                 task=task,
@@ -1858,6 +1866,7 @@ class EvaluationRunner:
                 final_attempt=final_attempt,
             )
 
+        self._execution_ends_by_session[issued.session.session_id] = outcome.execution_completed_at
         unpriceable = self._unpriceable_attempt_decision(
             batch_id=batch_id, artifact=artifact, task=task, session_id=issued.session.session_id
         )
@@ -1908,6 +1917,8 @@ class EvaluationRunner:
             else:
                 outcome = await orchestrator.execute(request, phase_recorder=phase_recorder)
         except SessionBudgetExhaustedError as exc:
+            if exc.completed_at is not None:
+                self._execution_ends_by_session[issued.session.session_id] = exc.completed_at
             control_failure_decision = self._platform_tool_proxy_control_failure_decision(
                 artifact=artifact,
                 task=task,
@@ -1925,6 +1936,8 @@ class EvaluationRunner:
                 )
             )
         except SandboxInvocationError as exc:
+            if exc.completed_at is not None:
+                self._execution_ends_by_session[issued.session.session_id] = exc.completed_at
             timeout_decision = self._platform_tool_proxy_timeout_decision(
                 batch_id=batch_id,
                 artifact=artifact,
@@ -1975,6 +1988,9 @@ class EvaluationRunner:
                 )
             )
         except Exception as exc:
+            completed_at = getattr(exc, "execution_completed_at", None)
+            if isinstance(completed_at, datetime):
+                self._execution_ends_by_session[issued.session.session_id] = completed_at
             control_failure_decision = self._platform_tool_proxy_control_failure_decision(
                 artifact=artifact,
                 task=task,
@@ -1992,6 +2008,7 @@ class EvaluationRunner:
                 final_attempt=final_attempt,
             )
 
+        self._execution_ends_by_session[issued.session.session_id] = outcome.execution_completed_at
         unpriceable = self._unpriceable_attempt_decision(
             batch_id=batch_id, artifact=artifact, task=task, session_id=issued.session.session_id
         )
@@ -2287,7 +2304,8 @@ class EvaluationRunner:
         trace: EvaluationTrace | None = None,
     ) -> MinerTaskRunSubmission:
         session_id = envelope.session.session_id
-        completed_at = self._clock()
+        execution_completed_at = self._execution_ends_by_session.get(session_id)
+        completed_at = execution_completed_at or self._clock()
         summarized_usage, summarized_tool_usage = self._summarize_session(envelope)
         receipt_log = tuple(self._receipts.for_session(session_id)) if execution_log is None else execution_log
         details = EvaluationDetails(
@@ -2295,7 +2313,12 @@ class EvaluationRunner:
             scoring_judge_usage=scoring_judge_usage,
             trace=trace,
             total_tool_usage=total_tool_usage or summarized_tool_usage,
-            elapsed_ms=elapsed_ms or _elapsed_ms(issued_at=envelope.session.issued_at, completed_at=completed_at),
+            elapsed_ms=(
+                elapsed_ms if elapsed_ms is not None
+                else (None if execution_completed_at is None else _elapsed_ms(
+                    issued_at=envelope.session.issued_at, completed_at=execution_completed_at
+                ))
+            ),
         )
         run = MinerTaskRun(
             session_id=session_id,
@@ -2429,10 +2452,9 @@ class EvaluationRunner:
             total_tool_usage=total_tool_usage,
             usage=usage,
             execution_log=current_attempt_receipts,
-            elapsed_ms=_elapsed_ms(
-                issued_at=envelope.session.issued_at,
-                completed_at=self._clock(),
-            ),
+            elapsed_ms=(None if timeout_exc.completed_at is None else _elapsed_ms(
+                issued_at=envelope.session.issued_at, completed_at=timeout_exc.completed_at,
+            )),
         )
         logger.error(
             "miner task timed out after retry budget exhaustion",
@@ -2558,6 +2580,8 @@ class EvaluationRunner:
             )
 
         if isinstance(exc, MinerResponseValidationError):
+            if exc.completed_at is not None:
+                self._execution_ends_by_session[session_id] = exc.completed_at
             return _submission_decision(
                 self._build_task_failure(
                     batch_id=batch_id,
@@ -2573,6 +2597,20 @@ class EvaluationRunner:
             )
 
         if isinstance(exc, SandboxInvocationError) and exc.detail_code == SANDBOX_OOM_AFFECTED:
+            if exc.completed_at is None:
+                message = "OOM-affected execution has no recoverable completion measurement"
+                return _validator_batch_failure_decision(
+                    ValidatorBatchFailedError(
+                        error_code=MinerTaskErrorCode.SANDBOX_OOM_AFFECTED,
+                        message=message,
+                        failure_detail=ValidatorBatchFailureDetail(
+                            error_code=MinerTaskErrorCode.SANDBOX_OOM_AFFECTED,
+                            error_message=message, occurred_at=self._clock(),
+                            artifact_id=artifact.artifact_id, task_id=task.task_id, uid=artifact.uid,
+                            exception_type=_exception_type_name(exc),
+                        ),
+                    )
+                )
             return _submission_decision(
                 self._build_task_failure(
                     batch_id=batch_id,
@@ -3059,6 +3097,7 @@ class EvaluationRunner:
         return self._progress.consume_provider_failures(session_id)
 
     def _clear_task_session(self, session_id: UUID) -> None:
+        self._execution_ends_by_session.pop(session_id, None)
         self._progress.clear_task_session(session_id)
 
     def _issue_session(
@@ -3152,6 +3191,7 @@ class EvaluationRunner:
             self._platform_tool_proxy_scopes.clear_session(session_id)
 
     def _begin_session_attempt(self, session_id: UUID) -> SessionIssued:
+        self._execution_ends_by_session.pop(session_id, None)
         token = secrets.token_urlsafe(self._config.token_secret_bytes)
         return self._sessions.begin_attempt(session_id, token=token)
 

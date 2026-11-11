@@ -36,6 +36,7 @@ from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptTerminalEffect,
     MinerTaskBatchSpec,
     MinerTaskRunSubmission,
+    PlatformOwnedTaskResult,
     SandboxFailureDiagnostics,
     ScriptArtifactSpec,
     TokenUsageSummary,
@@ -721,3 +722,80 @@ def test_run_progress_spools_large_execution_logs_without_retaining_payloads(
     blob_bytes = sum(path.stat().st_size for path in progress.storage_root.rglob("*.blob"))
     assert retained_delta < total_payload_bytes // 2
     assert blob_bytes >= total_payload_bytes
+
+
+def test_unacknowledged_result_recovers_without_surviving_in_memory_index(tmp_path: Path) -> None:
+    batch = _make_batch()
+    submission = _make_submission(batch)
+    attempt = _make_attempt(batch, session_id=submission.session.session_id).model_copy(update={
+        "status": MinerTaskAttemptStatus.SUCCEEDED, "error_code": None, "error_summary_code": None,
+        "retry_decision": MinerTaskAttemptRetryDecision.WILL_NOT_RETRY,
+        "terminal_effect": MinerTaskAttemptTerminalEffect.TASK_RESULT,
+    })
+    result = PlatformOwnedTaskResult(batch_id=batch.batch_id, artifact_id=submission.run.artifact_id,
+                                    task_id=submission.run.task_id, attempt_number=attempt.attempt_number,
+                                    result=submission, terminal_attempt=attempt)
+    progress = _progress(tmp_path)
+    progress.persist_pending(result)
+    fresh = _progress(tmp_path)
+    assert list(fresh.pending_submissions()) == [result]
+    fresh.persist_pending(result)
+    assert list(fresh.pending_submissions()) == [result]
+    fresh.acknowledge_pending(result)
+    assert list(_progress(tmp_path).pending_submissions()) == []
+
+
+def test_matching_local_submission_and_audit_recover_without_original_references(tmp_path: Path) -> None:
+    batch = _make_batch()
+    submission = _make_submission(batch)
+    attempt = _make_attempt(batch, session_id=submission.session.session_id).model_copy(update={
+        "status": MinerTaskAttemptStatus.SUCCEEDED, "error_code": None, "error_summary_code": None,
+        "retry_decision": MinerTaskAttemptRetryDecision.WILL_NOT_RETRY,
+        "terminal_effect": MinerTaskAttemptTerminalEffect.TASK_RESULT,
+    })
+    original = _progress(tmp_path)
+    original.record(submission)
+    original.record_terminated_attempt(attempt)
+    fresh = _progress(tmp_path)
+    fresh.recover_retained(datetime.now(UTC) - timedelta(hours=1))
+    recovered = list(fresh.pending_submissions())
+    assert len(recovered) == 1
+    assert recovered[0].result == submission
+    assert recovered[0].terminal_attempt == attempt
+
+
+def test_torn_tail_recovery_remains_readable_after_later_writes(tmp_path: Path) -> None:
+    batch = _make_batch()
+    submission = _make_submission(batch)
+    original = _progress(tmp_path)
+    original.record(submission)
+    segment = next((original.storage_root / str(batch.batch_id)).glob("runs-*.blob"))
+    with segment.open("ab") as handle:
+        handle.write(b"\x00\x00")
+    fresh = _progress(tmp_path)
+    fresh.recover_retained(datetime.now(UTC) - timedelta(hours=1))
+    second = _make_submission(batch)
+    second = second.model_copy(update={"run": second.run.model_copy(update={"artifact_id": uuid4()})})
+    fresh.record(second)
+    restarted = _progress(tmp_path)
+    restarted.recover_retained(datetime.now(UTC) - timedelta(hours=1))
+    assert restarted.recorded_pairs(batch.batch_id) == frozenset({
+        (submission.run.artifact_id, submission.run.task_id), (second.run.artifact_id, second.run.task_id),
+    })
+    assert list(segment.parent.glob("*.torn-*"))
+
+
+def test_recovery_rejects_conflicting_run_and_session_identity(tmp_path: Path) -> None:
+    batch = _make_batch()
+    submission = _make_submission(batch)
+    attempt = _make_attempt(batch, session_id=submission.session.session_id).model_copy(update={
+        "status": MinerTaskAttemptStatus.SUCCEEDED, "error_code": None, "error_summary_code": None,
+        "retry_decision": MinerTaskAttemptRetryDecision.WILL_NOT_RETRY,
+        "terminal_effect": MinerTaskAttemptTerminalEffect.TASK_RESULT,
+    })
+    submission = submission.model_copy(update={"run": submission.run.model_copy(update={"session_id": uuid4()})})
+    original = _progress(tmp_path)
+    original.record(submission)
+    original.record_terminated_attempt(attempt)
+    with pytest.raises(RuntimeError, match="identity conflicts"):
+        _progress(tmp_path).recover_retained(datetime.now(UTC) - timedelta(hours=1))
