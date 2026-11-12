@@ -5,6 +5,7 @@ import pytest
 from harnyx_commons.config.llm import LlmSettings
 from harnyx_commons.tools.invocation_clients import OpenRouterRerankProvider
 from harnyx_commons.tools.rerank_models import RerankRequest
+from harnyx_miner_sdk.tools.llm_provider_extra import OpenRouterExtra, OpenRouterProviderSelection
 
 pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
 
@@ -18,6 +19,9 @@ async def test_openrouter_rerank_native_contract_live() -> None:
             RerankRequest(
                 provider="openrouter",
                 model="cohere/rerank-v3.5",
+                provider_extra=OpenRouterExtra(
+                    provider=OpenRouterProviderSelection(only=("cohere",), allow_fallbacks=False)
+                ),
                 query="What is the capital of France?",
                 documents=[
                     "Berlin is the capital of Germany.",
