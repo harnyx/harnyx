@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from harnyx_commons.config.llm import OpenAiCompatibleEndpointConfig
+from harnyx_commons.llm import timeout as timeout_module
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_commons.llm.providers.chutes import ChutesLlmProvider
 from harnyx_commons.llm.providers.openai_compatible import OpenAiCompatibleLlmProvider
@@ -20,10 +21,13 @@ pytestmark = pytest.mark.anyio("asyncio")
 
 
 class _InterruptedStream(httpx.AsyncByteStream):
-    def __init__(self, *, wait_for_interrupt: bool, include_usage: bool, include_output: bool) -> None:
+    def __init__(
+        self, *, wait_for_interrupt: bool, include_usage: bool, include_output: bool, expire_deadline: bool
+    ) -> None:
         self.wait_for_interrupt = wait_for_interrupt
         self.include_usage = include_usage
         self.include_output = include_output
+        self.expire_deadline = expire_deadline
         self.consumed = asyncio.Event()
         self.closed = False
 
@@ -49,6 +53,11 @@ class _InterruptedStream(httpx.AsyncByteStream):
         if self.include_output:
             yield b'data: {"choices": [{"delta": {"content": "private output"}}]}\n\n'
         self.consumed.set()
+        if self.expire_deadline:
+            # Exercise deadline cancellation only after the provider has consumed the buffered evidence.
+            attempt = timeout_module._current_attempt.get()
+            assert attempt is not None
+            attempt.timer.reschedule(asyncio.get_running_loop().time())
         if self.wait_for_interrupt:
             await asyncio.Event().wait()
         raise httpx.ReadTimeout("stream stalled")
@@ -68,11 +77,12 @@ async def test_interrupted_similarity_stream_retains_available_usage_and_closes(
         wait_for_interrupt=failure != "transport-timeout",
         include_usage=include_usage,
         include_output=failure != "prefill",
+        expire_deadline=failure in {"prefill", "inactivity", "total"},
     )
     timeout = {
-        "prefill": Timeout(1, prefill=0.1),
-        "inactivity": Timeout(1, prefill=0.5, inactivity=0.1),
-        "total": Timeout(0.1, prefill=0.5, inactivity=0.5),
+        "prefill": Timeout(120, prefill=60),
+        "inactivity": Timeout(120, prefill=60, inactivity=60),
+        "total": Timeout(60, prefill=120, inactivity=120),
     }.get(failure)
     client = httpx.AsyncClient(
         base_url="https://example.com",
@@ -110,7 +120,7 @@ async def test_interrupted_similarity_stream_retains_available_usage_and_closes(
                 await invocation
         else:
             with pytest.raises(LlmRetryExhaustedError):
-                await invocation
+                await asyncio.wait_for(invocation, timeout=5)
     finally:
         if not invocation.done():
             invocation.cancel()
