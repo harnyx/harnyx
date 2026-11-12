@@ -1341,7 +1341,7 @@ async def test_worker_does_not_poll_platform_when_closing_group_still_consumes_o
 
 
 async def test_worker_polls_platform_when_idle_closing_group_does_not_own_capacity() -> None:
-    """Prevent an idle cleanup task from blocking unrelated platform-owned assignments."""
+    """Prevent a closing group with no owned task from blocking unrelated assignments."""
 
     old_batch_id = uuid4()
     old_artifact = _artifact(uid=1)
@@ -1351,6 +1351,17 @@ async def test_worker_polls_platform_when_idle_closing_group_does_not_own_capaci
     new_batch_id = uuid4()
     new_artifact = _artifact(uid=2)
     new_assignment = _assignment(batch_id=new_batch_id, artifact=new_artifact, task=_task("new"))
+    executor_started = asyncio.Event()
+
+    async def execute_artifact_assignments(
+        artifact_id: UUID,
+        _assigned_work: _AssignedArtifactGroup,
+        close_requested: asyncio.Event,
+        _result_queue: asyncio.Queue[PlatformOwnedTaskResult],
+    ) -> None:
+        assert artifact_id == new_artifact.artifact_id
+        executor_started.set()
+        await close_requested.wait()
 
     class _Platform:
         request_count = 0
@@ -1366,17 +1377,21 @@ async def test_worker_polls_platform_when_idle_closing_group_does_not_own_capaci
     platform = _Platform()
     worker = PlatformWorkWorker(
         platform=platform,  # type: ignore[arg-type]
-        execute_artifact_assignments=_unexpected_execute_artifact_assignments,
+        execute_artifact_assignments=execute_artifact_assignments,
         target_concurrency=1,
         max_active_artifacts=1,
     )
     worker._active_artifacts[(old_batch_id, old_artifact.artifact_id)] = old_group
 
-    await _run_once_and_consume_platform_work(worker)
+    try:
+        await _run_once_and_consume_platform_work(worker)
+        await asyncio.wait_for(executor_started.wait(), timeout=1)
 
-    assert platform.request_count == 1
-    assert (new_batch_id, new_artifact.artifact_id) in worker._active_artifacts
-    assert worker._active_artifacts[(new_batch_id, new_artifact.artifact_id)].local_inflight_count() == 1
+        assert platform.request_count == 1
+        assert (new_batch_id, new_artifact.artifact_id) in worker._active_artifacts
+        assert worker._active_artifacts[(new_batch_id, new_artifact.artifact_id)].local_inflight_count() == 1
+    finally:
+        await worker._cancel_artifact_group_tasks()
 
 
 async def test_worker_polls_platform_with_unstarted_admission_waiter() -> None:
