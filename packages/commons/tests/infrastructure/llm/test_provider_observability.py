@@ -151,3 +151,27 @@ def test_usage_observability_keeps_unavailable_reasoning_tokens_out_of_usage_det
     usage = LlmUsage(prompt_tokens=3, completion_tokens=6, reasoning_tokens=None, total_tokens=9)
 
     assert "reasoning" not in provider_module._usage_snapshot(usage)
+
+
+async def test_diagnostic_sink_failure_cannot_change_provider_result(monkeypatch) -> None:
+    from harnyx_commons.llm import judge_observability as observations
+
+    def broken_sink(*args, **kwargs):
+        raise RuntimeError("diagnostic delivery failed")
+
+    response = _response()
+    provider = _StubProvider(response=response)
+    monkeypatch.setattr(observations._LOGGER, "warning", broken_sink)
+    with observations.observe_judge_events(broken_sink):
+        result = await provider.invoke(_request(use_case="miner_task_similarity_judge"))
+    assert result == response
+
+
+async def test_scoring_attempts_do_not_enter_similarity_response() -> None:
+    from harnyx_commons.llm.judge_observability import observe_judge_events
+
+    events = []
+    provider = _StubProvider(response=_response())
+    with observe_judge_events(lambda event, data: events.append((event, data))):
+        await provider.invoke(_request(use_case="miner_task_pairwise_judge"))
+    assert events == []

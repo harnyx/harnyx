@@ -14,7 +14,8 @@ from uuid import uuid4
 import httpx
 
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse, LlmUsage
-from harnyx_commons.llm.timeout import LlmAttemptTimeoutError
+from harnyx_commons.llm.timeout import LlmAttemptTimeoutError, resolve_timeout
+from harnyx_miner_sdk.llm import Timeout
 
 SIMILARITY_JUDGE_USE_CASE = "miner_task_similarity_judge"
 _JUDGE_EVENT_PREFIXES = {
@@ -69,12 +70,14 @@ class JudgeLlmAttemptObservation:
     attempt_limit: int
     identity: Mapping[str, object]
     use_case: str = SIMILARITY_JUDGE_USE_CASE
+    timeout: Timeout | None = None
     logger: logging.Logger = _LOGGER
     clock: Callable[[], float] = time.perf_counter
     attempt_id: str = field(default_factory=lambda: str(uuid4()))
     _started_at: float = field(init=False)
     _headers_received_at: float | None = field(default=None, init=False)
     _first_output_at: float | None = field(default=None, init=False)
+    _last_output_at: float | None = field(default=None, init=False)
     _last_stream_event_at: float | None = field(default=None, init=False)
     _last_progress_log_at: float | None = field(default=None, init=False)
     _max_stream_event_gap_ms: float = field(default=0.0, init=False)
@@ -121,6 +124,7 @@ class JudgeLlmAttemptObservation:
         self._stream_event_count += 1
         first_output_observed = saw_output and self._first_output_at is None
         if saw_output:
+            self._last_output_at = now
             self._output_event_count += 1
             if first_output_observed:
                 self._first_output_at = now
@@ -176,7 +180,7 @@ class JudgeLlmAttemptObservation:
             "model": self.model,
             "attempt_number": self.attempt_number,
             "attempt_limit": self.attempt_limit,
-        } | _safe_identity(self.identity)
+        } | _safe_identity(self.identity) | ({"timeout": asdict(self.timeout)} if self.timeout is not None else {})
 
     def _terminal_data(self, outcome: str) -> dict[str, object]:
         now = self.clock()
@@ -188,6 +192,7 @@ class JudgeLlmAttemptObservation:
         return {
             "headers_received_ms": self._since_start_ms(self._headers_received_at),
             "first_output_ms": self._since_start_ms(self._first_output_at),
+            "last_output_ms": self._since_start_ms(self._last_output_at),
             "last_stream_event_ms": self._since_start_ms(self._last_stream_event_at),
             "time_since_last_stream_event_ms": (
                 round((now - self._last_stream_event_at) * 1000, 2) if self._last_stream_event_at is not None else None
@@ -212,6 +217,8 @@ class JudgeLlmAttemptObservation:
         return round((observed_at - self._started_at) * 1000, 2)
 
     def _log(self, phase: str, data: Mapping[str, object]) -> None:
+        if self.use_case == SIMILARITY_JUDGE_USE_CASE:
+            emit_judge_event(phase, data)
         try:
             self.logger.info(
                 f"{_JUDGE_EVENT_PREFIXES[self.use_case]}.llm_attempt.{phase}",
@@ -220,6 +227,33 @@ class JudgeLlmAttemptObservation:
         except Exception:
             # Monitoring must never alter the provider attempt it observes.
             return
+
+
+JudgeEventSink = Callable[[str, Mapping[str, object]], None]
+_JUDGE_EVENT_SINK: ContextVar[JudgeEventSink | None] = ContextVar("judge_event_sink", default=None)
+
+
+@contextmanager
+def observe_judge_events(sink: JudgeEventSink) -> Iterator[None]:
+    """Subscribe within one invocation without changing model or logging policy."""
+    token = _JUDGE_EVENT_SINK.set(sink)
+    try:
+        yield
+    finally:
+        _JUDGE_EVENT_SINK.reset(token)
+
+
+def emit_judge_event(event: str, data: Mapping[str, object]) -> None:
+    sink = _JUDGE_EVENT_SINK.get()
+    if sink is not None:
+        try:
+            sink(event, data)
+        except Exception:
+            # Diagnostic delivery must not alter model results or fallback.
+            try:
+                _LOGGER.warning("judge diagnostic observer failed", exc_info=True)
+            except Exception:
+                return
 
 
 _ACTIVE_ATTEMPT: ContextVar[JudgeLlmAttemptObservation | None] = ContextVar(
@@ -247,6 +281,7 @@ def observe_judge_llm_attempt(
         attempt_number=attempt_number,
         attempt_limit=attempt_limit,
         identity=request.internal_metadata or {},
+        timeout=resolve_timeout(request.timeout),
         use_case=use_case,
     )
     token = _ACTIVE_ATTEMPT.set(observation)

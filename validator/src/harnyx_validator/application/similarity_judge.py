@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from harnyx_commons.domain.judge_usage import JudgeUsageSummary
 from harnyx_commons.json_types import JsonObject
 from harnyx_commons.llm.json_utils import pydantic_postprocessor
-from harnyx_commons.llm.judge_observability import similarity_judge_observability_metadata
+from harnyx_commons.llm.judge_observability import emit_judge_event, similarity_judge_observability_metadata
 from harnyx_commons.llm.judge_usage import (
     JudgeUsageMetadataError,
     judge_usage_from_response,
@@ -630,6 +630,7 @@ def _log_similarity_event_best_effort(
     message: str,
     data: Mapping[str, object],
 ) -> None:
+    emit_judge_event(message.rsplit(".", 1)[-1], data)
     try:
         logger.log(level, message, extra={"data": dict(data)})
     except Exception:

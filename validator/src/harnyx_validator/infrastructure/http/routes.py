@@ -60,6 +60,7 @@ from harnyx_validator.infrastructure.http.schemas import (
     ValidatorResourceUsageResponse,
     ValidatorStatusResponse,
 )
+from harnyx_validator.infrastructure.http.similarity_stream import SimilarityStreamingResponse
 from harnyx_validator.infrastructure.observability.sentry import capture_exception
 from harnyx_validator.runtime.resource_usage import ValidatorResourceUsageSnapshot
 
@@ -381,7 +382,8 @@ def add_control_routes(
             502: {"model": SimilarityJudgeFailureResponseModel},
             500: {"model": ValidatorInternalErrorResponse},
         },
-        description="Run a validator-owned similarity judge for a dethroning miner script candidate.",
+        description="Run a validator-owned similarity judge; request text/event-stream for live diagnostics.",
+        openapi_extra={"responses": {"200": {"content": {"text/event-stream": {"schema": {"type": "string"}}}}}},
     )
     async def judge_similarity(
         request: Request,
@@ -389,27 +391,12 @@ def add_control_routes(
         payload: SimilarityJudgeRequestModel,
         deps: ValidatorControlDeps = Depends(get_control_deps),  # noqa: B008
         _caller: str = Security(require_bittensor_caller),
-    ) -> SimilarityJudgeResponseModel | JSONResponse:
-        try:
-            if deps.similarity_judge is None:
-                raise HTTPException(status_code=503, detail="similarity judge is not configured")
-            result = await deps.similarity_judge.judge(payload.to_domain(batch_id=batch_id))
-        except HTTPException:
-            raise
-        except (RuntimeError, ValueError) as exc:
-            error_response = SimilarityJudgeFailureResponseModel(
-                error_code="similarity_judge_failed",
-                retryable=False,
-                detail=str(exc),
-                judge_usage=getattr(exc, "judge_usage", None),
-            )
-            return JSONResponse(
-                status_code=502,
-                content=error_response.model_dump(mode="json"),
-            )
-        except Exception as exc:
-            return _control_route_internal_error_response(request, exc)
-        return SimilarityJudgeResponseModel.from_domain(result)
+    ) -> SimilarityJudgeResponseModel | JSONResponse | StreamingResponse:
+        if deps.similarity_judge is None:
+            raise HTTPException(status_code=503, detail="similarity judge is not configured")
+        if any(part.strip() == "text/event-stream" for part in request.headers.get("accept", "").split(",")):
+            return SimilarityStreamingResponse(lambda: _similarity_judge_response(request, batch_id, payload, deps))
+        return await _similarity_judge_response(request, batch_id, payload, deps)
 
     @app.get(
         _STATUS_PATH,
@@ -622,3 +609,28 @@ class ToolStreamingResponse(StreamingResponse):
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         response = super().__call__
         await self._stream.deliver(lambda: response(scope, receive, send))
+
+
+async def _similarity_judge_response(
+    request: Request, batch_id: UUID, payload: SimilarityJudgeRequestModel, deps: ValidatorControlDeps
+) -> JSONResponse:
+    try:
+        if deps.similarity_judge is None:
+            raise HTTPException(status_code=503, detail="similarity judge is not configured")
+        result = await deps.similarity_judge.judge(payload.to_domain(batch_id=batch_id))
+    except HTTPException:
+        raise
+    except (RuntimeError, ValueError) as exc:
+        error_response = SimilarityJudgeFailureResponseModel(
+            error_code="similarity_judge_failed",
+            retryable=False,
+            detail=str(exc),
+            judge_usage=getattr(exc, "judge_usage", None),
+        )
+        return JSONResponse(
+            status_code=502,
+            content=error_response.model_dump(mode="json"),
+        )
+    except Exception as exc:
+        return _control_route_internal_error_response(request, exc)
+    return JSONResponse(content=SimilarityJudgeResponseModel.from_domain(result).model_dump(mode="json"))

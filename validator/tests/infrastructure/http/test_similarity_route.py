@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from harnyx_commons.domain.judge_usage import JudgeModelUsage, JudgeUsageSummary
@@ -261,3 +261,89 @@ def test_similarity_route_preserves_missing_config_service_unavailable() -> None
 
     assert response.status_code == 503
     assert response.json() == {"detail": "similarity judge is not configured"}
+
+
+def test_similarity_stream_preserves_result_and_attempt_failure_history() -> None:
+    from harnyx_commons.llm.judge_observability import emit_judge_event
+    from harnyx_commons.miner_task_similarity_stream import SIMILARITY_FRAME_ADAPTER, SimilarityResultFrame
+
+    class FallbackJudge(StubSimilarityJudge):
+        async def judge(self, request: SimilarityJudgeRequest) -> SimilarityJudgeResult:
+            emit_judge_event("finished", {
+                "attempt_id": "attempt-a", "model": "model-a", "provider": "chutes",
+                "outcome": "failed", "timeout_phase": "prefill", "elapsed_ms": 300000.0,
+                "first_output_ms": None, "http_error_body": "must not be exported",
+                "timeout": {"total": 900.0, "prefill": 300.0, "inactivity": 60.0},
+            })
+            emit_judge_event("finished", {
+                "attempt_id": "attempt-b", "model": "model-b", "provider": "chutes",
+                "outcome": "response_received", "elapsed_ms": 10000.0, "first_output_ms": 120.0,
+            })
+            return await super().judge(request)
+
+    judge = FallbackJudge()
+    response = _client(judge).post(
+        f"/validator/miner-task-batches/{uuid4()}/similarity",
+        json=_payload(candidate_artifact_id=uuid4(), incumbent_artifact_id=uuid4()),
+        headers={"Accept": "text/event-stream"},
+    )
+    frames = [SIMILARITY_FRAME_ADAPTER.validate_json(line[6:]) for line in response.text.splitlines()
+              if line.startswith("data: ")]
+    terminal = frames[-1]
+    assert isinstance(terminal, SimilarityResultFrame)
+    assert terminal.result["classification"] == "novel"
+    assert terminal.result["judge_usage"]["call_count"] == 1
+    assert [item.model for item in terminal.diagnostics.attempts] == ["model-a", "model-b"]
+    assert terminal.diagnostics.attempts[0].timeout_phase == "prefill"
+    assert terminal.diagnostics.attempts[0].first_output_ms is None
+    assert "must not be exported" not in response.text
+    assert len(judge.requests) == 1
+
+
+def test_similarity_stream_keeps_failed_usage_and_retry_policy() -> None:
+    import json
+
+    response = _client(FailingSimilarityJudge()).post(
+        f"/validator/miner-task-batches/{uuid4()}/similarity",
+        json=_payload(candidate_artifact_id=uuid4(), incumbent_artifact_id=uuid4()),
+        headers={"Accept": "text/event-stream"},
+    )
+    terminal = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")][-1]
+    assert response.status_code == 200
+    assert terminal["type"] == "error"
+    assert terminal["status_code"] == 502
+    assert terminal["error"]["retryable"] is False
+    assert terminal["error"]["judge_usage"]["call_count"] == 2
+
+
+def test_similarity_stream_keeps_unexpected_error_distinct_from_model_failure() -> None:
+    import json
+
+    class BrokenJudge(StubSimilarityJudge):
+        async def judge(self, request: SimilarityJudgeRequest) -> SimilarityJudgeResult:
+            raise LookupError("unexpected failure")
+
+    response = _client(BrokenJudge()).post(
+        f"/validator/miner-task-batches/{uuid4()}/similarity",
+        json=_payload(candidate_artifact_id=uuid4(), incumbent_artifact_id=uuid4()),
+        headers={"Accept": "text/event-stream"},
+    )
+    terminal = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")][-1]
+    assert terminal["status_code"] == 500
+    assert terminal["error"]["error_code"] == "internal_server_error"
+
+
+def test_stream_negotiation_does_not_bypass_authentication(monkeypatch) -> None:
+    async def reject(*args):
+        raise HTTPException(status_code=401, detail="authentication required")
+
+    monkeypatch.setitem(globals(), "_allow_all_auth", reject)
+    judge = StubSimilarityJudge()
+    response = _client(judge).post(
+        f"/validator/miner-task-batches/{uuid4()}/similarity",
+        json=_payload(candidate_artifact_id=uuid4(), incumbent_artifact_id=uuid4()),
+        headers={"Accept": "text/event-stream"},
+    )
+    assert response.status_code == 401
+    assert response.headers["content-type"] == "application/json"
+    assert judge.requests == []

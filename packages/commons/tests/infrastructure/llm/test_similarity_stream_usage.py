@@ -10,6 +10,7 @@ import pytest
 
 from harnyx_commons.config.llm import OpenAiCompatibleEndpointConfig
 from harnyx_commons.llm import timeout as timeout_module
+from harnyx_commons.llm.judge_observability import observe_judge_events
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_commons.llm.providers.chutes import ChutesLlmProvider
 from harnyx_commons.llm.providers.openai_compatible import OpenAiCompatibleLlmProvider
@@ -111,7 +112,9 @@ async def test_interrupted_similarity_stream_retains_available_usage_and_closes(
         include_payloads_in_observability=False,
     )
     caplog.set_level(logging.INFO, logger="harnyx_commons.llm.calls")
-    invocation = asyncio.create_task(provider.invoke(request))
+    delivered = []
+    with observe_judge_events(lambda event, data: delivered.append((event, data))):
+        invocation = asyncio.create_task(provider.invoke(request))
     try:
         if failure == "cancelled":
             await asyncio.wait_for(stream.consumed.wait(), timeout=5)
@@ -131,6 +134,7 @@ async def test_interrupted_similarity_stream_retains_available_usage_and_closes(
     finished = [r.data for r in caplog.records if r.message == "similarity_judge.llm_attempt.finished"]
     assert len(finished) == 1
     result = finished[0]
+    assert [data for event, data in delivered if event == "finished"] == finished
     assert result["outcome"] == ("cancelled" if failure == "cancelled" else "failed")
     if timeout is not None:
         assert result["timeout_phase"] == failure
