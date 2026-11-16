@@ -350,6 +350,67 @@ async def test_platform_provider_success_log_omits_response_payload(
     assert response_sentinel not in "\n".join(str(record.__dict__) for record in caplog.records)
 
 
+@pytest.mark.parametrize("recorded", [False, True])
+async def test_completion_payload_logs_require_durable_receipt_acknowledgement(
+    caplog: pytest.LogCaptureFixture, recorded: bool,
+) -> None:
+    """Keep unpersisted evidence, but avoid re-logging payloads after durable recording."""
+    now = datetime.now(UTC)
+    payload: JsonObject = {"data": [{"snippet": "provider response evidence"}]}
+    recorder = RecordingEvidence() if recorded else None
+    executor, _, session, token = _build_search_executor(
+        now=now, expires_at=now + timedelta(hours=1), payload=payload, recorder=recorder,
+    )
+    with caplog.at_level(logging.DEBUG, logger="harnyx_commons.tools"):
+        result = await executor.execute(ToolInvocationRequest(
+            session_id=session.session_id, token=token, tool="search_web", kwargs={"query": "request evidence"},
+        ))
+
+    completion = next(record.data for record in caplog.records if record.message == "miner_tool_call.completed")
+    assert completion["receipt_id"] == result.receipt.receipt_id
+    assert completion["payloads_recorded"] is recorded
+    assert completion["cost_usd"] == result.receipt.details.cost_usd
+    assert completion["session_id"] == str(session.session_id)
+    assert completion["budget"] is not None
+    assert result.response_payload == payload
+    if recorder is not None:
+        saved = recorder.terminals[0].details
+        assert saved.request_payload == {"args": [], "kwargs": {"query": "request evidence"}}
+        assert saved.response_payload == payload
+        assert completion["request"] is None
+        assert completion["response"] is None
+        info = next(record for record in caplog.records if record.message == "tool call completed")
+        assert not hasattr(info, "response_preview")
+        assert not hasattr(info, "results_preview")
+    else:
+        assert completion["request"] == {"args": [], "kwargs": {"query": "request evidence"}}
+        assert completion["response"] == payload
+        assert any(hasattr(record, "response_preview") for record in caplog.records)
+
+
+async def test_failed_receipt_write_keeps_failure_and_start_payload_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A failed write must not be reported as a durably recorded completion."""
+    now = datetime.now(UTC)
+    recorder = RecordingEvidence()
+    recorder.fail_terminal = True
+    executor, _, session, token = _build_search_executor(
+        now=now, expires_at=now + timedelta(hours=1), payload={"data": []}, recorder=recorder,
+    )
+    with caplog.at_level(logging.DEBUG, logger="harnyx_commons.tools"):
+        with pytest.raises(RuntimeError, match="terminal acknowledgement lost"):
+            await executor.execute(ToolInvocationRequest(
+                session_id=session.session_id, token=token, tool="search_web", kwargs={"query": "request evidence"},
+            ))
+    assert not any(record.message == "miner_tool_call.completed" for record in caplog.records)
+    for event in ("miner_tool_call.started", "miner_tool_call.failed"):
+        data = next(record.data for record in caplog.records if record.message == event)
+        assert data["request"] == {"args": [], "kwargs": {"query": "request evidence"}}
+    failure = next(record.data for record in caplog.records if record.message == "miner_tool_call.failed")
+    assert failure["error"]["message"] == "terminal acknowledgement lost"
+
+
 @pytest.mark.parametrize(
     ("actual_cost_usd", "error_match"),
     [

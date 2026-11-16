@@ -111,6 +111,7 @@ class _ExecutionResult:
     llm_tokens: int
     usage_details: ToolCallUsage | None
     budget: ToolBudgetSnapshot
+    payloads_recorded: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -505,6 +506,8 @@ class ToolExecutor:
             llm_tokens=llm_tokens,
             usage_details=usage_details,
             budget=budget_snapshot,
+            # Reached only after record_terminal returned successfully above.
+            payloads_recorded=self._tool_call_recorder is not None,
         )
         _debug_tool_event(
             "miner_tool_call.completed",
@@ -512,15 +515,15 @@ class ToolExecutor:
                 call_id=debug_call_id,
                 session=updated_session,
                 request=request,
-                request_payload=_debug_payload(session, request_payload),
-                response_payload=_debug_payload(session, result.response_payload),
+                request_payload=None if result.payloads_recorded else _debug_payload(session, request_payload),
+                response_payload=None if result.payloads_recorded else _debug_payload(session, result.response_payload),
                 usage=asdict(result.usage_details) if result.usage_details else None,
                 cost_usd=result.receipt.details.cost_usd,
                 actual_cost_evidence=invocation_output.actual_cost_evidence,
                 budget=asdict(result.budget),
                 elapsed_ms=_elapsed_ms_from_receipt(result.receipt),
                 error=None,
-            ),
+            ) | {"receipt_id": receipt.receipt_id, "payloads_recorded": result.payloads_recorded},
         )
         if should_raise_budget_exhausted:
             raise BudgetExceededError(f"session {session.session_id} exhausted during tool accounting")
@@ -849,7 +852,9 @@ class ToolExecutor:
             "llm_tokens": result.llm_tokens,
             "usage": asdict(result.usage_details) if result.usage_details else None,
         }
-        if log_context.get("provider_credential_source") == ProviderCredentialSource.PLATFORM.value:
+        if result.payloads_recorded or (
+            log_context.get("provider_credential_source") == ProviderCredentialSource.PLATFORM.value
+        ):
             tool_logger.info("tool call completed", extra=log_fields)
             return
 
