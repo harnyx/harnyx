@@ -332,6 +332,8 @@ These helpers call validator-hosted tools when running inside the sandbox:
 | `deepseek` | `ori_question` (1–128 characters), `localization` (IP address), `need_content` (default `false`) |
 | `tavily` | `search_depth` (`basic`, `fast`, `advanced`, or `ultra-fast`), chunks, topic/time/date/domain/country/exact/safe controls |
 
+Firecrawl categories accept names or objects with a `type` field: `developer`, `research`, and `pdf`. Use `provider_extra={"categories": ["developer"]}` to search public-repository issues, merged pull requests, READMEs, and curated documentation sites. `developer` must be the only category. The removed `github` category is rejected; switch callers to `developer` rather than restricting web results to github.com. See the [Firecrawl Developer Index](https://docs.firecrawl.dev/features/developer).
+
 ### Fetch providers
 
 | Provider | `fetch_page.provider_extra` |

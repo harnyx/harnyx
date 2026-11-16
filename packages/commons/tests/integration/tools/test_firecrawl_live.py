@@ -16,7 +16,8 @@ def _api_key() -> str:
     return value
 
 
-async def test_firecrawl_live_search_and_scrape_contract() -> None:
+@pytest.mark.parametrize("category", [None, "developer"])
+async def test_firecrawl_live_search_and_scrape_contract(category: str | None) -> None:
     client = FirecrawlClient(
         base_url=FIRECRAWL.base_url,
         api_key=_api_key(),
@@ -25,11 +26,12 @@ async def test_firecrawl_live_search_and_scrape_contract() -> None:
     )
     try:
         search = await client.search_web(
-            SearchWebSearchRequest(
-                provider="firecrawl",
-                search_queries=("Example Domain IANA",),
-                num=3,
-            )
+            SearchWebSearchRequest.model_validate({
+                "provider": "firecrawl",
+                "search_queries": ["httpx timeout configuration" if category else "Example Domain IANA"],
+                "num": 3,
+                "provider_extra": {"categories": [category]} if category else None,
+            })
         )
         scrape = await client.fetch_page(
             FetchPageRequest.model_validate(

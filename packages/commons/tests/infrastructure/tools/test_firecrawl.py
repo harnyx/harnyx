@@ -36,7 +36,10 @@ def _client(
     )
 
 
-async def test_search_web_normalizes_results_and_optional_billing_metadata() -> None:
+@pytest.mark.parametrize("categories", [None, ["developer"], [{"type": "developer"}]])
+async def test_search_web_normalizes_results_and_optional_billing_metadata(
+    categories: list[str | dict[str, str]] | None,
+) -> None:
     observed: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -61,7 +64,10 @@ async def test_search_web_normalizes_results_and_optional_billing_metadata() -> 
 
     client, http_client = _client(handler)
     try:
-        result = await client.search_web(SearchWebSearchRequest(provider="firecrawl", search_queries=("one", "two")))
+        result = await client.search_web(SearchWebSearchRequest.model_validate({
+            "provider": "firecrawl", "search_queries": ["one", "two"],
+            "provider_extra": {"categories": categories} if categories is not None else None,
+        }))
     finally:
         await http_client.aclose()
 
@@ -69,7 +75,10 @@ async def test_search_web_normalizes_results_and_optional_billing_metadata() -> 
     request = observed[0]
     assert request.url.path == "/v2/search"
     assert request.headers["authorization"] == "Bearer firecrawl-key"
-    assert json.loads(request.content) == {"query": "(one) OR (two)", "sources": ["web"]}
+    expected_payload: dict[str, object] = {"query": "(one) OR (two)", "sources": ["web"]}
+    if categories is not None:
+        expected_payload["categories"] = categories
+    assert json.loads(request.content) == expected_payload
     assert result.response.data[0].model_dump() == {
         "link": "https://example.com/article",
         "snippet": "Result summary",

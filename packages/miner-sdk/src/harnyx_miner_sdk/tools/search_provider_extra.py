@@ -86,11 +86,11 @@ class ParallelFetchExtra(_SearchExtra):
 
 
 class FirecrawlCategory(_SearchExtra):
-    type: Literal["github", "research", "pdf"]
+    type: Literal["developer", "research", "pdf"]
 
 
 class FirecrawlSearchExtra(_SearchExtra):
-    categories: tuple[FirecrawlCategory | Literal["github", "research", "pdf"], ...] | None = None
+    categories: tuple[FirecrawlCategory | Literal["developer", "research", "pdf"], ...] | None = None
     include_domains: tuple[str, ...] | None = Field(default=None, alias="includeDomains")
     exclude_domains: tuple[str, ...] | None = Field(default=None, alias="excludeDomains")
     tbs: str | None = Field(default=None, min_length=1)
@@ -98,6 +98,16 @@ class FirecrawlSearchExtra(_SearchExtra):
     country: str | None = Field(default=None, min_length=2, max_length=2)
     ignore_invalid_urls: bool | None = Field(default=None, alias="ignoreInvalidURLs")
     privacy_mode: Literal["anon"] | None = None
+
+    @model_validator(mode="after")
+    def _validate_categories(self) -> FirecrawlSearchExtra:
+        if self.categories and len(self.categories) > 1:
+            if any(
+                (category.type if isinstance(category, FirecrawlCategory) else category) == "developer"
+                for category in self.categories
+            ):
+                raise ValueError("Firecrawl developer must be the only category")
+        return self
 
     @model_validator(mode="after")
     def _validate_domains(self) -> FirecrawlSearchExtra:

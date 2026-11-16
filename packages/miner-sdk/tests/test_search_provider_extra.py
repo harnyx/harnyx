@@ -8,8 +8,53 @@ from harnyx_miner_sdk.tools.search_provider_extra import (
     DeepSeekSearchExtra,
     ExaSearchExtra,
     FirecrawlFetchExtra,
+    FirecrawlSearchExtra,
     TavilyFetchExtra,
 )
+
+
+@pytest.mark.parametrize("categories", [["developer"], [{"type": "developer"}]])
+def test_firecrawl_developer_category_survives_request_serialization(categories: list[str | dict[str, str]]) -> None:
+    request = SearchWebSearchRequest.model_validate({
+        "provider": "firecrawl",
+        "search_queries": ["httpx timeout configuration"],
+        "provider_extra": {"categories": categories},
+    })
+
+    assert isinstance(request.provider_extra, FirecrawlSearchExtra)
+    assert request.provider_extra.to_provider_payload() == {"categories": categories}
+
+
+@pytest.mark.parametrize("categories", [
+    ["developer", "pdf"],
+    [{"type": "research"}, {"type": "developer"}],
+    ["developer", {"type": "pdf"}],
+    ["developer", "developer"],
+])
+def test_firecrawl_rejects_nonexclusive_developer_search_before_execution(
+    categories: list[str | dict[str, str]],
+) -> None:
+    with pytest.raises(ValidationError, match="developer must be the only category"):
+        SearchWebSearchRequest.model_validate({
+            "provider": "firecrawl", "search_queries": ["query"],
+            "provider_extra": {"categories": categories},
+        })
+
+
+@pytest.mark.parametrize("categories", [["github"], [{"type": "github"}]])
+def test_firecrawl_rejects_removed_github_category_before_execution(categories: list[str | dict[str, str]]) -> None:
+    with pytest.raises(ValidationError, match="categories"):
+        SearchWebSearchRequest.model_validate({
+            "provider": "firecrawl", "search_queries": ["query"],
+            "provider_extra": {"categories": categories},
+        })
+
+
+@pytest.mark.parametrize("categories", [["research", "pdf"], [{"type": "research"}, {"type": "pdf"}], []])
+def test_firecrawl_preserves_other_category_combinations(categories: list[str | dict[str, str]]) -> None:
+    extra = FirecrawlSearchExtra.model_validate({"categories": categories})
+
+    assert extra.to_provider_payload() == {"categories": categories}
 
 
 @pytest.mark.parametrize("queries,num", [(["x" * 129], 5), (["x" * 65, "y" * 65], 5), (["query"], 51)])
