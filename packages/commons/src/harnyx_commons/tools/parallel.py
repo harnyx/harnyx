@@ -17,6 +17,7 @@ from harnyx_commons.errors import ToolProviderError, ToolProviderFailureCode
 from harnyx_commons.llm.pricing import price_parallel_extract, price_parallel_search
 from harnyx_commons.llm.retry_utils import RetryPolicy, backoff_ms
 from harnyx_commons.platform_tool_proxy import platform_tool_proxy_effective_provider_timeout_seconds
+from harnyx_commons.provider_evidence import ProviderEvidence
 from harnyx_commons.tools.extraction_models import (
     ExtractedPage,
     ExtractPagesRequest,
@@ -220,9 +221,8 @@ class ParallelClient:
             advanced_settings["max_results"] = request.num
         if advanced_settings:
             payload["advanced_settings"] = advanced_settings
-        data = _ParallelSearchResponsePayload.model_validate(
-            await self._post("/v1/search", payload, requested_timeout=request.timeout)
-        )
+        raw = await self._post("/v1/search", payload, requested_timeout=request.timeout)
+        data = _ParallelSearchResponsePayload.model_validate(raw)
         response = SearchWebSearchResponse(
             data=[
                 SearchWebResult(
@@ -237,6 +237,9 @@ class ParallelClient:
         )
         return SearchProviderResult(
             response=response,
+            provider_evidence=ProviderEvidence.capture(
+                {"request": {"path": "/v1/search", "json": payload}, "response": raw},
+            ),
             billing=_parallel_search_billing(
                 billable_units=len(data.results),
                 provider_request_id=data.search_id,
@@ -252,9 +255,8 @@ class ParallelClient:
             "objective": request.prompt,
             "max_results": request.count,
         }
-        data = _ParallelSearchResponsePayload.model_validate(
-            await self._post("/v1beta/search", payload, requested_timeout=request.timeout)
-        )
+        raw = await self._post("/v1beta/search", payload, requested_timeout=request.timeout)
+        data = _ParallelSearchResponsePayload.model_validate(raw)
         response = SearchAiSearchResponse(
             data=[
                 SearchAiResult(
@@ -269,6 +271,9 @@ class ParallelClient:
         )
         return SearchProviderResult(
             response=response,
+            provider_evidence=ProviderEvidence.capture(
+                {"request": {"path": "/v1beta/search", "json": payload}, "response": raw},
+            ),
             billing=_parallel_search_billing(
                 billable_units=len(data.results),
                 provider_request_id=data.search_id,
@@ -314,6 +319,7 @@ class ParallelClient:
         return SearchProviderResult(
             response=response,
             billing=extraction.billing,
+            provider_evidence=extraction.provider_evidence,
         )
 
     async def extract_pages(
@@ -421,6 +427,9 @@ class ParallelClient:
                 retry_reasons=data.retry_reasons,
             ),
             billing=billing,
+            provider_evidence=ProviderEvidence.capture(
+                {"request": {"path": "/v1/extract", "json": payload}, "response": raw_response},
+            ),
         )
 
     async def aclose(self) -> None:

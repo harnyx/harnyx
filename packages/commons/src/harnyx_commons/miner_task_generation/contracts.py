@@ -17,6 +17,7 @@ from harnyx_commons.domain.shared_config import COMMONS_STRICT_CONFIG
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
 from harnyx_commons.domain.tool_usage_accounting import known_zero_actual_cost_tool_usage
 from harnyx_commons.miner_task_fast_scoring import FastJudgeAssessment
+from harnyx_commons.provider_evidence import ProviderEvidence
 
 StageName = Literal["question_generation"]
 ResponseMode = Literal["plain_text", "structured"]
@@ -169,6 +170,7 @@ class CandidateSession:
     missing_usage_calls: int = 0
     source_support: list[SourceSupport] = field(default_factory=list)
     stage_summaries: list[GenerationStageSummary] = field(default_factory=list)
+    provider_evidence: list[ProviderEvidence] = field(default_factory=list)
 
 
 class TerminalReference(BaseModel):
@@ -300,6 +302,7 @@ class FinalizedTask(BaseModel):
     tool_usage: ToolUsageSummary = Field(default_factory=ToolUsageSummary.zero)
     stage_summaries: tuple[GenerationStageSummary, ...] = ()
     generation_metadata: GenerationCheckpoint | None = None
+    provider_evidence: tuple[ProviderEvidence, ...] = ()
 
 
 class CycleRecord(BaseModel):

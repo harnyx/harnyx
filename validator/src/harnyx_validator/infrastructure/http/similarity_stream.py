@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import suppress
@@ -124,6 +125,17 @@ class SimilarityStreamingResponse(StreamingResponse):
             terminal = self._terminal
             if terminal is not None:
                 encoded = terminal.model_dump_json().encode()
+                if len(encoded) > SIMILARITY_TERMINAL_MAX_BYTES:
+                    payload = terminal.result if isinstance(terminal, SimilarityResultFrame) else terminal.error
+                    if isinstance(payload, dict) and "provider_evidence" in payload:
+                        field = "result" if isinstance(terminal, SimilarityResultFrame) else "error"
+                        terminal = terminal.model_copy(update={
+                            field: {key: value for key, value in payload.items() if key != "provider_evidence"},
+                        })
+                        encoded = terminal.model_dump_json().encode()
+                        logging.getLogger(__name__).warning(
+                            "similarity provider evidence exceeds the existing stream limit; retaining provider logs",
+                        )
                 if len(encoded) > SIMILARITY_TERMINAL_MAX_BYTES:
                     raise ValueError("similarity terminal response exceeds the stream limit")
                 yield b"event: " + terminal.type.encode() + b"\ndata: " + encoded + b"\n\n"

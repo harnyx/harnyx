@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from harnyx_commons.domain.judge_usage import JudgeModelUsage, JudgeUsageSummary
 from harnyx_commons.domain.miner_task import (
     EvaluationDetails,
     EvaluationError,
@@ -29,6 +30,7 @@ from harnyx_commons.domain.tool_call import (
     ToolExecutionFacts,
 )
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
+from harnyx_commons.provider_evidence import ProviderEvidence
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptAuditRecord,
     MinerTaskAttemptRetryDecision,
@@ -362,6 +364,49 @@ def test_run_progress_record_is_idempotent_for_duplicate_pair(tmp_path: Path) ->
     assert summary["remaining"] == 0
     assert summary["latest_sequence"] == 1
     assert page["items"] == ({"sequence": 1, "kind": "completed_run", "submission": submission, "attempt": None},)
+
+
+def test_combined_judge_evidence_preserves_replay_and_rejects_changed_exchanges(tmp_path: Path) -> None:
+    batch = _make_batch()
+    original = _make_submission(batch)
+    evidence = ProviderEvidence.capture([{"response": "original"}])
+    usage = JudgeUsageSummary(
+        call_count=2, prompt_tokens=0, completion_tokens=0, total_tokens=0, reasoning_tokens=0,
+        actual_cost_usd=None, models=(JudgeModelUsage(
+            provider="test", model="test", call_count=2, prompt_tokens=0, completion_tokens=0,
+            total_tokens=0, reasoning_tokens=0, actual_cost_usd=None, actual_cost_source="unavailable",
+        ),), provider_evidence=(evidence, evidence),
+    )
+    submission = original.model_copy(update={"run": original.run.model_copy(update={
+        "details": original.run.details.model_copy(update={"scoring_judge_usage": usage}),
+    })})
+    progress = _progress(tmp_path)
+    progress.register(batch)
+    progress.record(submission)
+    progress.record(submission)
+    changed = submission.model_copy(update={"run": submission.run.model_copy(update={
+        "details": submission.run.details.model_copy(update={"scoring_judge_usage": replace(
+            usage, provider_evidence=(ProviderEvidence.capture([{"response": "different"}]),),
+        )}),
+    })})
+    with pytest.raises(RuntimeError, match="different result"):
+        progress.record(changed)
+    attempt = _make_attempt(batch, session_id=submission.session.session_id).model_copy(update={
+        "status": MinerTaskAttemptStatus.SUCCEEDED, "error_code": None, "error_summary_code": None,
+        "retry_decision": MinerTaskAttemptRetryDecision.WILL_NOT_RETRY,
+        "terminal_effect": MinerTaskAttemptTerminalEffect.TASK_RESULT,
+    })
+    pending = PlatformOwnedTaskResult(
+        batch_id=batch.batch_id, artifact_id=submission.run.artifact_id, task_id=submission.run.task_id,
+        attempt_number=attempt.attempt_number, result=submission, terminal_attempt=attempt,
+    )
+    progress.persist_pending(pending)
+    fresh = _progress(tmp_path)
+    fresh.persist_pending(pending)
+    with pytest.raises(RuntimeError, match="conflicting pending"):
+        fresh.persist_pending(pending.model_copy(update={"result": changed}))
+    restored = list(fresh.pending_submissions())[0].result.run.details.scoring_judge_usage
+    assert restored.provider_evidence[0].restore() == [{"response": "original"}] * 2
 
 
 def test_run_progress_terminated_attempts_round_trip_from_blob_store(tmp_path: Path) -> None:

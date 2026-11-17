@@ -298,6 +298,7 @@ class CandidatePipeline:
                             tool_usage=session.tool_usage,
                             stage_summaries=tuple(session.stage_summaries),
                             generation_metadata=result.generation_metadata,
+                            provider_evidence=tuple(session.provider_evidence),
                         )
         except (asyncio.CancelledError, BatchTerminalGenerationError, FinalizedTaskRejectedError) as exc:
             result.status, result.error_type = "operational_failure", type(exc).__name__

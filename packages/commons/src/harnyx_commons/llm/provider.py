@@ -14,12 +14,12 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field, is_dataclass, replace
-from typing import Literal, Protocol, TypeVar, cast
+from typing import Any, Literal, Protocol, TypeVar, cast
 
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 from opentelemetry.util.types import AttributeValue
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter
 
 from harnyx_commons.config.external_client import ExternalClientRetrySettings
 from harnyx_commons.llm.judge_observability import observe_judge_llm_attempt
@@ -48,6 +48,7 @@ from harnyx_commons.llm.schema import (
     supports_tool_result_messages,
 )
 from harnyx_commons.llm.timeout import LlmAttemptTimeoutError, enforce_attempt_deadlines, resolve_timeout
+from harnyx_commons.provider_evidence import ProviderEvidence, record_provider_exchange
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 
@@ -92,6 +93,7 @@ class RetryContext:
     total_usage: LlmUsage = field(default_factory=LlmUsage)
     total_latency_ms: float = 0.0
     last_response: LlmResponse | None = None
+    provider_exchanges: list[Any] = field(default_factory=list)
     billable_response_count: int = 0
     _actual_cost_usd_values: list[float] = field(default_factory=list)
     _actual_cost_complete: bool = True
@@ -452,6 +454,11 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         ctx: RetryContext,
     ) -> LlmResponse:
         response = await self._annotate_response_cost(request, response)
+        ctx.provider_exchanges.append(TypeAdapter(Any).dump_python(
+            {"request": _request_snapshot(request), "response": response.payload},
+            mode="json", fallback=repr,
+        ))
+        record_provider_exchange(ctx.provider_exchanges[-1])
         ctx.total_usage += response.usage or LlmUsage()
         ctx.record_billable_response(response)
         ctx.last_response = response
@@ -624,6 +631,7 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         processed: object | None,
     ) -> LlmResponse:
         metadata = dict(response.metadata or {})
+        metadata["_provider_evidence"] = ProviderEvidence.capture(ctx.provider_exchanges).model_dump(mode="json")
         metadata["attempts"] = len(ctx.reasons) + 1
         metadata["billable_response_count"] = ctx.billable_response_count
         actual_cost_total = ctx.actual_cost_usd_total
@@ -804,6 +812,7 @@ def _error_raw_payload_metadata(
 def _instrumentation_response_metadata(response: LlmResponse) -> dict[str, object]:
     metadata = dict(response.metadata or {})
     metadata.pop("ttft_ms", None)
+    metadata.pop("_provider_evidence", None)
     return metadata
 
 

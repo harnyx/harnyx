@@ -119,6 +119,7 @@ class ToolInvocationOutput:
     """Internal tool result that keeps public payload separate from execution facts."""
 
     public_payload: JsonObject
+    provider_evidence: JsonObject | None = None
     execution: ToolExecutionFacts | None = None
     actual_cost_usd: float | None = None
     actual_cost_provider: str | None = None
@@ -171,7 +172,9 @@ class ToolCallRecorder(Protocol):
     async def record_started(self, session: Session, call: StartedToolCall, *, on_recorded: Callable[[], None]) -> None:
         """Acknowledge a successful write before cancellation can propagate."""
 
-    async def record_terminal(self, session: Session, call: ToolCall) -> None: ...
+    async def record_terminal(
+        self, session: Session, call: ToolCall, *, provider_evidence: JsonObject | None = None,
+    ) -> None: ...
 
 
 @dataclass(slots=True)
@@ -489,7 +492,7 @@ class ToolExecutor:
         )
         if self._tool_call_recorder is not None:
             recording.terminal_attempted = True
-            await self._record_terminal(session, receipt)
+            await self._record_terminal(session, receipt, provider_evidence=invocation_output.provider_evidence)
         completion = self._receipts.complete_pending_receipt(
             receipt,
             settle_usage=lambda: self._settle_usage(session_id=session.session_id, receipt=receipt),
@@ -794,10 +797,15 @@ class ToolExecutor:
             self._mark_recording_error(session)
             raise
 
-    async def _record_terminal(self, session: Session, call: ToolCall) -> None:
+    async def _record_terminal(
+        self, session: Session, call: ToolCall, *, provider_evidence: JsonObject | None = None,
+    ) -> None:
         assert self._tool_call_recorder is not None
         try:
-            await self._tool_call_recorder.record_terminal(session, call)
+            if provider_evidence is None:
+                await self._tool_call_recorder.record_terminal(session, call)
+            else:
+                await self._tool_call_recorder.record_terminal(session, call, provider_evidence=provider_evidence)
         except Exception:
             self._mark_recording_error(session)
             raise

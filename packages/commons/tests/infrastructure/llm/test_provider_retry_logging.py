@@ -24,8 +24,25 @@ from harnyx_commons.llm.schema import (
     LlmResponse,
     LlmUsage,
 )
+from harnyx_commons.provider_evidence import ProviderEvidence
 
 pytestmark = pytest.mark.anyio("asyncio")
+
+
+async def test_evidence_retains_rejected_response_before_successful_retry():
+    provider = _RetryOnceExceptionProvider()
+    responses = [replace(_response(), id="rejected"), replace(_response(), id="accepted")]
+
+    async def call(request):
+        return responses.pop(0)
+
+    response = await provider._call_with_retry(
+        _request(), call_coro=call,
+        verifier=lambda result: (result.id == "accepted", True, "retry rejected response"),
+    )
+    evidence = ProviderEvidence.model_validate(response.metadata["_provider_evidence"])
+    assert [item["response"]["id"] for item in evidence.restore()] == ["rejected", "accepted"]
+    assert response.usage.total_tokens == 36
 
 
 class _RetryOnceExceptionProvider(BaseLlmProvider):

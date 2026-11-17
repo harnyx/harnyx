@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime
 from unittest.mock import Mock
 from uuid import uuid4
@@ -12,6 +13,7 @@ from pydantic import ValidationError
 from harnyx_commons.bittensor import VerificationError, build_canonical_request
 from harnyx_commons.domain.judge_usage import JudgeUsageSummary
 from harnyx_commons.domain.miner_task import Query
+from harnyx_commons.provider_evidence import ProviderEvidence
 from harnyx_commons.rating_competition import (
     RatingAnswer,
     RatingJudgment,
@@ -125,7 +127,8 @@ async def test_worker_retries_completed_result_without_rejudging_and_keeps_other
 
 
 @pytest.mark.anyio
-async def test_signed_client_round_trips_strict_work_and_completed_judgment() -> None:
+@pytest.mark.parametrize("evidence_chars", [0, 512, 1_100_000])
+async def test_signed_client_round_trips_strict_work_and_completed_judgment(evidence_chars: int) -> None:
     import httpx
 
     from harnyx_commons.bittensor import verify_signed_request
@@ -134,6 +137,12 @@ async def test_signed_client_round_trips_strict_work_and_completed_judgment() ->
     query = Query(text="Question")
     work = RatingWork(comparison_id=uuid4(), query=query, first=_answer(query), second=_answer(query))
     result = RatingJudgment(comparison_id=work.comparison_id, quality_result=1, two_order_evidence=_evidence())
+    if evidence_chars:
+        result = result.model_copy(update={"two_order_evidence": result.two_order_evidence.model_copy(update={
+            "judge_usage": replace(result.two_order_evidence.judge_usage, provider_evidence=(
+                ProviderEvidence.capture([{"response": "x" * evidence_chars}]),
+            )),
+        })})
     key = bt.Keypair.create_from_uri("//Bob")
     received = []
 
@@ -154,7 +163,13 @@ async def test_signed_client_round_trips_strict_work_and_completed_judgment() ->
     page = await client.poll_rating_comparisons()
     assert page.items == (work,)
     await client.submit_rating_judgment(result)
-    assert received == [result]
+    assert len(received) == 1
+    assert received[0].quality_result == result.quality_result
+    retained = received[0].two_order_evidence.judge_usage.provider_evidence
+    if evidence_chars and evidence_chars < 1_000_000:
+        assert retained[0].restore() == [{"response": "x" * evidence_chars}]
+    else:
+        assert retained == ()
 
 
 def test_signed_citation_hydrates_only_from_its_assignment_receipts() -> None:

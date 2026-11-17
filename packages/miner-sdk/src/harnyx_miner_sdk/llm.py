@@ -340,6 +340,7 @@ class LlmResponse:
         payload = _LLM_RESPONSE_ADAPTER.dump_python(
             self,
             mode="json",
+            exclude={"metadata": {"_provider_evidence"}},
             fallback=lambda value: repr(value),
         )
         if not isinstance(payload, dict):

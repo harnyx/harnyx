@@ -51,6 +51,7 @@ from harnyx_commons.llm.schema import (
     LlmUsage,
 )
 from harnyx_commons.miner_task_fast_scoring import FastJudgeAssessment, build_fast_judge_messages
+from harnyx_commons.provider_evidence import ProviderEvidence
 
 from .contracts import (
     MAX_OUTPUT_CORRECTION_RETRIES,
@@ -170,6 +171,8 @@ class CallCapture:
         if usage is None:
             return
         self.usage_records += 1
+        if response is not None and (evidence := (response.metadata or {}).get("_provider_evidence")) is not None:
+            self.session.provider_evidence.append(ProviderEvidence.model_validate(evidence))
         model, provider = model or self.model, provider or self.provider
         pricing_date = _REQUEST_DATE.get() or datetime.now(UTC).date()
         summary = tool_usage_from_llm_usage(usage, model=model, provider=provider, pricing_date=pricing_date)

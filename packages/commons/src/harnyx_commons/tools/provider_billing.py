@@ -10,6 +10,7 @@ from pydantic import TypeAdapter
 
 from harnyx_commons.json_types import JsonObject
 from harnyx_commons.llm.schema import LlmUsage
+from harnyx_commons.provider_evidence import ProviderEvidence
 from harnyx_commons.tools.decision_models import DecisionUsage
 
 # Providers whose accepted inference costs can be completed by hosted receipts.
@@ -216,6 +217,7 @@ def normalize_llm_timeout(
 class SearchProviderResult(Generic[TSearchResponse]):
     response: TSearchResponse
     billing: ProviderBillingMetadata
+    provider_evidence: ProviderEvidence | None = None
 
 
 def billing_evidence_payload(billing: ProviderBillingMetadata | None) -> JsonObject | None:

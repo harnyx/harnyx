@@ -216,7 +216,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 <a id="endpoint-post-validator-miner-task-batches-batch_id-similarity"></a>
 ##### POST /validator/miner-task-batches/{batch_id}/similarity
 
-Run a validator-owned similarity judge for a dethroning miner script candidate.
+Run a validator-owned similarity judge; request text/event-stream for live diagnostics.
 
 **Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
 
@@ -267,8 +267,25 @@ Body: [SimilarityJudgeResponseModel](#model-similarityjudgeresponsemodel)
 |  | `total_tokens` |  | req | `integer` |
 | `model` |  |  | req | `string` |
 | `provider` |  |  | req | `string` |
+| `provider_evidence` |  |  | opt | array[[ProviderEvidence](#model-providerevidence)] (default: []) |
+|  | `escaped_json` |  | opt | `string` (nullable) |
+|  | `payload` |  | req | [harnyx_miner_sdk__json_types__JsonValue](#model-harnyx_miner_sdk__json_types__jsonvalue) |
+|  | `text_references` |  | opt | array[[EvidenceTextReference](#model-evidencetextreference)] (default: []) |
+|  |  | `end` | req | `integer` |
+|  |  | `path` | req | array[anyOf: `string` OR `integer`] |
+|  |  | `prefix` | opt | `string` (default: ) |
+|  |  | `source` | req | `string` (enum: [base, evidence]) |
+|  |  | `source_path` | req | array[anyOf: `string` OR `integer`] |
+|  |  | `start` | req | `integer` |
+|  |  | `suffix` | opt | `string` (default: ) |
+|  | `version` |  | opt | `integer` (default: 1) |
 | `reasoning` |  |  | opt | `string` (nullable) |
 | `reasoning_tokens` |  |  | opt | `integer` (nullable) |
+
+Content-Type: `text/event-stream`
+Body: `string`
+
+(no documented fields)
 
 `422` Validation Error
 Content-Type: `application/json`
@@ -322,6 +339,18 @@ Body: [SimilarityJudgeFailureResponseModel](#model-similarityjudgefailurerespons
 |  | `prompt_tokens` |  | req | `integer` |
 |  | `reasoning_tokens` |  | req | `integer` |
 |  | `total_tokens` |  | req | `integer` |
+| `provider_evidence` |  |  | opt | array[[ProviderEvidence](#model-providerevidence)] (default: []) |
+|  | `escaped_json` |  | opt | `string` (nullable) |
+|  | `payload` |  | req | [harnyx_miner_sdk__json_types__JsonValue](#model-harnyx_miner_sdk__json_types__jsonvalue) |
+|  | `text_references` |  | opt | array[[EvidenceTextReference](#model-evidencetextreference)] (default: []) |
+|  |  | `end` | req | `integer` |
+|  |  | `path` | req | array[anyOf: `string` OR `integer`] |
+|  |  | `prefix` | opt | `string` (default: ) |
+|  |  | `source` | req | `string` (enum: [base, evidence]) |
+|  |  | `source_path` | req | array[anyOf: `string` OR `integer`] |
+|  |  | `start` | req | `integer` |
+|  |  | `suffix` | opt | `string` (default: ) |
+|  | `version` |  | opt | `integer` (default: 1) |
 | `retryable` |  |  | req | `boolean` |
 
 
@@ -403,7 +432,7 @@ Body: [ToolExecuteRequestDTO](#model-toolexecuterequestdto)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `args` |  |  | opt | array[[JsonValue](#model-jsonvalue)] (default: []) |
+| `args` |  |  | opt | array[[JsonValue-Input](#model-jsonvalue-input)] (default: []) |
 | `kwargs` |  |  | opt | `object` (default: {}) |
 | `tool` |  |  | req | `string` (enum: [search_web, fetch_page, embed_text, rerank, decision_query, llm_chat, test_tool, tooling_info]) |
 
@@ -421,12 +450,12 @@ Body: [ToolExecuteResponseDTO](#model-toolexecuteresponsedto)
 |  | `session_used_budget_usd` |  | req | `number` |
 | `cost_usd` |  |  | opt | `number` (nullable) |
 | `receipt_id` |  |  | req | `string` |
-| `response` |  |  | req | [JsonValue](#model-jsonvalue) |
+| `response` |  |  | req | [pydantic__types__JsonValue](#model-pydantic__types__jsonvalue) |
 | `result_policy` |  |  | req | `string` |
 | `results` |  |  | req | array[[ToolResultDTO](#model-toolresultdto)] |
 |  | `index` |  | req | `integer` |
 |  | `note` |  | opt | `string` (nullable) |
-|  | `raw` |  | opt | [JsonValue](#model-jsonvalue) (nullable) |
+|  | `raw` |  | opt | [pydantic__types__JsonValue](#model-pydantic__types__jsonvalue) (nullable) |
 |  | `result_id` |  | req | `string` |
 |  | `title` |  | opt | `string` (nullable) |
 |  | `url` |  | opt | `string` (nullable) |
@@ -1106,6 +1135,95 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
 
 </details>
 
+<a id="model-evidencetextreference"></a>
+### Model: EvidenceTextReference
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `end` |  |  | req | `integer` |
+| `path` |  |  | req | array[anyOf: `string` OR `integer`] |
+| `prefix` |  |  | opt | `string` (default: ) |
+| `source` |  |  | req | `string` (enum: [base, evidence]) |
+| `source_path` |  |  | req | array[anyOf: `string` OR `integer`] |
+| `start` |  |  | req | `integer` |
+| `suffix` |  |  | opt | `string` (default: ) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "end": {
+      "title": "End",
+      "type": "integer"
+    },
+    "path": {
+      "items": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "integer"
+          }
+        ]
+      },
+      "title": "Path",
+      "type": "array"
+    },
+    "prefix": {
+      "default": "",
+      "title": "Prefix",
+      "type": "string"
+    },
+    "source": {
+      "enum": [
+        "base",
+        "evidence"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "source_path": {
+      "items": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "integer"
+          }
+        ]
+      },
+      "title": "Source Path",
+      "type": "array"
+    },
+    "start": {
+      "title": "Start",
+      "type": "integer"
+    },
+    "suffix": {
+      "default": "",
+      "title": "Suffix",
+      "type": "string"
+    }
+  },
+  "required": [
+    "path",
+    "source",
+    "source_path",
+    "start",
+    "end"
+  ],
+  "title": "EvidenceTextReference",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-fastscoreevidence"></a>
 ### Model: FastScoreEvidence
 
@@ -1236,6 +1354,50 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
 
 </details>
 
+<a id="model-harnyx_miner_sdk__json_types__jsonvalue"></a>
+### Model: harnyx_miner_sdk__json_types__JsonValue
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "anyOf": [
+    {
+      "type": "string"
+    },
+    {
+      "type": "integer"
+    },
+    {
+      "type": "number"
+    },
+    {
+      "type": "boolean"
+    },
+    {
+      "items": {
+        "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue"
+      },
+      "type": "array"
+    },
+    {
+      "additionalProperties": {
+        "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue"
+      },
+      "type": "object"
+    },
+    {
+      "type": "null"
+    }
+  ]
+}
+```
+
+</details>
+
 <a id="model-httpvalidationerror"></a>
 ### Model: HTTPValidationError
 
@@ -1269,8 +1431,8 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
 
 </details>
 
-<a id="model-jsonvalue"></a>
-### Model: JsonValue
+<a id="model-jsonvalue-input"></a>
+### Model: JsonValue-Input
 
 (no documented fields)
 
@@ -1482,6 +1644,84 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
   "title": "JudgeUsageSummary",
   "type": "object"
 }
+```
+
+</details>
+
+<a id="model-providerevidence"></a>
+### Model: ProviderEvidence
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `escaped_json` |  |  | opt | `string` (nullable) |
+| `payload` |  |  | req | [harnyx_miner_sdk__json_types__JsonValue](#model-harnyx_miner_sdk__json_types__jsonvalue) |
+| `text_references` |  |  | opt | array[[EvidenceTextReference](#model-evidencetextreference)] (default: []) |
+|  | `end` |  | req | `integer` |
+|  | `path` |  | req | array[anyOf: `string` OR `integer`] |
+|  | `prefix` |  | opt | `string` (default: ) |
+|  | `source` |  | req | `string` (enum: [base, evidence]) |
+|  | `source_path` |  | req | array[anyOf: `string` OR `integer`] |
+|  | `start` |  | req | `integer` |
+|  | `suffix` |  | opt | `string` (default: ) |
+| `version` |  |  | opt | `integer` (default: 1) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "description": "A private snapshot; references never point outside its owning record.",
+  "properties": {
+    "escaped_json": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Escaped Json"
+    },
+    "payload": {
+      "$ref": "#/components/schemas/harnyx_miner_sdk__json_types__JsonValue"
+    },
+    "text_references": {
+      "default": [],
+      "items": {
+        "$ref": "#/components/schemas/EvidenceTextReference"
+      },
+      "title": "Text References",
+      "type": "array"
+    },
+    "version": {
+      "const": 1,
+      "default": 1,
+      "title": "Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "payload"
+  ],
+  "title": "ProviderEvidence",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-pydantic__types__jsonvalue"></a>
+### Model: pydantic__types__JsonValue
+
+(no documented fields)
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{}
 ```
 
 </details>
@@ -2324,6 +2564,18 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
 |  | `prompt_tokens` |  | req | `integer` |
 |  | `reasoning_tokens` |  | req | `integer` |
 |  | `total_tokens` |  | req | `integer` |
+| `provider_evidence` |  |  | opt | array[[ProviderEvidence](#model-providerevidence)] (default: []) |
+|  | `escaped_json` |  | opt | `string` (nullable) |
+|  | `payload` |  | req | [harnyx_miner_sdk__json_types__JsonValue](#model-harnyx_miner_sdk__json_types__jsonvalue) |
+|  | `text_references` |  | opt | array[[EvidenceTextReference](#model-evidencetextreference)] (default: []) |
+|  |  | `end` | req | `integer` |
+|  |  | `path` | req | array[anyOf: `string` OR `integer`] |
+|  |  | `prefix` | opt | `string` (default: ) |
+|  |  | `source` | req | `string` (enum: [base, evidence]) |
+|  |  | `source_path` | req | array[anyOf: `string` OR `integer`] |
+|  |  | `start` | req | `integer` |
+|  |  | `suffix` | opt | `string` (default: ) |
+|  | `version` |  | opt | `integer` (default: 1) |
 | `retryable` |  |  | req | `boolean` |
 
 <details>
@@ -2352,6 +2604,14 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
           "type": "null"
         }
       ]
+    },
+    "provider_evidence": {
+      "default": [],
+      "items": {
+        "$ref": "#/components/schemas/ProviderEvidence"
+      },
+      "title": "Provider Evidence",
+      "type": "array"
     },
     "retryable": {
       "title": "Retryable",
@@ -2462,6 +2722,18 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
 |  | `total_tokens` |  | req | `integer` |
 | `model` |  |  | req | `string` |
 | `provider` |  |  | req | `string` |
+| `provider_evidence` |  |  | opt | array[[ProviderEvidence](#model-providerevidence)] (default: []) |
+|  | `escaped_json` |  | opt | `string` (nullable) |
+|  | `payload` |  | req | [harnyx_miner_sdk__json_types__JsonValue](#model-harnyx_miner_sdk__json_types__jsonvalue) |
+|  | `text_references` |  | opt | array[[EvidenceTextReference](#model-evidencetextreference)] (default: []) |
+|  |  | `end` | req | `integer` |
+|  |  | `path` | req | array[anyOf: `string` OR `integer`] |
+|  |  | `prefix` | opt | `string` (default: ) |
+|  |  | `source` | req | `string` (enum: [base, evidence]) |
+|  |  | `source_path` | req | array[anyOf: `string` OR `integer`] |
+|  |  | `start` | req | `integer` |
+|  |  | `suffix` | opt | `string` (default: ) |
+|  | `version` |  | opt | `integer` (default: 1) |
 | `reasoning` |  |  | opt | `string` (nullable) |
 | `reasoning_tokens` |  |  | opt | `integer` (nullable) |
 
@@ -2501,6 +2773,14 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
       "minLength": 1,
       "title": "Provider",
       "type": "string"
+    },
+    "provider_evidence": {
+      "default": [],
+      "items": {
+        "$ref": "#/components/schemas/ProviderEvidence"
+      },
+      "title": "Provider Evidence",
+      "type": "array"
     },
     "reasoning": {
       "anyOf": [
@@ -2593,7 +2873,7 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `args` |  |  | opt | array[[JsonValue](#model-jsonvalue)] (default: []) |
+| `args` |  |  | opt | array[[JsonValue-Input](#model-jsonvalue-input)] (default: []) |
 | `kwargs` |  |  | opt | `object` (default: {}) |
 | `tool` |  |  | req | `string` (enum: [search_web, fetch_page, embed_text, rerank, decision_query, llm_chat, test_tool, tooling_info]) |
 
@@ -2607,14 +2887,14 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
     "args": {
       "default": [],
       "items": {
-        "$ref": "#/components/schemas/JsonValue"
+        "$ref": "#/components/schemas/JsonValue-Input"
       },
       "title": "Args",
       "type": "array"
     },
     "kwargs": {
       "additionalProperties": {
-        "$ref": "#/components/schemas/JsonValue"
+        "$ref": "#/components/schemas/JsonValue-Input"
       },
       "default": {},
       "title": "Kwargs",
@@ -2657,12 +2937,12 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
 |  | `session_used_budget_usd` |  | req | `number` |
 | `cost_usd` |  |  | opt | `number` (nullable) |
 | `receipt_id` |  |  | req | `string` |
-| `response` |  |  | req | [JsonValue](#model-jsonvalue) |
+| `response` |  |  | req | [pydantic__types__JsonValue](#model-pydantic__types__jsonvalue) |
 | `result_policy` |  |  | req | `string` |
 | `results` |  |  | req | array[[ToolResultDTO](#model-toolresultdto)] |
 |  | `index` |  | req | `integer` |
 |  | `note` |  | opt | `string` (nullable) |
-|  | `raw` |  | opt | [JsonValue](#model-jsonvalue) (nullable) |
+|  | `raw` |  | opt | [pydantic__types__JsonValue](#model-pydantic__types__jsonvalue) (nullable) |
 |  | `result_id` |  | req | `string` |
 |  | `title` |  | opt | `string` (nullable) |
 |  | `url` |  | opt | `string` (nullable) |
@@ -2696,7 +2976,7 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
       "type": "string"
     },
     "response": {
-      "$ref": "#/components/schemas/JsonValue"
+      "$ref": "#/components/schemas/pydantic__types__JsonValue"
     },
     "result_policy": {
       "title": "Result Policy",
@@ -2741,7 +3021,7 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
 | --- | --- | --- | --- | --- |
 | `index` |  |  | req | `integer` |
 | `note` |  |  | opt | `string` (nullable) |
-| `raw` |  |  | opt | [JsonValue](#model-jsonvalue) (nullable) |
+| `raw` |  |  | opt | [pydantic__types__JsonValue](#model-pydantic__types__jsonvalue) (nullable) |
 | `result_id` |  |  | req | `string` |
 | `title` |  |  | opt | `string` (nullable) |
 | `url` |  |  | opt | `string` (nullable) |
@@ -2770,7 +3050,7 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
     "raw": {
       "anyOf": [
         {
-          "$ref": "#/components/schemas/JsonValue"
+          "$ref": "#/components/schemas/pydantic__types__JsonValue"
         },
         {
           "type": "null"

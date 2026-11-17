@@ -11,6 +11,7 @@ from harnyx_commons.domain.judge_usage import JudgeModelUsage, JudgeUsageSummary
 from harnyx_commons.llm.provider import LlmProviderConfigurationError, LlmRetryExhaustedError
 from harnyx_commons.llm.providers.openai_stream import OpenAiStreamError
 from harnyx_commons.miner_task_similarity import SimilarityJudgeRequest, SimilarityJudgeResult
+from harnyx_commons.provider_evidence import ProviderEvidence
 from harnyx_validator.application.status import BatchActivityTracker, StatusProvider
 from harnyx_validator.infrastructure.http.routes import ValidatorControlDeps, add_control_routes
 from harnyx_validator.runtime.resource_usage import ValidatorResourceUsageSnapshot
@@ -19,6 +20,7 @@ from harnyx_validator.runtime.resource_usage import ValidatorResourceUsageSnapsh
 class StubSimilarityJudge:
     def __init__(self) -> None:
         self.requests: list[SimilarityJudgeRequest] = []
+        self.provider_evidence: tuple[ProviderEvidence, ...] = ()
 
     async def judge(self, request: SimilarityJudgeRequest) -> SimilarityJudgeResult:
         self.requests.append(request)
@@ -29,6 +31,7 @@ class StubSimilarityJudge:
             model="google/gemma-4-31B-turbo-TEE",
             provider="custom-openai-compatible:gemma4-cloud-run-turbo",
             judge_usage=JudgeUsageSummary(
+                provider_evidence=self.provider_evidence,
                 call_count=1,
                 prompt_tokens=31,
                 completion_tokens=13,
@@ -124,6 +127,20 @@ def _payload(*, candidate_artifact_id: UUID, incumbent_artifact_id: UUID) -> dic
         "incumbent_script": "def old(): pass",
         "candidate_diff": "+ def new(): pass",
     }
+
+
+def test_similarity_evidence_uses_optional_envelope_field_without_changing_usage_contract() -> None:
+    judge = StubSimilarityJudge()
+    original = [{"request": "private prompt", "response": "original response"}]
+    judge.provider_evidence = (ProviderEvidence.capture(original),)
+    response = _client(judge).post(
+        f"/validator/miner-task-batches/{uuid4()}/similarity",
+        json=_payload(candidate_artifact_id=uuid4(), incumbent_artifact_id=uuid4()),
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert "provider_evidence" not in payload["judge_usage"]
+    assert ProviderEvidence.model_validate(payload["provider_evidence"][0]).restore() == original
 
 
 def test_similarity_route_runs_validator_owned_judge() -> None:

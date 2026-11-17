@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from harnyx_commons.domain.judge_usage import JudgeUsageSummary
 from harnyx_commons.miner_task_similarity import SimilarityJudgeRequest, SimilarityJudgeResult
+from harnyx_commons.provider_evidence import ProviderEvidence
 from harnyx_validator.domain.shared_config import VALIDATOR_STRICT_CONFIG
 
 _VALIDATOR_TRANSPORT_CONFIG = ConfigDict(
@@ -60,6 +61,7 @@ class SimilarityJudgeResponseModel(BaseModel):
     model: str = Field(min_length=1)
     provider: str = Field(min_length=1)
     judge_usage: JudgeUsageSummary | None = None
+    provider_evidence: tuple[ProviderEvidence, ...] = Field(default=(), exclude_if=lambda value: not value)
 
     @classmethod
     def from_domain(cls, result: SimilarityJudgeResult) -> SimilarityJudgeResponseModel:
@@ -70,6 +72,7 @@ class SimilarityJudgeResponseModel(BaseModel):
             model=result.model,
             provider=result.provider,
             judge_usage=result.judge_usage,
+            provider_evidence=() if result.judge_usage is None else result.judge_usage.provider_evidence,
         )
 
 
@@ -80,6 +83,7 @@ class SimilarityJudgeFailureResponseModel(BaseModel):
     retryable: bool
     detail: str = Field(min_length=1)
     judge_usage: JudgeUsageSummary | None = None
+    provider_evidence: tuple[ProviderEvidence, ...] = Field(default=(), exclude_if=lambda value: not value)
 
 
 class ValidatorInternalErrorResponse(BaseModel):

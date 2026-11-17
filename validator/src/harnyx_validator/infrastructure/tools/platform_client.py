@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime
@@ -35,7 +36,12 @@ from harnyx_commons.errors import (
 )
 from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.protocol_headers import PLATFORM_TOOL_PROXY_TOKEN_HEADER
-from harnyx_commons.rating_competition import RATING_JUDGMENT_ALREADY_ACCEPTED, RatingJudgment, RatingWorkPage
+from harnyx_commons.rating_competition import (
+    MAX_RATING_JUDGMENT_BODY_BYTES,
+    RATING_JUDGMENT_ALREADY_ACCEPTED,
+    RatingJudgment,
+    RatingWorkPage,
+)
 from harnyx_commons.tools.decision_models import DecisionUsage
 from harnyx_commons.tools.http_models import (
     CloudflareErrorBillingDTO,
@@ -296,7 +302,16 @@ class HttpPlatformClient(PlatformPort):
 
     async def submit_rating_judgment(self, judgment: RatingJudgment) -> None:
         path = f"/v1/rating-comparisons/{judgment.comparison_id}/judgment"
-        response = await self._post_json_async(path, judgment.model_dump(mode="json"))
+        payload = judgment.model_dump(mode="json", context={"private_provider_evidence": True})
+        if len(_json_body(payload)) > MAX_RATING_JUDGMENT_BODY_BYTES:
+            # Evidence retention must not turn a previously deliverable judgment
+            # into a permanent rejection. Provider payload logs remain enabled.
+            payload = judgment.model_dump(mode="json")
+            logging.getLogger(__name__).warning(
+                "rating provider evidence exceeds the existing submission limit; retaining provider logs",
+                extra={"comparison_id": str(judgment.comparison_id)},
+            )
+        response = await self._post_json_async(path, payload)
         if response.status_code == httpx.codes.REQUEST_ENTITY_TOO_LARGE:
             raise RatingJudgmentDeliveryRejectedError("rating judgment exceeds the Platform request limit")
         if (
@@ -1074,7 +1089,7 @@ def _platform_result_acknowledgement(value: object) -> PlatformTaskResultAcknowl
 
 def _jsonable(value: object) -> JsonValue:
     if isinstance(value, BaseModel):
-        return cast(JsonValue, value.model_dump(mode="json"))
+        return cast(JsonValue, value.model_dump(mode="json", context={"private_provider_evidence": True}))
     if is_dataclass(value) and not isinstance(value, type):
         return _jsonable(asdict(value))
     if isinstance(value, UUID):

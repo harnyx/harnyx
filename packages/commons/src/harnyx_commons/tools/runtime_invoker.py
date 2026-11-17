@@ -69,6 +69,7 @@ from harnyx_commons.platform_tool_proxy import (
     PLATFORM_TOOL_PROXY_SEARCH_TOOL_DEFAULT_TIMEOUT_SECONDS,
     platform_tool_proxy_provider_timeout_seconds,
 )
+from harnyx_commons.provider_evidence import ProviderEvidence
 from harnyx_commons.tools.decision_models import MINER_SELECTED_DECISION_PROVIDER_MODELS, DecisionQueryRequest
 from harnyx_commons.tools.dto import tool_payload_from_args_kwargs
 from harnyx_commons.tools.embedding_models import MINER_SELECTED_EMBEDDING_PROVIDER_MODELS, EmbedTextRequest
@@ -707,6 +708,7 @@ class RuntimeToolInvoker(ToolInvoker):
                 cast(JsonObject, as_mapping),
                 tool_name=tool_name,
                 billing=response_web.billing,
+                provider_evidence=response_web.provider_evidence,
                 request_provider=provider_name,
             )
         elif tool_name == "search_ai":
@@ -722,6 +724,7 @@ class RuntimeToolInvoker(ToolInvoker):
                 cast(JsonObject, as_mapping),
                 tool_name=tool_name,
                 billing=response.billing,
+                provider_evidence=response.provider_evidence,
                 request_provider=provider_name,
             )
         elif tool_name == "fetch_page":
@@ -737,6 +740,7 @@ class RuntimeToolInvoker(ToolInvoker):
                 cast(JsonObject, as_mapping),
                 tool_name=tool_name,
                 billing=response_page.billing,
+                provider_evidence=response_page.provider_evidence,
                 request_provider=fetch_provider,
             )
         raise LookupError(f"search tool '{tool_name}' is not supported")
@@ -800,6 +804,7 @@ class RuntimeToolInvoker(ToolInvoker):
             raise ToolProviderError("tool provider failed") from exc
         return ToolInvocationOutput(
             public_payload=_public_llm_response_payload(llm_response),
+            provider_evidence=cast(JsonObject | None, (llm_response.metadata or {}).get("_provider_evidence")),
             execution=ToolExecutionFacts(elapsed_ms=elapsed_ms, ttft_ms=_response_ttft_ms(llm_response)),
             actual_cost_usd=actual_cost.cost_usd,
             actual_cost_provider=actual_cost.provider,
@@ -1345,6 +1350,7 @@ def _search_invocation_output(
     tool_name: SearchToolName,
     billing: ProviderBillingMetadata | None,
     request_provider: FetchProviderName,
+    provider_evidence: ProviderEvidence | None = None,
 ) -> ToolInvocationOutput:
     try:
         actual_cost = _settle_search_cost(
@@ -1358,6 +1364,9 @@ def _search_invocation_output(
         raise ToolProviderError("tool provider failed") from exc
     return ToolInvocationOutput(
         public_payload=public_payload,
+        provider_evidence=(
+            None if provider_evidence is None else cast(JsonObject, provider_evidence.model_dump(mode="json"))
+        ),
         actual_cost_usd=actual_cost.cost_usd,
         actual_cost_provider=actual_cost.provider,
         actual_cost_evidence=actual_cost.evidence,

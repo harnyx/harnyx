@@ -99,7 +99,7 @@ class RunSubmissionBlobStore:
         sequence: int,
         submission: MinerTaskRunSubmission,
     ) -> RunSubmissionBlobRef:
-        payload = _SUBMISSION_ADAPTER.dump_json(submission)
+        payload = _SUBMISSION_ADAPTER.dump_json(submission, context={"private_provider_evidence": True})
         frame_length = _FRAME_HEADER_SIZE + len(payload)
         writer = self._writer_for(batch_id=batch_id, frame_length=frame_length)
         ref = _write_frame(
@@ -450,21 +450,25 @@ class PendingTaskSubmissionStore:
 
     def persist(self, item: PlatformOwnedTaskExecution | PlatformOwnedTaskResult) -> None:
         path = self._path(item)
+        payload = _PENDING_ADAPTER.dump_json(item, context={"private_provider_evidence": True})
+        # Compare the persisted representation: evidence packing can combine
+        # multiple in-memory snapshots while preserving their exchanges.
+        canonical_item = _PENDING_ADAPTER.validate_json(payload)
         if path.exists():
-            if _PENDING_ADAPTER.validate_json(path.read_bytes()) != item:
+            if _PENDING_ADAPTER.validate_json(path.read_bytes()) != canonical_item:
                 raise RuntimeError("conflicting pending submission for the same execution identity")
             return
         temporary: str | None = None
         try:
             with tempfile.NamedTemporaryFile(dir=self.root, prefix=".pending-", delete=False) as handle:
                 temporary = handle.name
-                handle.write(_PENDING_ADAPTER.dump_json(item))
+                handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
             try:
                 os.link(temporary, path)
             except FileExistsError as exc:
-                if _PENDING_ADAPTER.validate_json(path.read_bytes()) != item:
+                if _PENDING_ADAPTER.validate_json(path.read_bytes()) != canonical_item:
                     raise RuntimeError("conflicting pending submission for the same execution identity") from exc
             self._sync_directory()
         finally:

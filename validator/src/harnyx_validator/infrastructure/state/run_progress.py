@@ -526,7 +526,9 @@ class FileBackedRunProgress:
         existing_ref = refs.get(pair)
         if existing_ref is not None:
             existing = self.blob_store.read(existing_ref)
-            if existing != result:
+            if existing.model_dump(mode="json", context={"private_provider_evidence": True}) != result.model_dump(
+                mode="json", context={"private_provider_evidence": True},
+            ):
                 raise RuntimeError(
                     "batch already recorded a different result for artifact/task pair"
                 )

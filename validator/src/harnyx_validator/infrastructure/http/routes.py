@@ -629,6 +629,7 @@ async def _similarity_judge_response(
             retryable=_similarity_failure_retryable(exc),
             detail=str(exc),
             judge_usage=getattr(exc, "judge_usage", None),
+            provider_evidence=getattr(getattr(exc, "judge_usage", None), "provider_evidence", ()),
         )
         return JSONResponse(
             status_code=503 if deps.similarity_judge is None else 502,

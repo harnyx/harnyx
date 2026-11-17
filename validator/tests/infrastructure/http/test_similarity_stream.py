@@ -13,6 +13,27 @@ from harnyx_validator.infrastructure.http.similarity_stream import SimilarityStr
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("status_code", [200, 502])
+@pytest.mark.parametrize("evidence_size", [20, 2000])
+async def test_private_evidence_cannot_prevent_terminal_delivery(monkeypatch, status_code, evidence_size) -> None:
+    monkeypatch.setattr(stream_module, "SIMILARITY_TERMINAL_MAX_BYTES", 1000)
+
+    async def execute():
+        return JSONResponse(
+            {"reasoning": "complete judgment", "provider_evidence": [{"payload": "x" * evidence_size}]},
+            status_code=status_code,
+        )
+
+    response = SimilarityStreamingResponse(execute)
+    await response._produce()
+    frames = [part async for part in response._body()]
+    terminal = json.loads(frames[-1].split(b"data: ", 1)[1])
+    payload = terminal["result" if status_code == 200 else "error"]
+    assert payload["reasoning"] == "complete judgment"
+    assert ("provider_evidence" in payload) == (evidence_size == 20)
+
+
+@pytest.mark.anyio
 async def test_history_limits_are_explicit_and_do_not_truncate_judgment(monkeypatch) -> None:
     monkeypatch.setattr(stream_module, "SIMILARITY_DIAGNOSTICS_MAX_BYTES", 2500)
 
