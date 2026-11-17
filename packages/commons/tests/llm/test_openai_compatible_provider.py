@@ -8,10 +8,11 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from google.auth import exceptions as google_auth_errors
 
 from harnyx_commons.config.llm import LlmSettings, parse_openai_compatible_endpoints_json
 from harnyx_commons.llm.adapter import LlmProviderAdapter
-from harnyx_commons.llm.provider import LlmProviderError, LlmRetryExhaustedError
+from harnyx_commons.llm.provider import LlmProviderConfigurationError, LlmProviderError, LlmRetryExhaustedError
 from harnyx_commons.llm.providers import openai_compatible
 from harnyx_commons.llm.providers.openai_compatible import OpenAiCompatibleLlmProvider
 from harnyx_commons.llm.retry_utils import RetryPolicy
@@ -97,6 +98,55 @@ async def test_bearer_token_env_auth_adds_authorization_header(monkeypatch: pyte
     assert response.raw_text == "ok"
     assert response.usage.prompt_tokens == 3
     assert response.usage.completion_tokens == 2
+
+
+@pytest.mark.parametrize("auth_type,value", [
+    ("bearer", None), ("google", None), ("google", "invalid-base64"),
+    ("google", base64.b64encode(b"[]").decode()),
+    ("google", base64.b64encode(b"{}").decode()),
+])
+async def test_missing_or_invalid_credentials_preserve_configuration_failure(monkeypatch, auth_type, value):
+    """Missing custom-provider credentials must not consume another Platform model chain."""
+    env_name = "TEST_SIMILARITY_PROVIDER_CREDENTIALS"
+    if value is None:
+        monkeypatch.delenv(env_name, raising=False)
+    else:
+        monkeypatch.setenv(env_name, value)
+    auth = {"type": "bearer_token_env", "token_env": env_name} if auth_type == "bearer" else {
+        "type": "google_id_token", "audience": "https://example.com",
+        "credential_source": "service_account_json_b64_env", "credential_env": env_name,
+    }
+
+    def unexpected_request(request):
+        raise AssertionError("invalid credentials must fail before provider dispatch")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(unexpected_request)) as client:
+        provider = OpenAiCompatibleLlmProvider(endpoint=_endpoint(auth=auth), client=client)
+        with pytest.raises(LlmProviderConfigurationError):
+            await provider.invoke(_request())
+
+
+@pytest.mark.parametrize("failure,configuration", [
+    (google_auth_errors.DefaultCredentialsError("missing ADC"), True),
+    (google_auth_errors.RefreshError("credentials rejected"), True),
+    (google_auth_errors.RefreshError("temporarily unavailable", retryable=True), False),
+    (google_auth_errors.TransportError("connection failed"), False),
+])
+async def test_google_credentials_distinguish_operator_errors_from_temporary_refresh_failures(
+    monkeypatch, failure, configuration,
+):
+    """A temporary token-service failure must retain its chance to recover."""
+    def refresh(auth):
+        raise failure
+
+    monkeypatch.setattr(openai_compatible, "_refresh_google_id_token", refresh)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: _streaming_response())) as client:
+        provider = OpenAiCompatibleLlmProvider(endpoint=_endpoint(auth={
+            "type": "google_id_token", "audience": "https://example.com", "credential_source": "adc",
+        }), client=client)
+        with pytest.raises(LlmProviderError) as caught:
+            await provider.invoke(_request())
+    assert isinstance(caught.value, LlmProviderConfigurationError) is configuration
 
 
 async def test_google_id_token_service_account_b64_auth_refreshes_per_request(

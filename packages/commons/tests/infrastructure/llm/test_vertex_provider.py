@@ -8,16 +8,17 @@ from typing import Any, cast
 
 import httpx
 import pytest
-from anthropic import AsyncAnthropicVertex
+from anthropic import AsyncAnthropicVertex, PermissionDeniedError
 from anthropic.types.raw_content_block_delta_event import RawContentBlockDeltaEvent
 from anthropic.types.text_block import TextBlock
 from anthropic.types.text_delta import TextDelta
 from anthropic.types.thinking_block import ThinkingBlock
+from google.auth.exceptions import DefaultCredentialsError, RefreshError
 from google.genai import errors, types
 from pydantic import BaseModel
 
 from harnyx_commons.clients import CHUTES
-from harnyx_commons.llm.provider import LlmRetryExhaustedError
+from harnyx_commons.llm.provider import LlmProviderConfigurationError, LlmProviderError, LlmRetryExhaustedError
 from harnyx_commons.llm.provider_types import normalize_reasoning_effort
 from harnyx_commons.llm.providers.openai_stream import (
     OpenAiChoiceState,
@@ -1914,5 +1915,60 @@ async def test_vertex_closes_gemini_stream_before_failed_attempt_returns(
             with pytest.raises(LlmAttemptTimeoutError):
                 await invoke()
         assert closed
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.parametrize("failure,requires_configuration", [
+    (DefaultCredentialsError("missing ADC"), True),
+    (RefreshError("invalid credentials", retryable=False), True),
+    (RefreshError("temporary failure", retryable=True), False),
+    (errors.APIError(403, {"error": {"code": 403, "message": "denied"}}), True),
+])
+async def test_vertex_runtime_credentials_preserve_operator_action_classification(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception, requires_configuration: bool,
+) -> None:
+    _patch_google_client(monkeypatch, {})
+    provider = VertexLlmProvider(project="demo-project", location="us-central1")
+
+    async def fail_request(request):
+        raise failure
+
+    monkeypatch.setattr(provider, "_call_vertex_with_request", fail_request)
+    request = LlmRequest(
+        provider="vertex", model="gemini-3-pro-preview",
+        messages=(LlmMessage(role="user", content=(LlmMessageContentPart.input_text("Compare"),)),),
+        temperature=0.0, max_output_tokens=128,
+        retry_policy=RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0.0),
+    )
+    try:
+        with pytest.raises(LlmProviderError) as caught:
+            await provider.invoke(request)
+        assert isinstance(caught.value, LlmProviderConfigurationError) is requires_configuration
+    finally:
+        await provider.aclose()
+
+
+async def test_claude_vertex_permissions_preserve_operator_action_classification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_google_client(monkeypatch, {})
+    provider = VertexLlmProvider(project="demo-project", location="us-central1")
+    response = httpx.Response(403, request=httpx.Request("POST", "https://provider.invalid"))
+    failure = PermissionDeniedError("denied", response=response, body={"error": "denied"})
+
+    async def deny_request(request):
+        raise failure
+
+    monkeypatch.setattr(provider, "_call_claude_anthropic", deny_request)
+    request = LlmRequest(
+        provider="vertex", model="claude-sonnet-4-5@20250929",
+        messages=(LlmMessage(role="user", content=(LlmMessageContentPart.input_text("Compare"),)),),
+        temperature=0.0, max_output_tokens=128,
+    )
+    try:
+        with pytest.raises(LlmProviderConfigurationError) as caught:
+            await provider.invoke(request)
+        assert caught.value.__cause__.__cause__ is failure
     finally:
         await provider.aclose()

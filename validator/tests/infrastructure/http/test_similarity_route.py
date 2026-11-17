@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from uuid import UUID, uuid4
 
+import httpx
+import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from harnyx_commons.domain.judge_usage import JudgeModelUsage, JudgeUsageSummary
+from harnyx_commons.llm.provider import LlmProviderConfigurationError, LlmRetryExhaustedError
+from harnyx_commons.llm.providers.openai_stream import OpenAiStreamError
 from harnyx_commons.miner_task_similarity import SimilarityJudgeRequest, SimilarityJudgeResult
 from harnyx_validator.application.status import BatchActivityTracker, StatusProvider
 from harnyx_validator.infrastructure.http.routes import ValidatorControlDeps, add_control_routes
@@ -217,7 +221,7 @@ def test_similarity_route_returns_failed_judge_usage() -> None:
     assert response.status_code == 502
     assert response.json() == {
         "error_code": "similarity_judge_failed",
-        "retryable": False,
+        "retryable": True,
         "detail": "provider retries exhausted",
         "judge_usage": {
             "call_count": 2,
@@ -245,7 +249,8 @@ def test_similarity_route_returns_failed_judge_usage() -> None:
     }
 
 
-def test_similarity_route_preserves_missing_config_service_unavailable() -> None:
+@pytest.mark.parametrize("stream", [False, True])
+def test_similarity_route_preserves_missing_config_service_unavailable(stream) -> None:
     batch_id = uuid4()
     candidate_artifact_id = uuid4()
     incumbent_artifact_id = uuid4()
@@ -257,10 +262,14 @@ def test_similarity_route_preserves_missing_config_service_unavailable() -> None
             candidate_artifact_id=candidate_artifact_id,
             incumbent_artifact_id=incumbent_artifact_id,
         ),
+        headers={"Accept": "text/event-stream"} if stream else {},
     )
 
     assert response.status_code == 503
-    assert response.json() == {"detail": "similarity judge is not configured"}
+    assert response.json() == {
+        "error_code": "similarity_judge_failed", "retryable": False,
+        "detail": "similarity judge is not configured", "judge_usage": None,
+    }
 
 
 def test_similarity_stream_preserves_result_and_attempt_failure_history() -> None:
@@ -312,8 +321,48 @@ def test_similarity_stream_keeps_failed_usage_and_retry_policy() -> None:
     assert response.status_code == 200
     assert terminal["type"] == "error"
     assert terminal["status_code"] == 502
-    assert terminal["error"]["retryable"] is False
+    assert terminal["error"]["retryable"] is True
     assert terminal["error"]["judge_usage"]["call_count"] == 2
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("failure,retryable", [
+    ("timeout", True), ("invalid_output", True), ("configuration", False),
+    (401, False), (403, False), (404, False), (429, True), (503, True),
+    ("401", False), ("403", False), ("404", False), ("429", True), ("503", True),
+])
+def test_similarity_failure_allows_retry_except_authentication_and_configuration(stream, failure, retryable) -> None:
+    """A failed fallback must get a second Platform chance unless operator action is required."""
+    import json
+
+    class Judge:
+        async def judge(self, request):
+            if failure == "timeout":
+                raise LlmRetryExhaustedError("total_timeout") from TimeoutError()
+            if failure == "invalid_output":
+                raise ValueError("invalid structured output")
+            if failure == "configuration":
+                cause = LlmProviderConfigurationError("missing provider credentials")
+            elif isinstance(failure, str):
+                cause = OpenAiStreamError(message="streamed provider error", code=failure)
+            else:
+                response = httpx.Response(failure, request=httpx.Request("POST", "https://provider.invalid"))
+                cause = httpx.HTTPStatusError("upstream rejected request", request=response.request, response=response)
+            raise RuntimeError("wrapped provider failure") from cause
+
+    response = _client(Judge()).post(
+        f"/validator/miner-task-batches/{uuid4()}/similarity",
+        json=_payload(candidate_artifact_id=uuid4(), incumbent_artifact_id=uuid4()),
+        headers={"Accept": "text/event-stream"} if stream else {},
+    )
+    if stream:
+        terminal = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")][-1]
+        payload = terminal["error"]
+        assert terminal["status_code"] == 502
+    else:
+        assert response.status_code == 502
+        payload = response.json()
+    assert payload["retryable"] is retryable
 
 
 def test_similarity_stream_keeps_unexpected_error_distinct_from_model_failure() -> None:

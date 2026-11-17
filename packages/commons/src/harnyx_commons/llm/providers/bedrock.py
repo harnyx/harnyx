@@ -7,10 +7,21 @@ import time
 
 from aiobotocore.session import get_session
 from botocore.config import Config
-from botocore.exceptions import BotoCoreError, ClientError, ParamValidationError
+from botocore.exceptions import (
+    BotoCoreError,
+    ClientError,
+    NoCredentialsError,
+    ParamValidationError,
+    PartialCredentialsError,
+)
 
 from harnyx_commons.llm.cost_settlement import settled_response_cost, with_settled_llm_cost
-from harnyx_commons.llm.provider import BaseLlmProvider
+from harnyx_commons.llm.provider import (
+    BaseLlmProvider,
+    LlmProviderConfigurationError,
+    LlmProviderError,
+    LlmRetryExhaustedError,
+)
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmRequest, LlmResponse
 from harnyx_commons.llm.timeout import record_output_progress, resolve_timeout
 
@@ -64,13 +75,24 @@ class BedrockLlmProvider(BaseLlmProvider):
 
     async def _invoke(self, request: AbstractLlmRequest) -> LlmResponse:
         validated_request = _validate_request(request)
-        return await self._call_with_retry(
-            validated_request,
-            call_coro=lambda current_request: self._call_bedrock(_validate_request(current_request)),
-            verifier=self._verify_response,
-            classify_exception=self._classify_exception,
-            policy=validated_request.retry_policy,
-        )
+        try:
+            return await self._call_with_retry(
+                validated_request,
+                call_coro=lambda current_request: self._call_bedrock(_validate_request(current_request)),
+                verifier=self._verify_response,
+                classify_exception=self._classify_exception,
+                policy=validated_request.retry_policy,
+            )
+        except (LlmProviderError, LlmRetryExhaustedError) as exc:
+            cause = exc.__cause__
+            configuration_error = isinstance(cause, (NoCredentialsError, PartialCredentialsError))
+            if isinstance(cause, ClientError):
+                retryable, _ = self._classify_exception(cause)
+                status = cause.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+                configuration_error = not retryable and status in (401, 403, 404)
+            if configuration_error:
+                raise LlmProviderConfigurationError(str(exc), response=exc.response) from exc
+            raise
 
     async def _annotate_response_cost(
         self,

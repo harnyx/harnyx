@@ -11,6 +11,7 @@ from typing import Any, Protocol, cast
 from urllib.parse import quote
 from uuid import UUID, uuid4
 
+import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, Security, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import APIKeyHeader
@@ -28,7 +29,9 @@ from harnyx_commons.endpoint_execution import (
     parse_delegation_header,
 )
 from harnyx_commons.errors import ConcurrencyLimitError, ToolProviderError
+from harnyx_commons.llm.provider import LlmProviderConfigurationError
 from harnyx_commons.llm.provider_error_summary import public_llm_provider_failure_summary
+from harnyx_commons.llm.providers.openai_stream import OpenAiStreamError
 from harnyx_commons.miner_task_similarity import SimilarityJudgeRequest, SimilarityJudgeResult
 from harnyx_commons.protocol_headers import SESSION_ID_HEADER
 from harnyx_commons.reference_selection import ReferenceSelectionRequest
@@ -393,7 +396,7 @@ def add_control_routes(
         _caller: str = Security(require_bittensor_caller),
     ) -> SimilarityJudgeResponseModel | JSONResponse | StreamingResponse:
         if deps.similarity_judge is None:
-            raise HTTPException(status_code=503, detail="similarity judge is not configured")
+            return await _similarity_judge_response(request, batch_id, payload, deps)
         if any(part.strip() == "text/event-stream" for part in request.headers.get("accept", "").split(",")):
             return SimilarityStreamingResponse(lambda: _similarity_judge_response(request, batch_id, payload, deps))
         return await _similarity_judge_response(request, batch_id, payload, deps)
@@ -616,21 +619,37 @@ async def _similarity_judge_response(
 ) -> JSONResponse:
     try:
         if deps.similarity_judge is None:
-            raise HTTPException(status_code=503, detail="similarity judge is not configured")
+            raise LlmProviderConfigurationError("similarity judge is not configured")
         result = await deps.similarity_judge.judge(payload.to_domain(batch_id=batch_id))
     except HTTPException:
         raise
     except (RuntimeError, ValueError) as exc:
         error_response = SimilarityJudgeFailureResponseModel(
             error_code="similarity_judge_failed",
-            retryable=False,
+            retryable=_similarity_failure_retryable(exc),
             detail=str(exc),
             judge_usage=getattr(exc, "judge_usage", None),
         )
         return JSONResponse(
-            status_code=502,
+            status_code=503 if deps.similarity_judge is None else 502,
             content=error_response.model_dump(mode="json"),
         )
     except Exception as exc:
         return _control_route_internal_error_response(request, exc)
     return JSONResponse(content=SimilarityJudgeResponseModel.from_domain(result).model_dump(mode="json"))
+
+
+def _similarity_failure_retryable(error: Exception) -> bool:
+    """Preserve operator-action failures through provider exception wrapping."""
+    cause: BaseException | None = error
+    seen: set[int] = set()
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        if isinstance(cause, LlmProviderConfigurationError):
+            return False
+        if isinstance(cause, httpx.HTTPStatusError) and cause.response.status_code in {401, 403, 404}:
+            return False
+        if isinstance(cause, OpenAiStreamError) and str(cause.code) in {"401", "403", "404"}:
+            return False
+        cause = cause.__cause__
+    return True

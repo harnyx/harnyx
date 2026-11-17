@@ -12,7 +12,7 @@ from typing import Any, cast
 
 import google.auth
 import httpx
-from anthropic import AsyncAnthropicVertex
+from anthropic import APIStatusError, AsyncAnthropicVertex
 from anthropic.types import (
     InputJSONDelta,
     RawContentBlockDeltaEvent,
@@ -23,11 +23,12 @@ from anthropic.types import (
 )
 from google import genai
 from google.auth.credentials import Credentials as GoogleCredentials
+from google.auth.exceptions import DefaultCredentialsError, RefreshError
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.genai import errors, types
 
 from harnyx_commons.llm.cost_settlement import settled_response_cost, with_settled_llm_cost
-from harnyx_commons.llm.provider import BaseLlmProvider
+from harnyx_commons.llm.provider import BaseLlmProvider, LlmProviderConfigurationError, LlmProviderError
 from harnyx_commons.llm.providers.openai_stream import (
     OpenAiStreamError,
     OpenAiStreamState,
@@ -140,22 +141,33 @@ class VertexLlmProvider(BaseLlmProvider):
         self._logger = logging.getLogger("harnyx_commons.llm.calls")
 
     async def _invoke(self, request: AbstractLlmRequest) -> LlmResponse:
-        if is_claude_model(request.model):
+        try:
+            if is_claude_model(request.model):
+                return await self._call_with_retry(
+                    request,
+                    call_coro=lambda current_request: self._call_claude_anthropic(current_request),
+                    verifier=self._verify_response,
+                    classify_exception=self._classify_anthropic_exception,
+                    policy=request.retry_policy,
+                )
+
             return await self._call_with_retry(
                 request,
-                call_coro=lambda current_request: self._call_claude_anthropic(current_request),
+                call_coro=lambda current_request: self._call_vertex_with_request(current_request),
                 verifier=self._verify_response,
-                classify_exception=self._classify_anthropic_exception,
+                classify_exception=self._classify_exception,
                 policy=request.retry_policy,
             )
-
-        return await self._call_with_retry(
-            request,
-            call_coro=lambda current_request: self._call_vertex_with_request(current_request),
-            verifier=self._verify_response,
-            classify_exception=self._classify_exception,
-            policy=request.retry_policy,
-        )
+        except LlmProviderError as exc:
+            cause = exc.__cause__
+            if (
+                isinstance(cause, DefaultCredentialsError)
+                or (isinstance(cause, RefreshError) and not cause.retryable)
+                or (isinstance(cause, errors.APIError) and cause.code in (401, 403, 404))
+                or (isinstance(cause, APIStatusError) and cause.status_code in (401, 403, 404))
+            ):
+                raise LlmProviderConfigurationError(str(exc), response=exc.response) from exc
+            raise
 
     async def _annotate_response_cost(
         self,

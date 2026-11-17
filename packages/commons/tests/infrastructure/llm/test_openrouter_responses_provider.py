@@ -9,7 +9,7 @@ import pytest
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
-from harnyx_commons.llm.provider import LlmProviderError
+from harnyx_commons.llm.provider import LlmProviderConfigurationError, LlmProviderError, LlmRetryExhaustedError
 from harnyx_commons.llm.providers.openrouter_responses import OpenRouterResponsesLlmProvider
 from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import (
@@ -378,6 +378,7 @@ async def test_failed_response_reports_upstream_error_and_preserves_billing_with
                     retry_policy=RetryPolicy(attempts=3, initial_ms=0, max_ms=0, jitter=0),
                 )
             )
+        assert isinstance(failure.value, LlmProviderConfigurationError) is (code == "permission_denied")
         assert str(failure.value) == (
             f"OpenRouter response failed: {error_type or code}: Upstream provider is overloaded"
         )
@@ -416,5 +417,27 @@ async def test_missing_openrouter_cost_receipt_preserves_usage_without_claiming_
         assert result.raw_text == "Complete answer" and result.usage.prompt_tokens == 12
         assert result.metadata.get("actual_cost_usd") is None
         assert result.metadata["cost_incomplete_reason"] == "missing_openrouter_billing_receipt"
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 429, 503])
+async def test_responses_sdk_preserves_authentication_vs_temporary_failure(status):
+    sdk = AsyncOpenAI(
+        api_key="test-key", base_url="https://openrouter.ai/api/v1", max_retries=0,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda request: httpx.Response(status, json={"error": {"message": "rejected"}}),
+        )),
+    )
+    provider = OpenRouterResponsesLlmProvider(client=sdk)
+    expected_error = LlmProviderConfigurationError if status in (401, 403, 404) else LlmRetryExhaustedError
+    try:
+        with pytest.raises(expected_error):
+            await provider.invoke(LlmRequest(
+                provider="openrouter", model="openai/gpt-6-luna",
+                messages=(LlmMessage(role="user", content=(LlmMessageContentPart.input_text("Compare"),)),),
+                temperature=0.0, max_output_tokens=128,
+                retry_policy=RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0),
+            ))
     finally:
         await provider.aclose()

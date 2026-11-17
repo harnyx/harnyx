@@ -142,13 +142,19 @@ class OpenRouterResponsesLlmProvider(BaseLlmProvider):
         await self._retrieval.aclose()
 
     async def _invoke(self, request: AbstractLlmRequest) -> LlmResponse:
-        return await self._call_with_retry(
-            request,
-            call_coro=self._request,
-            verifier=self._verify,
-            classify_exception=self._classify,
-            policy=request.retry_policy,
-        )
+        try:
+            return await self._call_with_retry(
+                request,
+                call_coro=self._request,
+                verifier=self._verify,
+                classify_exception=self._classify,
+                policy=request.retry_policy,
+            )
+        except LlmProviderError as exc:
+            cause = exc.__cause__
+            if isinstance(cause, APIStatusError) and cause.status_code in (401, 403, 404):
+                raise LlmProviderConfigurationError(str(exc), response=exc.response) from exc
+            raise
 
     @staticmethod
     def _classify(exc: Exception) -> tuple[bool, str]:
@@ -257,7 +263,10 @@ class OpenRouterResponsesLlmProvider(BaseLlmProvider):
             result = replace(result, usage=total_usage, metadata=metadata)
             record_observed_llm_response(result)
             if raw.status == "failed" and raw.error is not None:
-                raise LlmProviderError(
+                error_type = (
+                    LlmProviderConfigurationError if raw.error.code == "permission_denied" else LlmProviderError
+                )
+                raise error_type(
                     f"OpenRouter response failed: {raw.error_type or raw.error.code}: {raw.error.message}"
                 )
             if result.finish_reason not in {"stop", "tool_calls"} or retrieval is None or not result.tool_calls:

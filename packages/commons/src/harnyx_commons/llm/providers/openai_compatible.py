@@ -13,6 +13,7 @@ from dataclasses import replace
 from typing import Any
 
 import httpx
+from google.auth import exceptions as google_auth_errors
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import id_token, service_account
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -30,7 +31,7 @@ from harnyx_commons.llm.judge_observability import (
     record_judge_stream_event,
     record_judge_stream_headers_received,
 )
-from harnyx_commons.llm.provider import BaseLlmProvider, record_observed_llm_response
+from harnyx_commons.llm.provider import BaseLlmProvider, LlmProviderConfigurationError, record_observed_llm_response
 from harnyx_commons.llm.provider_types import custom_openai_compatible_target
 from harnyx_commons.llm.providers.openai_chat_codec import OpenAiChatRequestParts
 from harnyx_commons.llm.providers.openai_stream import (
@@ -525,12 +526,25 @@ class _OpenAiCompatibleAuthenticator:
             case OpenAiCompatibleBearerTokenEnvAuthConfig(token_env=token_env):
                 token = os.environ.get(token_env, "").strip()
                 if not token:
-                    raise RuntimeError(f"{token_env} must be configured for OpenAI-compatible bearer auth")
+                    raise LlmProviderConfigurationError(
+                        f"{token_env} must be configured for OpenAI-compatible bearer auth"
+                    )
                 return {"Authorization": f"Bearer {token}"}
             case OpenAiCompatibleGoogleIdTokenAuthConfig() as auth:
-                token = await asyncio.to_thread(_refresh_google_id_token, auth)
+                try:
+                    token = await asyncio.to_thread(_refresh_google_id_token, auth)
+                except (google_auth_errors.DefaultCredentialsError, ValueError) as exc:
+                    raise LlmProviderConfigurationError(
+                        "invalid OpenAI-compatible Google ID token credentials"
+                    ) from exc
+                except google_auth_errors.RefreshError as exc:
+                    if exc.retryable:
+                        raise
+                    raise LlmProviderConfigurationError(
+                        "OpenAI-compatible Google ID token credentials rejected"
+                    ) from exc
                 return {"Authorization": f"Bearer {token}"}
-        raise RuntimeError(f"unsupported OpenAI-compatible auth type: {self._auth.type}")
+        raise LlmProviderConfigurationError(f"unsupported OpenAI-compatible auth type: {self._auth.type}")
 
 
 def _refresh_google_id_token(auth: OpenAiCompatibleGoogleIdTokenAuthConfig) -> str:
@@ -539,7 +553,7 @@ def _refresh_google_id_token(auth: OpenAiCompatibleGoogleIdTokenAuthConfig) -> s
         credentials = id_token.fetch_id_token_credentials(auth.audience, request=request)
     else:
         if auth.credential_env is None:
-            raise RuntimeError("credential_env must be configured for service_account_json_b64_env")
+            raise LlmProviderConfigurationError("credential_env must be configured for service_account_json_b64_env")
         credentials = service_account.IDTokenCredentials.from_service_account_info(
             _service_account_info_from_env(auth.credential_env),
             target_audience=auth.audience,
@@ -554,11 +568,11 @@ def _refresh_google_id_token(auth: OpenAiCompatibleGoogleIdTokenAuthConfig) -> s
 def _service_account_info_from_env(env_name: str) -> dict[str, object]:
     encoded = os.environ.get(env_name, "").strip()
     if not encoded:
-        raise RuntimeError(f"{env_name} must be configured for OpenAI-compatible Google ID token auth")
+        raise LlmProviderConfigurationError(f"{env_name} must be configured for OpenAI-compatible Google ID token auth")
     decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
     payload = json.loads(decoded)
     if not isinstance(payload, dict):
-        raise RuntimeError(f"{env_name} must decode to a service-account JSON object")
+        raise LlmProviderConfigurationError(f"{env_name} must decode to a service-account JSON object")
     return dict(payload)
 
 

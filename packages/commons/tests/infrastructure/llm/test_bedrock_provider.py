@@ -7,10 +7,10 @@ from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, replace
 
 import pytest
-from botocore.exceptions import ClientError, EventStreamError
+from botocore.exceptions import ClientError, EventStreamError, NoCredentialsError, PartialCredentialsError
 from pydantic import BaseModel, ValidationError
 
-from harnyx_commons.llm.provider import LlmProviderError, LlmRetryExhaustedError
+from harnyx_commons.llm.provider import LlmProviderConfigurationError, LlmProviderError, LlmRetryExhaustedError
 from harnyx_commons.llm.providers.bedrock import BedrockLlmProvider
 from harnyx_commons.llm.providers.bedrock_codec import (
     BEDROCK_STREAM_EVENT_ADAPTER,
@@ -757,3 +757,42 @@ def test_bedrock_provider_classifies_lowercase_eventstream_internal_error_as_ret
         reason == "client_error:internalServerException:None:"
         "The system encountered an unexpected error during processing. Try your request again."
     )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ClientError(
+            {"Error": {"Code": "AccessDeniedException", "Message": "denied"},
+             "ResponseMetadata": {"HTTPStatusCode": 403}},
+            "ConverseStream",
+        ),
+        NoCredentialsError(),
+        PartialCredentialsError(provider="env", cred_var="AWS_SECRET_ACCESS_KEY"),
+    ],
+)
+async def test_bedrock_authentication_failure_keeps_operator_action_classification(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception,
+) -> None:
+    _patch_session(monkeypatch, events=(), failures=(failure,))
+    request = replace(_base_request(), retry_policy=RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0.0))
+
+    with pytest.raises(LlmProviderConfigurationError) as caught:
+        await _provider().invoke(request)
+
+    assert caught.value.__cause__.__cause__ is failure
+
+
+async def test_bedrock_exhausted_expired_signature_remains_temporary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failure = ClientError(
+        {"Error": {"Code": "InvalidSignatureException", "Message": "Signature expired"},
+         "ResponseMetadata": {"HTTPStatusCode": 403}},
+        "ConverseStream",
+    )
+    _patch_session(monkeypatch, events=(), failures=(failure,))
+    request = replace(_base_request(), retry_policy=RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0.0))
+
+    with pytest.raises(LlmRetryExhaustedError):
+        await _provider().invoke(request)
