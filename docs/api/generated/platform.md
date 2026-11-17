@@ -1967,6 +1967,8 @@ Body: [RegisterValidatorRequest](#model-registervalidatorrequest)
 |  | `cleanup` |  | req | `string` (enum: [succeeded, not_needed, unconfirmed]) |
 |  | `cleanup_details` |  | opt | `string` (default: ) |
 |  | `details` |  | opt | `string` (default: ) |
+|  | `docker_api_version` |  | opt | `string` (nullable) |
+|  | `docker_engine_version` |  | opt | `string` (nullable) |
 |  | `image_bytes` |  | req | `integer` |
 |  | `iops` |  | req | `integer` |
 |  | `probe_id` |  | req | `string` (format: uuid) |
@@ -9365,6 +9367,8 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `cleanup` |  | req | `string` (enum: [succeeded, not_needed, unconfirmed]) |
 |  | `cleanup_details` |  | opt | `string` (default: ) |
 |  | `details` |  | opt | `string` (default: ) |
+|  | `docker_api_version` |  | opt | `string` (nullable) |
+|  | `docker_engine_version` |  | opt | `string` (nullable) |
 |  | `image_bytes` |  | req | `integer` |
 |  | `iops` |  | req | `integer` |
 |  | `probe_id` |  | req | `string` (format: uuid) |
@@ -10467,6 +10471,8 @@ Body: [StatusResponse](#model-statusresponse)
 | `cleanup` |  |  | req | `string` (enum: [succeeded, not_needed, unconfirmed]) |
 | `cleanup_details` |  |  | opt | `string` (default: ) |
 | `details` |  |  | opt | `string` (default: ) |
+| `docker_api_version` |  |  | opt | `string` (nullable) |
+| `docker_engine_version` |  |  | opt | `string` (nullable) |
 | `image_bytes` |  |  | req | `integer` |
 | `iops` |  |  | req | `integer` |
 | `probe_id` |  |  | req | `string` (format: uuid) |
@@ -10510,6 +10516,30 @@ Body: [StatusResponse](#model-statusresponse)
       "maxLength": 12000,
       "title": "Details",
       "type": "string"
+    },
+    "docker_api_version": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Docker Api Version"
+    },
+    "docker_engine_version": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Docker Engine Version"
     },
     "image_bytes": {
       "exclusiveMinimum": 0.0,

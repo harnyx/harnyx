@@ -3,7 +3,15 @@ from unittest.mock import Mock
 
 import pytest
 
+from harnyx_validator.infrastructure.artifact_storage import DockerServerVersion
 from harnyx_validator.runtime.storage_probe import PROBE_LABELS, PROBE_POOL, StorageProbeWorker
+
+
+@pytest.fixture(autouse=True)
+def docker_version(monkeypatch):
+    read = Mock(return_value=DockerServerVersion(Version="28.5.2", ApiVersion="1.51"))
+    monkeypatch.setattr("harnyx_validator.runtime.storage_probe.read_docker_server_version", read)
+    return read
 
 
 def worker(factory, report):
@@ -26,6 +34,8 @@ def test_probe_reports_failure_and_always_attempts_owned_cleanup(failure, monkey
     result = probe._probe()
     assert result.status == ("succeeded" if failure is None else "failed")
     assert secret not in result.model_dump_json()
+    assert result.docker_engine_version == "28.5.2"
+    assert result.docker_api_version == "1.51"
     if failure == "identity":
         manager.finish_probe.assert_not_called()
         assert result.cleanup == "not_needed"
@@ -61,3 +71,14 @@ def test_shutdown_before_start_does_not_allocate():
     probe._run()
     factory.assert_not_called()
     send.assert_not_called()
+
+
+def test_version_lookup_failure_does_not_skip_probe_or_report(docker_version):
+    docker_version.side_effect = TimeoutError("Docker version timed out")
+    manager = Mock(stage="mount")
+    result = worker(Mock(return_value=manager), Mock())._probe()
+    assert result.status == "succeeded"
+    assert result.docker_engine_version is None
+    assert result.docker_api_version is None
+    manager.recover.assert_called_once()
+    manager.finish_probe.assert_called_once()

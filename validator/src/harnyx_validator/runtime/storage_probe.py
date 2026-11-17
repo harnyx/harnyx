@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from harnyx_commons.storage_diagnostics import StorageProbeReport
-from harnyx_validator.infrastructure.artifact_storage import ArtifactStorageSandboxManager
+from harnyx_validator.infrastructure.artifact_storage import ArtifactStorageSandboxManager, read_docker_server_version
 
 logger = logging.getLogger(__name__)
 PROBE_POOL = "harnyx-storage-probe"
@@ -63,6 +63,11 @@ class StorageProbeWorker:
         self._stop.set()
 
     def _probe(self) -> StorageProbeReport:
+        docker_version = None
+        try:
+            docker_version = read_docker_server_version()
+        except Exception as exc:
+            logger.warning("storage probe Docker version unavailable", extra={"data": {"details": _details(exc)}})
         manager = None
         stage = "validator runtime identity"
         error = ""
@@ -89,6 +94,8 @@ class StorageProbeWorker:
             stage=stage, cleanup=cleanup,
             image_bytes=PROBE_IMAGE_BYTES, iops=self._iops, bytes_per_second=self._bytes_per_second,
             details=error, cleanup_details=cleanup_error,
+            docker_engine_version=docker_version.engine if docker_version is not None else None,
+            docker_api_version=docker_version.api if docker_version is not None else None,
         )
 
     def _run(self) -> None:

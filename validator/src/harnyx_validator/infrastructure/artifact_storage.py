@@ -52,6 +52,19 @@ class ValidatorRuntimeIdentity(BaseModel):
     image_id: str = Field(min_length=1)
 
 
+class DockerServerVersion(BaseModel):
+    engine: str = Field(alias="Version", min_length=1, max_length=128)
+    api: str = Field(alias="ApiVersion", min_length=1, max_length=128)
+
+
+def read_docker_server_version() -> DockerServerVersion:
+    result = subprocess.run(
+        ["docker", "version", "--format", "{{json .Server}}"],  # noqa: S607
+        capture_output=True, text=True, check=True, timeout=10,
+    )
+    return DockerServerVersion.model_validate_json(result.stdout)
+
+
 class ArtifactStorageSandboxManager:
     def __init__(
         self,

@@ -19,3 +19,5 @@ class StorageProbeReport(BaseModel):
     bytes_per_second: int = Field(gt=0)
     details: str = Field(default="", max_length=12000)
     cleanup_details: str = Field(default="", max_length=12000)
+    docker_engine_version: str | None = Field(default=None, max_length=128)
+    docker_api_version: str | None = Field(default=None, max_length=128)
