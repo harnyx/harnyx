@@ -1808,3 +1808,168 @@ async def probe(request: dict[str, object]) -> dict[str, object]:
         assert ordinary_calls == ["tooling_info"]
     finally:
         await runtime.close()
+
+
+WORKSPACE_SOURCE = '''
+import asyncio
+import os
+import tempfile
+from pathlib import Path
+from harnyx_miner_sdk.decorators import entrypoint
+Path("module.txt").write_text("module initialized")
+with tempfile.NamedTemporaryFile(delete=False) as f:
+    module_temp = f.name
+@entrypoint("files")
+async def files(request: dict[str, object]) -> dict[str, object]:
+    Path("nested").mkdir()
+    Path("nested/data").write_text("hello")
+    Path("nested/data").rename("nested/renamed")
+    with open("nested/renamed", "r+") as f:
+        f.truncate(2)
+    with tempfile.NamedTemporaryFile() as f:
+        temporary_parent = str(Path(f.name).parent)
+    await asyncio.sleep(request.get("delay", 0.03))
+    if request.get("fail"):
+        raise ValueError("original failure")
+    return {"cwd": os.getcwd(), "temp_parent": temporary_parent,
+            "module_temp_parent": str(Path(module_temp).parent),
+            "module": Path("module.txt").read_text(), "data": Path("nested/renamed").read_text()}
+'''
+
+
+@pytest.fixture
+async def workspace_harness(tmp_path):
+    from harnyx_sandbox.sandbox.workspace import QueryWorkspaces
+
+    source = tmp_path / "files.py"
+    source.write_text(WORKSPACE_SOURCE)
+    root = tmp_path / "queries"
+    root.mkdir()
+    runtime = SandboxHarness(artifact_path=str(source))
+    runtime._workspaces = QueryWorkspaces(root)
+    try:
+        yield runtime, root
+    finally:
+        await runtime.close()
+
+
+async def wait_empty(root):
+    async with asyncio.timeout(3):
+        while list(root.iterdir()):
+            await asyncio.sleep(0.01)
+
+
+async def test_query_workspaces_cover_module_code_tempfiles_and_concurrency(workspace_harness):
+    import tempfile
+
+    runtime, root = workspace_harness
+    original_cwd, original_temp = os.getcwd(), tempfile.gettempdir()
+    results = await asyncio.gather(*(runtime.invoke("files", body()) for _ in range(10)))
+    assert len({r["cwd"] for r in results}) == 10
+    for result in results:
+        assert Path(result["cwd"]).parent == root
+        assert result["cwd"] == result["temp_parent"] == result["module_temp_parent"]
+        assert result["module"] == "module initialized"
+        assert result["data"] == "he"
+    assert (os.getcwd(), tempfile.gettempdir()) == (original_cwd, original_temp)
+    await wait_empty(root)
+
+
+@pytest.mark.parametrize("failure", ["exception", "timeout", "cancel", "preload"])
+async def test_workspace_cleanup_preserves_failure(workspace_harness, failure):
+    runtime, root = workspace_harness
+    if failure != "preload":
+        await runtime.invoke("files", body())
+        await wait_empty(root)
+    if failure == "preload":
+        Path(runtime.artifact_path).write_text(WORKSPACE_SOURCE + '\nraise ValueError("preload failure")\n')
+    request = body({"fail": failure == "exception", "delay": 5 if failure in {"timeout", "cancel"} else 0},
+                   seconds=0.2 if failure == "timeout" else 5)
+    task = asyncio.create_task(runtime.invoke("files", request))
+    if failure == "cancel":
+        async with asyncio.timeout(3):
+            while not list(root.glob("*/module.txt")):
+                await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        with pytest.raises(HTTPException) as exc:
+            await task
+        assert exc.value.status_code == (504 if failure == "timeout" else 500)
+    await wait_empty(root)
+    assert not runtime._compiler.children
+
+
+async def test_workspace_prepare_failure_never_runs_miner(workspace_harness):
+    runtime, root = workspace_harness
+    root.rmdir()
+    with pytest.raises(HTTPException) as exc:
+        await runtime.invoke("files", body())
+    assert exc.value.status_code == 500
+    assert not runtime._compiler.children
+    assert not root.exists()
+
+
+async def test_workspace_slow_cleanup_does_not_block_results_or_peers(workspace_harness, monkeypatch):
+    runtime, root = workspace_harness
+    started, release = threading.Event(), threading.Event()
+    original_remove = runtime._workspaces._remove
+
+    def slow_remove(path):
+        started.set()
+        release.wait(5)
+        original_remove(path)
+
+    monkeypatch.setattr(runtime._workspaces, "_remove", slow_remove)
+    try:
+        result = await runtime.invoke("files", body())
+        assert result["data"] == "he"
+        assert await asyncio.to_thread(started.wait, 1)
+        peer = await asyncio.wait_for(runtime.invoke("files", body()), 2)
+        assert peer["cwd"] != result["cwd"]
+        assert not runtime._retired.is_set()
+    finally:
+        release.set()
+    await wait_empty(root)
+
+
+@pytest.mark.parametrize("failure", ["dispatch", "chdir"])
+async def test_workspace_fork_or_child_setup_failure_does_not_execute_miner(workspace_harness, monkeypatch, failure):
+    from harnyx_miner_sdk.sandbox_protocol import AdmissionRequest
+
+    runtime, root = workspace_harness
+    admission = await runtime.reserve(AdmissionRequest(limit_seconds=5.0), {})
+    compiler = runtime._compiler
+    original = compiler.fork
+
+    async def fail_fork(key, fds, *, workspace=None):
+        if failure == "dispatch":
+            raise OSError("fork dispatch failed")
+        return await original(key, fds, workspace=str(root / "missing"))
+
+    monkeypatch.setattr(compiler, "fork", fail_fork)
+    request = body()
+    request.admission = admission
+    with pytest.raises(HTTPException) as exc:
+        await runtime.invoke("files", request)
+    assert exc.value.status_code == 500
+    assert not list(root.glob("*/module.txt"))
+    await wait_empty(root)
+
+
+async def test_workspace_delete_failure_keeps_success(workspace_harness, monkeypatch):
+    runtime, root = workspace_harness
+    finished = threading.Event()
+
+    def broken_delete(path):
+        finished.set()
+        raise PermissionError("synthetic file cleanup failure")
+
+    monkeypatch.setattr(runtime._workspaces, "_remove", broken_delete)
+    result = await runtime.invoke("files", body())
+    assert result["data"] == "he"
+    assert await asyncio.to_thread(finished.wait, 1)
+    assert list(root.iterdir())
+    assert not runtime._retired.is_set()
+    assert not runtime._compiler.children

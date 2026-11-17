@@ -46,8 +46,10 @@ from harnyx_commons.miner_task_scoring import (
     EvaluationScoringService,
 )
 from harnyx_commons.sandbox.docker import DockerSandboxManager
+from harnyx_commons.sandbox.manager import SandboxManager
 from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_commons.sandbox.runtime import ContainerSecurity, build_sandbox_options, create_sandbox_manager
+from harnyx_commons.storage_diagnostics import StorageProbeReport
 from harnyx_commons.tools.decision_models import DecisionQueryRequest
 from harnyx_commons.tools.dto import ToolInvocationRequest, tool_payload_for_invocation
 from harnyx_commons.tools.embedding_models import parse_miner_selected_embedding_provider_model
@@ -98,6 +100,7 @@ from harnyx_validator.application.services.evaluation_batch_prep import (
 from harnyx_validator.application.similarity_judge import SimilarityJudge, SimilarityJudgeConfig
 from harnyx_validator.application.status import BatchActivityTracker, StatusProvider
 from harnyx_validator.application.submit_weights import WeightSubmissionService
+from harnyx_validator.infrastructure.artifact_storage import ArtifactStorageSandboxManager
 from harnyx_validator.infrastructure.auth.sr25519 import BittensorSr25519InboundVerifier
 from harnyx_validator.infrastructure.endpoint_client import SignedMinerEndpointClient
 from harnyx_validator.infrastructure.http.routes import (
@@ -125,9 +128,13 @@ from harnyx_validator.runtime.platform_work_worker import (
     ScoringSlotConfigEntry,
 )
 from harnyx_validator.runtime.rating_competition_worker import RatingCompetitionWorker
-from harnyx_validator.runtime.registration_metadata import resolve_validator_registration_metadata
+from harnyx_validator.runtime.registration_metadata import (
+    inspect_current_validator_runtime,
+    resolve_validator_registration_metadata,
+)
 from harnyx_validator.runtime.resource_usage import ValidatorResourceUsageProvider
 from harnyx_validator.runtime.settings import Settings
+from harnyx_validator.runtime.storage_probe import PROBE_IMAGE_BYTES, PROBE_POOL, StorageProbeWorker
 
 logger = logging.getLogger("harnyx_validator.runtime")
 
@@ -319,6 +326,31 @@ class RuntimeContext:
         )
 
 
+def create_storage_probe_worker(runtime: RuntimeContext) -> StorageProbeWorker:
+    def create_manager() -> ArtifactStorageSandboxManager:
+        return ArtifactStorageSandboxManager(
+            create_sandbox_manager(logger_name="harnyx_validator.storage_probe"),
+            inspect_current_validator_runtime(),
+            iops=runtime.settings.artifact_iops,
+            bytes_per_second=runtime.settings.artifact_io_mib_per_second * 1024**2,
+            pool_name=PROBE_POOL, image_bytes=PROBE_IMAGE_BYTES,
+        )
+
+    def report(result: StorageProbeReport) -> None:
+        base = runtime.settings.platform_api.platform_base_url
+        public_url = runtime.settings.platform_api.validator_public_base_url
+        if not base or not public_url:
+            raise RuntimeError("platform registration configuration unavailable for storage report")
+        PlatformRegistrationClient(
+            platform_base_url=base, hotkey=runtime.platform_hotkey, timeout_seconds=10,
+        ).register(public_url, runtime.registration_metadata, storage_probe=result)
+
+    return StorageProbeWorker(
+        create_manager, report, iops=runtime.settings.artifact_iops,
+        bytes_per_second=runtime.settings.artifact_io_mib_per_second * 1024**2,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeLlmClients:
     search_client: WebSearchProviderPort | None
@@ -377,7 +409,10 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
     scoring_service = _direct_scoring_service(scoring_services)
 
     sandbox_manager = create_sandbox_manager(logger_name="harnyx_validator.sandbox")
-    _cleanup_stale_sandbox_containers(sandbox_manager)
+    if not sandbox_manager.cleanup_stale_sandbox_containers(
+        labels=SANDBOX_LABELS, name_prefix=f"{SANDBOX_CONTAINER_NAME_PREFIX}-",
+    ):
+        raise RuntimeError("stale sandbox removal unconfirmed; execution startup blocked")
     entrypoint_factory, orchestrator_factory, options_factory = _build_factories(
         resolved=resolved,
         state=state,
@@ -496,7 +531,7 @@ def _build_platform_work_worker(
     *,
     resolved: Settings,
     state: InMemoryState,
-    sandbox_manager: DockerSandboxManager,
+    sandbox_manager: SandboxManager,
     batch_blocking_executor: Executor,
     subtensor_client: SubtensorClientPort,
     platform_client: PlatformPort | None,
@@ -589,14 +624,6 @@ def _direct_scoring_service(
     scoring_services: Mapping[str, EvaluationScoringService],
 ) -> EvaluationScoringService:
     return scoring_services[_DIRECT_SCORING_LLM_MODEL]
-
-
-def _cleanup_stale_sandbox_containers(sandbox_manager: DockerSandboxManager) -> None:
-    if not sandbox_manager.cleanup_stale_sandbox_containers(
-        labels=SANDBOX_LABELS,
-        name_prefix=f"{SANDBOX_CONTAINER_NAME_PREFIX}-",
-    ):
-        raise RuntimeError("stale sandbox removal unconfirmed; execution startup blocked")
 
 
 def _build_state(
@@ -1240,7 +1267,9 @@ def _make_options_factory(resolved: Settings) -> Callable[[], SandboxOptions]:
         )
         return replace(
             base_options,
-            extra_args=base_options.extra_args + ("--cpuset-cpus", cpuset_cpus),
+            extra_args=base_options.extra_args + (
+                "--cpuset-cpus", cpuset_cpus,
+            ),
         )
 
     return factory
@@ -1360,7 +1389,6 @@ async def close_runtime_resources(runtime: RuntimeContext) -> None:
         await obj.aclose()
 
     runtime.batch_blocking_executor.shutdown(wait=False, cancel_futures=True)
-
     for owned in _unique_aclose_targets(
         runtime.search_client,
         runtime.llm_provider_registry,

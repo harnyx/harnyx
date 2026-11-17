@@ -178,3 +178,52 @@ async def wait(request: dict[str, bool]) -> dict[str, int]:
         if not query.done():
             query.cancel()
         await asyncio.gather(query, return_exceptions=True)
+
+
+async def test_workspace_volume_lifecycle_in_real_container(sandbox_launcher) -> None:
+    import json
+    import os
+    import subprocess
+
+    from harnyx_commons.sandbox.docker import DockerSandboxManager
+
+    docker = os.getenv("DOCKER_CLI", "docker")
+
+    def run(*args):
+        return subprocess.run(  # noqa: S603 - Docker CLI and arguments are owned by this test
+            [docker, *args], capture_output=True, text=True, check=True,
+        ).stdout
+
+    deployment = sandbox_launcher(
+        agent_module="commons.tests.integration.sandbox.isolated_worker_agent", evaluation_policy=True,
+    )
+    inspected = json.loads(run("inspect", deployment.identifier))[0]
+    volume = next(m["Name"] for m in inspected["Mounts"] if m["Destination"] == "/sandbox/queries")
+    state = next(m for m in inspected["Mounts"] if m["Destination"] != "/sandbox/queries")
+    manager = DockerSandboxManager(docker_binary=docker)
+    results = await asyncio.gather(*(
+        deployment.client.invoke(
+            "workspace", payload={}, context={"time_budget": {"limit_seconds": 5.0}},
+            token=uuid4().hex, session_id=uuid4(),
+        ) for _ in range(10)
+    ))
+    assert len({r["cwd"] for r in results}) == 10
+    for result in results:
+        assert result["cwd"] == result["temp"] == result["module_temp"]
+        assert result["module"] == "initialized"
+        assert result["contents"] == "abc" and result["listed"] == ["output"]
+        assert result["root_read_only"] and result["uid"] != 0
+    for payload, limit, status in [({"fail": True}, 5.0, 500), ({"delay": 5}, 0.3, 504)]:
+        with pytest.raises(SandboxInvokeError) as exc:
+            await deployment.client.invoke(
+                "workspace", payload=payload, context={"time_budget": {"limit_seconds": limit}},
+                token=uuid4().hex, session_id=uuid4(),
+            )
+        assert exc.value.status_code == status
+    async with asyncio.timeout(5):
+        while run("exec", deployment.identifier, "ls", "-A", "/sandbox/queries").strip():
+            await asyncio.sleep(0.05)
+    assert manager.stop(deployment)
+    assert volume not in run("volume", "ls", "--format", "{{.Name}}").splitlines()
+    if state["Type"] == "volume":
+        run("volume", "inspect", state["Name"])

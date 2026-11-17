@@ -549,3 +549,21 @@ async def test_unsent_worker_call_does_not_leak_capacity(failure, stream):
     assert not invoker.calls
     assert not invoker.streams
     writer.write.assert_not_called()
+
+
+@pytest.mark.parametrize("mounted", [False, True])
+def test_evaluation_workspaces_require_launcher_mount(monkeypatch, mounted):
+    """Predeployment without a mount must preserve ordinary read-only execution."""
+    from unittest.mock import Mock
+
+    from harnyx_sandbox.sandbox import harness as module
+
+    monkeypatch.setenv(module.EVALUATION_RESOURCE_POLICY_ENV, "1")
+    monkeypatch.setattr(module, "EvaluationMemoryState", Mock())
+    monkeypatch.setattr(module.os.path, "ismount", lambda path: mounted)
+    workspace_factory = Mock()
+    monkeypatch.setattr(module, "QueryWorkspaces", workspace_factory)
+    runtime = module.SandboxHarness()
+    runtime.initialize_resources()
+    assert workspace_factory.call_count == int(mounted)
+    assert (runtime._workspaces is not None) is mounted

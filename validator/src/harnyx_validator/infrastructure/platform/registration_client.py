@@ -13,6 +13,7 @@ import bittensor as bt
 import httpx
 
 from harnyx_commons.bittensor import build_canonical_request
+from harnyx_commons.storage_diagnostics import StorageProbeReport
 from harnyx_validator.application.dto.registration import ValidatorRegistrationMetadata
 
 logger = logging.getLogger("harnyx_validator.platform.registration")
@@ -69,12 +70,16 @@ class PlatformRegistrationClient:
         self,
         validator_public_base_url: str,
         metadata: ValidatorRegistrationMetadata,
+        *,
+        storage_probe: StorageProbeReport | None = None,
     ) -> None:
         path = "/v1/validators/register"
         payload = {
             "base_url": validator_public_base_url,
             **metadata.model_dump(mode="json"),
         }
+        if storage_probe is not None:
+            payload["storage_probe"] = storage_probe.model_dump(mode="json")
         body = json.dumps(payload, separators=(",", ":")).encode()
         headers = {
             "Authorization": self._signed_header("POST", path, body),

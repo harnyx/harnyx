@@ -122,6 +122,9 @@ def _import_server_with_captured_weight_worker_kwargs(
     monkeypatch.setattr(logging_mod, "init_logging", lambda: None)
     monkeypatch.setattr(logging_mod, "configure_logging", lambda **kwargs: None)
     monkeypatch.setattr(bootstrap_mod, "build_runtime", lambda settings: fake_runtime)
+    monkeypatch.setattr(bootstrap_mod, "create_storage_probe_worker", lambda runtime: SimpleNamespace(
+        start=lambda: None, stop=lambda **kwargs: None,
+    ))
     monkeypatch.setattr(weight_worker_mod, "create_weight_worker", _fake_create_weight_worker)
     monkeypatch.setattr(
         registration_worker_mod,
@@ -370,6 +373,9 @@ async def test_lifespan_stops_auth_when_later_startup_step_fails(monkeypatch: py
 
     monkeypatch.setattr(settings_mod.Settings, "load", classmethod(lambda cls: fake_settings))
     monkeypatch.setattr(bootstrap_mod, "build_runtime", lambda settings: fake_runtime)
+    monkeypatch.setattr(bootstrap_mod, "create_storage_probe_worker", lambda runtime: SimpleNamespace(
+        start=lambda: None, stop=lambda **kwargs: None,
+    ))
     monkeypatch.setattr(
         weight_worker_mod,
         "create_weight_worker",
@@ -478,6 +484,9 @@ async def test_lifespan_closes_runtime_resources_when_auth_stop_raises(
 
     monkeypatch.setattr(settings_mod.Settings, "load", classmethod(lambda cls: fake_settings))
     monkeypatch.setattr(bootstrap_mod, "build_runtime", lambda settings: fake_runtime)
+    monkeypatch.setattr(bootstrap_mod, "create_storage_probe_worker", lambda runtime: SimpleNamespace(
+        start=lambda: None, stop=lambda **kwargs: None,
+    ))
     monkeypatch.setattr(
         weight_worker_mod,
         "create_weight_worker",
@@ -523,3 +532,61 @@ async def test_lifespan_closes_runtime_resources_when_auth_stop_raises(
         "close-runtime",
         "shutdown-logging",
     ]
+
+
+@pytest.mark.anyio
+async def test_stalled_storage_probe_does_not_delay_execution_shutdown(monkeypatch):
+    """A hung optional probe must not consume the execution workers' stop grace."""
+    import asyncio
+    import threading
+    from unittest.mock import Mock
+
+    from harnyx_validator.runtime.storage_probe import StorageProbeWorker
+
+    _import_server_with_captured_weight_worker_kwargs(monkeypatch)
+    module_name = "harnyx_validator.server"
+    original_module = sys.modules.pop(module_name, None)
+    try:
+        server = importlib.import_module(module_name)
+    finally:
+        sys.modules.pop(module_name, None)
+        if original_module is not None:
+            sys.modules[module_name] = original_module
+
+    entered = threading.Event()
+    release = threading.Event()
+    manager = Mock()
+
+    def recover(**kwargs):
+        entered.set()
+        release.wait(5)
+
+    manager.recover.side_effect = recover
+    send = Mock()
+    probe = StorageProbeWorker(lambda: manager, send, iops=32, bytes_per_second=4194304)
+    monkeypatch.setattr(server, "_storage_probe_worker", probe)
+    stopped = []
+
+    async def stop_execution(**kwargs):
+        # This continuation needs a responsive event loop while recovery is blocked.
+        await asyncio.sleep(0)
+        assert probe._thread.is_alive()
+        assert not release.is_set()
+        assert probe._stop.is_set()
+        stopped.append("execution")
+
+    monkeypatch.setattr(server, "_platform_work_worker", SimpleNamespace(stop=stop_execution))
+    probe.start()
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        await asyncio.wait_for(server._stop_runtime_components(
+            platform_work_started=True, weight_started=False,
+            registration_refresh_started=False, auth_started=False,
+        ), timeout=1)
+        assert stopped == ["execution"]
+    finally:
+        release.set()
+        await asyncio.to_thread(probe._thread.join, 2)
+    assert not probe._thread.is_alive()
+    manager.finish_probe.assert_called_once()
+    send.assert_not_called()

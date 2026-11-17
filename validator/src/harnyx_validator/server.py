@@ -19,7 +19,7 @@ from harnyx_validator.infrastructure.observability.logging import (
     init_logging,
 )
 from harnyx_validator.infrastructure.observability.sentry import configure_sentry_from_env
-from harnyx_validator.runtime.bootstrap import build_runtime, close_runtime_resources
+from harnyx_validator.runtime.bootstrap import build_runtime, close_runtime_resources, create_storage_probe_worker
 from harnyx_validator.runtime.registration_worker import create_registration_refresh_worker
 from harnyx_validator.runtime.settings import Settings
 from harnyx_validator.runtime.weight_worker import create_weight_worker
@@ -65,6 +65,7 @@ else:
     )
 
 _runtime = build_runtime(_settings)
+_storage_probe_worker = create_storage_probe_worker(_runtime)
 _platform_work_worker = _runtime.platform_work_worker
 _rating_competition_worker = _runtime.rating_competition_worker
 _endpoint_execution = _runtime.endpoint_execution
@@ -96,6 +97,7 @@ async def _stop_runtime_components(
     registration_refresh_started: bool,
     auth_started: bool,
 ) -> None:
+    _storage_probe_worker.stop()
     if _endpoint_execution is not None:
         await _endpoint_execution.stop()
     if _rating_competition_worker is not None:
@@ -145,6 +147,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             _endpoint_execution.start()
         if _rating_competition_worker is not None:
             _rating_competition_worker.start()
+        _storage_probe_worker.start()
         yield
     finally:
         try:

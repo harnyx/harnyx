@@ -61,6 +61,7 @@ from harnyx_sandbox.sandbox.worker_protocol import (
     read_frame,
     send,
 )
+from harnyx_sandbox.sandbox.workspace import QueryWorkspaces
 
 ToolConfig = Mapping[str, Any] | None
 ToolHeaders = Mapping[str, str]
@@ -324,11 +325,11 @@ class _Compiler:
                     finally:
                         loop.remove_writer(control.fileno())
 
-    async def fork(self, key: str, fds: tuple[int, ...]) -> _Child:
+    async def fork(self, key: str, fds: tuple[int, ...], *, workspace: str | None = None) -> _Child:
         loop = asyncio.get_running_loop()
         child = _Child(loop.create_future(), loop.create_future())
         self.children[key] = child
-        await self.command({"kind": "fork", "id": key}, fds)
+        await self.command({"kind": "fork", "id": key, "workspace": workspace}, fds)
         child.requested = True
         await asyncio.shield(child.spawned)
         return child
@@ -611,11 +612,15 @@ class SandboxHarness:
         self._startup_waiters = 0
         self._memory: EvaluationMemoryState | None = None
         self._slots: asyncio.Semaphore | None = None
+        self._workspaces: QueryWorkspaces | None = None
 
     def initialize_resources(self) -> None:
         if os.getenv(EVALUATION_RESOURCE_POLICY_ENV) == "1" and self._memory is None:
             self._memory = EvaluationMemoryState()
             self._slots = asyncio.Semaphore(10)
+            # Only launchers supplying a workspace mount enable file I/O.
+            if os.path.ismount("/sandbox/queries"):
+                self._workspaces = QueryWorkspaces()
 
     def resource_status(self) -> SandboxResourceStatus:
         if self._memory is None:
@@ -747,6 +752,8 @@ class SandboxHarness:
         if self._compiler is not None:
             await self._compiler.close()
         await asyncio.gather(*self._invocations, return_exceptions=True)
+        if self._workspaces is not None:
+            self._workspaces.close()
 
     async def invoke(
         self, entrypoint_name: str, body: EntrypointRequest, *,
@@ -846,7 +853,9 @@ class SandboxHarness:
             proxy = None
             active = True
             result_received = False
+            workspace: str | None = None
             try:
+                workspace = self._prepare_workspace()
                 for pipe, stream in ((stdout, "stdout"), (stderr, "stderr")):
                     outputs.append(
                         asyncio.create_task(
@@ -858,7 +867,9 @@ class SandboxHarness:
                         )
                     )
                 proxy = self._tool_factory(config, headers) if self._tool_factory else None
-                await compiler.fork(admission.reservation_id, (child.fileno(), stdout.write_fd, stderr.write_fd))
+                await compiler.fork(
+                    admission.reservation_id, (child.fileno(), stdout.write_fd, stderr.write_fd), workspace=workspace,
+                )
                 child.close()
                 stdout.close_write()
                 stderr.close_write()
@@ -987,7 +998,7 @@ class SandboxHarness:
                 async def cleanup() -> None:
                     try:
                         try:
-                            await compiler.stop_child(admission.reservation_id)
+                            await self._stop_query_child(compiler, admission.reservation_id, workspace)
                             await asyncio.gather(*outputs, *calls, return_exceptions=True)
                         finally:
                             if proxy is not None:
@@ -1018,6 +1029,14 @@ class SandboxHarness:
                     if not result_received or not compiler._oom_draining():
                         raise
                     logger.exception("preserving received OOM-drain result while retaining worker cleanup ownership")
+
+    def _prepare_workspace(self) -> str | None:
+        return self._workspaces.prepare() if self._workspaces is not None else None
+
+    async def _stop_query_child(self, compiler: _Compiler, key: str, workspace: str | None) -> None:
+        await compiler.stop_child(key)
+        if workspace is not None and self._workspaces is not None:
+            self._workspaces.remove_later(workspace)
 
     async def _wait_cleanup(self, task: asyncio.Task[None], admission: SandboxAdmission) -> None:
         done, _ = await asyncio.wait((task,), timeout=4 * WORKER_KILL_GRACE_SECONDS)

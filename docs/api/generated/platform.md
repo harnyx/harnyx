@@ -1961,6 +1961,17 @@ Body: [RegisterValidatorRequest](#model-registervalidatorrequest)
 | `local_image_id` |  |  | opt | `string` (nullable) |
 | `registry_digest` |  |  | opt | `string` (nullable) |
 | `source_revision` |  |  | opt | `string` (nullable) |
+| `storage_probe` |  |  | opt | [StorageProbeReport](#model-storageprobereport) (nullable) |
+|  | `bytes_per_second` |  | req | `integer` |
+|  | `checked_at` |  | req | `string` (format: date-time) |
+|  | `cleanup` |  | req | `string` (enum: [succeeded, not_needed, unconfirmed]) |
+|  | `cleanup_details` |  | opt | `string` (default: ) |
+|  | `details` |  | opt | `string` (default: ) |
+|  | `image_bytes` |  | req | `integer` |
+|  | `iops` |  | req | `integer` |
+|  | `probe_id` |  | req | `string` (format: uuid) |
+|  | `stage` |  | req | `string` |
+|  | `status` |  | req | `string` (enum: [succeeded, failed]) |
 | `validator_version` |  |  | opt | `string` (nullable) |
 
 **Responses**
@@ -9348,6 +9359,17 @@ Body: [StatusResponse](#model-statusresponse)
 | `local_image_id` |  |  | opt | `string` (nullable) |
 | `registry_digest` |  |  | opt | `string` (nullable) |
 | `source_revision` |  |  | opt | `string` (nullable) |
+| `storage_probe` |  |  | opt | [StorageProbeReport](#model-storageprobereport) (nullable) |
+|  | `bytes_per_second` |  | req | `integer` |
+|  | `checked_at` |  | req | `string` (format: date-time) |
+|  | `cleanup` |  | req | `string` (enum: [succeeded, not_needed, unconfirmed]) |
+|  | `cleanup_details` |  | opt | `string` (default: ) |
+|  | `details` |  | opt | `string` (default: ) |
+|  | `image_bytes` |  | req | `integer` |
+|  | `iops` |  | req | `integer` |
+|  | `probe_id` |  | req | `string` (format: uuid) |
+|  | `stage` |  | req | `string` |
+|  | `status` |  | req | `string` (enum: [succeeded, failed]) |
 | `validator_version` |  |  | opt | `string` (nullable) |
 
 <details>
@@ -9397,6 +9419,16 @@ Body: [StatusResponse](#model-statusresponse)
         }
       ],
       "title": "Source Revision"
+    },
+    "storage_probe": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/StorageProbeReport"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "validator_version": {
       "anyOf": [
@@ -10419,6 +10451,106 @@ Body: [StatusResponse](#model-statusresponse)
     "status"
   ],
   "title": "StatusResponse",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-storageprobereport"></a>
+### Model: StorageProbeReport
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `bytes_per_second` |  |  | req | `integer` |
+| `checked_at` |  |  | req | `string` (format: date-time) |
+| `cleanup` |  |  | req | `string` (enum: [succeeded, not_needed, unconfirmed]) |
+| `cleanup_details` |  |  | opt | `string` (default: ) |
+| `details` |  |  | opt | `string` (default: ) |
+| `image_bytes` |  |  | req | `integer` |
+| `iops` |  |  | req | `integer` |
+| `probe_id` |  |  | req | `string` (format: uuid) |
+| `stage` |  |  | req | `string` |
+| `status` |  |  | req | `string` (enum: [succeeded, failed]) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "bytes_per_second": {
+      "exclusiveMinimum": 0.0,
+      "title": "Bytes Per Second",
+      "type": "integer"
+    },
+    "checked_at": {
+      "format": "date-time",
+      "title": "Checked At",
+      "type": "string"
+    },
+    "cleanup": {
+      "enum": [
+        "succeeded",
+        "not_needed",
+        "unconfirmed"
+      ],
+      "title": "Cleanup",
+      "type": "string"
+    },
+    "cleanup_details": {
+      "default": "",
+      "maxLength": 12000,
+      "title": "Cleanup Details",
+      "type": "string"
+    },
+    "details": {
+      "default": "",
+      "maxLength": 12000,
+      "title": "Details",
+      "type": "string"
+    },
+    "image_bytes": {
+      "exclusiveMinimum": 0.0,
+      "title": "Image Bytes",
+      "type": "integer"
+    },
+    "iops": {
+      "exclusiveMinimum": 0.0,
+      "title": "Iops",
+      "type": "integer"
+    },
+    "probe_id": {
+      "format": "uuid",
+      "title": "Probe Id",
+      "type": "string"
+    },
+    "stage": {
+      "maxLength": 160,
+      "title": "Stage",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "succeeded",
+        "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "probe_id",
+    "checked_at",
+    "status",
+    "stage",
+    "cleanup",
+    "image_bytes",
+    "iops",
+    "bytes_per_second"
+  ],
+  "title": "StorageProbeReport",
   "type": "object"
 }
 ```

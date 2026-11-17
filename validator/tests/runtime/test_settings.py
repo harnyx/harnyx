@@ -107,3 +107,22 @@ def test_settings_honor_sandbox_image_override_from_dotenv(tmp_path, monkeypatch
     settings = Settings.load()
 
     assert settings.sandbox.sandbox_image == "dotenv-sandbox:latest"
+
+
+def test_artifact_io_defaults_and_overrides(monkeypatch):
+    monkeypatch.delenv("VALIDATOR_ARTIFACT_IOPS", raising=False)
+    monkeypatch.delenv("VALIDATOR_ARTIFACT_IO_MIB_PER_SECOND", raising=False)
+    defaults = Settings.load()
+    assert (defaults.artifact_iops, defaults.artifact_io_mib_per_second) == (32, 4)
+    monkeypatch.setenv("VALIDATOR_ARTIFACT_IOPS", "64")
+    monkeypatch.setenv("VALIDATOR_ARTIFACT_IO_MIB_PER_SECOND", "8")
+    overridden = Settings.load()
+    assert (overridden.artifact_iops, overridden.artifact_io_mib_per_second) == (64, 8)
+
+
+@pytest.mark.parametrize("name", ["VALIDATOR_ARTIFACT_IOPS", "VALIDATOR_ARTIFACT_IO_MIB_PER_SECOND"])
+@pytest.mark.parametrize("value", ["0", "-1", "invalid", "1.5"])
+def test_artifact_io_rejects_values_that_cannot_enforce_a_positive_limit(monkeypatch, name, value):
+    monkeypatch.setenv(name, value)
+    with pytest.raises(ValidationError):
+        Settings.load()

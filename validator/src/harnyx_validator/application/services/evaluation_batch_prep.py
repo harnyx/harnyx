@@ -14,7 +14,7 @@ from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.application.session_manager import SessionManager
 from harnyx_commons.domain.miner_task import MinerTaskExecutionInput
 from harnyx_commons.sandbox.client import SandboxClient
-from harnyx_commons.sandbox.docker import DockerSandboxManager
+from harnyx_commons.sandbox.manager import SandboxManager
 from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_commons.sandbox.state import DEFAULT_STATE_DIR, resolve_state_mount_source
 from harnyx_validator.application.dto.evaluation import MinerTaskBatchSpec, ScriptArtifactSpec
@@ -73,7 +73,7 @@ class BatchExecutionPlanner:
         self,
         *,
         subtensor_client: SubtensorClientPort,
-        sandbox_manager: DockerSandboxManager,
+        sandbox_manager: SandboxManager,
         session_manager: SessionManager,
         evaluation_records: EvaluationRecordPort,
         receipt_log: ReceiptLogPort,

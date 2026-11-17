@@ -5,7 +5,7 @@ ENV UV_SYSTEM_PYTHON=1 \
     PYTHONUNBUFFERED=1
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl gnupg build-essential \
+ && apt-get install -y --no-install-recommends ca-certificates curl gnupg build-essential util-linux e2fsprogs \
  && install -m 0755 -d /etc/apt/keyrings \
  && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
  && chmod a+r /etc/apt/keyrings/docker.asc \
@@ -33,7 +33,7 @@ FROM deps AS runtime
 
 COPY validator ./validator
 
-RUN uv pip install --system --editable ./validator --no-deps
+RUN uv sync --package harnyx-validator --frozen
 
 ARG SOURCE_REVISION=""
 

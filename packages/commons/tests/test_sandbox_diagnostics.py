@@ -211,10 +211,10 @@ def test_docker_sandbox_manager_writes_inspect_and_logs_before_cleanup(tmp_path:
     assert ["docker", "inspect", container_id] in commands
     assert ["docker", "logs", container_id] in commands
     assert any(command[:2] == ["docker", "stop"] for command in commands)
-    assert any(command == ["docker", "rm", "-f", container_id] for command in commands)
+    assert any(command == ["docker", "rm", "-f", "-v", container_id] for command in commands)
     inspect_index = commands.index(["docker", "inspect", container_id])
     logs_index = commands.index(["docker", "logs", container_id])
-    remove_index = commands.index(["docker", "rm", "-f", container_id])
+    remove_index = commands.index(["docker", "rm", "-f", "-v", container_id])
     assert inspect_index < remove_index
     assert logs_index < remove_index
     inspect_output = (tmp_path / "docker-inspect.json").read_text(encoding="utf-8")
@@ -285,7 +285,7 @@ def test_docker_sandbox_manager_removes_container_when_stop_fails(tmp_path: Path
             return subprocess.CompletedProcess(args=args, returncode=0, stdout="sandbox log line\n", stderr="")
         if args[:2] == ["docker", "stop"]:
             raise subprocess.CalledProcessError(returncode=1, cmd=args, stderr="stop failed")
-        if args == ["docker", "rm", "-f", container_id]:
+        if args == ["docker", "rm", "-f", "-v", container_id]:
             return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
         raise AssertionError(f"unexpected command: {args}")
 
@@ -298,7 +298,7 @@ def test_docker_sandbox_manager_removes_container_when_stop_fails(tmp_path: Path
     with pytest.raises(RuntimeError, match="sandbox healthz did not succeed"):
         manager.start(options)
 
-    assert ["docker", "rm", "-f", container_id] in commands
+    assert ["docker", "rm", "-f", "-v", container_id] in commands
 
 
 def test_docker_sandbox_manager_publishes_allocated_port_on_client_host(tmp_path: Path) -> None:

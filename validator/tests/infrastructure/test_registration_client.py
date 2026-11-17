@@ -5,12 +5,14 @@ import re
 
 import bittensor as bt
 import httpx
+import pytest
 
 import harnyx_validator.infrastructure.platform.registration_client as registration_module
 from harnyx_commons.bittensor import build_canonical_request
 from harnyx_validator.application.dto.registration import ValidatorRegistrationMetadata
 from harnyx_validator.infrastructure.platform.registration_client import (
     PlatformRegistrationClient,
+    RegistrationError,
     register_with_retry,
 )
 from harnyx_validator.version import VALIDATOR_RELEASE_VERSION
@@ -109,3 +111,34 @@ def test_register_with_retry_forwards_metadata(monkeypatch) -> None:
     )
 
     assert calls == [("https://validator.invalid", metadata)]
+
+
+def test_probe_delivery_is_signed_and_does_not_change_normal_registration(monkeypatch):
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from harnyx_commons.storage_diagnostics import StorageProbeReport
+
+    requests = []
+    original_client = httpx.Client
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(422 if "storage_probe" in json.loads(request.content) else 200)
+
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: original_client(
+        transport=httpx.MockTransport(handler), **kwargs,
+    ))
+    keypair = bt.Keypair.create_from_uri("//Alice")
+    client = PlatformRegistrationClient("https://platform.invalid", keypair)
+    metadata = ValidatorRegistrationMetadata(validator_version=VALIDATOR_RELEASE_VERSION)
+    report = StorageProbeReport(
+        probe_id=uuid4(), checked_at=datetime.now(UTC), status="succeeded", stage="complete",
+        cleanup="succeeded", image_bytes=128 * 1024**2, iops=32, bytes_per_second=4 * 1024**2,
+    )
+    with pytest.raises(RegistrationError):
+        client.register("https://validator.invalid", metadata, storage_probe=report)
+    client.register("https://validator.invalid", metadata)
+    for request in requests:
+        _assert_signed_body(request, keypair)
+    assert "storage_probe" not in json.loads(requests[-1].content)

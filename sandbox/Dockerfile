@@ -4,7 +4,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 RUN useradd --create-home --uid 1000 harnyx
-RUN mkdir -p /sandbox && chown harnyx:harnyx /sandbox
+RUN mkdir -p /sandbox/queries && chown harnyx:harnyx /sandbox /sandbox/queries
 
 WORKDIR /workspace
 

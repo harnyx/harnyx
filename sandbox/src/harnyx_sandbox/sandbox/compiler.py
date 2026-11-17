@@ -15,6 +15,7 @@ import select
 import signal
 import socket
 import sys
+import tempfile
 import termios
 import time
 import types
@@ -226,7 +227,7 @@ def restrict_worker() -> None:
         seccomp.Arg(1, seccomp.EQ, fcntl.F_SETFL),
         seccomp.Arg(2, seccomp.MASKED_EQ, os.O_ASYNC, 0),
     )
-    for command in (termios.TCGETS, termios.TIOCGWINSZ, termios.FIONREAD, termios.FIONBIO):
+    for command in (termios.TCGETS, termios.TIOCGWINSZ, termios.FIONREAD, termios.FIONBIO, termios.FIOCLEX):
         rules.add_rule(seccomp.ALLOW, "ioctl", seccomp.Arg(1, seccomp.EQ, command))
     pid = os.getpid()
     for name in ("kill", "tkill", "rt_sigqueueinfo"):
@@ -443,7 +444,7 @@ async def run_query(channel: socket.socket, preload_failure: WorkerError | None,
         writer.close()
 
 
-def child_main(fds: list[int], code: types.CodeType, path: str) -> None:
+def child_main(fds: list[int], code: types.CodeType, path: str, workspace: str | None = None) -> None:
     channel_fd, stdout_fd, stderr_fd = fds
     os.dup2(stdout_fd, 1)
     os.dup2(stderr_fd, 2)
@@ -461,6 +462,13 @@ def child_main(fds: list[int], code: types.CodeType, path: str) -> None:
     )
     try:
         restrict_worker()
+        if workspace is not None:
+            os.chdir(workspace)
+            for name in ("TMPDIR", "TEMP", "TMP"):
+                os.environ[name] = workspace
+            tempfile.tempdir = None
+            if tempfile.gettempdir() != workspace:
+                raise OSError("query temporary directory is unavailable")
         preload_failure = initialize_module(code, path)
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -537,7 +545,7 @@ def main() -> None:
                         os._exit(0)
                 finally:
                     os.close(gate_read)
-                child_main(fds, code, path)
+                child_main(fds, code, path, command.get("workspace"))
             os.close(gate_read)
             gates[command["id"]] = gate_write
             for fd in fds:

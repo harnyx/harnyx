@@ -15,7 +15,7 @@ Before starting, ensure you have:
 
 - vCPU: 2 (4 recommended)
 - RAM: 32 GiB
-- Disk: 20 GB
+- Disk: space for Docker images, logs, normal validator operation and a 128 MiB storage compatibility probe
 - Network: platform must reach your validator on TCP 8100; set `VALIDATOR_PUBLIC_BASE_URL` accordingly
 - Third-party APIs: Chutes (`CHUTES_API_KEY`) for validator pairwise scoring and similarity by default. Brightmount-managed routes also use OpenRouter (`OPENROUTER_API_KEY`) for the DeepSeek similarity fallback; provider-backed miner script tools use miner-stored credentials through platform tool proxy.
 
@@ -195,3 +195,35 @@ The platform's validator allowlist only controls miner-task batch delivery. It d
 If weight queries still return `403`, verify that the validator has registered its public base URL with platform under the same hotkey used to sign the request.
 
 **Note:** Registration is still required; an unregistered hotkey remains blocked.
+
+## Miner temporary storage
+
+This release runs **only a background compatibility probe**. Existing miner execution keeps its read-only filesystem; no new workspace volume is attached, even after a successful probe. File I/O activation remains a separate release decision.
+
+Once per validator process, an isolated `harnyx-storage-probe` pool tests a 128 MiB image through allocation, mount, kernel I/O limits, read/write and cleanup. Failures do not block startup or existing work. Success and failure reports include the stage, bounded sanitized exception traces (including helper errors), cleanup outcome, validator hotkey and version. The validator sends them through a separate signed registration request; normal registration never includes diagnostics. Delivery has a ten-second request timeout and at most three attempts, spaced thirty seconds apart. Delivery failure or rejection by an older platform does not change readiness. Look for `validator storage probe` in platform logs; use `probe_id` to recognize repeated deliveries. Reports live in logs, not a database or monitoring endpoint; missing reports are not proof of success. No environment dump, credentials or frame-local values are collected.
+
+The probe uses fixed names and ownership-fenced recovery. It does not rerun allocation on delivery retries; unresolved cleanup blocks the next probe before another allocation. Normal cleanup releases the loop/image and removes the helper and filesystem volume; the small named backing volume and bookkeeping remain. Probe resources are separate from miner containers. Inspect the validator log and `docker logs harnyx-storage-probe-helper` if that helper remains. Do not prune or detach unrelated resources. Existing stale miner-container cleanup still gates execution independently of this probe. Shutdown signals the probe without waiting for its thread, so slow Docker diagnostics cannot consume the execution workers’ shutdown grace. In-flight probe cleanup may finish while the service stops; interrupted resources are recovered on the next startup.
+
+The storage implementation retained for later activation gives each artifact a shared 3 GiB ext4 disk image for its query workspaces. Filesystem metadata reduces usable file capacity. One query can consume all remaining space for that artifact; other artifacts have separate images. Fifteen fixed slots bound total workspace image capacity to 45 GiB, including allocations retained after cleanup failures. This does not limit Docker image storage, logs or other host consumers.
+
+Each artifact's loop device is limited to **32 IOPS and 4 MiB/s for reads, and independently the same limits for writes**, shared by its concurrent queries. Override these with `VALIDATOR_ARTIFACT_IOPS` and `VALIDATOR_ARTIFACT_IO_MIB_PER_SECOND` in the validator environment, then recreate the validator container. Both accept positive integers; unset or empty values use the defaults. Zero does not disable throttling. At fifteen active slots, the configured sums are 480 IOPS and 60 MiB/s in each direction. These are loop-device limits, not a physical host-wide budget: cached reads, helper image preparation, and unrelated disk activity are outside them. Low IOPS especially slows random access and frequent fsync workloads.
+
+The validator starts a trusted storage helper from its own immutable Docker image. Required utilities are included in that image; operators do not install tools inside running containers. The helper receives UID 0, `MKNOD`, `/dev/loop-control:rw` and device rule `b 7:* rwm`, with all other capabilities dropped, no network and a read-only root. It does not receive the Docker socket, credentials or validator state. The Docker daemon mounts the prepared filesystem. The miner receives no additional capabilities or devices, and keeps its read-only root and existing memory/process restrictions.
+
+This requires a rootful Linux Docker daemon with loop and ext4 support and permission to grant the helper those device accesses. A normal host-Docker validator needs no additional capabilities on its own container; Docker must be allowed to start the helper. Docker-in-Docker requires its outer daemon deployment to permit these operations (the existing privileged staging daemon does). Rootless Docker and restrictive device/security policies are not assumed supported. The daemon must support block I/O throttling and be accessible through a local Unix socket. The validator creates each consumer without starting it, configures all four limits through the Engine API using the same owned device node as the filesystem mount, then starts it. This does not require a daemon-side `/dev/loopN` pathname. Existing CLI security and launch options are preserved. The background probe verifies all four kernel cgroup limits and performs an allocation, mount, read/write and cleanup check. Failure is reported without enabling storage or stopping existing execution. The eventual artifact rollout will require space for 45 GiB plus normal operating headroom; that capacity is not allocated by this probe.
+
+The helper owns the labeled `harnyx-artifact-storage-backing` volume. It is never mounted into miners. Fixed slot records account for incomplete operations across restarts. Only confirmed container removal, filesystem-volume removal and loop detachment permit a slot to be freed. Cleanup failure preserves completed query results, logs the consumer identity and retains the allocation. Unknown ownership blocks recovery; operators must not manually delete backing images or volumes while they might still be mounted or attached.
+
+After Docker mounts an artifact workspace, the helper verifies and enables kernel loop `autoclear`, then unlinks the owned image file. The mounted loop keeps the image data alive: existing I/O continues even if the helper dies. When the last user releases the loop, the kernel detaches it and releases the image storage. Preparation retains a named image with autoclear disabled so the device survives until Docker mounts it. A crash before activation finishes can therefore leave an image for normal cleanup or startup recovery. Slot records remain until ownership-fenced cleanup confirms consumer, filesystem-volume and loop removal; uncertain mappings are never detached using a missing image as proof of ownership. Live consumers still hold storage, and Docker does not automatically remove the named backing volume or its small bookkeeping files.
+
+For later artifact-storage activation diagnosis, inspect `docker logs harnyx-artifact-storage-helper`, the validator error, and `docker volume ls --filter label=ai.harnyx.artifact-storage`. Preserve exact resource identities. Restarting the validator after its previous incarnation has stopped triggers owned-resource recovery; a second live validator on the same daemon is rejected. If recovery cannot prove ownership or detachment, stop new execution and investigate those exact resources. Never use global volume prune, global loop detach or forced unmount as recovery.
+
+Real Docker/loop storage acceptance tests are manual-only; CI retains unit tests and ordinary sandbox tests without loop devices. On a suitable development host, build both images with `task build:sandbox` and `task build:validator`, then run:
+
+```bash
+task test:integration -- --skip-setup --deterministic-defaults --artifact-storage public/validator/tests/integration/test_artifact_storage.py
+```
+
+Without `--artifact-storage`, these tests are deselected before provisioning resources. They use 128 MiB images, not a full-capacity 45 GiB trial.
+
+Deploy the matching sandbox and validator images together. Before rollback, drain execution and reclaim its storage using the new manager; if reclamation cannot be confirmed, leave execution stopped and retain the diagnostic identities. Reverting to unlimited workspaces is not an automatic fallback.

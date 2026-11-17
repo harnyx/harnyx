@@ -91,3 +91,33 @@ def test_inspect_current_image_id_requires_container_identity(monkeypatch) -> No
 
     with pytest.raises(RuntimeError, match="failed to resolve current validator container id"):
         metadata_mod._inspect_current_image_id()
+
+
+def test_strict_runtime_identity_uses_docker_restart_incarnation(monkeypatch):
+    import json
+
+    monkeypatch.setattr(metadata_mod, "_resolve_current_container_id_from_mountinfo", lambda: "mounted-owner")
+    seen = []
+
+    def command(args, **kwargs):
+        seen.append(args)
+        return json.dumps([{"Id": "full-owner", "Image": "sha256:image",
+                            "State": {"StartedAt": "2026-11-13T00:00:00Z"}}])
+
+    monkeypatch.setattr(metadata_mod, "_run_docker_command", command)
+    identity = metadata_mod.inspect_current_validator_runtime()
+    assert identity.container_id == "full-owner"
+    assert identity.started_at == "2026-11-13T00:00:00Z"
+    assert identity.image_id == "sha256:image"
+    assert seen == [["docker", "inspect", "mounted-owner"]]
+
+
+def test_strict_runtime_identity_rejects_unknown_incarnation(monkeypatch):
+    from pydantic import ValidationError
+
+    monkeypatch.setattr(metadata_mod, "_resolve_current_container_id", lambda: "owner")
+    monkeypatch.setattr(
+        metadata_mod, "_run_docker_command", lambda *a, **k: '[{"Id":"owner","Image":"image","State":{}}]',
+    )
+    with pytest.raises(ValidationError):
+        metadata_mod.inspect_current_validator_runtime()

@@ -13,6 +13,19 @@ HOST_CONTAINER_URL_HEADER = "x-host-container-url"
 
 
 @dataclass(frozen=True)
+class BlockIOLimits:
+    """Limits for one daemon-visible block device, independently per direction."""
+
+    device: str
+    iops: int
+    bytes_per_second: int
+
+    def __post_init__(self) -> None:
+        if not self.device.startswith("/") or self.iops <= 0 or self.bytes_per_second <= 0:
+            raise ValueError("block I/O requires an absolute device path and positive limits")
+
+
+@dataclass(frozen=True)
 class SandboxOptions:
     """Configuration for launching a sandbox container."""
 
@@ -41,6 +54,7 @@ class SandboxOptions:
     failure_diagnostics_dir: str | None = None
     labels: Mapping[str, str] = field(default_factory=dict)
     include_container_logs: bool = True
+    block_io_limits: BlockIOLimits | None = None
 
 
 __all__ = [

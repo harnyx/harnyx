@@ -514,3 +514,29 @@ class DummyManager:
 
     def stop(self, deployment):
         return True  # test launcher owns physical teardown
+
+
+async def test_probe_only_validator_runs_miner_without_workspace(sandbox_launcher):
+    """Predeployment must execute modules without adding writable disk to miners."""
+    source = b'''
+import os
+from harnyx_miner_sdk.decorators import entrypoint
+@entrypoint("legacy")
+async def legacy(request: dict[str, object]) -> dict[str, object]:
+    try:
+        with open("probe-only-write", "w") as stream:
+            stream.write("unexpected")
+    except OSError:
+        return {"cwd": os.getcwd(), "read_only": True}
+    return {"read_only": False}
+'''
+    deployment = sandbox_launcher(
+        "validator.tests.integration.sandbox.recovery_agent", source=source,
+        evaluation_policy=True, workspace=False,
+    )
+    result = await deployment.client.invoke(
+        "legacy", payload={}, context={"time_budget": {"limit_seconds": 30}},
+        token=uuid4().hex, session_id=uuid4(),
+    )
+    assert result["read_only"] is True
+    assert not result["cwd"].startswith("/sandbox/queries/query-")

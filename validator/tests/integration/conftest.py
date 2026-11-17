@@ -68,8 +68,24 @@ def _find_free_port() -> int:
         return sock.getsockname()[1]
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--artifact-storage", action="store_true", default=False,
+        help="Run manual Docker/loop artifact-storage acceptance tests.",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--artifact-storage"):
+        return
+    manual = [item for item in items if item.get_closest_marker("artifact_storage")]
+    if manual:
+        items[:] = [item for item in items if not item.get_closest_marker("artifact_storage")]
+        config.hook.pytest_deselected(items=manual)
+
+
 @pytest.fixture
-def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
+def sandbox_launcher(request) -> Callable[[str], SandboxDeployment]:
     """Start a sandbox container for the provided agent module and clean it up afterward."""
 
     docker_bin = _docker_binary()
@@ -79,10 +95,15 @@ def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
 
     manager = DockerSandboxManager(docker_binary=docker_bin, host="127.0.0.1")
     deployments = []
+    storage = None
+    if request.config.getoption("--artifact-storage"):
+        storage = request.getfixturevalue("artifact_storage_manager")
     workspace_root = Path(os.getenv("HOST_WORKSPACE", str(_REPO_ROOT)))
     state_dir = Path(tempfile.mkdtemp(prefix=".harnyx-validator-int-state-", dir=workspace_root))
 
-    def _start(agent_module: str, *, source: bytes | None = None, evaluation_policy: bool = False):
+    def _start(
+        agent_module: str, *, source: bytes | None = None, evaluation_policy: bool = False, workspace: bool = True,
+    ):
         module_rel_path = Path(*agent_module.split(".")).with_suffix(".py")
         module_path = _REPO_ROOT / module_rel_path
         if not module_path.exists():
@@ -102,7 +123,8 @@ def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
         )
         options = SandboxOptions(
             image=image,
-            container_name=f"validator-int-{uuid.uuid4().hex[:8]}",
+            container_name=f"{storage._pool if storage else 'validator-int'}-sandbox-{uuid.uuid4().hex[:8]}",
+            labels={"storage-test": storage._pool} if storage else {},
             pull_policy="missing",
             host_port=port,
             container_port=8000,
@@ -120,16 +142,62 @@ def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
             seccomp_profile=default_profile_path() if evaluation_policy else None,
             ulimits=ContainerSecurity().ulimits if evaluation_policy else (),
             extra_args=(
-                (*ContainerSecurity(memory="1536m").extra_args, "--memory-swap", "1536m") if evaluation_policy else ()
+                (*ContainerSecurity(memory="1536m").extra_args, "--memory-swap", "1536m",
+                 *(("--mount", "type=volume,destination=/sandbox/queries") if storage is None and workspace else ()),
+                 ) if evaluation_policy else ()
             ),
         )
-        deployment = manager.start(options)
+        deployment = (storage if storage is not None and evaluation_policy else manager).start(options)
         deployments.append(deployment)
         return deployment
 
     yield _start
 
     for deployment in deployments:
-        manager.stop(deployment)
+        (storage or manager).stop(deployment)
 
     shutil.rmtree(state_dir, ignore_errors=True)
+
+
+@pytest.fixture
+def artifact_storage_manager(request):
+    """Real same-image helper, explicitly opted in on a suitable development host."""
+    if not request.config.getoption("--artifact-storage"):
+        raise RuntimeError("manual loop-storage trial requires --artifact-storage")
+    import json
+
+    from harnyx_validator.infrastructure.artifact_storage import (
+        ArtifactStorageSandboxManager,
+        ValidatorRuntimeIdentity,
+    )
+
+    docker = _docker_binary()
+    image = "local/harnyx-validator:0.1.0-dev"
+    _ensure_image_present(docker, image)
+    prefix = f"harnyx-storage-test-{uuid.uuid4().hex}"
+
+    def run(*args):
+        return subprocess.run(  # noqa: S603
+            [docker, *args], check=True, text=True, capture_output=True, timeout=180,
+        ).stdout.strip()
+
+    owner = run("run", "-d", "--name", f"{prefix}-owner", "--network", "none", "--read-only",
+                "--cap-drop", "ALL", "--entrypoint", "/bin/sleep", image, "infinity")
+    inspected = json.loads(run("inspect", owner))[0]
+    iops, mib_per_second = getattr(request, "param", (32, 4))
+    manager = ArtifactStorageSandboxManager(
+        DockerSandboxManager(docker_binary=docker, host="127.0.0.1"),
+        ValidatorRuntimeIdentity(container_id=owner, started_at=inspected["State"]["StartedAt"],
+                                 image_id=inspected["Image"]),
+        iops=iops, bytes_per_second=mib_per_second * 1024**2,
+        docker_binary=docker, pool_name=prefix, image_bytes=128 * 1024**2,
+    )
+    try:
+        manager.recover(sandbox_labels={"storage-test": prefix}, sandbox_name_prefix=f"{prefix}-sandbox-")
+        yield manager
+    finally:
+        try:
+            manager.close()
+            run("volume", "rm", f"{prefix}-backing")
+        finally:
+            run("rm", "-f", owner)

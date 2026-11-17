@@ -9,7 +9,10 @@ import re
 import subprocess
 from pathlib import Path
 
+from pydantic import BaseModel, Field, TypeAdapter
+
 from harnyx_validator.application.dto.registration import ValidatorRegistrationMetadata
+from harnyx_validator.infrastructure.artifact_storage import ValidatorRuntimeIdentity
 from harnyx_validator.version import VALIDATOR_RELEASE_VERSION
 
 _DOCKER_BINARY = "docker"
@@ -65,6 +68,28 @@ def _inspect_container_image_id(container: str) -> str:
     if not image_id:
         raise RuntimeError(f"docker inspect returned empty image id for container={container}")
     return image_id
+
+
+class _RuntimeState(BaseModel):
+    started_at: str = Field(alias="StartedAt")
+
+
+class _RuntimeInspection(BaseModel):
+    identifier: str = Field(alias="Id")
+    image: str = Field(alias="Image")
+    state: _RuntimeState = Field(alias="State")
+
+
+def inspect_current_validator_runtime() -> ValidatorRuntimeIdentity:
+    """Strict self identity for helper image selection and restart fencing."""
+    output = _run_docker_command(
+        [_DOCKER_BINARY, "inspect", _resolve_current_container_id()],
+        error_context="validator runtime identity unavailable",
+    )
+    inspection = TypeAdapter(list[_RuntimeInspection]).validate_json(output)[0]
+    return ValidatorRuntimeIdentity(
+        container_id=inspection.identifier, started_at=inspection.state.started_at, image_id=inspection.image,
+    )
 
 
 def _inspect_registry_digest(local_image_id: str) -> str | None:

@@ -100,3 +100,13 @@ Accepted tool requests stay owned by the invocation. Before returning a worker r
 On normal worker completion, after sending its result or classified error, the worker keeps receiving late tool replies until the supervisor closes the connection or terminates it. This prevents late replies from discarding results during normal completion; abrupt worker loss, cancellation, and OOM retain their existing failure handling. Workers remain resident during tool settlement, subject to the existing query deadline and bounded cleanup.
 
 Worker signal syscalls are restricted to the worker's own PID/thread. Process-group signals and pidfd-based signals are denied, so a miner cannot stop the compiler, supervisor, or sibling worker. Supervisor-to-child termination remains available.
+
+## Temporary query files
+
+Current validators run a background storage compatibility probe only; miner containers retain their read-only filesystem. The workspace implementation below is available when a launcher explicitly mounts storage at `/sandbox/queries`, but is not enabled for miner evaluations in this rollout.
+
+With a shared, disk-image-backed 3 GiB filesystem mounted at `/sandbox/queries`, each query worker enters a unique writable directory there before miner module code runs. Relative file operations and Python `tempfile` use that directory; the supervisor and other workers keep their own cwd. Both evaluation resource mode and the launcher-provided mount are required. Without a mount, the supervisor does not prepare query directories.
+
+After the worker exits, file deletion runs best effort with bounded background work. Preparation failures fail the query without executing miner code; deletion failures do not replace its result. Slow cleanup may leave files until container teardown. Process termination must still be confirmed independently. Absolute `/tmp` writes and link creation are not supported by this feature.
+
+Directories are not access-isolated: peers can read or modify each other's files. Queries in one artifact share its capacity and inode supply; a query can exhaust space for its siblings. Filesystem metadata consumes part of the 3 GiB image. The validator accounts for at most 15 images, including cleanup failures. Memory, process and container-root protections remain in place. Files are temporary and are not returned as result artifacts.

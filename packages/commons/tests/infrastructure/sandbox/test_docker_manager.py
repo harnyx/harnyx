@@ -176,8 +176,8 @@ def test_docker_sandbox_manager_builds_commands(monkeypatch) -> None:
     manager.stop(deployment)
     stop_args, stop_kwargs = runner.commands[1]
     assert stop_args == ["docker", "stop", "-t", "5", "container123"]
-    rm_args, rm_kwargs = runner.commands[2]
-    assert rm_args == ["docker", "rm", "-f", "container123"]
+    rm_args, rm_kwargs = next((args, kw) for args, kw in runner.commands if args[:2] == ["docker", "rm"])
+    assert rm_args == ["docker", "rm", "-f", "-v", "container123"]
     assert deployment.client.closed is True
     assert created_clients[0].closed is True
     assert stop_kwargs["capture_output"] is True
@@ -232,7 +232,7 @@ def test_docker_sandbox_manager_confirms_disposition_after_failed_removal(
         del kwargs
         if args == ["docker", "stop", "container123"]:
             return subprocess_completed(args, "")
-        if args == ["docker", "rm", "-f", "container123"]:
+        if args == ["docker", "rm", "-f", "-v", "container123"]:
             if removal_failure == "timeout":
                 raise subprocess.TimeoutExpired(cmd=args, timeout=120)
             raise subprocess.CalledProcessError(returncode=1, cmd=args, stderr="No such container")
@@ -330,6 +330,7 @@ def test_docker_sandbox_manager_requires_every_label_and_removes_legacy_prefix_m
             "docker",
             "rm",
             "-f",
+            "-v",
             "new-labeled",
             "old-created",
             "old-dead",
@@ -348,11 +349,11 @@ def test_docker_sandbox_manager_requires_every_label_and_removes_legacy_prefix_m
     )
 
     assert removal_confirmed is True
-    assert commands == [
+    assert [cmd for cmd in commands if cmd[1:3] != ["container", "inspect"]] == [
         ["docker", "ps", "-aq", "--filter", "label=harnyx.sandbox.managed=true"],
         ["docker", "ps", "-aq", "--filter", "label=harnyx.sandbox.owner=validator"],
         ["docker", "ps", "-aq", "--filter", "name=^/harnyx-sandbox-"],
-        ["docker", "rm", "-f", "new-labeled", "old-created", "old-dead", "old-exited", "old-running"],
+        ["docker", "rm", "-f", "-v", "new-labeled", "old-created", "old-dead", "old-exited", "old-running"],
         ["docker", "ps", "-aq", "--filter", "label=harnyx.sandbox.managed=true"],
         ["docker", "ps", "-aq", "--filter", "label=harnyx.sandbox.owner=validator"],
         ["docker", "ps", "-aq", "--filter", "name=^/harnyx-sandbox-"],
@@ -379,7 +380,7 @@ def test_docker_run_timeout_always_retains_uncertain_named_deployment(
             raise subprocess.TimeoutExpired(cmd=args, timeout=120)
         if args == ["docker", "ps", "-aq", "--filter", "name=^/sandbox-demo$"]:
             return subprocess_completed(args, "container123\n" if disposition == "present" else "")
-        if args == ["docker", "rm", "-f", "sandbox-demo"]:
+        if args == ["docker", "rm", "-f", "-v", "sandbox-demo"]:
             if removal_confirmed:
                 return subprocess_completed(args, "")
             raise subprocess.CalledProcessError(returncode=1, cmd=args, stderr="docker unavailable")
@@ -608,7 +609,7 @@ def test_docker_manager_network_readiness_uses_container_id_and_classifies_early
     assert inspect_commands == [
         ["docker", "inspect", "--format", "{{json .}}", "container123"],
     ]
-    assert any(args == ["docker", "rm", "-f", "container123"] for args, _ in runner.commands)
+    assert any(args == ["docker", "rm", "-f", "-v", "container123"] for args, _ in runner.commands)
 
 
 def test_docker_manager_network_readiness_inspect_command_failure_is_not_retryable(
@@ -689,7 +690,7 @@ def test_docker_manager_cleans_up_when_container_ip_never_becomes_valid(
         manager.start(_internal_network_options())
 
     assert any(args == ["docker", "stop", "-t", "5", "container123"] for args, _ in runner.commands)
-    assert any(args == ["docker", "rm", "-f", "container123"] for args, _ in runner.commands)
+    assert any(args == ["docker", "rm", "-f", "-v", "container123"] for args, _ in runner.commands)
 
 
 def test_docker_manager_requires_network_when_host_port_missing() -> None:
@@ -744,8 +745,8 @@ def test_start_cleans_up_container_on_healthz_failure(monkeypatch) -> None:
     assert run_args[4:7] == ["-d", "--name", "sandbox-demo"]
     stop_args, _ = runner.commands[1]
     assert stop_args == ["docker", "stop", "-t", "5", "container123"]
-    rm_args, _ = runner.commands[2]
-    assert rm_args == ["docker", "rm", "-f", "container123"]
+    rm_args, _ = next((args, kw) for args, kw in runner.commands if args[:2] == ["docker", "rm"])
+    assert rm_args == ["docker", "rm", "-f", "-v", "container123"]
     assert created_clients[0].closed is True
 
 
@@ -881,3 +882,120 @@ def test_start_removes_container_even_when_client_cleanup_raises(monkeypatch):
         manager.start(SandboxOptions(image="test", container_name="test", host_container_url=_HOST_CONTAINER_URL))
     assert failure.value.unremoved_deployment.client is client
     assert any(args[1] == "rm" for args, kwargs in runner.commands)
+
+
+def test_container_removal_leaves_named_storage_lifecycle_to_owner():
+    runner = RecordingRunner()
+    manager = DockerSandboxManager(docker_binary="docker", command_runner=runner)
+    assert manager._best_effort_remove("owned-container")
+    commands = [args for args, _ in runner.commands]
+    assert ["docker", "rm", "-f", "-v", "owned-container"] in commands
+    assert not any(args[1] == "volume" for args in commands)
+
+
+@pytest.mark.parametrize("failure", [None, "configure", "start"])
+def test_block_io_is_installed_before_start_and_failed_setup_is_removed(monkeypatch, failure):
+    from harnyx_commons.sandbox.options import BlockIOLimits
+
+    events = []
+
+    def runner(args, **kwargs):
+        events.append(args[1])
+        if args[1] == "start" and failure == "start":
+            raise subprocess.CalledProcessError(1, args, stderr="start failed")
+        return subprocess_completed(args, "created-id" if args[1] == "create" else "")
+
+    manager = DockerSandboxManager(command_runner=runner)
+    monkeypatch.setattr(manager, "_write_failure_diagnostics", lambda **kwargs: None)
+
+    def configure(container, limits):
+        events.append("configure")
+        assert container == "created-id"
+        assert limits.device == "/owned/slot.node"
+        if failure == "configure":
+            raise RuntimeError("API unavailable")
+
+    monkeypatch.setattr(manager, "configure_block_io", configure)
+    options = SandboxOptions(
+        image="image", container_name="consumer", pull_policy="never",
+        extra_args=("--read-only",), block_io_limits=BlockIOLimits("/owned/slot.node", 32, 4194304),
+    )
+    if failure:
+        with pytest.raises((RuntimeError, subprocess.CalledProcessError)):
+            manager._launch_container(options)
+        assert events[-1] == "rm"
+        if failure == "configure":
+            assert "start" not in events
+    else:
+        assert manager._launch_container(options) == "created-id"
+        assert events == ["create", "configure", "start"]
+
+
+def test_block_io_create_conflict_does_not_remove_existing_container(monkeypatch):
+    from harnyx_commons.sandbox.options import BlockIOLimits
+
+    commands = []
+    def runner(args, **kwargs):
+        commands.append(args[1])
+        raise subprocess.CalledProcessError(1, args, stderr="name already in use")
+
+    manager = DockerSandboxManager(command_runner=runner)
+    monkeypatch.setattr(manager, "_write_failure_diagnostics", lambda **kwargs: None)
+    with pytest.raises(RuntimeError):
+        manager._launch_container(SandboxOptions(
+            image="image", container_name="existing", pull_policy="never",
+            block_io_limits=BlockIOLimits("/owned/node", 32, 4194304),
+        ))
+    assert commands == ["create"]
+
+
+def test_block_io_engine_request_preserves_owned_path_and_rejects_warnings(monkeypatch):
+    from harnyx_commons.sandbox.options import BlockIOLimits
+
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
+    warning = []
+    def handle(request):
+        assert request.url.path == "/v1.56/containers/consumer/update"
+        payload = json.loads(request.content)
+        assert payload == {
+            f"BlkioDevice{direction}{unit}": [{"Path": "/owned/slot.node", "Rate": rate}]
+            for direction in ("Read", "Write")
+            for unit, rate in (("IOps", 32), ("Bps", 4194304))
+        }
+        return httpx.Response(200, json={"Warnings": warning})
+
+    def runner(args, **kwargs):
+        return subprocess_completed(args, "unix:///var/run/docker.sock" if args[1] == "context" else "1.56")
+
+    monkeypatch.setattr(docker_module.httpx, "HTTPTransport", lambda **kwargs: httpx.MockTransport(handle))
+    manager = DockerSandboxManager(command_runner=runner)
+    limits = BlockIOLimits("/owned/slot.node", 32, 4194304)
+    manager.configure_block_io("consumer", limits)
+    warning.append("I/O controller unavailable")
+    with pytest.raises(RuntimeError, match="could not guarantee"):
+        manager.configure_block_io("consumer", limits)
+
+
+@pytest.mark.parametrize("stage", ["create", "start"])
+def test_limited_launch_timeout_retains_cleanup_identity_and_redacts_credentials(monkeypatch, stage):
+    from harnyx_commons.sandbox.options import BlockIOLimits
+
+    secret = "test-private-credential"  # noqa: S105 - synthetic redaction fixture
+    def runner(args, **kwargs):
+        if args[1] == stage:
+            raise subprocess.TimeoutExpired(args, 1, stderr=secret.encode())
+        return subprocess_completed(args, "created-id" if args[1] == "create" else "")
+
+    manager = DockerSandboxManager(command_runner=runner)
+    monkeypatch.setattr(manager, "_write_failure_diagnostics", lambda **kwargs: None)
+    monkeypatch.setattr(manager, "configure_block_io", lambda *args: None)
+    with pytest.raises(SandboxStartError) as caught:
+        manager._launch_container(SandboxOptions(
+            image="image", container_name="consumer", pull_policy="never",
+            env={"API_KEY": secret}, block_io_limits=BlockIOLimits("/owned/node", 32, 4194304),
+        ))
+    assert caught.value.unremoved_deployment.identifier == "consumer"
+    assert secret not in str(caught.value.__cause__)
+    assert secret not in str(caught.value.__cause__.stderr)
+    assert secret not in str(caught.value.__cause__.cmd)

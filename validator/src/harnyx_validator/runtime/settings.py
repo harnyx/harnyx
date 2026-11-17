@@ -90,6 +90,12 @@ class Settings(BaseSettings):
         ge=1,
     )
 
+    # --- Artifact workspace I/O (each direction, shared by its queries) ---
+    artifact_iops: int = Field(default=32, alias="VALIDATOR_ARTIFACT_IOPS", gt=0)
+    artifact_io_mib_per_second: int = Field(
+        default=4, alias="VALIDATOR_ARTIFACT_IO_MIB_PER_SECOND", gt=0,
+    )
+
     # --- Component settings ---
     llm: LlmSettings = Field(default_factory=LlmSettings)
     bedrock: BedrockSettings = Field(default_factory=BedrockSettings)

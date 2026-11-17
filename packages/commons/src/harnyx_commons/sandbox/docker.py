@@ -21,6 +21,7 @@ from typing import Any
 from uuid import UUID
 
 import httpx
+from pydantic import BaseModel, Field
 
 from harnyx_commons.json_types import JsonValue
 from harnyx_commons.protocol_headers import (
@@ -41,7 +42,13 @@ from harnyx_commons.sandbox.diagnostic_files import (
     write_private_text,
 )
 from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager, SandboxStartError
-from harnyx_commons.sandbox.options import CONTROL_TOKEN_ENV, CONTROL_TOKEN_HEADER, DEFAULT_TOKEN_HEADER, SandboxOptions
+from harnyx_commons.sandbox.options import (
+    CONTROL_TOKEN_ENV,
+    CONTROL_TOKEN_HEADER,
+    DEFAULT_TOKEN_HEADER,
+    BlockIOLimits,
+    SandboxOptions,
+)
 from harnyx_miner_sdk.sandbox_protocol import (
     EVALUATION_RESOURCE_POLICY_ENV,
     SANDBOX_OOM_AFFECTED,
@@ -771,6 +778,10 @@ def _to_json_value(value: object, *, label: str) -> JsonValue:
     raise TypeError(f"{label} must be JSON-compatible")
 
 
+class _EngineUpdateReply(BaseModel):
+    warnings: list[str] | None = Field(default=None, alias="Warnings")
+
+
 class DockerSandboxManager(SandboxManager):
     """Launches sandbox containers using the Docker CLI."""
 
@@ -955,6 +966,35 @@ class DockerSandboxManager(SandboxManager):
         if options.command:
             args.extend(options.command)
 
+    def configure_block_io(self, container_id: str, limits: BlockIOLimits) -> None:
+        """Configure a stopped consumer through the same local daemon used by CLI."""
+        endpoint = os.environ.get("DOCKER_HOST") if not os.environ.get("DOCKER_CONTEXT") else None
+        if not endpoint:
+            endpoint = self._run_command(
+                [self._docker, "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+        if not endpoint.startswith("unix://"):
+            raise RuntimeError("block I/O configuration requires a local Docker Unix socket")
+        version = self._run_command(
+            [self._docker, "version", "--format", "{{.Server.APIVersion}}"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        payload = {
+            f"BlkioDevice{direction}{unit}": [{"Path": limits.device, "Rate": rate}]
+            for direction in ("Read", "Write")
+            for unit, rate in (("IOps", limits.iops), ("Bps", limits.bytes_per_second))
+        }
+        with httpx.Client(
+            transport=httpx.HTTPTransport(uds=endpoint.removeprefix("unix://")),
+            base_url="http://docker", timeout=self._command_timeout_seconds, trust_env=False,
+        ) as client:
+            response = client.post(f"/v{version}/containers/{container_id}/update", json=payload)
+            response.raise_for_status()
+            reply = _EngineUpdateReply.model_validate_json(response.content)
+            if reply.warnings:
+                raise RuntimeError(f"Docker could not guarantee block I/O limits: {reply.warnings}")
+
     def _launch_container(self, options: SandboxOptions) -> str:
         args = self._build_run_args(options)
         return self._run_container(args, options)
@@ -988,6 +1028,45 @@ class DockerSandboxManager(SandboxManager):
             },
         )
         try:
+            if options.block_io_limits is not None:
+                # CLI retains ownership of all existing option serialization. The
+                # consumer cannot execute until the API has installed its limits.
+                create_args = [args[0], "create", *args[2:]]
+                create_args.remove("-d")
+                container_id = None
+                try:
+                    result = self._run_command(create_args, capture_output=True, text=True, check=True)
+                    container_id = result.stdout.strip()
+                    if not container_id:
+                        raise RuntimeError("docker create did not return a container identifier")
+                    self.configure_block_io(container_id, options.block_io_limits)
+                    self._run_command([self._docker, "start", container_id], capture_output=True, text=True, check=True)
+                    return container_id
+                except Exception as exc:
+                    if not isinstance(exc, (subprocess.CalledProcessError, subprocess.TimeoutExpired)):
+                        self._write_failure_diagnostics(
+                            options=options, container_id=options.container_name, error=exc, docker_run_args=args,
+                        )
+                    if container_id is None and not isinstance(exc, subprocess.TimeoutExpired):
+                        raise
+                    removed = self._best_effort_remove(container_id or options.container_name)
+                    if not removed or isinstance(exc, subprocess.TimeoutExpired):
+                        if isinstance(exc, (subprocess.CalledProcessError, subprocess.TimeoutExpired)):
+                            exc.cmd = [_redact_sensitive_text(arg, options) for arg in exc.cmd]
+                            exc.output = _redact_sensitive_text(str(exc.output or ""), options)
+                            redacted_stderr = _redact_sensitive_text(str(exc.stderr or ""), options)
+                            if isinstance(exc, subprocess.TimeoutExpired):
+                                exc.stderr = redacted_stderr.encode()
+                            else:
+                                exc.stderr = redacted_stderr
+                        raise SandboxStartError(
+                            "sandbox creation or I/O configuration failed; cleanup requires confirmation",
+                            unremoved_deployment=SandboxDeployment(
+                                client=_UnreadySandboxClient(), identifier=options.container_name,
+                                stop_timeout_seconds=options.stop_timeout_seconds,
+                            ),
+                        ) from exc
+                    raise
             result = self._run_command(args, capture_output=True, text=True, check=True)
         except subprocess.CalledProcessError as exc:  # pragma: no cover - exercised in integration
             exc.cmd = [_redact_sensitive_text(arg, options) for arg in args]
@@ -1433,7 +1512,7 @@ class DockerSandboxManager(SandboxManager):
             if not container_ids:
                 return True
             self._run_command(
-                [self._docker, "rm", "-f", *container_ids],
+                [self._docker, "rm", "-f", "-v", *container_ids],
                 capture_output=True,
                 text=True,
                 check=True,
@@ -1517,7 +1596,7 @@ class DockerSandboxManager(SandboxManager):
         return self._best_effort_remove(container_id)
 
     def _best_effort_remove(self, container_id: str) -> bool:
-        args = [self._docker, "rm", "-f", container_id]
+        args = [self._docker, "rm", "-f", "-v", container_id]
         try:
             self._run_command(args, capture_output=True, text=True, check=True)
             return True

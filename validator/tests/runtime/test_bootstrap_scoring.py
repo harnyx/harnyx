@@ -526,20 +526,25 @@ def test_build_state_prunes_stale_run_progress_dirs(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("has_platform_client", [False, True])
-async def test_build_runtime_cleans_stale_sandbox_containers_on_startup(
+async def test_build_runtime_preserves_existing_execution_without_storage(
     has_platform_client: bool,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Storage inspection must not be a prerequisite for ordinary work admission."""
+
     class FakeSandboxManager:
         def __init__(self) -> None:
             self.cleanup_calls: list[dict[str, object]] = []
 
-        def cleanup_stale_sandbox_containers(self, *, labels: dict[str, str], name_prefix: str) -> bool:
+        def cleanup_stale_sandbox_containers(self, *, labels, name_prefix):
             self.cleanup_calls.append({"labels": dict(labels), "name_prefix": name_prefix})
             return True
 
+    from unittest.mock import Mock
+
     manager = FakeSandboxManager()
+
     validator_hotkey = Keypair.create_from_uri("//Alice")
     from unittest.mock import AsyncMock
 
@@ -576,24 +581,29 @@ async def test_build_runtime_cleans_stale_sandbox_containers_on_startup(
             object(),
         ),
     )
-    monkeypatch.setattr(
-        bootstrap,
-        "_build_factories",
-        lambda **_kwargs: (lambda _client: object(), lambda _client: object(), lambda: object()),
-    )
+
+    def build_factories(**_kwargs):
+        assert manager.cleanup_calls
+        return lambda _client: object(), lambda _client: object(), lambda: object()
+
+    factories = Mock(side_effect=build_factories)
+    monkeypatch.setattr(bootstrap, "_build_factories", factories)
     monkeypatch.setattr(
         bootstrap,
         "_build_http_dependencies",
         lambda **_kwargs: (lambda: object(), lambda: object(), status_provider, object()),
     )
     monkeypatch.setattr(bootstrap, "create_sandbox_manager", lambda **_kwargs: manager)
+    monkeypatch.setattr(bootstrap, "inspect_current_validator_runtime", Mock(side_effect=RuntimeError("no loop")))
     settings = Settings.model_construct(
         validator_state_dir=tmp_path,
+        artifact_iops=64, artifact_io_mib_per_second=8,
         run_progress_retention_seconds=3600,
     )
 
     runtime = bootstrap.build_runtime(settings)
     try:
+        assert runtime.sandbox_manager is manager
         assert (runtime.rating_competition_worker is not None) is has_platform_client
         assert status_provider.rating_worker_readiness() is False
         if has_platform_client:
@@ -1012,13 +1022,3 @@ async def test_env_similarity_chain_invokes_routed_candidates_in_order(monkeypat
                 provider="chutes", model=model, messages=(), temperature=None, max_output_tokens=None,
             ))
     assert calls == [(model, "openrouter") for model in fallbacks]
-
-def test_bootstrap_blocks_execution_when_stale_container_removal_is_unconfirmed():
-    from unittest.mock import Mock
-
-    from harnyx_validator.runtime.bootstrap import _cleanup_stale_sandbox_containers
-
-    manager = Mock()
-    manager.cleanup_stale_sandbox_containers.return_value = False
-    with pytest.raises(RuntimeError, match="startup blocked"):
-        _cleanup_stale_sandbox_containers(manager)
