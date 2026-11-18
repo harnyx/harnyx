@@ -371,41 +371,77 @@ def test_combined_judge_evidence_preserves_replay_and_rejects_changed_exchanges(
     original = _make_submission(batch)
     evidence = ProviderEvidence.capture([{"response": "original"}])
     usage = JudgeUsageSummary(
-        call_count=2, prompt_tokens=0, completion_tokens=0, total_tokens=0, reasoning_tokens=0,
-        actual_cost_usd=None, models=(JudgeModelUsage(
-            provider="test", model="test", call_count=2, prompt_tokens=0, completion_tokens=0,
-            total_tokens=0, reasoning_tokens=0, actual_cost_usd=None, actual_cost_source="unavailable",
-        ),), provider_evidence=(evidence, evidence),
+        call_count=2,
+        prompt_tokens=0,
+        completion_tokens=0,
+        total_tokens=0,
+        reasoning_tokens=0,
+        actual_cost_usd=None,
+        models=(
+            JudgeModelUsage(
+                provider="test",
+                model="test",
+                call_count=2,
+                prompt_tokens=0,
+                completion_tokens=0,
+                total_tokens=0,
+                reasoning_tokens=0,
+                actual_cost_usd=None,
+                actual_cost_source="unavailable",
+            ),
+        ),
     )
-    submission = original.model_copy(update={"run": original.run.model_copy(update={
-        "details": original.run.details.model_copy(update={"scoring_judge_usage": usage}),
-    })})
+    submission = original.model_copy(
+        update={
+            "run": original.run.model_copy(
+                update={
+                    "details": original.run.details.model_copy(
+                        update={"scoring_judge_usage": usage, "provider_evidence": (evidence, evidence)}
+                    ),
+                }
+            )
+        }
+    )
     progress = _progress(tmp_path)
     progress.register(batch)
     progress.record(submission)
     progress.record(submission)
-    changed = submission.model_copy(update={"run": submission.run.model_copy(update={
-        "details": submission.run.details.model_copy(update={"scoring_judge_usage": replace(
-            usage, provider_evidence=(ProviderEvidence.capture([{"response": "different"}]),),
-        )}),
-    })})
+    changed = submission.model_copy(
+        update={
+            "run": submission.run.model_copy(
+                update={
+                    "details": submission.run.details.model_copy(
+                        update={"provider_evidence": (ProviderEvidence.capture([{"response": "different"}]),)}
+                    ),
+                }
+            )
+        }
+    )
     with pytest.raises(RuntimeError, match="different result"):
         progress.record(changed)
-    attempt = _make_attempt(batch, session_id=submission.session.session_id).model_copy(update={
-        "status": MinerTaskAttemptStatus.SUCCEEDED, "error_code": None, "error_summary_code": None,
-        "retry_decision": MinerTaskAttemptRetryDecision.WILL_NOT_RETRY,
-        "terminal_effect": MinerTaskAttemptTerminalEffect.TASK_RESULT,
-    })
+    attempt = _make_attempt(batch, session_id=submission.session.session_id).model_copy(
+        update={
+            "status": MinerTaskAttemptStatus.SUCCEEDED,
+            "error_code": None,
+            "error_summary_code": None,
+            "retry_decision": MinerTaskAttemptRetryDecision.WILL_NOT_RETRY,
+            "terminal_effect": MinerTaskAttemptTerminalEffect.TASK_RESULT,
+        }
+    )
     pending = PlatformOwnedTaskResult(
-        batch_id=batch.batch_id, artifact_id=submission.run.artifact_id, task_id=submission.run.task_id,
-        attempt_number=attempt.attempt_number, result=submission, terminal_attempt=attempt,
+        batch_id=batch.batch_id,
+        artifact_id=submission.run.artifact_id,
+        task_id=submission.run.task_id,
+        attempt_number=attempt.attempt_number,
+        result=submission,
+        terminal_attempt=attempt,
     )
     progress.persist_pending(pending)
     fresh = _progress(tmp_path)
     fresh.persist_pending(pending)
     with pytest.raises(RuntimeError, match="conflicting pending"):
         fresh.persist_pending(pending.model_copy(update={"result": changed}))
-    restored = list(fresh.pending_submissions())[0].result.run.details.scoring_judge_usage
+    restored = list(fresh.pending_submissions())[0].result.run.details
     assert restored.provider_evidence[0].restore() == [{"response": "original"}] * 2
 
 

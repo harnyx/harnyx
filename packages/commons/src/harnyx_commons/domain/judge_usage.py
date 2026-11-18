@@ -5,11 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Annotated, Literal
-
-from pydantic import Field, SerializationInfo, SerializerFunctionWrapHandler, model_serializer
-
-from harnyx_commons.provider_evidence import ProviderEvidence
+from typing import Literal
 
 JudgeActualCostSource = Literal["provider_actual", "unavailable"]
 
@@ -71,26 +67,6 @@ class JudgeUsageSummary:
     reasoning_tokens: int
     actual_cost_usd: float | None
     models: tuple[JudgeModelUsage, ...]
-    provider_evidence: Annotated[tuple[ProviderEvidence, ...], Field(exclude=True)] = ()
-
-    @model_serializer(mode="wrap")
-    # A return annotation would replace the public dataclass JSON schema.
-    def _serialize(self, handler: SerializerFunctionWrapHandler, info: SerializationInfo):  # noqa: ANN202
-        result = handler(self)
-        if self.provider_evidence and (info.context or {}).get("private_provider_evidence"):
-            exchanges = []
-            for evidence in self.provider_evidence:
-                restored = evidence.restore(base=(info.context or {}).get(
-                    "provider_evidence_source_base", (info.context or {}).get("provider_evidence_base"),
-                ))
-                if not isinstance(restored, list):
-                    raise ValueError("judge provider evidence must contain an exchange list")
-                exchanges.extend(restored)
-            packed = ProviderEvidence.capture(
-                exchanges, base=(info.context or {}).get("provider_evidence_base"),
-            )
-            result["provider_evidence"] = [packed.model_dump(mode="json")]
-        return result
 
     def __post_init__(self) -> None:
         if self.call_count < 0:

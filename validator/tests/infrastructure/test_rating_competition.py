@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
 from datetime import UTC, datetime
 from unittest.mock import Mock
 from uuid import uuid4
@@ -138,11 +137,15 @@ async def test_signed_client_round_trips_strict_work_and_completed_judgment(evid
     work = RatingWork(comparison_id=uuid4(), query=query, first=_answer(query), second=_answer(query))
     result = RatingJudgment(comparison_id=work.comparison_id, quality_result=1, two_order_evidence=_evidence())
     if evidence_chars:
-        result = result.model_copy(update={"two_order_evidence": result.two_order_evidence.model_copy(update={
-            "judge_usage": replace(result.two_order_evidence.judge_usage, provider_evidence=(
-                ProviderEvidence.capture([{"response": "x" * evidence_chars}]),
-            )),
-        })})
+        result = result.model_copy(
+            update={
+                "two_order_evidence": result.two_order_evidence.model_copy(
+                    update={
+                        "provider_evidence": (ProviderEvidence.capture([{"response": "x" * evidence_chars}]),),
+                    }
+                )
+            }
+        )
     key = bt.Keypair.create_from_uri("//Bob")
     received = []
 
@@ -165,7 +168,7 @@ async def test_signed_client_round_trips_strict_work_and_completed_judgment(evid
     await client.submit_rating_judgment(result)
     assert len(received) == 1
     assert received[0].quality_result == result.quality_result
-    retained = received[0].two_order_evidence.judge_usage.provider_evidence
+    retained = received[0].two_order_evidence.provider_evidence
     if evidence_chars and evidence_chars < 1_000_000:
         assert retained[0].restore() == [{"response": "x" * evidence_chars}]
     else:

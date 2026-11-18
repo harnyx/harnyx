@@ -6,7 +6,7 @@ import math
 import re
 from collections.abc import Iterable
 from enum import StrEnum
-from typing import Literal, Self, cast
+from typing import Any, Literal, Self, cast
 from uuid import UUID
 
 from pydantic import (
@@ -20,10 +20,12 @@ from pydantic import (
     model_serializer,
     model_validator,
 )
+from pydantic.json_schema import SkipJsonSchema
 
 from harnyx_commons.domain.judge_usage import JudgeUsageSummary
 from harnyx_commons.domain.shared_config import COMMONS_STRICT_CONFIG
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
+from harnyx_commons.provider_evidence import ProviderEvidence, pack_judge_evidence
 from harnyx_miner_sdk.json_types import JsonValue
 from harnyx_miner_sdk.query import Query
 from harnyx_miner_sdk.structured_output import compact_json, validate_output_size
@@ -498,6 +500,33 @@ class EvaluationTrace(BaseModel):
 
 class EvaluationDetails(BaseModel):
     model_config = COMMONS_STRICT_CONFIG
+    provider_evidence: SkipJsonSchema[tuple[ProviderEvidence, ...]] = Field(default=(), exclude=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_provider_evidence(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        value = cast(dict[str, Any], value)
+        usage = value.get("scoring_judge_usage")
+        if not isinstance(usage, dict) or "provider_evidence" not in usage:
+            return value
+        clean_usage = dict(usage)
+        evidence = tuple(ProviderEvidence.model_validate(raw) for raw in clean_usage.pop("provider_evidence"))
+        if "provider_evidence" in value and tuple(value["provider_evidence"]) != evidence:
+            raise ValueError("conflicting private judge evidence")
+        return {**value, "scoring_judge_usage": clean_usage, "provider_evidence": evidence}
+
+    @model_serializer(mode="wrap")
+    def _private_evidence(self, handler: SerializerFunctionWrapHandler, info: SerializationInfo):  # noqa: ANN202
+        result = handler(self)
+        if self.provider_evidence and (info.context or {}).get("private_provider_evidence"):
+            if result.get("scoring_judge_usage") is None:
+                raise ValueError("private judge evidence requires its usage")
+            result["scoring_judge_usage"]["provider_evidence"] = pack_judge_evidence(
+                self.provider_evidence, info.context or {}
+            )
+        return result
 
     score_breakdown: ScoreBreakdown | None = None
     scoring_judge_usage: JudgeUsageSummary | None = None

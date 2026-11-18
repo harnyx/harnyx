@@ -22,6 +22,7 @@ from harnyx_commons.domain.tool_usage import (
 from harnyx_commons.llm.pricing import price_search
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_commons.miner_task_scoring import EvaluationScoringResult, EvaluationScoringService
+from harnyx_commons.provider_evidence import ProviderEvidence
 from harnyx_commons.tools.receipt_accounting import (
     decision_reference_costs,
     rerank_reference_costs,
@@ -424,6 +425,7 @@ async def score_platform_execution(
                 error_code=MinerTaskErrorCode(error_code),
                 error_message=str(exc) or type(exc).__name__,
                 scoring_judge_usage=_scoring_judge_usage(exc),
+                provider_evidence=getattr(exc, "provider_evidence", ()),
                 trace=trace,
             ),
             status=MinerTaskAttemptStatus.SUCCEEDED,
@@ -433,10 +435,12 @@ async def score_platform_execution(
     if isinstance(scoring_result, EvaluationScoringResult):
         score_breakdown = scoring_result.score_breakdown
         scoring_judge_usage = scoring_result.judge_usage
+        provider_evidence = scoring_result.provider_evidence
         evaluation_trace = scoring_result.evaluation_trace
     else:
         score_breakdown = scoring_result
         scoring_judge_usage = None
+        provider_evidence = ()
         evaluation_trace = None
     scoring_ms = _monotonic_elapsed_ms(
         started_at=scoring_started_at,
@@ -446,6 +450,7 @@ async def score_platform_execution(
     details = EvaluationDetails(
         score_breakdown=score_breakdown,
         scoring_judge_usage=scoring_judge_usage,
+        provider_evidence=provider_evidence,
         total_tool_usage=execution.total_tool_usage,
         elapsed_ms=_elapsed_ms(
             issued_at=execution.session.issued_at,
@@ -541,10 +546,12 @@ def _failed_platform_execution_submission(
     error_message: str,
     scoring_judge_usage: JudgeUsageSummary | None,
     trace: EvaluationTrace,
+    provider_evidence: tuple[ProviderEvidence, ...] = (),
 ) -> MinerTaskRunSubmission:
     details = EvaluationDetails(
         error=EvaluationError(code=error_code, message=error_message),
         scoring_judge_usage=scoring_judge_usage,
+        provider_evidence=provider_evidence,
         trace=trace,
         total_tool_usage=execution.total_tool_usage,
         elapsed_ms=_elapsed_ms(

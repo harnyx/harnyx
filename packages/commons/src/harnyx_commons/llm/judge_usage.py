@@ -9,7 +9,6 @@ from dataclasses import dataclass
 
 from harnyx_commons.domain.judge_usage import JudgeModelUsage, JudgeUsageSummary
 from harnyx_commons.llm.schema import LlmResponse
-from harnyx_commons.provider_evidence import ProviderEvidence
 
 
 class JudgeUsageMetadataError(ValueError):
@@ -83,9 +82,6 @@ def _build_judge_usage(
         reasoning_tokens=_coalesce_reasoning_tokens((model_usage.reasoning_tokens,)),
         actual_cost_usd=model_usage.actual_cost_usd,
         models=(model_usage,),
-        provider_evidence=(() if (response.metadata or {}).get("_provider_evidence") is None else (
-            ProviderEvidence.model_validate((response.metadata or {})["_provider_evidence"]),
-        )),
     )
 
 
@@ -108,7 +104,6 @@ def merge_judge_usage(usages: Iterable[JudgeUsageSummary | None]) -> JudgeUsageS
         reasoning_tokens=_coalesce_reasoning_tokens(model.reasoning_tokens for model in merged_models),
         actual_cost_usd=_sum_actual_costs(tuple(model.actual_cost_usd for model in merged_models)),
         models=merged_models,
-        provider_evidence=tuple(evidence for usage in present for evidence in usage.provider_evidence),
     )
 
 

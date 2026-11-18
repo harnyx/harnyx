@@ -1062,7 +1062,7 @@ Body: [MinerTaskWorkResultsRequest](#model-minertaskworkresultsrequest)
 |  |  | `run` | req | [MinerTaskRunSection](#model-minertaskrunsection) |
 |  |  | `score` | opt | `number` (nullable) |
 |  |  | `session` | req | [SessionModel](#model-sessionmodel) |
-|  |  | `specifics` | req | [EvaluationDetails-Input](#model-evaluationdetails-input) |
+|  |  | `specifics` | req | [EvaluationDetails](#model-evaluationdetails) |
 |  |  | `usage` | req | [UsageModel](#model-usagemodel) |
 |  | `task_id` |  | req | `string` (format: uuid) |
 |  | `terminal_attempt` |  | req | [MinerTaskAttemptAuditPayload](#model-minertaskattemptauditpayload) |
@@ -1672,7 +1672,6 @@ Body: [RatingJudgment](#model-ratingjudgment)
 |  |  | `completion_tokens` | req | `integer` |
 |  |  | `models` | req | array[[RatingJudgmentJudgeModelUsage](#model-ratingjudgmentjudgemodelusage)] |
 |  |  | `prompt_tokens` | req | `integer` |
-|  |  | `provider_evidence` | opt | array[[RatingJudgmentProviderEvidence](#model-ratingjudgmentproviderevidence)] (default: []) |
 |  |  | `reasoning_tokens` | req | `integer` |
 |  |  | `total_tokens` | req | `integer` |
 |  | `reasoning` |  | req | [RatingJudgmentScorerReasoning](#model-ratingjudgmentscorerreasoning) (nullable) |
@@ -3635,8 +3634,8 @@ Body: [StatusResponse](#model-statusresponse)
 
 </details>
 
-<a id="model-evaluationdetails-input"></a>
-### Model: EvaluationDetails-Input
+<a id="model-evaluationdetails"></a>
+### Model: EvaluationDetails
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
@@ -3662,7 +3661,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `text` | opt | `string` (nullable) |
 |  | `scoring_version` |  | req | `string` |
 |  | `total_score` |  | req | `number` |
-| `scoring_judge_usage` |  |  | opt | [JudgeUsageSummary-Input](#model-judgeusagesummary-input) (nullable) |
+| `scoring_judge_usage` |  |  | opt | [JudgeUsageSummary](#model-judgeusagesummary) (nullable) |
 |  | `actual_cost_usd` |  | req | `number` (nullable) |
 |  | `call_count` |  | req | `integer` |
 |  | `completion_tokens` |  | req | `integer` |
@@ -3679,11 +3678,6 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `reasoning_tokens` | req | `integer` (nullable) |
 |  |  | `total_tokens` | req | `integer` |
 |  | `prompt_tokens` |  | req | `integer` |
-|  | `provider_evidence` |  | opt | array[[ProviderEvidence](#model-providerevidence)] (default: []) |
-|  |  | `escaped_json` | opt | `string` (nullable) |
-|  |  | `payload` | req | [JsonValue-Input](#model-jsonvalue-input) |
-|  |  | `text_references` | opt | array[[EvidenceTextReference](#model-evidencetextreference)] (default: []) |
-|  |  | `version` | opt | `integer` (default: 1) |
 |  | `reasoning_tokens` |  | req | `integer` |
 |  | `total_tokens` |  | req | `integer` |
 | `total_tool_usage` |  |  | opt | [ToolUsageSummary](#model-toolusagesummary) |
@@ -3769,7 +3763,7 @@ Body: [StatusResponse](#model-statusresponse)
     "scoring_judge_usage": {
       "anyOf": [
         {
-          "$ref": "#/components/schemas/JudgeUsageSummary-Input"
+          "$ref": "#/components/schemas/JudgeUsageSummary"
         },
         {
           "type": "null"
@@ -3960,95 +3954,6 @@ Body: [StatusResponse](#model-statusresponse)
     }
   },
   "title": "EvaluationTrace",
-  "type": "object"
-}
-```
-
-</details>
-
-<a id="model-evidencetextreference"></a>
-### Model: EvidenceTextReference
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `end` |  |  | req | `integer` |
-| `path` |  |  | req | array[anyOf: `string` OR `integer`] |
-| `prefix` |  |  | opt | `string` (default: ) |
-| `source` |  |  | req | `string` (enum: [base, evidence]) |
-| `source_path` |  |  | req | array[anyOf: `string` OR `integer`] |
-| `start` |  |  | req | `integer` |
-| `suffix` |  |  | opt | `string` (default: ) |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "additionalProperties": false,
-  "properties": {
-    "end": {
-      "title": "End",
-      "type": "integer"
-    },
-    "path": {
-      "items": {
-        "anyOf": [
-          {
-            "type": "string"
-          },
-          {
-            "type": "integer"
-          }
-        ]
-      },
-      "title": "Path",
-      "type": "array"
-    },
-    "prefix": {
-      "default": "",
-      "title": "Prefix",
-      "type": "string"
-    },
-    "source": {
-      "enum": [
-        "base",
-        "evidence"
-      ],
-      "title": "Source",
-      "type": "string"
-    },
-    "source_path": {
-      "items": {
-        "anyOf": [
-          {
-            "type": "string"
-          },
-          {
-            "type": "integer"
-          }
-        ]
-      },
-      "title": "Source Path",
-      "type": "array"
-    },
-    "start": {
-      "title": "Start",
-      "type": "integer"
-    },
-    "suffix": {
-      "default": "",
-      "title": "Suffix",
-      "type": "string"
-    }
-  },
-  "required": [
-    "path",
-    "source",
-    "source_path",
-    "start",
-    "end"
-  ],
-  "title": "EvidenceTextReference",
   "type": "object"
 }
 ```
@@ -5130,8 +5035,8 @@ Body: [StatusResponse](#model-statusresponse)
 
 </details>
 
-<a id="model-judgeusagesummary-input"></a>
-### Model: JudgeUsageSummary-Input
+<a id="model-judgeusagesummary"></a>
+### Model: JudgeUsageSummary
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
@@ -5151,18 +5056,6 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `reasoning_tokens` |  | req | `integer` (nullable) |
 |  | `total_tokens` |  | req | `integer` |
 | `prompt_tokens` |  |  | req | `integer` |
-| `provider_evidence` |  |  | opt | array[[ProviderEvidence](#model-providerevidence)] (default: []) |
-|  | `escaped_json` |  | opt | `string` (nullable) |
-|  | `payload` |  | req | [JsonValue-Input](#model-jsonvalue-input) |
-|  | `text_references` |  | opt | array[[EvidenceTextReference](#model-evidencetextreference)] (default: []) |
-|  |  | `end` | req | `integer` |
-|  |  | `path` | req | array[anyOf: `string` OR `integer`] |
-|  |  | `prefix` | opt | `string` (default: ) |
-|  |  | `source` | req | `string` (enum: [base, evidence]) |
-|  |  | `source_path` | req | array[anyOf: `string` OR `integer`] |
-|  |  | `start` | req | `integer` |
-|  |  | `suffix` | opt | `string` (default: ) |
-|  | `version` |  | opt | `integer` (default: 1) |
 | `reasoning_tokens` |  |  | req | `integer` |
 | `total_tokens` |  |  | req | `integer` |
 
@@ -5201,14 +5094,6 @@ Body: [StatusResponse](#model-statusresponse)
     "prompt_tokens": {
       "title": "Prompt Tokens",
       "type": "integer"
-    },
-    "provider_evidence": {
-      "default": [],
-      "items": {
-        "$ref": "#/components/schemas/ProviderEvidence"
-      },
-      "title": "Provider Evidence",
-      "type": "array"
     },
     "reasoning_tokens": {
       "title": "Reasoning Tokens",
@@ -6471,7 +6356,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `session_id` |  | req | `string` (format: uuid) |
 |  | `status` |  | req | `string` |
 |  | `uid` |  | req | `integer` |
-| `specifics` |  |  | req | [EvaluationDetails-Input](#model-evaluationdetails-input) |
+| `specifics` |  |  | req | [EvaluationDetails](#model-evaluationdetails) |
 |  | `elapsed_ms` |  | opt | `number` (nullable) |
 |  | `error` |  | opt | [EvaluationError](#model-evaluationerror) (nullable) |
 |  |  | `code` | req | [MinerTaskErrorCode](#model-minertaskerrorcode) |
@@ -6484,13 +6369,12 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `reasoning` | opt | [ScorerReasoning](#model-scorerreasoning) (nullable) |
 |  |  | `scoring_version` | req | `string` |
 |  |  | `total_score` | req | `number` |
-|  | `scoring_judge_usage` |  | opt | [JudgeUsageSummary-Input](#model-judgeusagesummary-input) (nullable) |
+|  | `scoring_judge_usage` |  | opt | [JudgeUsageSummary](#model-judgeusagesummary) (nullable) |
 |  |  | `actual_cost_usd` | req | `number` (nullable) |
 |  |  | `call_count` | req | `integer` |
 |  |  | `completion_tokens` | req | `integer` |
 |  |  | `models` | req | array[[JudgeModelUsage](#model-judgemodelusage)] |
 |  |  | `prompt_tokens` | req | `integer` |
-|  |  | `provider_evidence` | opt | array[[ProviderEvidence](#model-providerevidence)] (default: []) |
 |  |  | `reasoning_tokens` | req | `integer` |
 |  |  | `total_tokens` | req | `integer` |
 |  | `total_tool_usage` |  | opt | [ToolUsageSummary](#model-toolusagesummary) |
@@ -6563,7 +6447,7 @@ Body: [StatusResponse](#model-statusresponse)
       "$ref": "#/components/schemas/SessionModel"
     },
     "specifics": {
-      "$ref": "#/components/schemas/EvaluationDetails-Input"
+      "$ref": "#/components/schemas/EvaluationDetails"
     },
     "usage": {
       "$ref": "#/components/schemas/UsageModel"
@@ -7248,11 +7132,11 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `session_id` | req | `string` (format: uuid) |
 |  |  | `status` | req | `string` |
 |  |  | `uid` | req | `integer` |
-|  | `specifics` |  | req | [EvaluationDetails-Input](#model-evaluationdetails-input) |
+|  | `specifics` |  | req | [EvaluationDetails](#model-evaluationdetails) |
 |  |  | `elapsed_ms` | opt | `number` (nullable) |
 |  |  | `error` | opt | [EvaluationError](#model-evaluationerror) (nullable) |
 |  |  | `score_breakdown` | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
-|  |  | `scoring_judge_usage` | opt | [JudgeUsageSummary-Input](#model-judgeusagesummary-input) (nullable) |
+|  |  | `scoring_judge_usage` | opt | [JudgeUsageSummary](#model-judgeusagesummary) (nullable) |
 |  |  | `total_tool_usage` | opt | [ToolUsageSummary](#model-toolusagesummary) |
 |  |  | `trace` | opt | [EvaluationTrace](#model-evaluationtrace) (nullable) |
 |  | `usage` |  | req | [UsageModel](#model-usagemodel) |
@@ -7458,7 +7342,7 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `run` | req | [MinerTaskRunSection](#model-minertaskrunsection) |
 |  |  | `score` | opt | `number` (nullable) |
 |  |  | `session` | req | [SessionModel](#model-sessionmodel) |
-|  |  | `specifics` | req | [EvaluationDetails-Input](#model-evaluationdetails-input) |
+|  |  | `specifics` | req | [EvaluationDetails](#model-evaluationdetails) |
 |  |  | `usage` | req | [UsageModel](#model-usagemodel) |
 |  | `task_id` |  | req | `string` (format: uuid) |
 |  | `terminal_attempt` |  | req | [MinerTaskAttemptAuditPayload](#model-minertaskattemptauditpayload) |
@@ -8112,70 +7996,6 @@ Body: [StatusResponse](#model-statusresponse)
 
 </details>
 
-<a id="model-providerevidence"></a>
-### Model: ProviderEvidence
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `escaped_json` |  |  | opt | `string` (nullable) |
-| `payload` |  |  | req | [JsonValue-Input](#model-jsonvalue-input) |
-| `text_references` |  |  | opt | array[[EvidenceTextReference](#model-evidencetextreference)] (default: []) |
-|  | `end` |  | req | `integer` |
-|  | `path` |  | req | array[anyOf: `string` OR `integer`] |
-|  | `prefix` |  | opt | `string` (default: ) |
-|  | `source` |  | req | `string` (enum: [base, evidence]) |
-|  | `source_path` |  | req | array[anyOf: `string` OR `integer`] |
-|  | `start` |  | req | `integer` |
-|  | `suffix` |  | opt | `string` (default: ) |
-| `version` |  |  | opt | `integer` (default: 1) |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "additionalProperties": false,
-  "description": "A private snapshot; references never point outside its owning record.",
-  "properties": {
-    "escaped_json": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Escaped Json"
-    },
-    "payload": {
-      "$ref": "#/components/schemas/JsonValue-Input"
-    },
-    "text_references": {
-      "default": [],
-      "items": {
-        "$ref": "#/components/schemas/EvidenceTextReference"
-      },
-      "title": "Text References",
-      "type": "array"
-    },
-    "version": {
-      "const": 1,
-      "default": 1,
-      "title": "Version",
-      "type": "integer"
-    }
-  },
-  "required": [
-    "payload"
-  ],
-  "title": "ProviderEvidence",
-  "type": "object"
-}
-```
-
-</details>
-
 <a id="model-query"></a>
 ### Model: Query
 
@@ -8278,7 +8098,6 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `completion_tokens` | req | `integer` |
 |  |  | `models` | req | array[[RatingJudgmentJudgeModelUsage](#model-ratingjudgmentjudgemodelusage)] |
 |  |  | `prompt_tokens` | req | `integer` |
-|  |  | `provider_evidence` | opt | array[[RatingJudgmentProviderEvidence](#model-ratingjudgmentproviderevidence)] (default: []) |
 |  |  | `reasoning_tokens` | req | `integer` |
 |  |  | `total_tokens` | req | `integer` |
 |  | `reasoning` |  | req | [RatingJudgmentScorerReasoning](#model-ratingjudgmentscorerreasoning) (nullable) |
@@ -8464,139 +8283,6 @@ Body: [StatusResponse](#model-statusresponse)
 
 </details>
 
-<a id="model-ratingjudgmentevidencetextreference"></a>
-### Model: RatingJudgmentEvidenceTextReference
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `end` |  |  | req | `integer` |
-| `path` |  |  | req | array[anyOf: `string` OR `integer`] |
-| `prefix` |  |  | opt | `string` (default: ) |
-| `source` |  |  | req | `string` (enum: [base, evidence]) |
-| `source_path` |  |  | req | array[anyOf: `string` OR `integer`] |
-| `start` |  |  | req | `integer` |
-| `suffix` |  |  | opt | `string` (default: ) |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "additionalProperties": false,
-  "properties": {
-    "end": {
-      "title": "End",
-      "type": "integer"
-    },
-    "path": {
-      "items": {
-        "anyOf": [
-          {
-            "type": "string"
-          },
-          {
-            "type": "integer"
-          }
-        ]
-      },
-      "title": "Path",
-      "type": "array"
-    },
-    "prefix": {
-      "default": "",
-      "title": "Prefix",
-      "type": "string"
-    },
-    "source": {
-      "enum": [
-        "base",
-        "evidence"
-      ],
-      "title": "Source",
-      "type": "string"
-    },
-    "source_path": {
-      "items": {
-        "anyOf": [
-          {
-            "type": "string"
-          },
-          {
-            "type": "integer"
-          }
-        ]
-      },
-      "title": "Source Path",
-      "type": "array"
-    },
-    "start": {
-      "title": "Start",
-      "type": "integer"
-    },
-    "suffix": {
-      "default": "",
-      "title": "Suffix",
-      "type": "string"
-    }
-  },
-  "required": [
-    "path",
-    "source",
-    "source_path",
-    "start",
-    "end"
-  ],
-  "title": "EvidenceTextReference",
-  "type": "object"
-}
-```
-
-</details>
-
-<a id="model-ratingjudgmentjsonvalue"></a>
-### Model: RatingJudgmentJsonValue
-
-(no documented fields)
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "anyOf": [
-    {
-      "type": "string"
-    },
-    {
-      "type": "integer"
-    },
-    {
-      "type": "number"
-    },
-    {
-      "type": "boolean"
-    },
-    {
-      "items": {
-        "$ref": "#/components/schemas/RatingJudgmentJsonValue"
-      },
-      "type": "array"
-    },
-    {
-      "additionalProperties": {
-        "$ref": "#/components/schemas/RatingJudgmentJsonValue"
-      },
-      "type": "object"
-    },
-    {
-      "type": "null"
-    }
-  ]
-}
-```
-
-</details>
-
 <a id="model-ratingjudgmentjudgemodelusage"></a>
 ### Model: RatingJudgmentJudgeModelUsage
 
@@ -8738,18 +8424,6 @@ Body: [StatusResponse](#model-statusresponse)
 |  | `reasoning_tokens` |  | req | `integer` (nullable) |
 |  | `total_tokens` |  | req | `integer` |
 | `prompt_tokens` |  |  | req | `integer` |
-| `provider_evidence` |  |  | opt | array[[RatingJudgmentProviderEvidence](#model-ratingjudgmentproviderevidence)] (default: []) |
-|  | `escaped_json` |  | opt | `string` (nullable) |
-|  | `payload` |  | req | [RatingJudgmentJsonValue](#model-ratingjudgmentjsonvalue) |
-|  | `text_references` |  | opt | array[[RatingJudgmentEvidenceTextReference](#model-ratingjudgmentevidencetextreference)] (default: []) |
-|  |  | `end` | req | `integer` |
-|  |  | `path` | req | array[anyOf: `string` OR `integer`] |
-|  |  | `prefix` | opt | `string` (default: ) |
-|  |  | `source` | req | `string` (enum: [base, evidence]) |
-|  |  | `source_path` | req | array[anyOf: `string` OR `integer`] |
-|  |  | `start` | req | `integer` |
-|  |  | `suffix` | opt | `string` (default: ) |
-|  | `version` |  | opt | `integer` (default: 1) |
 | `reasoning_tokens` |  |  | req | `integer` |
 | `total_tokens` |  |  | req | `integer` |
 
@@ -8789,14 +8463,6 @@ Body: [StatusResponse](#model-statusresponse)
       "title": "Prompt Tokens",
       "type": "integer"
     },
-    "provider_evidence": {
-      "default": [],
-      "items": {
-        "$ref": "#/components/schemas/RatingJudgmentProviderEvidence"
-      },
-      "title": "Provider Evidence",
-      "type": "array"
-    },
     "reasoning_tokens": {
       "title": "Reasoning Tokens",
       "type": "integer"
@@ -8816,71 +8482,6 @@ Body: [StatusResponse](#model-statusresponse)
     "models"
   ],
   "title": "JudgeUsageSummary",
-  "type": "object"
-}
-```
-
-</details>
-
-<a id="model-ratingjudgmentproviderevidence"></a>
-### Model: RatingJudgmentProviderEvidence
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `escaped_json` |  |  | opt | `string` (nullable) |
-| `payload` |  |  | req | [RatingJudgmentJsonValue](#model-ratingjudgmentjsonvalue) |
-| `text_references` |  |  | opt | array[[RatingJudgmentEvidenceTextReference](#model-ratingjudgmentevidencetextreference)] (default: []) |
-|  | `end` |  | req | `integer` |
-|  | `path` |  | req | array[anyOf: `string` OR `integer`] |
-|  | `prefix` |  | opt | `string` (default: ) |
-|  | `source` |  | req | `string` (enum: [base, evidence]) |
-|  | `source_path` |  | req | array[anyOf: `string` OR `integer`] |
-|  | `start` |  | req | `integer` |
-|  | `suffix` |  | opt | `string` (default: ) |
-| `version` |  |  | opt | `integer` (default: 1) |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "additionalProperties": false,
-  "description": "A private snapshot; references never point outside its owning record.",
-  "properties": {
-    "escaped_json": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Escaped Json"
-    },
-    "payload": {
-      "$ref": "#/components/schemas/RatingJudgmentJsonValue"
-    },
-    "text_references": {
-      "default": [],
-      "items": {
-        "$ref": "#/components/schemas/RatingJudgmentEvidenceTextReference"
-      },
-      "title": "Text References",
-      "type": "array"
-    },
-    "version": {
-      "const": 1,
-      "default": 1,
-      "title": "Version",
-      "type": "integer"
-    }
-  },
-  "required": [
-    "payload"
-  ],
-  "title": "ProviderEvidence",
   "type": "object"
 }
 ```
@@ -8920,11 +8521,6 @@ Body: [StatusResponse](#model-statusresponse)
 |  |  | `reasoning_tokens` | req | `integer` (nullable) |
 |  |  | `total_tokens` | req | `integer` |
 |  | `prompt_tokens` |  | req | `integer` |
-|  | `provider_evidence` |  | opt | array[[RatingJudgmentProviderEvidence](#model-ratingjudgmentproviderevidence)] (default: []) |
-|  |  | `escaped_json` | opt | `string` (nullable) |
-|  |  | `payload` | req | [RatingJudgmentJsonValue](#model-ratingjudgmentjsonvalue) |
-|  |  | `text_references` | opt | array[[RatingJudgmentEvidenceTextReference](#model-ratingjudgmentevidencetextreference)] (default: []) |
-|  |  | `version` | opt | `integer` (default: 1) |
 |  | `reasoning_tokens` |  | req | `integer` |
 |  | `total_tokens` |  | req | `integer` |
 | `reasoning` |  |  | req | [RatingJudgmentScorerReasoning](#model-ratingjudgmentscorerreasoning) (nullable) |

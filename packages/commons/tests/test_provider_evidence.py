@@ -6,9 +6,10 @@ import pytest
 from pydantic import TypeAdapter
 
 from harnyx_commons.domain.judge_usage import JudgeUsageSummary
+from harnyx_commons.domain.miner_task import EvaluationDetails, EvaluationError, MinerTaskErrorCode
 from harnyx_commons.llm.judge_usage import judge_usage_from_response, merge_judge_usage
 from harnyx_commons.llm.schema import LlmResponse, LlmUsage
-from harnyx_commons.provider_evidence import ProviderEvidence
+from harnyx_commons.provider_evidence import ProviderEvidence, judge_evidence_from_response
 
 
 def test_original_excerpts_round_trip_without_repeating_stored_page_text():
@@ -35,40 +36,67 @@ def test_judge_evidence_survives_private_transport_but_is_absent_from_public_ser
     original = [{"request": {"prompt": "private prompt"}, "response": {"raw": "private output"}}]
     evidence = ProviderEvidence.capture(original)
     response = LlmResponse(
-        id="receipt", choices=(), usage=LlmUsage(),
+        id="receipt",
+        choices=(),
+        usage=LlmUsage(),
         metadata={"_provider_evidence": evidence.model_dump(mode="json")},
     )
     usage = judge_usage_from_response(response, default_provider="test", default_model="judge")
-    adapter = TypeAdapter(JudgeUsageSummary)
-    private = adapter.dump_json(usage, context={"private_provider_evidence": True})
+    adapter = TypeAdapter(EvaluationDetails)
+    private = adapter.dump_json(
+        EvaluationDetails(
+            error=EvaluationError(code=MinerTaskErrorCode.NEVER_RAN, message="test"),
+            scoring_judge_usage=usage,
+            provider_evidence=judge_evidence_from_response(response),
+        ),
+        context={"private_provider_evidence": True},
+    )
     restored = adapter.validate_json(private)
     assert restored.provider_evidence[0].restore() == original
     assert "provider_evidence" not in adapter.dump_python(restored, mode="json")
     assert "provider_evidence" not in adapter.json_schema(mode="serialization")["properties"]
     assert "_provider_evidence" not in response.payload["metadata"]
+    assert not hasattr(usage, "provider_evidence")
+    assert "provider_evidence" not in TypeAdapter(JudgeUsageSummary).dump_python(
+        usage, context={"private_provider_evidence": True}
+    )
 
 
 def test_pairwise_judge_evidence_deduplicates_prompts_and_reuses_saved_reasoning():
     prompt, reasoning = "shared system prompt " * 1000, "saved reasoning " * 1000
     exchange = {"request": prompt, "response": {"reasoning": reasoning}}
     response = LlmResponse(
-        id="receipt", choices=(), usage=LlmUsage(),
+        id="receipt",
+        choices=(),
+        usage=LlmUsage(),
         metadata={"_provider_evidence": ProviderEvidence.capture([exchange]).model_dump(mode="json")},
     )
     usage = judge_usage_from_response(response, default_provider="test", default_model="judge")
     merged = merge_judge_usage((usage, usage))
     base = {"reasoning": reasoning}
-    stored = TypeAdapter(JudgeUsageSummary).dump_python(
-        merged, mode="json", context={"private_provider_evidence": True, "provider_evidence_base": base},
+    stored = TypeAdapter(EvaluationDetails).dump_python(
+        EvaluationDetails(
+            error=EvaluationError(code=MinerTaskErrorCode.NEVER_RAN, message="test"),
+            scoring_judge_usage=merged,
+            provider_evidence=judge_evidence_from_response(response) * 2,
+        ),
+        mode="json",
+        context={"private_provider_evidence": True, "provider_evidence_base": base},
     )
-    evidence = ProviderEvidence.model_validate(stored["provider_evidence"][0])
+    evidence = ProviderEvidence.model_validate(stored["scoring_judge_usage"]["provider_evidence"][0])
     assert evidence.restore(base=base) == [exchange, exchange]
     assert evidence.model_dump_json().count(prompt) == 1
     assert reasoning not in evidence.model_dump_json()
-    reloaded = TypeAdapter(JudgeUsageSummary).validate_python(stored)
-    moved = TypeAdapter(JudgeUsageSummary).dump_python(
-        reloaded, mode="json", context={
-            "private_provider_evidence": True, "provider_evidence_source_base": base,
+    reloaded = TypeAdapter(EvaluationDetails).validate_python(stored)
+    moved = TypeAdapter(EvaluationDetails).dump_python(
+        reloaded,
+        mode="json",
+        context={
+            "private_provider_evidence": True,
+            "provider_evidence_source_base": base,
         },
     )
-    assert ProviderEvidence.model_validate(moved["provider_evidence"][0]).restore() == [exchange, exchange]
+    assert ProviderEvidence.model_validate(moved["scoring_judge_usage"]["provider_evidence"][0]).restore() == [
+        exchange,
+        exchange,
+    ]

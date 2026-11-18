@@ -72,7 +72,7 @@ class SimilarityJudgeResponseModel(BaseModel):
             model=result.model,
             provider=result.provider,
             judge_usage=result.judge_usage,
-            provider_evidence=() if result.judge_usage is None else result.judge_usage.provider_evidence,
+            provider_evidence=result.provider_evidence,
         )
 
 

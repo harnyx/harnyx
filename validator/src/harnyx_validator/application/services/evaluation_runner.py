@@ -45,6 +45,7 @@ from harnyx_commons.miner_task_failure_policy import (
     is_timeout_sandbox_invocation,
     is_uncaught_platform_tool_proxy_timeout_sandbox_invocation,
 )
+from harnyx_commons.provider_evidence import ProviderEvidence
 from harnyx_commons.sandbox.client import SandboxClient, SandboxInvokeError
 from harnyx_commons.tools.receipt_accounting import usage_from_receipts as _usage_from_receipts
 from harnyx_miner_sdk.sandbox_protocol import SANDBOX_OOM_AFFECTED, SandboxAdmission
@@ -2189,6 +2190,7 @@ class EvaluationRunner:
         execution_log: tuple[ToolCall, ...] | None = None,
         elapsed_ms: float | None = None,
         scoring_judge_usage: JudgeUsageSummary | None = None,
+        provider_evidence: tuple[ProviderEvidence, ...] = (),
         trace: EvaluationTrace | None = None,
     ) -> MinerTaskRunSubmission:
         envelope = self._sessions.mark_status(session_id, SessionStatus.ERROR)
@@ -2206,6 +2208,7 @@ class EvaluationRunner:
             execution_log=execution_log,
             elapsed_ms=elapsed_ms,
             scoring_judge_usage=scoring_judge_usage,
+            provider_evidence=provider_evidence,
             trace=trace,
         )
 
@@ -2265,6 +2268,7 @@ class EvaluationRunner:
         execution_log: tuple[ToolCall, ...] | None = None,
         elapsed_ms: float | None = None,
         scoring_judge_usage: JudgeUsageSummary | None = None,
+        provider_evidence: tuple[ProviderEvidence, ...] = (),
         trace: EvaluationTrace | None = None,
     ) -> MinerTaskRunSubmission:
         submission = self._build_terminal_failure(
@@ -2280,6 +2284,7 @@ class EvaluationRunner:
             execution_log=execution_log,
             elapsed_ms=elapsed_ms,
             scoring_judge_usage=scoring_judge_usage,
+            provider_evidence=provider_evidence,
             trace=trace,
         )
         self._record_submission(submission)
@@ -2301,6 +2306,7 @@ class EvaluationRunner:
         execution_log: tuple[ToolCall, ...] | None = None,
         elapsed_ms: float | None = None,
         scoring_judge_usage: JudgeUsageSummary | None = None,
+        provider_evidence: tuple[ProviderEvidence, ...] = (),
         trace: EvaluationTrace | None = None,
     ) -> MinerTaskRunSubmission:
         session_id = envelope.session.session_id
@@ -2311,13 +2317,17 @@ class EvaluationRunner:
         details = EvaluationDetails(
             error=EvaluationError(code=error_code, message=error_message),
             scoring_judge_usage=scoring_judge_usage,
+            provider_evidence=provider_evidence,
             trace=trace,
             total_tool_usage=total_tool_usage or summarized_tool_usage,
             elapsed_ms=(
-                elapsed_ms if elapsed_ms is not None
-                else (None if execution_completed_at is None else _elapsed_ms(
-                    issued_at=envelope.session.issued_at, completed_at=execution_completed_at
-                ))
+                elapsed_ms
+                if elapsed_ms is not None
+                else (
+                    None
+                    if execution_completed_at is None
+                    else _elapsed_ms(issued_at=envelope.session.issued_at, completed_at=execution_completed_at)
+                )
             ),
         )
         run = MinerTaskRun(
@@ -2379,6 +2389,7 @@ class EvaluationRunner:
         exc: Exception,
         rejected_response: str | None = None,
         scoring_judge_usage: JudgeUsageSummary | None = None,
+        provider_evidence: tuple[ProviderEvidence, ...] = (),
     ) -> MinerTaskRunSubmission:
         logger.error(
             log_message,
@@ -2401,6 +2412,7 @@ class EvaluationRunner:
             error_message=error_message,
             rejected_response=rejected_response,
             scoring_judge_usage=scoring_judge_usage or getattr(exc, "judge_usage", None),
+            provider_evidence=provider_evidence or getattr(exc, "provider_evidence", ()),
             trace=evaluation_trace if isinstance(evaluation_trace, EvaluationTrace) else None,
         )
 

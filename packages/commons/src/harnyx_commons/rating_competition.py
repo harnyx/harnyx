@@ -2,15 +2,27 @@
 
 from __future__ import annotations
 
-from typing import Literal, Self
+from typing import Any, Literal, Self, cast
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializationInfo,
+    SerializerFunctionWrapHandler,
+    TypeAdapter,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
+from pydantic.json_schema import SkipJsonSchema
 
 from harnyx_commons.domain.judge_usage import JudgeUsageSummary
 from harnyx_commons.domain.miner_task import EvaluationTrace, Query, ScorerReasoning
 from harnyx_commons.endpoint_answer import EndpointAnswer as RatingAnswer
 from harnyx_commons.endpoint_answer import EndpointReceipt as RatingReceipt
+from harnyx_commons.provider_evidence import ProviderEvidence, pack_judge_evidence
 
 __all__ = [
     "RatingAnswer",
@@ -43,11 +55,42 @@ class RatingWork(BaseModel):
 
 class RatingQualityEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+    provider_evidence: SkipJsonSchema[tuple[ProviderEvidence, ...]] = Field(default=(), exclude=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_provider_evidence(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        value = cast(dict[str, Any], value)
+        usage = value.get("judge_usage")
+        if not isinstance(usage, dict) or "provider_evidence" not in usage:
+            return value
+        clean_usage = dict(usage)
+        evidence = tuple(ProviderEvidence.model_validate(raw) for raw in clean_usage.pop("provider_evidence"))
+        if "provider_evidence" in value and tuple(value["provider_evidence"]) != evidence:
+            raise ValueError("conflicting private judge evidence")
+        return {**value, "judge_usage": clean_usage, "provider_evidence": evidence}
+
+    @model_serializer(mode="wrap")
+    def _private_evidence(self, handler: SerializerFunctionWrapHandler, info: SerializationInfo):  # noqa: ANN202
+        result = handler(self)
+        if self.provider_evidence and (info.context or {}).get("private_provider_evidence"):
+            if result.get("judge_usage") is None:
+                raise ValueError("private judge evidence requires its usage")
+            result["judge_usage"]["provider_evidence"] = pack_judge_evidence(self.provider_evidence, info.context or {})
+        return result
+
     first_order_preference: Literal["first", "second"]
     second_order_preference: Literal["first", "second"]
     reasoning: ScorerReasoning | None
     judge_usage: JudgeUsageSummary
     evaluation_trace: EvaluationTrace | None = None
+
+    @field_validator("judge_usage", mode="before")
+    @classmethod
+    def _usage(cls, value: object) -> JudgeUsageSummary:
+        return TypeAdapter(JudgeUsageSummary).validate_python(value)
 
     @property
     def quality_result(self) -> Literal[-1, 0, 1]:

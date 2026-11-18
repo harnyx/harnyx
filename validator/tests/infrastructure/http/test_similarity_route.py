@@ -30,8 +30,8 @@ class StubSimilarityJudge:
             reasoning_tokens=19,
             model="google/gemma-4-31B-turbo-TEE",
             provider="custom-openai-compatible:gemma4-cloud-run-turbo",
+            provider_evidence=self.provider_evidence,
             judge_usage=JudgeUsageSummary(
-                provider_evidence=self.provider_evidence,
                 call_count=1,
                 prompt_tokens=31,
                 completion_tokens=13,

@@ -148,3 +148,22 @@ def _replace(value: JsonValue, path: Path, replacement: JsonValue) -> JsonValue:
     else:
         raise ValueError("provider evidence destination is invalid")
     return value
+
+
+def judge_evidence_from_response(response: object) -> tuple[ProviderEvidence, ...]:
+    """Extract diagnostic snapshots independently from billable usage."""
+    metadata = getattr(response, "metadata", None) or {}
+    raw = metadata.get("_provider_evidence")
+    return () if raw is None else (ProviderEvidence.model_validate(raw),)
+
+
+def pack_judge_evidence(evidence: tuple[ProviderEvidence, ...], context: dict) -> list[dict]:
+    exchanges = []
+    for snapshot in evidence:
+        restored = snapshot.restore(
+            base=context.get("provider_evidence_source_base", context.get("provider_evidence_base"))
+        )
+        if not isinstance(restored, list):
+            raise ValueError("judge provider evidence must contain an exchange list")
+        exchanges.extend(restored)
+    return [ProviderEvidence.capture(exchanges, base=context.get("provider_evidence_base")).model_dump(mode="json")]

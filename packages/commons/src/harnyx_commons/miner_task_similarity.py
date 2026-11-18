@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
+
+from pydantic import Field
+from pydantic.json_schema import SkipJsonSchema
 
 from harnyx_commons.domain.judge_usage import JudgeUsageSummary
 from harnyx_commons.llm.provider_types import LlmRouteTarget
+from harnyx_commons.provider_evidence import ProviderEvidence
 
 SimilarityClassification = Literal["duplicate", "near_duplicate", "notable_change", "novel"]
 StoredSimilarityClassification = Literal[
@@ -46,6 +50,7 @@ class SimilarityJudgeResult:
     model: str
     provider: LlmRouteTarget
     judge_usage: JudgeUsageSummary | None = None
+    provider_evidence: Annotated[SkipJsonSchema[tuple[ProviderEvidence, ...]], Field(exclude=True)] = ()
 
 
 @dataclass(frozen=True, slots=True)
