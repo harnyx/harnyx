@@ -778,7 +778,25 @@ def _to_json_value(value: object, *, label: str) -> JsonValue:
     raise TypeError(f"{label} must be JSON-compatible")
 
 
-class _EngineUpdateReply(BaseModel):
+class _EngineContainerState(BaseModel):
+    status: str = Field(alias="Status")
+
+
+class _EngineNetworkSettings(BaseModel):
+    networks: dict[str, dict[str, JsonValue]] = Field(alias="Networks")
+
+
+class _EngineCreateTemplate(BaseModel):
+    name: str = Field(alias="Name")
+    image: str = Field(alias="Image")
+    state: _EngineContainerState = Field(alias="State")
+    config: dict[str, JsonValue] = Field(alias="Config")
+    host_config: dict[str, JsonValue] = Field(alias="HostConfig")
+    network_settings: _EngineNetworkSettings = Field(alias="NetworkSettings")
+
+
+class _EngineCreateReply(BaseModel):
+    identifier: str = Field(alias="Id", min_length=1)
     warnings: list[str] | None = Field(default=None, alias="Warnings")
 
 
@@ -966,8 +984,14 @@ class DockerSandboxManager(SandboxManager):
         if options.command:
             args.extend(options.command)
 
-    def configure_block_io(self, container_id: str, limits: BlockIOLimits) -> None:
-        """Configure a stopped consumer through the same local daemon used by CLI."""
+    def recreate_with_block_io(self, container_id: str, limits: BlockIOLimits) -> str:
+        """Recreate an unstarted CLI container with limits in the create request.
+
+        Docker APIs before 1.55 silently ignore device limits on update. The
+        CLI still serializes all options; inspect preserves that configuration
+        without maintaining a second CLI flag parser. Neither container runs
+        until the caller explicitly starts the returned container.
+        """
         endpoint = os.environ.get("DOCKER_HOST") if not os.environ.get("DOCKER_CONTEXT") else None
         if not endpoint:
             endpoint = self._run_command(
@@ -980,7 +1004,7 @@ class DockerSandboxManager(SandboxManager):
             [self._docker, "version", "--format", "{{.Server.APIVersion}}"],
             capture_output=True, text=True, check=True,
         ).stdout.strip()
-        payload = {
+        io_limits = {
             f"BlkioDevice{direction}{unit}": [{"Path": limits.device, "Rate": rate}]
             for direction in ("Read", "Write")
             for unit, rate in (("IOps", limits.iops), ("Bps", limits.bytes_per_second))
@@ -989,11 +1013,49 @@ class DockerSandboxManager(SandboxManager):
             transport=httpx.HTTPTransport(uds=endpoint.removeprefix("unix://")),
             base_url="http://docker", timeout=self._command_timeout_seconds, trust_env=False,
         ) as client:
-            response = client.post(f"/v{version}/containers/{container_id}/update", json=payload)
-            response.raise_for_status()
-            reply = _EngineUpdateReply.model_validate_json(response.content)
-            if reply.warnings:
-                raise RuntimeError(f"Docker could not guarantee block I/O limits: {reply.warnings}")
+            inspected = client.get(f"/v{version}/containers/{container_id}/json")
+            inspected.raise_for_status()
+            template = _EngineCreateTemplate.model_validate_json(inspected.content)
+            if template.state.status != "created":
+                raise RuntimeError("block I/O setup requires an unstarted container")
+            payload = dict(template.config)
+            payload["Image"] = template.image
+            payload["HostConfig"] = {**template.host_config, **io_limits}
+            # Runtime endpoint identifiers and allocated addresses belong to the
+            # old container. Only caller-configured endpoint options survive.
+            payload["NetworkingConfig"] = {"EndpointsConfig": {
+                name: {key: value for key, value in endpoint.items() if key in (
+                    "IPAMConfig", "Links", "Aliases", "DriverOpts", "MacAddress", "GwPriority",
+                )}
+                for name, endpoint in template.network_settings.networks.items()
+            }}
+            self._run_command(
+                [self._docker, "rm", "-v", container_id], capture_output=True, text=True, check=True,
+            )
+            try:
+                response = client.post(
+                    f"/v{version}/containers/create", params={"name": template.name.removeprefix("/")},
+                    json=payload,
+                )
+                response.raise_for_status()
+                reply = _EngineCreateReply.model_validate_json(response.content)
+                if reply.warnings:
+                    raise RuntimeError(f"Docker could not guarantee block I/O limits: {reply.warnings}")
+                return reply.identifier
+            except Exception as exc:
+                # A lost create response may still have created the replacement.
+                # Retain its name for caller-owned cleanup/recovery. On conflict
+                # do not delete a container created by another owner.
+                conflict = isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 409
+                removed = False if conflict else self._best_effort_remove(template.name.removeprefix("/"))
+                if not removed or isinstance(exc, httpx.TransportError):
+                    raise SandboxStartError(
+                        "limited container creation failed; cleanup requires confirmation",
+                        unremoved_deployment=SandboxDeployment(
+                            client=_UnreadySandboxClient(), identifier=template.name.removeprefix("/"),
+                        ),
+                    ) from exc
+                raise
 
     def _launch_container(self, options: SandboxOptions) -> str:
         args = self._build_run_args(options)
@@ -1030,7 +1092,7 @@ class DockerSandboxManager(SandboxManager):
         try:
             if options.block_io_limits is not None:
                 # CLI retains ownership of all existing option serialization. The
-                # consumer cannot execute until the API has installed its limits.
+                # consumer cannot execute until API creation includes its limits.
                 create_args = [args[0], "create", *args[2:]]
                 create_args.remove("-d")
                 container_id = None
@@ -1039,9 +1101,11 @@ class DockerSandboxManager(SandboxManager):
                     container_id = result.stdout.strip()
                     if not container_id:
                         raise RuntimeError("docker create did not return a container identifier")
-                    self.configure_block_io(container_id, options.block_io_limits)
+                    container_id = self.recreate_with_block_io(container_id, options.block_io_limits)
                     self._run_command([self._docker, "start", container_id], capture_output=True, text=True, check=True)
                     return container_id
+                except SandboxStartError:
+                    raise
                 except Exception as exc:
                     if not isinstance(exc, (subprocess.CalledProcessError, subprocess.TimeoutExpired)):
                         self._write_failure_diagnostics(

@@ -914,8 +914,9 @@ def test_block_io_is_installed_before_start_and_failed_setup_is_removed(monkeypa
         assert limits.device == "/owned/slot.node"
         if failure == "configure":
             raise RuntimeError("API unavailable")
+        return "created-id"
 
-    monkeypatch.setattr(manager, "configure_block_io", configure)
+    monkeypatch.setattr(manager, "recreate_with_block_io", configure)
     options = SandboxOptions(
         image="image", container_name="consumer", pull_policy="never",
         extra_args=("--read-only",), block_io_limits=BlockIOLimits("/owned/slot.node", 32, 4194304),
@@ -949,32 +950,89 @@ def test_block_io_create_conflict_does_not_remove_existing_container(monkeypatch
     assert commands == ["create"]
 
 
-def test_block_io_engine_request_preserves_owned_path_and_rejects_warnings(monkeypatch):
+@pytest.mark.parametrize("version", ["1.51", "1.54", "1.56"])
+def test_block_io_create_preserves_cli_configuration_and_never_updates(monkeypatch, version):
     from harnyx_commons.sandbox.options import BlockIOLimits
 
-    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    monkeypatch.setenv("DOCKER_HOST", "unix:///var/run/docker.sock")
     monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
-    warning = []
+    calls = []
+    config = {"Image": "mutable:tag", "Env": ["TOKEN=synthetic"], "User": "1000:1000",
+              "Entrypoint": ["/python"], "Cmd": ["-m", "probe"], "WorkingDir": "/work"}
+    host_config = {"ReadonlyRootfs": True, "CapDrop": ["ALL"], "SecurityOpt": ["no-new-privileges"],
+                   "Binds": ["owned-volume:/work:rw"], "Memory": 12345, "NetworkMode": "isolated",
+                   "Ulimits": [{"Name": "nofile", "Soft": 100, "Hard": 100}],
+                   "PortBindings": {"8000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "8080"}]}}
     def handle(request):
-        assert request.url.path == "/v1.56/containers/consumer/update"
+        calls.append(request.method)
+        if request.method == "GET":
+            assert request.url.path == f"/v{version}/containers/template/json"
+            return httpx.Response(200, json={
+                "Name": "/consumer", "Image": "sha256:pinned", "State": {"Status": "created"},
+                "Config": config, "HostConfig": host_config,
+                "NetworkSettings": {"Networks": {"isolated": {
+                    "Aliases": ["worker"], "IPAMConfig": {"IPv4Address": "172.20.0.5"},
+                    "EndpointID": "obsolete", "NetworkID": "runtime-id", "IPAddress": "", "DNSNames": ["template"],
+                }}},
+            })
+        assert request.url.path == f"/v{version}/containers/create"
+        assert request.url.params["name"] == "consumer"
         payload = json.loads(request.content)
         assert payload == {
-            f"BlkioDevice{direction}{unit}": [{"Path": "/owned/slot.node", "Rate": rate}]
-            for direction in ("Read", "Write")
-            for unit, rate in (("IOps", 32), ("Bps", 4194304))
+            **config, "Image": "sha256:pinned", "HostConfig": {
+                **host_config,
+                **{f"BlkioDevice{direction}{unit}": [{"Path": "/owned/slot.node", "Rate": rate}]
+                   for direction in ("Read", "Write")
+                   for unit, rate in (("IOps", 32), ("Bps", 4194304))},
+            },
+            "NetworkingConfig": {"EndpointsConfig": {"isolated": {
+                "Aliases": ["worker"], "IPAMConfig": {"IPv4Address": "172.20.0.5"},
+            }}},
         }
-        return httpx.Response(200, json={"Warnings": warning})
+        assert calls == ["GET", "rm", "POST"]
+        return httpx.Response(201, json={"Id": "limited-id", "Warnings": None})
 
     def runner(args, **kwargs):
-        return subprocess_completed(args, "unix:///var/run/docker.sock" if args[1] == "context" else "1.56")
+        if args[1] == "rm":
+            calls.append("rm")
+            assert args == ["docker", "rm", "-v", "template"]
+        return subprocess_completed(args, version)
 
     monkeypatch.setattr(docker_module.httpx, "HTTPTransport", lambda **kwargs: httpx.MockTransport(handle))
     manager = DockerSandboxManager(command_runner=runner)
-    limits = BlockIOLimits("/owned/slot.node", 32, 4194304)
-    manager.configure_block_io("consumer", limits)
-    warning.append("I/O controller unavailable")
-    with pytest.raises(RuntimeError, match="could not guarantee"):
-        manager.configure_block_io("consumer", limits)
+    assert manager.recreate_with_block_io("template", BlockIOLimits("/owned/slot.node", 32, 4194304)) == "limited-id"
+
+
+@pytest.mark.parametrize("failure", ["warning", "timeout", "disconnect", "conflict", "cleanup"])
+def test_block_io_failed_recreation_cleans_owned_replacement_or_retains_identity(monkeypatch, failure):
+    from harnyx_commons.sandbox.options import BlockIOLimits
+
+    monkeypatch.setenv("DOCKER_HOST", "unix:///var/run/docker.sock")
+    monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
+    removed = []
+    def handle(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={
+                "Name": "/consumer", "Image": "sha256:pinned", "State": {"Status": "created"},
+                "Config": {}, "HostConfig": {}, "NetworkSettings": {"Networks": {}},
+            })
+        if failure in ("timeout", "cleanup"):
+            raise httpx.ReadTimeout("response lost", request=request)
+        if failure == "disconnect":
+            raise httpx.ReadError("connection lost", request=request)
+        if failure == "conflict":
+            return httpx.Response(409, json={"message": "name in use"})
+        return httpx.Response(201, json={"Id": "limited-id", "Warnings": ["I/O unsupported"]})
+
+    monkeypatch.setattr(docker_module.httpx, "HTTPTransport", lambda **kwargs: httpx.MockTransport(handle))
+    manager = DockerSandboxManager(command_runner=lambda args, **kw: subprocess_completed(args, "1.54"))
+    monkeypatch.setattr(manager, "_best_effort_remove", lambda name: removed.append(name) or failure != "cleanup")
+    with pytest.raises((RuntimeError, httpx.HTTPError)) as caught:
+        manager.recreate_with_block_io("template", BlockIOLimits("/owned/node", 32, 4194304))
+    assert removed == ([] if failure == "conflict" else ["consumer"])
+    if failure in ("cleanup", "timeout", "disconnect", "conflict"):
+        assert isinstance(caught.value, SandboxStartError)
+        assert caught.value.unremoved_deployment.identifier == "consumer"
 
 
 @pytest.mark.parametrize("stage", ["create", "start"])
@@ -989,7 +1047,7 @@ def test_limited_launch_timeout_retains_cleanup_identity_and_redacts_credentials
 
     manager = DockerSandboxManager(command_runner=runner)
     monkeypatch.setattr(manager, "_write_failure_diagnostics", lambda **kwargs: None)
-    monkeypatch.setattr(manager, "configure_block_io", lambda *args: None)
+    monkeypatch.setattr(manager, "recreate_with_block_io", lambda *args: "created-id")
     with pytest.raises(SandboxStartError) as caught:
         manager._launch_container(SandboxOptions(
             image="image", container_name="consumer", pull_policy="never",

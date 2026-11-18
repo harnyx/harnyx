@@ -93,6 +93,7 @@ class ArtifactStorageSandboxManager:
         self._ready = False
         self._helper_started = False
         self._claimed = False
+        self._uncertain_creation = False
         self.stage = "initialization"
         self._deployments: dict[str, str] = {}
 
@@ -212,16 +213,21 @@ class ArtifactStorageSandboxManager:
                     str(loop_number), str(self._iops), str(self._bytes_per_second),
                 )
                 limits = self._io_limits(probe)
-                self.stage = "configure block I/O"
-                self._docker_manager.configure_block_io(probe.consumer, limits)
+                self.stage = "create with block I/O"
+                self._docker_manager.recreate_with_block_io(probe.consumer, limits)
                 self._run("start", "--attach", probe.consumer)
+            except SandboxStartError:
+                self._uncertain_creation = True
+                failed_stage = self.stage
+                raise
             except Exception:
                 failed_stage = self.stage
                 raise
             finally:
-                if self._container(probe.consumer) is not None:
-                    self._run("rm", "-f", probe.consumer)
-                self._reclaim(probe)
+                if not self._uncertain_creation:
+                    if self._container(probe.consumer) is not None:
+                        self._run("rm", "-f", probe.consumer)
+                    self._reclaim(probe)
                 self.stage = failed_stage
             self._ready = True
 
@@ -299,6 +305,7 @@ class ArtifactStorageSandboxManager:
                     block_io_limits=self._io_limits(slot),
                 ))
             except SandboxStartError as exc:
+                self._uncertain_creation = True
                 if exc.unremoved_deployment.identifier:
                     self._deployments[exc.unremoved_deployment.identifier] = options.container_name
                 raise
@@ -345,6 +352,8 @@ class ArtifactStorageSandboxManager:
         """Release helper only after all slots have been reclaimed."""
         with self._lock:
             self._ready = False
+            if self._uncertain_creation:
+                raise RuntimeError("container creation outcome uncertain; storage retained for recovery")
             for slot in self._request(Request(action="list")).slots:
                 self._reclaim(slot)
             self._request(Request(action="release"))

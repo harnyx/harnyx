@@ -493,3 +493,31 @@ def test_helper_failure_reply_preserves_trace_and_command_stderr():
     finally:
         thread.join(timeout=5)
     assert not thread.is_alive()
+
+
+def test_uncertain_probe_creation_retains_storage_through_finish(monkeypatch):
+    from harnyx_validator.infrastructure.artifact_storage import _Volume
+
+    storage = manager()
+    monkeypatch.setattr(storage, "_container", lambda _: None)
+    monkeypatch.setattr(storage, "_volume", lambda _: _Volume(
+        Name="backing", Mountpoint="/owned", Labels={"ai.harnyx.artifact-storage": "harnyx-artifact-storage"},
+    ))
+    commands = Mock(return_value="template")
+    monkeypatch.setattr(storage, "_run", commands)
+    requests = Mock(return_value=Reply())
+    monkeypatch.setattr(storage, "_request", requests)
+    monkeypatch.setattr(storage, "_prepare", lambda name: Slot(index=0, consumer=name))
+    monkeypatch.setattr(storage, "_loop_number", lambda _: 7)
+    reclaim = Mock()
+    monkeypatch.setattr(storage, "_reclaim", reclaim)
+    storage._docker_manager.recreate_with_block_io.side_effect = SandboxStartError(
+        "response lost", unremoved_deployment=SandboxDeployment(client=Mock(), identifier="sandbox-storage-probe"),
+    )
+    with pytest.raises(SandboxStartError):
+        storage.recover(sandbox_labels={}, sandbox_name_prefix="sandbox-")
+    with pytest.raises(RuntimeError, match="creation outcome uncertain"):
+        storage.finish_probe()
+    reclaim.assert_not_called()
+    assert not any(call.args[0].action == "release" for call in requests.call_args_list)
+    assert not any(call.args[0] == "rm" for call in commands.call_args_list)
