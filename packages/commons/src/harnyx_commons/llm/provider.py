@@ -454,11 +454,12 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         ctx: RetryContext,
     ) -> LlmResponse:
         response = await self._annotate_response_cost(request, response)
-        ctx.provider_exchanges.append(TypeAdapter(Any).dump_python(
-            {"request": _request_snapshot(request), "response": response.payload},
-            mode="json", fallback=repr,
-        ))
-        record_provider_exchange(ctx.provider_exchanges[-1])
+        if request.include_payloads_in_observability:
+            ctx.provider_exchanges.append(TypeAdapter(Any).dump_python(
+                {"request": _request_snapshot(request), "response": response.payload},
+                mode="json", fallback=repr,
+            ))
+            record_provider_exchange(ctx.provider_exchanges[-1])
         ctx.total_usage += response.usage or LlmUsage()
         ctx.record_billable_response(response)
         ctx.last_response = response
@@ -631,7 +632,8 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         processed: object | None,
     ) -> LlmResponse:
         metadata = dict(response.metadata or {})
-        metadata["_provider_evidence"] = ProviderEvidence.capture(ctx.provider_exchanges).model_dump(mode="json")
+        if ctx.provider_exchanges:
+            metadata["_provider_evidence"] = ProviderEvidence.capture(ctx.provider_exchanges).model_dump(mode="json")
         metadata["attempts"] = len(ctx.reasons) + 1
         metadata["billable_response_count"] = ctx.billable_response_count
         actual_cost_total = ctx.actual_cost_usd_total

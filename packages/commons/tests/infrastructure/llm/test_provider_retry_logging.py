@@ -24,10 +24,28 @@ from harnyx_commons.llm.schema import (
     LlmResponse,
     LlmUsage,
 )
-from harnyx_commons.provider_evidence import ProviderEvidence
+from harnyx_commons.provider_evidence import ProviderEvidence, capture_provider_exchanges
 
 pytestmark = pytest.mark.anyio("asyncio")
 
+
+async def test_disabled_payload_observability_excludes_persisted_evidence_across_retries():
+    provider = _RetryOnceExceptionProvider()
+    responses = [replace(_response(), id="rejected"), replace(_response(), id="accepted")]
+
+    async def call(request):
+        return responses.pop(0)
+
+    with capture_provider_exchanges() as exchanges:
+        response = await provider._call_with_retry(
+            replace(_request(), include_payloads_in_observability=False),
+            call_coro=call,
+            verifier=lambda result: (result.id == "accepted", True, "retry rejected response"),
+        )
+
+    assert exchanges == []
+    assert "_provider_evidence" not in response.metadata
+    assert response.usage.total_tokens == 36
 
 async def test_evidence_retains_rejected_response_before_successful_retry():
     provider = _RetryOnceExceptionProvider()
