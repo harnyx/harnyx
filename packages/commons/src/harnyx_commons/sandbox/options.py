@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 
 CONTROL_TOKEN_HEADER = "x-sandbox-control-token"  # noqa: S105
 CONTROL_TOKEN_ENV = "SANDBOX_CONTROL_TOKEN"  # noqa: S105
@@ -26,6 +27,29 @@ class BlockIOLimits:
 
 
 @dataclass(frozen=True)
+class ReadonlyVolumeSubpathMount:
+    """Expose one existing directory from a named volume as read-only."""
+
+    source: str
+    subpath: str
+    target: str
+
+    def __post_init__(self) -> None:
+        subpath = PurePosixPath(self.subpath)
+        target = PurePosixPath(self.target)
+        if (
+            not self.source
+            or self.source.startswith("/")
+            or any(character in self.source for character in ("/", ",", "="))
+        ):
+            raise ValueError("volume subpath mount requires a Docker named-volume source")
+        if not self.subpath or subpath.is_absolute() or ".." in subpath.parts or "," in self.subpath:
+            raise ValueError("volume subpath must be a non-empty relative path without parent traversal")
+        if not target.is_absolute() or "," in self.target:
+            raise ValueError("volume subpath target must be an absolute container path")
+
+
+@dataclass(frozen=True)
 class SandboxOptions:
     """Configuration for launching a sandbox container."""
 
@@ -40,6 +64,7 @@ class SandboxOptions:
     network: str | None = None
     host_container_url: str | None = None
     volumes: Sequence[tuple[str, str, str | None]] = field(default_factory=tuple)
+    volume_subpath_mounts: Sequence[ReadonlyVolumeSubpathMount] = field(default_factory=tuple)
     working_dir: str | None = None
     extra_hosts: Sequence[tuple[str, str]] = field(default_factory=tuple)
     startup_delay_seconds: float = 0.0
@@ -58,6 +83,7 @@ class SandboxOptions:
 
 
 __all__ = [
+    "ReadonlyVolumeSubpathMount",
     "SandboxOptions",
     "DEFAULT_TOKEN_HEADER",
     "HOST_CONTAINER_URL_HEADER",

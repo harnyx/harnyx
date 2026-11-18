@@ -7,6 +7,7 @@ import logging
 import pytest
 
 import harnyx_commons.sandbox.runtime as runtime_module
+from harnyx_commons.sandbox.options import ReadonlyVolumeSubpathMount
 
 
 def test_sandbox_manager_maps_owned_invocation_output_and_preserves_other_lines(
@@ -71,6 +72,11 @@ def test_build_sandbox_options_accepts_explicit_host_container_url_without_netwo
         lambda **_: pytest.fail("explicit host_container_url should bypass resolver"),
     )
 
+    artifact_mount = ReadonlyVolumeSubpathMount(
+        source="validator-state",
+        subpath="agents/selected",
+        target="/workspace/state/agents/selected",
+    )
     options = runtime_module.build_sandbox_options(
         image="harnyx/sandbox:demo",
         network=None,
@@ -78,8 +84,10 @@ def test_build_sandbox_options_accepts_explicit_host_container_url_without_netwo
         rpc_port=8100,
         container_name="sandbox-demo",
         host_container_url="http://host.docker.internal:39100",
+        volume_subpath_mounts=(artifact_mount,),
     )
 
     assert options.host_container_url == "http://host.docker.internal:39100"
     assert options.host_port == 0
     assert options.network is None
+    assert options.volume_subpath_mounts == (artifact_mount,)

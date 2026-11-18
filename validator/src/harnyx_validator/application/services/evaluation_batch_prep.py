@@ -16,7 +16,7 @@ from harnyx_commons.domain.miner_task import MinerTaskExecutionInput
 from harnyx_commons.sandbox.client import SandboxClient
 from harnyx_commons.sandbox.manager import SandboxManager
 from harnyx_commons.sandbox.options import SandboxOptions
-from harnyx_commons.sandbox.state import DEFAULT_STATE_DIR, resolve_state_mount_source
+from harnyx_commons.sandbox.state import DEFAULT_STATE_DIR, resolve_artifact_state_mount
 from harnyx_validator.application.dto.evaluation import MinerTaskBatchSpec, ScriptArtifactSpec
 from harnyx_validator.application.evaluate_task_run import TaskRunOrchestrator
 from harnyx_validator.application.platform_tool_proxy import PlatformToolProxyScopeRegistry
@@ -42,6 +42,9 @@ OrchestratorFactory = Callable[[SandboxClient], TaskRunOrchestrator]
 
 
 class AgentArtifact(Protocol):
+    @property
+    def host_path(self) -> Path: ...
+
     @property
     def container_path(self) -> str: ...
 
@@ -152,7 +155,6 @@ class BatchExecutionPlanner:
         self,
         run_ctx: RunContext,
     ) -> Callable[[ScriptArtifactSpec], SandboxOptions]:
-        volumes = run_ctx.base_volumes + ((resolve_state_mount_source(), run_ctx.config.state_dir, "ro"),)
         resolved_artifacts: dict[UUID, AgentArtifact] = {}
 
         def sandbox_options_factory(artifact: ScriptArtifactSpec) -> SandboxOptions:
@@ -190,12 +192,21 @@ class BatchExecutionPlanner:
                 )
                 resolved_artifacts[artifact.artifact_id] = resolved_artifact
             env["AGENT_PATH"] = resolved_artifact.container_path
+            artifact_mount = resolve_artifact_state_mount(
+                artifact_host_path=resolved_artifact.host_path,
+                state_dir=run_ctx.state_dir,
+                artifact_container_path=resolved_artifact.container_path,
+            )
             return replace(
                 run_ctx.base_options,
                 container_name=container_name,
                 labels=labels,
                 env=env,
-                volumes=volumes,
+                volumes=run_ctx.base_volumes + artifact_mount.bind_volumes,
+                volume_subpath_mounts=(
+                    *run_ctx.base_options.volume_subpath_mounts,
+                    *artifact_mount.volume_subpaths,
+                ),
                 failure_diagnostics_dir=str(failure_diagnostics_dir),
             )
 

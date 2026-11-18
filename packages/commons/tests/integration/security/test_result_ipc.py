@@ -42,7 +42,6 @@ async def test_miner_sdk_response_round_trips_through_real_sandbox(sandbox) -> N
 @pytest.mark.anyio("asyncio")
 async def test_malicious_result_is_rejected_without_affecting_concurrent_invocation(
     sandbox,
-    result_ipc_barrier,
 ) -> None:
     barrier_id = uuid.uuid4().hex
     malicious, healthy = await asyncio.gather(
@@ -51,7 +50,6 @@ async def test_malicious_result_is_rejected_without_affecting_concurrent_invocat
             {
                 "mode": "result_ipc_overlap",
                 "barrier_id": barrier_id,
-                "barrier_url": result_ipc_barrier.url,
                 "role": "malicious",
             },
         ),
@@ -60,7 +58,6 @@ async def test_malicious_result_is_rejected_without_affecting_concurrent_invocat
             {
                 "mode": "result_ipc_overlap",
                 "barrier_id": barrier_id,
-                "barrier_url": result_ipc_barrier.url,
                 "role": "healthy",
             },
         ),
@@ -71,9 +68,17 @@ async def test_malicious_result_is_rejected_without_affecting_concurrent_invocat
     assert malicious.status_code == 500
     assert malicious.detail_code == "UnhandledException"
     assert healthy == {"role": "healthy"}
-    assert result_ipc_barrier.observed(barrier_id, "malicious")
-    assert result_ipc_barrier.observed(barrier_id, "healthy")
-    assert not result_ipc_barrier.observed(barrier_id, "reduce")
+    observed = await _invoke(sandbox, {"mode": "result_ipc_observed", "barrier_id": barrier_id})
+    assert observed == {"malicious": True, "healthy": True, "reduce": False}
+
+
+@pytest.mark.security
+@pytest.mark.anyio("asyncio")
+async def test_worker_cannot_create_or_operate_network_sockets(sandbox) -> None:
+    result = await _invoke(sandbox, {"mode": "network_syscalls"})
+
+    assert result["socketpair_works"] is True
+    assert all(value is True for name, value in result.items() if name != "socketpair_works")
 
 
 @pytest.mark.security

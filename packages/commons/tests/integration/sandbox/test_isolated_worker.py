@@ -87,20 +87,21 @@ async def test_blocked_loop_times_out_and_replaces_in_real_container(sandbox_lau
     assert replacement["loads"] == 1
 
 
-async def test_worker_cannot_authorize_host_control_requests(sandbox_launcher) -> None:
+async def test_worker_cannot_create_tcp_socket_or_read_control_credential(sandbox_launcher) -> None:
     source = b"""
 import os
-import httpx
+import socket
 from harnyx_miner_sdk.decorators import entrypoint
 @entrypoint("check_control")
 async def check_control(request: dict[str, str]) -> dict[str, object]:
-    async with httpx.AsyncClient(base_url="http://127.0.0.1:8000") as client:
-        health = await client.get("/healthz")
-        codes = []
-        for path in ("/admission", "/admission/release", "/entry/check_control"):
-            response = await client.post(path, json={}, headers={"x-platform-token": "test-tool-token"})
-            codes.append(response.status_code)
-    return {"health": health.status_code, "control_statuses": codes,
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM):
+            pass
+    except PermissionError:
+        network_denied = True
+    else:
+        network_denied = False
+    return {"network_denied": network_denied,
             "credential_in_environment": "SANDBOX_CONTROL_TOKEN" in os.environ}
 """
     deployment = sandbox_launcher(agent_module="commons.tests.integration.sandbox.isolated_worker_agent", source=source)
@@ -111,7 +112,7 @@ async def check_control(request: dict[str, str]) -> dict[str, object]:
         token=uuid4().hex,
         session_id=uuid4(),
     )
-    assert result == {"health": 200, "control_statuses": [401, 401, 401], "credential_in_environment": False}
+    assert result == {"network_denied": True, "credential_in_environment": False}
 
 
 async def test_stopped_compiler_cannot_prevent_container_worker_timeout(sandbox_launcher) -> None:

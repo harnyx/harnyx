@@ -170,13 +170,6 @@ def restrict_worker() -> None:
         "eventfd2",
         "pipe",
         "pipe2",
-        "socket",
-        "socketpair",
-        "connect",
-        "bind",
-        "listen",
-        "accept",
-        "accept4",
         "getsockname",
         "getpeername",
         "getsockopt",
@@ -208,6 +201,10 @@ def restrict_worker() -> None:
         "restart_syscall",
     ):
         rules.add_rule(seccomp.ALLOW, name)
+    # The worker uses an inherited, already-connected private channel. A Unix
+    # socket pair is still needed when asyncio initializes its self-pipe, but
+    # miner code must not create Internet sockets or establish connections.
+    rules.add_rule(seccomp.ALLOW, "socketpair", seccomp.Arg(0, seccomp.EQ, socket.AF_UNIX))
     # Descriptor ownership and async notification commands can signal peers
     # without calling kill. Permit only ordinary descriptor operations.
     for command in (

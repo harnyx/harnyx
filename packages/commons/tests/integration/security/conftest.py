@@ -6,12 +6,8 @@ import shutil
 import socket
 import subprocess
 import tempfile
-import threading
 import uuid
-from dataclasses import dataclass
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -31,39 +27,6 @@ SECURITY_SANDBOX_IMAGE = os.getenv(
     "SECURITY_SANDBOX_IMAGE",
     "local/harnyx-sandbox:0.1.0-dev",
 )
-
-
-@dataclass(frozen=True)
-class ResultIpcBarrier:
-    url: str
-    handler: type[_ResultIpcBarrierHandler]
-
-    def observed(self, barrier_id: str, role: str) -> bool:
-        with self.handler.condition:
-            return role in self.handler.arrivals.get(barrier_id, set())
-
-
-class _ResultIpcBarrierHandler(BaseHTTPRequestHandler):
-    condition = threading.Condition()
-    arrivals: dict[str, set[str]] = {}
-
-    def do_GET(self) -> None:
-        query = parse_qs(urlparse(self.path).query)
-        barrier_id = query.get("barrier_id", [""])[0]
-        role = query.get("role", [""])[0]
-        with self.condition:
-            roles = self.arrivals.setdefault(barrier_id, set())
-            roles.add(role)
-            self.condition.notify_all()
-            ready = role == "reduce" or self.condition.wait_for(
-                lambda: {"malicious", "healthy"} <= self.arrivals.get(barrier_id, set()),
-                timeout=3,
-            )
-        self.send_response(204 if ready else 504)
-        self.end_headers()
-
-    def log_message(self, _format: str, *_args: object) -> None:
-        return
 
 
 @pytest.fixture(scope="session")
@@ -105,25 +68,6 @@ def _find_free_port() -> int:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
-
-
-@pytest.fixture
-def result_ipc_barrier() -> ResultIpcBarrier:
-    port = _find_free_port()
-    server = ThreadingHTTPServer(("0.0.0.0", port), _ResultIpcBarrierHandler)  # noqa: S104 - Docker bridge access
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    url = resolve_sandbox_host_container_url(
-        docker_binary=DOCKER_BINARY,
-        sandbox_network="bridge",
-        rpc_port=port,
-    )
-    try:
-        yield ResultIpcBarrier(url=url, handler=_ResultIpcBarrierHandler)
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
 
 
 @pytest.fixture

@@ -960,6 +960,16 @@ class DockerSandboxManager(SandboxManager):
             if mode:
                 mount = f"{mount}:{mode}"
             args.extend(["-v", mount])
+        for mount in options.volume_subpath_mounts:
+            args.extend(
+                [
+                    "--mount",
+                    (
+                        f"type=volume,src={mount.source},dst={mount.target},"
+                        f"volume-subpath={mount.subpath},readonly"
+                    ),
+                ]
+            )
 
     def _add_env(self, args: list[str], options: SandboxOptions) -> None:
         for key, value in options.env.items():
@@ -1830,6 +1840,10 @@ def _diagnostic_options_snapshot(options: SandboxOptions) -> dict[str, object]:
         "network": options.network,
         "host_container_url": options.host_container_url,
         "volumes": [list(volume) for volume in options.volumes],
+        "volume_subpath_mounts": [
+            {"source": mount.source, "subpath": mount.subpath, "target": mount.target}
+            for mount in options.volume_subpath_mounts
+        ],
         "working_dir": options.working_dir,
         "extra_hosts": [list(extra_host) for extra_host in options.extra_hosts],
         "startup_delay_seconds": options.startup_delay_seconds,

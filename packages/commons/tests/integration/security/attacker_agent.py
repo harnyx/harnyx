@@ -14,13 +14,10 @@ import struct
 import subprocess
 import sys
 import tempfile
-import urllib.parse
-import urllib.request
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-import httpx
 import pyseccomp
 
 from harnyx_miner_sdk.context import ContextSnapshot
@@ -29,11 +26,11 @@ from harnyx_miner_sdk.query import Query, Response
 
 
 class _MaliciousResult:
-    def __init__(self, marker_url: str) -> None:
-        self._marker_url = marker_url
+    def __init__(self, marker_path: Path) -> None:
+        self._marker_path = marker_path
 
     def __reduce__(self):
-        urllib.request.urlopen(self._marker_url, timeout=2).close()  # noqa: S310 - fixed test-server URL
+        self._marker_path.touch()
         return str, ("executed",)
 
 
@@ -51,6 +48,8 @@ async def probe(request: Mapping[str, Any]) -> Any:
         return _probe_signals()
     if mode == "peer_access":
         return _probe_peer_access()
+    if mode == "network_syscalls":
+        return _probe_network_syscalls()
     if mode == "forge_frame":
         from harnyx_miner_sdk._internal.tool_invoker import _current_tool_invoker
 
@@ -72,12 +71,16 @@ async def probe(request: Mapping[str, Any]) -> Any:
     if mode == "result_ipc_overlap":
         barrier_id = str(request["barrier_id"])
         role = str(request["role"])
-        barrier_url = str(request["barrier_url"])
-        await _reach_result_ipc_barrier(barrier_url, barrier_id, role)
+        await _reach_result_ipc_barrier(barrier_id, role)
         if role == "malicious":
-            marker_url = _result_ipc_url(barrier_url, barrier_id, "reduce")
-            return _MaliciousResult(marker_url)
+            return _MaliciousResult(_result_ipc_marker(barrier_id, "reduce"))
         return {"role": "healthy"}
+    if mode == "result_ipc_observed":
+        barrier_id = str(request["barrier_id"])
+        return {
+            role: _result_ipc_marker(barrier_id, role).exists()
+            for role in ("malicious", "healthy", "reduce")
+        }
     return {"error": f"unknown mode {mode!r}"}
 
 
@@ -122,15 +125,53 @@ def _try_write(path: str) -> bool | str:
         return f"err:{exc.__class__.__name__}"
 
 
-async def _reach_result_ipc_barrier(barrier_url: str, barrier_id: str, role: str) -> None:
-    async with httpx.AsyncClient(trust_env=False, timeout=4) as client:
-        response = await client.get(_result_ipc_url(barrier_url, barrier_id, role))
-        response.raise_for_status()
+async def _reach_result_ipc_barrier(barrier_id: str, role: str) -> None:
+    own_marker = _result_ipc_marker(barrier_id, role)
+    own_marker.touch()
+    for _ in range(300):
+        if all(_result_ipc_marker(barrier_id, peer).exists() for peer in ("malicious", "healthy")):
+            return
+        await asyncio.sleep(0.01)
+    raise TimeoutError("result IPC overlap barrier timed out")
 
 
-def _result_ipc_url(barrier_url: str, barrier_id: str, role: str) -> str:
-    query = urllib.parse.urlencode({"barrier_id": barrier_id, "role": role})
-    return f"{barrier_url}?{query}"
+def _result_ipc_marker(barrier_id: str, role: str) -> Path:
+    if not barrier_id.isalnum() or not role.isalpha():
+        raise ValueError("invalid result IPC marker")
+    return Path("/dev/shm") / f"harnyx-result-ipc-{barrier_id}-{role}"  # noqa: S108 - container-local test IPC
+
+
+def _probe_network_syscalls() -> dict[str, bool]:
+    blocked: dict[str, bool] = {}
+    for family in (socket.AF_INET, socket.AF_INET6):
+        try:
+            candidate = socket.socket(family, socket.SOCK_STREAM)
+        except PermissionError:
+            blocked[f"socket_{family.name}"] = True
+        else:
+            candidate.close()
+            blocked[f"socket_{family.name}"] = False
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    attempts = {
+        "connect": ("connect", (-1, 0, 0)),
+        "bind": ("bind", (-1, 0, 0)),
+        "listen": ("listen", (-1, 0)),
+        "accept": ("accept", (-1, 0, 0)),
+        "accept4": ("accept4", (-1, 0, 0, 0)),
+    }
+    for label, (name, args) in attempts.items():
+        number = pyseccomp.resolve_syscall(pyseccomp.Arch.NATIVE, name)
+        ctypes.set_errno(0)
+        result = libc.syscall(number, *args)
+        blocked[label] = result == -1 and ctypes.get_errno() == errno.EPERM
+
+    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    left.sendall(b"ok")
+    socketpair_works = right.recv(2) == b"ok"
+    left.close()
+    right.close()
+    return {**blocked, "socketpair_works": socketpair_works}
 
 
 def _try_write_temp() -> bool:

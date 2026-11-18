@@ -19,6 +19,7 @@ from harnyx_commons.sandbox.docker import (
     resolve_sandbox_host_container_url,
 )
 from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxStartError
+from harnyx_commons.sandbox.options import ReadonlyVolumeSubpathMount
 
 _HOST_CONTAINER_URL = "http://127.0.0.1:1"
 
@@ -140,6 +141,13 @@ def test_docker_sandbox_manager_builds_commands(monkeypatch) -> None:
         labels={"harnyx.sandbox.owner": "validator"},
         network="harnyx-net",
         volumes=(("/host/agent.py", "/workspace/agent.py", "ro"),),
+        volume_subpath_mounts=(
+            ReadonlyVolumeSubpathMount(
+                source="validator-state",
+                subpath="agents/selected",
+                target="/workspace/state/agents/selected",
+            ),
+        ),
         extra_hosts=(("host.docker.internal", "host-gateway"),),
         seccomp_profile="/workspace/runtime-seccomp.json",
         host_container_url=_HOST_CONTAINER_URL,
@@ -167,6 +175,10 @@ def test_docker_sandbox_manager_builds_commands(monkeypatch) -> None:
         run_args.index("--label") : run_args.index("--label") + 2
     ]
     assert run_args[run_args.index("-v") + 1] == "/host/agent.py:/workspace/agent.py:ro"
+    assert run_args[run_args.index("--mount") + 1] == (
+        "type=volume,src=validator-state,dst=/workspace/state/agents/selected,"
+        "volume-subpath=agents/selected,readonly"
+    )
     assert run_args[run_args.index("--add-host") + 1] == "host.docker.internal:host-gateway"
     assert run_args[run_args.index("--security-opt") + 1] == "seccomp=/workspace/runtime-seccomp.json"
     assert run_args[-1] == options.image

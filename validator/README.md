@@ -6,7 +6,7 @@ This directory contains the validator runtime package plus an operator-ready Doc
 
 Before starting, ensure you have:
 
-1. **Docker** installed and running (Docker Compose v2+)
+1. **Docker Engine 26+** installed and running (Docker Compose v2+). The validator uses read-only named-volume subpath mounts so a miner receives only its selected source. Older engines fail sandbox startup through the existing `sandbox_start_failed` path; there is no fallback that mounts the whole validator state directory.
 2. **A Bittensor wallet/hotkey** registered on the subnet metagraph
 3. **A public endpoint** reachable by the platform (for registration + evaluation callbacks)
 4. **API key** for validator pairwise scoring and similarity LLM calls (see env vars below)

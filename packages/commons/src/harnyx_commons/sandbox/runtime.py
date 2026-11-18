@@ -11,7 +11,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from harnyx_commons.sandbox.docker import DockerSandboxManager, resolve_sandbox_host_container_url
-from harnyx_commons.sandbox.options import SandboxOptions
+from harnyx_commons.sandbox.options import ReadonlyVolumeSubpathMount, SandboxOptions
 from harnyx_commons.sandbox.seccomp.paths import default_profile_path
 
 DOCKER_BINARY: Final[str] = "/usr/bin/docker"
@@ -111,6 +111,7 @@ def build_sandbox_options(
     container_name: str,
     container_port: int = 8000,
     volumes: tuple[tuple[str, str, str | None], ...] = (),
+    volume_subpath_mounts: tuple[ReadonlyVolumeSubpathMount, ...] = (),
     extra_env: dict[str, str] | None = None,
     host_container_url: str | None = None,
     labels: Mapping[str, str] | None = None,
@@ -143,6 +144,7 @@ def build_sandbox_options(
         network=network,
         host_container_url=resolved_host_container_url,
         volumes=volumes,
+        volume_subpath_mounts=volume_subpath_mounts,
         extra_hosts=(("host.docker.internal", "host-gateway"),),
         startup_delay_seconds=2.0,
         wait_for_healthz=True,

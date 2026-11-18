@@ -40,15 +40,19 @@ async def probe(request: dict[str, object]) -> dict[str, object]:
     counter += 1
     mode = request.get("mode")
     if mode == "descriptor":
-        with socket.socket() as descriptor:
-            descriptor.setblocking(False)
-            flags = fcntl.fcntl(descriptor, fcntl.F_GETFL)
-            fcntl.fcntl(descriptor, fcntl.F_SETFL, flags)
+        reader, writer = os.pipe()
+        try:
+            os.set_blocking(reader, False)
+            flags = fcntl.fcntl(reader, fcntl.F_GETFL)
+            fcntl.fcntl(reader, fcntl.F_SETFL, flags)
             try:
-                fcntl.fcntl(descriptor, fcntl.F_SETOWN, os.getpid())
+                fcntl.fcntl(reader, fcntl.F_SETOWN, os.getpid())
             except PermissionError:
-                return {"notification_owner_denied": True, "nonblocking": not descriptor.getblocking()}
+                return {"notification_owner_denied": True, "nonblocking": not os.get_blocking(reader)}
             raise AssertionError("signal notification ownership was permitted")
+        finally:
+            os.close(reader)
+            os.close(writer)
     if mode == "block":
         while True:
             pass
