@@ -359,6 +359,9 @@ class _DurableResultQueue(asyncio.Queue[PlatformOwnedTaskExecution | PlatformOwn
         super().put_nowait(item)
 
 
+_ATTEMPT_CONTACT_INTERVAL_SECONDS = 30.0
+
+
 class PlatformWorkWorker:
     worker_name = "validator-platform-work-worker"
 
@@ -414,6 +417,8 @@ class PlatformWorkWorker:
         self._results_pending_submission: list[PlatformOwnedTaskResult] = []
         self._work_request_task: asyncio.Task[tuple[MinerTaskWorkAssignment, ...]] | None = None
         self._scoreable_execution_request_task: asyncio.Task[tuple[PlatformOwnedTaskExecution, ...]] | None = None
+        self._work_poll_lock = asyncio.Lock()
+        self._last_work_poll = monotonic_clock()
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
 
@@ -444,6 +449,36 @@ class PlatformWorkWorker:
         return bool(task is not None and not task.done())
 
     async def _run(self) -> None:
+        heartbeat = asyncio.create_task(self._report_attempt_contacts(), name="validator-attempt-contacts")
+        try:
+            await self._run_work_loop()
+        finally:
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
+
+    async def _report_attempt_contacts(self) -> None:
+        delay = _ATTEMPT_CONTACT_INTERVAL_SECONDS
+        while not self._stop.is_set():
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=delay)
+                return
+            except TimeoutError:
+                pass
+            delay = _ATTEMPT_CONTACT_INTERVAL_SECONDS - (self._monotonic_clock() - self._last_work_poll)
+            if delay > 0:
+                continue
+            delay = _ATTEMPT_CONTACT_INTERVAL_SECONDS
+            if self._work_poll_lock.locked():
+                continue
+            attempts = tuple(a for a in self._active_attempts() if a.validator_session_id is not None)
+            if attempts:
+                try:
+                    # The current batch can change during recovery. Discard even a nonempty offer.
+                    await self._request_platform_work(attempts, target_concurrency=1)
+                except Exception:
+                    logger.warning("validator attempt contact failed; will retry", exc_info=True)
+
+    async def _run_work_loop(self) -> None:
         while not self._stop.is_set():
             try:
                 await self.run_once()
@@ -524,25 +559,29 @@ class PlatformWorkWorker:
             return
         if not self._can_request_platform_work():
             return
-        if self._work_request_task is None:
+        if self._work_request_task is None and not self._work_poll_lock.locked():
             self._start_work_request()
 
     def _start_work_request(self) -> None:
         active_attempts = self._active_attempts()
         self._work_request_task = asyncio.create_task(
-            self._request_platform_work(active_attempts),
+            self._request_platform_work(active_attempts, target_concurrency=self._target_concurrency),
             name="validator-platform-work-request",
         )
 
     async def _request_platform_work(
-        self,
-        active_attempts: tuple[PlatformTaskAttemptIdentity, ...],
+        self, active_attempts: tuple[PlatformTaskAttemptIdentity, ...], *, target_concurrency: int,
     ) -> tuple[MinerTaskWorkAssignment, ...]:
-        return await self._platform.request_miner_task_work(
-            target_concurrency=self._target_concurrency,
-            max_active_artifacts=self._max_active_artifacts,
-            active_attempts=active_attempts,
-        )
+        async with self._work_poll_lock:
+            self._last_work_poll = self._monotonic_clock()
+            # Bound a stalled read while local work needs contact. Idle intake keeps its normal timeout.
+            timeout = _ATTEMPT_CONTACT_INTERVAL_SECONDS if active_attempts or self._local_inflight_count() else None
+            async with asyncio.timeout(timeout):
+                return await self._platform.request_miner_task_work(
+                    target_concurrency=target_concurrency,
+                    max_active_artifacts=self._max_active_artifacts,
+                    active_attempts=active_attempts,
+                )
 
     def _consume_completed_work_request(self) -> set[_ArtifactGroupKey]:
         task = self._work_request_task

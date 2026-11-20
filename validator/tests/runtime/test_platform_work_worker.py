@@ -2343,29 +2343,48 @@ async def test_restart_replays_saved_result_before_polling_or_execution(
         await worker._cancel_scoreable_execution_request_task()
 
 
-@pytest.mark.parametrize("corrupt_payload", (b"", b'{"batch_id":'), ids=("empty", "truncated"))
-async def test_corrupt_pending_record_never_unlocks_fresh_work(tmp_path, corrupt_payload):
+@pytest.mark.parametrize("healthy_copy", ("none", "other_result", "same_result_staged"))
+@pytest.mark.parametrize("damage", ("truncated", "wrong_filename"))
+async def test_restart_replays_recoverable_results_and_resumes_polling(tmp_path, healthy_copy, damage):
     from harnyx_validator.infrastructure.state.run_progress import FileBackedRunProgress
 
-    store = FileBackedRunProgress(tmp_path)
-    store.persist_pending(_platform_result(successful=True))
-    committed = next(store.pending_store.root.glob("result-*.json"))
-    committed.write_bytes(corrupt_payload)
+    original = FileBackedRunProgress(tmp_path)
+    result = _platform_result(successful=True)
+    original.persist_pending(result)
+    directory = original.pending_store.root
+    committed = next(directory.glob("result-*.json"))
+    if healthy_copy == "same_result_staged":
+        (directory / ".pending-crash").write_bytes(committed.read_bytes())
+    elif healthy_copy == "other_result":
+        result = _platform_result(successful=True)
+        original.persist_pending(result)
+    damaged = b"{" if damage == "truncated" else _platform_result(successful=True).model_dump_json().encode()
+    committed.write_bytes(damaged)
+    events = []
 
     class Platform:
+        def submit_miner_task_work_results(self, results):
+            assert tuple(results) == (result,)
+            events.append("submit")
+            return (_ack(result, reason_code="already_accepted"),)
+
         async def request_miner_task_work(self, **kwargs):
-            pytest.fail("corrupt recovery must not start fresh work")
+            events.append("poll")
+            return ()
 
     worker = PlatformWorkWorker(
         platform=Platform(), execute_artifact_assignments=_unexpected_execute_artifact_assignments,
-        submission_store=store, target_concurrency=1, max_active_artifacts=1,
+        submission_store=FileBackedRunProgress(tmp_path), target_concurrency=1, max_active_artifacts=1,
     )
-    for _ in range(2):
-        with pytest.raises((ValueError, RuntimeError), match="JSON|recovery"):
-            await worker.run_once()
-    assert worker._work_request_task is None
-    assert committed.read_bytes() == corrupt_payload
-    assert not list(store.pending_store.root.glob(".incomplete-*"))
+    try:
+        await worker.run_once()
+        await worker._work_request_task
+        assert events == (["poll"] if healthy_copy == "none" else ["submit", "poll"])
+        assert [p.read_bytes() for p in directory.glob(".corrupt-*")] == [damaged]
+        assert list(FileBackedRunProgress(tmp_path).pending_submissions()) == []
+    finally:
+        await worker._cancel_work_request_task()
+        await worker._cancel_scoreable_execution_request_task()
 
 
 async def test_platform_outage_keeps_recovery_to_one_bounded_window():
@@ -2391,3 +2410,76 @@ async def test_platform_outage_keeps_recovery_to_one_bounded_window():
         await worker.run_once()
     assert yielded == 100
     assert worker._work_request_task is None
+
+
+async def test_busy_validator_reports_exact_contact_while_submission_is_blocked(monkeypatch):
+    monkeypatch.setattr(platform_work_worker_module, "_ATTEMPT_CONTACT_INTERVAL_SECONDS", 0.01)
+    result = _platform_result(successful=False)
+    release = ThreadEvent()
+    reported = asyncio.Event()
+    contacts = []
+
+    class Platform:
+        def submit_miner_task_work_results(self, results):
+            release.wait(timeout=5)
+            return ()
+
+        async def request_miner_task_work(self, *, active_attempts, target_concurrency, **kwargs):
+            contacts.append((active_attempts, target_concurrency))
+            reported.set()
+            return (_assignment(batch_id=uuid4(), artifact=_artifact(uid=1), task=_task("new batch")),)
+
+    worker = PlatformWorkWorker(
+        platform=Platform(),
+        execute_artifact_assignments=_unexpected_execute_artifact_assignments,
+        target_concurrency=4,
+        max_active_artifacts=2,
+    )
+    worker._results_pending_submission.append(result)
+    worker.start()
+    try:
+        await asyncio.wait_for(reported.wait(), timeout=2)
+        attempts, concurrency = contacts[0]
+        assert concurrency == 1
+        assert [a.validator_session_id for a in attempts] == [result.terminal_attempt.validator_session_id]
+        assert worker._active_artifacts == {}
+        assert worker._work_request_task is None
+    finally:
+        release.set()
+        await worker.stop()
+
+
+async def test_saturated_validator_keeps_reporting_the_started_session(monkeypatch):
+    monkeypatch.setattr(platform_work_worker_module, "_ATTEMPT_CONTACT_INTERVAL_SECONDS", 0.01)
+    artifact = _artifact(uid=1)
+    assignment = _assignment(batch_id=uuid4(), artifact=artifact, task=_task("busy"))
+    group = _assigned_group(artifact_id=artifact.artifact_id)
+    assert group.put_nowait(assignment)
+    startup = group.take_nowait_for_startup()
+    group.mark_dispatch_ready()
+    claimed = group.claim_initial_for_dispatch(startup)
+    assert claimed is not None
+    sid = uuid4()
+    claimed.mark_started(sid)
+    reports = []
+    observed = asyncio.Event()
+
+    class Platform:
+        async def request_miner_task_work(self, *, target_concurrency, active_attempts, **kwargs):
+            reports.append((target_concurrency, tuple(a.validator_session_id for a in active_attempts)))
+            if len(reports) == 11:
+                observed.set()
+            return ()
+
+    worker = PlatformWorkWorker(
+        platform=Platform(), execute_artifact_assignments=_unexpected_execute_artifact_assignments,
+        target_concurrency=1, max_active_artifacts=1,
+    )
+    worker._active_artifacts[(assignment.batch_id, artifact.artifact_id)] = group
+    worker.start()
+    try:
+        await asyncio.wait_for(observed.wait(), timeout=2)
+        assert all(report == (1, (sid,)) for report in reports)
+        assert worker._work_request_task is None
+    finally:
+        await worker.stop()

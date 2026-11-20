@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import Final
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -410,7 +410,9 @@ def _discover_frames(directory: Path, batch_id: UUID, prefix: str) -> Iterator[_
                 length = int.from_bytes(header, "big")
                 if len(header) != _FRAME_HEADER_SIZE or length > size - handle.tell():
                     if segment != segments[-1]:
-                        raise RuntimeError(f"corrupt run-progress frame: {segment.name} at {offset}")
+                        logger.warning("skipping unreadable run-progress segment tail",
+                                       extra={"batch_id": str(batch_id), "segment": segment.name, "offset": offset})
+                        break
                     logger.warning("quarantining torn final run-progress frame", extra={"batch_id": str(batch_id),
                                                                                      "segment": segment.name})
                     handle.seek(offset)
@@ -429,6 +431,10 @@ def _discover_frames(directory: Path, batch_id: UUID, prefix: str) -> Iterator[_
                                       payload_offset=offset + _FRAME_HEADER_SIZE, payload_length=length,
                                       frame_offset=offset, frame_length=length + _FRAME_HEADER_SIZE,
                                       sha256=sha256(payload).hexdigest())
+
+
+class PendingSubmissionConflictError(RuntimeError):
+    """A different, valid submission already owns this identity."""
 
 
 class PendingTaskSubmissionStore:
@@ -455,9 +461,13 @@ class PendingTaskSubmissionStore:
         # multiple in-memory snapshots while preserving their exchanges.
         canonical_item = _PENDING_ADAPTER.validate_json(payload)
         if path.exists():
-            if _PENDING_ADAPTER.validate_json(path.read_bytes()) != canonical_item:
-                raise RuntimeError("conflicting pending submission for the same execution identity")
-            return
+            existing = self._read_committed(path)
+            if existing is not None:
+                if existing != canonical_item:
+                    raise PendingSubmissionConflictError(
+                        "conflicting pending submission for the same execution identity"
+                    )
+                return
         temporary: str | None = None
         try:
             with tempfile.NamedTemporaryFile(dir=self.root, prefix=".pending-", delete=False) as handle:
@@ -469,7 +479,9 @@ class PendingTaskSubmissionStore:
                 os.link(temporary, path)
             except FileExistsError as exc:
                 if _PENDING_ADAPTER.validate_json(path.read_bytes()) != canonical_item:
-                    raise RuntimeError("conflicting pending submission for the same execution identity") from exc
+                    raise PendingSubmissionConflictError(
+                        "conflicting pending submission for the same execution identity"
+                    ) from exc
             self._sync_directory()
         finally:
             if temporary is not None:
@@ -490,16 +502,37 @@ class PendingTaskSubmissionStore:
                     extra={"quarantine_file": quarantine.name},
                 )
                 continue
-            self.persist(item)
+            try:
+                self.persist(item)
+            except PendingSubmissionConflictError:
+                self._quarantine(temporary, "conflicts with committed submission")
+                continue
             temporary.unlink()
             self._sync_directory()
         for kind in ("execution-", "result-"):
             for path in self.root.iterdir():
                 if path.name.startswith(kind) and path.suffix == ".json":
-                    item = _PENDING_ADAPTER.validate_json(path.read_bytes())
-                    if self._path(item) != path:
-                        raise RuntimeError("pending submission identity does not match its filename")
-                    yield item
+                    item = self._read_committed(path)
+                    if item is not None:
+                        yield item
+
+    def _read_committed(self, path: Path) -> PlatformOwnedTaskExecution | PlatformOwnedTaskResult | None:
+        try:
+            item = _PENDING_ADAPTER.validate_json(path.read_bytes())
+        except ValidationError:
+            self._quarantine(path, "invalid submission")
+            return None
+        if self._path(item) != path:
+            self._quarantine(path, "submission identity differs from filename")
+            return None
+        return item
+
+    def _quarantine(self, path: Path, reason: str) -> None:
+        quarantine = self.root / f".corrupt-{uuid4().hex}"
+        path.rename(quarantine)
+        self._sync_directory()
+        logger.warning("quarantined pending submission: %s", reason,
+                       extra={"submission_file": path.name, "quarantine_file": quarantine.name})
 
     def acknowledge(self, item: PlatformOwnedTaskExecution | PlatformOwnedTaskResult) -> None:
         self._path(item).unlink(missing_ok=True)

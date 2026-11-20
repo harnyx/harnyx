@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -9,6 +10,8 @@ from pathlib import Path
 from threading import RLock
 from typing import TypeAlias
 from uuid import UUID
+
+from pydantic import ValidationError
 
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskAttemptAuditRecord,
@@ -27,10 +30,13 @@ from harnyx_validator.application.ports.progress import (
 from harnyx_validator.infrastructure.state.run_progress_blob_store import (
     AttemptAuditBlobRef,
     AttemptAuditBlobStore,
+    PendingSubmissionConflictError,
     PendingTaskSubmissionStore,
     RunSubmissionBlobRef,
     RunSubmissionBlobStore,
 )
+
+logger = logging.getLogger(__name__)
 
 ProviderEvidenceSnapshot: TypeAlias = ProviderFailureEvidence
 
@@ -120,24 +126,44 @@ class FileBackedRunProgress:
                 return
             refs = self.submission_refs_by_batch.setdefault(batch_id, {})
             for ref in self.blob_store.discover(batch_id):
-                submission = self.blob_store.read(ref)
+                location = {"batch_id": str(batch_id), "segment": ref.segment_name, "offset": ref.frame_offset}
+                try:
+                    submission = self.blob_store.read(ref)
+                except ValidationError:
+                    logger.warning("skipping invalid retained submission", extra=location)
+                    continue
                 if submission.batch_id != batch_id:
-                    raise RuntimeError("run-progress submission belongs to a different batch")
+                    logger.warning("run-progress submission belongs to a different batch", extra=location)
+                    continue
+                if (
+                    submission.run.session_id != submission.session.session_id
+                    or submission.run.task_id != submission.session.task_id
+                    or submission.run.uid != submission.session.uid
+                ):
+                    logger.warning("skipping submission with inconsistent session identity", extra=location)
+                    continue
                 pair = _submission_pair(submission)
                 previous = refs.get(pair)
                 if previous is not None and self.blob_store.read(previous) != submission:
-                    raise RuntimeError("conflicting recovered run-progress submissions")
+                    logger.warning("conflicting recovered run-progress submissions", extra=location)
+                    continue
                 refs[pair] = ref
                 self._record_submission(batch_id=batch_id, refs=refs, result=submission)
             audits = self.attempt_refs_by_session_by_batch.setdefault(batch_id, {})
             for ref in self.attempt_blob_store.discover(batch_id):
-                attempt = self.attempt_blob_store.read(ref)
+                location = {"batch_id": str(batch_id), "segment": ref.segment_name, "offset": ref.frame_offset}
+                try:
+                    attempt = self.attempt_blob_store.read(ref)
+                except ValidationError:
+                    logger.warning("skipping invalid retained attempt", extra=location)
+                    continue
                 if attempt.batch_id != batch_id:
-                    raise RuntimeError("run-progress attempt belongs to a different batch")
+                    logger.warning("run-progress attempt belongs to a different batch", extra=location)
+                    continue
                 previous = audits.get(attempt.validator_session_id)
                 if previous is not None:
                     if self.attempt_blob_store.read(previous) != attempt:
-                        raise RuntimeError("conflicting recovered run-progress attempts")
+                        logger.warning("conflicting recovered run-progress attempts", extra=location)
                     continue
                 audits[attempt.validator_session_id] = ref
                 sequence = self.next_sequence_by_batch.get(batch_id, 1)
@@ -152,19 +178,19 @@ class FileBackedRunProgress:
                     submission = None
                 if submission is not None and submission.session.session_id != attempt.validator_session_id:
                     submission = None
-                if submission is not None and not (
-                    submission.run.session_id == submission.session.session_id == attempt.validator_session_id
-                    and submission.run.task_id == submission.session.task_id == attempt.task_id
-                    and submission.run.uid == submission.session.uid == attempt.uid
-                    and submission.run.artifact_id == attempt.artifact_id
-                ):
-                    raise RuntimeError("recovered submission identity conflicts with its attempt")
+                if submission is not None and submission.run.uid != attempt.uid:
+                    logger.warning("recovered submission identity conflicts with its attempt", extra=location)
+                    continue
                 if attempt.terminal_effect is MinerTaskAttemptTerminalEffect.TASK_RESULT and submission is None:
                     continue
-                self.persist_pending(PlatformOwnedTaskResult(
-                    batch_id=batch_id, artifact_id=attempt.artifact_id, task_id=attempt.task_id,
-                    attempt_number=attempt.attempt_number, result=submission, terminal_attempt=attempt,
-                ))
+                try:
+                    self.persist_pending(PlatformOwnedTaskResult(
+                        batch_id=batch_id, artifact_id=attempt.artifact_id, task_id=attempt.task_id,
+                        attempt_number=attempt.attempt_number, result=submission, terminal_attempt=attempt,
+                    ))
+                except PendingSubmissionConflictError:
+                    logger.warning("retaining committed submission over conflicting progress history",
+                                   extra={"batch_id": str(batch_id), "session_id": str(attempt.validator_session_id)})
             self._restored_batches.add(batch_id)
 
     def register(self, batch: MinerTaskBatchSpec) -> None:

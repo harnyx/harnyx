@@ -878,5 +878,25 @@ def test_recovery_rejects_conflicting_run_and_session_identity(tmp_path: Path) -
     original = _progress(tmp_path)
     original.record(submission)
     original.record_terminated_attempt(attempt)
-    with pytest.raises(RuntimeError, match="identity conflicts"):
-        _progress(tmp_path).recover_retained(datetime.now(UTC) - timedelta(hours=1))
+    healthy_attempt = _make_attempt(batch, session_id=uuid4())
+    original.record_terminated_attempt(healthy_attempt)
+    fresh = _progress(tmp_path)
+    fresh.recover_retained(datetime.now(UTC) - timedelta(hours=1))
+    assert [item.terminal_attempt for item in fresh.pending_submissions()] == [healthy_attempt]
+
+
+def test_recovery_keeps_valid_frames_after_invalid_payload_and_damaged_segment(tmp_path: Path) -> None:
+    batch = _make_batch()
+    healthy = _make_attempt(batch)
+    original = _progress(tmp_path)
+    original.record_terminated_attempt(healthy)
+    directory = original.storage_root / str(batch.batch_id)
+    segment = next(directory.glob("attempts-*.blob"))
+    segment.write_bytes((1).to_bytes(8, "big") + b"{" + segment.read_bytes())
+    earlier = directory / "attempts-00000000.blob"
+    assert earlier != segment
+    earlier.write_bytes(b"broken")
+    fresh = _progress(tmp_path)
+    fresh.recover_retained(datetime.now(UTC) - timedelta(hours=1))
+    assert [item.terminal_attempt for item in fresh.pending_submissions()] == [healthy]
+    assert earlier.read_bytes() == b"broken"
