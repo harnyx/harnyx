@@ -95,7 +95,7 @@ class ExtractionAnswer(_ExtractionModel):
     p_null: Probability | None = None
     confidence: Probability | None = None
     span: list[int] | None = Field(default=None, min_length=2, max_length=2)
-    spans: list[list[int]] | None = None
+    spans: list[list[int] | None] | None = None
     unit: str | None = None
     mean: int | float | str | list[int | float | str] | None = None
     median: int | float | str | list[int | float | str] | None = None
@@ -161,6 +161,8 @@ def validate_extraction_answer(question: ExtractionQuestion, answer: ExtractionA
                 question.type
             ](value)
     for span in ([answer.span] if answer.span is not None else []) + (answer.spans or []):
+        if span is None:
+            continue
         if len(span) != 2 or not 0 <= span[0] <= span[1] <= len(state):
             raise ValueError("extraction source span is outside the input state")
     if question.type == "text" and isinstance(value, str) and answer.span is not None:

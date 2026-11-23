@@ -11,7 +11,7 @@ from harnyx_commons.llm.providers.cloudflare import CloudflareDecisionProvider, 
 from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest
 from harnyx_miner_sdk.tools.cloudflare import CloudflareCredential
-from harnyx_miner_sdk.tools.decision_models import DecisionQueryRequest
+from harnyx_miner_sdk.tools.decision_models import DecisionQueryRequest, DecisionQueryResponse
 
 pytestmark = pytest.mark.anyio("asyncio")
 
@@ -58,6 +58,10 @@ async def test_decisions_use_stored_account_token_and_map_boolean_to_native_noul
      {"type": "estimate", "value": 5, "median": 5, "p10": 9, "p90": 1}, False),
     ({"type": "number", "null_threshold": 0.5}, {"type": "number", "value": 100, "p_null": 0.9}, False),
     ({"type": "list", "items": "text"}, {"type": "list", "value": None}, False),
+    ({"type": "list", "items": "text"},
+     {"type": "list", "value": ["amount", "invoice"], "spans": [None, [3, 10]]}, True),
+    ({"type": "list", "items": "text"},
+     {"type": "list", "value": ["amount", "invoice"], "spans": [None, [3, 100]]}, False),
     ({"type": "estimate", "min": 0, "max": 10}, {"type": "estimate", "value": None}, False),
     ({"type": "forecast", "min": 0, "max": 10, "horizon": 2, "interval": "day"},
      {"type": "forecast", "value": None}, False),
@@ -81,8 +85,8 @@ async def test_extraction_values_and_failure_billing_follow_native_contract(
         assert body["fields"]["amount"]["instructions"] == "Invoice total"
         assert "questions" not in body
         return httpx.Response(200, json={"success": True, "result": {
-            "model": "clairic", "answers": {"amount": answer}, "truncated": False,
-            "usage": {"input_tokens": 1000, "output_tokens": 0, "passes": 3},
+            "model": "clairic-27b", "answers": {"amount": {**answer, "complete": True}}, "truncated": False,
+            "usage": {"input_tokens": 1000, "output_tokens": 12, "passes": 3},
         }})
 
     request = DecisionQueryRequest.model_validate({
@@ -97,12 +101,16 @@ async def test_extraction_values_and_failure_billing_follow_native_contract(
             assert caught.value.billing.actual_cost_usd == pytest.approx(0.0001)
             assert caught.value.billing.reference_cost_usd == caught.value.billing.actual_cost_usd
             assert caught.value.billing.usage.input_tokens == 1000
+            assert caught.value.billing.usage.output_tokens == 12
         else:
             result = await provider.query(request)
-            assert result.response.answers["amount"].value == answer["value"]
+            sdk_response = DecisionQueryResponse.model_validate_json(result.response.model_dump_json())
+            assert sdk_response.answers["amount"].value == answer["value"]
+            assert sdk_response.answers["amount"].spans == answer.get("spans")
             assert result.response.answers["amount"].guess == answer.get("guess")
             assert result.response.answers["amount"].mean == answer.get("mean")
             assert result.response.truncated is False
+            assert result.response.usage.output_tokens == 12
             assert result.actual_cost_usd == pytest.approx(0.0001)
             assert result.reference_cost_usd == result.actual_cost_usd
 

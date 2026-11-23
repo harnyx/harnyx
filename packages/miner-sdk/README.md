@@ -730,7 +730,8 @@ do not supply the requested values. When both representations are supplied,
 corresponding values and same-name statistics must agree. Each position is
 validated as one estimate, including percentile ordering across the two forms.
 Integer bounds, steps, values and statistics retain their precision during validation.
-Missing list matches return `[]`, never null.
+Missing list matches return `[]`, never null. When a list includes `spans`, each
+entry gives the source offsets for the corresponding item or `null` if it has no source span.
 For scalar extraction, a null `value` means no determined value; do not
 substitute `guess`.
 Predictions can be wrong despite satisfying the requested type. Estimates must
@@ -742,10 +743,10 @@ model must support every question type. JSON state is serialized to text for
 Clairic; source spans index that text. Empty extraction text is rejected before
 dispatch. This tool supports text/JSON state rather
 than Cloudflare's separate native media input fields. Clairic's `truncated`
-status is preserved, so callers can detect upstream input truncation. Its
+status indicates an invalid or incomplete generated answer or list. Its
 reported input-token count includes the provider's processing passes and is
-billed once at the published rate. Native decision/extraction models generate
-no output tokens. Independently validated usage retains known charges when
+billed once at the published rate. Clairic may report output tokens. The response preserves
+that count, and only input tokens incur a charge. Independently validated usage retains known charges when
 answer validation fails. No provider inference retry or model fallback is added.
 
 Cloudflare support requires `harnyx-miner-sdk>=0.1.24`.

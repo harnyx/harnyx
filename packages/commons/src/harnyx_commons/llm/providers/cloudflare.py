@@ -252,11 +252,16 @@ class _ScoreAnswer(ScoreAnswer):
     legend: dict[str, DecisionContext]
 
 
+class _ExtractionAnswer(ExtractionAnswer):
+    # Workers AI includes decoder diagnostics alongside the published answer fields.
+    model_config = ConfigDict(extra="ignore")
+
+
 class _Payload(BaseModel):
     model_config = ConfigDict(extra="ignore", strict=True)
     model: str
     answers: dict[
-        str, Annotated[_NoulAnswer | _ChoiceAnswer | _ScoreAnswer | ExtractionAnswer, Field(discriminator="type")]
+        str, Annotated[_NoulAnswer | _ChoiceAnswer | _ScoreAnswer | _ExtractionAnswer, Field(discriminator="type")]
     ]
     usage: _Usage
     truncated: bool | None = None
@@ -309,8 +314,8 @@ class CloudflareDecisionProvider:
         # Establish charge evidence independently before parsing model answers.
         try:
             usage = _BillingProbe.model_validate(raw).usage
-            if usage.output_tokens != 0:
-                raise ValueError("Cloudflare decision models do not generate output tokens")
+            if not extraction and usage.output_tokens != 0:
+                raise ValueError("Cloudflare Clef models do not generate output tokens")
             canonical_usage = DecisionUsage(input_tokens=usage.input_tokens, output_tokens=usage.output_tokens)
             cost = price_decision("cloudflare", request.model, canonical_usage)
         except (ValidationError, ValueError) as exc:
@@ -327,7 +332,10 @@ class CloudflareDecisionProvider:
         )
         try:
             native = _Payload.model_validate(raw)
-            if native.model not in {request.model, request.model.rsplit("/", 1)[-1]}:
+            expected_models = {request.model, request.model.rsplit("/", 1)[-1]}
+            if extraction:
+                expected_models.add("clairic-27b")
+            if native.model not in expected_models:
                 raise ValueError("Cloudflare returned a different model")
             response = DecisionQueryResponse(
                 provider="cloudflare", model=request.model,

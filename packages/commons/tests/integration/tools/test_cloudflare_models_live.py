@@ -81,7 +81,11 @@ async def test_cloudflare_native_typed_contract(capability: str) -> None:
             assert answer.span == [16, 22]
         assert set(result.response.answers) == set(questions)
         assert result.response.usage.input_tokens > 0
-        assert result.response.usage.output_tokens == 0
+        if capability == "extraction":
+            assert result.response.usage.output_tokens >= 0
+            assert result.actual_cost_usd == pytest.approx(result.response.usage.input_tokens * 0.10 / 1_000_000)
+        else:
+            assert result.response.usage.output_tokens == 0
         assert result.actual_cost_usd >= 0
         assert result.reference_cost_usd == result.actual_cost_usd
     finally:
