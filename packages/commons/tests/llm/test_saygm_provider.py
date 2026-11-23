@@ -30,7 +30,6 @@ from harnyx_commons.llm.schema import (
     LlmThinkingConfig,
     LlmTool,
 )
-from harnyx_commons.llm.tool_models import parse_miner_selected_llm_provider_model
 from harnyx_miner_sdk.llm import Timeout
 
 pytestmark = pytest.mark.anyio("asyncio")
@@ -111,7 +110,7 @@ async def test_internal_alias_and_miner_native_routes_stream_and_settle_with_exp
         )
         for request in (
             internal,
-            replace(internal, model="gpt-oss-20b", thinking=LlmThinkingConfig(enabled=True, effort="low")),
+            replace(internal, model="gpt-6.1-terra", thinking=LlmThinkingConfig(enabled=True, effort="low")),
             replace(internal, model="zai-org/GLM-5.1-TEE"),
         ):
             response = await provider.invoke(request)
@@ -126,7 +125,7 @@ async def test_internal_alias_and_miner_native_routes_stream_and_settle_with_exp
     assert all(request.headers["Authorization"] == "Bearer miner-key" for request in requests)
     first, second, third = [json.loads(request.content) for request in requests]
     assert first["model"] == "gemma-4-31b-turbo-tee"
-    assert second["model"] == "gpt-oss-20b"
+    assert second["model"] == "gpt-6.1-terra"
     assert third["model"] == "glm-5.1-tee"
     assert second["reasoning_effort"] == "low"
     assert second["stream_options"] == {"include_usage": True}
@@ -236,23 +235,6 @@ async def test_billable_empty_output_retry_accumulates_all_settled_costs() -> No
         )
     assert attempts == 2
     assert response.metadata["actual_cost_usd_total"] == pytest.approx(0.0002)
-
-
-def test_miner_selection_accepts_native_ids_and_rejects_other_api_surfaces_and_internal_aliases() -> None:
-    assert parse_miner_selected_llm_provider_model(provider="saygm", model="gpt-oss-20b").model == "gpt-oss-20b"
-    for model in (
-        "gpt-6-luna",
-        "glm-5.1-tee",
-        "kimi-k3-tee",
-        "glm-5.3",
-        "ornith-1.5-397b",
-        "qwen3.6-35b-a3b",
-        "claude-sonnet-5",
-        "gemini-3.8-flash",
-        "google/gemma-4-31B-turbo-TEE",
-    ):
-        with pytest.raises(ValueError, match="not supported"):
-            parse_miner_selected_llm_provider_model(provider="saygm", model=model)
 
 
 def _retry_request(**updates: object) -> LlmRequest:

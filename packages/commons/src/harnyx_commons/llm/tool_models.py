@@ -94,26 +94,6 @@ MINER_SELECTED_LLM_PROVIDER_MODELS: Mapping[
         "xiaomi/mimo-v2.6-pro",
         "xiaomi/mimo-v2.6-pro-ultraspeed",
     ),
-    # SayGM equivalents of models already authorized through existing miner providers.
-    SAYGM_PROVIDER: (
-        "deepseek-v3.2-tee",
-        "deepseek-v4-flash-0731",
-        "deepseek-v4-flash-0731-tee",
-        "deepseek-v4.1-flash",
-        "deepseek-v4.1-flash-tee",
-        "gemma-4-31b-turbo-tee",
-        "glm-5.2",
-        "glm-5.2-tee",
-        "glm-5.3-flash",
-        "glm-5.3-flash-tee",
-        "gpt-oss-20b",
-        "kimi-k2.6-tee",
-        "mimo-v2.6-pro-ultraspeed",
-        "mimo-v2.6-pro-ultraspeed-tee",
-        "qwen3.5-397b-a17b-tee",
-        "qwen3.6-27b-tee",
-        "qwen3.8-27b",
-    ),
     AI_GATEWAY_PROVIDER: (
         "thinkingmachines/inkling",
         "zai/glm-5.2-fast",
@@ -197,7 +177,10 @@ def parse_miner_selected_llm_provider_model(
         raise ValueError("model must be provided for validator tools")
     if selected_provider == OPENROUTER_PROVIDER:
         validate_paid_openrouter_model(selected_model)
-    elif selected_model not in MINER_SELECTED_LLM_PROVIDER_MODELS[selected_provider]:
+    elif (
+        selected_provider != SAYGM_PROVIDER
+        and selected_model not in MINER_SELECTED_LLM_PROVIDER_MODELS[selected_provider]
+    ):
         raise ValueError(f"model {selected_model!r} is not supported for miner-selected provider {selected_provider!r}")
     return MinerSelectedLlmProviderModel(provider=selected_provider, model=selected_model)
 

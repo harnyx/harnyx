@@ -116,22 +116,17 @@ async def test_detailed_llm_timeout_preserves_phases_and_outer_deadline_headroom
     assert provider.requests[0].retry_policy.attempts == 1
 
 
-@pytest.mark.parametrize("model", ["gpt-6-luna", "glm-5.1-tee", "kimi-k3-tee", "glm-5.3", "ornith-1.5-397b"])
-async def test_saygm_miner_access_rejects_new_models_before_provider_dispatch(model: str) -> None:
+@pytest.mark.parametrize("model", ["gpt-6.1-terra", "claude-sonnet-5-5"])
+async def test_saygm_dispatches_miner_selected_native_model(model: str) -> None:
     provider = _CapturingLlmProvider()
-    invoker = RuntimeToolInvoker(InMemoryReceiptLog(), llm_provider=provider, llm_provider_name="saygm")
-    with pytest.raises(ValueError, match="not supported for miner-selected provider"):
-        await invoker.invoke(
-            "llm_chat",
-            args=(),
-            kwargs={
-                "provider": "saygm",
-                "model": model,
-                "messages": [{"role": "user", "content": "hello"}],
-            },
-            context=_miner_context(),
-        )
-    assert provider.requests == []
+    invoker = RuntimeToolInvoker(InMemoryReceiptLog(), llm_provider_resolver=lambda *_: provider)
+    await invoker.invoke(
+        "llm_chat",
+        args=(),
+        kwargs={"provider": "saygm", "model": model, "messages": [{"role": "user", "content": "hello"}]},
+        context=_miner_context(),
+    )
+    assert [request.model for request in provider.requests] == [model]
 
 
 def _miner_context() -> ToolInvocationContext:

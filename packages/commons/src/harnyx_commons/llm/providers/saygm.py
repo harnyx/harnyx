@@ -27,52 +27,6 @@ from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatOutputSink
 SAYGM_BASE_URL = "https://api.saygm.com/v1"
 _stream_output_started: ContextVar[bool] = ContextVar("saygm_stream_output_started", default=False)
 
-# Transport capability is independent of the narrower miner authorization policy.
-SAYGM_CHAT_COMPLETIONS_MODELS = (
-    "deepseek-v3.2-tee",
-    "deepseek-v4-flash-0731",
-    "deepseek-v4-flash-0731-tee",
-    "deepseek-v4.1-flash",
-    "deepseek-v4.1-flash-tee",
-    "gemma-4-31b-turbo-tee",
-    "glm-5.1-tee",
-    "glm-5.2",
-    "glm-5.2-tee",
-    "glm-5.3",
-    "glm-5.3-flash",
-    "glm-5.3-flash-tee",
-    "glm-5.3-tee",
-    "gpt-5.4",
-    "gpt-5.4-mini",
-    "gpt-5.4-nano",
-    "gpt-5.5",
-    "gpt-5.6-luna",
-    "gpt-5.6-sol",
-    "gpt-5.6-terra",
-    "gpt-6-astra",
-    "gpt-6-luna",
-    "gpt-6-sol",
-    "gpt-6.1-sol",
-    "gpt-oss-20b",
-    "kimi-k2.6-tee",
-    "kimi-k3",
-    "kimi-k3-tee",
-    "mimo-v2.6-pro-ultraspeed",
-    "mimo-v2.6-pro-ultraspeed-tee",
-    "mistral-nemo-instruct-2407-tee",
-    "nemotron-3-nano-omni-30b-tee",
-    "o3",
-    "o4-mini",
-    "ornith-1.5-397b",
-    "ornith-1.5-397b-tee",
-    "qwen3-235b-a22b-thinking-2507-tee",
-    "qwen3-32b-tee",
-    "qwen3.5-397b-a17b-tee",
-    "qwen3.6-27b-tee",
-    "qwen3.6-35b-a3b",
-    "qwen3.8-27b",
-)
-
 
 class SayGmLlmProvider(OpenAiCompatibleLlmProvider):
     def __init__(self, *, api_key: SecretStr, client: httpx.AsyncClient | None = None) -> None:
@@ -91,8 +45,6 @@ class SayGmLlmProvider(OpenAiCompatibleLlmProvider):
         self._owns_client = client is None
 
     async def _invoke(self, request: AbstractLlmRequest) -> LlmResponse:
-        if request.model not in SAYGM_CHAT_COMPLETIONS_MODELS:
-            raise ValueError(f"SayGM Chat Completions does not support model {request.model!r}")
         token = _stream_output_started.set(False)
         try:
             return await super()._invoke(replace(request, provider=SAYGM_PROVIDER))

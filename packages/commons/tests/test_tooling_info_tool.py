@@ -82,7 +82,7 @@ async def test_discovery_uses_fresh_cache_and_recovers_after_expired_refresh_fai
 
 def test_tool_model_pricing_covers_every_allowed_tool_model() -> None:
     assert set(MODEL_PRICING) == set(ALLOWED_TOOL_MODELS)
-    assert set(MINER_TOOL_LLM_PRICING) == set(MINER_SELECTED_LLM_PROVIDER_MODELS)
+    assert set(MINER_TOOL_LLM_PRICING) == set(MINER_SELECTED_LLM_PROVIDER_MODELS) | {"saygm"}
     for provider, models in MINER_SELECTED_LLM_PROVIDER_MODELS.items():
         assert set(MINER_TOOL_LLM_PRICING[provider]) == set(models)
     assert set(MINER_TOOL_EMBEDDING_PRICING) == set(MINER_SELECTED_EMBEDDING_PROVIDER_MODELS)
@@ -152,15 +152,16 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
     }
     model_prices = payload["pricing"]["llm_chat"]["provider_models"]
     provider_models = payload["allowed_llm_provider_models"]
+    assert "saygm" not in provider_models
     assert provider_models == {
         provider: list(models) if provider != "openrouter" else ["inception/mercury-3"]
         for provider, models in MINER_SELECTED_LLM_PROVIDER_MODELS.items()
     }
-    assert set(model_prices) == set(provider_models) - {"openrouter"}
+    assert set(model_prices) == (set(provider_models) - {"openrouter"}) | {"saygm"}
     for provider, pricing_by_model in MINER_TOOL_LLM_PRICING.items():
         if provider == "openrouter":
             continue
-        assert set(model_prices[provider]) == set(provider_models[provider])
+        assert set(model_prices[provider]) == set(pricing_by_model)
         for model, rates in pricing_by_model.items():
             assert model_prices[provider][model]["input_per_million"] == pytest.approx(rates.input_per_million)
             assert model_prices[provider][model]["output_per_million"] == pytest.approx(rates.output_per_million)

@@ -158,10 +158,7 @@ def build_miner_paid_llm_provider(
             ),
         )
     if provider_name == SAYGM_PROVIDER:
-        return LlmProviderAdapter(
-            provider_name=provider_name,
-            delegate=SayGmLlmProvider(api_key=SecretStr(explicit_key)),
-        )
+        return SayGmLlmProvider(api_key=SecretStr(explicit_key))
     if provider_name == AI_GATEWAY_PROVIDER:
         return LlmProviderAdapter(
             provider_name=provider_name,

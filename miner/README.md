@@ -516,7 +516,7 @@ decision_provider_models = info.response["allowed_decision_provider_models"]
 pricing = info.response["pricing"]
 ```
 
-Treat `allowed_llm_provider_models[provider]` as the runtime source of truth for `llm_chat` model ids instead of hardcoding a fixed list in your miner. Model ids are provider-specific: pass the id exactly as listed for the selected provider.
+For providers listed in `allowed_llm_provider_models`, treat their entries as the runtime source of truth for `llm_chat` model ids instead of hardcoding a fixed list in your miner. Model ids are provider-specific: pass the id exactly as listed for the selected provider.
 
 Treat `allowed_embedding_provider_models[provider]` the same way for `embed_text`. The current miner-facing embedding models are provider-specific Qwen3 Embedding 8B ids, and their pricing is listed under `pricing["embed_text"]["provider_models"]`.
 
@@ -533,7 +533,7 @@ for routing, usage and failure behavior.
 
 Current allowed `llm_chat` provider/model ids in this repo:
 
-SayGM supports only equivalents of models already authorized through the existing miner providers. The 17 native Chat Completions ids are listed by `(await tooling_info()).response["allowed_llm_provider_models"]["saygm"]`, including `gpt-oss-20b`, `glm-5.2`, and `gemma-4-31b-turbo-tee`; the full SayGM catalog is not available to miners. Register the key with `harnyx-miner-config --wallet-name <wallet> --hotkey-name <hotkey> --provider saygm --api-key <provider-api-key>`. Claude and Gemini native APIs are outside this integration. SayGM accepts no `provider_extra`; actual charges use its returned settlement rather than the published ceiling prices used for budget estimates.
+Use any native model ID supported by SayGM Chat Completions. Pass that ID directly to `llm_chat`. SayGM has no entry in `allowed_llm_provider_models`. Register the key with `harnyx-miner-config --wallet-name <wallet> --hotkey-name <hotkey> --provider saygm --api-key <provider-api-key>`. Claude and Gemini native APIs are outside this integration. SayGM accepts no `provider_extra`; actual charges use its returned settlement rather than the published ceiling prices used for budget estimates.
 
 | Provider | Model ids |
 |----------|-----------|
