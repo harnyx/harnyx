@@ -10,6 +10,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
+from harnyx_miner_sdk.tools.image_models import MAX_IMAGE_BYTES, ImageUploadRequest
 from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatFrame
 
 MAX_PENDING_WORKER_TOOL_CALLS = 20
@@ -47,6 +48,12 @@ class ToolCall(Message):
     kwargs: dict[str, JsonValue]
 
 
+class ImageUpload(Message):
+    kind: Literal["image_upload"] = "image_upload"
+    call_id: int = Field(ge=0)
+    request: ImageUploadRequest
+
+
 class WorkerError(Message):
     code: str
     exception: str
@@ -81,7 +88,9 @@ class StreamReply(Message):
     frame: LlmChatFrame | None = None
 
 
-WorkerMessage = Annotated[ToolCall | ToolStreamRead | ToolStreamClose | QueryResult, Field(discriminator="kind")]
+WorkerMessage = Annotated[
+    ToolCall | ImageUpload | ToolStreamRead | ToolStreamClose | QueryResult, Field(discriminator="kind"),
+]
 WORKER_MESSAGE = TypeAdapter(WorkerMessage)
 HOST_REPLY = TypeAdapter(ToolReply | StreamReply)
 
@@ -135,3 +144,16 @@ async def read_frame(reader: asyncio.StreamReader) -> bytes:
 async def send(writer: asyncio.StreamWriter, message: BaseModel) -> None:
     writer.write(encode(message))
     await writer.drain()
+
+
+async def read_image_payload(reader: asyncio.StreamReader, expected_size: int) -> bytes:
+    """Require a typed raw frame; never interpret its bytes as control JSON."""
+    try:
+        if await reader.readexactly(1) != b"I":
+            raise WorkerMessageViolationError("expected image payload frame")
+        length = struct.unpack(">Q", await reader.readexactly(8))[0]
+        if length != expected_size or not 0 < length <= MAX_IMAGE_BYTES:
+            raise WorkerMessageViolationError("invalid image payload length")
+        return await reader.readexactly(length)
+    except asyncio.IncompleteReadError as exc:
+        raise WorkerTransportError("incomplete image upload frame") from exc

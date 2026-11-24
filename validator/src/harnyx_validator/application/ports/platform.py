@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Protocol
@@ -20,6 +20,7 @@ from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.rating_competition import RatingJudgment, RatingWorkPage
 from harnyx_commons.tools.types import ToolName
 from harnyx_miner_sdk.endpoint_protocol import EndpointCallbackAcknowledgement, EndpointDelegation
+from harnyx_miner_sdk.tools.image_models import ImageReference, ImageUploadRequest
 from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatOutputSink
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskWorkAssignment,
@@ -99,6 +100,10 @@ class PlatformPort(EndpointPlatformPort, Protocol):
 class PlatformToolProxyPlatformPort(Protocol):
     """Async platform client for platform-tool-proxy token and execution calls."""
 
+    async def upload_attempt_image(
+        self, *, token: str, request: ImageUploadRequest, body: AsyncIterator[bytes], deadline: datetime,
+    ) -> ImageReference: ...
+
     async def create_platform_tool_proxy_grant(
         self,
         *,
@@ -148,6 +153,10 @@ class PlatformWeightsUnavailableError(RuntimeError):
 class PlatformToolProxyGrant:
     token: str
     expires_at: datetime
+
+
+class PlatformImageUploadRejectedError(ValueError):
+    """The image upload request or body was rejected as invalid."""
 
 
 class PlatformToolProxyControlError(PermissionError):

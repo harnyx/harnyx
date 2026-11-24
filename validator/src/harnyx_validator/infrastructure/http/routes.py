@@ -47,10 +47,11 @@ from harnyx_miner_sdk.endpoint_protocol import (
     EndpointCallbackAcknowledgement,
 )
 from harnyx_miner_sdk.tools.http_models import ToolExecuteRequestDTO
+from harnyx_miner_sdk.tools.image_models import IMAGE_UPLOAD_HEADER, ImageReference, ImageUploadRequest
 from harnyx_miner_sdk.tools.llm_chat_stream_models import LLM_CHAT_PUBLIC_FRAME_ADAPTER, LlmChatErrorFrame
 from harnyx_validator.application.endpoint_execution import ValidatorEndpointExecution
 from harnyx_validator.application.platform_tool_proxy import PlatformToolProxyScopeRegistry
-from harnyx_validator.application.ports.platform import PlatformToolProxyPlatformPort
+from harnyx_validator.application.ports.platform import PlatformImageUploadRejectedError, PlatformToolProxyPlatformPort
 from harnyx_validator.application.status import BatchActivityTracker, StatusProvider
 from harnyx_validator.infrastructure.http.schemas import (
     SimilarityJudgeFailureResponseModel,
@@ -128,6 +129,36 @@ def add_tool_routes(app: FastAPI, dependency_provider: Callable[[], ToolRouteDep
         return dependency_provider()
 
     tool_token_header = APIKeyHeader(name="x-platform-token", scheme_name="PlatformToken", auto_error=False)
+
+    @app.post("/v1/tools/images", response_model=ImageReference, openapi_extra={
+        "requestBody": {"required": True, "content": {
+            "application/octet-stream": {"schema": {"type": "string", "format": "binary"}},
+        }},
+    })
+    async def upload_image(
+        request: Request,
+        deps: ToolRouteDeps = Depends(get_dependencies),  # noqa: B008
+        token_header: str | None = Security(tool_token_header),
+        session_id: UUID = Header(alias=SESSION_ID_HEADER),  # noqa: B008
+        metadata: str = Header(
+            alias=IMAGE_UPLOAD_HEADER,
+            description="JSON: upload_id (UUID), size_bytes (1–20971520), sha256 (64 lowercase hex characters).",
+        ),
+    ) -> ImageReference:
+        if not token_header:
+            raise HTTPException(status_code=401, detail="missing session authorization")
+        try:
+            upload = ImageUploadRequest.model_validate_json(metadata)
+        except ValidationError:
+            raise HTTPException(status_code=400, detail="invalid image upload metadata") from None
+        try:
+            return await deps.tool_executor.upload_image(session_id, token_header, upload, request.stream())
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="image upload denied") from None
+        except PlatformImageUploadRejectedError:
+            raise HTTPException(status_code=400, detail="image upload rejected") from None
+        except Exception:
+            raise HTTPException(status_code=500, detail="image upload failed") from None
 
     @app.post(
         "/v1/tools/execute",

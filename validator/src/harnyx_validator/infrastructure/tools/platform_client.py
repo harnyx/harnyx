@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import asdict, dataclass, field, is_dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal, cast
 from uuid import UUID
 
@@ -57,6 +57,7 @@ from harnyx_commons.tools.provider_billing import (
 )
 from harnyx_commons.tools.types import ToolName
 from harnyx_miner_sdk.endpoint_protocol import EndpointCallbackAcknowledgement, EndpointDelegation
+from harnyx_miner_sdk.tools.image_models import IMAGE_UPLOAD_HEADER, ImageReference, ImageUploadRequest
 from harnyx_miner_sdk.tools.llm_chat_stream_models import (
     LlmChatCompletedFrame,
     LlmChatErrorFrame,
@@ -74,6 +75,7 @@ from harnyx_validator.application.dto.evaluation import (
 from harnyx_validator.application.endpoint_execution import EndpointReportRejectedError
 from harnyx_validator.application.ports.platform import (
     ChampionWeights,
+    PlatformImageUploadRejectedError,
     PlatformPort,
     PlatformTaskAttemptIdentity,
     PlatformTaskResultAcknowledgement,
@@ -625,6 +627,44 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
                 continue
             return response
         raise RuntimeError("platform tool proxy grant retry loop exhausted without response")
+
+    async def upload_attempt_image(
+        self, *, token: str, request: ImageUploadRequest, body: AsyncIterator[bytes], deadline: datetime,
+    ) -> ImageReference:
+        async def bounded_body() -> AsyncIterator[bytes]:
+            received = 0
+            async for chunk in body:
+                received += len(chunk)
+                if received > request.size_bytes:
+                    raise PlatformImageUploadRejectedError("image body exceeds declared size")
+                yield chunk
+            if received != request.size_bytes:
+                raise PlatformImageUploadRejectedError("image body does not match declared size")
+
+        remaining = min(900.0, (deadline - datetime.now(UTC)).total_seconds())
+        if remaining <= 0:
+            raise PermissionError("image upload deadline expired")
+        try:
+            async with asyncio.timeout(remaining):
+                response = await self._client.post(
+                    "/v1/platform-tool-proxy/tools/images", content=bounded_body(),
+                    headers={
+                        PLATFORM_TOOL_PROXY_TOKEN_HEADER: token,
+                        IMAGE_UPLOAD_HEADER: request.model_dump_json(),
+                        "x-harnyx-upload-deadline": deadline.isoformat(),
+                        "Content-Type": "application/octet-stream",
+                    }, timeout=remaining,
+                )
+                if response.status_code == 400:
+                    raise PlatformImageUploadRejectedError("image upload rejected")
+                if response.status_code in {401, 403}:
+                    raise PermissionError("image upload denied")
+                response.raise_for_status()
+                return ImageReference.model_validate(response.json())
+        except PlatformImageUploadRejectedError:
+            raise
+        except (httpx.HTTPError, ValueError):
+            raise RuntimeError("image upload failed") from None
 
     async def execute_platform_tool_proxy_tool(
         self,

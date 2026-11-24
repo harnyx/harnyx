@@ -23,6 +23,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from harnyx_miner_sdk._internal.tool_invoker import ToolInvoker
 from harnyx_miner_sdk.context import ContextSnapshot
 from harnyx_miner_sdk.sandbox_headers import EXECUTION_COMPLETED_HEADER, read_session_id_header
 from harnyx_miner_sdk.sandbox_protocol import (
@@ -47,6 +48,7 @@ from harnyx_sandbox.sandbox.tool_stream import SupervisorToolStream
 from harnyx_sandbox.sandbox.worker_protocol import (
     MAX_FRAME_BYTES,
     MAX_PENDING_WORKER_TOOL_CALLS,
+    ImageUpload,
     Invocation,
     QueryResult,
     StreamReply,
@@ -59,6 +61,7 @@ from harnyx_sandbox.sandbox.worker_protocol import (
     WorkerResultProtocolError,
     decode_worker_message,
     read_frame,
+    read_image_payload,
     send,
 )
 from harnyx_sandbox.sandbox.workspace import QueryWorkspaces
@@ -877,13 +880,12 @@ class SandboxHarness:
                 reader, writer = await asyncio.open_connection(sock=parent)
                 await send(writer, request)
                 last_call_id = -1
+                image_call: asyncio.Task[None] | None = None
                 write_lock = asyncio.Lock()
 
-                async def execute(call: ToolCall) -> None:
+                async def execute(call: ToolCall | ImageUpload, image_data: bytes | None = None) -> None:
                     try:
-                        if proxy is None:
-                            raise RuntimeError("no tool invoker bound in this context")
-                        result = await proxy.invoke(call.method, args=call.args, kwargs=call.kwargs)
+                        result = await _invoke_worker_tool(proxy, call, image_data)
                         reply = ToolReply(call_id=call.call_id, result=result)
                     except Exception as exc:
                         reply = ToolReply(call_id=call.call_id, error=str(exc))
@@ -940,6 +942,7 @@ class SandboxHarness:
                         if message.call_id <= last_call_id:
                             raise WorkerMessageViolationError("worker tool call IDs must increase")
                         last_call_id = message.call_id
+                        image_data = await _read_call_image(reader, message, image_call)
                     except WorkerMessageViolationError as exc:
                         completion.seal()
                         if execution_deadline is not None:
@@ -958,7 +961,8 @@ class SandboxHarness:
                     # Controls are serviced at capacity; excess ordinary calls retain FIFO waiting.
                     if len(calls) >= MAX_PENDING_WORKER_TOOL_CALLS:
                         await asyncio.wait(calls, return_when=asyncio.FIRST_COMPLETED)
-                    if message.method == "llm_chat" and message.kwargs.get("stream") is True:
+                    if (isinstance(message, ToolCall) and message.method == "llm_chat"
+                            and message.kwargs.get("stream") is True):
                         async def open_stream(call: ToolCall = message) -> LlmChatFrameStream:
                             if proxy is None:
                                 raise RuntimeError("no tool invoker bound in this context")
@@ -978,7 +982,9 @@ class SandboxHarness:
 
                         call_task.add_done_callback(stream_done)
                     else:
-                        call_task = asyncio.create_task(execute(message))
+                        call_task = asyncio.create_task(execute(message, image_data))
+                    if isinstance(message, ImageUpload):
+                        image_call = call_task
                     calls.add(call_task)
                     call_task.add_done_callback(calls.discard)
             finally:
@@ -1138,3 +1144,23 @@ class SandboxHarness:
 def _close_fd(fd: int) -> None:
     with contextlib.suppress(OSError):
         os.close(fd)
+
+
+async def _read_call_image(
+    reader: asyncio.StreamReader, message: ToolCall | ImageUpload, active: asyncio.Task[None] | None,
+) -> bytes | None:
+    if not isinstance(message, ImageUpload):
+        return None
+    if active is not None and not active.done():
+        raise WorkerMessageViolationError("only one image upload may be in flight")
+    return await read_image_payload(reader, message.request.size_bytes)
+
+
+async def _invoke_worker_tool(proxy: ToolInvoker | None, call: ToolCall | ImageUpload, data: bytes | None) -> Any:
+    if proxy is None:
+        raise RuntimeError("no tool invoker bound in this context")
+    if isinstance(call, ImageUpload):
+        if data is None:
+            raise RuntimeError("missing image payload")
+        return (await proxy.upload_image(data, call.request)).model_dump(mode="json")
+    return await proxy.invoke(call.method, args=call.args, kwargs=call.kwargs)

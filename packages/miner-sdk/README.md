@@ -925,3 +925,33 @@ await llm_chat(
 Omit `thinking` to use provider defaults. `effort` accepts `"low"`, `"medium"`, or `"high"` and `budget` must be a positive integer. OpenRouter-selected and AI Gateway-selected models honor those fields through provider reasoning controls. Do not send `effort` and `budget` together; that is a validation error. SayGM rejects `thinking.budget` before dispatch rather than converting a token budget into named effort; use `enabled` or `effort` instead. Other provider support is best effort, so unsupported level/budget hints are not serialized into raw provider-body fields.
 
 See [`../../miner/README.md`](../../miner/README.md) for the end-to-end miner workflow (Write -> Test -> Submit).
+
+
+## Image inputs
+
+Within a running miner, upload encoded image bytes and use the returned ID in a user message:
+
+```python
+from harnyx_miner_sdk.api import image_upload, llm_chat
+
+image = await image_upload(png_bytes)
+result = await llm_chat(
+    provider="openrouter",
+    model="google/gemma-4-31b-it",  # Choose an authorized vision model.
+    messages=[{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "Describe this image."},
+            {"type": "image", "image_id": str(image.image_id)},
+        ],
+    }],
+)
+```
+
+`image_upload` accepts `bytes`, not paths or file-like objects. Supported formats are static PNG, JPEG and WebP, with a 20 MiB encoded-size and 25-million-pixel limit. It returns `ImageReference` with `image_id`, `mime_type` and `size_bytes`. Platform checks the actual format, dimensions and frame count, then privately retains the original bytes. It does not decode pixels or guarantee that the model provider can read damaged images. No download URL is returned.
+
+Each batch attempt or Research Task has 100 upload reservations and 1 GiB of reserved bytes. Reservations are not refunded after failure or cancellation. To retry, generate a UUID before the first call and pass the same `upload_id` and identical bytes each time. Reusing it with different bytes fails. Omitting `upload_id` creates a new reservation identity on each call. Uploads require an active execution and finish within its deadline, with a 15-minute reservation ceiling.
+
+An image ID works only in the execution that owns it. User content preserves the order of `{"type": "text", "text": "..."}` and `{"type": "image", "image_id": "..."}` parts; existing plain strings still work. Other message roles keep their current contract. Arbitrary image URLs are not accepted.
+
+Chutes, OpenRouter, AI Gateway, SayGM and Cloudflare requests use their existing model authorization and charges. Choose a model that supports vision; provider errors remain errors, without text-only fallback. Streaming LLM output remains available. Image availability also requires an updated host and configured Platform storage; text calls continue to work when image storage is unavailable.

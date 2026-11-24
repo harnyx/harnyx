@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from typing import Annotated, Literal, TypeAlias, cast
+from uuid import UUID
 
 from pydantic import (
     BaseModel,
@@ -19,6 +20,7 @@ from pydantic import (
 
 from harnyx_miner_sdk.json_types import JsonObject
 from harnyx_miner_sdk.llm import (
+    LlmInputImagePart,
     LlmInputTextPart,
     LlmInputToolResultPart,
     LlmMessage,
@@ -129,19 +131,42 @@ class LlmChatSystemMessage(_StrictModel):
         return LlmMessage(role=self.role, content=(LlmInputTextPart(text=self.content),))
 
 
+class LlmChatTextPart(_StrictModel):
+    type: Literal["text"]
+    text: str = Field(min_length=1)
+
+
+class LlmChatImagePart(_StrictModel):
+    type: Literal["image"]
+    image_id: UUID
+
+
+LlmChatUserPart = Annotated[LlmChatTextPart | LlmChatImagePart, Field(discriminator="type")]
+
+
 class LlmChatUserMessage(_StrictModel):
     role: Literal["user"]
-    content: str = Field(min_length=1)
+    content: str | list[LlmChatUserPart] = Field(min_length=1)
 
     @field_validator("content")
     @classmethod
-    def _validate_content(cls, value: str) -> str:
-        if not value.strip():
+    def _validate_content(cls, value: str | list[LlmChatUserPart]) -> str | list[LlmChatUserPart]:
+        if isinstance(value, str) and not value.strip():
             raise ValueError("user message content must be non-empty")
         return value
 
-    def to_message(self) -> LlmMessage:
-        return LlmMessage(role=self.role, content=(LlmInputTextPart(text=self.content),))
+    def to_message(self, images: Mapping[UUID, LlmInputImagePart] | None = None) -> LlmMessage:
+        if isinstance(self.content, str):
+            return LlmMessage(role=self.role, content=(LlmInputTextPart(text=self.content),))
+        parts: list[LlmInputTextPart | LlmInputImagePart] = []
+        for part in self.content:
+            if isinstance(part, LlmChatTextPart):
+                parts.append(LlmInputTextPart(text=part.text))
+            elif images is None or part.image_id not in images:
+                raise ValueError("image reference has not been authorized")
+            else:
+                parts.append(images[part.image_id])
+        return LlmMessage(role=self.role, content=tuple(parts))
 
 
 class LlmChatAssistantMessage(_StrictModel):
@@ -349,7 +374,7 @@ class LlmChatRequest(_StrictModel):
         if pending:
             raise ValueError("all pending tool calls require one contiguous tool result")
 
-    def to_tool_request(self) -> ToolLlmRequest:
+    def to_tool_request(self, images: Mapping[UUID, LlmInputImagePart] | None = None) -> ToolLlmRequest:
         choice: LlmChatToolChoiceName | JsonObject | None
         if isinstance(self.tool_choice, LlmChatNamedToolChoice):
             choice = cast(JsonObject, self.tool_choice.model_dump(mode="json"))
@@ -358,7 +383,10 @@ class LlmChatRequest(_StrictModel):
         return ToolLlmRequest(
             provider=self.provider,
             model=self.model,
-            messages=tuple(message.to_message() for message in self.messages),
+            messages=tuple(
+                message.to_message(images) if isinstance(message, LlmChatUserMessage) else message.to_message()
+                for message in self.messages
+            ),
             temperature=self.temperature,
             max_output_tokens=self.max_output_tokens,
             tools=(

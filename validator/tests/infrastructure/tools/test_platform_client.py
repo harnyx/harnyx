@@ -2086,3 +2086,66 @@ async def test_private_proxy_decoder_preserves_unobserved_actual_and_reference_s
             assert caught.value.billing.llm_usage.total_tokens == 15
     finally:
         await client.aclose()
+
+
+@pytest.mark.anyio("asyncio")
+async def test_image_upload_relay_preserves_grant_metadata_bytes_and_deadline():
+    from harnyx_commons.protocol_headers import PLATFORM_TOOL_PROXY_TOKEN_HEADER
+    from harnyx_miner_sdk.tools.image_models import IMAGE_UPLOAD_HEADER, ImageUploadRequest
+
+    data, image_id = b"original image bytes", uuid4()
+    metadata = ImageUploadRequest.from_bytes(data, uuid4())
+    deadline = datetime.now(UTC) + timedelta(seconds=30)
+    token = str(uuid4())
+
+    async def handler(request):
+        assert request.url.path == "/v1/platform-tool-proxy/tools/images"
+        assert request.headers[PLATFORM_TOOL_PROXY_TOKEN_HEADER] == token
+        assert ImageUploadRequest.model_validate_json(request.headers[IMAGE_UPLOAD_HEADER]) == metadata
+        assert datetime.fromisoformat(request.headers["x-harnyx-upload-deadline"]) == deadline
+        assert await request.aread() == data
+        return httpx.Response(200, json={"image_id": str(image_id), "mime_type": "image/png",
+                                        "size_bytes": len(data)})
+
+    async def body():
+        yield data[:4]
+        yield data[4:]
+
+    client = AsyncPlatformToolProxyPlatformClient("http://platform", _keypair(), transport=httpx.MockTransport(handler))
+    try:
+        result = await client.upload_attempt_image(token=token, request=metadata, body=body(), deadline=deadline)
+        assert result.image_id == image_id
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.anyio("asyncio")
+@pytest.mark.parametrize("failure", ["invalid", "short", "long", "denied", "server", "network", "response"])
+async def test_image_upload_relay_separates_rejection_from_server_failure(failure):
+    from harnyx_miner_sdk.tools.image_models import ImageUploadRequest
+    from harnyx_validator.application.ports.platform import PlatformImageUploadRejectedError
+
+    async def handler(request):
+        await request.aread()
+        if failure == "network":
+            raise httpx.ConnectError("private downstream address", request=request)
+        status = {"invalid": 400, "denied": 403, "server": 503}.get(failure, 200)
+        return httpx.Response(status, json={"detail": "private downstream address"})
+
+    async def body():
+        yield {"short": b"im", "long": b"too-long"}.get(failure, b"image")
+
+    expected = (
+        PlatformImageUploadRejectedError if failure in {"invalid", "short", "long"}
+        else PermissionError if failure == "denied" else RuntimeError
+    )
+    client = AsyncPlatformToolProxyPlatformClient("http://platform", _keypair(), transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(expected) as caught:
+            await client.upload_attempt_image(
+                token=str(uuid4()), request=ImageUploadRequest.from_bytes(b"image", uuid4()),
+                body=body(), deadline=datetime.now(UTC) + timedelta(seconds=30),
+            )
+        assert "private downstream address" not in str(caught.value)
+    finally:
+        await client.aclose()

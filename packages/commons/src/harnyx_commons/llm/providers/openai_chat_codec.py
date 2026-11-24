@@ -71,7 +71,7 @@ class OpenAiChatMessagePayload(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     role: str
-    content: str | None
+    content: str | list[dict[str, Any]] | None
     tool_call_id: str | None = None
     name: str | None = None
     tool_calls: list[dict[str, Any]] | None = None
@@ -96,21 +96,31 @@ class OpenAiChatMessagePayload(BaseModel):
         message: LlmMessage,
         *,
         image_error_message: str,
+        allow_images: bool = False,
         tool_mix_error_message: str,
         tool_count_error_message: str,
     ) -> OpenAiChatMessagePayload:
         text_parts: list[str] = []
+        content_parts: list[dict[str, Any]] = []
+        has_images = False
         tool_results: list[LlmInputToolResultPart] = []
         for part in message.content:
             match part:
                 case LlmInputTextPart(text=text):
                     text_parts.append(text)
+                    content_parts.append({"type": "text", "text": text})
                 case LlmInputToolResultPart() as tool_result:
                     tool_results.append(tool_result)
-                case LlmInputImagePart():
-                    raise ValueError(image_error_message)
+                case LlmInputImagePart(data=data):
+                    if not allow_images or message.role != "user":
+                        raise ValueError(image_error_message)
+                    has_images = True
+                    content_parts.append({"type": "image_url", "image_url": {"url": data.url}})
                 case _:
                     raise ValueError(f"unsupported request content part type: {part!r}")
+
+        if has_images and (message.tool_calls or tool_results):
+            raise ValueError(tool_mix_error_message)
 
         if message.tool_calls:
             if message.role != "assistant" or tool_results:
@@ -148,7 +158,7 @@ class OpenAiChatMessagePayload(BaseModel):
 
         return cls(
             role=message.role,
-            content="\n".join(text_parts),
+            content=content_parts if has_images else "\n".join(text_parts),
             reasoning_details=(
                 [dict(detail) for detail in message.reasoning_details]
                 if message.role == "assistant" and message.reasoning_details is not None
@@ -182,6 +192,7 @@ class OpenAiChatRequestParts(BaseModel):
                 OpenAiChatMessagePayload.from_message(
                     message,
                     image_error_message=image_error_message,
+                    allow_images=provider_name in {"chutes", "openrouter", "ai_gateway", "saygm", "cloudflare"},
                     tool_mix_error_message=tool_mix_error_message,
                     tool_count_error_message=tool_count_error_message,
                 )

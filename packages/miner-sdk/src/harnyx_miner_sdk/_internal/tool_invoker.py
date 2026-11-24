@@ -5,6 +5,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Protocol
 
+from harnyx_miner_sdk.tools.image_models import ImageReference, ImageUploadRequest
+
 if TYPE_CHECKING:
     from harnyx_miner_sdk.streaming import LlmChatFrameStream
 
@@ -19,6 +21,8 @@ class ToolInvoker(Protocol):
         args: Sequence[Any] | None = None,
         kwargs: Mapping[str, Any] | None = None,
     ) -> Any: ...
+
+    async def upload_image(self, data: bytes, request: ImageUploadRequest) -> ImageReference: ...
 
     async def invoke_llm_chat_stream(self, *, kwargs: Mapping[str, Any]) -> LlmChatFrameStream: ...
 

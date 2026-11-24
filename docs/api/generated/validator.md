@@ -13,6 +13,7 @@ Generated from FastAPI OpenAPI.
   - [GET /validator/status](#endpoint-get-validator-status)
 - [tools](#tools)
   - [POST /v1/tools/execute](#endpoint-post-v1-tools-execute)
+  - [POST /v1/tools/images](#endpoint-post-v1-tools-images)
 - [Misc](#misc)
   - [GET /healthz](#endpoint-get-healthz)
   - [GET /readyz](#endpoint-get-readyz)
@@ -468,6 +469,52 @@ Content-Type: `text/event-stream`
 Body: oneOf: [ToolStreamLlmChatOutputFrame](#model-toolstreamllmchatoutputframe) OR [ToolStreamLlmChatCompletedFrame_ToolExecuteResponseDTO_](#model-toolstreamllmchatcompletedframe_toolexecuteresponsedto_) OR [ToolStreamLlmChatPublicErrorFrame](#model-toolstreamllmchatpublicerrorframe)
 
 (no documented fields)
+
+`422` Validation Error
+Content-Type: `application/json`
+Body: [HTTPValidationError](#model-httpvalidationerror)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
+|  | `ctx` |  | opt | `object` |
+|  | `input` |  | opt | `object` |
+|  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
+|  | `msg` |  | req | `string` |
+|  | `type` |  | req | `string` |
+
+
+### images
+
+<a id="endpoint-post-v1-tools-images"></a>
+#### POST /v1/tools/images
+
+Upload Image
+
+**Auth**: Tool token (`x-platform-token` header)
+
+**Headers**
+| Header | Req | Notes |
+| --- | --- | --- |
+| `x-session-id` | req | `string` (format: uuid) |
+| `x-harnyx-image-upload` | req | `string` — JSON: upload_id (UUID), size_bytes (1–20971520), sha256 (64 lowercase hex characters). |
+
+**Request**
+Content-Type: `application/octet-stream`
+Body: `string` (format: binary)
+
+(no documented fields)
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: [ImageReference](#model-imagereference)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `image_id` |  |  | req | `string` (format: uuid) |
+| `mime_type` |  |  | req | `string` (enum: [image/png, image/jpeg, image/webp]) |
+| `size_bytes` |  |  | req | `integer` |
 
 `422` Validation Error
 Content-Type: `application/json`
@@ -1425,6 +1472,55 @@ Body: [ValidatorReadinessFailureResponse](#model-validatorreadinessfailurerespon
     }
   },
   "title": "HTTPValidationError",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-imagereference"></a>
+### Model: ImageReference
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `image_id` |  |  | req | `string` (format: uuid) |
+| `mime_type` |  |  | req | `string` (enum: [image/png, image/jpeg, image/webp]) |
+| `size_bytes` |  |  | req | `integer` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "image_id": {
+      "format": "uuid",
+      "title": "Image Id",
+      "type": "string"
+    },
+    "mime_type": {
+      "enum": [
+        "image/png",
+        "image/jpeg",
+        "image/webp"
+      ],
+      "title": "Mime Type",
+      "type": "string"
+    },
+    "size_bytes": {
+      "exclusiveMinimum": 0.0,
+      "maximum": 20971520.0,
+      "title": "Size Bytes",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "image_id",
+    "mime_type",
+    "size_bytes"
+  ],
+  "title": "ImageReference",
   "type": "object"
 }
 ```

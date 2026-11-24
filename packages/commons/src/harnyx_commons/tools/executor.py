@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from typing import Protocol
@@ -50,7 +50,7 @@ from harnyx_commons.tools.provider_billing import (
     billing_usage_payload,
 )
 from harnyx_commons.tools.rerank_models import RerankResponse
-from harnyx_commons.tools.token_semaphore import ToolConcurrencyLimiter
+from harnyx_commons.tools.token_semaphore import TokenSemaphore, ToolConcurrencyLimiter
 from harnyx_commons.tools.types import (
     DECISION_TOOLS,
     EMBEDDING_TOOLS,
@@ -63,6 +63,7 @@ from harnyx_commons.tools.types import (
     is_search_tool,
 )
 from harnyx_commons.tools.usage_tracker import ToolCallUsage, UsageTracker
+from harnyx_miner_sdk.tools.image_models import ImageReference, ImageUploadRequest
 from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatOutputSink
 
 
@@ -191,6 +192,9 @@ class _CallRecording:
         self.dispatched = True
 
 
+ImageUploader = Callable[[Session, ImageUploadRequest, AsyncIterator[bytes]], Awaitable[ImageReference]]
+
+
 class ToolExecutor:
     """Coordinates budget enforcement and receipt recording for tool calls."""
 
@@ -206,7 +210,10 @@ class ToolExecutor:
         tool_call_observer: ToolCallObserver | None = None,
         tool_call_recorder: ToolCallRecorder | None = None,
         account_provider_failures: bool = False,
+        image_uploader: ImageUploader | None = None,
     ) -> None:
+        self._image_uploader = image_uploader
+        self._image_slots = TokenSemaphore(1)
         self._sessions = session_registry
         self._receipts = receipt_log
         self._usage_tracker = usage_tracker
@@ -216,6 +223,22 @@ class ToolExecutor:
         self._tool_call_observer = tool_call_observer
         self._tool_call_recorder = tool_call_recorder
         self._account_provider_failures = account_provider_failures
+
+    async def upload_image(
+        self, session_id: UUID, token: str, request: ImageUploadRequest, body: AsyncIterator[bytes],
+    ) -> ImageReference:
+        session = self._load_session(session_id)
+        self._validate_token(session_id, token)
+        if self._image_uploader is None:
+            raise ValueError("image storage is not configured for this execution")
+        remaining = min(900.0, (session.expires_at - self._clock()).total_seconds())
+        async with asyncio.timeout(max(0, remaining)):
+            await self._image_slots.acquire_async(token)
+            try:
+                self._load_session(session_id)
+                return await self._image_uploader(session, request, body)
+            finally:
+                self._image_slots.release(token)
 
     def validate_request(self, request: ToolInvocationRequest) -> None:
         """Validate admission before a streaming response sends its headers."""

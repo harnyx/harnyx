@@ -14,6 +14,7 @@ import os
 import select
 import signal
 import socket
+import struct
 import sys
 import tempfile
 import termios
@@ -30,11 +31,13 @@ from pydantic import BaseModel
 from harnyx_miner_sdk._internal.tool_invoker import bind_tool_invoker
 from harnyx_miner_sdk.context import ContextSnapshot
 from harnyx_miner_sdk.decorators import get_entrypoint
+from harnyx_miner_sdk.tools.image_models import ImageReference, ImageUploadRequest
 from harnyx_miner_sdk.tools.proxy import ToolInvocationError
 from harnyx_sandbox.sandbox.tool_stream import WorkerToolStream
 from harnyx_sandbox.sandbox.worker_protocol import (
     HOST_REPLY,
     MAX_PENDING_WORKER_TOOL_CALLS,
+    ImageUpload,
     Invocation,
     QueryResult,
     StreamReply,
@@ -250,6 +253,8 @@ class ConnectionInvoker:
         self.next_call = 0
         self.write_lock = asyncio.Lock()
         self.slots = asyncio.Semaphore(MAX_PENDING_WORKER_TOOL_CALLS)
+        self.upload_slot = asyncio.Semaphore(1)
+        self.uploads: set[asyncio.Task[ImageReference]] = set()
 
     async def invoke(
         self, method: str, *, args: Sequence[Any] | None = None, kwargs: Mapping[str, Any] | None = None
@@ -282,6 +287,43 @@ class ConnectionInvoker:
             if not sent:
                 future.cancel()
             raise
+
+    async def upload_image(self, data: bytes, request: ImageUploadRequest) -> ImageReference:
+        # Keep one accepted upload alive on caller cancellation, including its
+        # writer lock and slot. The host deadline still terminates the worker.
+        await self.upload_slot.acquire()
+        task = asyncio.create_task(self._upload_image(data, request))
+        self.uploads.add(task)
+
+        def completed(done: asyncio.Task[ImageReference]) -> None:
+            self.uploads.discard(done)
+            self.upload_slot.release()
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(completed)
+        return await asyncio.shield(task)
+
+    async def _upload_image(self, data: bytes, request: ImageUploadRequest) -> ImageReference:
+        async with self.slots:
+            call_id = self.next_call
+            self.next_call += 1
+            future = asyncio.get_running_loop().create_future()
+            self.calls[call_id] = future
+            try:
+                async with self.write_lock:
+                    try:
+                        self.writer.write(encode(ImageUpload(call_id=call_id, request=request)))
+                        self.writer.write(b"I" + struct.pack(">Q", len(data)))
+                        self.writer.write(data)
+                        await self.writer.drain()
+                    except BaseException:
+                        # A partially sent payload makes this connection unusable.
+                        self.writer.close()
+                        raise
+                return ImageReference.model_validate(await future)
+            finally:
+                self.calls.pop(call_id, None)
 
     async def invoke_llm_chat_stream(self, *, kwargs: Mapping[str, Any]) -> WorkerToolStream:
         await self.slots.acquire()
@@ -381,6 +423,7 @@ async def run_query(channel: socket.socket, preload_failure: WorkerError | None,
     reader, writer = await asyncio.open_connection(sock=channel)
     receiver = None
     invocation = None
+    invoker: ConnectionInvoker | None = None
     try:
         request = Invocation.model_validate(load_json(await read_frame(reader)))
         if preload_failure is not None:
@@ -418,12 +461,13 @@ async def run_query(channel: socket.socket, preload_failure: WorkerError | None,
             frame = encode(result)
         except BaseException as exc:
             frame = encode(QueryResult(error=_miner_error(outcome.phase, exc)))
-        if outcome.fatal.done():
-            frame = encode(QueryResult(error=outcome.fatal.result()))
-        # No await between the final failure check, write and terminal commitment.
-        writer.write(frame)
-        outcome.committed = True
-        await writer.drain()
+        # Wait for any accepted binary frame before committing terminal output.
+        async with invoker.write_lock if invoker is not None else asyncio.Lock():
+            if outcome.fatal.done():
+                frame = encode(QueryResult(error=outcome.fatal.result()))
+            writer.write(frame)
+            outcome.committed = True
+            await writer.drain()
         # Late replies must not destroy an already committed terminal result.
         if receiver is None:
             receiver = asyncio.create_task(ConnectionInvoker(reader, writer).receive())

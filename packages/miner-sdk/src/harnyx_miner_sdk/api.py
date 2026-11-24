@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from typing import Any, Generic, Literal, TypeVar, cast, overload
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -36,6 +37,7 @@ from harnyx_miner_sdk.tools.http_models import (
     ToolResultDTO,
     ToolUsageDTO,
 )
+from harnyx_miner_sdk.tools.image_models import ImageReference, ImageUploadRequest
 from harnyx_miner_sdk.tools.llm_chat_models import (
     LlmChatFunctionTool,
     LlmChatMessage,
@@ -66,6 +68,12 @@ from harnyx_miner_sdk.tools.types import ToolInvocationTimeout
 
 TResponse = TypeVar("TResponse")
 TToolCallResponse = TypeVar("TToolCallResponse", bound="ToolCallResponse[Any]")
+
+
+async def image_upload(data: bytes, upload_id: UUID | None = None) -> ImageReference:
+    """Store a static image for this execution; reuse upload_id and bytes to retry."""
+    request = ImageUploadRequest.from_bytes(data, upload_id or uuid4())
+    return await _current_tool_invoker().upload_image(data, request)
 
 
 @dataclass(frozen=True)
@@ -630,6 +638,8 @@ def _llm_chat_message_input(message: Mapping[str, Any] | LlmChatMessage | LlmMes
 
 
 __all__ = [
+    "image_upload",
+    "ImageReference",
     "Timeout",
     "embed_text",
     "rerank",

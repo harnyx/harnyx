@@ -520,6 +520,7 @@ def build_openrouter_chat_provider(api_key: str) -> tuple[OpenAiCompatibleLlmPro
         endpoint=endpoint,
         client=client,
         response_metadata_extractor=_openrouter_response_metadata,
+        provider_label=OPENROUTER_PROVIDER,
     ), client
 
 

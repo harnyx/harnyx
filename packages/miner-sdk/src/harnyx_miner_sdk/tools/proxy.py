@@ -12,6 +12,7 @@ import httpx
 
 from harnyx_miner_sdk.json_types import JsonValue
 from harnyx_miner_sdk.sandbox_headers import PLATFORM_TOKEN_HEADER, SESSION_ID_HEADER
+from harnyx_miner_sdk.tools.image_models import IMAGE_UPLOAD_HEADER, ImageReference, ImageUploadRequest
 from harnyx_miner_sdk.tools.llm_chat_stream_models import LLM_CHAT_FRAME_ADAPTER, LlmChatFrame
 
 logger = logging.getLogger(__name__)
@@ -98,6 +99,26 @@ class ToolProxy:
         except httpx.HTTPError as exc:  # pragma: no cover - exercised in tests
             raise ToolInvocationError(f"tool invocation failed: {exc}") from exc
         return cast(JsonValue, response.json())
+
+    async def upload_image(self, data: bytes, request: ImageUploadRequest) -> ImageReference:
+        """Send bounded raw bytes through the authenticated host connection."""
+        endpoint = self._endpoint.rsplit("/", 1)[0] + "/images"
+        try:
+            response = await self._client.post(
+                endpoint,
+                content=data,
+                headers={
+                    DEFAULT_TOKEN_HEADER: self._token,
+                    SESSION_ID_HEADER: self._session_id,
+                    IMAGE_UPLOAD_HEADER: request.model_dump_json(),
+                    "content-type": "application/octet-stream",
+                },
+                timeout=min(self._timeout, 900.0),
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise ToolInvocationError("image upload failed") from exc
+        return ImageReference.model_validate(response.json())
 
     async def invoke_llm_chat_stream(self, *, kwargs: Mapping[str, JsonValue]) -> ToolResponseStream:
         request = self._client.build_request(

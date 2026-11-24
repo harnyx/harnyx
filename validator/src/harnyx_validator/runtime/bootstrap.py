@@ -846,6 +846,7 @@ def _build_proxy_tooling(
         tool_invoker=tool_invoker,
         token_registry=state.token_registry,
         clock=_clock,
+        image_uploader=tool_invoker.upload_image,
     )
 
 

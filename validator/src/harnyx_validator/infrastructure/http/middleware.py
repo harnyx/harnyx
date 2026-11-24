@@ -25,7 +25,9 @@ async def request_logging_middleware(
     query_params = list(request.query_params.multi_items())
 
     body_str = (
-        "<redacted>" if "/validator/endpoint-assignments" in request.url.path else _truncate_body(await request.body())
+        "<redacted>"
+        if "/validator/endpoint-assignments" in request.url.path or request.url.path.rstrip("/") == "/v1/tools/images"
+        else _truncate_body(await request.body())
     )
     logger.log(
         log_level,

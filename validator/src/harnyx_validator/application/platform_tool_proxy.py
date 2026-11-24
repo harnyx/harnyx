@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from threading import Lock
 from uuid import UUID
 
+from harnyx_commons.domain.session import Session
 from harnyx_commons.json_types import JsonValue
 from harnyx_commons.platform_tool_proxy import PLATFORM_TOOL_PROXY_EXECUTE_TRANSPORT_TIMEOUT_SECONDS
 from harnyx_commons.tools.decision_models import DecisionQueryRequest
@@ -17,6 +18,7 @@ from harnyx_commons.tools.executor import ToolInvocationContext, ToolInvocationO
 from harnyx_commons.tools.provider_billing import RECOVERABLE_INFERENCE_TOOLS
 from harnyx_commons.tools.rerank_models import RerankRequest
 from harnyx_commons.tools.types import ToolName, is_embedding_tool, is_search_tool
+from harnyx_miner_sdk.tools.image_models import ImageReference, ImageUploadRequest
 from harnyx_validator.application.assigned_work import PhaseRecorder
 from harnyx_validator.application.ports.platform import (
     PlatformToolProxyControlError,
@@ -148,6 +150,50 @@ class PlatformToolProxyProxyToolInvoker(ToolInvoker):
         self._platform = platform_tool_proxy_platform
         self._scopes = scopes
 
+    async def _require_grant(
+        self, session_id: UUID,
+    ) -> tuple[PlatformToolProxySessionScope, PlatformToolProxyAttemptGrant]:
+        scope = self._scopes.require_session(session_id)
+        attempt_number = scope.attempt_number
+        attempt_grant = scope.grants_by_attempt.get(attempt_number)
+        if attempt_grant is None:
+            async with self._scopes.grant_lock(session_id, attempt_number):
+                scope = self._scopes.require_session(session_id)
+                attempt_grant = scope.grants_by_attempt.get(attempt_number)
+                if attempt_grant is None:
+                    previous_phase: str | None = None
+                    if scope.phase_recorder is not None:
+                        previous_phase = scope.phase_recorder.mark("platform_tool_proxy_grant_create")
+                    grant = await self._platform.create_platform_tool_proxy_grant(
+                        batch_id=scope.batch_id,
+                        artifact_id=scope.artifact_id,
+                        task_id=scope.task_id,
+                        validator_session_id=session_id,
+                        attempt_number=attempt_number,
+                        assignment_token=scope.assignment_token,
+                    )
+                    attempt_grant = self._scopes.store_session_grant(
+                        session_id=session_id,
+                        attempt_number=attempt_number,
+                        token=grant.token,
+                        expires_at=grant.expires_at,
+                    )
+                    if scope.phase_recorder is not None and previous_phase is not None:
+                        scope.phase_recorder.mark(previous_phase)
+        if attempt_grant is None:
+            raise PlatformToolProxyControlError("platform tool proxy token is not registered for session")
+        if _grant_expired(attempt_grant.expires_at):
+            raise PlatformToolProxyTokenExpiredError("platform tool proxy token expired for session")
+        return scope, attempt_grant
+
+    async def upload_image(
+        self, session: Session, request: ImageUploadRequest, body: AsyncIterator[bytes],
+    ) -> ImageReference:
+        _, grant = await self._require_grant(session.session_id)
+        return await self._platform.upload_attempt_image(
+            token=grant.token, request=request, body=body, deadline=min(session.expires_at, grant.expires_at),
+        )
+
     async def invoke(
         self,
         tool_name: ToolName,
@@ -164,37 +210,8 @@ class PlatformToolProxyProxyToolInvoker(ToolInvoker):
             RerankRequest.model_validate(tool_payload_from_args_kwargs(args, kwargs))
         if context is None:
             raise PlatformToolProxyControlError("platform tool proxy execution requires tool invocation context")
-        scope = self._scopes.require_session(context.session_id)
+        scope, attempt_grant = await self._require_grant(context.session_id)
         attempt_number = scope.attempt_number
-        attempt_grant = scope.grants_by_attempt.get(attempt_number)
-        if attempt_grant is None:
-            async with self._scopes.grant_lock(context.session_id, attempt_number):
-                scope = self._scopes.require_session(context.session_id)
-                attempt_grant = scope.grants_by_attempt.get(attempt_number)
-                if attempt_grant is None:
-                    previous_phase: str | None = None
-                    if scope.phase_recorder is not None:
-                        previous_phase = scope.phase_recorder.mark("platform_tool_proxy_grant_create")
-                    grant = await self._platform.create_platform_tool_proxy_grant(
-                        batch_id=scope.batch_id,
-                        artifact_id=scope.artifact_id,
-                        task_id=scope.task_id,
-                        validator_session_id=context.session_id,
-                        attempt_number=attempt_number,
-                        assignment_token=scope.assignment_token,
-                    )
-                    attempt_grant = self._scopes.store_session_grant(
-                        session_id=context.session_id,
-                        attempt_number=attempt_number,
-                        token=grant.token,
-                        expires_at=grant.expires_at,
-                    )
-                    if scope.phase_recorder is not None and previous_phase is not None:
-                        scope.phase_recorder.mark(previous_phase)
-        if attempt_grant is None:
-            raise PlatformToolProxyControlError("platform tool proxy token is not registered for session")
-        if _grant_expired(attempt_grant.expires_at):
-            raise PlatformToolProxyTokenExpiredError("platform tool proxy token expired for session")
         if context.receipt_started_at is None or context.receipt_issued_at is None:
             raise PlatformToolProxyControlError("platform tool proxy receipt chronology is missing")
         previous_phase = None

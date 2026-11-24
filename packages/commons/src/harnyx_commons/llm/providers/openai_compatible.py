@@ -118,7 +118,7 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
     def _build_request(self, request: AbstractLlmRequest) -> _OpenAiCompatibleChatRequest:
         return _OpenAiCompatibleChatRequest.from_request(
             request,
-            provider_name=custom_openai_compatible_target(self._endpoint.id),
+            provider_name=self._provider_label,
         )
 
     async def _request_chat(

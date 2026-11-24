@@ -8,8 +8,9 @@ import logging
 import math
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import TypeVar, cast
+from uuid import UUID
 
 import httpx
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
@@ -74,6 +75,7 @@ from harnyx_commons.tools.decision_models import MINER_SELECTED_DECISION_PROVIDE
 from harnyx_commons.tools.dto import tool_payload_from_args_kwargs
 from harnyx_commons.tools.embedding_models import MINER_SELECTED_EMBEDDING_PROVIDER_MODELS, EmbedTextRequest
 from harnyx_commons.tools.executor import ToolInvocationContext, ToolInvocationOutput, ToolInvoker
+from harnyx_commons.tools.image_redaction import ImageUrlRedactor
 from harnyx_commons.tools.ports import (
     AiSearchProviderPort,
     DecisionProviderPort,
@@ -110,8 +112,8 @@ from harnyx_commons.tools.types import (
     is_search_tool,
 )
 from harnyx_commons.tools.usage_tracker import ToolCallUsage  # noqa: F401 - compatibility
-from harnyx_miner_sdk.llm import Timeout
-from harnyx_miner_sdk.tools.llm_chat_models import LlmChatRequest, LlmChatTimeout
+from harnyx_miner_sdk.llm import LlmInputImagePart, Timeout
+from harnyx_miner_sdk.tools.llm_chat_models import LlmChatImagePart, LlmChatRequest, LlmChatTimeout, LlmChatUserMessage
 
 MINER_SANDBOX_TOOL_NAMES: tuple[ToolName, ...] = tuple(sorted(MINER_TOOL_NAMES))
 DEFAULT_TOOL_LLM_TIMEOUT_SECONDS = PLATFORM_TOOL_PROXY_LLM_CHAT_DEFAULT_TIMEOUT_SECONDS
@@ -191,6 +193,9 @@ class _TestToolInvocation(BaseModel):
     timeout: ToolInvocationTimeout | None = None
 
 
+ImageResolver = Callable[[Sequence[UUID], ToolInvocationContext | None], Awaitable[Mapping[UUID, LlmInputImagePart]]]
+
+
 def build_miner_sandbox_tool_invoker(
     receipt_log: ReceiptLogPort,
     *,
@@ -221,9 +226,11 @@ def build_miner_sandbox_tool_invoker(
     platform_rerank_provider_resolver: RerankProviderResolver | None = None,
     allowed_models: tuple[ToolModelName, ...] = ALLOWED_TOOL_MODELS,
     openrouter_pricing_catalog: OpenRouterPricingCatalog | None = None,
+    image_resolver: ImageResolver | None = None,
 ) -> RuntimeToolInvoker:
     return RuntimeToolInvoker(
         receipt_log,
+        image_resolver=image_resolver,
         web_search_client=web_search_client,
         fetch_page_client=fetch_page_client,
         fetch_page_provider_name=fetch_page_provider_name,
@@ -389,8 +396,10 @@ class RuntimeToolInvoker(ToolInvoker):
         advertised_tool_names: tuple[ToolName, ...] | None = None,
         allowed_models: tuple[ToolModelName, ...] = ALLOWED_TOOL_MODELS,
         openrouter_pricing_catalog: OpenRouterPricingCatalog | None = None,
+        image_resolver: ImageResolver | None = None,
     ) -> None:
         self._openrouter_pricing_catalog = openrouter_pricing_catalog or shared_openrouter_pricing_catalog()
+        self._image_resolver = image_resolver
         self._receipts = receipt_log
         self._logger = logging.getLogger("harnyx_commons.tools.runtime_invoker")
         self._fetch_page = fetch_page_client
@@ -761,8 +770,42 @@ class RuntimeToolInvoker(ToolInvoker):
                 raise _credential_unavailable(self._llm_provider_name or "llm")
             raise LookupError("llm provider is not configured")
         invocation = self._parse_invocation(args, kwargs)
-        request = self._build_llm_request(invocation, context=context)
+        image_ids = tuple(dict.fromkeys(
+            part.image_id for message in invocation.messages
+            if isinstance(message, LlmChatUserMessage) and isinstance(message.content, list)
+            for part in message.content if isinstance(part, LlmChatImagePart)
+        ))
+        images: Mapping[UUID, LlmInputImagePart] = {}
+        if image_ids:
+            if self._image_resolver is None:
+                raise ValueError("image storage is not configured for this execution")
+            images = await self._image_resolver(image_ids, context)
+        redactor = ImageUrlRedactor([image.data.url for image in images.values()])
+        if images and context is not None and context.on_output is not None:
+            context = replace(context, on_output=redactor.wrap(context.on_output))
+        try:
+            output = await self._dispatch_resolved_llm(invocation, context=context, images=images)
+            await redactor.finish()
+        except (ToolProviderError, ToolInvocationTimeoutError, ToolInvocationCancelledError) as exc:
+            if not images:
+                raise
+            # Preserve failure classification and settled billing, never the raw provider cause.
+            billing = redactor.value(exc.billing)
+            if isinstance(exc, ToolProviderError):
+                raise ToolProviderError(redactor.text(str(exc)), failure_code=exc.failure_code,
+                                        provider=exc.provider, http_status=exc.http_status, billing=billing) from None
+            raise type(exc)(redactor.text(str(exc)), billing=billing) from None
+        except Exception:
+            if not images:
+                raise
+            raise ToolProviderError("image model invocation failed", provider=invocation.provider) from None
+        return redactor.value(output) if images else output
 
+    async def _dispatch_resolved_llm(
+        self, invocation: LlmChatRequest, *, context: ToolInvocationContext | None,
+        images: Mapping[UUID, LlmInputImagePart],
+    ) -> ToolInvocationOutput:
+        request = self._build_llm_request(invocation, context=context, images=images)
         try:
             llm_provider = await self._resolve_llm_provider(invocation.provider, context)
         except LlmProviderConfigurationError as exc:
@@ -1185,8 +1228,9 @@ class RuntimeToolInvoker(ToolInvoker):
         invocation: LlmChatRequest,
         *,
         context: ToolInvocationContext | None,
+        images: Mapping[UUID, LlmInputImagePart] | None = None,
     ) -> LlmRequest:
-        normalized = invocation.to_tool_request()
+        normalized = invocation.to_tool_request(images)
         if isinstance(invocation.timeout, LlmChatTimeout):
             total = invocation.timeout.total
             prefill = invocation.timeout.prefill
@@ -1214,7 +1258,7 @@ class RuntimeToolInvoker(ToolInvoker):
             on_output=context.on_output if context is not None and invocation.stream else None,
             use_case="tool_runtime_invoker",
             retry_policy=RetryPolicy(attempts=1, initial_ms=0, max_ms=0, jitter=0.0),
-            include_payloads_in_observability=not _uses_platform_credentials(context),
+            include_payloads_in_observability=not images and not _uses_platform_credentials(context),
         )
 
 
