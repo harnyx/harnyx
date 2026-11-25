@@ -15,7 +15,8 @@ from harnyx_miner_sdk.query import Response as MinerSdkResponse
 
 
 @pytest.mark.parametrize(
-    "saved,fast,expected", [(300, False, 300), (300, True, 210), (200, True, 140), (100, True, 70)]
+    "saved,fast,expected",
+    [(300, False, 300), (300, True, 210), (200, False, 200), (200, True, 140), (100, False, 100), (100, True, 70)],
 )
 def test_saved_timeout_survives_serialization_without_fast_mode_reduction(saved, fast, expected):
     task = MinerTask(
