@@ -50,6 +50,7 @@ from harnyx_miner_sdk.tools.llm_provider_extra import (
     AiGatewayExtra,
     OpenRouterExtra,
     ProviderExtra,
+    SayGmExtra,
 )
 from harnyx_miner_sdk.tools.rerank_models import RerankRequest, RerankResponse, validate_rerank_results
 from harnyx_miner_sdk.tools.search_models import (
@@ -403,7 +404,26 @@ async def llm_chat(
 @overload
 async def llm_chat(
     *,
-    provider: Literal["chutes", "saygm", "cloudflare"],
+    provider: Literal["saygm"],
+    messages: Sequence[Mapping[str, Any] | LlmChatMessage | LlmMessage],
+    model: str,
+    temperature: float | None = None,
+    max_output_tokens: int | None = None,
+    max_tokens: int | None = None,
+    tools: Sequence[Mapping[str, Any] | LlmChatFunctionTool] | None = None,
+    tool_choice: LlmChatToolChoice | Mapping[str, Any] | None = None,
+    parallel_tool_calls: bool | None = None,
+    thinking: Mapping[str, Any] | LlmChatThinking | LlmThinkingConfig | None = None,
+    provider_extra: Mapping[str, Any] | SayGmExtra | None = None,
+    timeout: float | Timeout | None = None,
+    stream: Literal[False] = False,
+) -> LlmChatResult: ...
+
+
+@overload
+async def llm_chat(
+    *,
+    provider: Literal["chutes", "cloudflare"],
     messages: Sequence[Mapping[str, Any] | LlmChatMessage | LlmMessage],
     model: str,
     temperature: float | None = None,
@@ -460,7 +480,26 @@ async def llm_chat(
 @overload
 async def llm_chat(
     *,
-    provider: Literal["chutes", "saygm", "cloudflare"],
+    provider: Literal["saygm"],
+    messages: Sequence[Mapping[str, Any] | LlmChatMessage | LlmMessage],
+    model: str,
+    temperature: float | None = None,
+    max_output_tokens: int | None = None,
+    max_tokens: int | None = None,
+    tools: Sequence[Mapping[str, Any] | LlmChatFunctionTool] | None = None,
+    tool_choice: LlmChatToolChoice | Mapping[str, Any] | None = None,
+    parallel_tool_calls: bool | None = None,
+    thinking: Mapping[str, Any] | LlmChatThinking | LlmThinkingConfig | None = None,
+    provider_extra: Mapping[str, Any] | SayGmExtra | None = None,
+    timeout: float | Timeout | None = None,
+    stream: Literal[True],
+) -> LlmChatStream: ...
+
+
+@overload
+async def llm_chat(
+    *,
+    provider: Literal["chutes", "cloudflare"],
     messages: Sequence[Mapping[str, Any] | LlmChatMessage | LlmMessage],
     model: str,
     temperature: float | None = None,
@@ -517,7 +556,26 @@ async def llm_chat(
 @overload
 async def llm_chat(
     *,
-    provider: Literal["chutes", "saygm", "cloudflare"],
+    provider: Literal["saygm"],
+    messages: Sequence[Mapping[str, Any] | LlmChatMessage | LlmMessage],
+    model: str,
+    temperature: float | None = None,
+    max_output_tokens: int | None = None,
+    max_tokens: int | None = None,
+    tools: Sequence[Mapping[str, Any] | LlmChatFunctionTool] | None = None,
+    tool_choice: LlmChatToolChoice | Mapping[str, Any] | None = None,
+    parallel_tool_calls: bool | None = None,
+    thinking: Mapping[str, Any] | LlmChatThinking | LlmThinkingConfig | None = None,
+    provider_extra: Mapping[str, Any] | SayGmExtra | None = None,
+    timeout: float | Timeout | None = None,
+    stream: bool,
+) -> LlmChatResult | LlmChatStream: ...
+
+
+@overload
+async def llm_chat(
+    *,
+    provider: Literal["chutes", "cloudflare"],
     messages: Sequence[Mapping[str, Any] | LlmChatMessage | LlmMessage],
     model: str,
     temperature: float | None = None,
@@ -569,7 +627,7 @@ async def llm_chat(
     if thinking is not None:
         payload_raw["thinking"] = asdict(thinking) if isinstance(thinking, LlmThinkingConfig) else thinking
     if provider_extra is not None:
-        if isinstance(provider_extra, OpenRouterExtra | AiGatewayExtra):
+        if isinstance(provider_extra, ProviderExtra):
             payload_raw["provider_extra"] = provider_extra.to_request_extra()
         else:
             payload_raw["provider_extra"] = provider_extra

@@ -21,8 +21,7 @@ from harnyx_commons.llm.providers.openai_compatible import (
 from harnyx_commons.llm.providers.thinking import resolve_request_thinking
 from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
-from harnyx_miner_sdk.llm import Timeout
-from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatOutputSink
+from harnyx_miner_sdk.tools.llm_provider_extra import SayGmExtra
 
 SAYGM_BASE_URL = "https://api.saygm.com/v1"
 _stream_output_started: ContextVar[bool] = ContextVar("saygm_stream_output_started", default=False)
@@ -53,13 +52,13 @@ class SayGmLlmProvider(OpenAiCompatibleLlmProvider):
 
     async def _request_chat(
         self,
-        payload: _OpenAiCompatibleChatRequest,
-        *,
-        timeout: float | Timeout | None,
-        on_output: LlmChatOutputSink | None = None,
+        request: AbstractLlmRequest,
     ) -> LlmResponse:
         _stream_output_started.set(False)
-        response = await super()._request_chat(payload, timeout=timeout, on_output=on_output)
+        body_extra = dict(request.extra or {})
+        routing = {key: body_extra.pop(key) for key in ("X-GM-Routing", "X-GM-Providers") if key in body_extra}
+        headers = SayGmExtra.model_validate(routing).to_request_extra() if routing else None
+        response = await self._send_chat(replace(request, extra=body_extra), headers=headers)
         # A completed response is no longer an interrupted stream when a later backoff expires.
         _stream_output_started.set(False)
         return response

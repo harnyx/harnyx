@@ -117,16 +117,22 @@ async def test_detailed_llm_timeout_preserves_phases_and_outer_deadline_headroom
 
 
 @pytest.mark.parametrize("model", ["gpt-6.1-terra", "claude-sonnet-5-5"])
-async def test_saygm_dispatches_miner_selected_native_model(model: str) -> None:
+async def test_saygm_dispatches_miner_selected_native_model_and_headers(model: str) -> None:
     provider = _CapturingLlmProvider()
     invoker = RuntimeToolInvoker(InMemoryReceiptLog(), llm_provider_resolver=lambda *_: provider)
     await invoker.invoke(
         "llm_chat",
         args=(),
-        kwargs={"provider": "saygm", "model": model, "messages": [{"role": "user", "content": "hello"}]},
+        kwargs={
+            "provider": "saygm",
+            "model": model,
+            "messages": [{"role": "user", "content": "hello"}],
+            "provider_extra": {"X-GM-Providers": "openai,azure", "X-GM-Routing": "cheapest"},
+        },
         context=_miner_context(),
     )
     assert [request.model for request in provider.requests] == [model]
+    assert provider.requests[0].extra == {"X-GM-Providers": "openai,azure", "X-GM-Routing": "cheapest"}
 
 
 def _miner_context() -> ToolInvocationContext:

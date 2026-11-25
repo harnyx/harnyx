@@ -110,7 +110,12 @@ async def test_internal_alias_and_miner_native_routes_stream_and_settle_with_exp
         )
         for request in (
             internal,
-            replace(internal, model="gpt-6.1-terra", thinking=LlmThinkingConfig(enabled=True, effort="low")),
+            replace(
+                internal,
+                model="gpt-6.1-terra",
+                thinking=LlmThinkingConfig(enabled=True, effort="low"),
+                extra={"X-GM-Routing": "fastest", "X-GM-Providers": "openai,azure"},
+            ),
             replace(internal, model="zai-org/GLM-5.1-TEE"),
         ):
             response = await provider.invoke(request)
@@ -124,6 +129,10 @@ async def test_internal_alias_and_miner_native_routes_stream_and_settle_with_exp
     assert all(str(request.url) == "https://api.saygm.com/v1/chat/completions" for request in requests)
     assert all(request.headers["Authorization"] == "Bearer miner-key" for request in requests)
     first, second, third = [json.loads(request.content) for request in requests]
+    for header, value in {"X-GM-Routing": "fastest", "X-GM-Providers": "openai,azure"}.items():
+        assert requests[1].headers[header] == value
+        assert header not in requests[0].headers and header not in requests[2].headers
+        assert header not in second
     assert first["model"] == "gemma-4-31b-turbo-tee"
     assert second["model"] == "gpt-6.1-terra"
     assert third["model"] == "glm-5.1-tee"

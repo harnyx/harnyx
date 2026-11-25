@@ -30,8 +30,7 @@ from harnyx_miner_sdk.llm import (
     ToolLlmRequest,
 )
 from harnyx_miner_sdk.tools.llm_provider_extra import (
-    AiGatewayExtra,
-    OpenRouterExtra,
+    ProviderExtra,
     validate_provider_extra,
 )
 from harnyx_miner_sdk.tools.types import ToolInvocationTimeout
@@ -286,7 +285,7 @@ class LlmChatRequest(_StrictModel):
     tool_choice: LlmChatToolChoice | None = None
     parallel_tool_calls: StrictBool | None = None
     thinking: LlmChatThinking | None = None
-    provider_extra: OpenRouterExtra | AiGatewayExtra | None = None
+    provider_extra: ProviderExtra | None = None
 
     @model_validator(mode="before")
     @classmethod

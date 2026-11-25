@@ -54,7 +54,6 @@ from harnyx_commons.llm.schema import (
     LlmUsage,
 )
 from harnyx_commons.llm.timeout import record_output_progress, streaming_transport_timeout
-from harnyx_miner_sdk.llm import Timeout
 from harnyx_miner_sdk.tools.llm_chat_stream_models import LlmChatChunk, LlmChatOutputSink
 
 _provider_dispatch: ContextVar[Callable[[], None] | None] = ContextVar("openai_compatible_dispatch", default=None)
@@ -88,11 +87,7 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
         try:
             return await self._call_with_retry(
                 request,
-                call_coro=lambda current_request: self._request_chat(
-                    self._build_request(current_request),
-                    timeout=current_request.timeout,
-                    on_output=current_request.on_output,
-                ),
+                call_coro=self._request_chat,
                 verifier=self._verify_response,
                 classify_exception=self._classify_exception,
                 policy=request.retry_policy,
@@ -121,16 +116,21 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
             provider_name=self._provider_label,
         )
 
-    async def _request_chat(
+    async def _request_chat(self, request: AbstractLlmRequest) -> LlmResponse:
+        return await self._send_chat(request)
+
+    async def _send_chat(
         self,
-        payload: _OpenAiCompatibleChatRequest,
+        request: AbstractLlmRequest,
         *,
-        timeout: float | Timeout | None,
-        on_output: LlmChatOutputSink | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> LlmResponse:
+        payload = self._build_request(request)
+        timeout = request.timeout
+        on_output = request.on_output
         request_kwargs: dict[str, Any] = {
             "json": payload.model_dump(mode="json", exclude_none=True),
-            "headers": await self._authenticator.headers(),
+            "headers": {**await self._authenticator.headers(), **(headers or {})},
         }
         if timeout is not None:
             request_kwargs["timeout"] = streaming_transport_timeout(timeout)

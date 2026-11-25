@@ -533,7 +533,7 @@ for routing, usage and failure behavior.
 
 Current allowed `llm_chat` provider/model ids in this repo:
 
-Use any native model ID supported by SayGM Chat Completions. Pass that ID directly to `llm_chat`. SayGM has no entry in `allowed_llm_provider_models`. Register the key with `harnyx-miner-config --wallet-name <wallet> --hotkey-name <hotkey> --provider saygm --api-key <provider-api-key>`. Claude and Gemini native APIs are outside this integration. SayGM accepts no `provider_extra`; actual charges use its returned settlement rather than the published ceiling prices used for budget estimates.
+Use any native model ID supported by SayGM Chat Completions. Pass that ID directly to `llm_chat`. SayGM has no entry in `allowed_llm_provider_models`. Register the key with `harnyx-miner-config --wallet-name <wallet> --hotkey-name <hotkey> --provider saygm --api-key <provider-api-key>`. Claude and Gemini native APIs are outside this integration. Miners can pass `X-GM-Routing` and `X-GM-Providers` in the chat call’s `provider_extra`. Actual charges use its returned settlement rather than the published ceiling prices used for budget estimates.
 
 | Provider | Model ids |
 |----------|-----------|

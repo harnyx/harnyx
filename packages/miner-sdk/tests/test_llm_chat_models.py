@@ -40,8 +40,32 @@ def test_saygm_wire_preserves_native_selection_and_rejects_other_gateway_routing
     request = LlmChatRequest.model_validate(payload)
     assert request.to_tool_request().provider == "saygm"
     assert request.model_dump(mode="json")["model"] == "gpt-oss-20b"
-    with pytest.raises(ValueError, match="provider_extra is not supported"):
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         LlmChatRequest.model_validate(payload | {"provider_extra": {"provider": {"only": ["groq"]}}})
+
+
+@pytest.mark.parametrize("mode", ["default", "cheapest", "fastest"])
+def test_saygm_routing_survives_tool_transport(mode: str) -> None:
+    extra = {"X-GM-Routing": mode, "X-GM-Providers": "openai, azure"}
+    request = LlmChatRequest.model_validate(_request_payload() | {"provider": "saygm", "provider_extra": extra})
+    wire = request.model_dump(mode="json", by_alias=True, exclude_none=True)
+    assert LlmChatRequest.model_validate(wire).provider_extra_payload() == {
+        "X-GM-Routing": mode,
+        "X-GM-Providers": "openai,azure",
+    }
+
+
+@pytest.mark.parametrize("extra", [
+    {"X-GM-Routing": "random"},
+    {"X-GM-Providers": "openai,OpenAI"},
+    {"X-GM-Providers": "openai,"},
+    {"X-GM-Providers": "azure\r\nAuthorization: bad"},
+    {"X-GM-Providers": ",".join(str(number) for number in range(17))},
+    {"Authorization": "bad"},
+])
+def test_saygm_rejects_invalid_routing(extra: dict[str, str]) -> None:
+    with pytest.raises(ValidationError):
+        LlmChatRequest.model_validate(_request_payload() | {"provider": "saygm", "provider_extra": extra})
 
 
 @pytest.mark.parametrize("enabled", [True, False])

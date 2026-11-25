@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+import re
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
@@ -140,16 +141,48 @@ class AiGatewayExtra(BaseModel):
         return {"providerOptions": provider_options}
 
 
+class SayGmExtra(BaseModel):
+    """Per-request routing headers for SayGM chat."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    routing: Literal["default", "cheapest", "fastest"] | None = Field(default=None, alias="X-GM-Routing")
+    providers: str | None = Field(default=None, alias="X-GM-Providers")
+
+    @field_validator("providers")
+    @classmethod
+    def _validate_providers(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        names = [name.strip(" ") for name in value.split(",")]
+        if len(names) > 16 or any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", name) is None for name in names):
+            raise ValueError("X-GM-Providers requires 1 to 16 comma-separated provider identifiers")
+        if len({name.lower() for name in names}) != len(names):
+            raise ValueError("X-GM-Providers requires distinct provider identifiers")
+        return ",".join(names)
+
+    @model_validator(mode="after")
+    def _require_header(self) -> SayGmExtra:
+        if self.routing is None and self.providers is None:
+            raise ValueError("SayGM provider_extra requires X-GM-Routing or X-GM-Providers")
+        return self
+
+    def to_request_extra(self) -> dict[str, Any]:
+        return self.model_dump(by_alias=True, exclude_none=True)
+
+
 _OPENROUTER_EXTRA_ADAPTER = TypeAdapter(OpenRouterExtra)
 _AI_GATEWAY_EXTRA_ADAPTER = TypeAdapter(AiGatewayExtra)
 
 
-ProviderExtra = OpenRouterExtra | AiGatewayExtra
+ProviderExtra = OpenRouterExtra | AiGatewayExtra | SayGmExtra
 
 
 def validate_provider_extra(*, provider: str, provider_extra: object) -> ProviderExtra | None:
     if provider_extra is None:
         return None
+    if provider == "saygm":
+        return SayGmExtra.model_validate(provider_extra)
     if provider == "openrouter":
         return _OPENROUTER_EXTRA_ADAPTER.validate_python(provider_extra)
     if provider == "ai_gateway":
@@ -165,5 +198,6 @@ __all__ = [
     "OpenRouterExtra",
     "OpenRouterProviderSelection",
     "ProviderExtra",
+    "SayGmExtra",
     "validate_provider_extra",
 ]
