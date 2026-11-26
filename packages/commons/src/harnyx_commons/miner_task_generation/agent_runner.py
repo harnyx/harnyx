@@ -65,7 +65,7 @@ from .contracts import (
 )
 
 logger = logging.getLogger("harnyx_commons.llm.calls")
-AUTHOR_MODEL = "gpt-6.1-sol"
+AUTHOR_MODEL = "gpt-6.2-sol"
 JUDGE_MODEL = "openai/gpt-6-luna"
 RETRY_POLICY = RetryPolicy(attempts=2, initial_ms=500, max_ms=30_000, jitter=0.2)
 T = TypeVar("T")
